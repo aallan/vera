@@ -1,0 +1,32 @@
+[project]
+name = "vera"
+version = "0.1.0"
+description = "Vera: a programming language designed for LLMs, with full contracts, algebraic effects, and typed slot references"
+requires-python = ">=3.11"
+dependencies = [
+    "lark>=1.1",
+    "z3-solver>=4.12",
+    "wasmtime>=15.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "mypy>=1.0",
+    "hypothesis>=6.0",
+]
+
+[project.scripts]
+vera = "vera.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
