@@ -8,10 +8,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
     strategy:
       matrix:
+        os: [ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -28,7 +30,7 @@ jobs:
         run: pytest -v
 
       - name: Run tests with coverage
-        if: matrix.python-version == '3.12'
+        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
         run: pytest --cov=vera --cov-report=term-missing --cov-fail-under=80
 
   typecheck:
@@ -62,3 +64,9 @@ jobs:
 
       - name: Check all examples type-check cleanly
         run: python scripts/check_examples.py
+
+      - name: Check version numbers are in sync
+        run: python scripts/check_version_sync.py
+
+      - name: Check spec code blocks parse correctly
+        run: python scripts/check_spec_examples.py

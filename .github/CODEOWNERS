@@ -1,0 +1,15 @@
+# Code owners — automatically request reviews on PRs.
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owner for everything
+* @aallan
+
+# Specification changes — extra scrutiny, language design impact
+spec/ @aallan
+
+# Grammar changes — must stay in sync with spec/10-grammar.md
+vera/grammar.lark @aallan
+
+# CI and project config
+.github/ @aallan
+pyproject.toml @aallan
