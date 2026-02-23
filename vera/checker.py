@@ -4,8 +4,8 @@ Validates expression types, slot reference resolution, effect annotations,
 and contract well-formedness.  Consumes Program AST nodes from parse_to_ast()
 and produces a list of Diagnostic errors (empty = success).
 
-Refinement predicate verification and contract satisfiability are deferred
-to C4 (Z3 solver).
+Refinement predicate verification and contract satisfiability are handled
+by the contract verifier (vera/verifier.py) via Z3.
 """
 
 from __future__ import annotations
@@ -497,7 +497,7 @@ class TypeChecker:
             self.env.in_contract = True
             for expr in contract.exprs:
                 ty = self._synth_expr(expr)
-                # Type is checked but verification deferred to C4
+                # Type is checked; termination verification is Tier 3
             self.env.in_contract = False
 
     # -----------------------------------------------------------------
