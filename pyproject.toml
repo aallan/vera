@@ -35,6 +35,7 @@ dev = [
     "pytest-cov>=4.0",
     "mypy>=1.0",
     "hypothesis>=6.0",
+    "pre-commit>=3.0",
 ]
 
 [project.scripts]
@@ -53,3 +54,12 @@ testpaths = ["tests"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[[tool.mypy.overrides]]
+# Lark transformer methods are dynamically named callbacks that take
+# untyped `args` lists — strict annotations are impractical here.
+module = "vera.transform"
+disallow_untyped_defs = false
+disallow_any_generics = false
+no_implicit_reexport = false
+warn_return_any = false

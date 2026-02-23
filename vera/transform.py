@@ -7,6 +7,8 @@ bottom-up, so children are already transformed when a parent runs.
 
 from __future__ import annotations
 
+from typing import Any
+
 from lark import Token, Transformer, Tree, v_args
 
 from vera.ast import (
@@ -90,7 +92,7 @@ from vera.ast import (
 from vera.errors import Diagnostic, SourceLocation, TransformError
 
 
-def _span_from_meta(meta) -> Span | None:
+def _span_from_meta(meta: Any) -> Span | None:
     """Extract a Span from a Lark Tree's meta, if positions are available."""
     if hasattr(meta, "line") and meta.line is not None:
         return Span(
@@ -102,7 +104,7 @@ def _span_from_meta(meta) -> Span | None:
     return None
 
 
-def _transform_error(msg: str, meta=None) -> TransformError:
+def _transform_error(msg: str, meta: Any = None) -> TransformError:
     """Create a TransformError with optional location info."""
     loc = SourceLocation()
     if meta and hasattr(meta, "line") and meta.line is not None:
@@ -973,7 +975,7 @@ class VeraTransformer(Transformer):
 _transformer = VeraTransformer()
 
 
-def transform(tree: Tree) -> Program:
+def transform(tree: Tree[Any]) -> Program:
     """Transform a Lark parse tree into a Vera AST.
 
     Args:

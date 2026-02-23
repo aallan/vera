@@ -8,10 +8,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+from typing import Any
+
 from lark import Lark, Tree
 from lark.exceptions import LarkError
 
-from vera.errors import ParseError, diagnose_lark_error
+from vera.errors import Diagnostic, ParseError, diagnose_lark_error
 
 _GRAMMAR_PATH = Path(__file__).parent / "grammar.lark"
 
@@ -31,7 +33,7 @@ def _get_parser() -> Lark:
     return _parser
 
 
-def parse(source: str, file: Optional[str] = None) -> Tree:
+def parse(source: str, file: Optional[str] = None) -> Tree[Any]:
     """Parse Vera source code into a parse tree.
 
     Args:
@@ -55,7 +57,7 @@ def parse(source: str, file: Optional[str] = None) -> Tree:
         raise ParseError(diagnostic) from exc
 
 
-def parse_file(path: str | Path) -> Tree:
+def parse_file(path: str | Path) -> Tree[Any]:
     """Parse a .vera file.
 
     Args:
@@ -73,7 +75,7 @@ def parse_file(path: str | Path) -> Tree:
     return parse(source, file=str(path))
 
 
-def parse_to_ast(source: str, file: str | None = None):
+def parse_to_ast(source: str, file: str | None = None) -> Any:
     """Parse Vera source code directly to an AST.
 
     Args:
@@ -93,7 +95,7 @@ def parse_to_ast(source: str, file: str | None = None):
     return transform(tree)
 
 
-def typecheck_file(path: str | Path) -> list:
+def typecheck_file(path: str | Path) -> list[Diagnostic]:
     """Parse, transform, and type-check a .vera file.
 
     Args:
