@@ -117,6 +117,42 @@ Vera is in **active development**. The language specification, parser, AST, and 
 | Contract verifier (Z3) | Not started |
 | WASM code generation | Not started |
 
+## Roadmap
+
+Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next.
+
+| Phase | Version | Layer | Status |
+|-------|---------|-------|--------|
+| C1 | v0.0.1–0.0.3 | **Parser** — Lark LALR(1) grammar, LLM diagnostics, 13 examples | Done |
+| C2 | v0.0.4 | **AST** — typed syntax tree, Lark→AST transformer | Done |
+| C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
+| C4 | v0.0.6 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Next |
+| C5 | v0.0.7 | **WASM codegen** — compile pure functions, `vera compile` / `vera run` | Planned |
+| C6 | v0.0.8 | **Stdlib + runtime** — core library, effect handlers as continuations, GC | Planned |
+| C7 | v0.0.9 | **Module system** — cross-file imports, public/private visibility | Planned |
+| C8 | v0.1.0 | **End-to-end** — `.vera` → parse → typecheck → verify → compile → run | Planned |
+
+### What's next: C4 — Contract Verifier (v0.0.6)
+
+The type checker validates *types*. The contract verifier validates *logic* — that preconditions are satisfiable, postconditions follow from the implementation, and refinement types actually constrain what they claim.
+
+- Wire up Z3 (already a declared dependency) to verify `requires`/`ensures`/`decreases` clauses
+- Refinement type verification — `{ @Int | @Int.0 > 0 }` checked against actual values
+- Three-tier verification: static (Z3 proves it), guided (user provides hints), runtime (fallback assertions)
+- Counterexample generation — when verification fails, show a concrete input that breaks the contract
+- `vera verify` command (or extend `vera check` to include verification)
+
+### Specification chapters
+
+The language specification grows alongside the compiler. Chapters 0–7 and 10 are drafted. The remaining chapters will be written with their corresponding compiler phases:
+
+| Chapter | Topic | Written with |
+|---------|-------|-------------|
+| 8 | Modules and imports | C7 |
+| 9 | Standard library | C6 |
+| 11 | Compilation model | C5 |
+| 12 | Runtime and execution | C5/C6 |
+
 ## Getting Started
 
 ### Prerequisites
@@ -170,6 +206,16 @@ vera ast --json examples/factorial.vera
 ```bash
 pytest tests/ -v
 ```
+
+### Development setup
+
+For contributors, install pre-commit hooks to catch issues before they reach CI:
+
+```bash
+pre-commit install
+```
+
+This runs mypy, pytest, trailing whitespace checks, and validates all examples on every commit.
 
 ### Write a program
 
@@ -296,7 +342,8 @@ vera/
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # Example Vera programs
-├── tests/                         # Test suite
+├── tests/                         # Test suite (284 tests)
+├── scripts/                       # CI and maintenance scripts
 └── runtime/                       # WASM runtime support (future)
 ```
 

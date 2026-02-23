@@ -1,0 +1,43 @@
+# Pre-commit hooks — run `pre-commit install` after cloning.
+# See https://pre-commit.com for more information.
+#
+# Local hooks use `language: system` and assume the venv is active
+# (the same environment where `pip install -e ".[dev]"` was run).
+
+repos:
+  # General hygiene
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: debug-statements
+
+  # Project-specific checks — require activated venv
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: .venv/bin/mypy vera/
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest
+        entry: .venv/bin/pytest tests/ -q
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: vera-examples
+        name: vera examples
+        entry: .venv/bin/python scripts/check_examples.py
+        language: system
+        pass_filenames: false
+        files: '(\.vera$|vera/.*\.py$|vera/grammar\.lark$)'
