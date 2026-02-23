@@ -91,3 +91,27 @@ def parse_to_ast(source: str, file: str | None = None):
 
     tree = parse(source, file=file)
     return transform(tree)
+
+
+def typecheck_file(path: str | Path) -> list:
+    """Parse, transform, and type-check a .vera file.
+
+    Args:
+        path: Path to the .vera file.
+
+    Returns:
+        A list of Diagnostic objects (empty if no issues found).
+
+    Raises:
+        ParseError: If the file contains syntax errors.
+        TransformError: If the parse tree cannot be transformed.
+        FileNotFoundError: If the file does not exist.
+    """
+    from vera.checker import typecheck
+    from vera.transform import transform
+
+    path = Path(path)
+    source = path.read_text(encoding="utf-8")
+    tree = parse(source, file=str(path))
+    ast = transform(tree)
+    return typecheck(ast, source, file=str(path))
