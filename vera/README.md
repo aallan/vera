@@ -80,9 +80,9 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `wasm.py` | 585 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
 | `codegen.py` | 653 | Compile | Codegen orchestrator | `compile()`, `execute()` |
 | `errors.py` | 354 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
-| `cli.py` | 525 | All | CLI commands | `main()` |
+| `cli.py` | 541 | All | CLI commands | `main()` |
 
-Total: ~7,060 lines of Python + 328 lines of grammar.
+Total: ~7,082 lines of Python + 328 lines of grammar.
 
 ## Parsing
 
@@ -168,7 +168,7 @@ Node
 
 ## Type Checking
 
-**Files:** `checker.py` (1,589 lines), `types.py` (300 lines), `environment.py` (299 lines)
+**Files:** `checker.py` (1,569 lines), `types.py` (302 lines), `environment.py` (299 lines)
 
 This is the most architecturally complex stage.
 
@@ -261,7 +261,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 
 ## Contract Verification
 
-**Files:** `verifier.py` (558 lines), `smt.py` (363 lines)
+**Files:** `verifier.py` (539 lines), `smt.py` (363 lines)
 
 ### Tiered model
 
@@ -451,22 +451,22 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**470 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
+**508 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
 | File | Tests | Lines | What it covers |
 |------|------:|------:|----------------|
-| `test_parser.py` | 82 | 791 | Grammar rules, operator precedence, parse errors |
-| `test_ast.py` | 71 | 896 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 80 | 950 | Type synthesis, slot resolution, effects, contracts |
-| `test_verifier.py` | 51 | 616 | Z3 verification, counterexamples, tier classification |
-| `test_codegen.py` | ~76 | 849 | WASM compilation, arithmetic, control flow, strings, IO, contracts |
-| `test_cli.py` | ~35 | 606 | CLI commands (check, verify, compile, run), subprocess integration |
+| `test_parser.py` | 95 | 791 | Grammar rules, operator precedence, parse errors |
+| `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
+| `test_checker.py` | 91 | 950 | Type synthesis, slot resolution, effects, contracts |
+| `test_verifier.py` | 52 | 616 | Z3 verification, counterexamples, tier classification |
+| `test_codegen.py` | 104 | 1,181 | WASM compilation, arithmetic, control flow, strings, IO, contracts, example round-trips |
+| `test_cli.py` | 64 | 767 | CLI commands (check, verify, compile, run), subprocess integration, runtime traps |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 16 | 129 | Diagnostic formatting, error patterns |
 
-Total: 4,905 lines of test code (66% of source code size).
+Total: 5,398 lines of test code (73% of source code size).
 
 ### Round-trip testing
 
@@ -534,11 +534,11 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **No ADT/match codegen** | Needs tagged union representation in linear memory | #26 |
-| **No closure codegen** | Needs closure conversion pass | #27 |
-| **No effect handler codegen** | Needs continuation-passing transform | #28 |
-| **No generic function codegen** | Needs monomorphization or type erasure | #29 |
-| **No Float64/Byte codegen** | Straightforward extensions | #25, #30 |
+| **No ADT/match codegen** | Needs tagged union representation in linear memory | [#26](https://github.com/aallan/vera/issues/26) |
+| **No closure codegen** | Needs closure conversion pass | [#27](https://github.com/aallan/vera/issues/27) |
+| **No effect handler codegen** | Needs continuation-passing transform | [#28](https://github.com/aallan/vera/issues/28) |
+| **No generic function codegen** | Needs monomorphization or type erasure | [#29](https://github.com/aallan/vera/issues/29) |
+| **No Float64/Byte codegen** | Straightforward extensions | [#25](https://github.com/aallan/vera/issues/25), [#30](https://github.com/aallan/vera/issues/30) |
 | **No module resolution** | `import` declarations parsed but not resolved | C7 (module system) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | Incremental |
 | **No termination verification** | `decreases` clauses parsed but always Tier 3 | Future |

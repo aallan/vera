@@ -87,9 +87,10 @@ mypy vera/
 ### Validation Scripts
 
 ```bash
-python scripts/check_examples.py       # verify all .vera examples
-python scripts/check_spec_examples.py   # verify spec code blocks parse
-python scripts/check_version_sync.py    # verify version consistency
+python scripts/check_examples.py         # verify all .vera examples
+python scripts/check_spec_examples.py    # verify spec code blocks parse
+python scripts/check_readme_examples.py  # verify README code blocks parse
+python scripts/check_version_sync.py     # verify version consistency
 ```
 
 ## Coding Standards
@@ -139,9 +140,10 @@ When proposing changes, consider whether they align with Vera's design goals:
 vera/
 ├── spec/          # Language specification (Markdown)
 ├── vera/          # Reference compiler (Python)
-├── runtime/       # WASM runtime support (WAT)
+├── runtime/       # WASM runtime support (future)
 ├── tests/         # Test suite
 ├── examples/      # Example Vera programs
+├── scripts/       # CI and validation scripts
 ```
 
 ## Branch Protection

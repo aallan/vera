@@ -436,7 +436,7 @@ vera/
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (470 tests)
+├── tests/                         # Test suite (508 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse

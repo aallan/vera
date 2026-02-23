@@ -604,3 +604,164 @@ class TestMain:
         parsed = json.loads(result.stdout)
         assert parsed["ok"] is True
         assert parsed["stdout"] == "Hello, World!"
+
+    def test_dispatch_run_json_with_value(self) -> None:
+        """Subprocess: vera run --json --fn factorial -- 5 returns value."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", "--json", FACTORIAL,
+             "--fn", "factorial", "--", "5"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is True
+        assert parsed["value"] == 120
+
+    def test_dispatch_compile_binary(self, tmp_path: Path) -> None:
+        """Subprocess: vera compile -o <path> produces a .wasm binary."""
+        out_path = tmp_path / "output.wasm"
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile",
+             "-o", str(out_path), HELLO_WORLD],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert out_path.exists()
+        assert len(out_path.read_bytes()) > 0
+        assert "Compiled:" in result.stdout
+
+    def test_dispatch_compile_missing_file(self) -> None:
+        """Subprocess: vera compile on missing file returns error."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile",
+             "--wat", "/nonexistent/file.vera"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "file not found" in result.stderr
+
+    def test_dispatch_run_missing_file(self) -> None:
+        """Subprocess: vera run on missing file returns error."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", "/nonexistent/file.vera"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "file not found" in result.stderr
+
+    def test_dispatch_compile_json_missing_file(self) -> None:
+        """Subprocess: vera compile --json on missing file returns JSON error."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile",
+             "--json", "/nonexistent/file.vera"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is False
+
+    def test_dispatch_run_json_missing_file(self) -> None:
+        """Subprocess: vera run --json on missing file returns JSON error."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run",
+             "--json", "/nonexistent/file.vera"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is False
+
+
+# =====================================================================
+# cmd_run — additional edge cases
+# =====================================================================
+
+
+class TestCmdRunEdgeCases:
+    def test_run_with_multiple_args(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Run a function with multiple integer arguments."""
+        # Create a temp file with a two-arg function
+        import tempfile
+        source = """\
+fn add(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.1 + @Int.0 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        rc = cmd_run(path, fn_name="add", fn_args=[3, 4])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "7" in out
+
+    def test_run_with_negative_args(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Run a function with negative integer arguments."""
+        import tempfile
+        source = """\
+fn abs(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 } }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        rc = cmd_run(path, fn_name="abs", fn_args=[-42])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "42" in out
+
+    def test_run_runtime_trap(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Run a function that triggers a runtime precondition trap."""
+        import tempfile
+        source = """\
+fn positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        # Runtime error → caught by cmd_run's RuntimeError handler
+        rc = cmd_run(path, fn_name="positive", fn_args=[0])
+        assert rc == 1
+
+    def test_run_compile_json_with_warnings(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Compile JSON mode includes warnings from compilation."""
+        import tempfile
+        source = """\
+data Opt<T> { None, Some(T) }
+
+fn make_none(-> @Opt<Int>)
+  requires(true) ensures(true) effects(pure)
+{ None }
+
+fn simple(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        rc = cmd_compile(path, as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is True
+        # The ADT function produces a compilation warning
+        assert len(data["warnings"]) > 0

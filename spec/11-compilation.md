@@ -300,12 +300,12 @@ The current compilation model has the following limitations, each tracked as a G
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| No Float64 codegen | #25 | Straightforward i64 → f64 extension |
-| No ADT / match codegen | #26 | Needs tagged union representation in linear memory |
-| No closure / anonymous function codegen | #27 | Needs closure conversion pass |
-| No effect handler codegen | #28 | Needs continuation-passing transform |
-| No generic function codegen | #29 | Needs monomorphization or type erasure |
-| No Byte type codegen | #30 | Needs linear memory byte operations |
+| No Float64 codegen | [#25](https://github.com/aallan/vera/issues/25) | Straightforward i64 → f64 extension |
+| No ADT / match codegen | [#26](https://github.com/aallan/vera/issues/26) | Needs tagged union representation in linear memory |
+| No closure / anonymous function codegen | [#27](https://github.com/aallan/vera/issues/27) | Needs closure conversion pass |
+| No effect handler codegen | [#28](https://github.com/aallan/vera/issues/28) | Needs continuation-passing transform |
+| No generic function codegen | [#29](https://github.com/aallan/vera/issues/29) | Needs monomorphization or type erasure |
+| No Byte type codegen | [#30](https://github.com/aallan/vera/issues/30) | Needs linear memory byte operations |
 | No module-level code generation | — | Each file compiles independently |
 | No garbage collection | — | Linear memory is not reclaimed |
 | String constants only | — | No dynamic string construction |
