@@ -159,18 +159,47 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
 | C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
 | C5 | v0.0.9 | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
-| C6 | v0.0.10 | **Stdlib + runtime** — core library, effect handlers as continuations, GC | Planned |
-| C7 | v0.0.11 | **Module system** — cross-file imports, public/private visibility | Planned |
-| C8 | v0.1.0 | **End-to-end** — `.vera` → parse → typecheck → verify → compile → run | Planned |
+| C6 | v0.0.10–0.0.23 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Planned |
+| C7 | — | **Module system** — cross-file imports, public/private visibility | Planned |
+| C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
 
-### What's next: C6 — Stdlib + Runtime (v0.0.10)
+### What's next: C6 — Codegen Completeness (v0.0.10–v0.0.23)
 
-The code generator compiles verified programs to executable WebAssembly. The next phase adds a standard library and runtime support.
+The code generator compiles 6 of 14 examples. C6 extends WASM compilation to all language constructs, working through the dependency graph from simplest to most complex.
 
-- Core library functions (string operations, array operations, Option/Result utilities)
-- Effect handlers compiled as continuations
-- Garbage collection for heap-allocated data
-- ADT and match expression codegen (#26)
+**Independent tasks (no dependencies on each other):**
+
+| Sub-phase | Scope | Closes | Unlocks |
+|-----------|-------|--------|---------|
+| C6a | Float64 — `f64` literals, arithmetic, comparisons | #25 | — |
+| C6b | Callee preconditions — verify `requires()` at call sites | #19 | — |
+| C6c | Match exhaustiveness — verify all constructors covered | #18 | — |
+| C6d | State\<T\> operations — get/put as host imports | — | increment.vera |
+
+**Allocator and data types (sequential chain):**
+
+| Sub-phase | Scope | Closes | Unlocks |
+|-----------|-------|--------|---------|
+| C6e | Bump allocator — heap allocation for tagged values | — | — |
+| C6f | ADT constructors — heap-allocated tagged unions | — | — |
+| C6g | Match expressions — tag dispatch, field extraction | #26 | pattern_matching.vera |
+| C6i | Generics — monomorphization of `forall<T>` functions | #29 | generics.vera, list_ops.vera |
+
+**Higher-order and effects:**
+
+| Sub-phase | Scope | Closes | Unlocks |
+|-----------|-------|--------|---------|
+| C6h | Closures — closure conversion, `call_indirect` | #27 | closures.vera |
+| C6j | Effect handlers — handle/resume compilation | #28 | effect_handler.vera |
+
+**Collections, runtime, and documentation:**
+
+| Sub-phase | Scope | Closes | Unlocks |
+|-----------|-------|--------|---------|
+| C6k | Byte + arrays — linear memory arrays with bounds | #30 | — |
+| C6l | Quantifiers — forall/exists as runtime loops | — | quantifiers.vera |
+| C6m | Refinement returns + stdlib utilities | — | refinement_types.vera |
+| C6n | Spec chapters 9 (Standard library) and 12 (Runtime) | — | — |
 
 ### Specification chapters
 
@@ -179,9 +208,9 @@ The language specification grows alongside the compiler. Chapters 0–7 and 10 a
 | Chapter | Topic | Written with |
 |---------|-------|-------------|
 | 8 | Modules and imports | C7 |
-| 9 | Standard library | C6 |
+| 9 | Standard library | C6n |
 | 11 | Compilation model | C5 ✓ |
-| 12 | Runtime and execution | C6 |
+| 12 | Runtime and execution | C6n |
 
 ## Getting Started
 
