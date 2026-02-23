@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-02-23
+
+### Added
+- **WASM code generation** (`vera/codegen.py`, `vera/wasm.py`): compile verified Vera programs to WebAssembly and execute them via wasmtime — **first light** 🌅
+  - Two-pass code generator: register functions (forward references, mutual recursion), then compile bodies
+  - Expression compilation: integer/Boolean literals, arithmetic, comparisons, Boolean logic, if/else, let bindings, blocks, function calls, recursion, string literals, IO operations
+  - `WasmSlotEnv` — maps De Bruijn slot references (`@T.n`) to WASM local indices (mirrors `SlotEnv` in `smt.py`)
+  - `WasmContext` — manages local allocation, data section, imports, accumulates WAT instructions
+  - `StringPool` — deduplicated string constants in the WASM data section
+  - Type mapping: Int/Nat → i64, Bool → i32, Unit → void, String → (i32 ptr, i32 len) pair
+  - IO effect as host imports: `IO.print` compiles to imported host function, host reads UTF-8 from linear memory
+  - Where-block functions compiled as module-level WASM functions
+  - Graceful degradation: functions with unsupported types/constructs are skipped with a warning
+- **Runtime contract insertion**: Tier 3 (unverified) contracts compiled as runtime assertions
+  - Preconditions checked at function entry, trap on violation via `unreachable`
+  - Postconditions checked after body with result stored in temp local
+  - Trivial contracts (`requires(true)`, `ensures(true)`) eliminated — no runtime overhead
+  - Tier 1 (proven) contracts omitted — statically guaranteed
+- **CLI commands**: `vera compile` and `vera run`
+  - `vera compile <file>` — full pipeline, writes `.wasm` binary; `--wat` prints human-readable WAT; `--json` for diagnostics; `-o` for output path
+  - `vera run <file>` — compile and execute; `--fn` to call specific function; `--` to pass arguments; `--json` for structured output
+- **Spec Chapter 11** (`spec/11-compilation.md`): compilation model documentation — type mapping, expression compilation, string pool, IO host bindings, runtime contracts, CLI commands, limitations
+- **Hello World example** (`examples/hello_world.vera`): IO effect with qualified `IO.print` call (14 examples total)
+- **README code sample testing** (`scripts/check_readme_examples.py`, `tests/test_readme.py`): extracts Vera code blocks from README.md and verifies they parse; pre-commit hook added
+- **Codegen tests**: 76 new tests — literals, arithmetic, comparisons, Boolean logic, control flow, let bindings, function calls, recursion, strings, IO, runtime contracts, CLI commands, subprocess integration (470 total, up from 372)
+
+### Changed
+- README: updated status table (WASM codegen: Working), advanced roadmap (C5 Done, What's next → C6), added `vera compile`/`vera run` docs, updated project structure with `wasm.py`, `codegen.py`, `spec/11-compilation.md`
+- SKILLS.md: added `vera compile` and `vera run` to toolchain section, added Chapter 11 to spec reference table
+- CLAUDE.md: added compile/run commands, updated pipeline, updated example/test counts
+- AGENTS.md: added compile/run commands, updated pipeline, added `wasm.py` and `codegen.py` to module table, updated test counts
+- vera/README.md: updated pipeline diagram (6 stages), added codegen/wasm to module map, updated line counts, added codegen section, updated test suite table, updated limitations
+
+### Fixed
+- Documentation consistency: all `print(...)` calls in README.md, spec/05-functions.md, spec/07-effects.md, and SKILLS.md corrected to use qualified `IO.print(...)` syntax (matching the language's "one canonical form" design principle)
+
 ## [0.0.8] - 2026-02-23
 
 ### Added
@@ -154,7 +190,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.8...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.9...HEAD
+[0.0.9]: https://github.com/aallan/vera/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/aallan/vera/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/aallan/vera/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/aallan/vera/compare/v0.0.5...v0.0.6

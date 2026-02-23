@@ -313,7 +313,7 @@ fn main(@Unit -> @Unit)
   ensures(true)
   effects(<IO>)
 {
-  print("Hello, Vera!");
+  IO.print("Hello, Vera!");
   ()
 }
 ```

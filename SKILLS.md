@@ -15,6 +15,12 @@ vera check --json file.vera       # Type-check with JSON diagnostics
 vera typecheck file.vera          # Same as check (explicit alias)
 vera verify file.vera             # Type-check and verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON diagnostics
+vera compile file.vera            # Compile to .wasm binary
+vera compile --wat file.vera      # Print WAT text (human-readable WASM)
+vera compile --json file.vera     # Compile with JSON diagnostics
+vera run file.vera                # Compile and execute (calls main)
+vera run file.vera --fn f -- 42   # Call function f with argument 42
+vera run --json file.vera         # Run with JSON output
 vera parse file.vera              # Print the parse tree
 vera ast file.vera                # Print the typed AST
 vera ast --json file.vera         # Print the AST as JSON
@@ -256,7 +262,7 @@ Blocks contain statements followed by a final expression:
 {
   let @Int = @Int.0 + 1;
   let @String = to_string(@Int.0);
-  print(@String.0);
+  IO.print(@String.0);
   @Int.0
 }
 ```
@@ -345,7 +351,7 @@ fn greet(@String -> @Unit)
   ensures(true)
   effects(<IO>)
 {
-  print(@String.0);
+  IO.print(@String.0);
   ()
 }
 ```
@@ -594,14 +600,14 @@ fn factorial(@Nat -> @Nat)
 
 ### Undeclared effects
 
-WRONG — `print` performs IO but function declares `pure`:
+WRONG — `IO.print` performs IO but function declares `pure`:
 ```vera
 fn greet(@String -> @Unit)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  print(@String.0);
+  IO.print(@String.0);
   ()
 }
 ```
@@ -613,7 +619,7 @@ fn greet(@String -> @Unit)
   ensures(true)
   effects(<IO>)
 {
-  print(@String.0);
+  IO.print(@String.0);
   ()
 }
 ```
@@ -753,3 +759,4 @@ The full language specification is in `spec/`:
 | 6 | `spec/06-contracts.md` | Verification system |
 | 7 | `spec/07-effects.md` | Algebraic effect system |
 | 10 | `spec/10-grammar.md` | Formal EBNF grammar |
+| 11 | `spec/11-compilation.md` | Compilation model and WASM target |

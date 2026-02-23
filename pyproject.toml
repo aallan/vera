@@ -1,6 +1,6 @@
 [project]
 name = "vera"
-version = "0.0.8"
+version = "0.0.9"
 description = "Vera: a programming language designed for LLMs, with full contracts, algebraic effects, and typed slot references"
 readme = "README.md"
 license = "MIT"
@@ -67,4 +67,9 @@ warn_return_any = false
 [[tool.mypy.overrides]]
 # z3-solver does not ship py.typed or stubs.
 module = "z3.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# wasmtime does not ship complete type stubs.
+module = "wasmtime.*"
 ignore_missing_imports = true

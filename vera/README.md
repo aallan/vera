@@ -5,12 +5,12 @@ Architecture documentation for the Vera compiler (`vera/` package). This is for 
 For other documentation:
 - [Root README](../README.md) — project overview, getting started, language examples
 - [SKILLS.md](../SKILLS.md) — language reference for LLM agents writing Vera code
-- [spec/](../spec/) — formal language specification (9 chapters)
+- [spec/](../spec/) — formal language specification (10 chapters)
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — contributor workflow and conventions
 
 ## Pipeline Overview
 
-The compiler is a five-stage pipeline. Each stage consumes the output of the previous one. Each stage has a single public entry point and is independently testable.
+The compiler is a six-stage pipeline. Each stage consumes the output of the previous one. Each stage has a single public entry point and is independently testable.
 
 ```
 Source (.vera)
@@ -39,14 +39,20 @@ Source (.vera)
 └────────────────────────┬─────────────────────────────────┘
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  5. Codegen                           (not yet — C5)     │
-│     AST → WebAssembly                                    │
+│  5. Compile                    codegen.py + wasm.py      │
+│     AST → CompileResult          (WAT text + WASM binary)│
+│     Runtime contract insertion for Tier 3                │
+└────────────────────────┬─────────────────────────────────┘
+                         ▼
+┌──────────────────────────────────────────────────────────┐
+│  6. Execute                            (wasmtime)        │
+│     WASM binary → host runtime with IO bindings          │
 └──────────────────────────────────────────────────────────┘
 ```
 
 Errors never cause early exit. Parse errors raise exceptions (the tree is incomplete), but the type checker and verifier **accumulate** all diagnostics and return them as a list. This is critical for LLM consumption — the model gets all feedback in one pass.
 
-Public entry points (from `parser.py`):
+Public entry points (from `parser.py` and `codegen.py`):
 
 ```python
 parse(source, file=None)        # → Lark Tree
@@ -54,6 +60,8 @@ parse_file(path)                # → Lark Tree (from disk)
 parse_to_ast(source, file=None) # → Program AST
 typecheck_file(path)            # → list[Diagnostic]
 verify_file(path)               # → VerifyResult
+compile(program, verify_result) # → CompileResult (WAT + WASM bytes)
+execute(compile_result, ...)    # → run WASM via wasmtime
 ```
 
 ## Module Map
@@ -64,15 +72,17 @@ verify_file(path)               # → VerifyResult
 | `parser.py` | 147 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
 | `transform.py` | 990 | Transform | Lark tree → AST transformer | `transform()` |
 | `ast.py` | 682 | Transform | Frozen dataclass AST nodes | `Program`, `Node`, `Expr` |
-| `types.py` | 300 | Type check | Semantic type representation | `Type`, `is_subtype()` |
+| `types.py` | 302 | Type check | Semantic type representation | `Type`, `is_subtype()` |
 | `environment.py` | 299 | Type check | Type environment, scope stacks | `TypeEnv` |
-| `checker.py` | 1,589 | Type check | Two-pass type checker | `typecheck()` |
+| `checker.py` | 1,569 | Type check | Two-pass type checker | `typecheck()` |
 | `smt.py` | 363 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
-| `verifier.py` | 558 | Verify | Contract verification | `verify()` |
-| `errors.py` | 327 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
-| `cli.py` | 183 | All | CLI commands | `main()` |
+| `verifier.py` | 539 | Verify | Contract verification | `verify()` |
+| `wasm.py` | 585 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
+| `codegen.py` | 653 | Compile | Codegen orchestrator | `compile()`, `execute()` |
+| `errors.py` | 354 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
+| `cli.py` | 525 | All | CLI commands | `main()` |
 
-Total: ~5,770 lines of Python + 328 lines of grammar.
+Total: ~7,060 lines of Python + 328 lines of grammar.
 
 ## Parsing
 
@@ -333,9 +343,49 @@ Error at line 3, column 3:
   See: Chapter 6, Section 6.4 "Verification Conditions"
 ```
 
+## Code Generation
+
+**Files:** `codegen.py` (653 lines), `wasm.py` (585 lines)
+
+### Compilation pipeline
+
+`compile()` in `codegen.py` takes a `Program` AST and optional `VerifyResult`, and produces a `CompileResult` containing WAT text, WASM bytes, export names, and diagnostics.
+
+```
+Program AST → CodeGenerator._register_functions()  (pass 1)
+            → CodeGenerator._compile_functions()   (pass 2)
+            → WAT module text
+            → wasmtime.wat2wasm() → WASM bytes
+```
+
+The two-pass architecture mirrors the type checker: pass 1 registers all function signatures so forward references and mutual recursion work, pass 2 compiles bodies.
+
+### WASM translation
+
+`WasmContext` in `wasm.py` mirrors `SmtContext` in `smt.py`. It translates AST expressions to WAT instructions via `translate_expr()`, which dispatches on AST node type. Returns `None` for unsupported constructs (graceful degradation, same pattern as SMT translation).
+
+`WasmSlotEnv` mirrors `SlotEnv` — it maps typed De Bruijn indices (`@T.n`) to WASM local indices. Immutable: `push()` returns a new environment.
+
+### String pool
+
+`StringPool` manages string constants in the WASM data section. Identical strings are deduplicated. Each string gets an `(offset, length)` pair. `StringLit` compiles to two `i32.const` instructions pushing the pointer and length.
+
+### IO host bindings
+
+`IO.print` compiles to a call to an imported host function. The `execute()` function in `codegen.py` provides the host implementation via wasmtime's `Linker`: it reads UTF-8 bytes from WASM linear memory and writes to stdout (or a capture buffer for testing).
+
+### Runtime contracts
+
+The code generator classifies contracts using the verifier's tier results:
+- **Tier 1 (proven):** omitted — statically guaranteed
+- **Trivial (`requires(true)`, `ensures(true)`):** omitted — no meaningful check
+- **Tier 3 (unverified):** compiled as runtime assertions using `unreachable` traps
+
+Preconditions are checked at function entry. Postconditions store the return value in a temporary local, check the condition, and trap or return.
+
 ## Error System
 
-**File:** `errors.py` (327 lines)
+**File:** `errors.py` (354 lines)
 
 ```
 VeraError (exception hierarchy)
@@ -385,6 +435,8 @@ The type checker and verifier never stop at the first error. All diagnostics are
 
 `SmtContext.translate_expr()` returns `None` for any construct it can't handle. The verifier interprets `None` as "Tier 3: warn and assume runtime check". This means **no valid program ever fails verification** — contracts that Z3 can't prove get warnings, not errors. As the SMT translation grows (Tier 2, quantifiers, etc.), constructs graduate from Tier 3 to Tier 1.
 
+The same pattern applies to code generation: `WasmContext.translate_expr()` returns `None` for unsupported expressions, and the code generator skips those functions with a warning. As codegen support grows, more functions become compilable.
+
 ### 5. Lark Transformer bottom-up
 
 Methods in `transform.py` are named after grammar rules and receive already-transformed children. Sentinel types (`_ForallVars`, `_Signature`, `_TypeParams`, `_WhereFns`) carry intermediate results between grammar rules during transformation but are never part of the exported AST. The `__default__()` method catches any unhandled grammar rule and raises `TransformError`.
@@ -399,7 +451,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**335 tests** across 5 files, plus 3 validation scripts and CI infrastructure.
+**470 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -409,13 +461,16 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 | `test_ast.py` | 71 | 896 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 80 | 950 | Type synthesis, slot resolution, effects, contracts |
 | `test_verifier.py` | 51 | 616 | Z3 verification, counterexamples, tier classification |
+| `test_codegen.py` | ~76 | 849 | WASM compilation, arithmetic, control flow, strings, IO, contracts |
+| `test_cli.py` | ~35 | 606 | CLI commands (check, verify, compile, run), subprocess integration |
+| `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 16 | 129 | Diagnostic formatting, error patterns |
 
-Total: 3,382 lines of test code (59% of source code size).
+Total: 4,905 lines of test code (66% of source code size).
 
 ### Round-trip testing
 
-Every one of the 13 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests. If you add a new `.vera` example, it's automatically included in the round-trip suite.
+Every one of the 14 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests. If you add a new `.vera` example, it's automatically included in the round-trip suite.
 
 ### Helper conventions
 
@@ -430,14 +485,21 @@ _check_err(source, "match")    # assert at least one error matching substring
 _verify_ok(source)             # assert no verification errors
 _verify_err(source, "match")   # assert at least one verification error
 _verify_warn(source, "match")  # assert at least one warning
+
+# test_codegen.py pattern:
+_compile_ok(source)            # assert compilation succeeds
+_run(source, fn, args)         # compile + execute, return result
+_run_io(source, fn, args)      # compile + execute, return captured stdout
+_run_trap(source, fn, args)    # compile + execute, assert WASM trap
 ```
 
 ### Validation scripts
 
 | Script | What it validates |
 |--------|-------------------|
-| `scripts/check_examples.py` | All 13 `.vera` examples pass `vera check` + `vera verify` |
+| `scripts/check_examples.py` | All 14 `.vera` examples pass `vera check` + `vera verify` |
 | `scripts/check_spec_examples.py` | 154 code blocks from spec chapters parse correctly |
+| `scripts/check_readme_examples.py` | Vera code blocks in README.md parse correctly |
 | `scripts/check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
 
 ### CI and pre-commit
@@ -462,8 +524,9 @@ When extending the compiler, add tests following the existing patterns:
 2. **New AST node:** Add transformation tests to `test_ast.py` (check node fields, spans, serialisation)
 3. **New type rule:** Add checker tests to `test_checker.py` using `_check_ok()`/`_check_err()`
 4. **New SMT support:** Add verifier tests to `test_verifier.py` using `_verify_ok()`/`_verify_err()`
-5. **New example program:** Add to `examples/` — it's automatically included in round-trip tests
-6. **New error pattern:** Add formatting tests to `test_errors.py`
+5. **New codegen support:** Add compilation tests to `test_codegen.py` using `_compile_ok()`/`_run()`/`_run_trap()`
+6. **New example program:** Add to `examples/` — it's automatically included in round-trip tests
+7. **New error pattern:** Add formatting tests to `test_errors.py`
 
 ## Current Limitations
 
@@ -471,9 +534,12 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **No code generation** | Pipeline stops at verification | C5 (WASM codegen) |
+| **No ADT/match codegen** | Needs tagged union representation in linear memory | #26 |
+| **No closure codegen** | Needs closure conversion pass | #27 |
+| **No effect handler codegen** | Needs continuation-passing transform | #28 |
+| **No generic function codegen** | Needs monomorphization or type erasure | #29 |
+| **No Float64/Byte codegen** | Straightforward extensions | #25, #30 |
 | **No module resolution** | `import` declarations parsed but not resolved | C7 (module system) |
-| **No runtime contract insertion** | Tier 3 contracts warn but don't generate assertions | C5 (codegen) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | Incremental |
 | **No termination verification** | `decreases` clauses parsed but always Tier 3 | Future |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | Tier 2 |
@@ -521,6 +587,12 @@ self.effects["Name"] = EffectInfo(
 
 Add a case to `SmtContext.translate_expr()` in `smt.py`. Return a Z3 expression for supported constructs. **Return `None`** for anything that can't be translated — this triggers Tier 3 gracefully rather than causing an error.
 
+### Extending WASM compilation
+
+Add a case to `WasmContext.translate_expr()` in `wasm.py`. Return a list of WAT instruction strings for supported constructs. **Return `None`** for anything that can't be compiled — this triggers a "function skipped" warning rather than a compilation error.
+
+To add a new WASM type mapping, update `wasm_type()` in `wasm.py` and the type mapping table in `codegen.py`.
+
 ### New CLI command
 
 1. Add a `cmd_*` function to `cli.py` following the existing pattern (try/except VeraError)
@@ -535,7 +607,7 @@ Add a case to `SmtContext.translate_expr()` in `smt.py`. Return a Z3 expression 
 |---------|---------|---------|
 | `lark` | ≥1.1 | LALR(1) parser generator. Chosen for its Python-native implementation, deterministic parsing, and built-in Transformer pattern. |
 | `z3-solver` | ≥4.12 | SMT solver for contract verification. Industry-standard solver supporting QF_LIA and Boolean logic. Note: does not ship `py.typed` — mypy override configured in `pyproject.toml`. |
-| `wasmtime` | ≥15.0 | WebAssembly runtime. Declared but not yet used — planned for C5 code generation. |
+| `wasmtime` | ≥15.0 | WebAssembly runtime. Used for WAT→WASM compilation and execution via `vera compile` / `vera run`. Note: does not ship complete type stubs — mypy override configured in `pyproject.toml`. |
 
 ### Development
 

@@ -19,6 +19,10 @@ vera check file.vera              # Parse and type-check
 vera check --json file.vera       # Type-check with JSON output (for parsing)
 vera verify file.vera             # Type-check + verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON output (for parsing)
+vera compile file.vera            # Compile to .wasm binary
+vera compile --wat file.vera      # Print WAT text (human-readable WASM)
+vera run file.vera                # Compile and execute (calls main)
+vera run file.vera --fn f -- 42   # Call function f with argument 42
 ```
 
 ### Error handling
@@ -77,10 +81,10 @@ Read `vera/README.md` for architecture docs, module map, and design patterns.
 ### Pipeline
 
 ```
-source -> parse (parser.py) -> transform (transform.py) -> typecheck (checker.py) -> verify (verifier.py) -> codegen (future)
+source -> parse (parser.py) -> transform (transform.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen.py + wasm.py) -> execute (wasmtime)
 ```
 
-Each stage is a module with a single public API function (`parse_file`, `transform`, `typecheck`, `verify`) and is independently testable.
+Each stage is a module with a single public API function (`parse_file`, `transform`, `typecheck`, `verify`, `compile`, `execute`) and is independently testable.
 
 ### Key modules
 
@@ -97,23 +101,25 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 | `vera/verifier.py` | Contract verifier |
 | `vera/registration.py` | Shared function registration for checker and verifier |
 | `vera/errors.py` | LLM-oriented diagnostics |
+| `vera/wasm.py` | WASM translation layer |
+| `vera/codegen.py` | Code generation orchestrator |
 | `vera/cli.py` | Command-line interface |
 
 ### Testing
 
 ```bash
-pytest tests/ -v                       # Run all tests
+pytest tests/ -v                       # Run all tests (470 tests)
 mypy vera/                             # Type-check the compiler
-python scripts/check_examples.py       # All 13 examples must pass
+python scripts/check_examples.py       # All 14 examples must pass
 ```
 
 Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)` / `_verify_ok(source)` / `_verify_err(source, match)`. See existing tests for examples.
 
 ### Invariants
 
-- All 13 examples in `examples/` must pass `vera check` and `vera verify`
+- All 14 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
-- `pytest tests/ -v` must pass (currently 372 tests)
+- `pytest tests/ -v` must pass (currently 470 tests)
 - Version must be in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 
 ### Contributing

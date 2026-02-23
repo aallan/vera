@@ -1,0 +1,13 @@
+-- Hello, World! — First light for Vera compilation.
+
+effect IO {
+  op print(String -> Unit);
+}
+
+fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("Hello, World!")
+}
