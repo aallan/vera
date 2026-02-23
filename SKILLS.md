@@ -10,16 +10,28 @@ Vera is a programming language designed for LLMs to write. It uses typed slot re
 ## Toolchain
 
 ```bash
-vera check file.vera       # Parse and type-check (or "OK")
-vera typecheck file.vera   # Same as check (explicit alias)
-vera verify file.vera      # Type-check and verify contracts via Z3
-vera parse file.vera       # Print the parse tree
-vera ast file.vera         # Print the typed AST
-vera ast --json file.vera  # Print the AST as JSON
-pytest tests/ -v           # Run the test suite
+vera check file.vera              # Parse and type-check (or "OK")
+vera check --json file.vera       # Type-check with JSON diagnostics
+vera typecheck file.vera          # Same as check (explicit alias)
+vera verify file.vera             # Type-check and verify contracts via Z3
+vera verify --json file.vera      # Verify with JSON diagnostics
+vera parse file.vera              # Print the parse tree
+vera ast file.vera                # Print the typed AST
+vera ast --json file.vera         # Print the AST as JSON
+pytest tests/ -v                  # Run the test suite
 ```
 
 Errors are natural language instructions explaining what went wrong and how to fix it. Feed them back into your context to correct the code.
+
+### JSON diagnostics
+
+Use `--json` on `check` or `verify` for machine-readable output:
+
+```json
+{"ok": true, "file": "...", "diagnostics": [], "warnings": []}
+```
+
+On error, each diagnostic includes `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, and `spec_ref`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts.
 
 ## Function Structure
 

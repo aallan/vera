@@ -27,6 +27,16 @@ class SourceLocation:
         parts.append(f"column {self.column}")
         return ", ".join(parts)
 
+    def to_dict(self) -> dict[str, object]:
+        """Machine-readable representation for JSON output."""
+        d: dict[str, object] = {
+            "line": self.line,
+            "column": self.column,
+        }
+        if self.file:
+            d["file"] = self.file
+        return d
+
 
 @dataclass
 class Diagnostic:
@@ -91,6 +101,23 @@ class Diagnostic:
             parts.append(f"  See: {self.spec_ref}")
 
         return "\n".join(parts)
+
+    def to_dict(self) -> dict[str, object]:
+        """Machine-readable representation for JSON output."""
+        d: dict[str, object] = {
+            "severity": self.severity,
+            "description": self.description,
+            "location": self.location.to_dict(),
+        }
+        if self.source_line:
+            d["source_line"] = self.source_line
+        if self.rationale:
+            d["rationale"] = self.rationale
+        if self.fix:
+            d["fix"] = self.fix
+        if self.spec_ref:
+            d["spec_ref"] = self.spec_ref
+        return d
 
 
 class VeraError(Exception):
