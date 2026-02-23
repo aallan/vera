@@ -369,7 +369,10 @@ vera/
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # Example Vera programs
 ├── tests/                         # Test suite (284 tests)
-├── scripts/                       # CI and maintenance scripts
+├── scripts/                       # CI and validation scripts
+│   ├── check_examples.py          # Verify all .vera examples
+│   ├── check_spec_examples.py     # Verify spec code blocks parse
+│   └── check_version_sync.py      # Verify version consistency
 └── runtime/                       # WASM runtime support (future)
 ```
 
