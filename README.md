@@ -2,7 +2,7 @@
 
 [![Vera — A language designed for machines to write](assets/vera-social-preview.jpg)](https://veralang.dev)
 
-**Vera** (V-EER-A) is a programming language designed for large language models (LLMs) to write, not humans.
+**Vera** (v-EER-a) is a programming language designed for large language models (LLMs) to write, not humans.
 
 The name comes from the Latin *veritas* (truth). In Vera, verification is a first-class citizen, not an afterthought.
 
