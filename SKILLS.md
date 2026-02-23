@@ -12,6 +12,8 @@ Vera is a programming language designed for LLMs to write. It uses typed slot re
 ```bash
 vera check file.vera    # Parse and report errors (or "OK")
 vera parse file.vera    # Print the parse tree
+vera ast file.vera      # Print the typed AST
+vera ast --json file.vera  # Print the AST as JSON
 pytest tests/ -v        # Run the test suite
 ```
 

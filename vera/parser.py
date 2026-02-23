@@ -71,3 +71,23 @@ def parse_file(path: str | Path) -> Tree:
     path = Path(path)
     source = path.read_text(encoding="utf-8")
     return parse(source, file=str(path))
+
+
+def parse_to_ast(source: str, file: str | None = None):
+    """Parse Vera source code directly to an AST.
+
+    Args:
+        source: Vera source code as a string.
+        file: Optional file path for error messages.
+
+    Returns:
+        A Program AST node.
+
+    Raises:
+        ParseError: If the source contains syntax errors.
+        TransformError: If the parse tree cannot be transformed.
+    """
+    from vera.transform import transform
+
+    tree = parse(source, file=file)
+    return transform(tree)

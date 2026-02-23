@@ -107,6 +107,12 @@ class ParseError(VeraError):
     pass
 
 
+class TransformError(VeraError):
+    """An error during Lark tree → AST transformation."""
+
+    pass
+
+
 # =====================================================================
 # Common parse error patterns
 # =====================================================================
