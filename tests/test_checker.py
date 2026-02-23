@@ -821,7 +821,7 @@ fn foo(@PosInt -> @Int)
 """)
 
     def test_int_to_nat_allowed(self) -> None:
-        """Int -> Nat is allowed in C3 (deferred to C4)."""
+        """Int -> Nat allowed by checker; verifier enforces >= 0 via Z3."""
         _check_ok("""
 fn foo(@Int -> @Nat)
   requires(true) ensures(true) effects(pure)

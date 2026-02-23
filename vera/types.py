@@ -191,15 +191,17 @@ def base_type(ty: Type) -> Type:
 
 
 def is_subtype(sub: Type, sup: Type) -> bool:
-    """Check if sub <: sup under the C3 subtyping rules.
+    """Check if sub <: sup under the subtyping rules.
 
     Rules:
     1. Reflexivity: T <: T
     2. Never <: T for all T
-    3. Nat <: Int
+    3a. Nat <: Int (widening — always safe)
+    3b. Int <: Nat (checker permits; verifier enforces non-negativity via Z3)
     4. RefinedType(base, _) <: base
     5. RefinedType(base, _) <: T if base <: T
-    6. UnknownType is compatible with everything (error recovery)
+    6. T <: RefinedType(base, _) if T <: base (predicate enforced by verifier)
+    7. UnknownType is compatible with everything (error recovery)
     """
     # Unknown propagates silently
     if isinstance(sub, UnknownType) or isinstance(sup, UnknownType):
@@ -213,8 +215,8 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     if isinstance(sub, PrimitiveType) and sub.name == "Never":
         return True
 
-    # Nat <: Int (always valid)
-    # Int <: Nat (allowed in C3 — refinement verification deferred to C4)
+    # Nat <: Int (widening — always safe)
+    # Int <: Nat (checker permits; verifier enforces >= 0 via Z3)
     if isinstance(sub, PrimitiveType) and isinstance(sup, PrimitiveType):
         if sub.name == "Nat" and sup.name == "Int":
             return True
@@ -238,7 +240,7 @@ def is_subtype(sub: Type, sup: Type) -> bool:
         return is_subtype(sub.base, sup)
 
     # Refinement on the sup side: T <: { @T | P } only if T <: base
-    # (predicate verification deferred to C4)
+    # (predicate enforced by the contract verifier, not the type checker)
     if isinstance(sup, RefinedType):
         return is_subtype(sub, sup.base)
 
