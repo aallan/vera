@@ -50,7 +50,71 @@ Vera draws on ideas from several existing languages and systems:
 
 - **TLA+ / Alloy**: Formal specification languages. Vera's contracts serve a similar role — they are executable specifications that constrain what the implementation can do.
 
-## 0.5 Document Conventions
+## 0.5 Diagnostics as Instructions
+
+Vera's compiler does not produce diagnostics for humans. It produces **instructions for the model that wrote the code**.
+
+Every diagnostic — parse errors, type errors, contract violations, effect mismatches, verification failures — MUST be a natural language explanation that tells the model what went wrong, why, and how to fix it. The diagnostic is not a status report; it is a corrective action.
+
+### 0.5.1 Diagnostic Structure
+
+Every diagnostic MUST include:
+
+1. **Location.** File path, line number, and column, with the offending source line quoted and the error position indicated.
+2. **Description.** A plain English explanation of the problem. No error codes, no abbreviated jargon.
+3. **Rationale.** Why this is an error — which language rule was violated.
+4. **Fix.** A concrete code example showing the corrected form. This is not a hint; it is a template the model can apply directly.
+5. **Spec reference.** The specification chapter and section that defines the violated rule.
+
+### 0.5.2 Example
+
+```
+Error in examples/bad.vera at line 5, column 1:
+
+    fn add(@Int, @Int -> @Int)
+    ^
+
+  Function "add" is missing its contract block. Every function in Vera
+  must declare requires(), ensures(), and effects() clauses between
+  the signature and the body.
+
+  Add a contract block after the signature:
+
+    fn add(@Int, @Int -> @Int)
+      requires(true)
+      ensures(@Int.result == @Int.0 + @Int.1)
+      effects(pure)
+    {
+      ...
+    }
+
+  See: Chapter 5, Section 5.1 "Function Structure"
+```
+
+### 0.5.3 Diagnostic Categories
+
+Diagnostics occur at every phase of compilation:
+
+| Phase | Examples |
+|-------|----------|
+| Parsing | Missing contracts, malformed `@T.n` references, unclosed blocks, invalid syntax |
+| Type checking | Type mismatches, invalid refinement predicates, subtyping violations |
+| Effect checking | Undeclared effects, missing handlers, effect row mismatches |
+| Verification (Tier 1) | Contract violations with SMT counterexamples, explained in plain language |
+| Verification (Tier 2) | Suggestions for lemmas or hints that would help the solver |
+| Verification (Tier 3) | Runtime check insertion points, with explanation of what could not be proven |
+| Reachability | Unreachable branches (when preconditions or types make a case impossible) |
+| Call-site analysis | Arguments that cannot be proven to satisfy a callee's preconditions |
+
+### 0.5.4 Design Rationale
+
+The LLM-compiler interaction is a feedback loop. The model writes code; the compiler checks it; the model reads the diagnostics and revises. The quality of the diagnostics determines the speed of convergence.
+
+Traditional compilers optimise diagnostics for human developers who understand the language and can infer fixes from terse messages. LLMs do not have this background knowledge reliably. They perform best when given explicit, complete instructions — the same principle that makes MCP tool descriptions effective is applied here to compiler output.
+
+A diagnostic that says `expected token '{'` is a puzzle. A diagnostic that says "Function X is missing its contract block. Add requires(), ensures(), and effects() between the signature and the body, like this: [example]" is an instruction. Vera always produces instructions.
+
+## 0.6 Document Conventions
 
 Throughout this specification:
 
@@ -61,7 +125,7 @@ Throughout this specification:
 - Grammar rules use EBNF notation as defined in Chapter 10.
 - The term "the compiler" refers to any conforming implementation of the Vera specification.
 
-## 0.6 Specification Structure
+## 0.7 Specification Structure
 
 | Chapter | Contents |
 |---------|----------|

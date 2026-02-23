@@ -14,7 +14,7 @@ Vera addresses this by making everything explicit and verifiable. The model does
 
 ## Design Principles
 
-1. **Checkability over correctness.** Code that can be mechanically checked. When wrong, the compiler provides a precise, actionable signal.
+1. **Checkability over correctness.** Code that can be mechanically checked. When wrong, the compiler provides a natural language explanation of the error with a concrete fix — an instruction, not a status report.
 2. **Explicitness over convenience.** All state changes declared. All effects typed. All function contracts mandatory. No implicit behaviour.
 3. **One canonical form.** Every construct has exactly one textual representation. No style choices.
 4. **Structural references over names.** Bindings referenced by type and positional index (`@T.n`), not arbitrary names.
@@ -28,6 +28,7 @@ Vera addresses this by making everything explicit and verifiable. The model does
 - **Algebraic effects** — declared, typed, and handled explicitly; pure by default
 - **Refinement types** — types that express constraints like "a list of positive integers of length n"
 - **Three-tier verification** — static verification via Z3, guided verification with hints, runtime fallback
+- **Diagnostics as instructions** — every error message is a natural language explanation with a concrete fix, designed for LLM consumption
 - **Compiles to WebAssembly** — portable, sandboxed execution
 
 ## What Vera Looks Like
@@ -69,21 +70,194 @@ fn increment(@Unit -> @Unit)
 }
 ```
 
+## What Errors Look Like
+
+Traditional compilers produce diagnostics for humans: `expected token '{'`. Vera produces **instructions for the model that wrote the code**.
+
+Every error includes what went wrong, why, how to fix it with a concrete code example, and a spec reference. The compiler's output is designed to be fed directly back to the model as corrective context.
+
+```
+Error in main.vera at line 12, column 1:
+
+    fn add(@Int, @Int -> @Int)
+    ^
+
+  Function "add" is missing its contract block. Every function in Vera
+  must declare requires(), ensures(), and effects() clauses between the
+  signature and the body.
+
+  Add a contract block after the signature:
+
+    fn add(@Int, @Int -> @Int)
+      requires(true)
+      ensures(@Int.result == @Int.0 + @Int.1)
+      effects(pure)
+    {
+      ...
+    }
+
+  See: Chapter 5, Section 5.1 "Function Structure"
+```
+
+This principle applies at every stage: parse errors, type errors, effect mismatches, verification failures, and contract violations all produce natural language explanations with actionable fixes.
+
 ## Project Status
 
-Vera is in the **specification phase**. The language specification is being written alongside a reference compiler.
+Vera is in **active development**. The language specification and parser are functional. Type checking, verification, and code generation are not yet implemented.
 
 | Component | Status |
 |-----------|--------|
 | Language specification (Chapters 0-7, 10) | Draft |
 | Language specification (Chapters 8-9, 11-12) | Not started |
-| Reference compiler (Python) | Not started |
+| Parser (Lark LALR(1)) | Working |
+| Type checker | Not started |
+| Contract verifier (Z3) | Not started |
 | WASM code generation | Not started |
+
+## Getting Started
+
+### Prerequisites
+
+- Python 3.11+
+- Git
+
+### Installation
+
+```bash
+git clone https://github.com/aallan/vera.git
+cd vera
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+### Check a program
+
+```bash
+vera check examples/absolute_value.vera
+```
+```
+OK: examples/absolute_value.vera
+```
+
+### Parse a program
+
+```bash
+vera parse examples/safe_divide.vera
+```
+
+This prints the parse tree, useful for debugging syntax issues.
+
+### Run the tests
+
+```bash
+pytest tests/ -v
+```
+
+### Write a program
+
+Create a file `hello.vera`:
+
+```vera
+fn double(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 * 2)
+  effects(pure)
+{
+  @Int.0 * 2
+}
+```
+
+Then check it:
+
+```bash
+vera check hello.vera
+```
+
+See `examples/` for more programs, and the [language specification](spec/) for the full language reference.
+
+## For Agents
+
+Vera ships with a [`SKILLS.md`](SKILLS.md) file — a complete language reference designed for LLM agents. It covers syntax, slot references, contracts, effects, common mistakes, and working examples that all parse correctly.
+
+### Giving Your Agent the Vera Skill
+
+#### Claude Code
+
+If you're working in this repo, Claude Code discovers the skill automatically. For other projects, install it as a personal skill:
+
+```bash
+mkdir -p ~/.claude/skills/vera-language
+cp /path/to/vera/SKILLS.md ~/.claude/skills/vera-language/SKILL.md
+```
+
+The skill is now available across all your Claude Code projects. Claude will read it automatically when you ask it to write Vera code.
+
+#### Claude.ai
+
+1. Go to **Settings > Features**
+2. Upload `SKILLS.md` as a zip file (rename to `SKILL.md` first, then zip the directory)
+3. The skill is now available in your conversations
+
+#### Claude API
+
+```python
+from anthropic.lib import files_from_dir
+
+client = anthropic.Anthropic()
+
+skill = client.beta.skills.create(
+    display_title="Vera Language",
+    files=[("SKILL.md", open("SKILLS.md", "rb"))],
+    betas=["skills-2025-10-02"],
+)
+
+# Use in a message
+response = client.beta.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=4096,
+    betas=["code-execution-2025-08-25", "skills-2025-10-02"],
+    container={"skills": [{"type": "custom", "skill_id": skill.id, "version": "latest"}]},
+    tools=[{"type": "code_execution_20250825", "name": "code_execution"}],
+    messages=[{"role": "user", "content": "Write a Vera function that..."}],
+)
+```
+
+#### Other Models
+
+Point the model at `SKILLS.md` by including it in the system prompt, as a file attachment, or as a retrieval document. The file is self-contained and works with any model that can read markdown.
+
+### Agent Quickstart
+
+If you are an LLM agent, read [`SKILLS.md`](SKILLS.md) for the full language reference. Here is the minimal workflow:
+
+Install (if not already available):
+
+```bash
+git clone https://github.com/aallan/vera.git && cd vera
+python -m venv .venv && source .venv/bin/activate && pip install -e .
+```
+
+Write a `.vera` file, then check it:
+
+```bash
+vera check your_file.vera
+```
+
+If the check fails, the error message tells you exactly what went wrong and how to fix it. Feed the error back into your context and correct the code.
+
+**Essential rules:**
+1. Every function needs `requires()`, `ensures()`, and `effects()` between the signature and body
+2. Use `@Type.index` to reference bindings — `@Int.0` is the most recent `Int`, `@Int.1` is the one before that
+3. Declare all effects — `effects(pure)` for pure functions, `effects(<IO>)` for IO, etc.
+4. Recursive functions need a `decreases()` clause
+5. Match expressions must be exhaustive
 
 ## Project Structure
 
 ```
 vera/
+├── SKILLS.md                      # Language reference for LLM agents
 ├── spec/                          # Language specification
 │   ├── 00-introduction.md         # Design goals and philosophy
 │   ├── 01-lexical-structure.md    # Tokens, operators, formatting rules
@@ -95,9 +269,13 @@ vera/
 │   ├── 07-effects.md              # Algebraic effect system
 │   └── 10-grammar.md              # Formal EBNF grammar
 ├── vera/                          # Reference compiler (Python)
-├── runtime/                       # WASM runtime support
+│   ├── grammar.lark               # Lark LALR(1) grammar
+│   ├── parser.py                  # Parser module
+│   ├── errors.py                  # LLM-oriented diagnostics
+│   └── cli.py                     # Command-line interface
+├── examples/                      # Example Vera programs
 ├── tests/                         # Test suite
-└── examples/                      # Example Vera programs
+└── runtime/                       # WASM runtime support (future)
 ```
 
 ## Technical Decisions
@@ -113,6 +291,7 @@ vera/
 | Target | WebAssembly | Portable, sandboxed, no ambient capabilities |
 | Compiler | Python reference impl | Correctness over performance |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about |
+| Diagnostics | Natural language with fix examples | Compiler output is the model's feedback loop |
 
 ## Prior Art
 
@@ -124,30 +303,23 @@ Vera draws on ideas from:
 - [SPARK/Ada](https://www.adacore.com/about-spark) — contract-based industrial verification
 - [bruijn](https://bruijn.marvinborner.de/) — De Bruijn indices as surface syntax
 
-## Getting Started
-
-The reference compiler is not yet implemented. For now, you can read the [language specification](spec/) to understand Vera's design.
-
-### Prerequisites (for when the compiler is ready)
-
-- Python 3.11+
-- Z3 SMT solver (`pip install z3-solver`)
-- Wasmtime (`pip install wasmtime`)
-
-### Installation (future)
-
-```bash
-pip install vera
-```
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute to Vera.
 
-## License
-
-Vera is licensed under the [MIT License](LICENSE).
 
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md) for a history of changes.
+
+## Licence
+
+Vera is licensed under the [MIT License](LICENSE).
+
+Copyright &copy; 2026 Alasdair Allan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
