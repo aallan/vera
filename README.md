@@ -371,7 +371,7 @@ vera/
 │   ├── 06-contracts.md            # Verification system
 │   ├── 07-effects.md              # Algebraic effect system
 │   └── 10-grammar.md              # Formal EBNF grammar
-├── vera/                          # Reference compiler (Python) — see [vera/README.md](vera/README.md)
+├── vera/                          # Reference compiler (Python)
 │   ├── grammar.lark               # Lark LALR(1) grammar
 │   ├── parser.py                  # Parser module
 │   ├── ast.py                     # Typed AST node definitions
@@ -391,6 +391,8 @@ vera/
 │   └── check_version_sync.py      # Verify version consistency
 └── runtime/                       # WASM runtime support (future)
 ```
+
+For compiler architecture, pipeline internals, design patterns, and how to extend the compiler, see [`vera/README.md`](vera/README.md).
 
 ## Technical Decisions
 
