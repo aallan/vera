@@ -1,0 +1,33 @@
+-- Module declaration and imports
+
+module vera.examples.modules;
+
+import vera.math(abs, max);
+import vera.collections(List, Option);
+
+-- Public function — visible to importers
+public fn clamp(@Int, @Int, @Int -> @Int)
+  requires(@Int.1 <= @Int.2)
+  ensures(@Int.result >= @Int.1)
+  ensures(@Int.result <= @Int.2)
+  effects(pure)
+{
+  if @Int.0 < @Int.1 then {
+    @Int.1
+  } else {
+    if @Int.0 > @Int.2 then {
+      @Int.2
+    } else {
+      @Int.0
+    }
+  }
+}
+
+-- Private function — internal to this module
+private fn helper(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
+}

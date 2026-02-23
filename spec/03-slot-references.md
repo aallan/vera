@@ -322,19 +322,7 @@ Here `@Tuple<Int, String>.result` refers to the entire return tuple, and `.0` ac
 
 ## 3.7 Function Type References
 
-When a function type is a parameter, it is referenced using a mangled form of the function type. For readability and to avoid deeply nested syntax, function parameters use the keyword `Fn` with a numeric suffix:
-
-```
-fn(@Array<Int>, @Fn0 -> @Array<Int>)
-```
-
-where `@Fn0` is declared in the function signature as:
-
-```
-fn apply_to_array(@Array<Int>, @Fn0: Fn(@Int -> @Int) effects(pure) -> @Array<Int>)
-```
-
-**Actually, let's simplify.** Function-type parameters use the same `@T.n` system, where `T` is the full function type. Since function types can be long, a type alias is recommended:
+Function-type parameters use the same `@T.n` system, where `T` is the full function type. Since function types can be long, a type alias is recommended:
 
 ```
 type IntTransform = Fn(@Int -> @Int) effects(pure);

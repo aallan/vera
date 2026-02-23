@@ -1,0 +1,52 @@
+-- Generic functions and parameterized types
+
+-- Identity function — works for any type
+forall<T> fn identity(@T -> @T)
+  requires(true)
+  ensures(@T.result == @T.0)
+  effects(pure)
+{
+  @T.0
+}
+
+-- Constant function — returns the first argument, ignoring the second
+forall<A, B> fn const(@A, @B -> @A)
+  requires(true)
+  ensures(@A.result == @A.0)
+  effects(pure)
+{
+  @A.0
+}
+
+-- Generic option type
+data Option<T> { None, Some(T) }
+
+-- Check if an option contains a value
+forall<T> fn is_some(@Option<T> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<T>.0 {
+    None -> false,
+    Some(@T) -> true
+  }
+}
+
+-- Either type — two type parameters
+data Either<L, R> {
+  Left(L),
+  Right(R)
+}
+
+-- Extract the right value or provide a default
+fn unwrap_right(@Either<String, Int>, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Either<String, Int>.0 {
+    Left(@String) -> @Int.0,
+    Right(@Int) -> @Int.0
+  }
+}

@@ -229,28 +229,24 @@ VCs are translated to SMT-LIB format and solved by Z3:
 
 ### 6.4.4 Counterexample Reporting
 
-When Z3 finds a counterexample (a VC is invalid), the compiler reports:
-
-```
-ERROR: Contract violation in function safe_divide (line 2)
-  Postcondition: @Int.result == @Int.0 / @Int.1
-  Counterexample:
-    @Int.0 = 7
-    @Int.1 = 2
-    @Int.result = 3
-  Expected: 7 / 2 = 3 (but integer division truncates)
-  Note: The postcondition holds. If you see this error, there is a compiler bug.
-```
-
-Actually, in the case above the VC would be valid. A real counterexample:
+When Z3 finds a counterexample (a VC is invalid), the compiler reports the specific input values that violate the contract:
 
 ```
 ERROR: Contract violation in function foo (line 5)
+
+    fn foo(@Int -> @Int)
+      requires(true)
+      ensures(@Int.result > @Int.0)
+      ...
+
   Postcondition: @Int.result > @Int.0
   Counterexample:
     @Int.0 = 0
     @Int.result = 0
+
   The postcondition @Int.result > @Int.0 does not hold when @Int.0 = 0.
+  Consider strengthening the precondition (e.g., requires(@Int.0 > 0))
+  or weakening the postcondition (e.g., ensures(@Int.result >= @Int.0)).
 ```
 
 ## 6.5 Runtime Contract Checking

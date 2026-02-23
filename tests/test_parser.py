@@ -351,6 +351,418 @@ class TestComments:
         }
         """)
 
+    def test_annotation_comment(self) -> None:
+        parse("""
+        fn add(@Int /* left */, @Int /* right */ -> @Int /* sum */)
+          requires(true)
+          ensures(@Int.result == @Int.0 + @Int.1)
+          effects(pure)
+        {
+          @Int.0 + @Int.1
+        }
+        """)
+
+    def test_annotation_comment_standalone(self) -> None:
+        parse("""
+        /* Helper function */
+        fn id(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          @Int.0
+        }
+        """)
+
+    def test_mixed_comments(self) -> None:
+        parse("""
+        -- Line comment
+        {- Block comment -}
+        /* Annotation comment */
+        fn f(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          @Int.0
+        }
+        """)
+
+
+# =====================================================================
+# Tests for previously untested grammar constructs
+# =====================================================================
+
+
+class TestAnonymousFunctions:
+    def test_closure_as_argument(self) -> None:
+        parse("""
+        fn f(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          map(@Int.0, fn(@Int -> @Int) effects(pure) { @Int.0 * 2 })
+        }
+        """)
+
+    def test_fn_type_alias(self) -> None:
+        """Function types use type aliases for slot references."""
+        parse("""
+        type IntToInt = fn(Int -> Int) effects(pure);
+
+        fn apply(@IntToInt, @Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          apply_fn(@IntToInt.0, @Int.0)
+        }
+        """)
+
+    def test_closure_in_let(self) -> None:
+        """Anonymous functions can be bound in let statements."""
+        parse("""
+        fn f(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          let @Int = apply(fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }, @Int.0);
+          @Int.0
+        }
+        """)
+
+
+class TestGenerics:
+    def test_forall_single_type_var(self) -> None:
+        parse("""
+        forall<T> fn identity(@T -> @T)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          @T.0
+        }
+        """)
+
+    def test_forall_multiple_type_vars(self) -> None:
+        parse("""
+        forall<A, B> fn const(@A, @B -> @A)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          @A.0
+        }
+        """)
+
+    def test_generic_data_type_multiple_params(self) -> None:
+        parse("""
+        data Either<L, R> {
+          Left(L),
+          Right(R)
+        }
+        """)
+
+    def test_generic_function_call(self) -> None:
+        parse("""
+        forall<T> fn wrap(@T -> @Option<T>)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          Some(@T.0)
+        }
+        """)
+
+
+class TestRefinementTypes:
+    def test_refinement_type_alias(self) -> None:
+        parse("type PosInt = { @Int | @Int.0 > 0 };")
+
+    def test_refinement_via_type_alias(self) -> None:
+        """Refined types in signatures use a type alias since @{...} isn't valid."""
+        parse("""
+        type NonNegInt = { @Int | @Int.0 >= 0 };
+
+        fn sqrt(@NonNegInt -> @Int)
+          requires(true)
+          ensures(@Int.result >= 0)
+          effects(pure)
+        {
+          @NonNegInt.0
+        }
+        """)
+
+    def test_parameterized_refinement_alias(self) -> None:
+        parse("type NonEmpty<T> = { @Array<T> | length(@Array<T>.0) > 0 };")
+
+
+class TestTupleDestructuring:
+    def test_basic_destruct(self) -> None:
+        parse("""
+        fn swap(@Tuple<Int, String> -> @Tuple<String, Int>)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          let Tuple<@Int, @String> = @Tuple<Int, String>.0;
+          make_tuple(@String.0, @Int.0)
+        }
+        """)
+
+
+class TestQuantifiers:
+    def test_forall_expr(self) -> None:
+        parse("""
+        fn all_positive(@Array<Int> -> @Bool)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+            @Array<Int>.0[@Int.0] > 0
+          })
+        }
+        """)
+
+    def test_exists_expr(self) -> None:
+        parse("""
+        fn has_zero(@Array<Int> -> @Bool)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+            @Array<Int>.0[@Int.0] == 0
+          })
+        }
+        """)
+
+
+class TestAssertAssume:
+    def test_assert(self) -> None:
+        parse("""
+        fn f(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          assert(@Int.0 > 0);
+          @Int.0
+        }
+        """)
+
+    def test_assume(self) -> None:
+        parse("""
+        fn f(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          assume(@Int.0 > 0);
+          @Int.0
+        }
+        """)
+
+
+class TestQualifiedCalls:
+    def test_effect_qualified_call(self) -> None:
+        parse("""
+        fn f(@Unit -> @Int)
+          requires(true)
+          ensures(true)
+          effects(<State<Int>>)
+        {
+          State.get(())
+        }
+        """)
+
+    def test_import_and_direct_call(self) -> None:
+        """After importing, call functions directly (module_call has LALR limitation with multi-segment paths)."""
+        parse("""
+        import vera.math(abs);
+
+        fn f(@Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          abs(@Int.0)
+        }
+        """)
+
+
+class TestFunctionTypes:
+    def test_fn_type_alias_in_signature(self) -> None:
+        """Function types in signatures use type aliases."""
+        parse("""
+        type Mapper = fn(Int -> Int) effects(pure);
+
+        fn apply(@Mapper, @Int -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          apply_fn(@Mapper.0, @Int.0)
+        }
+        """)
+
+    def test_fn_type_alias_with_effects(self) -> None:
+        """Function types with effects use type aliases."""
+        parse("""
+        type Action = fn(Unit -> Unit) effects(<IO>);
+
+        fn run(@Action -> @Unit)
+          requires(true)
+          ensures(true)
+          effects(<IO>)
+        {
+          run_action(@Action.0)
+        }
+        """)
+
+    def test_fn_type_in_type_alias(self) -> None:
+        """fn type expressions work in type alias declarations."""
+        parse("type Predicate = fn(Int -> Bool) effects(pure);")
+        parse("type Callback = fn(String -> Unit) effects(<IO>);")
+
+
+class TestFloatLiterals:
+    def test_float_in_expression(self) -> None:
+        parse("""
+        fn f(@Unit -> @Float)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          3.14
+        }
+        """)
+
+    def test_float_arithmetic(self) -> None:
+        parse("""
+        fn f(@Float -> @Float)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          @Float.0 * 2.0 + 1.5
+        }
+        """)
+
+
+class TestNestedPatterns:
+    def test_nested_constructor_pattern(self) -> None:
+        parse("""
+        data Option<T> { None, Some(T) }
+        data List<T> { Nil, Cons(T, List<T>) }
+
+        fn head_or_zero(@List<Option<Int>> -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          match @List<Option<Int>>.0 {
+            Cons(Some(@Int), @List<Option<Int>>) -> @Int.0,
+            _ -> 0
+          }
+        }
+        """)
+
+    def test_literal_and_wildcard_patterns(self) -> None:
+        parse("""
+        fn describe(@Int -> @String)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          match @Int.0 {
+            0 -> "zero",
+            1 -> "one",
+            _ -> "other"
+          }
+        }
+        """)
+
+
+class TestHandlerVariations:
+    def test_handler_without_state(self) -> None:
+        parse("""
+        fn f(@Unit -> @Option<Int>)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          handle[Exn<String>] {
+            throw(@String) -> { None }
+          } in {
+            let @Int = risky(());
+            Some(@Int.0)
+          }
+        }
+        """)
+
+    def test_handler_multiple_clauses(self) -> None:
+        parse("""
+        fn f(@Unit -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          handle[State<Int>](@Int = 0) {
+            get(@Unit) -> { resume(@Int.0) },
+            put(@Int) -> { resume(()) }
+          } in {
+            let @Int = State.get(());
+            State.put(@Int.0 + 1);
+            State.get(())
+          }
+        }
+        """)
+
+    def test_handler_with_qualified_effect(self) -> None:
+        parse("""
+        fn f(@Unit -> @String)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          handle[Console] {
+            print(@String) -> { resume(()) },
+            read_line(@Unit) -> { resume("input") }
+          } in {
+            Console.print("hello");
+            Console.read_line(())
+          }
+        }
+        """)
+
+
+class TestImpliesOperator:
+    def test_implies_in_contract(self) -> None:
+        parse("""
+        fn f(@Int -> @Int)
+          requires(@Int.0 > 0 ==> @Int.0 < 100)
+          ensures(true)
+          effects(pure)
+        {
+          @Int.0
+        }
+        """)
+
+    def test_implies_right_associative(self) -> None:
+        parse("""
+        fn f(@Bool, @Bool, @Bool -> @Bool)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          @Bool.0 ==> @Bool.1 ==> @Bool.2
+        }
+        """)
+
 
 # =====================================================================
 # Error case tests — verify that invalid programs produce ParseError
