@@ -171,30 +171,11 @@ class ContractVerifier:
 
     def _register_fn(self, decl: ast.FnDecl) -> None:
         """Register a function signature and its contracts."""
-        saved_params = dict(self.env.type_params)
-        if decl.forall_vars:
-            for tv in decl.forall_vars:
-                self.env.type_params[tv] = TypeVar(tv)
-
-        param_types = tuple(self._resolve_type(p) for p in decl.params)
-        ret_type = self._resolve_type(decl.return_type)
-        eff = self._resolve_effect_row(decl.effect)
-
-        self.env.functions[decl.name] = FunctionInfo(
-            name=decl.name,
-            forall_vars=decl.forall_vars,
-            param_types=param_types,
-            return_type=ret_type,
-            effect=eff,
-            span=decl.span,
-            contracts=decl.contracts,
+        from vera.registration import register_fn
+        register_fn(
+            self.env, decl,
+            self._resolve_type, self._resolve_effect_row,
         )
-
-        if decl.where_fns:
-            for wfn in decl.where_fns:
-                self._register_fn(wfn)
-
-        self.env.type_params = saved_params
 
     def _register_data(self, decl: ast.DataDecl) -> None:
         """Register an ADT (minimal — just enough for type resolution)."""
