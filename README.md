@@ -369,7 +369,7 @@ vera/
 │   ├── 06-contracts.md            # Verification system
 │   ├── 07-effects.md              # Algebraic effect system
 │   └── 10-grammar.md              # Formal EBNF grammar
-├── vera/                          # Reference compiler (Python)
+├── vera/                          # Reference compiler (Python) — see [vera/README.md](vera/README.md)
 │   ├── grammar.lark               # Lark LALR(1) grammar
 │   ├── parser.py                  # Parser module
 │   ├── ast.py                     # Typed AST node definitions
@@ -401,7 +401,7 @@ vera/
 | Verification | Z3 via SMT-LIB | Industry standard, decidable fragment |
 | Memory | Garbage collected | Models focus on logic, not memory |
 | Target | WebAssembly | Portable, sandboxed, no ambient capabilities |
-| Compiler | Python reference impl | Correctness over performance |
+| Compiler | Python reference impl | Correctness over performance — see [architecture docs](vera/README.md) |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about |
 | Diagnostics | Natural language with fix examples | Compiler output is the model's feedback loop |
 
@@ -417,7 +417,7 @@ Vera draws on ideas from:
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute to Vera.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute to Vera. For compiler internals — pipeline architecture, module map, design patterns, and how to extend the compiler — see [vera/README.md](vera/README.md).
 
 
 ## Changelog
