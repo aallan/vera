@@ -131,4 +131,4 @@ By contributing to Vera, you agree that your contributions will be licensed unde
 
 ## Questions?
 
-If you have questions about contributing, open a [discussion](https://github.com/aallan/vera/discussions) or an issue.
+If you have questions about contributing, [open an issue](https://github.com/aallan/vera/issues).
