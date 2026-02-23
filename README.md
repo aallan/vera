@@ -35,6 +35,10 @@ Vera addresses this by making everything explicit and verifiable. The model does
 
 ## What Vera Looks Like
 
+### Hello World — effects and contracts
+
+Every function declares what it requires, what it guarantees, and what effects it performs. Even a one-liner has a full contract. `effects(<IO>)` tells the compiler (and the model) that this function interacts with the outside world.
+
 ```vera
 fn hello(@Unit -> @Unit)
   requires(true)
@@ -44,6 +48,10 @@ fn hello(@Unit -> @Unit)
   print("Hello, World!")
 }
 ```
+
+### Pure functions — postconditions the compiler can verify
+
+There are no variable names. `@Int.0` refers to the most recent `Int` binding — a typed positional index, like De Bruijn indices but namespaced by type. The `ensures` clause is a machine-checkable promise: the result is non-negative and equals the absolute value of the input. The compiler verifies this via SMT solver.
 
 ```vera
 fn absolute_value(@Int -> @Nat)
@@ -60,6 +68,10 @@ fn absolute_value(@Int -> @Nat)
 }
 ```
 
+### Preconditions — rejecting bad inputs at compile time
+
+`requires(@Int.1 != 0)` means this function cannot be called with a zero divisor. The compiler checks every call site to prove the precondition holds. If it cannot prove it, the code does not compile. Division by zero is not a runtime error — it is a type error.
+
 ```vera
 fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
@@ -69,6 +81,10 @@ fn safe_divide(@Int, @Int -> @Int)
   @Int.0 / @Int.1
 }
 ```
+
+### Algebraic effects — explicit state, no hidden mutation
+
+Vera is pure by default. State changes must be declared as effects. `effects(<State<Int>>)` says this function reads and writes an integer. The `ensures` clause specifies exactly how the state changes: the new value equals the old value plus one. Handlers (not shown) provide the actual state implementation — an in-memory cell in production, a mock in tests.
 
 ```vera
 fn increment(@Unit -> @Unit)
