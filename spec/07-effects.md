@@ -104,7 +104,7 @@ fn greet(@String -> @Unit)
   ensures(true)
   effects(<IO>)
 {
-  print(string_concat("Hello, ", @String.0))
+  IO.print(string_concat("Hello, ", @String.0))
 }
 ```
 
@@ -273,9 +273,9 @@ forall<A> fn with_logging(Fn(@Unit -> @A) effects(<E>) -> @A)
   ensures(true)
   effects(<IO, E>)
 {
-  print("Starting computation");
+  IO.print("Starting computation");
   let @A = @Fn.0(());
-  print("Finished computation");
+  IO.print("Finished computation");
   @A.0
 }
 ```

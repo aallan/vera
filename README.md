@@ -37,15 +37,19 @@ Vera addresses this by making everything explicit and verifiable. The model does
 
 ### Hello World — effects and contracts
 
-Every function declares what it requires, what it guarantees, and what effects it performs. Even a one-liner has a full contract. `effects(<IO>)` tells the compiler (and the model) that this function interacts with the outside world.
+Every function declares what it requires, what it guarantees, and what effects it performs. Even a one-liner has a full contract. Effects are declared before use, and effect operations use qualified calls (`IO.print`). `effects(<IO>)` tells the compiler (and the model) that this function interacts with the outside world.
 
 ```vera
-fn hello(@Unit -> @Unit)
+effect IO {
+  op print(String -> Unit);
+}
+
+fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
 {
-  print("Hello, World!")
+  IO.print("Hello, World!")
 }
 ```
 
@@ -131,17 +135,18 @@ This principle applies at every stage: parse errors, type errors, effect mismatc
 
 ## Project Status
 
-Vera is in **active development**. The language specification, parser, AST, type checker, and contract verifier are functional. Code generation is not yet implemented.
+Vera is in **active development**. The language specification, parser, AST, type checker, contract verifier, and WASM code generator are functional. Programs compile to WebAssembly and execute via wasmtime.
 
 | Component | Status |
 |-----------|--------|
-| Language specification (Chapters 0-7, 10) | Draft |
-| Language specification (Chapters 8-9, 11-12) | Not started |
+| Language specification (Chapters 0-7, 10-11) | Draft |
+| Language specification (Chapters 8-9, 12) | Not started |
 | Parser (Lark LALR(1)) | Working |
 | AST (typed syntax tree) | Working |
 | Type checker | Working |
 | Contract verifier (Z3) | Working |
-| WASM code generation | Not started |
+| WASM code generation | Working |
+| Runtime contract insertion | Working |
 
 ## Roadmap
 
@@ -153,19 +158,19 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C2 | v0.0.4 | **AST** — typed syntax tree, Lark→AST transformer | Done |
 | C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
 | C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
-| C5 | v0.0.9 | **WASM codegen** — compile pure functions, `vera compile` / `vera run` | Planned |
+| C5 | v0.0.9 | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
 | C6 | v0.0.10 | **Stdlib + runtime** — core library, effect handlers as continuations, GC | Planned |
 | C7 | v0.0.11 | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — `.vera` → parse → typecheck → verify → compile → run | Planned |
 
-### What's next: C5 — WASM Codegen (v0.0.9)
+### What's next: C6 — Stdlib + Runtime (v0.0.10)
 
-The contract verifier validates *logic*. The code generator turns verified programs into executable WebAssembly.
+The code generator compiles verified programs to executable WebAssembly. The next phase adds a standard library and runtime support.
 
-- Compile pure functions to WASM (integer arithmetic, conditionals, let bindings)
-- `vera compile <file>` produces `.wasm` output, `vera run <file>` executes it
-- Runtime contract insertion for Tier 3 (unverifiable) contracts
-- Function call codegen with WASM function table
+- Core library functions (string operations, array operations, Option/Result utilities)
+- Effect handlers compiled as continuations
+- Garbage collection for heap-allocated data
+- ADT and match expression codegen (#26)
 
 ### Specification chapters
 
@@ -175,8 +180,8 @@ The language specification grows alongside the compiler. Chapters 0–7 and 10 a
 |---------|-------|-------------|
 | 8 | Modules and imports | C7 |
 | 9 | Standard library | C6 |
-| 11 | Compilation model | C5 |
-| 12 | Runtime and execution | C5/C6 |
+| 11 | Compilation model | C5 ✓ |
+| 12 | Runtime and execution | C6 |
 
 ## Getting Started
 
@@ -185,7 +190,7 @@ The language specification grows alongside the compiler. Chapters 0–7 and 10 a
 - Python 3.11+
 - Git
 
-The install step pulls in several dependencies via pip — [Lark](https://github.com/lark-parser/lark) (parser generator), [Z3](https://github.com/Z3Prover/z3) (SMT solver for contract verification), and [wasmtime](https://wasmtime.dev/) (WASM runtime, used in later phases). These all install into the virtual environment and don't require separate system packages.
+The install step pulls in several dependencies via pip — [Lark](https://github.com/lark-parser/lark) (parser generator), [Z3](https://github.com/Z3Prover/z3) (SMT solver for contract verification), and [wasmtime](https://wasmtime.dev/) (WASM runtime for compilation and execution). These all install into the virtual environment and don't require separate system packages.
 
 ### Installation
 
@@ -219,6 +224,39 @@ Verification: 2 verified (Tier 1)
 ```
 
 `vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning.
+
+### Compile a program
+
+```bash
+vera compile examples/hello_world.vera
+```
+```
+Compiled: examples/hello_world.wasm (1 function exported)
+```
+
+`vera compile` runs the full pipeline (parse → typecheck → verify → compile) and writes a `.wasm` binary. Add `--wat` to print the human-readable WAT text instead:
+
+```bash
+vera compile --wat examples/hello_world.vera
+```
+
+### Run a program
+
+```bash
+vera run examples/hello_world.vera
+```
+```
+Hello, World!
+```
+
+`vera run` compiles and executes the program. By default it calls `main`. Use `--fn` to call a different function, and pass arguments after `--`:
+
+```bash
+vera run examples/factorial.vera --fn factorial -- 5
+```
+```
+120
+```
 
 ### Parse a program
 
@@ -301,9 +339,10 @@ The skill is now available across all your Claude Code projects. Claude will rea
 
 #### Claude.ai
 
-1. Go to **Settings > Features**
-2. Upload `SKILLS.md` as a zip file (rename to `SKILL.md` first, then zip the directory)
-3. The skill is now available in your conversations
+1. Create a folder called `vera-language` containing a single file named `Skill.md` (copy `SKILLS.md` into this folder and rename it to `Skill.md`)
+2. Compress the folder into a ZIP file — the structure should be `vera-language.zip → vera-language/ → Skill.md`
+3. In Claude.ai, go to **Settings > Capabilities > Skills** and upload the ZIP file
+4. The skill is now available in your conversations — Claude will use it automatically when you ask it to write Vera code
 
 #### Claude API
 
@@ -344,12 +383,14 @@ git clone https://github.com/aallan/vera.git && cd vera
 python -m venv .venv && source .venv/bin/activate && pip install -e .
 ```
 
-Write a `.vera` file, then check and verify it:
+Write a `.vera` file, then check, verify, and run it:
 
 ```bash
 vera check your_file.vera              # type-check
-vera check --json your_file.vera       # type-check with JSON diagnostics
 vera verify your_file.vera             # type-check + verify contracts
+vera compile your_file.vera            # compile to .wasm binary
+vera run your_file.vera                # compile + execute
+vera run your_file.vera --fn f -- 42   # call function f with argument 42
 vera verify --json your_file.vera      # verify with JSON diagnostics
 ```
 
@@ -378,7 +419,8 @@ vera/
 │   ├── 05-functions.md            # Function declarations and contracts
 │   ├── 06-contracts.md            # Verification system
 │   ├── 07-effects.md              # Algebraic effect system
-│   └── 10-grammar.md              # Formal EBNF grammar
+│   ├── 10-grammar.md              # Formal EBNF grammar
+│   └── 11-compilation.md          # Compilation model and WASM target
 ├── vera/                          # Reference compiler (Python)
 │   ├── grammar.lark               # Lark LALR(1) grammar
 │   ├── parser.py                  # Parser module
@@ -389,13 +431,16 @@ vera/
 │   ├── checker.py                 # Type checker
 │   ├── smt.py                     # Z3 SMT translation layer
 │   ├── verifier.py                # Contract verifier
+│   ├── wasm.py                    # WASM translation layer
+│   ├── codegen.py                 # Code generation orchestrator
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
-├── examples/                      # Example Vera programs
-├── tests/                         # Test suite (372 tests)
+├── examples/                      # 14 example Vera programs
+├── tests/                         # Test suite (470 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse
+│   ├── check_readme_examples.py   # Verify README code blocks parse
 │   └── check_version_sync.py      # Verify version consistency
 └── runtime/                       # WASM runtime support (future)
 ```

@@ -41,3 +41,10 @@ repos:
         language: system
         pass_filenames: false
         files: '(\.vera$|vera/.*\.py$|vera/grammar\.lark$)'
+
+      - id: readme-examples
+        name: readme examples
+        entry: .venv/bin/python scripts/check_readme_examples.py
+        language: system
+        pass_filenames: false
+        files: '(README\.md$|vera/.*\.py$|vera/grammar\.lark$)'

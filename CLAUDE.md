@@ -9,23 +9,28 @@ vera check file.vera              # Parse and type-check
 vera check --json file.vera       # Type-check with JSON diagnostics
 vera verify file.vera             # Type-check + verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON diagnostics
+vera compile file.vera            # Compile to .wasm binary
+vera compile --wat file.vera      # Print WAT text (human-readable WASM)
+vera run file.vera                # Compile and execute (calls main)
+vera run file.vera --fn f -- 42   # Call function f with argument 42
 vera parse file.vera              # Print the parse tree
 vera ast file.vera                # Print the typed AST
 vera ast --json file.vera         # Print the AST as JSON
 
-pytest tests/ -v                  # Run the test suite (372 tests)
+pytest tests/ -v                  # Run the test suite (470 tests)
 mypy vera/                        # Type-check the compiler itself
 
-python scripts/check_examples.py      # Verify all 13 examples parse + check + verify
+python scripts/check_examples.py      # Verify all 14 examples parse + check + verify
 python scripts/check_spec_examples.py # Verify spec code blocks parse
+python scripts/check_readme_examples.py # Verify README code blocks parse
 python scripts/check_version_sync.py  # Verify version consistency
 ```
 
 ## Project layout
 
-- `spec/` — Language specification (Chapters 0-7, 10)
-- `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, CLI
-- `examples/` — 13 example Vera programs (all must pass `vera check` and `vera verify`)
+- `spec/` — Language specification (Chapters 0-7, 10-11)
+- `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
+- `examples/` — 14 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite
 - `scripts/` — CI and validation scripts
 - `runtime/` — WASM runtime support (future)
@@ -38,14 +43,14 @@ Read `SKILLS.md` for the full language reference. It covers syntax, slot referen
 
 Read `vera/README.md` for architecture docs, module map, and design patterns.
 
-The compiler pipeline: source -> parse (`parser.py`) -> transform (`transform.py`) -> typecheck (`checker.py`) -> verify (`verifier.py`) -> codegen (future).
+The compiler pipeline: source -> parse (`parser.py`) -> transform (`transform.py`) -> typecheck (`checker.py`) -> verify (`verifier.py`) -> compile (`codegen.py` + `wasm.py`) -> execute (wasmtime).
 
 Each stage is a module with a public API function and is independently testable. See `CONTRIBUTING.md` for contribution guidelines.
 
 ## What not to break
 
 - Pre-commit hooks run mypy + pytest + example validation on every commit
-- All 13 examples in `examples/` must pass `vera check` and `vera verify`
+- All 14 examples in `examples/` must pass `vera check` and `vera verify`
 - Version must stay in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 - All tests must pass: `pytest tests/ -v`
 - Type checking must be clean: `mypy vera/`
