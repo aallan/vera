@@ -4,7 +4,13 @@
 
 If you discover a security vulnerability in Vera, please report it responsibly.
 
-**Do not open a public issue.** Instead, email **alasdair@babilim.co.uk** with:
+**Do not open a public issue.** Instead, use one of these channels:
+
+1. **GitHub private vulnerability reporting** (preferred) — go to the [Security tab](https://github.com/aallan/vera/security/advisories/new) and click "Report a vulnerability". This keeps the report within GitHub and allows coordinated disclosure.
+
+2. **Email** — send details to **alasdair@babilim.co.uk** if you prefer.
+
+In either case, include:
 
 - A description of the vulnerability
 - Steps to reproduce
