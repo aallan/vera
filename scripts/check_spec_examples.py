@@ -43,12 +43,12 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     # =================================================================
 
     # Chapter 0 — Section 0.8 design notes (abilities, async, inference)
-    ("00-introduction.md", 161): "FUTURE",   # JSON ADT
-    ("00-introduction.md", 178): "FUTURE",   # fetch_both async example
-    # Note: 00-introduction.md abilities block (~line 206) starts with
+    ("00-introduction.md", 158): "FUTURE",   # JSON ADT
+    ("00-introduction.md", 175): "FUTURE",   # fetch_both async example
+    # Note: 00-introduction.md abilities block (~line 203) starts with
     # "ability" keyword, which the heuristic correctly skips as a fragment
     # since abilities aren't in the parser yet.
-    ("00-introduction.md", 241): "FUTURE",   # effect Inference + fn classify
+    ("00-introduction.md", 238): "FUTURE",   # effect Inference + fn classify
 
     # Chapter 2 — type constraint syntax (post-v0.1)
     ("02-types.md", 250): "FUTURE",          # forall<T where Ord<T>> fn sort

@@ -140,11 +140,8 @@ Throughout this specification:
 | 8 | Modules |
 | 9 | Standard Library |
 | 10 | Formal Grammar |
-| 11 | Evaluation Semantics |
-| 12 | WASM Compilation Model |
-| A | Complete Examples |
-| B | Verification Condition Reference |
-| C | WASM Mapping Reference |
+| 11 | Compilation Model |
+| 12 | Runtime and Execution |
 
 ## 0.8 Design Notes (Future Chapters)
 
