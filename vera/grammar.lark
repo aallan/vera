@@ -1,0 +1,327 @@
+// Vera Language Grammar
+// Lark LALR(1) parser — translated from spec/10-grammar.md
+//
+// Conventions:
+//   - String literals ("fn", "let", etc.) for keywords and operators
+//   - Named terminals (UPPER_CASE) for identifiers and literals
+//   - ?rule prefix = inline single-child nodes (cleaner parse trees)
+
+// =====================================================================
+// Program Structure
+// =====================================================================
+
+start: module_decl? import_decl* top_level_decl*
+
+module_decl: "module" module_path ";"
+
+module_path: LOWER_IDENT ("." LOWER_IDENT)*
+
+import_decl: "import" module_path import_list? ";"
+
+import_list: "(" import_name ("," import_name)* ")"
+
+import_name: LOWER_IDENT | UPPER_IDENT
+
+top_level_decl: visibility? fn_decl     -> fn_top_level
+              | visibility? data_decl   -> data_top_level
+              | type_alias_decl
+              | effect_decl
+
+visibility: "public" | "private"
+
+// =====================================================================
+// Function Declarations
+// =====================================================================
+
+fn_decl: forall_clause? "fn" LOWER_IDENT fn_signature contract_block effect_clause fn_body where_block?
+
+forall_clause: "forall" "<" type_var_list ">"
+
+type_var_list: UPPER_IDENT ("," UPPER_IDENT)*
+
+// Function signatures use @Type for params and return (binding sites)
+fn_signature: "(" fn_params? "->" "@" type_expr ")"
+
+fn_params: "@" type_expr ("," "@" type_expr)*
+
+// Plain type lists (no @) for type-level signatures: fn_type, op_decl
+param_types: type_expr ("," type_expr)*
+
+contract_block: contract_clause+
+
+?contract_clause: requires_clause
+                | ensures_clause
+                | decreases_clause
+
+requires_clause: "requires" "(" expr ")"
+
+ensures_clause: "ensures" "(" expr ")"
+
+decreases_clause: "decreases" "(" expr ("," expr)* ")"
+
+effect_clause: "effects" "(" effect_row ")"
+
+?effect_row: pure_effect
+           | effect_set
+
+pure_effect: "pure"
+
+effect_set: "<" effect_list ">"
+
+effect_list: effect_ref ("," effect_ref)*
+
+effect_ref: UPPER_IDENT type_args?
+          | UPPER_IDENT "." UPPER_IDENT type_args?  -> qualified_effect_ref
+
+fn_body: "{" block_contents "}"
+
+where_block: "where" "{" fn_decl+ "}"
+
+// =====================================================================
+// Data Type Declarations
+// =====================================================================
+
+data_decl: "data" UPPER_IDENT type_params? invariant_clause? "{" constructor_list "}"
+
+type_params: "<" type_var_list ">"
+
+invariant_clause: "invariant" "(" expr ")"
+
+constructor_list: constructor ("," constructor)*
+
+constructor: UPPER_IDENT "(" type_expr ("," type_expr)* ")"  -> fields_constructor
+           | UPPER_IDENT                                      -> nullary_constructor
+
+// =====================================================================
+// Type Aliases
+// =====================================================================
+
+type_alias_decl: "type" UPPER_IDENT type_params? "=" type_expr ";"
+
+// =====================================================================
+// Effect Declarations
+// =====================================================================
+
+effect_decl: "effect" UPPER_IDENT type_params? "{" op_decl+ "}"
+
+op_decl: "op" LOWER_IDENT "(" param_types? "->" type_expr ")" ";"
+
+// =====================================================================
+// Type Expressions
+// =====================================================================
+
+type_expr: UPPER_IDENT type_args?  -> named_type
+         | fn_type
+         | refinement_type
+
+type_args: "<" type_expr ("," type_expr)* ">"
+
+fn_type: "fn" "(" param_types? "->" type_expr ")" effect_clause
+
+refinement_type: "{" "@" type_expr "|" expr "}"
+
+// =====================================================================
+// Expressions — precedence climbing, loosest to tightest
+//
+//   1    |>    left     pipe_expr
+//   1.5  ==>   right    implies_expr
+//   2    ||    left     or_expr
+//   3    &&    left     and_expr
+//   4    == != none     eq_expr
+//   5    comparisons    cmp_expr
+//   6    + -   left     add_expr
+//   7    * / % left     mul_expr
+//   9    ! -   prefix   unary_expr
+//   10   [] call        postfix_expr
+// =====================================================================
+
+?expr: pipe_expr
+
+?pipe_expr: implies_expr
+          | pipe_expr "|>" implies_expr  -> pipe
+
+// right-associative: a ==> b ==> c  parses as  a ==> (b ==> c)
+?implies_expr: or_expr
+             | or_expr "==>" implies_expr  -> implies
+
+?or_expr: and_expr
+        | or_expr "||" and_expr  -> or_op
+
+?and_expr: eq_expr
+         | and_expr "&&" eq_expr  -> and_op
+
+// non-associative: a == b == c is a parse error
+?eq_expr: cmp_expr
+        | cmp_expr "==" cmp_expr  -> eq_op
+        | cmp_expr "!=" cmp_expr  -> neq_op
+
+// non-associative
+?cmp_expr: add_expr
+         | add_expr "<" add_expr   -> lt_op
+         | add_expr ">" add_expr   -> gt_op
+         | add_expr "<=" add_expr  -> le_op
+         | add_expr ">=" add_expr  -> ge_op
+
+?add_expr: mul_expr
+         | add_expr "+" mul_expr  -> add_op
+         | add_expr "-" mul_expr  -> sub_op
+
+?mul_expr: unary_expr
+         | mul_expr "*" unary_expr  -> mul_op
+         | mul_expr "/" unary_expr  -> div_op
+         | mul_expr "%" unary_expr  -> mod_op
+
+?unary_expr: "!" unary_expr   -> not_op
+           | "-" unary_expr   -> neg_op
+           | postfix_expr
+
+?postfix_expr: primary_expr
+             | postfix_expr "[" expr "]"  -> index_op
+
+?primary_expr: INT_LIT                       -> int_lit
+             | FLOAT_LIT                     -> float_lit
+             | STRING_LIT                    -> string_lit
+             | "true"                        -> true_lit
+             | "false"                       -> false_lit
+             | "(" ")"                       -> unit_lit
+             | slot_ref
+             | result_ref
+             | fn_call
+             | anonymous_fn
+             | if_expr
+             | match_expr
+             | block_expr
+             | handle_expr
+             | array_literal
+             | old_expr
+             | new_expr
+             | assert_expr
+             | assume_expr
+             | forall_expr
+             | exists_expr
+             | "(" expr ")"                  -> paren_expr
+
+// =====================================================================
+// Slot References
+// =====================================================================
+
+slot_ref: "@" UPPER_IDENT type_args? "." INT_LIT
+
+result_ref: "@" UPPER_IDENT type_args? "." "result"
+
+// =====================================================================
+// Function Calls and Constructors
+// =====================================================================
+
+fn_call: LOWER_IDENT "(" arg_list? ")"                         -> func_call
+       | UPPER_IDENT "(" arg_list? ")"                         -> constructor_call
+       | UPPER_IDENT                                            -> nullary_constructor_expr
+       | UPPER_IDENT "." LOWER_IDENT "(" arg_list? ")"         -> qualified_call
+       | module_path "." LOWER_IDENT "(" arg_list? ")"         -> module_call
+
+arg_list: expr ("," expr)*
+
+// =====================================================================
+// Anonymous Functions
+// =====================================================================
+
+anonymous_fn: "fn" "(" fn_params? "->" "@" type_expr ")" effect_clause fn_body
+
+// =====================================================================
+// Conditional Expressions
+// =====================================================================
+
+if_expr: "if" expr "then" block_expr "else" block_expr
+
+// =====================================================================
+// Match Expressions
+// =====================================================================
+
+match_expr: "match" expr "{" match_arm ("," match_arm)* "}"
+
+match_arm: pattern "->" expr
+
+?pattern: UPPER_IDENT "(" pattern ("," pattern)* ")"  -> constructor_pattern
+        | UPPER_IDENT                                   -> nullary_pattern
+        | "_"                                           -> wildcard_pattern
+        | INT_LIT                                       -> int_pattern
+        | STRING_LIT                                    -> string_pattern
+        | "true"                                        -> true_pattern
+        | "false"                                       -> false_pattern
+        | "@" type_expr                                 -> binding_pattern
+
+// =====================================================================
+// Block Expressions
+// =====================================================================
+
+block_expr: "{" block_contents "}"
+
+block_contents: statement* expr
+
+statement: let_stmt
+         | expr ";"  -> expr_stmt
+
+let_stmt: "let" "@" type_expr "=" expr ";"
+        | "let" tuple_destruct "=" expr ";"  -> let_destruct
+
+tuple_destruct: UPPER_IDENT "<" "@" type_expr ("," "@" type_expr)* ">"
+
+// =====================================================================
+// Effect Handlers
+// =====================================================================
+
+handle_expr: "handle" "[" effect_ref "]" handler_state? "{" handler_clause ("," handler_clause)* "}" "in" block_expr
+
+handler_state: "(" "@" type_expr "=" expr ")"
+
+handler_clause: LOWER_IDENT "(" handler_params? ")" "->" handler_body
+
+handler_params: "@" type_expr ("," "@" type_expr)*
+
+// handler_body is just an expr — block_expr is already reachable via expr
+?handler_body: expr
+
+// =====================================================================
+// Array Literals
+// =====================================================================
+
+array_literal: "[" arg_list? "]"
+
+// =====================================================================
+// Contract-Only Expressions
+// =====================================================================
+
+old_expr: "old" "(" effect_ref ")"
+
+new_expr: "new" "(" effect_ref ")"
+
+assert_expr: "assert" "(" expr ")"
+
+assume_expr: "assume" "(" expr ")"
+
+forall_expr: "forall" "(" "@" type_expr "," expr "," anonymous_fn ")"
+
+exists_expr: "exists" "(" "@" type_expr "," expr "," anonymous_fn ")"
+
+// =====================================================================
+// Terminals
+// =====================================================================
+
+// Identifiers — lower priority than keywords (Lark string literals win)
+UPPER_IDENT: /[A-Z][A-Za-z0-9_]*/
+LOWER_IDENT: /[a-z][A-Za-z0-9_]*/
+
+// Numeric literals
+FLOAT_LIT: /[0-9]+\.[0-9]+/
+INT_LIT: /0|[1-9][0-9]*/
+
+// String literals
+STRING_LIT: /\"([^\"\\\\]|\\\\.)*\"/
+
+// =====================================================================
+// Whitespace and Comments (ignored)
+// =====================================================================
+
+%ignore /\s+/
+%ignore /--[^\n]*/
+%ignore /\{-[\s\S]*?-\}/

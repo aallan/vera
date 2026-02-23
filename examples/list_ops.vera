@@ -1,0 +1,30 @@
+-- List operations: demonstrates ADTs, pattern matching, and recursion.
+
+data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+fn length(@List<Int> -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + length(@List<Int>.0)
+  }
+}
+
+fn sum(@List<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> @Int.0 + sum(@List<Int>.0)
+  }
+}

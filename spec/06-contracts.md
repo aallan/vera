@@ -169,7 +169,23 @@ Where:
 
 Bounded quantification is decidable for finite bounds and is handled by Z3 via finite unrolling for small bounds or inductive reasoning for symbolic bounds.
 
-There is also `exists` with the same syntax.
+The `exists` quantifier uses the same syntax and asserts that at least one value in the range satisfies the predicate:
+
+```
+exists(@Nat, length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
+  @Array<Int>.0[@Nat.0] == 0
+})
+```
+
+This reads: "there exists some `@Nat.0` in `[0, length(@Array<Int>.0))` such that the array element at that index is zero."
+
+The syntax is:
+
+```
+exists(@IndexType, @BoundExpr, @PredicateFn)
+```
+
+Where the parameters have the same meaning as for `forall`. Bounded existential quantification is handled by Z3 via finite unrolling for small bounds or Skolemization for symbolic bounds.
 
 ## 6.4 Verification Architecture
 

@@ -1,6 +1,6 @@
 [project]
 name = "vera"
-version = "0.1.0"
+version = "0.0.1"
 description = "Vera: a programming language designed for LLMs, with full contracts, algebraic effects, and typed slot references"
 readme = "README.md"
 license = "MIT"
@@ -11,7 +11,6 @@ authors = [
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -39,9 +38,12 @@ dev = [
 [project.scripts]
 vera = "vera.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["vera*"]
+
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -56,6 +56,9 @@ PURE: "pure"
 OP: "op"
 OLD: "old"
 NEW: "new"
+EFFECTS: "effects"
+EXISTS: "exists"
+RESULT: "result"
 SOME: "Some"
 NONE: "None"
 OK: "Ok"
@@ -119,8 +122,9 @@ module_path: LOWER_IDENT (DOT LOWER_IDENT)*
 
 import_decl: IMPORT module_path import_list? SEMICOLON
 
-import_list: LPAREN LOWER_IDENT (COMMA LOWER_IDENT)* RPAREN
-           | LPAREN UPPER_IDENT (COMMA UPPER_IDENT)* RPAREN
+import_list: LPAREN import_name (COMMA import_name)* RPAREN
+
+import_name: LOWER_IDENT | UPPER_IDENT
 
 top_level_decl: visibility? fn_decl
               | visibility? data_decl
@@ -140,7 +144,12 @@ forall_clause: FORALL LT type_var_list GT
 
 type_var_list: UPPER_IDENT (COMMA UPPER_IDENT)*
 
-fn_signature: LPAREN param_types ARROW type_expr RPAREN
+fn_signature: LPAREN fn_params? ARROW AT type_expr RPAREN
+// The AT prefix marks each type as a binding site, creating slot references (@T.0, @T.1, etc.)
+
+fn_params: AT type_expr (COMMA AT type_expr)*
+// fn_params (with @) is used in function declarations and anonymous functions where types create bindings.
+// param_types (without @) is used in type-level signatures (fn_type, op_decl) where no bindings are created.
 
 param_types: type_expr (COMMA type_expr)*
            |  // empty
@@ -158,8 +167,6 @@ ensures_clause: ENSURES LPAREN expr RPAREN
 decreases_clause: DECREASES LPAREN expr (COMMA expr)* RPAREN
 
 effect_clause: EFFECTS LPAREN effect_row RPAREN
-
-EFFECTS: "effects"
 
 effect_row: PURE
           | LT effect_list GT
@@ -226,13 +233,15 @@ refinement_type: LBRACE AT type_expr BAR expr RBRACE
 ### 10.3.7 Expressions
 
 ```ebnf
-expr: or_expr
+expr: pipe_expr
+
+pipe_expr: implies_expr (PIPE implies_expr)*
+
+implies_expr: or_expr (IMPLIES or_expr)*
 
 or_expr: and_expr (OR and_expr)*
 
-and_expr: implies_expr (AND implies_expr)*
-
-implies_expr: eq_expr (IMPLIES eq_expr)*
+and_expr: eq_expr (AND eq_expr)*
 
 eq_expr: cmp_expr ((EQ | NEQ) cmp_expr)?
 
@@ -244,9 +253,7 @@ mul_expr: unary_expr ((STAR | SLASH | PERCENT) unary_expr)*
 
 unary_expr: NOT unary_expr
           | MINUS unary_expr
-          | pipe_expr
-
-pipe_expr: postfix_expr (PIPE postfix_expr)*
+          | postfix_expr
 
 postfix_expr: primary_expr (LBRACKET expr RBRACKET)*  // array indexing
 
@@ -281,8 +288,6 @@ primary_expr: INT_LIT
 slot_ref: AT type_expr DOT INT_LIT
 
 result_ref: AT type_expr DOT RESULT
-
-RESULT: "result"
 ```
 
 ### 10.3.9 Function Calls and Constructors
@@ -291,9 +296,10 @@ RESULT: "result"
 fn_call: LOWER_IDENT LPAREN arg_list? RPAREN          // function call
        | UPPER_IDENT LPAREN arg_list? RPAREN           // constructor call
        | UPPER_IDENT                                    // nullary constructor
-       | qualified_call                                 // Effect.op(args)
+       | qualified_call                                 // Effect.op(args) or module.fn(args)
 
-qualified_call: UPPER_IDENT DOT LOWER_IDENT LPAREN arg_list? RPAREN
+qualified_call: UPPER_IDENT DOT LOWER_IDENT LPAREN arg_list? RPAREN  // Effect.operation(args)
+             | module_path DOT LOWER_IDENT LPAREN arg_list? RPAREN   // module.function(args)
 
 arg_list: expr (COMMA expr)*
 ```
@@ -301,7 +307,7 @@ arg_list: expr (COMMA expr)*
 ### 10.3.10 Anonymous Functions
 
 ```ebnf
-anonymous_fn: FN LPAREN param_types ARROW type_expr RPAREN effect_clause fn_body
+anonymous_fn: FN LPAREN fn_params? ARROW AT type_expr RPAREN effect_clause fn_body
 ```
 
 ### 10.3.11 Conditional Expressions
@@ -357,7 +363,7 @@ handler_clause: LOWER_IDENT LPAREN handler_params? RPAREN ARROW handler_body
 handler_params: AT type_expr (COMMA AT type_expr)*
 
 handler_body: expr
-            | LBRACE block_contents RBRACE
+// Block expressions ({ ... }) are reachable via expr, so no separate alternative is needed.
 
 // resume is a special built-in call within handler bodies:
 // resume(expr)
@@ -374,9 +380,9 @@ array_literal: LBRACKET arg_list? RBRACKET
 ### 10.3.16 Contract-Only Expressions
 
 ```ebnf
-old_expr: OLD LPAREN UPPER_IDENT type_args? RPAREN
+old_expr: OLD LPAREN effect_ref RPAREN
 
-new_expr: NEW LPAREN UPPER_IDENT type_args? RPAREN
+new_expr: NEW LPAREN effect_ref RPAREN
 
 assert_stmt: ASSERT LPAREN expr RPAREN
 
@@ -385,8 +391,6 @@ assume_stmt: ASSUME LPAREN expr RPAREN
 forall_expr: FORALL LPAREN AT type_expr COMMA expr COMMA anonymous_fn RPAREN
 
 exists_expr: EXISTS LPAREN AT type_expr COMMA expr COMMA anonymous_fn RPAREN
-
-EXISTS: "exists"
 ```
 
 ### 10.3.17 Tuple Literals
@@ -406,10 +410,10 @@ tuple_literal: UPPER_IDENT LPAREN arg_list RPAREN
 | 6 | `+`, `-` | Left | `add_expr` |
 | 5 | `<`, `>`, `<=`, `>=` | None | `cmp_expr` |
 | 4 | `==`, `!=` | None | `eq_expr` |
-| 3.5 | `==>` | Right | `implies_expr` |
 | 3 | `&&` | Left | `and_expr` |
 | 2 | `||` | Left | `or_expr` |
-| 1 | `|>` | Left | `pipe_expr` |
+| 1.5 | `==>` | Right | `implies_expr` |
+| 1 | `\|>` | Left | `pipe_expr` |
 
 ## 10.5 Grammar Ambiguities and Resolution
 
