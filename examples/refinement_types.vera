@@ -1,0 +1,48 @@
+-- Refinement types — types constrained by predicates
+
+-- A positive integer
+type PosInt = { @Int | @Int.0 > 0 };
+
+-- A natural number (non-negative integer)
+type Nat = { @Int | @Int.0 >= 0 };
+
+-- A percentage (0 to 100 inclusive)
+type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
+
+-- Safe division — denominator must be non-zero
+fn safe_divide(@Int, @PosInt -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 / @PosInt.0
+}
+
+-- Clamp a value to a percentage
+fn to_percentage(@Int -> @Percentage)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 < 0 then {
+    0
+  } else {
+    if @Int.0 > 100 then {
+      100
+    } else {
+      @Int.0
+    }
+  }
+}
+
+-- Non-empty array
+type NonEmptyArray = { @Array<Int> | length(@Array<Int>.0) > 0 };
+
+-- Head of a non-empty array — always safe
+fn head(@NonEmptyArray -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @NonEmptyArray.0[0]
+}

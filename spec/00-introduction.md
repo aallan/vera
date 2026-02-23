@@ -145,3 +145,56 @@ Throughout this specification:
 | A | Complete Examples |
 | B | Verification Condition Reference |
 | C | WASM Mapping Reference |
+
+## 0.8 Design Notes (Future Chapters)
+
+The following design decisions are noted here for future specification work:
+
+### Network Access as an Effect
+
+Network I/O SHOULD be modelled as an algebraic effect (e.g., `<Http>` or `<Net>`) with operations like `get`, `post`, etc. Functions performing network access declare `effects(<Http>)`. Handlers provide the implementation — real HTTP in production, mocks in tests. This fits naturally with Vera's algebraic effect system and makes network I/O explicit and testable. Almost all practical programs need network access; this should be a first-class part of the standard library (Chapter 9).
+
+### JSON as a Standard Library Type
+
+JSON SHOULD be a standard library ADT, not a primitive type:
+
+```vera
+data Json {
+  JNull,
+  JBool(Bool),
+  JNumber(Float),
+  JString(String),
+  JArray(Array<Json>),
+  JObject(Map<String, Json>)
+}
+```
+
+Parse and serialize operations belong in the standard library. Refinement types can express JSON schemas (e.g., `type ApiResponse = { @Json | has_field(@Json.0, "status") }`). This approach keeps the core language small while providing ergonomic JSON support.
+
+### Asynchronous Promises/Futures
+
+Async operations SHOULD be first-class citizens in Vera, modelled as an algebraic effect. An `<Async>` effect with an `await` operation fits naturally:
+
+```vera
+fn fetch_both(@String, @String -> @Tuple<Json, Json>)
+  requires(true)
+  ensures(true)
+  effects(<Http, Async>)
+{
+  let @Future<Json> = async(http_get(@String.0));
+  let @Future<Json> = async(http_get(@String.1));
+  let @Json = await(@Future<Json>.1);
+  let @Json = await(@Future<Json>.0);
+  Tuple(@Json.1, @Json.0)
+}
+```
+
+Key design points:
+- `async(expr)` wraps an effectful computation in a `Future<T>`, starting it concurrently
+- `await(@Future<T>.n)` suspends until the future resolves, yielding the result
+- Futures can be passed around, stored in data structures, and composed
+- The `<Async>` effect must be declared, making concurrency explicit and trackable
+- Handlers can provide different scheduling strategies (thread pool, event loop, sequential)
+- This integrates with the `<Http>` effect: network calls are naturally async
+
+This avoids coloured-function problems (async vs sync) because algebraic effects already separate the description of an operation from its execution. A handler can run `<Http>` operations sequentially or concurrently — the function code is the same either way.

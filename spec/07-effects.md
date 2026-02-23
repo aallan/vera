@@ -346,18 +346,7 @@ Contract predicates (`requires`, `ensures`, `invariant`, `assert`, `assume`) MUS
 
 ### 7.9.2 State in Contracts
 
-For functions with `State` effects, contracts can reference the state via the state operations:
-
-```
-fn increment_and_return(@Unit -> @Int)
-  requires(true)
-  ensures(@Int.result == get(()) - 1)  -- WAIT: this performs an effect in a contract
-  effects(<State<Int>>)
-```
-
-**Actually, this is problematic.** We said contracts must be pure. The solution is a special contract syntax for state:
-
-Contracts on stateful functions use `old` and `new` prefixes to refer to state before and after the function call:
+Since contract predicates must be pure (Section 7.9.1), they cannot call effect operations like `get()` or `put()` directly. Instead, contracts on stateful functions use `old` and `new` to refer to the state before and after the function call:
 
 ```
 fn increment_and_return(@Unit -> @Int)

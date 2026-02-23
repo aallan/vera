@@ -1,0 +1,38 @@
+-- Closures and higher-order functions
+
+-- A type alias for a pure function from Int to Int
+type IntToInt = fn(Int -> Int) effects(pure);
+
+-- Apply a function to a value
+fn apply(@IntToInt, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@IntToInt.0, @Int.0)
+}
+
+-- Map a function over an optional value
+data Option<T> { None, Some(T) }
+
+type IntMapper = fn(Int -> Int) effects(pure);
+
+forall<T> fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    None -> None,
+    Some(@Int) -> Some(apply_fn(@IntMapper.0, @Int.0))
+  }
+}
+
+-- Pass an anonymous function as an argument
+fn double_all(@Array<Int> -> @Array<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 * 2 })
+}

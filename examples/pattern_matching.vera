@@ -1,0 +1,61 @@
+-- Pattern matching — nested patterns, wildcards, multiple variants
+
+data Option<T> { None, Some(T) }
+data List<T> { Nil, Cons(T, List<T>) }
+
+-- Nested pattern: match inside a list of options
+fn first_some(@List<Option<Int>> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @List<Option<Int>>.0 {
+    Cons(Some(@Int), @List<Option<Int>>) -> @Int.0,
+    Cons(None, @List<Option<Int>>) -> first_some(@List<Option<Int>>.0),
+    Nil -> 0
+  }
+}
+
+-- Literal patterns with wildcard fallback
+fn classify(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    0 -> "zero",
+    1 -> "one",
+    _ -> "other"
+  }
+}
+
+-- Boolean patterns
+fn to_string(@Bool -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Bool.0 {
+    true -> "true",
+    false -> "false"
+  }
+}
+
+-- Multi-variant ADT with exhaustive matching
+data Shape {
+  Circle(Float),
+  Rectangle(Float, Float),
+  Triangle(Float, Float, Float)
+}
+
+fn describe(@Shape -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Shape.0 {
+    Circle(@Float) -> "circle",
+    Rectangle(@Float, @Float) -> "rectangle",
+    Triangle(@Float, @Float, @Float) -> "triangle"
+  }
+}

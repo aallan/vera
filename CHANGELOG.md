@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-02-23
+
+### Added
+- **Parser tests**: 40 new tests covering annotation comments, anonymous functions, generics, refinement types, tuple destructuring, quantifiers, assert/assume, qualified calls, function types, float literals, nested patterns, handler variations, and implies operator (110 total, up from 70)
+- **Example programs**: 8 new examples — closures, generics, refinement types, effect handlers, modules, quantifiers, pattern matching, mutual recursion (13 total, up from 5)
+- **Design notes**: network access as an effect (`<Http>`), JSON as a stdlib ADT, async promises/futures as an effect (`<Async>`) documented in spec Chapter 0
+
+### Fixed
+- Grammar: annotation comments (`/* ... */`) now correctly ignored by the parser
+- Grammar: `vera/__init__.py` version was `0.1.0`, corrected to match pyproject.toml
+- Spec Chapter 3: removed deliberation marker about `@Fn0` approach, kept settled type alias approach
+- Spec Chapter 6: rewrote counterexample reporting section (removed incorrect example, added actionable fix suggestions)
+- Spec Chapter 7: cleaned up effect-contract interaction section (removed problematic `get()` in contract example, kept settled `old()`/`new()` syntax)
+
 ## [0.0.2] - 2026-02-23
 
 ### Added
