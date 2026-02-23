@@ -198,3 +198,81 @@ Key design points:
 - This integrates with the `<Http>` effect: network calls are naturally async
 
 This avoids coloured-function problems (async vs sync) because algebraic effects already separate the description of an operation from its execution. A handler can run `<Http>` operations sequentially or concurrently — the function code is the same either way.
+
+### Abilities (Restricted Type Constraints)
+
+Vera's type variables are currently unconstrained (`forall<T>`). To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera SHOULD adopt **Roc-style restricted abilities** rather than full Haskell-style typeclasses:
+
+```vera
+ability Eq<T> {
+  op eq(@T, @T -> @Bool);
+}
+
+ability Ord<T> {
+  op compare(@T, @T -> @Ordering);
+}
+
+forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  exists(@Nat, length(@Array<T>.0), fn(@Nat -> @Bool) effects(pure) {
+    eq(@Array<T>.0[@Nat.0], @T.0)
+  })
+}
+```
+
+Key design points:
+- **No higher-kinded types.** No `Functor`, `Monad`, or `Applicative`. Abilities are first-order only: `Eq<T>`, not `Mappable<F>` where F is a type constructor. This preserves decidable type checking and prevents the abstraction hierarchy that makes code harder for LLMs to generate correctly.
+- **Built-in abilities** auto-derivable for ADTs composed of types that already support them: `Eq`, `Ord`, `Hash`, `Encode`, `Decode`, `Show`. If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically — the LLM writes less, and there are fewer things to get wrong.
+- **User-defined abilities** are permitted but restricted to first-order type parameters. This allows library authors to define domain-specific abilities (e.g., `Serializable<T>`) without the complexity of higher-kinded polymorphism.
+- **`ability` declarations** look like `effect` declarations (using `op` for operations), keeping the language syntactically consistent.
+- **Constraint syntax** uses `forall<T where Ability<T>>`, consistent with the placeholder noted in Chapter 2, Section 2.7.1.
+
+This design draws on Roc's abilities (deliberately no HKTs, auto-derivable), Gleam's validation that useful languages need not have typeclasses, and Unison's abilities system. The consensus among modern functional languages is that restricted abilities provide sufficient extensibility for practical programming without the complexity explosion of full typeclasses.
+
+Abilities are a post-v0.1 feature. They will be specified in Chapter 2 when implemented.
+
+### LLM Inference as an Effect
+
+Vera is designed for LLMs to write. It SHOULD also support LLMs as a runtime component, modelled as an algebraic effect:
+
+```vera
+effect Inference {
+  op complete(@String -> @String);
+  op embed(@String -> @Array<Float64>);
+}
+
+fn classify(@String -> @Category)
+  requires(length(@String.0) > 0)
+  ensures(true)
+  effects(<Inference>)
+{
+  let @String = complete("Classify as Spam or Ham: " ++ @String.0);
+  match parse_category(@String.0) {
+    Some(@Category) -> @Category.0,
+    None -> Category.Unknown
+  }
+}
+```
+
+Key design points:
+- **Effect, not primitive.** LLM inference is inherently side-effectful, non-deterministic, and requires external resources. The effect system models this naturally.
+- **Testability.** A mock handler returns canned responses. No API calls in tests.
+- **Handler flexibility.** One handler uses the Anthropic API, another uses a local model, another uses cached replay for deterministic testing.
+- **Explicit in the type.** Any function that calls an LLM declares `effects(<Inference>)`. Pure functions cannot secretly call models.
+- **Contracts still apply.** Preconditions on inference inputs are verified normally. Postconditions on outputs can use refinement types to constrain response format.
+- **Constrained decoding potential.** Refinement types on the return type (e.g., `{ @String | is_json(@String.0) }`) could eventually guide model output, similar to LMQL's constrained decoding approach.
+
+The `Inference` effect belongs in the standard library (Chapter 9). The WASM runtime provides handler implementations that bind to HTTP APIs or local model runtimes. No language changes are needed — the existing effect system supports this directly.
+
+### Standard Library Collections
+
+The standard library (Chapter 9) SHOULD include:
+
+- **`Set<T>`** — an unordered collection of unique elements. Requires `Eq` and `Hash` abilities on `T`. Supports union, intersection, difference.
+- **`Map<K, V>`** — a key-value mapping. Requires `Eq` and `Hash` abilities on `K`. Already implicitly needed by the JSON ADT (`JObject(Map<String, Json>)`).
+- **`Decimal`** — exact decimal arithmetic for financial and precision-sensitive applications. Implemented as a library type (not a primitive) since WebAssembly does not have native decimal floating-point. Software implementation in the runtime.
+
+These types depend on the abilities system for their type constraints. `Set` and `Map` are standard library ADTs, not primitives — keeping the core language small while providing the collections that practical programs need.
