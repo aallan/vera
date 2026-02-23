@@ -185,6 +185,8 @@ The language specification grows alongside the compiler. Chapters 0–7 and 10 a
 - Python 3.11+
 - Git
 
+The install step pulls in several dependencies via pip — [Lark](https://github.com/lark-parser/lark) (parser generator), [Z3](https://github.com/Z3Prover/z3) (SMT solver for contract verification), and [wasmtime](https://wasmtime.dev/) (WASM runtime, used in later phases). These all install into the virtual environment and don't require separate system packages.
+
 ### Installation
 
 ```bash
