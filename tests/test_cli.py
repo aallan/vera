@@ -123,6 +123,68 @@ class TestCmdCheck:
         err = capsys.readouterr().err
         assert len(err) > 0
 
+    # -- JSON mode --
+
+    def test_json_ok(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Clean file produces JSON with ok: true."""
+        rc = cmd_check(INCREMENT, as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is True
+        assert data["diagnostics"] == []
+
+    def test_json_with_warnings(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Warnings-only file has ok: true with warnings in JSON."""
+        rc = cmd_check(CLOSURES, as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is True
+        assert data["diagnostics"] == []
+        assert len(data["warnings"]) > 0
+        assert data["warnings"][0]["severity"] == "warning"
+
+    def test_json_type_error(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Type error produces JSON with ok: false and diagnostics."""
+        path = _bad_vera(tmp_path, _type_error_source())
+        rc = cmd_check(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+        diag = data["diagnostics"][0]
+        assert diag["severity"] == "error"
+        assert "location" in diag
+        assert "description" in diag
+
+    def test_json_missing_file(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Missing file in JSON mode still produces valid JSON."""
+        rc = cmd_check("/nonexistent/file.vera", as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+
+    def test_json_syntax_error(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Syntax error in JSON mode produces valid JSON diagnostic."""
+        path = _bad_vera(tmp_path, _syntax_error_source())
+        rc = cmd_check(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+
 
 # =====================================================================
 # cmd_verify
@@ -178,6 +240,52 @@ class TestCmdVerify:
         assert rc == 1
         err = capsys.readouterr().err
         assert len(err) > 0
+
+    # -- JSON mode --
+
+    def test_json_tier1(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Tier 1 verified file produces JSON with verification summary."""
+        rc = cmd_verify(INCREMENT, as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is True
+        assert data["diagnostics"] == []
+        assert "verification" in data
+        v = data["verification"]
+        assert v["tier1_verified"] > 0
+        assert v["total"] > 0
+
+    def test_json_tier3(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Tier 3 file produces JSON with runtime check counts."""
+        rc = cmd_verify(FACTORIAL, as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is True
+        v = data["verification"]
+        assert v["tier3_runtime"] > 0
+        assert len(data["warnings"]) > 0
+
+    def test_json_type_error(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Type error blocks verification and produces JSON diagnostic."""
+        path = _bad_vera(tmp_path, _type_error_source())
+        rc = cmd_verify(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+
+    def test_json_missing_file(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Missing file in JSON verify mode produces valid JSON."""
+        rc = cmd_verify("/nonexistent/file.vera", as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
 
 
 # =====================================================================
@@ -295,3 +403,22 @@ class TestMain:
         assert result.returncode == 0
         parsed = json.loads(result.stdout)
         assert isinstance(parsed, dict)
+
+    def test_dispatch_check_json(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--json", INCREMENT],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is True
+
+    def test_dispatch_verify_json(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "verify", "--json", INCREMENT],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is True
+        assert "verification" in parsed
