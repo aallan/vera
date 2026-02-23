@@ -112,6 +112,7 @@ Vera is in **active development**. The language specification and parser are fun
 | Language specification (Chapters 0-7, 10) | Draft |
 | Language specification (Chapters 8-9, 11-12) | Not started |
 | Parser (Lark LALR(1)) | Working |
+| AST (typed syntax tree) | Working |
 | Type checker | Not started |
 | Contract verifier (Z3) | Not started |
 | WASM code generation | Not started |
@@ -149,6 +150,18 @@ vera parse examples/safe_divide.vera
 ```
 
 This prints the parse tree, useful for debugging syntax issues.
+
+### Inspect the AST
+
+```bash
+vera ast examples/factorial.vera
+```
+
+This prints the typed abstract syntax tree. Add `--json` for JSON output:
+
+```bash
+vera ast --json examples/factorial.vera
+```
 
 ### Run the tests
 
@@ -273,6 +286,8 @@ vera/
 ├── vera/                          # Reference compiler (Python)
 │   ├── grammar.lark               # Lark LALR(1) grammar
 │   ├── parser.py                  # Parser module
+│   ├── ast.py                     # Typed AST node definitions
+│   ├── transform.py               # Lark parse tree → AST transformer
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # Example Vera programs
