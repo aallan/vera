@@ -1,0 +1,29 @@
+# Dependabot — automated dependency update PRs.
+# See https://docs.github.com/en/code-security/dependabot
+
+version: 2
+
+updates:
+  # Python pip dependencies (pyproject.toml)
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dependencies"
+    open-pull-requests-limit: 5
+
+  # GitHub Actions versions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "ci"
+    open-pull-requests-limit: 5
