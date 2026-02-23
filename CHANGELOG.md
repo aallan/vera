@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-02-23
+
+### Added
+- **Type checker**: Tier 1 decidable type checking — validates expression types, slot reference resolution, effect annotations, and contract well-formedness
+  - Two-pass architecture: pass 1 registers all declarations (handles forward references and mutual recursion), pass 2 checks bodies
+  - Expression type synthesis for all AST node types (literals, operators, calls, constructors, match/if, handlers, anonymous functions, quantifiers)
+  - De Bruijn slot reference resolution with alias opacity
+  - Function call type checking with generic type argument inference
+  - ADT constructor validation and pattern type checking
+  - Basic effect checking (pure functions can't call effectful operations)
+  - Handler effect discharge (handlers eliminate their effect from the enclosing function's requirements)
+  - Contract well-formedness (predicates must be Bool, `@T.result` only in ensures, `old`/`new` only in ensures)
+  - Error accumulation — all type errors collected, never stops at first error
+  - Unresolved name graceful handling (warning, not failure) with `UnknownType` propagation
+  - LLM-oriented `TypeError` diagnostics with description, location, rationale, fix, and spec reference
+- **Internal type representation** (`vera/types.py`): semantic `Type` objects separate from syntactic AST `TypeExpr` nodes — `PrimitiveType`, `AdtType`, `FunctionType`, `RefinedType`, `TypeVar`, `UnknownType`, effect row types
+- **Type environment** (`vera/environment.py`): scope stack, slot resolution, built-in type/effect/function registrations (Option, Result, State with get/put, IO, length)
+- **CLI command**: `vera typecheck <file>` as explicit alias for `vera check`
+- **Convenience API**: `typecheck_file(path)` in `vera/parser.py`
+- **Type checker tests**: 91 new tests — round-trip tests for all 13 examples, literal types, slot references, operators, function calls, generics, constructors, patterns, control flow, effects, contracts, higher-order functions, refinement types, error accumulation, where blocks, arrays, return types (284 total, up from 193)
+
+### Changed
+- `vera check` now runs the full pipeline: parse → AST → type check (previously parse only)
+- README: updated status table (Type checker: Working), added type checker to project structure, documented `vera typecheck` alias
+- SKILLS.md: added `vera typecheck` to toolchain section
+
 ## [0.0.4] - 2026-02-23
 
 ### Added
