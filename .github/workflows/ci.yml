@@ -62,7 +62,7 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
-      - name: Check all examples type-check cleanly
+      - name: Check all examples type-check and verify cleanly
         run: python scripts/check_examples.py
 
       - name: Check version numbers are in sync

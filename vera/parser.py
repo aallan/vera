@@ -6,9 +6,10 @@ Parses .vera source into a Lark Tree, with LLM-oriented error diagnostics.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Any, Optional
 
-from typing import Any
+if TYPE_CHECKING:
+    from vera.verifier import VerifyResult
 
 from lark import Lark, Tree
 from lark.exceptions import LarkError
@@ -93,6 +94,33 @@ def parse_to_ast(source: str, file: str | None = None) -> Any:
 
     tree = parse(source, file=file)
     return transform(tree)
+
+
+def verify_file(path: str | Path) -> "VerifyResult":
+    """Parse, transform, type-check, and verify a .vera file.
+
+    Args:
+        path: Path to the .vera file.
+
+    Returns:
+        A VerifyResult with diagnostics and a verification summary.
+
+    Raises:
+        ParseError: If the file contains syntax errors.
+        TransformError: If the parse tree cannot be transformed.
+        FileNotFoundError: If the file does not exist.
+    """
+    from vera.checker import typecheck
+    from vera.transform import transform
+    from vera.verifier import VerifyResult, verify
+
+    path = Path(path)
+    source = path.read_text(encoding="utf-8")
+    tree = parse(source, file=str(path))
+    ast = transform(tree)
+    # Type-check first (verify expects a valid AST)
+    typecheck(ast, source, file=str(path))
+    return verify(ast, source, file=str(path))
 
 
 def typecheck_file(path: str | Path) -> list[Diagnostic]:

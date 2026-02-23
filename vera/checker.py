@@ -338,6 +338,7 @@ class TypeChecker:
             return_type=ret_type,
             effect=eff,
             span=decl.span,
+            contracts=decl.contracts,
         )
 
         # Register where-block functions

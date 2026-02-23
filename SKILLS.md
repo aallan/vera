@@ -12,6 +12,7 @@ Vera is a programming language designed for LLMs to write. It uses typed slot re
 ```bash
 vera check file.vera       # Parse and type-check (or "OK")
 vera typecheck file.vera   # Same as check (explicit alias)
+vera verify file.vera      # Type-check and verify contracts via Z3
 vera parse file.vera       # Print the parse tree
 vera ast file.vera         # Print the typed AST
 vera ast --json file.vera  # Print the AST as JSON

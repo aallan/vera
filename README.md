@@ -131,7 +131,7 @@ This principle applies at every stage: parse errors, type errors, effect mismatc
 
 ## Project Status
 
-Vera is in **active development**. The language specification, parser, AST, and type checker are functional. Verification and code generation are not yet implemented.
+Vera is in **active development**. The language specification, parser, AST, type checker, and contract verifier are functional. Code generation is not yet implemented.
 
 | Component | Status |
 |-----------|--------|
@@ -140,7 +140,7 @@ Vera is in **active development**. The language specification, parser, AST, and 
 | Parser (Lark LALR(1)) | Working |
 | AST (typed syntax tree) | Working |
 | Type checker | Working |
-| Contract verifier (Z3) | Not started |
+| Contract verifier (Z3) | Working |
 | WASM code generation | Not started |
 
 ## Roadmap
@@ -152,21 +152,20 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C1 | v0.0.1–0.0.3 | **Parser** — Lark LALR(1) grammar, LLM diagnostics, 13 examples | Done |
 | C2 | v0.0.4 | **AST** — typed syntax tree, Lark→AST transformer | Done |
 | C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
-| C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Next |
+| C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
 | C5 | v0.0.9 | **WASM codegen** — compile pure functions, `vera compile` / `vera run` | Planned |
 | C6 | v0.0.10 | **Stdlib + runtime** — core library, effect handlers as continuations, GC | Planned |
 | C7 | v0.0.11 | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — `.vera` → parse → typecheck → verify → compile → run | Planned |
 
-### What's next: C4 — Contract Verifier (v0.0.8)
+### What's next: C5 — WASM Codegen (v0.0.9)
 
-The type checker validates *types*. The contract verifier validates *logic* — that preconditions are satisfiable, postconditions follow from the implementation, and refinement types actually constrain what they claim.
+The contract verifier validates *logic*. The code generator turns verified programs into executable WebAssembly.
 
-- Wire up Z3 (already a declared dependency) to verify `requires`/`ensures`/`decreases` clauses
-- Refinement type verification — `{ @Int | @Int.0 > 0 }` checked against actual values
-- Three-tier verification: static (Z3 proves it), guided (user provides hints), runtime (fallback assertions)
-- Counterexample generation — when verification fails, show a concrete input that breaks the contract
-- `vera verify` command (or extend `vera check` to include verification)
+- Compile pure functions to WASM (integer arithmetic, conditionals, let bindings)
+- `vera compile <file>` produces `.wasm` output, `vera run <file>` executes it
+- Runtime contract insertion for Tier 3 (unverifiable) contracts
+- Function call codegen with WASM function table
 
 ### Specification chapters
 
@@ -206,6 +205,18 @@ OK: examples/absolute_value.vera
 ```
 
 `vera check` parses the file, builds the AST, and runs the type checker. `vera typecheck` is an explicit alias for the same command.
+
+### Verify contracts
+
+```bash
+vera verify examples/safe_divide.vera
+```
+```
+OK: examples/safe_divide.vera
+Verification: 2 verified (Tier 1)
+```
+
+`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning.
 
 ### Parse a program
 
@@ -327,13 +338,14 @@ git clone https://github.com/aallan/vera.git && cd vera
 python -m venv .venv && source .venv/bin/activate && pip install -e .
 ```
 
-Write a `.vera` file, then check it:
+Write a `.vera` file, then check and verify it:
 
 ```bash
-vera check your_file.vera
+vera check your_file.vera    # type-check
+vera verify your_file.vera   # type-check + verify contracts
 ```
 
-If the check fails, the error message tells you exactly what went wrong and how to fix it. Feed the error back into your context and correct the code.
+If the check or verification fails, the error message tells you exactly what went wrong and how to fix it. Feed the error back into your context and correct the code.
 
 **Essential rules:**
 1. Every function needs `requires()`, `ensures()`, and `effects()` between the signature and body
@@ -365,10 +377,12 @@ vera/
 │   ├── types.py                   # Internal type representation
 │   ├── environment.py             # Type environment and slot resolution
 │   ├── checker.py                 # Type checker
+│   ├── smt.py                     # Z3 SMT translation layer
+│   ├── verifier.py                # Contract verifier
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # Example Vera programs
-├── tests/                         # Test suite (284 tests)
+├── tests/                         # Test suite (335 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse
