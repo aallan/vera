@@ -113,6 +113,12 @@ class TransformError(VeraError):
     pass
 
 
+class TypeError(VeraError):
+    """A type-checking error."""
+
+    pass
+
+
 # =====================================================================
 # Common parse error patterns
 # =====================================================================
