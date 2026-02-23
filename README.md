@@ -36,6 +36,16 @@ Vera addresses this by making everything explicit and verifiable. The model does
 ## What Vera Looks Like
 
 ```vera
+fn hello(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  print("Hello, World!")
+}
+```
+
+```vera
 fn absolute_value(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
