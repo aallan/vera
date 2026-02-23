@@ -280,13 +280,17 @@ See `examples/` for more programs, and the [language specification](spec/) for t
 
 ## For Agents
 
-Vera ships with a [`SKILLS.md`](SKILLS.md) file — a complete language reference designed for LLM agents. It covers syntax, slot references, contracts, effects, common mistakes, and working examples that all parse correctly.
+Vera ships with three files for LLM agents:
+
+- [`SKILLS.md`](SKILLS.md) — Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.
+- [`AGENTS.md`](AGENTS.md) — Instructions for any agent system (Copilot, Cursor, Windsurf, custom). Covers both writing Vera code and working on the compiler.
+- [`CLAUDE.md`](CLAUDE.md) — Project orientation for Claude Code. Key commands, layout, workflows, and invariants.
 
 ### Giving Your Agent the Vera Skill
 
 #### Claude Code
 
-If you're working in this repo, Claude Code discovers the skill automatically. For other projects, install it as a personal skill:
+If you're working in this repo, Claude Code discovers `SKILLS.md` and `CLAUDE.md` automatically. For other projects, install the skill manually:
 
 ```bash
 mkdir -p ~/.claude/skills/vera-language
@@ -343,11 +347,13 @@ python -m venv .venv && source .venv/bin/activate && pip install -e .
 Write a `.vera` file, then check and verify it:
 
 ```bash
-vera check your_file.vera    # type-check
-vera verify your_file.vera   # type-check + verify contracts
+vera check your_file.vera              # type-check
+vera check --json your_file.vera       # type-check with JSON diagnostics
+vera verify your_file.vera             # type-check + verify contracts
+vera verify --json your_file.vera      # verify with JSON diagnostics
 ```
 
-If the check or verification fails, the error message tells you exactly what went wrong and how to fix it. Feed the error back into your context and correct the code.
+If the check or verification fails, the error message tells you exactly what went wrong and how to fix it. Feed the error back into your context and correct the code. Use `--json` for machine-readable output that includes structured diagnostics with location, rationale, and fix suggestions.
 
 **Essential rules:**
 1. Every function needs `requires()`, `ensures()`, and `effects()` between the signature and body
@@ -361,6 +367,8 @@ If the check or verification fails, the error message tells you exactly what wen
 ```
 vera/
 ├── SKILLS.md                      # Language reference for LLM agents
+├── AGENTS.md                      # Instructions for any AI agent system
+├── CLAUDE.md                      # Project orientation for Claude Code
 ├── spec/                          # Language specification
 │   ├── 00-introduction.md         # Design goals and philosophy
 │   ├── 01-lexical-structure.md    # Tokens, operators, formatting rules
