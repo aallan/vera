@@ -80,9 +80,9 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `wasm.py` | 585 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
 | `codegen.py` | 653 | Compile | Codegen orchestrator | `compile()`, `execute()` |
 | `errors.py` | 354 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
-| `cli.py` | 525 | All | CLI commands | `main()` |
+| `cli.py` | 541 | All | CLI commands | `main()` |
 
-Total: ~7,060 lines of Python + 328 lines of grammar.
+Total: ~7,082 lines of Python + 328 lines of grammar.
 
 ## Parsing
 
@@ -451,7 +451,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**470 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
+**508 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -461,12 +461,12 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 91 | 950 | Type synthesis, slot resolution, effects, contracts |
 | `test_verifier.py` | 52 | 616 | Z3 verification, counterexamples, tier classification |
-| `test_codegen.py` | 76 | 849 | WASM compilation, arithmetic, control flow, strings, IO, contracts |
-| `test_cli.py` | 54 | 606 | CLI commands (check, verify, compile, run), subprocess integration |
+| `test_codegen.py` | 104 | 1,181 | WASM compilation, arithmetic, control flow, strings, IO, contracts, example round-trips |
+| `test_cli.py` | 64 | 767 | CLI commands (check, verify, compile, run), subprocess integration, runtime traps |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 16 | 129 | Diagnostic formatting, error patterns |
 
-Total: 4,905 lines of test code (66% of source code size).
+Total: 5,398 lines of test code (73% of source code size).
 
 ### Round-trip testing
 

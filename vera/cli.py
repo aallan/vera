@@ -403,6 +403,22 @@ def cmd_run(
             return 1
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    except Exception as exc:
+        # Catch WASM traps (wasmtime.Trap, wasmtime.WasmtimeError)
+        # without importing wasmtime at module level.
+        exc_name = type(exc).__name__
+        if exc_name in ("Trap", "WasmtimeError"):
+            msg = f"Runtime contract violation: {exc}"
+            if as_json:
+                print(json.dumps({"ok": False, "file": path,
+                                  "diagnostics": [{"severity": "error",
+                                                   "description": msg,
+                                                   "location": {"line": 0, "column": 0}}]}
+                                  , indent=2))
+                return 1
+            print(f"Error: {msg}", file=sys.stderr)
+            return 1
+        raise  # re-raise unexpected exceptions
 
 
 def cmd_ast(path: str, as_json: bool = False) -> int:
