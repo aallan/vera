@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-02-23
+
+### Added
+- **CI**: GitHub Actions workflow running pytest on Python 3.11/3.12/3.13 with coverage on 3.12
+- **Social preview**: meerkat sentinel mascot using Negroni brand colour palette
+- **Custom domain**: veralang.dev with GitHub Pages and HTTPS
+
+### Changed
+- CONTRIBUTING.md: point "Questions?" section at Issues instead of Discussions
+- Issue template config: remove Discussions contact link (Discussions disabled)
+- README: add social preview banner image linking to veralang.dev
+- pyproject.toml: update Homepage/Documentation URLs to veralang.dev
+
 ## [0.0.1] - 2026-02-23
 
 ### Added
