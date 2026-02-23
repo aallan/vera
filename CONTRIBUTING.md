@@ -51,8 +51,23 @@ For contributions to the reference compiler:
 ```bash
 git clone https://github.com/aallan/vera.git
 cd vera
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
+pre-commit install
 ```
+
+### Pre-commit Hooks
+
+After running `pre-commit install`, every commit is automatically checked for:
+
+- Trailing whitespace and file endings
+- YAML/TOML validity
+- Merge conflict markers
+- Python debug statements
+- mypy type checking
+- pytest test suite
+- All `.vera` examples type-check cleanly
 
 ### Running Tests
 
@@ -67,6 +82,14 @@ pytest --cov=vera         # with coverage
 
 ```bash
 mypy vera/
+```
+
+### Validation Scripts
+
+```bash
+python scripts/check_examples.py       # verify all .vera examples
+python scripts/check_spec_examples.py   # verify spec code blocks parse
+python scripts/check_version_sync.py    # verify version consistency
 ```
 
 ## Coding Standards
@@ -120,6 +143,17 @@ vera/
 ├── tests/         # Test suite
 ├── examples/      # Example Vera programs
 ```
+
+## Branch Protection
+
+The `main` branch has the following protections enabled:
+
+- **Pull request required.** All changes to `main` must go through a pull request. No direct pushes.
+- **CI must pass.** The test, typecheck, and lint jobs must all pass before merging.
+- **Review required.** At least one approving review is needed.
+- **No force pushes.** History on `main` is immutable.
+
+If you are a maintainer setting up branch protection on a fork, configure these rules in **Settings > Branches > Branch protection rules** for the `main` branch.
 
 ## Code of Conduct
 
