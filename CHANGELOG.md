@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-02-23
+
+### Added
+- **Contract verifier** (`vera/verifier.py`): Z3-backed verification of `requires`/`ensures` contracts on functions
+  - Three-tier verification: Tier 1 (decidable, Z3 proves automatically), Tier 3 (runtime fallback with warning)
+  - Forward symbolic execution — translates function body to Z3 expression, checks postconditions directly
+  - Counterexample generation — when verification fails, shows concrete input values that break the contract
+  - Trivial contract fast path — `requires(true)`/`ensures(true)` counted as verified without invoking Z3
+  - Graceful Tier 3 fallback for unsupported constructs (match, effects, recursion, quantifiers)
+  - LLM-oriented diagnostics with counterexample values, rationale, and spec references
+- **SMT translation layer** (`vera/smt.py`): bridges Vera AST expressions to Z3 formulas
+  - `SlotEnv` — De Bruijn slot stacks mapped to Z3 variables
+  - Expression translation: integer/Boolean literals, arithmetic, comparisons, Boolean logic, if/else, let bindings, `length()` (uninterpreted function)
+  - `SmtContext.check_valid()` — refutation-based validity checking with counterexample extraction
+- **CLI command**: `vera verify <file>` — type-check and verify contracts, prints verification summary
+- **Convenience API**: `verify_file(path)` in `vera/parser.py`
+- **Verifier tests**: 51 new tests — round-trip verification of all 13 examples, trivial contracts, ensures verification, if/else bodies, let bindings, multiple contracts, counterexample extraction, tier classification, arithmetic, summary counts, edge cases (335 total, up from 284)
+
+### Changed
+- `FunctionInfo` in `vera/environment.py` now stores contract AST nodes (for modular verification)
+- `_register_fn` in `vera/checker.py` passes contracts to `FunctionInfo`
+- README: updated status table (Contract verifier: Working), added `vera verify` docs, updated project structure and test count, advanced roadmap (C4 Done, What's next → C5)
+- SKILLS.md: added `vera verify` to toolchain section
+- LICENSE converted to Markdown format
+
 ## [0.0.7] - 2026-02-23
 
 ### Added
@@ -129,7 +154,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.7...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.8...HEAD
+[0.0.8]: https://github.com/aallan/vera/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/aallan/vera/compare/v0.0.6...v0.0.7
 [0.0.6]: https://github.com/aallan/vera/compare/v0.0.5...v0.0.6
 [0.0.5]: https://github.com/aallan/vera/compare/v0.0.4...v0.0.5

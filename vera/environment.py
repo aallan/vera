@@ -41,6 +41,7 @@ class FunctionInfo:
     return_type: Type
     effect: EffectRowType
     span: object | None = None  # ast.Span
+    contracts: tuple[object, ...] = ()  # ast.Contract nodes (for C4)
 
 
 @dataclass

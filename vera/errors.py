@@ -119,6 +119,12 @@ class TypeError(VeraError):
     pass
 
 
+class VerifyError(VeraError):
+    """A contract verification error."""
+
+    pass
+
+
 # =====================================================================
 # Common parse error patterns
 # =====================================================================

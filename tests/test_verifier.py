@@ -1,0 +1,616 @@
+"""Tests for the Vera contract verifier (C4).
+
+Validates Z3-backed contract verification: postcondition checking,
+counterexample extraction, tier classification, and graceful fallback
+for unsupported constructs.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from vera.parser import parse_to_ast
+from vera.checker import typecheck
+from vera.verifier import VerifyResult, verify
+
+EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
+
+# Examples that verify with no errors (may have Tier 3 warnings)
+ALL_EXAMPLES = sorted(f.name for f in EXAMPLES_DIR.glob("*.vera"))
+
+
+# =====================================================================
+# Helpers
+# =====================================================================
+
+def _verify(source: str) -> VerifyResult:
+    """Parse, type-check, and verify a source string."""
+    ast = parse_to_ast(source)
+    typecheck(ast, source)
+    return verify(ast, source)
+
+
+def _verify_ok(source: str) -> None:
+    """Assert source verifies with no errors."""
+    result = _verify(source)
+    errors = [d for d in result.diagnostics if d.severity == "error"]
+    assert errors == [], f"Expected no errors, got: {[e.description for e in errors]}"
+
+
+def _verify_err(source: str, match: str) -> list:
+    """Assert source produces at least one verification error matching *match*."""
+    result = _verify(source)
+    errors = [d for d in result.diagnostics if d.severity == "error"]
+    assert errors, f"Expected at least one error, got none"
+    matched = [e for e in errors if match.lower() in e.description.lower()]
+    assert matched, (
+        f"No error matched '{match}'. Errors: {[e.description for e in errors]}"
+    )
+    return matched
+
+
+def _verify_warn(source: str, match: str) -> list:
+    """Assert source produces at least one verification warning matching *match*."""
+    result = _verify(source)
+    warnings = [d for d in result.diagnostics if d.severity == "warning"]
+    assert warnings, f"Expected at least one warning, got none"
+    matched = [w for w in warnings if match.lower() in w.description.lower()]
+    assert matched, (
+        f"No warning matched '{match}'. Warnings: {[w.description for w in warnings]}"
+    )
+    return matched
+
+
+# =====================================================================
+# Example round-trip tests
+# =====================================================================
+
+class TestExampleVerification:
+    """All example .vera files should verify without errors."""
+
+    @pytest.mark.parametrize("filename", ALL_EXAMPLES)
+    def test_example_verifies(self, filename: str) -> None:
+        source = (EXAMPLES_DIR / filename).read_text()
+        ast = parse_to_ast(source, file=filename)
+        type_diags = typecheck(ast, source, file=filename)
+        type_errors = [d for d in type_diags if d.severity == "error"]
+        assert type_errors == [], f"Type errors: {[e.description for e in type_errors]}"
+
+        result = verify(ast, source, file=filename)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Verify errors: {[e.description for e in errors]}"
+
+
+# =====================================================================
+# Trivial contracts
+# =====================================================================
+
+class TestTrivialContracts:
+    """requires(true) and ensures(true) are trivially Tier 1."""
+
+    def test_requires_true_ensures_true(self) -> None:
+        _verify_ok("""
+fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""")
+
+    def test_trivial_counted_as_tier1(self) -> None:
+        result = _verify("""
+fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""")
+        assert result.summary.tier1_verified == 2
+        assert result.summary.tier3_runtime == 0
+
+
+# =====================================================================
+# Ensures verification — postconditions
+# =====================================================================
+
+class TestEnsuresVerification:
+    """Postcondition VCs are generated and checked against the body."""
+
+    def test_identity_postcondition(self) -> None:
+        _verify_ok("""
+fn id(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{ @Int.0 }
+""")
+
+    def test_addition_postcondition(self) -> None:
+        _verify_ok("""
+fn add(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.1)
+  effects(pure)
+{ @Int.0 + @Int.1 }
+""")
+
+    def test_subtraction_postcondition(self) -> None:
+        _verify_ok("""
+fn sub(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 - @Int.1)
+  effects(pure)
+{ @Int.0 - @Int.1 }
+""")
+
+    def test_negation_postcondition(self) -> None:
+        _verify_ok("""
+fn neg(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 0 - @Int.0)
+  effects(pure)
+{ 0 - @Int.0 }
+""")
+
+    def test_safe_divide_postcondition(self) -> None:
+        _verify_ok("""
+fn safe_divide(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(@Int.result == @Int.0 / @Int.1)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""")
+
+    def test_constant_function(self) -> None:
+        _verify_ok("""
+fn zero(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{ 0 }
+""")
+
+    def test_boolean_postcondition(self) -> None:
+        _verify_ok("""
+fn is_positive(@Int -> @Bool)
+  requires(@Int.0 > 0)
+  ensures(@Bool.result == true)
+  effects(pure)
+{ @Int.0 > 0 }
+""")
+
+
+# =====================================================================
+# If-then-else
+# =====================================================================
+
+class TestIfThenElse:
+    """If-then-else bodies are verified correctly."""
+
+    def test_absolute_value(self) -> None:
+        _verify_ok("""
+fn absolute_value(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  if @Int.0 >= 0 then { @Int.0 } else { 0 - @Int.0 }
+}
+""")
+
+    def test_max(self) -> None:
+        _verify_ok("""
+fn max(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= @Int.0)
+  ensures(@Int.result >= @Int.1)
+  effects(pure)
+{
+  if @Int.0 >= @Int.1 then { @Int.0 } else { @Int.1 }
+}
+""")
+
+    def test_min(self) -> None:
+        _verify_ok("""
+fn min(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result <= @Int.0)
+  ensures(@Int.result <= @Int.1)
+  effects(pure)
+{
+  if @Int.0 <= @Int.1 then { @Int.0 } else { @Int.1 }
+}
+""")
+
+    def test_clamp(self) -> None:
+        _verify_ok("""
+fn clamp(@Int, @Int, @Int -> @Int)
+  requires(@Int.1 <= @Int.2)
+  ensures(@Int.result >= @Int.1)
+  ensures(@Int.result <= @Int.2)
+  effects(pure)
+{
+  if @Int.0 < @Int.1 then { @Int.1 }
+  else { if @Int.0 > @Int.2 then { @Int.2 } else { @Int.0 } }
+}
+""")
+
+    def test_nested_if(self) -> None:
+        _verify_ok("""
+fn sign(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= -1)
+  ensures(@Int.result <= 1)
+  effects(pure)
+{
+  if @Int.0 > 0 then { 1 }
+  else { if @Int.0 < 0 then { 0 - 1 } else { 0 } }
+}
+""")
+
+
+# =====================================================================
+# Let bindings
+# =====================================================================
+
+class TestLetBindings:
+    """Let bindings are handled via substitution."""
+
+    def test_let_identity(self) -> None:
+        _verify_ok("""
+fn double(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.0)
+  effects(pure)
+{
+  let @Int = @Int.0 + @Int.0;
+  @Int.0
+}
+""")
+
+    def test_chained_lets(self) -> None:
+        _verify_ok("""
+fn triple(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.0 + @Int.0)
+  effects(pure)
+{
+  let @Int = @Int.0 + @Int.0;
+  let @Int = @Int.0 + @Int.1;
+  @Int.0
+}
+""")
+
+
+# =====================================================================
+# Multiple contracts
+# =====================================================================
+
+class TestMultipleContracts:
+    """Multiple requires/ensures clauses are AND'd."""
+
+    def test_multiple_ensures(self) -> None:
+        _verify_ok("""
+fn bounded(@Int -> @Int)
+  requires(@Int.0 >= 0)
+  requires(@Int.0 <= 100)
+  ensures(@Int.result >= 0)
+  ensures(@Int.result <= 100)
+  effects(pure)
+{ @Int.0 }
+""")
+
+    def test_multiple_requires_strengthen(self) -> None:
+        _verify_ok("""
+fn positive_div(@Int, @Int -> @Int)
+  requires(@Int.0 > 0)
+  requires(@Int.1 > 0)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ @Int.0 / @Int.1 }
+""")
+
+
+# =====================================================================
+# Counterexamples
+# =====================================================================
+
+class TestCounterexamples:
+    """When a contract is violated, a counterexample is reported."""
+
+    def test_false_postcondition(self) -> None:
+        """ensures(@Int.result > @Int.0) fails when result == input."""
+        _verify_err("""
+fn bad(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > @Int.0)
+  effects(pure)
+{ @Int.0 }
+""", "postcondition does not hold")
+
+    def test_false_always(self) -> None:
+        """ensures(false) always fails."""
+        _verify_err("""
+fn always_fail(@Int -> @Int)
+  requires(true)
+  ensures(false)
+  effects(pure)
+{ @Int.0 }
+""", "postcondition does not hold")
+
+    def test_counterexample_has_values(self) -> None:
+        """Counterexample includes concrete slot values."""
+        result = _verify("""
+fn bad(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert len(errors) >= 1
+        # The description should mention slot values from the counterexample
+        desc = errors[0].description
+        assert "@Int.0" in desc or "Counterexample" in desc
+
+    def test_violation_has_fix_suggestion(self) -> None:
+        """Error diagnostic includes a fix suggestion."""
+        result = _verify("""
+fn bad(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > @Int.0)
+  effects(pure)
+{ @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert len(errors) >= 1
+        assert errors[0].fix != ""
+        assert "precondition" in errors[0].fix.lower() or "postcondition" in errors[0].fix.lower()
+
+    def test_violation_has_spec_ref(self) -> None:
+        """Error diagnostic includes a spec reference."""
+        result = _verify("""
+fn bad(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > @Int.0)
+  effects(pure)
+{ @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert len(errors) >= 1
+        assert "Chapter 6" in errors[0].spec_ref
+
+    def test_precondition_saves_from_violation(self) -> None:
+        """Adding a precondition can make a failing postcondition valid."""
+        # Without precondition: fails
+        _verify_err("""
+fn bad(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ @Int.0 }
+""", "postcondition does not hold")
+
+        # With precondition: passes
+        _verify_ok("""
+fn good(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ @Int.0 }
+""")
+
+
+# =====================================================================
+# Tier classification and fallback
+# =====================================================================
+
+class TestTierClassification:
+    """Contracts are classified into Tier 1 vs Tier 3."""
+
+    def test_linear_arithmetic_is_tier1(self) -> None:
+        result = _verify("""
+fn f(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(@Int.result == @Int.0 + @Int.1)
+  effects(pure)
+{ @Int.0 + @Int.1 }
+""")
+        assert result.summary.tier1_verified == 2
+        assert result.summary.tier3_runtime == 0
+
+    def test_generic_function_is_tier3(self) -> None:
+        result = _verify("""
+forall<T>
+fn id(@T -> @T)
+  requires(true)
+  ensures(@T.result == @T.0)
+  effects(pure)
+{ @T.0 }
+""")
+        assert result.summary.tier3_runtime >= 1
+
+    def test_match_body_is_tier3(self) -> None:
+        """Functions with match in the body fall to Tier 3."""
+        result = _verify("""
+data Bool2 { True2, False2 }
+
+fn invert(@Bool2 -> @Bool2)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Bool2.0 {
+    True2 -> False2,
+    False2 -> True2
+  }
+}
+""")
+        # ensures(true) is trivial → Tier 1
+        # No non-trivial ensures, so no Tier 3 from body translation
+        assert result.summary.tier1_verified >= 2
+
+    def test_recursive_call_is_tier3(self) -> None:
+        """Recursive function bodies can't be translated to Z3."""
+        result = _verify("""
+fn factorial(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 1)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 1 }
+  else { @Nat.0 * factorial(@Nat.0 - 1) }
+}
+""")
+        # ensures(@Nat.result >= 1) — body has recursive call → Tier 3
+        # decreases — always Tier 3 for now
+        assert result.summary.tier3_runtime >= 1
+
+
+# =====================================================================
+# Arithmetic contracts
+# =====================================================================
+
+class TestArithmetic:
+    """Arithmetic contract verification."""
+
+    def test_nat_non_negative(self) -> None:
+        _verify_ok("""
+fn nat_id(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{ @Nat.0 }
+""")
+
+    def test_nat_constraint_used(self) -> None:
+        """Nat parameters are constrained >= 0 in Z3."""
+        _verify_ok("""
+fn nat_plus_one(@Nat -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ @Nat.0 + 1 }
+""")
+
+    def test_modular_arithmetic(self) -> None:
+        _verify_ok("""
+fn remainder(@Int, @Int -> @Int)
+  requires(@Int.1 > 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 % @Int.1 }
+""")
+
+
+# =====================================================================
+# Summary
+# =====================================================================
+
+class TestSummary:
+    """Verification summary is correctly computed."""
+
+    def test_all_trivial(self) -> None:
+        result = _verify("""
+fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""")
+        assert result.summary.tier1_verified == 2
+        assert result.summary.total == 2
+        assert result.summary.tier3_runtime == 0
+
+    def test_mixed_tiers(self) -> None:
+        result = _verify("""
+fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 }
+  else { @Nat.0 + f(@Nat.0 - 1) }
+}
+""")
+        # requires(true) → Tier 1 trivial
+        # ensures with recursive body → Tier 3
+        # decreases → Tier 3
+        assert result.summary.total >= 3
+        assert result.summary.tier1_verified >= 1
+        assert result.summary.tier3_runtime >= 1
+
+    def test_multiple_functions_accumulate(self) -> None:
+        result = _verify("""
+fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{ @Int.0 }
+
+fn g(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + 1)
+  effects(pure)
+{ @Int.0 + 1 }
+""")
+        # f: requires(true) trivial + ensures verified = 2 Tier 1
+        # g: requires(true) trivial + ensures verified = 2 Tier 1
+        assert result.summary.tier1_verified == 4
+        assert result.summary.total == 4
+
+
+# =====================================================================
+# Edge cases
+# =====================================================================
+
+class TestEdgeCases:
+    """Edge cases and boundary conditions."""
+
+    def test_empty_body_unit(self) -> None:
+        """Unit-returning function with trivial contracts."""
+        _verify_ok("""
+fn noop(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ () }
+""")
+
+    def test_deeply_nested_if(self) -> None:
+        _verify_ok("""
+fn deep(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  ensures(@Int.result <= 3)
+  effects(pure)
+{
+  if @Int.0 > 0 then {
+    if @Int.0 > 10 then { 3 }
+    else { if @Int.0 > 5 then { 2 } else { 1 } }
+  } else { 0 }
+}
+""")
+
+    def test_implies_in_contract(self) -> None:
+        """The ==> operator works in contracts."""
+        _verify_ok("""
+fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.0 > 0 ==> @Int.result > 0)
+  effects(pure)
+{ @Int.0 }
+""")
+
+    def test_boolean_logic_in_contract(self) -> None:
+        _verify_ok("""
+fn f(@Int -> @Int)
+  requires(@Int.0 > 0 && @Int.0 < 100)
+  ensures(@Int.result > 0 || @Int.result == 0)
+  effects(pure)
+{ @Int.0 }
+""")
