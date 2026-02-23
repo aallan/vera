@@ -421,9 +421,12 @@ For compiler architecture, pipeline internals, design patterns, and how to exten
 
 Vera draws on ideas from:
 
+- [Eiffel](https://www.eiffel.org/) — Design by Contract (the originator of `require`/`ensure`)
 - [Dafny](https://dafny.org/) — full functional verification with contracts
+- [F*](https://fstar-lang.org/) — refinement types, algebraic effects, and SMT verification
 - [Koka](https://koka-lang.github.io/koka/doc/book.html) — row-polymorphic algebraic effects
 - [Liquid Haskell](https://ucsd-progsys.github.io/liquidhaskell/) — refinement types via SMT
+- [Idris](https://www.idris-lang.org/) — totality checking and termination proofs
 - [SPARK/Ada](https://www.adacore.com/about-spark) — contract-based industrial verification
 - [bruijn](https://bruijn.marvinborner.de/) — De Bruijn indices as surface syntax
 
