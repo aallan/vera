@@ -10,11 +10,12 @@ Vera is a programming language designed for LLMs to write. It uses typed slot re
 ## Toolchain
 
 ```bash
-vera check file.vera    # Parse and report errors (or "OK")
-vera parse file.vera    # Print the parse tree
-vera ast file.vera      # Print the typed AST
+vera check file.vera       # Parse and type-check (or "OK")
+vera typecheck file.vera   # Same as check (explicit alias)
+vera parse file.vera       # Print the parse tree
+vera ast file.vera         # Print the typed AST
 vera ast --json file.vera  # Print the AST as JSON
-pytest tests/ -v        # Run the test suite
+pytest tests/ -v           # Run the test suite
 ```
 
 Errors are natural language instructions explaining what went wrong and how to fix it. Feed them back into your context to correct the code.

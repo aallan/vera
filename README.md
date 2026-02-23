@@ -105,7 +105,7 @@ This principle applies at every stage: parse errors, type errors, effect mismatc
 
 ## Project Status
 
-Vera is in **active development**. The language specification and parser are functional. Type checking, verification, and code generation are not yet implemented.
+Vera is in **active development**. The language specification, parser, AST, and type checker are functional. Verification and code generation are not yet implemented.
 
 | Component | Status |
 |-----------|--------|
@@ -113,7 +113,7 @@ Vera is in **active development**. The language specification and parser are fun
 | Language specification (Chapters 8-9, 11-12) | Not started |
 | Parser (Lark LALR(1)) | Working |
 | AST (typed syntax tree) | Working |
-| Type checker | Not started |
+| Type checker | Working |
 | Contract verifier (Z3) | Not started |
 | WASM code generation | Not started |
 
@@ -142,6 +142,8 @@ vera check examples/absolute_value.vera
 ```
 OK: examples/absolute_value.vera
 ```
+
+`vera check` parses the file, builds the AST, and runs the type checker. `vera typecheck` is an explicit alias for the same command.
 
 ### Parse a program
 
@@ -288,6 +290,9 @@ vera/
 │   ├── parser.py                  # Parser module
 │   ├── ast.py                     # Typed AST node definitions
 │   ├── transform.py               # Lark parse tree → AST transformer
+│   ├── types.py                   # Internal type representation
+│   ├── environment.py             # Type environment and slot resolution
+│   ├── checker.py                 # Type checker
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # Example Vera programs

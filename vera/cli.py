@@ -1,10 +1,11 @@
 """Vera command-line interface.
 
 Usage:
-    vera parse <file.vera>         Parse a file and print the tree
-    vera check <file.vera>         Parse and report any errors
-    vera ast   <file.vera>         Parse and print the AST
-    vera ast   --json <file.vera>  Parse and print the AST as JSON
+    vera parse     <file.vera>         Parse a file and print the tree
+    vera check     <file.vera>         Parse and type-check a file
+    vera typecheck <file.vera>         Same as check (explicit alias)
+    vera ast       <file.vera>         Parse and print the AST
+    vera ast       --json <file.vera>  Parse and print the AST as JSON
 """
 
 from __future__ import annotations
@@ -33,9 +34,27 @@ def cmd_parse(path: str) -> int:
 
 
 def cmd_check(path: str) -> int:
-    """Parse a .vera file and report errors (no output on success)."""
+    """Parse, transform, and type-check a .vera file."""
+    from vera.checker import typecheck
+
     try:
-        parse_file(path)
+        p = Path(path)
+        source = p.read_text(encoding="utf-8")
+        tree = parse_file(path)
+        ast = transform(tree)
+        diagnostics = typecheck(ast, source, file=str(p))
+
+        errors = [d for d in diagnostics if d.severity == "error"]
+        warnings = [d for d in diagnostics if d.severity == "warning"]
+
+        for w in warnings:
+            print(f"warning: {w.format()}", file=sys.stderr)
+
+        if errors:
+            for e in errors:
+                print(e.format(), file=sys.stderr)
+            return 1
+
         print(f"OK: {path}")
         return 0
     except FileNotFoundError:
@@ -69,7 +88,8 @@ Usage: vera <command> [options] <file>
 
 Commands:
     parse          Parse a .vera file and print the parse tree
-    check          Parse a .vera file and report errors
+    check          Parse and type-check a .vera file
+    typecheck      Same as check (explicit alias)
     ast            Parse a .vera file and print the AST
     ast --json     Parse a .vera file and print the AST as JSON
 """
@@ -86,7 +106,7 @@ def main() -> None:
 
     if command == "parse":
         sys.exit(cmd_parse(args[1]))
-    elif command == "check":
+    elif command in ("check", "typecheck"):
         sys.exit(cmd_check(args[1]))
     elif command == "ast":
         if "--json" in args:
