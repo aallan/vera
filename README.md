@@ -152,13 +152,13 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C1 | v0.0.1–0.0.3 | **Parser** — Lark LALR(1) grammar, LLM diagnostics, 13 examples | Done |
 | C2 | v0.0.4 | **AST** — typed syntax tree, Lark→AST transformer | Done |
 | C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
-| C4 | v0.0.6 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Next |
-| C5 | v0.0.7 | **WASM codegen** — compile pure functions, `vera compile` / `vera run` | Planned |
-| C6 | v0.0.8 | **Stdlib + runtime** — core library, effect handlers as continuations, GC | Planned |
-| C7 | v0.0.9 | **Module system** — cross-file imports, public/private visibility | Planned |
+| C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Next |
+| C5 | v0.0.9 | **WASM codegen** — compile pure functions, `vera compile` / `vera run` | Planned |
+| C6 | v0.0.10 | **Stdlib + runtime** — core library, effect handlers as continuations, GC | Planned |
+| C7 | v0.0.11 | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — `.vera` → parse → typecheck → verify → compile → run | Planned |
 
-### What's next: C4 — Contract Verifier (v0.0.6)
+### What's next: C4 — Contract Verifier (v0.0.8)
 
 The type checker validates *types*. The contract verifier validates *logic* — that preconditions are satisfiable, postconditions follow from the implementation, and refinement types actually constrain what they claim.
 

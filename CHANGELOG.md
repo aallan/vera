@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.0.5-2] - 2026-02-23
+## [0.0.7] - 2026-02-23
 
 ### Added
 - **Spec code block validator** (`scripts/check_spec_examples.py`) — extracts 154 code blocks from spec Markdown, classifies them as parseable/fragment/non-Vera, and verifies parseable blocks still parse with the current grammar. Categorised allowlist tracks 30 spec/parser mismatches (spec uses `@T` in data/effect declarations, parser expects bare `T`), 4 future-syntax design proposals, and 3 fragment overrides. Stale allowlist detection catches when spec edits shift line numbers.
@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **CONTRIBUTING.md** — added pre-commit setup instructions, validation script documentation, branch protection rules
 - **CI lint job** — now runs version sync check and spec code block validator alongside example validation
 
-## [0.0.5-1] - 2026-02-23
+## [0.0.6] - 2026-02-23
 
 ### Added
 - **Hello World example** in README — first example in "What Vera Looks Like" section, demonstrates IO effect and mandatory contracts
@@ -128,3 +128,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: function signatures use `@Type` prefix to declare binding sites
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
+
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.7...HEAD
+[0.0.7]: https://github.com/aallan/vera/compare/v0.0.6...v0.0.7
+[0.0.6]: https://github.com/aallan/vera/compare/v0.0.5...v0.0.6
+[0.0.5]: https://github.com/aallan/vera/compare/v0.0.4...v0.0.5
+[0.0.4]: https://github.com/aallan/vera/compare/v0.0.3...v0.0.4
+[0.0.3]: https://github.com/aallan/vera/compare/v0.0.2...v0.0.3
+[0.0.2]: https://github.com/aallan/vera/compare/v0.0.1...v0.0.2
+[0.0.1]: https://github.com/aallan/vera/releases/tag/v0.0.1
