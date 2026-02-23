@@ -1,5 +1,7 @@
 # Vera
 
+[veralang.dev](https://veralang.dev)
+
 **Vera** is a programming language designed for large language models (LLMs) to write, not humans.
 
 The name comes from the Latin *veritas* (truth). In Vera, verification is a first-class citizen, not an afterthought.

@@ -23,9 +23,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/aallan/vera"
+Homepage = "https://veralang.dev"
+Documentation = "https://veralang.dev"
 Repository = "https://github.com/aallan/vera"
 Issues = "https://github.com/aallan/vera/issues"
+Changelog = "https://github.com/aallan/vera/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = [
