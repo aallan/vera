@@ -159,7 +159,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
 | C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
 | C5 | v0.0.9 | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
-| C6 | v0.0.10–0.0.23 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Planned |
+| C6 | v0.0.10–0.0.23 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | **In progress** (C6a done) |
 | C7 | — | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
 
@@ -171,7 +171,7 @@ The code generator compiles 6 of 14 examples. C6 extends WASM compilation to all
 
 | Sub-phase | Scope | Closes | Unlocks |
 |-----------|-------|--------|---------|
-| C6a | Float64 — `f64` literals, arithmetic, comparisons | #25 | — |
+| ~~C6a~~ | ~~Float64 — `f64` literals, arithmetic, comparisons~~ | ~~#25~~ | ~~Done (v0.0.10)~~ |
 | C6b | Callee preconditions — verify `requires()` at call sites | #19 | — |
 | C6c | Match exhaustiveness — verify all constructors covered | #18 | — |
 | C6d | State\<T\> operations — get/put as host imports | — | increment.vera |
@@ -465,7 +465,7 @@ vera/
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (514 tests)
+├── tests/                         # Test suite (540 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse

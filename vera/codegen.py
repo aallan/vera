@@ -57,7 +57,7 @@ class CompileResult:
 class ExecuteResult:
     """Result of executing a WASM function."""
 
-    value: int | None  # Return value (None for void/Unit functions)
+    value: int | float | None  # Return value (None for void/Unit functions)
     stdout: str  # Captured IO.print output
 
 
@@ -79,7 +79,7 @@ def compile(
 def execute(
     result: CompileResult,
     fn_name: str | None = None,
-    args: list[int] | None = None,
+    args: list[int | float] | None = None,
 ) -> ExecuteResult:
     """Execute a function from a compiled WASM module.
 
@@ -132,12 +132,15 @@ def execute(
         raise RuntimeError(f"Function '{fn_name}' not found in exports")
 
     # Call with arguments
-    call_args: list[int] = args or []
+    call_args: list[int | float] = args or []
     raw_result = func(store, *call_args)
 
     # Extract return value
+    value: int | float | None
     if raw_result is None:
         value = None
+    elif isinstance(raw_result, float):
+        value = raw_result
     elif isinstance(raw_result, int):
         value = raw_result
     else:
@@ -317,8 +320,8 @@ class CodeGenerator:
                 self._warning(
                     decl,
                     f"Function '{decl.name}' has unsupported parameter type.",
-                    rationale="Only Int, Nat, Bool, and Unit types are "
-                    "compilable in the current WASM backend.",
+                    rationale="Only Int, Nat, Float64, Bool, and Unit types "
+                    "are compilable in the current WASM backend.",
                 )
                 return None
             local_idx = ctx.alloc_param()
@@ -603,6 +606,8 @@ class CodeGenerator:
             name = te.name
             if name in ("Int", "Nat"):
                 return "i64"
+            if name in ("Float64", "Float"):
+                return "f64"
             if name == "Bool":
                 return "i32"
             if name == "Unit":
