@@ -171,9 +171,9 @@ C6 extends WASM compilation to all language constructs, working through the depe
 
 | Sub-phase | Scope | Closes | Unlocks |
 |-----------|-------|--------|---------|
-| ~~C6a~~ | ~~Float64 — `f64` literals, arithmetic, comparisons~~ | ~~#25~~ | ~~Done (v0.0.10, [#35](https://github.com/aallan/vera/pull/35))~~ |
-| ~~C6b~~ | ~~Callee preconditions — verify `requires()` at call sites~~ | ~~#19~~ | ~~Done (v0.0.11, [#36](https://github.com/aallan/vera/pull/36))~~ |
-| ~~C6c~~ | ~~Match exhaustiveness — verify all constructors covered~~ | ~~#18~~ | ~~Done (v0.0.12, [#37](https://github.com/aallan/vera/pull/37))~~ |
+| ~~C6a~~ | ~~Float64 — `f64` literals, arithmetic, comparisons~~ | ~~[#25](https://github.com/aallan/vera/issues/25)~~ | ~~Done (v0.0.10, [#35](https://github.com/aallan/vera/pull/35))~~ |
+| ~~C6b~~ | ~~Callee preconditions — verify `requires()` at call sites~~ | ~~[#19](https://github.com/aallan/vera/issues/19)~~ | ~~Done (v0.0.11, [#36](https://github.com/aallan/vera/pull/36))~~ |
+| ~~C6c~~ | ~~Match exhaustiveness — verify all constructors covered~~ | ~~[#18](https://github.com/aallan/vera/issues/18)~~ | ~~Done (v0.0.12, [#37](https://github.com/aallan/vera/pull/37))~~ |
 | ~~C6d~~ | ~~State\<T\> operations — get/put as host imports~~ | — | ~~Done (v0.0.13, [#38](https://github.com/aallan/vera/pull/38))~~ |
 
 **Allocator and data types (sequential chain):**
@@ -182,21 +182,21 @@ C6 extends WASM compilation to all language constructs, working through the depe
 |-----------|-------|--------|---------|
 | ~~C6e~~ | ~~Bump allocator — heap allocation for tagged values~~ | — | ~~Done (v0.0.14, [#39](https://github.com/aallan/vera/pull/39))~~ |
 | ~~C6f~~ | ~~ADT constructors — heap-allocated tagged unions~~ | — | ~~Done (v0.0.15, [#40](https://github.com/aallan/vera/pull/40))~~ |
-| ~~C6g~~ | ~~Match expressions — tag dispatch, field extraction~~ | ~~#26~~ | ~~Done (v0.0.16, [#41](https://github.com/aallan/vera/pull/41))~~ |
-| ~~C6i~~ | ~~Generics — monomorphization of `forall<T>` functions~~ | ~~#29~~ | ~~Done (v0.0.17, [#42](https://github.com/aallan/vera/pull/42))~~ |
+| ~~C6g~~ | ~~Match expressions — tag dispatch, field extraction~~ | ~~[#26](https://github.com/aallan/vera/issues/26)~~ | ~~Done (v0.0.16, [#41](https://github.com/aallan/vera/pull/41))~~ |
+| ~~C6i~~ | ~~Generics — monomorphization of `forall<T>` functions~~ | ~~[#29](https://github.com/aallan/vera/issues/29)~~ | ~~Done (v0.0.17, [#42](https://github.com/aallan/vera/pull/42))~~ |
 
 **Higher-order and effects:**
 
 | Sub-phase | Scope | Closes | Unlocks |
 |-----------|-------|--------|---------|
-| C6h | Closures — closure conversion, `call_indirect` | #27 | closures.vera |
-| C6j | Effect handlers — handle/resume compilation | #28 | effect_handler.vera |
+| C6h | Closures — closure conversion, `call_indirect` | [#27](https://github.com/aallan/vera/issues/27) | closures.vera |
+| C6j | Effect handlers — handle/resume compilation | [#28](https://github.com/aallan/vera/issues/28) | effect_handler.vera |
 
 **Collections, runtime, and documentation:**
 
 | Sub-phase | Scope | Closes | Unlocks |
 |-----------|-------|--------|---------|
-| C6k | Byte + arrays — linear memory arrays with bounds | #30 | — |
+| C6k | Byte + arrays — linear memory arrays with bounds | [#30](https://github.com/aallan/vera/issues/30) | — |
 | C6l | Quantifiers — forall/exists as runtime loops | — | quantifiers.vera |
 | C6m | Refinement returns + stdlib utilities | — | refinement_types.vera |
 | C6n | Spec chapters 9 (Standard library) and 12 (Runtime) | — | — |

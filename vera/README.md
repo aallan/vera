@@ -262,7 +262,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 
 ## Contract Verification
 
-**Files:** `verifier.py` (539 lines), `smt.py` (363 lines)
+**Files:** `verifier.py` (601 lines), `smt.py` (485 lines)
 
 ### Tiered model
 
