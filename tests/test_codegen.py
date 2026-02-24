@@ -2420,3 +2420,267 @@ fn unwrap_or(@Option<Int> -> @Int)
 """
         result = _compile_ok(source)
         assert "unwrap_or" in result.exports
+
+
+# =====================================================================
+# C6i: Monomorphization of generic (forall<T>) functions
+# =====================================================================
+
+
+class TestMonomorphization:
+    """Tests for monomorphization of forall<T> functions."""
+
+    def test_identity_int(self) -> None:
+        """forall<T> fn identity instantiated with Int."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ identity(42) }
+"""
+        assert _run(source, fn="main") == 42
+
+    def test_identity_bool(self) -> None:
+        """forall<T> fn identity instantiated with Bool."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn main(-> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ identity(true) }
+"""
+        assert _run(source, fn="main") == 1
+
+    def test_identity_two_instantiations(self) -> None:
+        """Same generic function instantiated with both Int and Bool."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn test_int(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ identity(42) }
+
+fn test_bool(-> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ identity(false) }
+"""
+        result = _compile_ok(source)
+        assert "identity$Int" in result.exports
+        assert "identity$Bool" in result.exports
+        # Run both
+        exec_int = execute(result, fn_name="test_int")
+        assert exec_int.value == 42
+        exec_bool = execute(result, fn_name="test_bool")
+        assert exec_bool.value == 0
+
+    def test_identity_slot_ref_arg(self) -> None:
+        """Generic function called with a slot reference argument."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ identity(@Int.0) }
+"""
+        assert _run(source, fn="main", args=[99]) == 99
+
+    def test_const_function(self) -> None:
+        """forall<A, B> fn const with two type parameters."""
+        source = """\
+forall<A, B> fn const(@A, @B -> @A)
+  requires(true) ensures(true) effects(pure)
+{ @A.0 }
+
+fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ const(42, true) }
+"""
+        assert _run(source, fn="main") == 42
+
+    def test_generic_with_adt_match(self) -> None:
+        """forall<T> fn is_some with ADT match (Some case)."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+forall<T> fn is_some(@Option<T> -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<T>.0 {
+    None -> false,
+    Some(@T) -> true
+  }
+}
+
+fn main(-> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ is_some(Some(1)) }
+"""
+        assert _run(source, fn="main") == 1
+
+    def test_generic_with_adt_match_none(self) -> None:
+        """forall<T> fn is_some with ADT match (None case)."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+forall<T> fn is_some(@Option<T> -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<T>.0 {
+    None -> false,
+    Some(@T) -> true
+  }
+}
+
+fn main(-> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = None;
+  is_some(@Option<Int>.0)
+}
+"""
+        assert _run(source, fn="main") == 0
+
+    def test_generic_fn_wat_has_mangled_name(self) -> None:
+        """WAT output contains mangled function name."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ identity(42) }
+"""
+        result = _compile_ok(source)
+        assert "$identity$Int" in result.wat
+
+    def test_generic_fn_mangled_in_exports(self) -> None:
+        """Mangled name appears in exports, original generic does not."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ identity(42) }
+"""
+        result = _compile_ok(source)
+        assert "identity$Int" in result.exports
+        assert "identity" not in result.exports
+
+    def test_non_generic_fn_unaffected(self) -> None:
+        """Non-generic functions compile normally alongside generic ones."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn double(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + @Int.0 }
+
+fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ double(identity(21)) }
+"""
+        assert _run(source, fn="main") == 42
+
+    def test_generic_identity_in_let_binding(self) -> None:
+        """Generic call result used in a let binding."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = identity(10);
+  @Int.0 + 5
+}
+"""
+        assert _run(source, fn="main") == 15
+
+    def test_generic_chained_calls(self) -> None:
+        """Generic function called with result of another generic call."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ identity(identity(99)) }
+"""
+        assert _run(source, fn="main") == 99
+
+    def test_generic_in_if_branch(self) -> None:
+        """Generic call inside an if-then-else branch."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn main(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { identity(1) } else { identity(2) }
+}
+"""
+        assert _run(source, fn="main", args=[1]) == 1
+        assert _run(source, fn="main", args=[0]) == 2
+
+    def test_generic_with_arithmetic_arg(self) -> None:
+        """Generic function called with arithmetic expression as argument."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ identity(3 + 4) }
+"""
+        assert _run(source, fn="main") == 7
+
+    def test_generic_no_callers_skipped(self) -> None:
+        """Generic function with no callers is gracefully skipped."""
+        source = """\
+forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "main" in result.exports
+        # identity has no callers → no monomorphized version → not in exports
+        assert "identity" not in result.exports
+
+    def test_generics_example_file(self) -> None:
+        """examples/generics.vera compiles without errors."""
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "examples" / "generics.vera"
+        source = path.read_text()
+        result = _compile(source)
+        assert result.ok
+
+    def test_list_ops_example_file(self) -> None:
+        """examples/list_ops.vera still compiles (concrete, not generic)."""
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "examples" / "list_ops.vera"
+        source = path.read_text()
+        result = _compile(source)
+        assert result.ok

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.17] - 2026-02-24
+
+### Added
+- **Generics monomorphization** (C6i — closes #29): compile `forall<T>` functions to WASM via monomorphization
+  - Collection pass: walk non-generic function bodies to find calls to generic functions, infer concrete type variable bindings
+  - AST substitution: create monomorphized FnDecl copies with type variables replaced by concrete types (e.g. `@T.0` → `@Int.0`)
+  - Name mangling: `identity` + `(Int,)` → `identity$Int`, `const` + `(Int, Bool)` → `const$Int_Bool`
+  - Call rewriting: generic function calls resolve to mangled names at WASM translation time
+  - FnCall type inference: infer WASM return types and Vera type names for function call expressions (improves if-branch and chained-call handling)
+  - Supports: literal args, slot ref args, constructor args, chained generic calls, arithmetic expression args
+- **Codegen tests**: 17 new tests — identity/const/is_some instantiation, two-instantiation exports, ADT match, chained calls, if-branches, let bindings, example files (660 total, up from 643)
+
 ## [0.0.16] - 2026-02-24
 
 ### Added
