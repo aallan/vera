@@ -11,8 +11,9 @@ See spec/11-compilation.md for the compilation specification.
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from io import StringIO
+from typing import Any
 
 import wasmtime
 
@@ -312,6 +313,11 @@ class CodeGenerator:
         # Pass 1: register all function signatures
         self._register_all(program)
 
+        # Pass 1.5: monomorphize generic functions
+        mono_decls = self._monomorphize(program)
+        for mdecl in mono_decls:
+            self._register_fn(mdecl)
+
         # Pass 2: compile function bodies
         functions_wat: list[str] = []
         exports: list[str] = []
@@ -329,6 +335,13 @@ class CodeGenerator:
                             wfn_wat = self._compile_fn(wfn, export=False)
                             if wfn_wat is not None:
                                 functions_wat.append(wfn_wat)
+
+        # Compile monomorphized functions
+        for mdecl in mono_decls:
+            fn_wat = self._compile_fn(mdecl)
+            if fn_wat is not None:
+                functions_wat.append(fn_wat)
+                exports.append(mdecl.name)
 
         # Assemble the module
         wat = self._assemble_module(functions_wat)
@@ -395,6 +408,433 @@ class CodeGenerator:
         self._adt_layouts[decl.name] = layouts
         self._needs_alloc = True
         self._needs_memory = True
+
+    # -----------------------------------------------------------------
+    # Monomorphization
+    # -----------------------------------------------------------------
+
+    def _monomorphize(
+        self, program: ast.Program,
+    ) -> list[ast.FnDecl]:
+        """Monomorphize generic functions for all concrete call sites.
+
+        Returns a list of new FnDecl nodes with type variables replaced
+        by concrete types and names mangled.
+        """
+        # Identify generic function declarations
+        generic_decls: dict[str, ast.FnDecl] = {}
+        for tld in program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl) and decl.forall_vars:
+                generic_decls[decl.name] = decl
+
+        if not generic_decls:
+            return []
+
+        # Build constructor → ADT name mapping
+        ctor_to_adt: dict[str, str] = {}
+        for adt_name in self._adt_layouts:
+            for ctor_name in self._adt_layouts[adt_name]:
+                ctor_to_adt[ctor_name] = adt_name
+
+        # Collect concrete instantiations from non-generic function bodies
+        instances: dict[str, set[tuple[str, ...]]] = {
+            name: set() for name in generic_decls
+        }
+        for tld in program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
+                self._collect_calls_in_expr(
+                    decl.body, generic_decls, ctor_to_adt, instances,
+                )
+
+        # Generate monomorphized FnDecls
+        mono_decls: list[ast.FnDecl] = []
+        for fn_name, type_arg_set in instances.items():
+            for concrete_types in type_arg_set:
+                decl = generic_decls[fn_name]
+                mono = self._monomorphize_fn(decl, concrete_types)
+                mono_decls.append(mono)
+
+        # Store generic fn info for call rewriting in wasm.py
+        self._generic_fn_info: dict[
+            str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]
+        ] = {}
+        for name, decl in generic_decls.items():
+            assert decl.forall_vars is not None
+            self._generic_fn_info[name] = (decl.forall_vars, decl.params)
+
+        return mono_decls
+
+    def _collect_calls_in_expr(
+        self,
+        expr: ast.Expr,
+        generic_decls: dict[str, ast.FnDecl],
+        ctor_to_adt: dict[str, str],
+        instances: dict[str, set[tuple[str, ...]]],
+    ) -> None:
+        """Walk an expression tree collecting generic call sites."""
+        if isinstance(expr, ast.FnCall) and expr.name in generic_decls:
+            decl = generic_decls[expr.name]
+            type_args = self._infer_type_args_from_call(
+                decl, expr, ctor_to_adt, generic_decls,
+            )
+            if type_args is not None:
+                instances[expr.name].add(type_args)
+
+        # Recurse into sub-expressions
+        if isinstance(expr, ast.Block):
+            for stmt in expr.statements:
+                if isinstance(stmt, ast.LetStmt):
+                    self._collect_calls_in_expr(
+                        stmt.value, generic_decls, ctor_to_adt, instances,
+                    )
+                elif isinstance(stmt, ast.ExprStmt):
+                    self._collect_calls_in_expr(
+                        stmt.expr, generic_decls, ctor_to_adt, instances,
+                    )
+            self._collect_calls_in_expr(
+                expr.expr, generic_decls, ctor_to_adt, instances,
+            )
+        elif isinstance(expr, ast.BinaryExpr):
+            self._collect_calls_in_expr(
+                expr.left, generic_decls, ctor_to_adt, instances,
+            )
+            self._collect_calls_in_expr(
+                expr.right, generic_decls, ctor_to_adt, instances,
+            )
+        elif isinstance(expr, ast.UnaryExpr):
+            self._collect_calls_in_expr(
+                expr.operand, generic_decls, ctor_to_adt, instances,
+            )
+        elif isinstance(expr, ast.IfExpr):
+            self._collect_calls_in_expr(
+                expr.condition, generic_decls, ctor_to_adt, instances,
+            )
+            self._collect_calls_in_expr(
+                expr.then_branch, generic_decls, ctor_to_adt, instances,
+            )
+            self._collect_calls_in_expr(
+                expr.else_branch, generic_decls, ctor_to_adt, instances,
+            )
+        elif isinstance(expr, ast.FnCall):
+            for arg in expr.args:
+                self._collect_calls_in_expr(
+                    arg, generic_decls, ctor_to_adt, instances,
+                )
+        elif isinstance(expr, ast.ConstructorCall):
+            for arg in expr.args:
+                self._collect_calls_in_expr(
+                    arg, generic_decls, ctor_to_adt, instances,
+                )
+        elif isinstance(expr, ast.MatchExpr):
+            self._collect_calls_in_expr(
+                expr.scrutinee, generic_decls, ctor_to_adt, instances,
+            )
+            for arm in expr.arms:
+                self._collect_calls_in_expr(
+                    arm.body, generic_decls, ctor_to_adt, instances,
+                )
+
+    def _infer_type_args_from_call(
+        self,
+        decl: ast.FnDecl,
+        call: ast.FnCall,
+        ctor_to_adt: dict[str, str],
+        generic_decls: dict[str, ast.FnDecl] | None = None,
+    ) -> tuple[str, ...] | None:
+        """Infer concrete type variable bindings from a call's arguments.
+
+        Returns a tuple of concrete type names, one per forall_var, or
+        None if inference fails.
+        """
+        forall_vars = decl.forall_vars
+        if not forall_vars:
+            return None
+
+        mapping: dict[str, str] = {}
+        for param_te, arg in zip(decl.params, call.args):
+            self._unify_param_arg(param_te, arg, forall_vars, ctor_to_adt,
+                                  mapping, generic_decls)
+
+        # Check all type vars are resolved
+        result = []
+        for tv in forall_vars:
+            if tv not in mapping:
+                return None
+            result.append(mapping[tv])
+        return tuple(result)
+
+    def _unify_param_arg(
+        self,
+        param_te: ast.TypeExpr,
+        arg: ast.Expr,
+        forall_vars: tuple[str, ...],
+        ctor_to_adt: dict[str, str],
+        mapping: dict[str, str],
+        generic_decls: dict[str, ast.FnDecl] | None = None,
+    ) -> None:
+        """Unify a parameter TypeExpr against an argument to bind type vars."""
+        if isinstance(param_te, ast.RefinementType):
+            self._unify_param_arg(
+                param_te.base_type, arg, forall_vars, ctor_to_adt, mapping,
+                generic_decls,
+            )
+            return
+
+        if not isinstance(param_te, ast.NamedType):
+            return
+
+        if param_te.name in forall_vars:
+            # Direct type variable — infer from argument
+            vera_type = self._infer_vera_type_name(
+                arg, ctor_to_adt, generic_decls)
+            if vera_type and param_te.name not in mapping:
+                mapping[param_te.name] = vera_type
+            return
+
+        # Parameterized type like Option<T> — match type args
+        if param_te.type_args:
+            arg_info = self._get_arg_type_info(arg, ctor_to_adt)
+            if arg_info and arg_info[0] == param_te.name:
+                for param_ta, arg_ta_name in zip(
+                    param_te.type_args, arg_info[1]
+                ):
+                    if (isinstance(param_ta, ast.NamedType)
+                            and param_ta.name in forall_vars
+                            and param_ta.name not in mapping):
+                        mapping[param_ta.name] = arg_ta_name
+
+    def _infer_vera_type_name(
+        self,
+        expr: ast.Expr,
+        ctor_to_adt: dict[str, str],
+        generic_decls: dict[str, ast.FnDecl] | None = None,
+    ) -> str | None:
+        """Infer the simple Vera type name of an expression."""
+        if isinstance(expr, ast.IntLit):
+            return "Int"
+        if isinstance(expr, ast.BoolLit):
+            return "Bool"
+        if isinstance(expr, ast.FloatLit):
+            return "Float64"
+        if isinstance(expr, ast.UnitLit):
+            return "Unit"
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name
+        if isinstance(expr, ast.ConstructorCall):
+            return ctor_to_adt.get(expr.name)
+        if isinstance(expr, ast.NullaryConstructor):
+            return ctor_to_adt.get(expr.name)
+        if isinstance(expr, ast.BinaryExpr):
+            if expr.op in (ast.BinOp.EQ, ast.BinOp.NEQ, ast.BinOp.LT,
+                           ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
+                           ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
+                return "Bool"
+            return self._infer_vera_type_name(
+                expr.left, ctor_to_adt, generic_decls)
+        if isinstance(expr, ast.UnaryExpr):
+            if expr.op == ast.UnaryOp.NOT:
+                return "Bool"
+            return self._infer_vera_type_name(
+                expr.operand, ctor_to_adt, generic_decls)
+        if isinstance(expr, ast.IfExpr):
+            return self._infer_vera_type_name(
+                expr.then_branch.expr, ctor_to_adt, generic_decls)
+        if isinstance(expr, ast.FnCall) and generic_decls:
+            return self._infer_fncall_vera_type(
+                expr, ctor_to_adt, generic_decls)
+        if isinstance(expr, ast.FnCall):
+            return self._infer_fncall_vera_type_simple(expr)
+        return None
+
+    def _infer_fncall_vera_type(
+        self,
+        call: ast.FnCall,
+        ctor_to_adt: dict[str, str],
+        generic_decls: dict[str, ast.FnDecl],
+    ) -> str | None:
+        """Infer the Vera return type of a function call.
+
+        For generic calls, infers type variable bindings from arguments,
+        then substitutes into the return TypeExpr.
+        """
+        if call.name in generic_decls:
+            decl = generic_decls[call.name]
+            type_args = self._infer_type_args_from_call(
+                decl, call, ctor_to_adt, generic_decls,
+            )
+            if type_args and decl.forall_vars:
+                mapping = dict(zip(decl.forall_vars, type_args))
+                ret_te = decl.return_type
+                if isinstance(ret_te, ast.NamedType):
+                    return mapping.get(ret_te.name, ret_te.name)
+        return self._infer_fncall_vera_type_simple(call)
+
+    def _infer_fncall_vera_type_simple(self, call: ast.FnCall) -> str | None:
+        """Infer Vera return type from registered function signatures."""
+        sig = self._fn_sigs.get(call.name)
+        if sig:
+            _, ret_wt = sig
+            if ret_wt == "i64":
+                return "Int"
+            if ret_wt == "i32":
+                return "Bool"
+            if ret_wt == "f64":
+                return "Float64"
+        return None
+
+    def _get_arg_type_info(
+        self, expr: ast.Expr, ctor_to_adt: dict[str, str],
+    ) -> tuple[str, tuple[str, ...]] | None:
+        """Get (type_name, type_arg_names) for an argument expression.
+
+        Used to match parameterized types like Option<T> against
+        concrete arguments like @Option<Int>.0.
+        """
+        if isinstance(expr, ast.SlotRef):
+            if expr.type_args:
+                arg_names = []
+                for ta in expr.type_args:
+                    if isinstance(ta, ast.NamedType):
+                        arg_names.append(ta.name)
+                    else:
+                        return None
+                return (expr.type_name, tuple(arg_names))
+            return (expr.type_name, ())
+        if isinstance(expr, ast.ConstructorCall):
+            adt_name = ctor_to_adt.get(expr.name)
+            if adt_name:
+                # Infer type args from constructor arguments
+                arg_types = []
+                for a in expr.args:
+                    t = self._infer_vera_type_name(a, ctor_to_adt)
+                    if t:
+                        arg_types.append(t)
+                    else:
+                        return None
+                return (adt_name, tuple(arg_types))
+        return None
+
+    @staticmethod
+    def _mangle_fn_name(name: str, concrete_types: tuple[str, ...]) -> str:
+        """Produce a mangled name for a monomorphized function.
+
+        Example: identity + ("Int",) -> "identity$Int"
+        """
+        return f"{name}${'_'.join(concrete_types)}"
+
+    def _monomorphize_fn(
+        self,
+        decl: ast.FnDecl,
+        concrete_types: tuple[str, ...],
+    ) -> ast.FnDecl:
+        """Create a monomorphized copy of a generic function.
+
+        Replaces type variables with concrete types throughout the AST
+        and mangles the function name.
+        """
+        assert decl.forall_vars is not None
+        mapping = dict(zip(decl.forall_vars, concrete_types))
+        mangled = self._mangle_fn_name(decl.name, concrete_types)
+
+        # Substitute type variables in the entire FnDecl
+        substituted = self._substitute_in_ast(decl, mapping)
+        assert isinstance(substituted, ast.FnDecl)
+
+        # Override name and clear forall_vars
+        return replace(substituted, name=mangled, forall_vars=None)
+
+    def _substitute_in_ast(
+        self, node: ast.Node, mapping: dict[str, str],
+    ) -> ast.Node:
+        """Recursively substitute type variable names in an AST subtree.
+
+        Handles NamedType (type expressions) and SlotRef (slot references)
+        as special cases; all other nodes are walked generically via
+        dataclass fields.
+        """
+        # Special case: NamedType — substitute type variable names
+        if isinstance(node, ast.NamedType):
+            new_name = mapping.get(node.name, node.name)
+            new_args: tuple[ast.TypeExpr, ...] | None = node.type_args
+            if node.type_args:
+                new_args = tuple(
+                    self._substitute_type_expr(ta, mapping)
+                    for ta in node.type_args
+                )
+            if new_name != node.name or new_args is not node.type_args:
+                return replace(node, name=new_name, type_args=new_args)
+            return node
+
+        # Special case: SlotRef — substitute type_name and type_args
+        if isinstance(node, ast.SlotRef):
+            new_type_name = mapping.get(node.type_name, node.type_name)
+            new_slot_args: tuple[ast.TypeExpr, ...] | None = node.type_args
+            if node.type_args:
+                new_slot_args = tuple(
+                    self._substitute_type_expr(ta, mapping)
+                    for ta in node.type_args
+                )
+            if (new_type_name != node.type_name
+                    or new_slot_args is not node.type_args):
+                return replace(
+                    node, type_name=new_type_name, type_args=new_slot_args,
+                )
+            return node
+
+        # Special case: ResultRef — substitute type_name and type_args
+        if isinstance(node, ast.ResultRef):
+            new_type_name = mapping.get(node.type_name, node.type_name)
+            new_res_args: tuple[ast.TypeExpr, ...] | None = node.type_args
+            if node.type_args:
+                new_res_args = tuple(
+                    self._substitute_type_expr(ta, mapping)
+                    for ta in node.type_args
+                )
+            if (new_type_name != node.type_name
+                    or new_res_args is not node.type_args):
+                return replace(
+                    node, type_name=new_type_name, type_args=new_res_args,
+                )
+            return node
+
+        # Generic case: recurse into all dataclass fields
+        changes: dict[str, Any] = {}
+        for f in fields(node):
+            if f.name == "span":
+                continue
+            val = getattr(node, f.name)
+            new_val = self._substitute_value(val, mapping)
+            if new_val is not val:
+                changes[f.name] = new_val
+
+        if changes:
+            return replace(node, **changes)
+        return node
+
+    def _substitute_value(
+        self, val: Any, mapping: dict[str, str],
+    ) -> Any:
+        """Recursively substitute type variables in a field value."""
+        if isinstance(val, ast.Node):
+            return self._substitute_in_ast(val, mapping)
+        if isinstance(val, tuple):
+            new_items = tuple(
+                self._substitute_value(v, mapping) for v in val
+            )
+            if any(n is not o for n, o in zip(new_items, val)):
+                return new_items
+            return val
+        return val
+
+    def _substitute_type_expr(
+        self, te: ast.TypeExpr, mapping: dict[str, str],
+    ) -> ast.TypeExpr:
+        """Substitute type variables in a TypeExpr, returning a TypeExpr."""
+        result = self._substitute_in_ast(te, mapping)
+        assert isinstance(result, ast.TypeExpr)
+        return result
 
     def _compute_constructor_layout(
         self,
@@ -485,8 +925,11 @@ class CodeGenerator:
 
         # Flatten ADT layouts into ctor_name -> layout for WasmContext
         ctor_layouts = {}
-        for layouts in self._adt_layouts.values():
+        ctor_to_adt: dict[str, str] = {}
+        for adt_name, layouts in self._adt_layouts.items():
             ctor_layouts.update(layouts)
+            for ctor_name in layouts:
+                ctor_to_adt[ctor_name] = adt_name
         adt_type_names = set(self._adt_layouts.keys())
 
         ctx = WasmContext(
@@ -494,7 +937,15 @@ class CodeGenerator:
             effect_ops=effect_ops,
             ctor_layouts=ctor_layouts,
             adt_type_names=adt_type_names,
+            generic_fn_info=getattr(self, "_generic_fn_info", None),
+            ctor_to_adt=ctor_to_adt,
         )
+        # Build function return type map for FnCall type inference
+        fn_ret_types: dict[str, str | None] = {}
+        for fn_name, (_, ret_wt) in self._fn_sigs.items():
+            if ret_wt != "unsupported":
+                fn_ret_types[fn_name] = ret_wt
+        ctx.set_fn_ret_types(fn_ret_types)
         env = WasmSlotEnv()
 
         # Allocate parameters

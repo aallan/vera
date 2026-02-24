@@ -159,6 +159,10 @@ class WasmContext:
         effect_ops: dict[str, tuple[str, bool]] | None = None,
         ctor_layouts: dict[str, ConstructorLayout] | None = None,
         adt_type_names: set[str] | None = None,
+        generic_fn_info: (
+            dict[str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]] | None
+        ) = None,
+        ctor_to_adt: dict[str, str] | None = None,
     ) -> None:
         self.string_pool = string_pool
         self._next_local: int = 0
@@ -172,6 +176,22 @@ class WasmContext:
         self._ctor_layouts: dict[str, ConstructorLayout] = ctor_layouts or {}
         # ADT type names for slot/param type resolution
         self._adt_type_names: set[str] = adt_type_names or set()
+        # Generic function info for call rewriting:
+        # fn_name -> (forall_vars, param_type_exprs)
+        self._generic_fn_info: dict[
+            str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]
+        ] = generic_fn_info or {}
+        # Constructor name → ADT name reverse mapping
+        self._ctor_to_adt: dict[str, str] = ctor_to_adt or {}
+        # Function return WASM types for type inference:
+        # fn_name → return_wasm_type (str | None)
+        self._fn_ret_types: dict[str, str | None] = {}
+
+    def set_fn_ret_types(
+        self, ret_types: dict[str, str | None],
+    ) -> None:
+        """Set function return WASM types for FnCall type inference."""
+        self._fn_ret_types = ret_types
 
     def set_result_local(self, local_idx: int) -> None:
         """Set the local index used for @T.result in postconditions."""
@@ -421,7 +441,7 @@ class WasmContext:
             if expr.op == ast.UnaryOp.NOT:
                 return "i32"
         if isinstance(expr, ast.FnCall):
-            return None  # can't infer without type info
+            return self._infer_fncall_wasm_type(expr)
         if isinstance(expr, ast.ConstructorCall):
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.NullaryConstructor):
@@ -430,6 +450,23 @@ class WasmContext:
             if expr.arms:
                 return self._infer_expr_wasm_type(expr.arms[0].body)
             return None
+        return None
+
+    def _infer_fncall_wasm_type(self, expr: ast.FnCall) -> str | None:
+        """Infer the WASM return type of a function call.
+
+        For generic calls, resolves the mangled name and looks up its
+        registered return type.  For non-generic calls, uses the
+        registered return type directly.
+        """
+        # Try generic call resolution first
+        if expr.name in self._generic_fn_info:
+            mangled = self._resolve_generic_call(expr)
+            if mangled and mangled in self._fn_ret_types:
+                return self._fn_ret_types[mangled]
+        # Non-generic function — direct lookup
+        if expr.name in self._fn_ret_types:
+            return self._fn_ret_types[expr.name]
         return None
 
     # -----------------------------------------------------------------
@@ -531,7 +568,7 @@ class WasmContext:
         if isinstance(expr, ast.IfExpr):
             return self._infer_block_result_type(expr.then_branch)
         if isinstance(expr, ast.FnCall):
-            return None  # can't infer without type info
+            return self._infer_fncall_wasm_type(expr)
         if isinstance(expr, ast.QualifiedCall):
             return None  # effect ops return Unit (void)
         if isinstance(expr, ast.StringLit):
@@ -620,6 +657,13 @@ class WasmContext:
             instructions.append(f"call {import_name}")
             return instructions
 
+        # Resolve call target — rewrite generic calls to mangled names
+        call_target = call.name
+        if call.name in self._generic_fn_info:
+            resolved = self._resolve_generic_call(call)
+            if resolved is not None:
+                call_target = resolved
+
         # Regular function call
         instructions = []
         for arg in call.args:
@@ -627,7 +671,7 @@ class WasmContext:
             if arg_instrs is None:
                 return None
             instructions.extend(arg_instrs)
-        instructions.append(f"call ${call.name}")
+        instructions.append(f"call ${call_target}")
         return instructions
 
     def _translate_qualified_call(
@@ -643,6 +687,173 @@ class WasmContext:
             instructions.extend(arg_instrs)
         instructions.append(f"call $vera.{call.name}")
         return instructions
+
+    # -----------------------------------------------------------------
+    # Generic call resolution
+    # -----------------------------------------------------------------
+
+    def _resolve_generic_call(self, call: ast.FnCall) -> str | None:
+        """Resolve a call to a generic function to its mangled name.
+
+        Infers concrete type variable bindings from the call's argument
+        expressions, then produces the mangled name like 'identity$Int'.
+        Returns None if type inference fails.
+        """
+        forall_vars, param_types = self._generic_fn_info[call.name]
+        mapping: dict[str, str] = {}
+
+        for param_te, arg in zip(param_types, call.args):
+            self._unify_param_arg_wasm(param_te, arg, forall_vars, mapping)
+
+        # Build mangled name
+        parts = []
+        for tv in forall_vars:
+            if tv not in mapping:
+                return None
+            parts.append(mapping[tv])
+        return f"{call.name}${'_'.join(parts)}"
+
+    def _unify_param_arg_wasm(
+        self,
+        param_te: ast.TypeExpr,
+        arg: ast.Expr,
+        forall_vars: tuple[str, ...],
+        mapping: dict[str, str],
+    ) -> None:
+        """Unify a parameter TypeExpr against an argument to bind type vars.
+
+        Mirrors CodeGenerator._unify_param_arg for use during WASM
+        translation.
+        """
+        if isinstance(param_te, ast.RefinementType):
+            self._unify_param_arg_wasm(
+                param_te.base_type, arg, forall_vars, mapping,
+            )
+            return
+
+        if not isinstance(param_te, ast.NamedType):
+            return
+
+        if param_te.name in forall_vars:
+            vera_type = self._infer_vera_type(arg)
+            if vera_type and param_te.name not in mapping:
+                mapping[param_te.name] = vera_type
+            return
+
+        # Parameterized type like Option<T>
+        if param_te.type_args:
+            arg_info = self._get_arg_type_info_wasm(arg)
+            if arg_info and arg_info[0] == param_te.name:
+                for param_ta, arg_ta_name in zip(
+                    param_te.type_args, arg_info[1]
+                ):
+                    if (isinstance(param_ta, ast.NamedType)
+                            and param_ta.name in forall_vars
+                            and param_ta.name not in mapping):
+                        mapping[param_ta.name] = arg_ta_name
+
+    def _infer_vera_type(self, expr: ast.Expr) -> str | None:
+        """Infer the Vera type name of an expression for call rewriting."""
+        if isinstance(expr, ast.IntLit):
+            return "Int"
+        if isinstance(expr, ast.BoolLit):
+            return "Bool"
+        if isinstance(expr, ast.FloatLit):
+            return "Float64"
+        if isinstance(expr, ast.UnitLit):
+            return "Unit"
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name
+        if isinstance(expr, ast.ConstructorCall):
+            return self._ctor_to_adt_name(expr.name)
+        if isinstance(expr, ast.NullaryConstructor):
+            return self._ctor_to_adt_name(expr.name)
+        if isinstance(expr, ast.BinaryExpr):
+            if expr.op in (ast.BinOp.EQ, ast.BinOp.NEQ, ast.BinOp.LT,
+                           ast.BinOp.GT, ast.BinOp.LE, ast.BinOp.GE,
+                           ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
+                return "Bool"
+            return self._infer_vera_type(expr.left)
+        if isinstance(expr, ast.UnaryExpr):
+            if expr.op == ast.UnaryOp.NOT:
+                return "Bool"
+            return self._infer_vera_type(expr.operand)
+        if isinstance(expr, ast.FnCall):
+            return self._infer_fncall_vera_type(expr)
+        return None
+
+    def _infer_fncall_vera_type(self, call: ast.FnCall) -> str | None:
+        """Infer Vera return type of a function call.
+
+        For generic calls, resolves type args and substitutes into
+        the return TypeExpr.  For non-generic calls, maps from WASM
+        return type back to Vera type name.
+        """
+        if call.name in self._generic_fn_info:
+            forall_vars, param_types = self._generic_fn_info[call.name]
+            mapping: dict[str, str] = {}
+            for pt, arg in zip(param_types, call.args):
+                self._unify_param_arg_wasm(pt, arg, forall_vars, mapping)
+            # Use the first param's type to determine return type
+            # (Generic fn return type is typically a type var)
+            # We need to figure out the return type from forall info
+            # Actually, look at the monomorphized fn sig
+            parts = []
+            for tv in forall_vars:
+                if tv not in mapping:
+                    return None
+                parts.append(mapping[tv])
+            mangled = f"{call.name}${'_'.join(parts)}"
+            # Look up WASM return type and map back
+            ret_wt = self._fn_ret_types.get(mangled)
+            if ret_wt == "i64":
+                return "Int"
+            if ret_wt == "i32":
+                return "Bool"
+            if ret_wt == "f64":
+                return "Float64"
+            return None
+        # Non-generic: map from WASM return type
+        ret_wt = self._fn_ret_types.get(call.name)
+        if ret_wt == "i64":
+            return "Int"
+        if ret_wt == "i32":
+            return "Bool"
+        if ret_wt == "f64":
+            return "Float64"
+        return None
+
+    def _ctor_to_adt_name(self, ctor_name: str) -> str | None:
+        """Find the ADT type name for a constructor name."""
+        return self._ctor_to_adt.get(ctor_name)
+
+    def _get_arg_type_info_wasm(
+        self, expr: ast.Expr,
+    ) -> tuple[str, tuple[str, ...]] | None:
+        """Get (type_name, type_arg_names) for an argument expression."""
+        if isinstance(expr, ast.SlotRef):
+            if expr.type_args:
+                arg_names = []
+                for ta in expr.type_args:
+                    if isinstance(ta, ast.NamedType):
+                        arg_names.append(ta.name)
+                    else:
+                        return None
+                return (expr.type_name, tuple(arg_names))
+            return (expr.type_name, ())
+        if isinstance(expr, ast.ConstructorCall):
+            # Infer from constructor args
+            adt_name = self._ctor_to_adt_name(expr.name)
+            if adt_name:
+                arg_types = []
+                for a in expr.args:
+                    t = self._infer_vera_type(a)
+                    if t:
+                        arg_types.append(t)
+                    else:
+                        return None
+                return (adt_name, tuple(arg_types))
+        return None
 
     # -----------------------------------------------------------------
     # String literals
