@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.0.17] - 2026-02-24
+## [0.0.17] - 2026-02-24 ([#42](https://github.com/aallan/vera/pull/42))
 
 ### Added
 - **Generics monomorphization** (C6i — closes #29): compile `forall<T>` functions to WASM via monomorphization
@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Supports: literal args, slot ref args, constructor args, chained generic calls, arithmetic expression args
 - **Codegen tests**: 17 new tests — identity/const/is_some instantiation, two-instantiation exports, ADT match, chained calls, if-branches, let bindings, example files (660 total, up from 643)
 
-## [0.0.16] - 2026-02-24
+## [0.0.16] - 2026-02-24 ([#41](https://github.com/aallan/vera/pull/41))
 
 ### Added
 - **Match expression codegen** (C6g — closes #26): compile `MatchExpr` AST nodes to WASM chained if-else cascades
@@ -30,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Environment scoping: each arm gets fresh bindings from pattern extraction, no cross-arm leakage
 - **Codegen tests**: 20 new tests — ADT tag dispatch, field extraction, wildcard catch-alls, Bool/Int literal patterns, binding patterns, composability (643 total, up from 623)
 
-## [0.0.15] - 2026-02-24
+## [0.0.15] - 2026-02-24 ([#40](https://github.com/aallan/vera/pull/40))
 
 ### Added
 - **ADT constructor codegen** (C6f): compile `ConstructorCall` and `NullaryConstructor` AST nodes to WASM heap-allocated tagged unions
@@ -42,7 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Functions using ADT constructors now compile (no longer skipped with warning)
 - **Codegen tests**: 12 new tests — nullary/tagged constructors, Int/Bool fields, Option None/Some, WAT inspection, let bindings, if-then-else branches, ADT parameters (623 total, up from 611)
 
-## [0.0.14] - 2026-02-24
+## [0.0.14] - 2026-02-24 ([#39](https://github.com/aallan/vera/pull/39))
 
 ### Added
 - **Bump allocator infrastructure** (C6e): heap allocation support for upcoming ADT constructor codegen
@@ -54,7 +54,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `StringPool.heap_offset` property exposes first free byte after string constants
 - **Codegen tests**: 26 new tests — layout helpers, WAT output inspection, ADT metadata registration, conditional emission (611 total, up from 585)
 
-## [0.0.13] - 2026-02-24
+## [0.0.13] - 2026-02-24 ([#38](https://github.com/aallan/vera/pull/38))
 
 ### Added
 - **State\<T\> WASM host imports** (C6d): compile `get`/`put` operations for `State<T>` effects as WASM host imports
@@ -68,7 +68,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Codegen tests**: 15 new tests — get default, put-then-get, increment pattern, example file, Bool/Float64/Nat state, String rejection, mixed effects, WAT imports, multiple types, void semantics, initial state override, pure function purity (585 total, up from 570)
 - `examples/increment.vera` now compiles and runs (7 of 14 examples compilable)
 
-## [0.0.12] - 2026-02-24
+## [0.0.12] - 2026-02-24 ([#37](https://github.com/aallan/vera/pull/37))
 
 ### Added
 - **Match exhaustiveness checking** (C6c — closes #18): compile-time verification that match expressions cover all possible values
@@ -80,7 +80,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Error diagnostics include missing constructor/value names and fix suggestions
 - **Type checker tests**: 17 new tests — ADT exhaustive/missing/wildcard/binding, Bool exhaustive/missing/wildcard, Int/String without wildcard, unreachable arms (single/multiple/after binding), wildcard only, refined type stripping (570 total, up from 553)
 
-## [0.0.11] - 2026-02-24
+## [0.0.11] - 2026-02-24 ([#36](https://github.com/aallan/vera/pull/36))
 
 ### Added
 - **Callee precondition verification** (C6b — closes #19): modular call-site contract checking
@@ -98,7 +98,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `SmtContext` constructor accepts optional `fn_lookup` callback for callee contract resolution
 - Caller precondition assumptions now asserted into the Z3 solver before body translation
 
-## [0.0.10] - 2026-02-24
+## [0.0.10] - 2026-02-24 ([#35](https://github.com/aallan/vera/pull/35))
 
 ### Added
 - **Float64 WASM codegen** (C6a — closes #25): compile Float64/Float values to WebAssembly `f64` instructions
@@ -116,7 +116,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Warning messages updated to mention Float64 as a compilable type
 - CLI `fn_args` type widened to `list[int | float]` for future float argument parsing
 
-## [0.0.9] - 2026-02-23
+## [0.0.9] - 2026-02-23 ([#31](https://github.com/aallan/vera/pull/31))
 
 ### Added
 - **WASM code generation** (`vera/codegen.py`, `vera/wasm.py`): compile verified Vera programs to WebAssembly and execute them via wasmtime — **first light** 🌅
@@ -152,7 +152,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Documentation consistency: all `print(...)` calls in README.md, spec/05-functions.md, spec/07-effects.md, and SKILLS.md corrected to use qualified `IO.print(...)` syntax (matching the language's "one canonical form" design principle)
 
-## [0.0.8] - 2026-02-23
+## [0.0.8] - 2026-02-23 ([#10](https://github.com/aallan/vera/pull/10))
 
 ### Added
 - **Contract verifier** (`vera/verifier.py`): Z3-backed verification of `requires`/`ensures` contracts on functions
@@ -201,7 +201,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - **LLM Inference effect**: `<Inference>` as an algebraic effect for AI runtime calls — testable via mock handlers, explicit in type signatures, contracts still apply
   - **Standard library collections**: `Set<T>`, `Map<K, V>` (depend on abilities), `Decimal` (software implementation for WASM)
 
-## [0.0.5] - 2026-02-23
+## [0.0.5] - 2026-02-23 ([#2](https://github.com/aallan/vera/pull/2))
 
 ### Added
 - **Type checker**: Tier 1 decidable type checking — validates expression types, slot reference resolution, effect annotations, and contract well-formedness
@@ -227,7 +227,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - README: updated status table (Type checker: Working), added type checker to project structure, documented `vera typecheck` alias
 - SKILLS.md: added `vera typecheck` to toolchain section
 
-## [0.0.4] - 2026-02-23
+## [0.0.4] - 2026-02-23 ([#1](https://github.com/aallan/vera/pull/1))
 
 ### Added
 - **Typed AST layer**: frozen dataclass nodes with source spans, covering all grammar constructs (~50 node classes)
@@ -300,7 +300,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.11...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.17...HEAD
+[0.0.17]: https://github.com/aallan/vera/compare/v0.0.16...v0.0.17
+[0.0.16]: https://github.com/aallan/vera/compare/v0.0.15...v0.0.16
+[0.0.15]: https://github.com/aallan/vera/compare/v0.0.14...v0.0.15
+[0.0.14]: https://github.com/aallan/vera/compare/v0.0.13...v0.0.14
+[0.0.13]: https://github.com/aallan/vera/compare/v0.0.12...v0.0.13
+[0.0.12]: https://github.com/aallan/vera/compare/v0.0.11...v0.0.12
 [0.0.11]: https://github.com/aallan/vera/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/aallan/vera/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/aallan/vera/compare/v0.0.8...v0.0.9
