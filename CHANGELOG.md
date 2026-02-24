@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.0.17] - 2026-02-24 ([#42](https://github.com/aallan/vera/pull/42))
 
 ### Added
-- **Generics monomorphization** (C6i — closes #29): compile `forall<T>` functions to WASM via monomorphization
+- **Generics monomorphization** (C6i — closes [#29](https://github.com/aallan/vera/issues/29)): compile `forall<T>` functions to WASM via monomorphization
   - Collection pass: walk non-generic function bodies to find calls to generic functions, infer concrete type variable bindings
   - AST substitution: create monomorphized FnDecl copies with type variables replaced by concrete types (e.g. `@T.0` → `@Int.0`)
   - Name mangling: `identity` + `(Int,)` → `identity$Int`, `const` + `(Int, Bool)` → `const$Int_Bool`
@@ -21,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.0.16] - 2026-02-24 ([#41](https://github.com/aallan/vera/pull/41))
 
 ### Added
-- **Match expression codegen** (C6g — closes #26): compile `MatchExpr` AST nodes to WASM chained if-else cascades
+- **Match expression codegen** (C6g — closes [#26](https://github.com/aallan/vera/issues/26)): compile `MatchExpr` AST nodes to WASM chained if-else cascades
   - ADT tag dispatch: load tag from heap pointer, compare with constructor tag, branch
   - Field extraction: load constructor fields at computed offsets into locals, bind in environment
   - Monomorphized offsets: field offsets computed from concrete binding types (same approach as C6f constructor calls)
@@ -71,7 +71,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.0.12] - 2026-02-24 ([#37](https://github.com/aallan/vera/pull/37))
 
 ### Added
-- **Match exhaustiveness checking** (C6c — closes #18): compile-time verification that match expressions cover all possible values
+- **Match exhaustiveness checking** (C6c — closes [#18](https://github.com/aallan/vera/issues/18)): compile-time verification that match expressions cover all possible values
   - ADT exhaustiveness: all constructors must be covered or a catch-all pattern must be present
   - Bool exhaustiveness: both `true` and `false` must be covered or a catch-all present
   - Infinite type exhaustiveness: `Int`, `String`, `Float64`, `Nat` matches require a wildcard `_` or binding pattern
@@ -83,7 +83,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.0.11] - 2026-02-24 ([#36](https://github.com/aallan/vera/pull/36))
 
 ### Added
-- **Callee precondition verification** (C6b — closes #19): modular call-site contract checking
+- **Callee precondition verification** (C6b — closes [#19](https://github.com/aallan/vera/issues/19)): modular call-site contract checking
   - When function `f` calls function `g`, the verifier now checks that `g`'s `requires()` clauses hold at the call site given `f`'s assumptions
   - Callee postconditions (`ensures()`) are assumed at the call site, enabling symbolic reasoning about return values
   - Fresh Z3 variables created per call, with postconditions asserted — supports chained calls, let bindings, and recursive calls
@@ -101,7 +101,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.0.10] - 2026-02-24 ([#35](https://github.com/aallan/vera/pull/35))
 
 ### Added
-- **Float64 WASM codegen** (C6a — closes #25): compile Float64/Float values to WebAssembly `f64` instructions
+- **Float64 WASM codegen** (C6a — closes [#25](https://github.com/aallan/vera/issues/25)): compile Float64/Float values to WebAssembly `f64` instructions
   - Type mapping: Float64/Float → `f64` in `wasm_type()`, `_type_expr_to_wasm_type()`, `_slot_name_to_wasm_type()`, `_infer_expr_wasm_type()`, `_infer_block_result_type()`
   - `FloatLit` emission: `f64.const` literals
   - Float64 arithmetic: `f64.add`, `f64.sub`, `f64.mul`, `f64.div` (MOD unsupported — WASM has no `f64.rem`)

@@ -169,7 +169,7 @@ fn abs(@Int -> @Nat)
 - `Bool` — `true`, `false`
 - `Int` — signed integers (arbitrary precision)
 - `Nat` — natural numbers (non-negative)
-- `Float` — floating-point
+- `Float64` / `Float` — 64-bit floating-point
 - `String` — text
 - `Unit` — singleton type, value is `()`
 
