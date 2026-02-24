@@ -144,11 +144,19 @@ class WasmContext:
     translation.  Mirrors SmtContext in smt.py.
     """
 
-    def __init__(self, string_pool: StringPool) -> None:
+    def __init__(
+        self,
+        string_pool: StringPool,
+        effect_ops: dict[str, tuple[str, bool]] | None = None,
+    ) -> None:
         self.string_pool = string_pool
         self._next_local: int = 0
         self._locals: list[tuple[str, str]] = []  # (name, wat_type)
         self._result_local: int | None = None
+        # Effect operation mapping: op_name -> (wasm_call_target, is_void)
+        # e.g. {"get": ("$vera.state_get_Int", False),
+        #        "put": ("$vera.state_put_Int", True)}
+        self._effect_ops = effect_ops or {}
 
     def set_result_local(self, local_idx: int) -> None:
         """Set the local index used for @T.result in postconditions."""
@@ -548,8 +556,25 @@ class WasmContext:
     def _translate_call(
         self, call: ast.FnCall, env: WasmSlotEnv
     ) -> list[str] | None:
-        """Translate a function call to WASM call instruction."""
-        instructions: list[str] = []
+        """Translate a function call to WASM call instruction.
+
+        If the call name matches an effect operation (e.g. get/put for
+        State<T>), redirects to the corresponding host import.
+        """
+        # Check if this is an effect operation (e.g. get/put)
+        if call.name in self._effect_ops:
+            import_name, _is_void = self._effect_ops[call.name]
+            instructions: list[str] = []
+            for arg in call.args:
+                arg_instrs = self.translate_expr(arg, env)
+                if arg_instrs is None:
+                    return None
+                instructions.extend(arg_instrs)
+            instructions.append(f"call {import_name}")
+            return instructions
+
+        # Regular function call
+        instructions = []
         for arg in call.args:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -595,17 +620,20 @@ class WasmContext:
     # Helpers
     # -----------------------------------------------------------------
 
-    @staticmethod
-    def _is_void_expr(expr: ast.Expr) -> bool:
+    def _is_void_expr(self, expr: ast.Expr) -> bool:
         """Check if an expression produces no value on the WASM stack.
 
         QualifiedCalls (effect operations like IO.print) return Unit
         and produce no stack value.  UnitLit also produces nothing.
+        Effect op calls like put() are also void.
         """
         if isinstance(expr, ast.QualifiedCall):
             return True  # effect ops return Unit (void)
         if isinstance(expr, ast.UnitLit):
             return True
+        if isinstance(expr, ast.FnCall) and expr.name in self._effect_ops:
+            _name, is_void = self._effect_ops[expr.name]
+            return is_void
         return False
 
     def _type_expr_to_slot_name(self, te: ast.TypeExpr) -> str | None:

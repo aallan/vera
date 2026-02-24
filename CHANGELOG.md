@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.13] - 2026-02-24
+
+### Added
+- **State\<T\> WASM host imports** (C6d): compile `get`/`put` operations for `State<T>` effects as WASM host imports
+  - `State<Int>`, `State<Nat>`, `State<Bool>`, `State<Float64>` compile to typed host import pairs
+  - `get(())` → `call $vera.state_get_{T}` (returns typed value); `put(x)` → `call $vera.state_put_{T}` (consumes typed value)
+  - Host runtime maintains mutable state cells per type, initialized to zero
+  - `execute()` accepts optional `initial_state` parameter and returns final `state` in `ExecuteResult`
+  - Mixed effects supported: `effects(<State<Int>, IO>)` compiles correctly
+  - `effect_ops` dict mechanism in `WasmContext` redirects bare `get`/`put` calls to host imports
+  - `_is_void_expr` recognizes `put()` as void (no `drop` emitted in ExprStmt)
+- **Codegen tests**: 15 new tests — get default, put-then-get, increment pattern, example file, Bool/Float64/Nat state, String rejection, mixed effects, WAT imports, multiple types, void semantics, initial state override, pure function purity (585 total, up from 570)
+- `examples/increment.vera` now compiles and runs (7 of 14 examples compilable)
+
 ## [0.0.12] - 2026-02-24
 
 ### Added

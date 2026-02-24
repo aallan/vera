@@ -159,13 +159,13 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
 | C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
 | C5 | v0.0.9 | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
-| C6 | v0.0.10–0.0.23 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | **In progress** (C6a done) |
+| C6 | v0.0.10–0.0.23 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | **In progress** (C6a–C6d done) |
 | C7 | — | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
 
 ### What's next: C6 — Codegen Completeness (v0.0.10–v0.0.23)
 
-The code generator compiles 6 of 14 examples. C6 extends WASM compilation to all language constructs, working through the dependency graph from simplest to most complex.
+The code generator compiles 7 of 14 examples. C6 extends WASM compilation to all language constructs, working through the dependency graph from simplest to most complex.
 
 **Independent tasks (no dependencies on each other):**
 
@@ -174,7 +174,7 @@ The code generator compiles 6 of 14 examples. C6 extends WASM compilation to all
 | ~~C6a~~ | ~~Float64 — `f64` literals, arithmetic, comparisons~~ | ~~#25~~ | ~~Done (v0.0.10)~~ |
 | ~~C6b~~ | ~~Callee preconditions — verify `requires()` at call sites~~ | ~~#19~~ | ~~Done (v0.0.11)~~ |
 | ~~C6c~~ | ~~Match exhaustiveness — verify all constructors covered~~ | ~~#18~~ | ~~Done (v0.0.12)~~ |
-| C6d | State\<T\> operations — get/put as host imports | — | increment.vera |
+| ~~C6d~~ | ~~State\<T\> operations — get/put as host imports~~ | — | ~~Done (v0.0.13)~~ |
 
 **Allocator and data types (sequential chain):**
 
