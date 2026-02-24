@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.16] - 2026-02-24
+
+### Added
+- **Match expression codegen** (C6g — closes #26): compile `MatchExpr` AST nodes to WASM chained if-else cascades
+  - ADT tag dispatch: load tag from heap pointer, compare with constructor tag, branch
+  - Field extraction: load constructor fields at computed offsets into locals, bind in environment
+  - Monomorphized offsets: field offsets computed from concrete binding types (same approach as C6f constructor calls)
+  - Pattern types: `ConstructorPattern`, `NullaryPattern`, `WildcardPattern`, `BindingPattern`, `BoolPattern`, `IntPattern`
+  - Recursive if-else cascade: each arm generates a condition check and branches, last arm emits directly
+  - Environment scoping: each arm gets fresh bindings from pattern extraction, no cross-arm leakage
+- **Codegen tests**: 20 new tests — ADT tag dispatch, field extraction, wildcard catch-alls, Bool/Int literal patterns, binding patterns, composability (643 total, up from 623)
+
 ## [0.0.15] - 2026-02-24
 
 ### Added

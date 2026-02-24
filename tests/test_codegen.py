@@ -2083,3 +2083,340 @@ fn identity(@Color -> @Color)
         result = _compile_ok(source)
         assert "identity" in result.exports
         assert "(param" in result.wat  # at least one i32 param
+
+
+# =====================================================================
+# C6g: Match expression codegen
+# =====================================================================
+
+
+class TestMatchExpressions:
+    """Test compilation of match expressions to WASM."""
+
+    def test_match_option_none_arm(self) -> None:
+        """Match on None arm returns 0."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn test_none(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = None;
+  match @Option<Int>.0 {
+    None -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+"""
+        assert _run(source, fn="test_none") == 0
+
+    def test_match_option_some_arm(self) -> None:
+        """Match on Some arm extracts value."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn test_some(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = Some(42);
+  match @Option<Int>.0 {
+    None -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+"""
+        assert _run(source, fn="test_some") == 42
+
+    def test_match_color_red(self) -> None:
+        """Match on Red arm returns 0."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn test_red(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Color = Red;
+  match @Color.0 {
+    Red -> 0,
+    Green -> 1,
+    Blue -> 2
+  }
+}
+"""
+        assert _run(source, fn="test_red") == 0
+
+    def test_match_color_green(self) -> None:
+        """Match on Green arm returns 1."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn test_green(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Color = Green;
+  match @Color.0 {
+    Red -> 0,
+    Green -> 1,
+    Blue -> 2
+  }
+}
+"""
+        assert _run(source, fn="test_green") == 1
+
+    def test_match_color_blue(self) -> None:
+        """Match on Blue arm returns 2."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn test_blue(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Color = Blue;
+  match @Color.0 {
+    Red -> 0,
+    Green -> 1,
+    Blue -> 2
+  }
+}
+"""
+        assert _run(source, fn="test_blue") == 2
+
+    def test_match_extracts_int(self) -> None:
+        """Match extracts Int field and uses it in body."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn test(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = Some(99);
+  match @Option<Int>.0 {
+    None -> 0,
+    Some(@Int) -> @Int.0 + 1
+  }
+}
+"""
+        assert _run(source, fn="test") == 100
+
+    def test_match_extracts_bool(self) -> None:
+        """Match extracts Bool field."""
+        source = """\
+data Toggle { MkToggle(Bool) }
+
+fn test(-> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Toggle = MkToggle(true);
+  match @Toggle.0 {
+    MkToggle(@Bool) -> @Bool.0
+  }
+}
+"""
+        assert _run(source, fn="test") == 1
+
+    def test_match_two_fields(self) -> None:
+        """Match extracts first of two fields."""
+        source = """\
+data Pair { MkPair(Int, Bool) }
+
+fn test(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Pair = MkPair(42, true);
+  match @Pair.0 {
+    MkPair(@Int, @Bool) -> @Int.0
+  }
+}
+"""
+        assert _run(source, fn="test") == 42
+
+    def test_match_wildcard_catchall(self) -> None:
+        """Wildcard catch-all matches None."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn test(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = None;
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    _ -> 0
+  }
+}
+"""
+        assert _run(source, fn="test") == 0
+
+    def test_match_wildcard_only(self) -> None:
+        """Single wildcard arm on Int."""
+        source = """\
+fn test(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    _ -> 42
+  }
+}
+"""
+        assert _run(source, fn="test", args=[999]) == 42
+
+    def test_match_wildcard_sub_pattern(self) -> None:
+        """Wildcard inside constructor sub-pattern."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn test(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = Some(77);
+  match @Option<Int>.0 {
+    Some(_) -> 1,
+    None -> 0
+  }
+}
+"""
+        assert _run(source, fn="test") == 1
+
+    def test_match_bool_true(self) -> None:
+        """Bool match on true arm."""
+        source = """\
+fn test(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> 1,
+    false -> 0
+  }
+}
+"""
+        assert _run(source, fn="test", args=[1]) == 1
+
+    def test_match_bool_false(self) -> None:
+        """Bool match on false arm."""
+        source = """\
+fn test(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> 1,
+    false -> 0
+  }
+}
+"""
+        assert _run(source, fn="test", args=[0]) == 0
+
+    def test_match_int_literal(self) -> None:
+        """Int literal match, first arm."""
+        source = """\
+fn test(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    0 -> 100,
+    1 -> 200,
+    _ -> 300
+  }
+}
+"""
+        assert _run(source, fn="test", args=[0]) == 100
+
+    def test_match_int_second_arm(self) -> None:
+        """Int literal match, second arm."""
+        source = """\
+fn test(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    0 -> 100,
+    1 -> 200,
+    _ -> 300
+  }
+}
+"""
+        assert _run(source, fn="test", args=[1]) == 200
+
+    def test_match_int_wildcard_fallback(self) -> None:
+        """Int literal match, wildcard fallback."""
+        source = """\
+fn test(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    0 -> 100,
+    1 -> 200,
+    _ -> 300
+  }
+}
+"""
+        assert _run(source, fn="test", args=[99]) == 300
+
+    def test_match_binding_catchall(self) -> None:
+        """Binding pattern as catch-all."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn test(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = None;
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    @Option<Int> -> 0
+  }
+}
+"""
+        assert _run(source, fn="test") == 0
+
+    def test_match_in_let_binding(self) -> None:
+        """Match result used in a let binding."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn test(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = Some(10);
+  let @Int = match @Option<Int>.0 {
+    None -> 0,
+    Some(@Int) -> @Int.0
+  };
+  @Int.0 + 1
+}
+"""
+        assert _run(source, fn="test") == 11
+
+    def test_match_wat_contains_tag_load(self) -> None:
+        """WAT output for ADT match contains i32.load (tag load)."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn test(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Color = Red;
+  match @Color.0 {
+    Red -> 0,
+    Green -> 1,
+    Blue -> 2
+  }
+}
+"""
+        result = _compile_ok(source)
+        assert "i32.load" in result.wat
+
+    def test_match_function_compiles(self) -> None:
+        """Function with match is now exported (not skipped)."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn unwrap_or(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    None -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+"""
+        result = _compile_ok(source)
+        assert "unwrap_or" in result.exports

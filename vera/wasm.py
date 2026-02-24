@@ -255,7 +255,10 @@ class WasmContext:
         if isinstance(expr, ast.NullaryConstructor):
             return self._translate_nullary_constructor(expr)
 
-        # Unsupported: match, handle, lambdas,
+        if isinstance(expr, ast.MatchExpr):
+            return self._translate_match(expr, env)
+
+        # Unsupported: handle, lambdas,
         # quantifiers, old/new, assert/assume, arrays, etc.
         return None
 
@@ -423,6 +426,10 @@ class WasmContext:
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.NullaryConstructor):
             return "i32" if expr.name in self._ctor_layouts else None
+        if isinstance(expr, ast.MatchExpr):
+            if expr.arms:
+                return self._infer_expr_wasm_type(expr.arms[0].body)
+            return None
         return None
 
     # -----------------------------------------------------------------
@@ -535,6 +542,10 @@ class WasmContext:
             return "i32" if expr.name in self._ctor_layouts else None
         if isinstance(expr, ast.NullaryConstructor):
             return "i32" if expr.name in self._ctor_layouts else None
+        if isinstance(expr, ast.MatchExpr):
+            if expr.arms:
+                return self._infer_expr_wasm_type(expr.arms[0].body)
+            return None
         return None
 
     # -----------------------------------------------------------------
@@ -734,6 +745,248 @@ class WasmContext:
         # Leave pointer as result
         instructions.append(f"local.get {tmp}")
         return instructions
+
+    # -----------------------------------------------------------------
+    # Match expressions
+    # -----------------------------------------------------------------
+
+    def _translate_match(
+        self, expr: ast.MatchExpr, env: WasmSlotEnv
+    ) -> list[str] | None:
+        """Translate a match expression to WAT.
+
+        Evaluates the scrutinee once, saves to a local, then emits a
+        chained if-else cascade for each arm.
+        """
+        # Translate scrutinee
+        scr_instrs = self.translate_expr(expr.scrutinee, env)
+        if scr_instrs is None:
+            return None
+
+        scr_wasm_type = self._infer_expr_wasm_type(expr.scrutinee)
+        if scr_wasm_type is None:
+            return None
+
+        # Save scrutinee to a local
+        scr_local = self.alloc_local(scr_wasm_type)
+        instructions: list[str] = list(scr_instrs)
+        instructions.append(f"local.set {scr_local}")
+
+        # Infer result type of the match
+        result_type = self._infer_match_result_type(expr)
+
+        # Compile arms as chained if-else
+        arm_instrs = self._compile_match_arms(
+            expr.arms, scr_local, scr_wasm_type, result_type, env
+        )
+        if arm_instrs is None:
+            return None
+
+        instructions.extend(arm_instrs)
+        return instructions
+
+    def _infer_match_result_type(
+        self, expr: ast.MatchExpr
+    ) -> str | None:
+        """Infer the WASM result type from the first arm body."""
+        for arm in expr.arms:
+            wt = self._infer_expr_wasm_type(arm.body)
+            if wt is not None:
+                return wt
+        return None
+
+    def _compile_match_arms(
+        self,
+        arms: tuple[ast.MatchArm, ...],
+        scr_local: int,
+        scr_wasm_type: str,
+        result_type: str | None,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Compile match arms as a chained if-else cascade."""
+        if not arms:
+            return None
+
+        arm = arms[0]
+        remaining = arms[1:]
+
+        # Check if this arm needs a condition
+        cond = self._translate_match_condition(
+            arm.pattern, scr_local, scr_wasm_type
+        )
+
+        if cond is None or not remaining:
+            # Unconditional arm (catch-all) or last arm — emit directly
+            setup = self._setup_match_arm_env(
+                arm.pattern, scr_local, scr_wasm_type, env
+            )
+            if setup is None:
+                return None
+            setup_instrs, arm_env = setup
+            body = self.translate_expr(arm.body, arm_env)
+            if body is None:
+                return None
+            return setup_instrs + body
+
+        # Conditional arm with more arms following
+        setup = self._setup_match_arm_env(
+            arm.pattern, scr_local, scr_wasm_type, env
+        )
+        if setup is None:
+            return None
+        setup_instrs, arm_env = setup
+        body = self.translate_expr(arm.body, arm_env)
+        if body is None:
+            return None
+
+        # Compile remaining arms (else branch)
+        else_instrs = self._compile_match_arms(
+            remaining, scr_local, scr_wasm_type, result_type, env
+        )
+        if else_instrs is None:
+            return None
+
+        # Build if-else block
+        result_annot = f" (result {result_type})" if result_type else ""
+        instrs: list[str] = list(cond)
+        instrs.append(f"if{result_annot}")
+        for i in setup_instrs:
+            instrs.append(f"  {i}")
+        for i in body:
+            instrs.append(f"  {i}")
+        instrs.append("else")
+        for i in else_instrs:
+            instrs.append(f"  {i}")
+        instrs.append("end")
+        return instrs
+
+    def _translate_match_condition(
+        self,
+        pattern: ast.Pattern,
+        scr_local: int,
+        scr_wasm_type: str,
+    ) -> list[str] | None:
+        """Emit i32 condition for a pattern check.
+
+        Returns None for unconditional patterns (wildcard/binding).
+        """
+        if isinstance(pattern, (ast.NullaryPattern, ast.ConstructorPattern)):
+            name = pattern.name
+            layout = self._ctor_layouts.get(name)
+            if layout is None:
+                return None
+            return [
+                f"local.get {scr_local}",
+                "i32.load",
+                f"i32.const {layout.tag}",
+                "i32.eq",
+            ]
+
+        if isinstance(pattern, ast.BoolPattern):
+            if pattern.value:
+                return [f"local.get {scr_local}"]
+            else:
+                return [f"local.get {scr_local}", "i32.eqz"]
+
+        if isinstance(pattern, ast.IntPattern):
+            return [
+                f"local.get {scr_local}",
+                f"i64.const {pattern.value}",
+                "i64.eq",
+            ]
+
+        # WildcardPattern, BindingPattern — unconditional
+        return None
+
+    def _setup_match_arm_env(
+        self,
+        pattern: ast.Pattern,
+        scr_local: int,
+        scr_wasm_type: str,
+        env: WasmSlotEnv,
+    ) -> tuple[list[str], WasmSlotEnv] | None:
+        """Extract fields and set up environment bindings for a match arm.
+
+        Returns (instructions, new_env) or None on failure.
+        """
+        if isinstance(pattern, (ast.WildcardPattern, ast.NullaryPattern,
+                                ast.BoolPattern, ast.IntPattern)):
+            return ([], env)
+
+        if isinstance(pattern, ast.BindingPattern):
+            # Bind the scrutinee itself to a new local
+            type_name = self._type_expr_to_slot_name(pattern.type_expr)
+            if type_name is None:
+                return None
+            local_idx = self.alloc_local(scr_wasm_type)
+            instrs = [
+                f"local.get {scr_local}",
+                f"local.set {local_idx}",
+            ]
+            new_env = env.push(type_name, local_idx)
+            return (instrs, new_env)
+
+        if isinstance(pattern, ast.ConstructorPattern):
+            layout = self._ctor_layouts.get(pattern.name)
+            if layout is None:
+                return None
+            return self._extract_constructor_fields(
+                pattern, scr_local, layout, env
+            )
+
+        return None
+
+    def _extract_constructor_fields(
+        self,
+        pattern: ast.ConstructorPattern,
+        scr_local: int,
+        layout: ConstructorLayout,
+        env: WasmSlotEnv,
+    ) -> tuple[list[str], WasmSlotEnv] | None:
+        """Extract fields from a constructor match into locals.
+
+        Computes field offsets from concrete binding types (same
+        monomorphization approach as _translate_constructor_call).
+        """
+        _sizes = {"i32": 4, "i64": 8, "f64": 8}
+        _aligns = {"i32": 4, "i64": 8, "f64": 8}
+        offset = 4  # after tag (i32, 4 bytes)
+        instrs: list[str] = []
+        new_env = env
+
+        for i, sub_pat in enumerate(pattern.sub_patterns):
+            if isinstance(sub_pat, ast.BindingPattern):
+                # Resolve concrete WASM type from the binding's type_expr
+                type_name = self._type_expr_to_slot_name(sub_pat.type_expr)
+                if type_name is None:
+                    return None
+                wt = self._slot_name_to_wasm_type(type_name)
+                if wt is None:
+                    return None
+                # Compute aligned offset for this field
+                align = _aligns.get(wt, 8)
+                offset = (offset + align - 1) & ~(align - 1)
+                # Load field from scrutinee pointer
+                local_idx = self.alloc_local(wt)
+                instrs.append(f"local.get {scr_local}")
+                instrs.append(f"{wt}.load offset={offset}")
+                instrs.append(f"local.set {local_idx}")
+                new_env = new_env.push(type_name, local_idx)
+                offset += _sizes.get(wt, 8)
+
+            elif isinstance(sub_pat, ast.WildcardPattern):
+                # Skip this field but advance offset using layout's type
+                if i < len(layout.field_offsets):
+                    _, generic_wt = layout.field_offsets[i]
+                    align = _aligns.get(generic_wt, 8)
+                    offset = (offset + align - 1) & ~(align - 1)
+                    offset += _sizes.get(generic_wt, 8)
+
+            else:
+                # Nested constructor patterns — deferred
+                return None
+
+        return (instrs, new_env)
 
     # -----------------------------------------------------------------
     # Helpers
