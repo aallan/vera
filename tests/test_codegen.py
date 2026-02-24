@@ -1395,3 +1395,211 @@ fn compute(-> @Int)
         assert "main" not in result.exports
         exec_result = execute(result)  # no fn_name specified
         assert exec_result.value == 99
+
+
+# =====================================================================
+# 6d: State<T> host imports
+# =====================================================================
+
+def _run_state(
+    source: str,
+    fn: str | None = None,
+    args: list[int | float] | None = None,
+    initial_state: dict[str, int | float] | None = None,
+) -> ExecuteResult:
+    """Compile, execute, and return the full ExecuteResult."""
+    result = _compile_ok(source)
+    return execute(result, fn_name=fn, args=args, initial_state=initial_state)
+
+
+class TestStateEffect:
+
+    def test_state_int_get_default(self) -> None:
+        """get(()) returns 0 by default for State<Int>."""
+        source = """\
+fn f(-> @Int)
+  requires(true) ensures(true) effects(<State<Int>>)
+{ get(()) }
+"""
+        exec_result = _run_state(source, fn="f")
+        assert exec_result.value == 0
+
+    def test_state_int_put_then_get(self) -> None:
+        """put(42) then get(()) returns 42."""
+        source = """\
+fn f(-> @Int)
+  requires(true) ensures(true) effects(<State<Int>>)
+{
+  put(42);
+  get(())
+}
+"""
+        exec_result = _run_state(source, fn="f")
+        assert exec_result.value == 42
+
+    def test_increment_pattern(self) -> None:
+        """Classic increment: get, add 1, put — state goes from 0 to 1."""
+        source = """\
+fn increment(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<State<Int>>)
+{
+  let @Int = get(());
+  put(@Int.0 + 1);
+  ()
+}
+"""
+        exec_result = _run_state(source, fn="increment")
+        assert exec_result.value is None  # Unit return
+        assert exec_result.state["State_Int"] == 1
+
+    def test_increment_example_file(self) -> None:
+        """examples/increment.vera compiles and executes."""
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "examples" / "increment.vera"
+        source = path.read_text()
+        tree = parse_file(str(path))
+        program = transform(tree)
+        result = compile(program, source=source, file=str(path))
+        assert result.ok
+        assert "increment" in result.exports
+        exec_result = execute(result, fn_name="increment")
+        assert exec_result.state["State_Int"] == 1
+
+    def test_state_bool_get_default(self) -> None:
+        """Bool state defaults to 0 (false)."""
+        source = """\
+fn f(-> @Bool)
+  requires(true) ensures(true) effects(<State<Bool>>)
+{ get(()) }
+"""
+        exec_result = _run_state(source, fn="f")
+        assert exec_result.value == 0
+
+    def test_state_bool_put_get(self) -> None:
+        """put(true) then get(()) returns 1."""
+        source = """\
+fn f(-> @Bool)
+  requires(true) ensures(true) effects(<State<Bool>>)
+{
+  put(true);
+  get(())
+}
+"""
+        exec_result = _run_state(source, fn="f")
+        assert exec_result.value == 1
+
+    def test_state_float64_get_default(self) -> None:
+        """Float64 state defaults to 0.0."""
+        source = """\
+fn f(-> @Float64)
+  requires(true) ensures(true) effects(<State<Float64>>)
+{ get(()) }
+"""
+        exec_result = _run_state(source, fn="f")
+        assert exec_result.value == 0.0
+
+    def test_state_nat_compiles(self) -> None:
+        """State<Nat> compiles (Nat maps to i64)."""
+        source = """\
+fn f(-> @Nat)
+  requires(true) ensures(true) effects(<State<Nat>>)
+{ get(()) }
+"""
+        exec_result = _run_state(source, fn="f")
+        assert exec_result.value == 0
+
+    def test_state_string_rejected(self) -> None:
+        """State<String> is unsupported — function skipped with warning."""
+        source = """\
+fn f(-> @Int)
+  requires(true) ensures(true) effects(<State<String>>)
+{ 42 }
+"""
+        result = _compile(source)
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        assert any("unsupported" in w.description.lower() for w in warnings)
+        assert "f" not in result.exports
+
+    def test_state_with_io(self) -> None:
+        """Mixed effects(<State<Int>, IO>) compiles and both work."""
+        source = """\
+fn f(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<State<Int>, IO>)
+{
+  put(42);
+  IO.print("done");
+  ()
+}
+"""
+        exec_result = _run_state(source, fn="f")
+        assert exec_result.state["State_Int"] == 42
+        assert exec_result.stdout == "done"
+
+    def test_state_wat_has_imports(self) -> None:
+        """WAT output contains State import declarations."""
+        source = """\
+fn f(-> @Int)
+  requires(true) ensures(true) effects(<State<Int>>)
+{ get(()) }
+"""
+        result = _compile_ok(source)
+        assert 'import "vera" "state_get_Int"' in result.wat
+        assert 'import "vera" "state_put_Int"' in result.wat
+
+    def test_multiple_state_types(self) -> None:
+        """Multiple State types emit all imports."""
+        source = """\
+fn f(@Int -> @Unit)
+  requires(true) ensures(true) effects(<State<Int>, State<Bool>>)
+{
+  put(@Int.0);
+  ()
+}
+"""
+        result = _compile_ok(source)
+        assert 'import "vera" "state_get_Int"' in result.wat
+        assert 'import "vera" "state_put_Int"' in result.wat
+        assert 'import "vera" "state_get_Bool"' in result.wat
+        assert 'import "vera" "state_put_Bool"' in result.wat
+        assert len(result.state_types) == 2
+
+    def test_put_void_no_drop(self) -> None:
+        """put(x) in ExprStmt does not emit a drop instruction."""
+        source = """\
+fn f(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<State<Int>>)
+{
+  put(42);
+  ()
+}
+"""
+        result = _compile_ok(source)
+        # The function body should NOT contain 'drop' after the put call
+        fn_start = result.wat.index("(func $f")
+        fn_body = result.wat[fn_start:]
+        # put call should be present, drop should not follow it
+        assert "call $vera.state_put_Int" in fn_body
+        assert "drop" not in fn_body
+
+    def test_state_initial_value(self) -> None:
+        """Initial state override: get(()) returns the initial value."""
+        source = """\
+fn f(-> @Int)
+  requires(true) ensures(true) effects(<State<Int>>)
+{ get(()) }
+"""
+        exec_result = _run_state(
+            source, fn="f", initial_state={"State_Int": 10}
+        )
+        assert exec_result.value == 10
+
+    def test_pure_no_state_imports(self) -> None:
+        """Pure functions don't produce State imports."""
+        source = """\
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "state_get" not in result.wat
+        assert "state_put" not in result.wat

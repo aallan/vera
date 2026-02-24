@@ -3,7 +3,7 @@
 Compiles a type-checked and verified Vera Program AST to WebAssembly.
 Generates WAT (WebAssembly Text Format) as the intermediate representation,
 then converts to WASM binary via wasmtime.  Provides execution support
-with host function bindings for IO effects.
+with host function bindings for IO and State effects.
 
 See spec/11-compilation.md for the compilation specification.
 """
@@ -46,6 +46,7 @@ class CompileResult:
     wasm_bytes: bytes
     exports: list[str]
     diagnostics: list[Diagnostic] = field(default_factory=list)
+    state_types: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -59,6 +60,7 @@ class ExecuteResult:
 
     value: int | float | None  # Return value (None for void/Unit functions)
     stdout: str  # Captured IO.print output
+    state: dict[str, int | float] = field(default_factory=dict)
 
 
 def compile(
@@ -80,12 +82,13 @@ def execute(
     result: CompileResult,
     fn_name: str | None = None,
     args: list[int | float] | None = None,
+    initial_state: dict[str, int | float] | None = None,
 ) -> ExecuteResult:
     """Execute a function from a compiled WASM module.
 
     Uses wasmtime to instantiate the module with host bindings
-    for IO effects.  Returns the function's return value and
-    any captured stdout output.
+    for IO and State effects.  Returns the function's return value,
+    any captured stdout output, and final state values.
     """
     if not result.ok:
         raise RuntimeError("Cannot execute: compilation had errors")
@@ -114,6 +117,52 @@ def execute(
     linker.define_func(
         "vera", "print", print_type, host_print, access_caller=True
     )
+
+    # State<T> host functions
+    _WASM_VAL_TYPE = {
+        "i64": wasmtime.ValType.i64(),
+        "i32": wasmtime.ValType.i32(),
+        "f64": wasmtime.ValType.f64(),
+    }
+    _DEFAULT_STATE: dict[str, int | float] = {
+        "i64": 0, "i32": 0, "f64": 0.0,
+    }
+
+    state_store: dict[str, int | float] = {}
+
+    for type_name, wasm_t in result.state_types:
+        state_key = f"State_{type_name}"
+        state_store[state_key] = _DEFAULT_STATE[wasm_t]
+        val_type = _WASM_VAL_TYPE[wasm_t]
+
+        # Closure factories to capture correct state_key per type
+        def _make_host_get(key: str):  # type: ignore[no-untyped-def]
+            def host_get() -> int | float:
+                return state_store[key]
+            return host_get
+
+        def _make_host_put(key: str):  # type: ignore[no-untyped-def]
+            def host_put(val: int | float) -> None:
+                state_store[key] = val
+            return host_put
+
+        get_type = wasmtime.FuncType([], [val_type])
+        linker.define_func(
+            "vera", f"state_get_{type_name}", get_type,
+            _make_host_get(state_key),
+        )
+
+        put_type = wasmtime.FuncType([val_type], [])
+        linker.define_func(
+            "vera", f"state_put_{type_name}", put_type,
+            _make_host_put(state_key),
+        )
+
+    # Apply initial state overrides (for testing)
+    if initial_state:
+        for key, val in initial_state.items():
+            if key in state_store:
+                state_store[key] = val
 
     instance = linker.instantiate(store, module)
 
@@ -149,6 +198,7 @@ def execute(
     return ExecuteResult(
         value=value,
         stdout=output_buf.getvalue(),
+        state=dict(state_store),
     )
 
 
@@ -179,6 +229,7 @@ class CodeGenerator:
         # Track which effect operations are needed
         self._needs_io_print: bool = False
         self._needs_memory: bool = False
+        self._state_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
 
     # -----------------------------------------------------------------
     # Diagnostics
@@ -255,6 +306,7 @@ class CodeGenerator:
                 wasm_bytes=b"",
                 exports=exports,
                 diagnostics=self.diagnostics,
+                state_types=list(self._state_types),
             )
 
         return CompileResult(
@@ -262,6 +314,7 @@ class CodeGenerator:
             wasm_bytes=bytes(wasm_bytes),
             exports=exports,
             diagnostics=self.diagnostics,
+            state_types=list(self._state_types),
         )
 
     # -----------------------------------------------------------------
@@ -306,7 +359,25 @@ class CodeGenerator:
         if not self._is_compilable(decl):
             return None
 
-        ctx = WasmContext(self.string_pool)
+        # Build effect_ops mapping for State<T> operations
+        effect_ops: dict[str, tuple[str, bool]] = {}
+        if isinstance(decl.effect, ast.EffectSet):
+            for eff in decl.effect.effects:
+                if (isinstance(eff, ast.EffectRef) and eff.name == "State"
+                        and eff.type_args and len(eff.type_args) == 1):
+                    type_name = self._type_expr_to_slot_name(eff.type_args[0])
+                    if type_name:
+                        # Only map if no user-defined function shadows the op
+                        if "get" not in self._fn_sigs:
+                            effect_ops["get"] = (
+                                f"$vera.state_get_{type_name}", False
+                            )
+                        if "put" not in self._fn_sigs:
+                            effect_ops["put"] = (
+                                f"$vera.state_put_{type_name}", True
+                            )
+
+        ctx = WasmContext(self.string_pool, effect_ops=effect_ops)
         env = WasmSlotEnv()
 
         # Allocate parameters
@@ -522,6 +593,17 @@ class CodeGenerator:
                 "(func $vera.print (param i32 i32)))"
             )
 
+        # Import State<T> host functions if needed
+        for type_name, wasm_t in self._state_types:
+            parts.append(
+                f'  (import "vera" "state_get_{type_name}" '
+                f"(func $vera.state_get_{type_name} (result {wasm_t})))"
+            )
+            parts.append(
+                f'  (import "vera" "state_put_{type_name}" '
+                f"(func $vera.state_put_{type_name} (param {wasm_t})))"
+            )
+
         # Memory (for string data)
         if self._needs_memory or self.string_pool.has_strings():
             parts.append('  (memory (export "memory") 1)')
@@ -544,25 +626,32 @@ class CodeGenerator:
     # -----------------------------------------------------------------
 
     def _is_compilable(self, decl: ast.FnDecl) -> bool:
-        """Check if a function can be compiled to WASM."""
-        # Check effect: must be pure or <IO>
+        """Check if a function can be compiled to WASM.
+
+        Accepts pure functions, IO effects, and State<T> where T is
+        a compilable primitive type (Int, Nat, Bool, Float64).
+        """
+        # Check effect: must be pure, <IO>, or <State<T>>
         effect = decl.effect
         if isinstance(effect, ast.PureEffect):
             pass  # OK
         elif isinstance(effect, ast.EffectSet):
-            # Check if all effects are IO
             for eff in effect.effects:
                 if isinstance(eff, ast.EffectRef):
                     if eff.name == "IO":
                         self._needs_io_print = True
                         self._needs_memory = True
+                    elif eff.name == "State":
+                        # State<T> — T must be a compilable primitive
+                        if not self._check_state_type(decl, eff):
+                            return False
                     else:
                         self._warning(
                             decl,
                             f"Function '{decl.name}' uses unsupported "
                             f"effect '{eff.name}' — skipped.",
-                            rationale="Only pure functions and functions "
-                            "with IO effects are compilable.",
+                            rationale="Only pure, IO, and State<T> effects "
+                            "are compilable.",
                         )
                         return False
                 else:
@@ -591,6 +680,37 @@ class CodeGenerator:
             )
             return False
 
+        return True
+
+    def _check_state_type(
+        self, decl: ast.FnDecl, eff: ast.EffectRef
+    ) -> bool:
+        """Validate a State<T> effect and register its type.
+
+        Returns True if compilable, False otherwise.
+        """
+        if not eff.type_args or len(eff.type_args) != 1:
+            self._warning(
+                decl,
+                f"Function '{decl.name}' uses State without "
+                f"a type argument — skipped.",
+                rationale="State<T> requires exactly one type argument.",
+            )
+            return False
+        type_arg = eff.type_args[0]
+        wt = self._type_expr_to_wasm_type(type_arg)
+        if wt is None or wt == "unsupported":
+            self._warning(
+                decl,
+                f"Function '{decl.name}' uses State with "
+                f"unsupported type — skipped.",
+                rationale="State<T> requires a compilable primitive type "
+                "(Int, Nat, Bool, Float64).",
+            )
+            return False
+        type_name = self._type_expr_to_slot_name(type_arg)
+        if type_name and (type_name, wt) not in self._state_types:
+            self._state_types.append((type_name, wt))
         return True
 
     # -----------------------------------------------------------------
