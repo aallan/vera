@@ -13,7 +13,16 @@ from __future__ import annotations
 import pytest
 import wasmtime
 
-from vera.codegen import CompileResult, ExecuteResult, compile, execute
+from vera.codegen import (
+    CompileResult,
+    ConstructorLayout,
+    ExecuteResult,
+    _align_up,
+    _wasm_type_align,
+    _wasm_type_size,
+    compile,
+    execute,
+)
 from vera.parser import parse_file
 from vera.transform import transform
 
@@ -1603,3 +1612,282 @@ fn f(-> @Int)
         result = _compile_ok(source)
         assert "state_get" not in result.wat
         assert "state_put" not in result.wat
+
+
+# =====================================================================
+# 6e: Bump allocator infrastructure
+# =====================================================================
+
+
+def _compile_with_generator(source: str):
+    """Compile and return both result and CodeGenerator for metadata inspection."""
+    import tempfile
+    from vera.codegen import CodeGenerator
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".vera", delete=False
+    ) as f:
+        f.write(source)
+        f.flush()
+        path = f.name
+
+    tree = parse_file(path)
+    program = transform(tree)
+    gen = CodeGenerator(source=source, file=path)
+    result = gen.compile_program(program)
+    return result, gen
+
+
+class TestLayoutHelpers:
+    """Unit tests for ADT memory layout helper functions."""
+
+    def test_align_up_already_aligned(self) -> None:
+        assert _align_up(8, 8) == 8
+
+    def test_align_up_needs_padding(self) -> None:
+        assert _align_up(5, 8) == 8
+
+    def test_align_up_zero(self) -> None:
+        assert _align_up(0, 8) == 0
+
+    def test_align_up_to_four(self) -> None:
+        assert _align_up(5, 4) == 8
+
+    def test_align_up_one(self) -> None:
+        assert _align_up(1, 8) == 8
+
+    def test_wasm_type_size_i32(self) -> None:
+        assert _wasm_type_size("i32") == 4
+
+    def test_wasm_type_size_i64(self) -> None:
+        assert _wasm_type_size("i64") == 8
+
+    def test_wasm_type_size_f64(self) -> None:
+        assert _wasm_type_size("f64") == 8
+
+    def test_wasm_type_align_i32(self) -> None:
+        assert _wasm_type_align("i32") == 4
+
+    def test_wasm_type_align_i64(self) -> None:
+        assert _wasm_type_align("i64") == 8
+
+    def test_wasm_type_align_f64(self) -> None:
+        assert _wasm_type_align("f64") == 8
+
+
+class TestHeapAllocation:
+    """Test heap infrastructure emission in WAT output."""
+
+    def test_heap_ptr_global_emitted(self) -> None:
+        """When ADTs are declared, $heap_ptr global appears in WAT."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "global $heap_ptr" in result.wat
+        assert 'export "heap_ptr"' in result.wat
+
+    def test_alloc_function_emitted(self) -> None:
+        """When ADTs are declared, $alloc function appears in WAT."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "func $alloc" in result.wat
+        assert "global.get $heap_ptr" in result.wat
+        assert "global.set $heap_ptr" in result.wat
+
+    def test_no_alloc_without_adt(self) -> None:
+        """Pure programs without ADTs should NOT emit allocator."""
+        source = """\
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "heap_ptr" not in result.wat
+        assert "$alloc" not in result.wat
+
+    def test_heap_ptr_starts_after_strings(self) -> None:
+        """Heap pointer initial value should be after string data."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print("hello") }
+"""
+        result = _compile_ok(source)
+        # "hello" is 5 bytes, so heap_ptr should start at offset 5
+        assert "global $heap_ptr" in result.wat
+        assert "i32.const 5" in result.wat
+
+    def test_heap_ptr_zero_without_strings(self) -> None:
+        """Without strings, heap starts at offset 0."""
+        source = """\
+data Flag { On, Off }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "i32.const 0)" in result.wat  # heap_ptr init
+
+    def test_alloc_alignment_logic(self) -> None:
+        """Alloc function contains 8-byte alignment rounding."""
+        source = """\
+data Bit { Zero, One }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "i32.const 7" in result.wat
+        assert "i32.const -8" in result.wat
+
+    def test_memory_emitted_with_adt(self) -> None:
+        """ADTs cause memory to be declared even without strings."""
+        source = """\
+data Flag { On, Off }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "(memory" in result.wat
+
+
+class TestAdtMetadata:
+    """Test ADT constructor layout metadata registration."""
+
+    def test_nullary_layout(self) -> None:
+        """Nullary constructor: tag only, total_size = 8."""
+        source = """\
+data Unit2 { MkUnit }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        _result, gen = _compile_with_generator(source)
+        layout = gen._adt_layouts["Unit2"]["MkUnit"]
+        assert layout.tag == 0
+        assert layout.field_offsets == ()
+        assert layout.total_size == 8
+
+    def test_single_int_field_layout(self) -> None:
+        """Constructor with Int field: tag(4) + pad(4) + i64(8) = 16."""
+        source = """\
+data Wrapper { Wrap(Int) }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        _result, gen = _compile_with_generator(source)
+        layout = gen._adt_layouts["Wrapper"]["Wrap"]
+        assert layout.tag == 0
+        assert layout.field_offsets == ((8, "i64"),)
+        assert layout.total_size == 16
+
+    def test_multiple_fields_layout(self) -> None:
+        """Constructor with Int + Bool: tag(4) + pad(4) + i64(8) + i32(4) → 24."""
+        source = """\
+data Pair { MkPair(Int, Bool) }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        _result, gen = _compile_with_generator(source)
+        layout = gen._adt_layouts["Pair"]["MkPair"]
+        assert layout.tag == 0
+        assert layout.field_offsets[0] == (8, "i64")   # Int at offset 8
+        assert layout.field_offsets[1] == (16, "i32")   # Bool at offset 16
+        assert layout.total_size == 24  # 20 aligned up to 24
+
+    def test_multiple_constructors_tags(self) -> None:
+        """Each constructor gets a sequential tag."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        _result, gen = _compile_with_generator(source)
+        layouts = gen._adt_layouts["Color"]
+        assert layouts["Red"].tag == 0
+        assert layouts["Green"].tag == 1
+        assert layouts["Blue"].tag == 2
+
+    def test_float64_field_layout(self) -> None:
+        """Constructor with Float64 field: tag(4) + pad(4) + f64(8) = 16."""
+        source = """\
+data Box { MkBox(Float64) }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        _result, gen = _compile_with_generator(source)
+        layout = gen._adt_layouts["Box"]["MkBox"]
+        assert layout.field_offsets == ((8, "f64"),)
+        assert layout.total_size == 16
+
+    def test_bool_field_layout(self) -> None:
+        """Constructor with Bool field: tag(4) + i32(4) = 8."""
+        source = """\
+data Toggle { MkToggle(Bool) }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        _result, gen = _compile_with_generator(source)
+        layout = gen._adt_layouts["Toggle"]["MkToggle"]
+        assert layout.field_offsets == ((4, "i32"),)  # i32 aligns to 4
+        assert layout.total_size == 8
+
+    def test_type_param_is_pointer(self) -> None:
+        """Type parameters map to i32 (pointer)."""
+        source = """\
+data Box<T> { MkBox(T) }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        _result, gen = _compile_with_generator(source)
+        layout = gen._adt_layouts["Box"]["MkBox"]
+        assert layout.field_offsets == ((4, "i32"),)  # T → pointer
+        assert layout.total_size == 8
+
+    def test_mixed_adt_constructors(self) -> None:
+        """Option-like ADT: None is nullary, Some has a field."""
+        source = """\
+data MyOption<T> { MyNone, MySome(T) }
+
+fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        _result, gen = _compile_with_generator(source)
+        layouts = gen._adt_layouts["MyOption"]
+        assert layouts["MyNone"].tag == 0
+        assert layouts["MyNone"].field_offsets == ()
+        assert layouts["MyNone"].total_size == 8
+        assert layouts["MySome"].tag == 1
+        assert layouts["MySome"].field_offsets == ((4, "i32"),)  # T → pointer
+        assert layouts["MySome"].total_size == 8

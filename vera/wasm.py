@@ -93,6 +93,11 @@ class StringPool:
         """Whether any strings have been interned."""
         return len(self._strings) > 0
 
+    @property
+    def heap_offset(self) -> int:
+        """First byte after all string data — heap starts here."""
+        return self._offset
+
 
 # =====================================================================
 # Type mapping
