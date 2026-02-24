@@ -35,6 +35,43 @@ from vera.wasm import StringPool, WasmContext, WasmSlotEnv, wasm_type
 
 
 # =====================================================================
+# ADT memory layout
+# =====================================================================
+
+
+@dataclass
+class ConstructorLayout:
+    """WASM memory layout for a single ADT constructor."""
+
+    tag: int  # discriminant (0, 1, 2, ...)
+    field_offsets: tuple[tuple[int, str], ...]  # (byte_offset, wasm_type) per field
+    total_size: int  # total bytes, 8-byte aligned
+
+
+def _wasm_type_size(wt: str) -> int:
+    """Byte size of a WASM value type."""
+    if wt == "i32":
+        return 4
+    if wt in ("i64", "f64"):
+        return 8
+    raise ValueError(f"Unknown WASM type: {wt}")
+
+
+def _wasm_type_align(wt: str) -> int:
+    """Natural alignment of a WASM value type."""
+    if wt == "i32":
+        return 4
+    if wt in ("i64", "f64"):
+        return 8
+    raise ValueError(f"Unknown WASM type: {wt}")
+
+
+def _align_up(offset: int, align: int) -> int:
+    """Round offset up to the next multiple of align."""
+    return (offset + align - 1) & ~(align - 1)
+
+
+# =====================================================================
 # Public API
 # =====================================================================
 
@@ -231,6 +268,10 @@ class CodeGenerator:
         self._needs_memory: bool = False
         self._state_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
 
+        # ADT layout metadata (populated during registration)
+        self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
+        self._needs_alloc: bool = False
+
     # -----------------------------------------------------------------
     # Diagnostics
     # -----------------------------------------------------------------
@@ -322,11 +363,13 @@ class CodeGenerator:
     # -----------------------------------------------------------------
 
     def _register_all(self, program: ast.Program) -> None:
-        """Register all function signatures for forward references."""
+        """Register all function signatures and ADT layouts."""
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl):
                 self._register_fn(decl)
+            elif isinstance(decl, ast.DataDecl):
+                self._register_data(decl)
 
     def _register_fn(self, decl: ast.FnDecl) -> None:
         """Register a function's WASM signature."""
@@ -342,6 +385,69 @@ class CodeGenerator:
         if decl.where_fns:
             for wfn in decl.where_fns:
                 self._register_fn(wfn)
+
+    def _register_data(self, decl: ast.DataDecl) -> None:
+        """Register an ADT and precompute constructor layouts."""
+        layouts: dict[str, ConstructorLayout] = {}
+        for tag, ctor in enumerate(decl.constructors):
+            layout = self._compute_constructor_layout(tag, ctor, decl)
+            layouts[ctor.name] = layout
+        self._adt_layouts[decl.name] = layouts
+        self._needs_alloc = True
+        self._needs_memory = True
+
+    def _compute_constructor_layout(
+        self,
+        tag: int,
+        ctor: ast.Constructor,
+        decl: ast.DataDecl,
+    ) -> ConstructorLayout:
+        """Compute the memory layout for a single constructor.
+
+        Layout: [tag: i32 (4 bytes)] [pad] [field0] [field1] ...
+        Total size rounded up to 8-byte multiple.
+        """
+        offset = 4  # tag (i32) at offset 0, occupies 4 bytes
+        field_offsets: list[tuple[int, str]] = []
+
+        if ctor.fields is not None:
+            for field_te in ctor.fields:
+                wt = self._resolve_field_wasm_type(field_te, decl)
+                align = _wasm_type_align(wt)
+                offset = _align_up(offset, align)
+                field_offsets.append((offset, wt))
+                offset += _wasm_type_size(wt)
+
+        total_size = _align_up(offset, 8) if offset > 0 else 8
+        return ConstructorLayout(
+            tag=tag,
+            field_offsets=tuple(field_offsets),
+            total_size=total_size,
+        )
+
+    def _resolve_field_wasm_type(
+        self,
+        te: ast.TypeExpr,
+        decl: ast.DataDecl,
+    ) -> str:
+        """Resolve a constructor field's TypeExpr to a WASM type.
+
+        Type parameters and ADT references map to i32 (heap pointer).
+        Known primitives map to their native WASM types.
+        """
+        if isinstance(te, ast.NamedType):
+            # Type parameter of the parent ADT → pointer
+            if decl.type_params and te.name in decl.type_params:
+                return "i32"
+            wt = self._type_expr_to_wasm_type(te)
+            if wt is None:
+                return "i32"  # Unit → pointer (shouldn't appear, safe fallback)
+            if wt == "unsupported":
+                return "i32"  # ADT/String/other → heap pointer
+            return wt
+        if isinstance(te, ast.RefinementType):
+            return self._resolve_field_wasm_type(te.base_type, decl)
+        return "i32"  # default: pointer
 
     # -----------------------------------------------------------------
     # Function compilation
@@ -604,7 +710,7 @@ class CodeGenerator:
                 f"(func $vera.state_put_{type_name} (param {wasm_t})))"
             )
 
-        # Memory (for string data)
+        # Memory (for string data and heap)
         if self._needs_memory or self.string_pool.has_strings():
             parts.append('  (memory (export "memory") 1)')
 
@@ -613,6 +719,33 @@ class CodeGenerator:
             # Escape special characters for WAT string literals
             escaped = self._escape_wat_string(value)
             parts.append(f'  (data (i32.const {offset}) "{escaped}")')
+
+        # Heap pointer global and bump allocator (for ADT allocation)
+        if self._needs_alloc:
+            heap_start = self.string_pool.heap_offset
+            parts.append(
+                f"  (global $heap_ptr (export \"heap_ptr\") "
+                f"(mut i32) (i32.const {heap_start}))"
+            )
+            parts.append(
+                "  (func $alloc (param $size i32) (result i32)\n"
+                "    (local $ptr i32)\n"
+                "    ;; Save current heap pointer\n"
+                "    global.get $heap_ptr\n"
+                "    local.set $ptr\n"
+                "    ;; Advance heap_ptr by size rounded up to 8\n"
+                "    global.get $heap_ptr\n"
+                "    local.get $size\n"
+                "    i32.const 7\n"
+                "    i32.add\n"
+                "    i32.const -8\n"
+                "    i32.and\n"
+                "    i32.add\n"
+                "    global.set $heap_ptr\n"
+                "    ;; Return old pointer\n"
+                "    local.get $ptr\n"
+                "  )"
+            )
 
         # Functions
         for fn_wat in functions:

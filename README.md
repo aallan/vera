@@ -159,7 +159,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
 | C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
 | C5 | v0.0.9 | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
-| C6 | v0.0.10–0.0.23 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | **In progress** (C6a–C6d done) |
+| C6 | v0.0.10–0.0.23 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | **In progress** (C6a–C6e done) |
 | C7 | — | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
 
@@ -180,7 +180,7 @@ The code generator compiles 7 of 14 examples. C6 extends WASM compilation to all
 
 | Sub-phase | Scope | Closes | Unlocks |
 |-----------|-------|--------|---------|
-| C6e | Bump allocator — heap allocation for tagged values | — | — |
+| ~~C6e~~ | ~~Bump allocator — heap allocation for tagged values~~ | — | ~~Done (v0.0.14)~~ |
 | C6f | ADT constructors — heap-allocated tagged unions | — | — |
 | C6g | Match expressions — tag dispatch, field extraction | #26 | pattern_matching.vera |
 | C6i | Generics — monomorphization of `forall<T>` functions | #29 | generics.vera, list_ops.vera |

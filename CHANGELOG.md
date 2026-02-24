@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.14] - 2026-02-24
+
+### Added
+- **Bump allocator infrastructure** (C6e): heap allocation support for upcoming ADT constructor codegen
+  - `$heap_ptr` mutable global: initialized to first byte after string data, exported as `"heap_ptr"`
+  - `$alloc` internal function: bump-allocates with 8-byte alignment, returns pointer to allocated block
+  - ADT layout metadata: `ConstructorLayout` dataclass stores tag, field offsets, and total size per constructor
+  - Layout computed eagerly during registration pass — available for C6f (constructor codegen) and C6g (match codegen)
+  - Allocator and heap global emitted only when user-declared ADTs are present (no overhead for pure programs)
+  - `StringPool.heap_offset` property exposes first free byte after string constants
+- **Codegen tests**: 26 new tests — layout helpers, WAT output inspection, ADT metadata registration, conditional emission (611 total, up from 585)
+
 ## [0.0.13] - 2026-02-24
 
 ### Added
