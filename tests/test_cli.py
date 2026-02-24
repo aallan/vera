@@ -765,3 +765,68 @@ fn simple(-> @Int)
         assert data["ok"] is True
         # The ADT function produces a compilation warning
         assert len(data["warnings"]) > 0
+
+    def test_run_invalid_int_arg(self) -> None:
+        """Non-integer arguments after -- produce a clean error."""
+        import tempfile
+        source = """\
+fn id(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli",
+             "run", path, "--fn", "id", "--", "abc"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "Invalid integer" in result.stderr
+
+    def test_run_invalid_float_arg(self) -> None:
+        """Float arguments after -- produce a clean error."""
+        import tempfile
+        source = """\
+fn id(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli",
+             "run", path, "--fn", "id", "--", "1.5"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "Invalid integer" in result.stderr
+
+    def test_run_invalid_arg_json(self) -> None:
+        """Invalid args with --json produce JSON error."""
+        import tempfile
+        source = """\
+fn id(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli",
+             "run", "--json", path, "--fn", "id", "--", "xyz"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["ok"] is False
+        assert "Invalid integer" in data["diagnostics"][0]["description"]

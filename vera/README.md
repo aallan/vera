@@ -451,7 +451,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**508 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
+**514 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -460,13 +460,13 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 | `test_parser.py` | 95 | 791 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 91 | 950 | Type synthesis, slot resolution, effects, contracts |
-| `test_verifier.py` | 52 | 616 | Z3 verification, counterexamples, tier classification |
+| `test_verifier.py` | 55 | 654 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement |
 | `test_codegen.py` | 104 | 1,181 | WASM compilation, arithmetic, control flow, strings, IO, contracts, example round-trips |
-| `test_cli.py` | 64 | 767 | CLI commands (check, verify, compile, run), subprocess integration, runtime traps |
+| `test_cli.py` | 67 | 832 | CLI commands (check, verify, compile, run), subprocess integration, runtime traps, arg validation |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 16 | 129 | Diagnostic formatting, error patterns |
 
-Total: 5,398 lines of test code (73% of source code size).
+Total: 5,501 lines of test code (74% of source code size).
 
 ### Round-trip testing
 
@@ -547,6 +547,15 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **Minimal type inference** | Call-site generic instantiation only, no Hindley-Milner | Incremental |
 | **No incremental compilation** | Full file processed from scratch each time | Low priority |
 | **No exhaustiveness checking** | Match expressions not checked for missing cases | Incremental |
+| **Spec/parser `@T` notation mismatch** | Spec uses `@T` in data/effect declarations; parser expects bare `T` — see below | Reconciliation |
+
+### Spec/parser notation mismatch
+
+The language specification uses `@T` notation in data type constructor fields and effect operation signatures (e.g., `data Option<T> { Some(@T), None }`, `op get(@Unit -> @T)`). The parser expects bare types in these positions (e.g., `Some(T)`, `op get(Unit -> T)`).
+
+This is an intentional design distinction: the grammar reserves `@` for value-level bindings (function parameters, where `@T.0` creates a slot reference) and uses bare types in type-level signatures (constructor fields, effect ops) where no runtime bindings are created. The spec aspirationally shows `@T` for visual consistency with function parameters.
+
+There are 30 spec code blocks affected, tracked as MISMATCH entries in `scripts/check_spec_examples.py`. Reconciliation will update either the spec or the parser to match; the question is whether binding-site notation should be syntactically uniform across all declaration forms.
 
 ## Extending the Compiler
 

@@ -496,6 +496,44 @@ fn nat_plus_one(@Nat -> @Int)
 { @Nat.0 + 1 }
 """)
 
+    def test_int_to_nat_negative_caught(self) -> None:
+        """Int body returning -1 as Nat: verifier must catch the violation.
+
+        The type checker permits Int <: Nat (rule 3b), deferring the
+        non-negativity check to the verifier.  Returning a literal -1
+        contradicts the Nat >= 0 constraint, so verification must fail.
+        """
+        _verify_err("""
+fn bad(@Unit -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{ -1 }
+""", "postcondition")
+
+    def test_int_to_nat_positive_ok(self) -> None:
+        """Int expression returned as Nat: verifier passes when >= 0."""
+        _verify_ok("""
+fn good(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{ @Nat.0 + 1 }
+""")
+
+    def test_int_to_nat_conditional(self) -> None:
+        """Int body with conditional: verifier checks all paths >= 0."""
+        _verify_ok("""
+fn abs_nat(@Int -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{
+  if @Int.0 >= 0 then { @Int.0 }
+  else { 0 - @Int.0 }
+}
+""")
+
     def test_modular_arithmetic(self) -> None:
         _verify_ok("""
 fn remainder(@Int, @Int -> @Int)

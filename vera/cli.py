@@ -28,6 +28,15 @@ from vera.parser import parse_file
 from vera.transform import transform
 
 
+def _is_int_str(s: str) -> bool:
+    """Return True if *s* can be parsed as a Python int literal."""
+    try:
+        int(s)
+        return True
+    except ValueError:
+        return False
+
+
 def cmd_parse(path: str) -> int:
     """Parse a .vera file and print the parse tree."""
     try:
@@ -490,7 +499,20 @@ def main() -> None:
     if "--" in args:
         dash_idx = args.index("--")
         raw_args = args[dash_idx + 1:]
-        fn_args = [int(a) for a in raw_args] if raw_args else None
+        if raw_args:
+            try:
+                fn_args = [int(a) for a in raw_args]
+            except ValueError:
+                bad = [a for a in raw_args if not _is_int_str(a)]
+                msg = f"Invalid integer argument(s): {', '.join(bad)}"
+                if use_json:
+                    print(json.dumps({"ok": False, "file": "",
+                                      "diagnostics": [{"severity": "error",
+                                                       "description": msg}]},
+                                     indent=2))
+                else:
+                    print(f"Error: {msg}", file=sys.stderr)
+                sys.exit(1)
 
     # Remove flags from remaining args to find the filepath
     skip_flags = {"--json", "--wat"}

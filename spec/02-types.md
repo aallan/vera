@@ -263,6 +263,8 @@ Vera has minimal subtyping. The complete subtyping relation is:
 4. **Never subtyping**: `Never <: T` for all types `T`.
 5. **No other subtyping**: there is no structural subtyping, no implicit numeric conversions, no covariance/contravariance on compound types.
 
+> **Implementation note:** The type checker additionally permits `Int <: Nat` (the reverse of the `Nat <: Int` relationship in Section 2.1) to allow functions that compute a natural number from integer inputs without explicit conversion. Non-negativity is not enforced by the type checker alone — the contract verifier enforces the `>= 0` constraint via Z3. Code that passes `vera check` but fails `vera verify` on a `Nat` return type indicates that the verifier could not prove the result is non-negative.
+
 This means `Array<PosInt>` is NOT a subtype of `Array<Int>`. Converting between them requires an explicit mapping.
 
 ## 2.9 Type Equality
