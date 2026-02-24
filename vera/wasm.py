@@ -10,8 +10,12 @@ See spec/11-compilation.md for the compilation specification.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from vera import ast
+
+if TYPE_CHECKING:
+    from vera.codegen import ConstructorLayout
 from vera.types import (
     BOOL,
     FLOAT64,
@@ -153,6 +157,8 @@ class WasmContext:
         self,
         string_pool: StringPool,
         effect_ops: dict[str, tuple[str, bool]] | None = None,
+        ctor_layouts: dict[str, ConstructorLayout] | None = None,
+        adt_type_names: set[str] | None = None,
     ) -> None:
         self.string_pool = string_pool
         self._next_local: int = 0
@@ -162,6 +168,10 @@ class WasmContext:
         # e.g. {"get": ("$vera.state_get_Int", False),
         #        "put": ("$vera.state_put_Int", True)}
         self._effect_ops = effect_ops or {}
+        # Constructor layout mapping: ctor_name -> ConstructorLayout
+        self._ctor_layouts: dict[str, ConstructorLayout] = ctor_layouts or {}
+        # ADT type names for slot/param type resolution
+        self._adt_type_names: set[str] = adt_type_names or set()
 
     def set_result_local(self, local_idx: int) -> None:
         """Set the local index used for @T.result in postconditions."""
@@ -239,7 +249,13 @@ class WasmContext:
         if isinstance(expr, ast.ResultRef):
             return self._translate_result_ref()
 
-        # Unsupported: match, handle, lambdas, constructors,
+        if isinstance(expr, ast.ConstructorCall):
+            return self._translate_constructor_call(expr, env)
+
+        if isinstance(expr, ast.NullaryConstructor):
+            return self._translate_nullary_constructor(expr)
+
+        # Unsupported: match, handle, lambdas,
         # quantifiers, old/new, assert/assume, arrays, etc.
         return None
 
@@ -373,6 +389,10 @@ class WasmContext:
                 return "f64"
             if expr.type_name == "Bool":
                 return "i32"
+            base = (expr.type_name.split("<")[0]
+                    if "<" in expr.type_name else expr.type_name)
+            if base in self._adt_type_names:
+                return "i32"
             return None
         if isinstance(expr, ast.ResultRef):
             if expr.type_name in ("Int", "Nat"):
@@ -399,6 +419,10 @@ class WasmContext:
                 return "i32"
         if isinstance(expr, ast.FnCall):
             return None  # can't infer without type info
+        if isinstance(expr, ast.ConstructorCall):
+            return "i32" if expr.name in self._ctor_layouts else None
+        if isinstance(expr, ast.NullaryConstructor):
+            return "i32" if expr.name in self._ctor_layouts else None
         return None
 
     # -----------------------------------------------------------------
@@ -479,6 +503,9 @@ class WasmContext:
                 return "f64"
             if name == "Bool":
                 return "i32"
+            base = name.split("<")[0] if "<" in name else name
+            if base in self._adt_type_names:
+                return "i32"
             return None
         if isinstance(expr, ast.BinaryExpr):
             if expr.op in self._ARITH_OPS:
@@ -504,6 +531,10 @@ class WasmContext:
             return None  # strings are (i32, i32) — handled specially
         if isinstance(expr, ast.Block):
             return self._infer_block_result_type(expr)
+        if isinstance(expr, ast.ConstructorCall):
+            return "i32" if expr.name in self._ctor_layouts else None
+        if isinstance(expr, ast.NullaryConstructor):
+            return "i32" if expr.name in self._ctor_layouts else None
         return None
 
     # -----------------------------------------------------------------
@@ -622,6 +653,89 @@ class WasmContext:
         return None
 
     # -----------------------------------------------------------------
+    # Constructors
+    # -----------------------------------------------------------------
+
+    def _translate_nullary_constructor(
+        self, expr: ast.NullaryConstructor
+    ) -> list[str] | None:
+        """Translate a nullary constructor (e.g., None, Red) to WAT.
+
+        Emits: alloc → store tag → return pointer.
+        """
+        layout = self._ctor_layouts.get(expr.name)
+        if layout is None:
+            return None
+
+        tmp = self.alloc_local("i32")
+        return [
+            f"i32.const {layout.total_size}",
+            "call $alloc",
+            f"local.tee {tmp}",
+            f"i32.const {layout.tag}",
+            "i32.store",
+            f"local.get {tmp}",
+        ]
+
+    def _translate_constructor_call(
+        self, expr: ast.ConstructorCall, env: WasmSlotEnv
+    ) -> list[str] | None:
+        """Translate a constructor call (e.g., Some(42)) to WAT.
+
+        Emits: alloc → store tag → store each field → return pointer.
+        Field offsets are computed from the concrete argument types so that
+        generic constructors (e.g. Some(T) instantiated as Some(Int))
+        use the correct WASM types and alignment.
+        """
+        layout = self._ctor_layouts.get(expr.name)
+        if layout is None:
+            return None
+
+        # Translate all arguments and infer their concrete WASM types
+        arg_instrs_list: list[list[str]] = []
+        arg_wasm_types: list[str] = []
+        for arg in expr.args:
+            arg_instrs = self.translate_expr(arg, env)
+            if arg_instrs is None:
+                return None
+            arg_wt = self._infer_expr_wasm_type(arg)
+            if arg_wt is None:
+                return None
+            arg_instrs_list.append(arg_instrs)
+            arg_wasm_types.append(arg_wt)
+
+        # Compute field offsets from concrete argument types
+        _sizes = {"i32": 4, "i64": 8, "f64": 8}
+        _aligns = {"i32": 4, "i64": 8, "f64": 8}
+        offset = 4  # after tag (i32, 4 bytes)
+        field_offsets: list[tuple[int, str]] = []
+        for wt in arg_wasm_types:
+            align = _aligns.get(wt, 8)
+            offset = (offset + align - 1) & ~(align - 1)  # align up
+            field_offsets.append((offset, wt))
+            offset += _sizes.get(wt, 8)
+        total_size = ((offset + 7) & ~7) if offset > 0 else 8  # 8-byte aligned
+
+        tmp = self.alloc_local("i32")
+        instructions: list[str] = [
+            f"i32.const {total_size}",
+            "call $alloc",
+            f"local.tee {tmp}",
+            f"i32.const {layout.tag}",
+            "i32.store",
+        ]
+
+        # Store each field at its computed offset
+        for i, (fo, wt) in enumerate(field_offsets):
+            instructions.append(f"local.get {tmp}")
+            instructions.extend(arg_instrs_list[i])
+            instructions.append(f"{wt}.store offset={fo}")
+
+        # Leave pointer as result
+        instructions.append(f"local.get {tmp}")
+        return instructions
+
+    # -----------------------------------------------------------------
     # Helpers
     # -----------------------------------------------------------------
 
@@ -664,5 +778,9 @@ class WasmContext:
         if name in ("Float64", "Float"):
             return "f64"
         if name == "Bool":
+            return "i32"
+        # ADT types are heap pointers
+        base = name.split("<")[0] if "<" in name else name
+        if base in self._adt_type_names:
             return "i32"
         return None
