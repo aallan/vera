@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.12] - 2026-02-24
+
+### Added
+- **Match exhaustiveness checking** (C6c — closes #18): compile-time verification that match expressions cover all possible values
+  - ADT exhaustiveness: all constructors must be covered or a catch-all pattern must be present
+  - Bool exhaustiveness: both `true` and `false` must be covered or a catch-all present
+  - Infinite type exhaustiveness: `Int`, `String`, `Float64`, `Nat` matches require a wildcard `_` or binding pattern
+  - Unreachable arm warnings: arms after a wildcard or binding catch-all produce warnings (Spec Section 4.9.3)
+  - Refinement types properly stripped via `base_type()` before analysis
+  - Error diagnostics include missing constructor/value names and fix suggestions
+- **Type checker tests**: 17 new tests — ADT exhaustive/missing/wildcard/binding, Bool exhaustive/missing/wildcard, Int/String without wildcard, unreachable arms (single/multiple/after binding), wildcard only, refined type stripping (570 total, up from 553)
+
 ## [0.0.11] - 2026-02-24
 
 ### Added

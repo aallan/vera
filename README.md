@@ -173,7 +173,7 @@ The code generator compiles 6 of 14 examples. C6 extends WASM compilation to all
 |-----------|-------|--------|---------|
 | ~~C6a~~ | ~~Float64 — `f64` literals, arithmetic, comparisons~~ | ~~#25~~ | ~~Done (v0.0.10)~~ |
 | ~~C6b~~ | ~~Callee preconditions — verify `requires()` at call sites~~ | ~~#19~~ | ~~Done (v0.0.11)~~ |
-| C6c | Match exhaustiveness — verify all constructors covered | #18 | — |
+| ~~C6c~~ | ~~Match exhaustiveness — verify all constructors covered~~ | ~~#18~~ | ~~Done (v0.0.12)~~ |
 | C6d | State\<T\> operations — get/put as host imports | — | increment.vera |
 
 **Allocator and data types (sequential chain):**

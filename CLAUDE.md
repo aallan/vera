@@ -17,7 +17,7 @@ vera parse file.vera              # Print the parse tree
 vera ast file.vera                # Print the typed AST
 vera ast --json file.vera         # Print the AST as JSON
 
-pytest tests/ -v                  # Run the test suite (553 tests)
+pytest tests/ -v                  # Run the test suite (570 tests)
 mypy vera/                        # Type-check the compiler itself
 
 python scripts/check_examples.py      # Verify all 14 examples parse + check + verify
