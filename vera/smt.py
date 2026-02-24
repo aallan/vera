@@ -11,10 +11,14 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable
 
 import z3
 
 from vera import ast
+
+if TYPE_CHECKING:
+    pass
 
 
 # =====================================================================
@@ -58,6 +62,16 @@ class SmtResult:
     counterexample: dict[str, str] | None = None  # slot_name → value
 
 
+@dataclass
+class CallViolation:
+    """Records a call site where a callee's precondition may not hold."""
+
+    callee_name: str
+    call_node: ast.FnCall
+    precondition: ast.Requires
+    counterexample: dict[str, str] | None = None
+
+
 # =====================================================================
 # SMT context — solver and translation
 # =====================================================================
@@ -86,13 +100,21 @@ _BOOL_OPS: set[ast.BinOp] = {ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES}
 class SmtContext:
     """Z3 solver context with AST-to-Z3 expression translation."""
 
-    def __init__(self, timeout_ms: int = 10_000) -> None:
+    def __init__(
+        self,
+        timeout_ms: int = 10_000,
+        fn_lookup: Callable[[str], Any] | None = None,
+    ) -> None:
         self.solver = z3.Solver()
         self.solver.set("timeout", timeout_ms)
         self._vars: dict[str, z3.ExprRef] = {}
         self._result_var: z3.ExprRef | None = None
         # Uninterpreted function for length (constrained >= 0)
         self._length_fn = z3.Function("length", z3.IntSort(), z3.IntSort())
+        # Callee contract verification
+        self._fn_lookup = fn_lookup
+        self._call_violations: list[CallViolation] = []
+        self._fresh_counter: int = 0
 
     # -----------------------------------------------------------------
     # Variable management
@@ -124,6 +146,17 @@ class SmtContext:
     def get_var(self, name: str) -> z3.ExprRef | None:
         """Look up a declared variable by name."""
         return self._vars.get(name)
+
+    def _fresh_name(self, prefix: str) -> str:
+        """Generate a unique Z3 variable name."""
+        self._fresh_counter += 1
+        return f"_call_{prefix}_{self._fresh_counter}"
+
+    def drain_call_violations(self) -> list[CallViolation]:
+        """Return accumulated call-site violations and clear the list."""
+        violations = list(self._call_violations)
+        self._call_violations.clear()
+        return violations
 
     # -----------------------------------------------------------------
     # Expression translation
@@ -260,19 +293,106 @@ class SmtContext:
     def _translate_call(
         self, call: ast.FnCall, env: SlotEnv
     ) -> z3.ExprRef | None:
-        """Translate built-in function calls.
+        """Translate a function call via modular contract verification.
 
-        Only ``length()`` is supported (as an uninterpreted function
-        constrained to return >= 0).  All other calls return None.
+        For ``length()``, uses the built-in uninterpreted function.
+        For user-defined functions:
+          1. Look up the callee's FunctionInfo
+          2. Translate actual arguments in the caller's env
+          3. Check each callee precondition holds (solver has caller assumptions)
+          4. Create a fresh return variable
+          5. Assume callee postconditions about the return variable
+          6. Return the fresh variable
         """
+        # Built-in: length()
         if call.name == "length" and len(call.args) == 1:
             arg = self.translate_expr(call.args[0], env)
             if arg is not None:
                 result = self._length_fn(arg)
-                # length is always non-negative
                 self.solver.add(result >= 0)
                 return result
-        return None
+            return None
+
+        # No function lookup → can't do modular verification
+        if self._fn_lookup is None:
+            return None
+
+        callee_info = self._fn_lookup(call.name)
+        if callee_info is None:
+            return None
+
+        # Generic functions can't be translated to Z3
+        if callee_info.forall_vars:
+            return None
+
+        # Must have matching arity
+        if len(call.args) != len(callee_info.param_type_exprs):
+            return None
+
+        # Translate actual arguments in the caller's env
+        z3_args: list[z3.ExprRef] = []
+        for arg_expr in call.args:
+            z3_arg = self.translate_expr(arg_expr, env)
+            if z3_arg is None:
+                return None
+            z3_args.append(z3_arg)
+
+        # Build callee's SlotEnv: push params in declaration order
+        callee_env = SlotEnv()
+        for param_te, z3_arg in zip(callee_info.param_type_exprs, z3_args):
+            slot_name = self._type_expr_to_slot_name(param_te)
+            if slot_name is None:
+                return None
+            callee_env = callee_env.push(slot_name, z3_arg)
+
+        # Check each callee precondition
+        for contract in callee_info.contracts:
+            if not isinstance(contract, ast.Requires):
+                continue
+            # Skip trivial requires(true)
+            if isinstance(contract.expr, ast.BoolLit) and contract.expr.value:
+                continue
+            z3_pre = self.translate_expr(contract.expr, callee_env)
+            if z3_pre is None:
+                # Can't translate precondition → bail to Tier 3
+                return None
+            # Check validity: solver state already has caller's assumptions
+            result = self.check_valid(z3_pre, [])
+            if result.status != "verified":
+                self._call_violations.append(CallViolation(
+                    callee_name=call.name,
+                    call_node=call,
+                    precondition=contract,
+                    counterexample=result.counterexample,
+                ))
+                return None
+
+        # Create fresh return variable
+        from vera.types import NAT, BOOL, RefinedType
+        ret_type = callee_info.return_type
+        base_ret = ret_type.base if isinstance(ret_type, RefinedType) else ret_type
+        fresh = self._fresh_name(call.name)
+        if base_ret == NAT:
+            ret_var = self.declare_nat(fresh)
+        elif base_ret == BOOL:
+            ret_var = self.declare_bool(fresh)
+        else:
+            ret_var = self.declare_int(fresh)
+
+        # Assume callee postconditions about the return variable
+        saved_result = self._result_var
+        self._result_var = ret_var
+        for contract in callee_info.contracts:
+            if not isinstance(contract, ast.Ensures):
+                continue
+            if isinstance(contract.expr, ast.BoolLit) and contract.expr.value:
+                continue
+            z3_post = self.translate_expr(contract.expr, callee_env)
+            if z3_post is not None:
+                self.solver.add(z3_post)
+        self._result_var = saved_result
+
+        return ret_var
 
     def _translate_block(
         self, block: ast.Block, env: SlotEnv
@@ -361,3 +481,5 @@ class SmtContext:
         self.solver.reset()
         self._vars.clear()
         self._result_var = None
+        self._call_violations.clear()
+        self._fresh_counter = 0

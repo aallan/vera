@@ -172,7 +172,7 @@ The code generator compiles 6 of 14 examples. C6 extends WASM compilation to all
 | Sub-phase | Scope | Closes | Unlocks |
 |-----------|-------|--------|---------|
 | ~~C6a~~ | ~~Float64 — `f64` literals, arithmetic, comparisons~~ | ~~#25~~ | ~~Done (v0.0.10)~~ |
-| C6b | Callee preconditions — verify `requires()` at call sites | #19 | — |
+| ~~C6b~~ | ~~Callee preconditions — verify `requires()` at call sites~~ | ~~#19~~ | ~~Done (v0.0.11)~~ |
 | C6c | Match exhaustiveness — verify all constructors covered | #18 | — |
 | C6d | State\<T\> operations — get/put as host imports | — | increment.vera |
 
@@ -465,7 +465,7 @@ vera/
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (540 tests)
+├── tests/                         # Test suite (553 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse

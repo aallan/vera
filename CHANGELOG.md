@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-02-24
+
+### Added
+- **Callee precondition verification** (C6b — closes #19): modular call-site contract checking
+  - When function `f` calls function `g`, the verifier now checks that `g`'s `requires()` clauses hold at the call site given `f`'s assumptions
+  - Callee postconditions (`ensures()`) are assumed at the call site, enabling symbolic reasoning about return values
+  - Fresh Z3 variables created per call, with postconditions asserted — supports chained calls, let bindings, and recursive calls
+  - Recursive functions (e.g., `factorial`) now verify `ensures()` at Tier 1 instead of falling to Tier 3
+  - `CallViolation` dataclass in `smt.py` records call-site violations with callee name, precondition, and counterexample
+  - `_report_call_violation()` in verifier produces LLM-oriented diagnostics with fix suggestions
+  - `param_type_exprs` field added to `FunctionInfo` for callee parameter slot resolution
+- **Verifier tests**: 13 new tests — satisfied/violated/forwarded preconditions, assumed postconditions, recursive calls, trivial preconditions, let bindings, where-block calls, generic call fallback, multiple preconditions, sequential calls, error message quality (553 total, up from 540)
+
+### Changed
+- Tier 3 warning rationale updated: "recursive calls" replaced with "generic calls" (recursive calls now handled via modular verification)
+- `SmtContext` constructor accepts optional `fn_lookup` callback for callee contract resolution
+- Caller precondition assumptions now asserted into the Z3 solver before body translation
+
 ## [0.0.10] - 2026-02-24
 
 ### Added
@@ -208,7 +226,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.10...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.11...HEAD
+[0.0.11]: https://github.com/aallan/vera/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/aallan/vera/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/aallan/vera/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/aallan/vera/compare/v0.0.7...v0.0.8
