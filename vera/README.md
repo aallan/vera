@@ -451,7 +451,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**514 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
+**540 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -461,12 +461,12 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 91 | 950 | Type synthesis, slot resolution, effects, contracts |
 | `test_verifier.py` | 55 | 654 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement |
-| `test_codegen.py` | 104 | 1,181 | WASM compilation, arithmetic, control flow, strings, IO, contracts, example round-trips |
+| `test_codegen.py` | 130 | 1,397 | WASM compilation, arithmetic, Float64, control flow, strings, IO, contracts, example round-trips |
 | `test_cli.py` | 67 | 832 | CLI commands (check, verify, compile, run), subprocess integration, runtime traps, arg validation |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 16 | 129 | Diagnostic formatting, error patterns |
 
-Total: 5,501 lines of test code (74% of source code size).
+Total: 5,717 lines of test code (77% of source code size).
 
 ### Round-trip testing
 

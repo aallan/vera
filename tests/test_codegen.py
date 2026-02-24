@@ -57,6 +57,19 @@ def _run(source: str, fn: str | None = None, args: list[int] | None = None) -> i
     return exec_result.value
 
 
+def _run_float(
+    source: str, fn: str | None = None, args: list[int | float] | None = None
+) -> float:
+    """Compile, execute, and return the float result."""
+    result = _compile_ok(source)
+    exec_result = execute(result, fn_name=fn, args=args)
+    assert exec_result.value is not None, "Expected a return value"
+    assert isinstance(exec_result.value, float), (
+        f"Expected float, got {type(exec_result.value).__name__}"
+    )
+    return exec_result.value
+
+
 def _run_io(
     source: str, fn: str | None = None, args: list[int] | None = None
 ) -> str:
@@ -103,6 +116,209 @@ class TestBoolLit:
 
     def test_false(self) -> None:
         assert _run("fn f(-> @Bool) requires(true) ensures(true) effects(pure) { false }") == 0
+
+
+class TestFloatLit:
+    def test_zero(self) -> None:
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 0.0 }"
+        ) == 0.0
+
+    def test_positive(self) -> None:
+        result = _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 3.14 }"
+        )
+        assert abs(result - 3.14) < 1e-10
+
+    def test_one(self) -> None:
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 1.0 }"
+        ) == 1.0
+
+
+class TestFloatSlotRef:
+    def test_identity_float64(self) -> None:
+        """Float64 identity function: param in, same value out."""
+        source = (
+            "fn id(@Float64 -> @Float64) requires(true) ensures(true) "
+            "effects(pure) { @Float64.0 }"
+        )
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="id", args=[7.5])
+        assert exec_result.value == 7.5
+
+    def test_two_float_params(self) -> None:
+        """@Float64.0 = most recent (second), @Float64.1 = first."""
+        source = (
+            "fn second(@Float64, @Float64 -> @Float64) requires(true) "
+            "ensures(true) effects(pure) { @Float64.0 }"
+        )
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="second", args=[1.5, 2.5])
+        assert exec_result.value == 2.5
+
+    def test_float_param_arithmetic(self) -> None:
+        """Float64 param used in arithmetic."""
+        source = (
+            "fn add_one(@Float64 -> @Float64) requires(true) ensures(true) "
+            "effects(pure) { @Float64.0 + 1.0 }"
+        )
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="add_one", args=[2.5])
+        assert exec_result.value == 3.5
+
+
+class TestFloatArithmetic:
+    def test_add(self) -> None:
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "{ 1.5 + 2.5 }"
+        ) == 4.0
+
+    def test_sub(self) -> None:
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "{ 5.0 - 2.5 }"
+        ) == 2.5
+
+    def test_mul(self) -> None:
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "{ 3.0 * 2.5 }"
+        ) == 7.5
+
+    def test_div(self) -> None:
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "{ 7.5 / 2.5 }"
+        ) == 3.0
+
+    def test_nested(self) -> None:
+        """(1.0 + 2.0) * 3.0 = 9.0"""
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "{ (1.0 + 2.0) * 3.0 }"
+        ) == 9.0
+
+
+class TestFloatComparison:
+    def test_eq_true(self) -> None:
+        assert _run(
+            "fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "{ 1.5 == 1.5 }"
+        ) == 1
+
+    def test_eq_false(self) -> None:
+        assert _run(
+            "fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "{ 1.5 == 2.5 }"
+        ) == 0
+
+    def test_neq(self) -> None:
+        assert _run(
+            "fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "{ 1.5 != 2.5 }"
+        ) == 1
+
+    def test_lt(self) -> None:
+        assert _run(
+            "fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "{ 1.5 < 2.5 }"
+        ) == 1
+
+    def test_gt(self) -> None:
+        assert _run(
+            "fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "{ 2.5 > 1.5 }"
+        ) == 1
+
+    def test_le(self) -> None:
+        assert _run(
+            "fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "{ 1.5 <= 1.5 }"
+        ) == 1
+
+    def test_ge(self) -> None:
+        assert _run(
+            "fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "{ 2.5 >= 1.5 }"
+        ) == 1
+
+
+class TestFloatNeg:
+    def test_neg_literal(self) -> None:
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "{ -3.5 }"
+        ) == -3.5
+
+    def test_neg_expr(self) -> None:
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "{ -(1.0 + 2.5) }"
+        ) == -3.5
+
+
+class TestFloatIfExpr:
+    def test_if_float_result(self) -> None:
+        """If expression returning Float64."""
+        source = """\
+fn f(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ if true then { 1.5 } else { 2.5 } }
+"""
+        assert _run_float(source) == 1.5
+
+    def test_if_float_else(self) -> None:
+        source = """\
+fn f(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ if false then { 1.5 } else { 2.5 } }
+"""
+        assert _run_float(source) == 2.5
+
+
+class TestFloatLet:
+    def test_let_float(self) -> None:
+        """Let binding with Float64 type."""
+        source = """\
+fn f(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Float64 = 1.5 + 2.5;
+  @Float64.0
+}
+"""
+        assert _run_float(source) == 4.0
+
+    def test_let_float_chain(self) -> None:
+        """Multiple let bindings with Float64."""
+        source = """\
+fn f(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Float64 = 3.0;
+  let @Float64 = @Float64.0 * 2.0;
+  @Float64.0
+}
+"""
+        assert _run_float(source) == 6.0
+
+
+class TestFloatCompileResult:
+    def test_wat_has_f64(self) -> None:
+        """WAT output contains f64 instructions."""
+        result = _compile_ok(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 3.14 }"
+        )
+        assert "f64.const" in result.wat
+
+    def test_float_fn_exported(self) -> None:
+        """Float64 functions are exported (no longer skipped)."""
+        result = _compile_ok(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 1.0 }"
+        )
+        assert "f" in result.exports
 
 
 class TestCompileResult:

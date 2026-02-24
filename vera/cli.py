@@ -308,7 +308,7 @@ def cmd_run(
     *,
     as_json: bool = False,
     fn_name: str | None = None,
-    fn_args: list[int] | None = None,
+    fn_args: list[int | float] | None = None,
 ) -> int:
     """Parse, type-check, compile, and execute a .vera file."""
     from vera.checker import typecheck
@@ -495,7 +495,7 @@ def main() -> None:
             output_path = args[o_idx + 1]
 
     # Parse -- <args> for run command
-    fn_args: list[int] | None = None
+    fn_args: list[int | float] | None = None
     if "--" in args:
         dash_idx = args.index("--")
         raw_args = args[dash_idx + 1:]

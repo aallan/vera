@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-02-24
+
+### Added
+- **Float64 WASM codegen** (C6a — closes #25): compile Float64/Float values to WebAssembly `f64` instructions
+  - Type mapping: Float64/Float → `f64` in `wasm_type()`, `_type_expr_to_wasm_type()`, `_slot_name_to_wasm_type()`, `_infer_expr_wasm_type()`, `_infer_block_result_type()`
+  - `FloatLit` emission: `f64.const` literals
+  - Float64 arithmetic: `f64.add`, `f64.sub`, `f64.mul`, `f64.div` (MOD unsupported — WASM has no `f64.rem`)
+  - Float64 comparisons: `f64.eq`, `f64.ne`, `f64.lt`, `f64.gt`, `f64.le`, `f64.ge` (result is `i32`)
+  - Float64 negation: `f64.neg`
+  - Float64 slot references, let bindings, if/else branches, function parameters and returns all compile
+  - `ExecuteResult.value` widened to `int | float | None`; `execute()` accepts `list[int | float]` args
+- **Codegen tests**: 26 new tests — Float64 literals, slot references, arithmetic, comparisons, negation, if/else, let bindings, WAT output validation (540 total, up from 514)
+
+### Changed
+- `execute()` signature updated: `args` parameter accepts `list[int | float]` for Float64 arguments
+- Warning messages updated to mention Float64 as a compilable type
+- CLI `fn_args` type widened to `list[int | float]` for future float argument parsing
+
 ## [0.0.9] - 2026-02-23
 
 ### Added
@@ -190,7 +208,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.9...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.10...HEAD
+[0.0.10]: https://github.com/aallan/vera/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/aallan/vera/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/aallan/vera/compare/v0.0.7...v0.0.8
 [0.0.7]: https://github.com/aallan/vera/compare/v0.0.6...v0.0.7

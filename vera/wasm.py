@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from vera import ast
 from vera.types import (
     BOOL,
+    FLOAT64,
     INT,
     NAT,
     STRING,
@@ -107,6 +108,8 @@ def wasm_type(t: Type) -> str | None:
     if isinstance(t, PrimitiveType):
         if t.name in ("Int", "Nat"):
             return "i64"
+        if t.name in ("Float64", "Float"):
+            return "f64"
         if t.name == "Bool":
             return "i32"
         if t.name == "Unit":
@@ -190,6 +193,9 @@ class WasmContext:
         if isinstance(expr, ast.BoolLit):
             return [f"i32.const {1 if expr.value else 0}"]
 
+        if isinstance(expr, ast.FloatLit):
+            return [f"f64.const {expr.value}"]
+
         if isinstance(expr, ast.UnitLit):
             return []  # Unit produces no value on the stack
 
@@ -251,7 +257,7 @@ class WasmContext:
     # Binary operators
     # -----------------------------------------------------------------
 
-    # Arithmetic: i64 ops
+    # Arithmetic: i64 ops (default for Int/Nat)
     _ARITH_OPS: dict[ast.BinOp, str] = {
         ast.BinOp.ADD: "i64.add",
         ast.BinOp.SUB: "i64.sub",
@@ -260,7 +266,16 @@ class WasmContext:
         ast.BinOp.MOD: "i64.rem_s",
     }
 
-    # Comparison: i64 → i32
+    # Arithmetic: f64 ops (Float64)
+    _ARITH_OPS_F64: dict[ast.BinOp, str] = {
+        ast.BinOp.ADD: "f64.add",
+        ast.BinOp.SUB: "f64.sub",
+        ast.BinOp.MUL: "f64.mul",
+        ast.BinOp.DIV: "f64.div",
+        # MOD: WASM has no f64.rem — unsupported for floats
+    }
+
+    # Comparison: i64 → i32 (default)
     _CMP_OPS: dict[ast.BinOp, str] = {
         ast.BinOp.EQ: "i64.eq",
         ast.BinOp.NEQ: "i64.ne",
@@ -268,6 +283,16 @@ class WasmContext:
         ast.BinOp.GT: "i64.gt_s",
         ast.BinOp.LE: "i64.le_s",
         ast.BinOp.GE: "i64.ge_s",
+    }
+
+    # Comparison: f64 → i32 (Float64)
+    _CMP_OPS_F64: dict[ast.BinOp, str] = {
+        ast.BinOp.EQ: "f64.eq",
+        ast.BinOp.NEQ: "f64.ne",
+        ast.BinOp.LT: "f64.lt",
+        ast.BinOp.GT: "f64.gt",
+        ast.BinOp.LE: "f64.le",
+        ast.BinOp.GE: "f64.ge",
     }
 
     def _translate_binary(
@@ -280,15 +305,21 @@ class WasmContext:
             return None
 
         op = expr.op
+        ltype = self._infer_expr_wasm_type(expr.left)
 
         # Arithmetic
         if op in self._ARITH_OPS:
+            if ltype == "f64":
+                if op not in self._ARITH_OPS_F64:
+                    return None  # MOD unsupported for f64
+                return left + right + [self._ARITH_OPS_F64[op]]
             return left + right + [self._ARITH_OPS[op]]
 
-        # Comparison — choose i32/i64 based on operand types
+        # Comparison — choose i32/i64/f64 based on operand types
         if op in self._CMP_OPS:
-            ltype = self._infer_expr_wasm_type(expr.left)
             rtype = self._infer_expr_wasm_type(expr.right)
+            if ltype == "f64" or rtype == "f64":
+                return left + right + [self._CMP_OPS_F64[op]]
             if ltype == "i32" and rtype == "i32":
                 # Bool operands — use i32 comparison
                 i32_op = self._CMP_OPS[op].replace("i64.", "i32.")
@@ -311,11 +342,13 @@ class WasmContext:
     def _infer_expr_wasm_type(self, expr: ast.Expr) -> str | None:
         """Infer the WAT result type of an expression.
 
-        Returns "i64" for Int/Nat, "i32" for Bool, None for unknown/Unit.
-        Used to select the correct comparison operators.
+        Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool,
+        None for unknown/Unit.  Used to select the correct operators.
         """
         if isinstance(expr, ast.IntLit):
             return "i64"
+        if isinstance(expr, ast.FloatLit):
+            return "f64"
         if isinstance(expr, ast.BoolLit):
             return "i32"
         if isinstance(expr, ast.UnitLit):
@@ -323,25 +356,32 @@ class WasmContext:
         if isinstance(expr, ast.SlotRef):
             if expr.type_name in ("Int", "Nat"):
                 return "i64"
+            if expr.type_name in ("Float64", "Float"):
+                return "f64"
             if expr.type_name == "Bool":
                 return "i32"
             return None
         if isinstance(expr, ast.ResultRef):
             if expr.type_name in ("Int", "Nat"):
                 return "i64"
+            if expr.type_name in ("Float64", "Float"):
+                return "f64"
             if expr.type_name == "Bool":
                 return "i32"
             return None
         if isinstance(expr, ast.BinaryExpr):
             if expr.op in self._ARITH_OPS:
-                return "i64"
+                # Propagate operand type: f64 if operands are f64
+                inner = self._infer_expr_wasm_type(expr.left)
+                return inner if inner == "f64" else "i64"
             if expr.op in self._CMP_OPS:
                 return "i32"
             if expr.op in (ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
                 return "i32"
         if isinstance(expr, ast.UnaryExpr):
             if expr.op == ast.UnaryOp.NEG:
-                return "i64"
+                inner = self._infer_expr_wasm_type(expr.operand)
+                return inner if inner == "f64" else "i64"
             if expr.op == ast.UnaryOp.NOT:
                 return "i32"
         if isinstance(expr, ast.FnCall):
@@ -363,6 +403,8 @@ class WasmContext:
         if expr.op == ast.UnaryOp.NOT:
             return operand + ["i32.eqz"]
         if expr.op == ast.UnaryOp.NEG:
+            if self._infer_expr_wasm_type(expr.operand) == "f64":
+                return operand + ["f64.neg"]
             return ["i64.const 0"] + operand + ["i64.sub"]
         return None
 
@@ -409,6 +451,8 @@ class WasmContext:
         expr = block.expr
         if isinstance(expr, ast.IntLit):
             return "i64"
+        if isinstance(expr, ast.FloatLit):
+            return "f64"
         if isinstance(expr, ast.BoolLit):
             return "i32"
         if isinstance(expr, ast.UnitLit):
@@ -418,19 +462,23 @@ class WasmContext:
             name = expr.type_name
             if name in ("Int", "Nat"):
                 return "i64"
+            if name in ("Float64", "Float"):
+                return "f64"
             if name == "Bool":
                 return "i32"
             return None
         if isinstance(expr, ast.BinaryExpr):
             if expr.op in self._ARITH_OPS:
-                return "i64"
+                inner = self._infer_expr_wasm_type(expr.left)
+                return inner if inner == "f64" else "i64"
             if expr.op in self._CMP_OPS:
                 return "i32"
             if expr.op in (ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES):
                 return "i32"
         if isinstance(expr, ast.UnaryExpr):
             if expr.op == ast.UnaryOp.NEG:
-                return "i64"
+                inner = self._infer_expr_wasm_type(expr.operand)
+                return inner if inner == "f64" else "i64"
             if expr.op == ast.UnaryOp.NOT:
                 return "i32"
         if isinstance(expr, ast.IfExpr):
@@ -580,6 +628,8 @@ class WasmContext:
         """Map a slot type name to a WAT type string."""
         if name in ("Int", "Nat"):
             return "i64"
+        if name in ("Float64", "Float"):
+            return "f64"
         if name == "Bool":
             return "i32"
         return None
