@@ -743,12 +743,13 @@ fn positive(@Int -> @Int)
     ) -> None:
         """Compile JSON mode includes warnings from compilation."""
         import tempfile
+        # Use an unsupported effect to trigger a compilation warning
         source = """\
-data Opt<T> { None, Some(T) }
+effect Counter { op inc(Unit -> Unit); }
 
-fn make_none(-> @Opt<Int>)
-  requires(true) ensures(true) effects(pure)
-{ None }
+fn count(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Counter>)
+{ () }
 
 fn simple(-> @Int)
   requires(true) ensures(true) effects(pure)
@@ -763,7 +764,7 @@ fn simple(-> @Int)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is True
-        # The ADT function produces a compilation warning
+        # The Counter effect function produces a compilation warning
         assert len(data["warnings"]) > 0
 
     def test_run_invalid_int_arg(self) -> None:

@@ -1052,8 +1052,8 @@ fn factorial(@Nat -> @Nat)
 
 
 class TestUnsupportedSkipped:
-    def test_adt_function_skipped(self) -> None:
-        """Functions with ADT types produce warnings, not errors."""
+    def test_adt_function_compiles(self) -> None:
+        """Functions with ADT types now compile (not skipped)."""
         source = """\
 data Option<T> { None, Some(T) }
 
@@ -1067,10 +1067,9 @@ fn simple(-> @Int)
 """
         result = _compile(source)
         errors = [d for d in result.diagnostics if d.severity == "error"]
-        warnings = [d for d in result.diagnostics if d.severity == "warning"]
         assert not errors
-        assert len(warnings) > 0
-        # The simple function should still be compiled
+        # Both functions should be compiled
+        assert "make_none" in result.exports
         assert "simple" in result.exports
 
     def test_unsupported_effect_skipped(self) -> None:
@@ -1891,3 +1890,196 @@ fn f(-> @Int)
         assert layouts["MySome"].tag == 1
         assert layouts["MySome"].field_offsets == ((4, "i32"),)  # T → pointer
         assert layouts["MySome"].total_size == 8
+
+
+# =====================================================================
+# C6f: ADT constructor codegen
+# =====================================================================
+
+
+class TestAdtConstructors:
+    """Test compilation of ADT constructor expressions to WASM."""
+
+    def test_nullary_constructor_returns_pointer(self) -> None:
+        """A nullary constructor (Red) compiles and returns an i32 >= 0."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn make_red(-> @Color)
+  requires(true) ensures(true) effects(pure)
+{ Red }
+"""
+        result = _compile_ok(source)
+        assert "make_red" in result.exports
+        exec_result = execute(result, fn_name="make_red")
+        assert exec_result.value is not None
+        assert exec_result.value >= 0  # heap pointer
+
+    def test_nullary_different_tags(self) -> None:
+        """Different nullary constructors compile to distinct functions."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn make_red(-> @Color)
+  requires(true) ensures(true) effects(pure)
+{ Red }
+
+fn make_green(-> @Color)
+  requires(true) ensures(true) effects(pure)
+{ Green }
+
+fn make_blue(-> @Color)
+  requires(true) ensures(true) effects(pure)
+{ Blue }
+"""
+        result = _compile_ok(source)
+        assert "make_red" in result.exports
+        assert "make_green" in result.exports
+        assert "make_blue" in result.exports
+
+    def test_constructor_with_int_field(self) -> None:
+        """Constructor with Int field: Wrap(@Int.0) compiles."""
+        source = """\
+data Wrapper { Wrap(Int) }
+
+fn wrap(@Int -> @Wrapper)
+  requires(true) ensures(true) effects(pure)
+{ Wrap(@Int.0) }
+"""
+        result = _compile_ok(source)
+        assert "wrap" in result.exports
+        exec_result = execute(result, fn_name="wrap", args=[42])
+        assert exec_result.value is not None
+        assert exec_result.value >= 0
+
+    def test_constructor_with_bool_field(self) -> None:
+        """Constructor with Bool field: MkToggle(@Bool.0) compiles."""
+        source = """\
+data Toggle { MkToggle(Bool) }
+
+fn toggle(@Bool -> @Toggle)
+  requires(true) ensures(true) effects(pure)
+{ MkToggle(@Bool.0) }
+"""
+        result = _compile_ok(source)
+        assert "toggle" in result.exports
+        exec_result = execute(result, fn_name="toggle", args=[1])
+        assert exec_result.value is not None
+        assert exec_result.value >= 0
+
+    def test_option_none(self) -> None:
+        """None as Option<Int> compiles (nullary constructor)."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn make_none(-> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ None }
+"""
+        result = _compile_ok(source)
+        assert "make_none" in result.exports
+        exec_result = execute(result, fn_name="make_none")
+        assert exec_result.value is not None
+
+    def test_option_some(self) -> None:
+        """Some(@Int.0) as Option<Int> compiles."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn make_some(@Int -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ Some(@Int.0) }
+"""
+        result = _compile_ok(source)
+        assert "make_some" in result.exports
+        exec_result = execute(result, fn_name="make_some", args=[99])
+        assert exec_result.value is not None
+        assert exec_result.value >= 0
+
+    def test_wat_contains_alloc_call(self) -> None:
+        """WAT output for constructor contains call $alloc."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn make_red(-> @Color)
+  requires(true) ensures(true) effects(pure)
+{ Red }
+"""
+        result = _compile_ok(source)
+        assert "call $alloc" in result.wat
+
+    def test_wat_contains_store_with_offset(self) -> None:
+        """WAT output for Some(x) contains field store with offset."""
+        source = """\
+data Wrapper { Wrap(Int) }
+
+fn wrap(@Int -> @Wrapper)
+  requires(true) ensures(true) effects(pure)
+{ Wrap(@Int.0) }
+"""
+        result = _compile_ok(source)
+        assert "i64.store offset=8" in result.wat
+
+    def test_nullary_tag_store(self) -> None:
+        """WAT for Red (tag=0) stores tag 0; Green (tag=1) stores tag 1."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn make_green(-> @Color)
+  requires(true) ensures(true) effects(pure)
+{ Green }
+"""
+        result = _compile_ok(source)
+        # Green has tag=1, so WAT should contain i32.const 1 before i32.store
+        assert "i32.const 1" in result.wat
+        assert "i32.store\n" in result.wat or "i32.store)" in result.wat or "i32.store" in result.wat
+
+    def test_constructor_in_let_binding(self) -> None:
+        """Constructor result in a let binding compiles."""
+        source = """\
+data Wrapper { Wrap(Int) }
+
+fn make_wrap(@Int -> @Wrapper)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Wrapper = Wrap(@Int.0);
+  @Wrapper.0
+}
+"""
+        result = _compile_ok(source)
+        assert "make_wrap" in result.exports
+        exec_result = execute(result, fn_name="make_wrap", args=[7])
+        assert exec_result.value is not None
+
+    def test_constructor_in_if_branches(self) -> None:
+        """Constructors in both branches of if-then-else compile."""
+        source = """\
+data Option<T> { None, Some(T) }
+
+fn maybe(@Bool -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { Some(42) }
+  else { None }
+}
+"""
+        result = _compile_ok(source)
+        assert "maybe" in result.exports
+        # Both branches should produce valid pointers
+        exec_true = execute(result, fn_name="maybe", args=[1])
+        exec_false = execute(result, fn_name="maybe", args=[0])
+        assert exec_true.value is not None
+        assert exec_false.value is not None
+
+    def test_adt_param_compiles(self) -> None:
+        """Function taking ADT param uses (param $p0 i32) in WAT."""
+        source = """\
+data Color { Red, Green, Blue }
+
+fn identity(@Color -> @Color)
+  requires(true) ensures(true) effects(pure)
+{ @Color.0 }
+"""
+        result = _compile_ok(source)
+        assert "identity" in result.exports
+        assert "(param" in result.wat  # at least one i32 param

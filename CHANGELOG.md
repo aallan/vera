@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.15] - 2026-02-24
+
+### Added
+- **ADT constructor codegen** (C6f): compile `ConstructorCall` and `NullaryConstructor` AST nodes to WASM heap-allocated tagged unions
+  - Nullary constructors (e.g. `Red`, `None`): alloc → store tag → return pointer
+  - Constructors with fields (e.g. `Some(42)`, `Wrap(@Int.0)`): alloc → store tag → store each field at computed offset → return pointer
+  - Field offsets computed from concrete argument types at translation time — handles monomorphized generic constructors (e.g. `Some(T)` with `T=Int` stores i64)
+  - ADT types compile to `i32` (heap pointer) in function signatures, slot references, and type inference
+  - `WasmContext` accepts `ctor_layouts` and `adt_type_names` for constructor-aware translation
+  - Functions using ADT constructors now compile (no longer skipped with warning)
+- **Codegen tests**: 12 new tests — nullary/tagged constructors, Int/Bool fields, Option None/Some, WAT inspection, let bindings, if-then-else branches, ADT parameters (623 total, up from 611)
+
 ## [0.0.14] - 2026-02-24
 
 ### Added

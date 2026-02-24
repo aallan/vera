@@ -483,7 +483,18 @@ class CodeGenerator:
                                 f"$vera.state_put_{type_name}", True
                             )
 
-        ctx = WasmContext(self.string_pool, effect_ops=effect_ops)
+        # Flatten ADT layouts into ctor_name -> layout for WasmContext
+        ctor_layouts = {}
+        for layouts in self._adt_layouts.values():
+            ctor_layouts.update(layouts)
+        adt_type_names = set(self._adt_layouts.keys())
+
+        ctx = WasmContext(
+            self.string_pool,
+            effect_ops=effect_ops,
+            ctor_layouts=ctor_layouts,
+            adt_type_names=adt_type_names,
+        )
         env = WasmSlotEnv()
 
         # Allocate parameters
@@ -867,6 +878,9 @@ class CodeGenerator:
                 return None
             if name == "String":
                 return "unsupported"
+            # ADT types compile to i32 (heap pointer)
+            if name in self._adt_layouts:
+                return "i32"
             return "unsupported"
         if isinstance(te, ast.RefinementType):
             return self._type_expr_to_wasm_type(te.base_type)
