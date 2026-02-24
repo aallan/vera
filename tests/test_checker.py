@@ -948,3 +948,256 @@ fn foo(@Unit -> @Nat)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """)
+
+
+# =====================================================================
+# Exhaustiveness checking
+# =====================================================================
+
+class TestExhaustiveness:
+
+    # --- ADT exhaustiveness ---
+
+    def test_adt_exhaustive(self) -> None:
+        """All constructors covered → no error."""
+        _check_ok("""
+data Option<T> { None, Some(T) }
+
+fn unwrap(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    None -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+""")
+
+    def test_adt_missing_constructor(self) -> None:
+        """Missing None constructor → non-exhaustive error."""
+        _check_err("""
+data Option<T> { None, Some(T) }
+
+fn unwrap(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0
+  }
+}
+""", "Non-exhaustive")
+
+    def test_adt_missing_multiple(self) -> None:
+        """Missing both Err constructor → error mentions missing ones."""
+        errs = _check_err("""
+data Result<T, E> { Ok(T), Err(E) }
+
+fn get(@Result<Int, String> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Result<Int, String>.0 {
+    Ok(@Int) -> @Int.0
+  }
+}
+""", "Non-exhaustive")
+        desc = " ".join(e.description for e in errs)
+        assert "Err" in desc
+
+    def test_adt_with_wildcard(self) -> None:
+        """Wildcard after Some covers None → exhaustive."""
+        _check_ok("""
+data Option<T> { None, Some(T) }
+
+fn unwrap(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    _ -> 0
+  }
+}
+""")
+
+    def test_adt_with_binding(self) -> None:
+        """Binding pattern is a catch-all → exhaustive."""
+        _check_ok("""
+data Option<T> { None, Some(T) }
+
+fn unwrap(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    @Option<Int> -> 0
+  }
+}
+""")
+
+    # --- Bool exhaustiveness ---
+
+    def test_bool_exhaustive(self) -> None:
+        """Both true and false covered → no error."""
+        _check_ok("""
+fn to_str(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> "yes",
+    false -> "no"
+  }
+}
+""")
+
+    def test_bool_missing_true(self) -> None:
+        """Only false covered → non-exhaustive."""
+        _check_err("""
+fn to_str(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    false -> "no"
+  }
+}
+""", "Non-exhaustive")
+
+    def test_bool_missing_false(self) -> None:
+        """Only true covered → non-exhaustive."""
+        _check_err("""
+fn to_str(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> "yes"
+  }
+}
+""", "Non-exhaustive")
+
+    def test_bool_with_wildcard(self) -> None:
+        """true + wildcard → exhaustive."""
+        _check_ok("""
+fn to_str(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Bool.0 {
+    true -> "yes",
+    _ -> "no"
+  }
+}
+""")
+
+    # --- Infinite type exhaustiveness ---
+
+    def test_int_with_wildcard(self) -> None:
+        """Int literals + wildcard → exhaustive."""
+        _check_ok("""
+fn classify(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    0 -> "zero",
+    1 -> "one",
+    _ -> "other"
+  }
+}
+""")
+
+    def test_int_without_wildcard(self) -> None:
+        """Int with only literals → non-exhaustive."""
+        _check_err("""
+fn classify(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    0 -> "zero",
+    1 -> "one"
+  }
+}
+""", "Non-exhaustive")
+
+    def test_string_without_wildcard(self) -> None:
+        """String with only literals → non-exhaustive."""
+        _check_err("""
+fn classify(@String -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @String.0 {
+    "hello" -> 1,
+    "world" -> 2
+  }
+}
+""", "Non-exhaustive")
+
+    # --- Unreachable arms ---
+
+    def test_unreachable_after_wildcard(self) -> None:
+        """Arm after wildcard → unreachable warning."""
+        warns = _warnings("""
+fn classify(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    0 -> "zero",
+    _ -> "other",
+    1 -> "one"
+  }
+}
+""")
+        assert any("Unreachable" in w.description for w in warns)
+
+    def test_unreachable_after_binding(self) -> None:
+        """Arm after binding pattern → unreachable warning."""
+        warns = _warnings("""
+fn classify(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    0 -> "zero",
+    @Int -> "other",
+    1 -> "one"
+  }
+}
+""")
+        assert any("Unreachable" in w.description for w in warns)
+
+    def test_multiple_unreachable(self) -> None:
+        """Multiple arms after wildcard → multiple warnings."""
+        warns = _warnings("""
+fn classify(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    _ -> "any",
+    0 -> "zero",
+    1 -> "one"
+  }
+}
+""")
+        unreachable = [w for w in warns if "Unreachable" in w.description]
+        assert len(unreachable) == 2
+
+    # --- Edge cases ---
+
+    def test_wildcard_only(self) -> None:
+        """Single wildcard arm → exhaustive."""
+        _check_ok("""
+fn identity(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    _ -> @Int.0
+  }
+}
+""")
+
+    def test_refined_type_stripped(self) -> None:
+        """Refined Int scrutinee still needs wildcard."""
+        _check_err("""
+fn classify(@Int -> @String)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    1 -> "one",
+    2 -> "two"
+  }
+}
+""", "Non-exhaustive")

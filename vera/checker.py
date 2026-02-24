@@ -38,6 +38,7 @@ from vera.types import (
     EffectInstance,
     EffectRowType,
     FunctionType,
+    PrimitiveType,
     PureEffectRow,
     RefinedType,
     Type,
@@ -1174,7 +1175,105 @@ class TypeChecker:
                         spec_ref='Chapter 4, Section 4.9 "Pattern Matching"',
                     )
 
+        self._check_exhaustiveness(expr, scrutinee_ty)
         return result_type or UnknownType()
+
+    def _check_exhaustiveness(
+        self, expr: ast.MatchExpr, scrutinee_ty: Type
+    ) -> None:
+        """Check that match arms cover all possible values of the scrutinee.
+
+        Spec Section 4.9.2: compiler MUST verify match is exhaustive.
+        Spec Section 4.9.3: compiler SHOULD warn about unreachable arms.
+        """
+        raw_ty = base_type(scrutinee_ty)
+
+        # --- Unreachable arm detection ---
+        catch_all_idx: int | None = None
+        for i, arm in enumerate(expr.arms):
+            pat = arm.pattern
+            if isinstance(pat, (ast.WildcardPattern, ast.BindingPattern)):
+                catch_all_idx = i
+                break
+
+        if catch_all_idx is not None:
+            # Warn about arms after the catch-all
+            for j in range(catch_all_idx + 1, len(expr.arms)):
+                self._error(
+                    expr.arms[j].pattern,
+                    "Unreachable match arm: pattern after catch-all "
+                    "will never match.",
+                    severity="warning",
+                    rationale="A wildcard or binding pattern already "
+                    "matches all remaining values.",
+                    fix="Remove this arm or move it before the catch-all.",
+                    spec_ref='Chapter 4, Section 4.9.3 "Unreachable Arms"',
+                )
+            return  # catch-all guarantees exhaustiveness
+
+        # --- ADT exhaustiveness ---
+        if isinstance(raw_ty, AdtType):
+            adt_info = self.env.data_types.get(raw_ty.name)
+            if adt_info is None:
+                return  # unknown ADT, can't check
+            all_ctors = set(adt_info.constructors.keys())
+            covered: set[str] = set()
+            for arm in expr.arms:
+                pat = arm.pattern
+                if isinstance(pat, ast.ConstructorPattern):
+                    covered.add(pat.name)
+                elif isinstance(pat, ast.NullaryPattern):
+                    covered.add(pat.name)
+            missing = sorted(all_ctors - covered)
+            if missing:
+                self._error(
+                    expr,
+                    f"Non-exhaustive match: missing patterns for "
+                    f"{', '.join(missing)}.",
+                    rationale="All constructors of the matched type "
+                    "must be covered.",
+                    fix="Add a wildcard '_' arm or cover all cases.",
+                    spec_ref='Chapter 4, Section 4.9.2 '
+                    '"Exhaustiveness Checking"',
+                )
+            return
+
+        # --- Bool exhaustiveness ---
+        if isinstance(raw_ty, PrimitiveType) and raw_ty.name == "Bool":
+            covered_bools: set[bool] = set()
+            for arm in expr.arms:
+                pat = arm.pattern
+                if isinstance(pat, ast.BoolPattern):
+                    covered_bools.add(pat.value)
+            missing_bools = []
+            if True not in covered_bools:
+                missing_bools.append("true")
+            if False not in covered_bools:
+                missing_bools.append("false")
+            if missing_bools:
+                self._error(
+                    expr,
+                    f"Non-exhaustive match: missing patterns for "
+                    f"{', '.join(missing_bools)}.",
+                    rationale="Bool matches must cover both true and false.",
+                    fix="Add a wildcard '_' arm or cover all cases.",
+                    spec_ref='Chapter 4, Section 4.9.2 '
+                    '"Exhaustiveness Checking"',
+                )
+            return
+
+        # --- Infinite types (Int, String, Float64, Nat, etc.) ---
+        # No catch-all found and type has infinite domain → non-exhaustive
+        self._error(
+            expr,
+            "Non-exhaustive match: type has infinite domain, "
+            "a wildcard '_' or binding pattern is required.",
+            rationale="Matches on types with infinite values cannot "
+            "enumerate all cases.",
+            fix="Add a wildcard '_' arm or a binding pattern.",
+            spec_ref='Chapter 4, Section 4.9.2 '
+            '"Exhaustiveness Checking"',
+        )
 
     # -----------------------------------------------------------------
     # Patterns
