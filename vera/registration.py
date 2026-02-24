@@ -46,6 +46,7 @@ def register_fn(
         effect=eff,
         span=decl.span,
         contracts=decl.contracts,
+        param_type_exprs=decl.params,
     )
 
     if decl.where_fns:

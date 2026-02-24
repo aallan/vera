@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from vera import ast
 from vera.environment import FunctionInfo, TypeEnv
 from vera.errors import Diagnostic, SourceLocation
-from vera.smt import SlotEnv, SmtContext
+from vera.smt import CallViolation, SlotEnv, SmtContext
 from vera.types import (
     BOOL,
     INT,
@@ -296,7 +296,10 @@ class ContractVerifier:
                     self.summary.total += 1
             return
 
-        smt = SmtContext(timeout_ms=self.timeout_ms)
+        smt = SmtContext(
+            timeout_ms=self.timeout_ms,
+            fn_lookup=self.env.lookup_function,
+        )
         slot_env = SlotEnv()
 
         # 1. Declare Z3 constants for parameters
@@ -351,10 +354,22 @@ class ContractVerifier:
                 assumptions.append(z3_pre)
                 self.summary.tier1_verified += 1
 
-        # 4. Translate function body
+        # 4. Assert caller assumptions into solver so _translate_call
+        #    can see them during body translation.
+        for a in assumptions:
+            smt.solver.add(a)
+
+        # 5. Translate function body
         body_expr = smt.translate_expr(decl.body, slot_env)
 
-        # 5. Verify ensures clauses
+        # 6. Report any call-site precondition violations
+        for v in smt.drain_call_violations():
+            self._report_call_violation(
+                decl, v.callee_name, v.call_node,
+                v.precondition, v.counterexample,
+            )
+
+        # 7. Verify ensures clauses
         for contract in decl.contracts:
             if isinstance(contract, ast.Ensures):
                 self.summary.total += 1
@@ -372,8 +387,8 @@ class ContractVerifier:
                         f"Contract will be checked at runtime.",
                         rationale="The function body contains constructs that "
                                   "cannot be translated to SMT (e.g., "
-                                  "pattern matching, recursive calls, "
-                                  "effect operations).",
+                                  "pattern matching, effect operations, "
+                                  "generic calls).",
                         spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
                     )
                     continue
@@ -481,6 +496,53 @@ class ContractVerifier:
                 "postcondition to match the actual function behaviour."
             ),
             spec_ref='Chapter 6, Section 6.4 "Verification Conditions"',
+        )
+
+    def _report_call_violation(
+        self,
+        caller: ast.FnDecl,
+        callee_name: str,
+        call_node: ast.FnCall,
+        precondition: ast.Requires,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Report a call site where the callee's precondition may not hold."""
+        pre_text = self._contract_source_text(precondition)
+
+        # Build counterexample description
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if not name.startswith("_call_"):
+                    ce_lines.append(f"    {name} = {value}")
+
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+
+        description = (
+            f"Call to '{callee_name}' in function '{caller.name}' "
+            f"may violate the callee's precondition."
+        )
+        if pre_text:
+            description += f"\n  Precondition: {pre_text}"
+        if ce_text:
+            description += f"\n  {ce_text}"
+
+        self._error(
+            call_node,
+            description,
+            rationale=(
+                "The SMT solver could not prove that the callee's "
+                "precondition holds at this call site given the caller's "
+                "assumptions. The callee may receive arguments that violate "
+                "its contract."
+            ),
+            fix=(
+                f"Add a precondition to '{caller.name}' or guard the call "
+                f"with an if-expression that ensures the callee's "
+                f"precondition is satisfied."
+            ),
+            spec_ref='Chapter 6, Section 6.4.2 "Call-Site Verification"',
         )
 
     def _contract_source_text(self, contract: ast.Contract) -> str:

@@ -453,7 +453,7 @@ fn invert(@Bool2 -> @Bool2)
         assert result.summary.tier1_verified >= 2
 
     def test_recursive_call_is_tier3(self) -> None:
-        """Recursive function bodies can't be translated to Z3."""
+        """Recursive functions still have Tier 3 for decreases."""
         result = _verify("""
 fn factorial(@Nat -> @Nat)
   requires(true)
@@ -465,7 +465,7 @@ fn factorial(@Nat -> @Nat)
   else { @Nat.0 * factorial(@Nat.0 - 1) }
 }
 """)
-        # ensures(@Nat.result >= 1) — body has recursive call → Tier 3
+        # ensures(@Nat.result >= 1) — now Tier 1 via modular verification
         # decreases — always Tier 3 for now
         assert result.summary.tier3_runtime >= 1
 
@@ -576,7 +576,8 @@ fn f(@Nat -> @Nat)
 }
 """)
         # requires(true) → Tier 1 trivial
-        # ensures with recursive body → Tier 3
+        # ensures — now Tier 1 via modular verification (recursive call
+        #   returns fresh Nat var with assumed postcondition)
         # decreases → Tier 3
         assert result.summary.total >= 3
         assert result.summary.tier1_verified >= 1
@@ -652,3 +653,242 @@ fn f(@Int -> @Int)
   effects(pure)
 { @Int.0 }
 """)
+
+
+# =====================================================================
+# Call-site precondition verification (C6b)
+# =====================================================================
+
+class TestCallSiteVerification:
+    """Modular verification: callee preconditions checked at call sites."""
+
+    def test_call_satisfied_precondition(self) -> None:
+        """Calling with a literal that satisfies requires(@Int.0 != 0)."""
+        _verify_ok("""
+fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+fn caller(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ non_zero(1) }
+""")
+
+    def test_call_violated_precondition(self) -> None:
+        """Calling with literal 0 violates requires(@Int.0 != 0)."""
+        _verify_err("""
+fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+fn bad_caller(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ non_zero(0) }
+""", "precondition")
+
+    def test_call_precondition_forwarded(self) -> None:
+        """Caller's precondition implies callee's — passes."""
+        _verify_ok("""
+fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+fn safe_caller(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ non_zero(@Int.0) }
+""")
+
+    def test_call_postcondition_assumed(self) -> None:
+        """Caller's ensures relies on callee's postcondition."""
+        _verify_ok("""
+fn succ(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + 1)
+  effects(pure)
+{ @Int.0 + 1 }
+
+fn add_two(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + 2)
+  effects(pure)
+{ succ(succ(@Int.0)) }
+""")
+
+    def test_recursive_call_uses_postcondition(self) -> None:
+        """Recursive factorial: ensures(@Nat.result >= 1) now Tier 1.
+
+        The postcondition is assumed at the recursive call site,
+        and base case returns 1, so result >= 1 is provable.
+        """
+        result = _verify("""
+fn factorial(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 1)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 1 }
+  else { @Nat.0 * factorial(@Nat.0 - 1) }
+}
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {[e.description for e in errors]}"
+        # ensures now Tier 1 (modular verification), decreases still Tier 3
+        assert result.summary.tier1_verified >= 2
+
+    def test_call_trivial_precondition(self) -> None:
+        """Callee with requires(true) — always satisfied."""
+        _verify_ok("""
+fn id(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{ @Int.0 }
+
+fn caller(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{ id(@Int.0) }
+""")
+
+    def test_call_in_let_binding(self) -> None:
+        """Call result used via let binding, passed to second call."""
+        _verify_ok("""
+fn succ(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + 1)
+  effects(pure)
+{ @Int.0 + 1 }
+
+fn add_two_let(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + 2)
+  effects(pure)
+{
+  let @Int = succ(@Int.0);
+  succ(@Int.0)
+}
+""")
+
+    def test_where_block_call(self) -> None:
+        """Call to a where-block helper function."""
+        _verify_ok("""
+fn outer(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + 1)
+  effects(pure)
+{ helper(@Int.0) }
+where {
+  fn helper(@Int -> @Int)
+    requires(true)
+    ensures(@Int.result == @Int.0 + 1)
+    effects(pure)
+  { @Int.0 + 1 }
+}
+""")
+
+    def test_generic_call_falls_to_tier3(self) -> None:
+        """Calls to generic functions bail to Tier 3."""
+        result = _verify("""
+forall<T>
+fn id(@T -> @T)
+  requires(true)
+  ensures(@T.result == @T.0)
+  effects(pure)
+{ @T.0 }
+
+fn caller(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ id(@Int.0) }
+""")
+        # id's contracts → Tier 3 (generic)
+        # caller's body has generic call → body_expr is None
+        # Since caller's ensures is trivial, it doesn't matter
+        assert result.summary.tier3_runtime >= 1
+
+    def test_multiple_preconditions_all_checked(self) -> None:
+        """Two requires on callee, second one violated."""
+        _verify_err("""
+fn guarded(@Int -> @Int)
+  requires(@Int.0 > 0)
+  requires(@Int.0 < 100)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+fn bad_caller(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ guarded(@Int.0) }
+""", "precondition")
+
+    def test_precondition_via_caller_requires(self) -> None:
+        """Caller's requires forwards two constraints to satisfy callee."""
+        _verify_ok("""
+fn guarded(@Int -> @Int)
+  requires(@Int.0 > 0)
+  requires(@Int.0 < 100)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+fn good_caller(@Int -> @Int)
+  requires(@Int.0 > 0)
+  requires(@Int.0 < 100)
+  ensures(true)
+  effects(pure)
+{ guarded(@Int.0) }
+""")
+
+    def test_multiple_calls_in_sequence(self) -> None:
+        """Two calls in sequence, each gets a fresh return variable."""
+        _verify_ok("""
+fn inc(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + 1)
+  effects(pure)
+{ @Int.0 + 1 }
+
+fn add_two_seq(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + 2)
+  effects(pure)
+{
+  let @Int = inc(@Int.0);
+  inc(@Int.0)
+}
+""")
+
+    def test_violation_error_mentions_callee_name(self) -> None:
+        """Error message includes the callee function name."""
+        errors = _verify_err("""
+fn non_zero(@Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+fn bad(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ non_zero(0) }
+""", "precondition")
+        # Check that the error mentions the callee name
+        assert any("non_zero" in e.description for e in errors)
