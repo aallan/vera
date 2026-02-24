@@ -74,15 +74,16 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `ast.py` | 682 | Transform | Frozen dataclass AST nodes | `Program`, `Node`, `Expr` |
 | `types.py` | 302 | Type check | Semantic type representation | `Type`, `is_subtype()` |
 | `environment.py` | 299 | Type check | Type environment, scope stacks | `TypeEnv` |
-| `checker.py` | 1,569 | Type check | Two-pass type checker | `typecheck()` |
-| `smt.py` | 363 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
-| `verifier.py` | 539 | Verify | Contract verification | `verify()` |
-| `wasm.py` | 585 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
-| `codegen.py` | 653 | Compile | Codegen orchestrator | `compile()`, `execute()` |
+| `checker.py` | 1,668 | Type check | Two-pass type checker | `typecheck()` |
+| `smt.py` | 485 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
+| `verifier.py` | 601 | Verify | Contract verification | `verify()` |
+| `wasm.py` | 1,250 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
+| `codegen.py` | 1,376 | Compile | Codegen orchestrator | `compile()`, `execute()` |
 | `errors.py` | 354 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
-| `cli.py` | 541 | All | CLI commands | `main()` |
+| `cli.py` | 563 | All | CLI commands | `main()` |
+| `registration.py` | 56 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~7,082 lines of Python + 328 lines of grammar.
+Total: ~9,102 lines of Python + 328 lines of grammar.
 
 ## Parsing
 
@@ -168,7 +169,7 @@ Node
 
 ## Type Checking
 
-**Files:** `checker.py` (1,569 lines), `types.py` (302 lines), `environment.py` (299 lines)
+**Files:** `checker.py` (1,668 lines), `types.py` (302 lines), `environment.py` (300 lines)
 
 This is the most architecturally complex stage.
 
@@ -345,7 +346,7 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen.py` (653 lines), `wasm.py` (585 lines)
+**Files:** `codegen.py` (1,376 lines), `wasm.py` (1,250 lines)
 
 ### Compilation pipeline
 
@@ -451,7 +452,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**553 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
+**660 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -459,14 +460,14 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 |------|------:|------:|----------------|
 | `test_parser.py` | 95 | 791 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 91 | 950 | Type synthesis, slot resolution, effects, contracts |
-| `test_verifier.py` | 68 | 897 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions |
-| `test_codegen.py` | 130 | 1,397 | WASM compilation, arithmetic, Float64, control flow, strings, IO, contracts, example round-trips |
-| `test_cli.py` | 67 | 832 | CLI commands (check, verify, compile, run), subprocess integration, runtime traps, arg validation |
+| `test_checker.py` | 108 | 1,203 | Type synthesis, slot resolution, effects, contracts, exhaustiveness |
+| `test_verifier.py` | 68 | 894 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions |
+| `test_codegen.py` | 220 | 2,686 | WASM compilation, arithmetic, Float64, ADTs, match, generics, State\<T\>, control flow, strings, IO, contracts, example round-trips |
+| `test_cli.py` | 67 | 833 | CLI commands (check, verify, compile, run), subprocess integration, runtime traps, arg validation |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 16 | 129 | Diagnostic formatting, error patterns |
 
-Total: 5,717 lines of test code (77% of source code size).
+Total: 7,500 lines of test code (82% of source code size).
 
 ### Round-trip testing
 
@@ -507,7 +508,7 @@ _run_trap(source, fn, args)    # compile + execute, assert WASM trap
 **CI** runs on every push and PR to `main`:
 - **Test matrix:** 6 jobs (ubuntu + macOS × Python 3.11, 3.12, 3.13)
 - **Coverage:** ≥80% threshold (Python 3.12 on ubuntu)
-- **Mypy:** strict mode, 11 source files
+- **Mypy:** strict mode, 14 source files
 - **Lint:** example validation + version sync + spec code blocks
 
 **Pre-commit hooks** run on every local commit:
@@ -534,11 +535,9 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **No ADT/match codegen** | Needs tagged union representation in linear memory | [#26](https://github.com/aallan/vera/issues/26) |
 | **No closure codegen** | Needs closure conversion pass | [#27](https://github.com/aallan/vera/issues/27) |
 | **No effect handler codegen** | Needs continuation-passing transform | [#28](https://github.com/aallan/vera/issues/28) |
-| **No generic function codegen** | Needs monomorphization or type erasure | [#29](https://github.com/aallan/vera/issues/29) |
-| **No Float64/Byte codegen** | Straightforward extensions | [#25](https://github.com/aallan/vera/issues/25), [#30](https://github.com/aallan/vera/issues/30) |
+| **No Byte type codegen** | Needs linear memory byte operations | [#30](https://github.com/aallan/vera/issues/30) |
 | **No module resolution** | `import` declarations parsed but not resolved | C7 (module system) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | Incremental |
 | **No termination verification** | `decreases` clauses parsed but always Tier 3 | Future |
@@ -546,7 +545,8 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **No match/constructor body verification** | Untranslatable to Z3, always Tier 3 | Tier 2 |
 | **Minimal type inference** | Call-site generic instantiation only, no Hindley-Milner | Incremental |
 | **No incremental compilation** | Full file processed from scratch each time | Low priority |
-| **No exhaustiveness checking** | Match expressions not checked for missing cases | Incremental |
+| **No garbage collection** | Bump allocator only; linear memory is not reclaimed | Future |
+| **String constants only** | No dynamic string construction | Future |
 | **Spec/parser `@T` notation mismatch** | Spec uses `@T` in data/effect declarations; parser expects bare `T` — see below | Reconciliation |
 
 ### Spec/parser notation mismatch

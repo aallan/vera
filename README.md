@@ -165,25 +165,25 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 ### What's next: C6 — Codegen Completeness (v0.0.10–v0.0.23)
 
-The code generator compiles 7 of 14 examples. C6 extends WASM compilation to all language constructs, working through the dependency graph from simplest to most complex.
+C6 extends WASM compilation to all language constructs, working through the dependency graph from simplest to most complex. All 14 examples now compile.
 
 **Independent tasks (no dependencies on each other):**
 
 | Sub-phase | Scope | Closes | Unlocks |
 |-----------|-------|--------|---------|
-| ~~C6a~~ | ~~Float64 — `f64` literals, arithmetic, comparisons~~ | ~~#25~~ | ~~Done (v0.0.10)~~ |
-| ~~C6b~~ | ~~Callee preconditions — verify `requires()` at call sites~~ | ~~#19~~ | ~~Done (v0.0.11)~~ |
-| ~~C6c~~ | ~~Match exhaustiveness — verify all constructors covered~~ | ~~#18~~ | ~~Done (v0.0.12)~~ |
-| ~~C6d~~ | ~~State\<T\> operations — get/put as host imports~~ | — | ~~Done (v0.0.13)~~ |
+| ~~C6a~~ | ~~Float64 — `f64` literals, arithmetic, comparisons~~ | ~~#25~~ | ~~Done (v0.0.10, [#35](https://github.com/aallan/vera/pull/35))~~ |
+| ~~C6b~~ | ~~Callee preconditions — verify `requires()` at call sites~~ | ~~#19~~ | ~~Done (v0.0.11, [#36](https://github.com/aallan/vera/pull/36))~~ |
+| ~~C6c~~ | ~~Match exhaustiveness — verify all constructors covered~~ | ~~#18~~ | ~~Done (v0.0.12, [#37](https://github.com/aallan/vera/pull/37))~~ |
+| ~~C6d~~ | ~~State\<T\> operations — get/put as host imports~~ | — | ~~Done (v0.0.13, [#38](https://github.com/aallan/vera/pull/38))~~ |
 
 **Allocator and data types (sequential chain):**
 
 | Sub-phase | Scope | Closes | Unlocks |
 |-----------|-------|--------|---------|
-| ~~C6e~~ | ~~Bump allocator — heap allocation for tagged values~~ | — | ~~Done (v0.0.14)~~ |
-| ~~C6f~~ | ~~ADT constructors — heap-allocated tagged unions~~ | — | ~~Done (v0.0.15)~~ |
-| ~~C6g~~ | ~~Match expressions — tag dispatch, field extraction~~ | ~~#26~~ | ~~Done (v0.0.16)~~ |
-| ~~C6i~~ | ~~Generics — monomorphization of `forall<T>` functions~~ | ~~#29~~ | ~~Done (v0.0.17)~~ |
+| ~~C6e~~ | ~~Bump allocator — heap allocation for tagged values~~ | — | ~~Done (v0.0.14, [#39](https://github.com/aallan/vera/pull/39))~~ |
+| ~~C6f~~ | ~~ADT constructors — heap-allocated tagged unions~~ | — | ~~Done (v0.0.15, [#40](https://github.com/aallan/vera/pull/40))~~ |
+| ~~C6g~~ | ~~Match expressions — tag dispatch, field extraction~~ | ~~#26~~ | ~~Done (v0.0.16, [#41](https://github.com/aallan/vera/pull/41))~~ |
+| ~~C6i~~ | ~~Generics — monomorphization of `forall<T>` functions~~ | ~~#29~~ | ~~Done (v0.0.17, [#42](https://github.com/aallan/vera/pull/42))~~ |
 
 **Higher-order and effects:**
 
@@ -465,7 +465,7 @@ vera/
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (553 tests)
+├── tests/                         # Test suite (660 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse

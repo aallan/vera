@@ -16,8 +16,8 @@ Source (.vera)
 
 The compilation target is a standalone WASM module containing:
 - Exported functions (callable from the host or other modules)
-- A linear memory segment (for string constants and future heap allocation)
-- Imported host functions (for IO operations)
+- A linear memory segment (for string constants and heap-allocated ADTs)
+- Imported host functions (for IO and State\<T\> operations)
 - An optional data section (for string literals)
 
 ## 11.2 Type Mapping
@@ -29,10 +29,12 @@ Vera types map to WASM value types as follows:
 | `Int` | `i64` | 64-bit signed integer |
 | `Nat` | `i64` | Non-negativity enforced by contracts, not by WASM type |
 | `Bool` | `i32` | `0` = `false`, `1` = `true` |
+| `Float64` / `Float` | `f64` | 64-bit IEEE 754 floating point |
 | `Unit` | *(none)* | Functions returning `Unit` have no WASM result type |
 | `String` | `i32, i32` | Pointer and length pair (UTF-8 bytes in linear memory) |
+| ADTs | `i32` | Heap pointer to tagged union (see Section 11.6) |
 
-Types not in this table (ADTs, arrays, closures, generic type variables) are not yet compilable. Functions using non-compilable types are skipped with a warning.
+Generic type variables are resolved via monomorphization — each concrete instantiation of a `forall<T>` function produces a specialized copy with type variables replaced by concrete types (e.g. `identity$Int`). Types not in this table (arrays, closures) are not yet compilable. Functions using non-compilable types are skipped with a warning.
 
 ### 11.2.1 Nat as i64
 
@@ -55,6 +57,7 @@ Each AST expression node compiles to a sequence of WASM instructions that leaves
 | Expression | WASM Output |
 |------------|-------------|
 | `IntLit(42)` | `i64.const 42` |
+| `FloatLit(3.14)` | `f64.const 3.14` |
 | `BoolLit(true)` | `i32.const 1` |
 | `BoolLit(false)` | `i32.const 0` |
 | `UnitLit` | *(nothing)* |
@@ -68,27 +71,30 @@ Each AST expression node compiles to a sequence of WASM instructions that leaves
 
 Binary operators compile to their WASM equivalents:
 
-| Operator | Int/Nat (i64) | Bool (i32) |
-|----------|---------------|------------|
-| `+` | `i64.add` | — |
-| `-` | `i64.sub` | — |
-| `*` | `i64.mul` | — |
-| `/` | `i64.div_s` | — |
-| `%` | `i64.rem_s` | — |
-| `==` | `i64.eq` | `i32.eq` |
-| `!=` | `i64.ne` | `i32.ne` |
-| `<` | `i64.lt_s` | `i32.lt_s` |
-| `>` | `i64.gt_s` | `i32.gt_s` |
-| `<=` | `i64.le_s` | `i32.le_s` |
-| `>=` | `i64.ge_s` | `i32.ge_s` |
-| `&&` | — | `i32.and` |
-| `\|\|` | — | `i32.or` |
+| Operator | Int/Nat (i64) | Float64 (f64) | Bool (i32) |
+|----------|---------------|---------------|------------|
+| `+` | `i64.add` | `f64.add` | — |
+| `-` | `i64.sub` | `f64.sub` | — |
+| `*` | `i64.mul` | `f64.mul` | — |
+| `/` | `i64.div_s` | `f64.div` | — |
+| `%` | `i64.rem_s` | *(unsupported)* | — |
+| `==` | `i64.eq` | `f64.eq` | `i32.eq` |
+| `!=` | `i64.ne` | `f64.ne` | `i32.ne` |
+| `<` | `i64.lt_s` | `f64.lt` | `i32.lt_s` |
+| `>` | `i64.gt_s` | `f64.gt` | `i32.gt_s` |
+| `<=` | `i64.le_s` | `f64.le` | `i32.le_s` |
+| `>=` | `i64.ge_s` | `f64.ge` | `i32.ge_s` |
+| `&&` | — | — | `i32.and` |
+| `\|\|` | — | — | `i32.or` |
+
+Float64 comparisons return `i32` (0 or 1), matching WASM's native comparison semantics.
 
 Unary operators:
 
 | Operator | WASM Output |
 |----------|-------------|
-| `-` (negation) | `i64.const 0  [expr]  i64.sub` |
+| `-` (Int negation) | `i64.const 0  [expr]  i64.sub` |
+| `-` (Float64 negation) | `f64.neg` |
 | `!` (Boolean not) | `[expr]  i32.eqz` |
 
 The implies operator `==>` is lowered to `(!a) || b`:
@@ -153,9 +159,11 @@ call $vera.print
 
 A function is compilable if:
 
-1. All parameter and return types map to WASM primitives (Section 11.2)
+1. All parameter and return types map to WASM types (Section 11.2) — primitives, ADTs, or monomorphized generics
 2. The function body uses only supported expression types
-3. Effects are either `pure` or `<IO>`
+3. Effects are `pure`, `<IO>`, or `<State<T>>` where T is a compilable type
+
+Generic (`forall<T>`) functions are compiled via monomorphization: for each concrete call site, a specialized copy is produced with type variables replaced by concrete types.
 
 Functions that fail any of these criteria are skipped with a diagnostic warning. This is analogous to the verifier's Tier 3 classification — the compiler degrades gracefully rather than failing.
 
@@ -194,11 +202,17 @@ All strings are concatenated into a single data segment starting at offset 0. Ea
 The WASM module exports one page (64 KiB) of linear memory as `"memory"`. This memory holds:
 
 - **String constants** (data section, starting at offset 0)
-- **Future:** heap-allocated data (ADTs, arrays, closures)
+- **Heap-allocated ADTs** (bump-allocated after string data)
+
+A bump allocator manages heap allocation. A mutable global `$heap_ptr` tracks the next free byte (initialized to the first byte after string data). The `$alloc` internal function bump-allocates with 8-byte alignment and returns a pointer to the allocated block. The allocator and heap global are only emitted when the program declares ADT types.
+
+ADT constructors allocate heap blocks containing a tag (i32) followed by field values at computed offsets. Match expressions dispatch on the tag and extract fields at the corresponding offsets.
 
 The memory is exported so the host runtime can read string data for IO operations.
 
-## 11.7 IO Host Bindings
+## 11.7 Host Bindings
+
+### 11.7.1 IO
 
 The `IO` effect is implemented via host imports. The WASM module imports:
 
@@ -213,6 +227,17 @@ The host runtime (wasmtime) provides the implementation:
 3. Print to stdout
 
 This means `IO.print("Hello")` compiles to pushing the string's offset and length, then calling the imported host function. The effect system ensures only functions declaring `effects(<IO>)` can call `IO.print`.
+
+### 11.7.2 State\<T\>
+
+The `State<T>` effect compiles to typed host import pairs for `get` and `put`:
+
+```wat
+(import "vera" "state_get_Int" (func $vera.state_get_Int (result i64)))
+(import "vera" "state_put_Int" (func $vera.state_put_Int (param i64)))
+```
+
+Each concrete `State<T>` type (`State<Int>`, `State<Bool>`, `State<Nat>`, `State<Float64>`) generates a separate pair of imports. The host runtime maintains mutable state cells per type, initialized to zero. Mixed effects (e.g. `effects(<State<Int>, IO>)`) are supported — both sets of imports are emitted.
 
 ## 11.8 Runtime Contract Insertion
 
@@ -300,12 +325,9 @@ The current compilation model has the following limitations, each tracked as a G
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| No Float64 codegen | [#25](https://github.com/aallan/vera/issues/25) | Straightforward i64 → f64 extension |
-| No ADT / match codegen | [#26](https://github.com/aallan/vera/issues/26) | Needs tagged union representation in linear memory |
 | No closure / anonymous function codegen | [#27](https://github.com/aallan/vera/issues/27) | Needs closure conversion pass |
 | No effect handler codegen | [#28](https://github.com/aallan/vera/issues/28) | Needs continuation-passing transform |
-| No generic function codegen | [#29](https://github.com/aallan/vera/issues/29) | Needs monomorphization or type erasure |
 | No Byte type codegen | [#30](https://github.com/aallan/vera/issues/30) | Needs linear memory byte operations |
 | No module-level code generation | — | Each file compiles independently |
-| No garbage collection | — | Linear memory is not reclaimed |
+| No garbage collection | — | Bump allocator only; linear memory is not reclaimed |
 | String constants only | — | No dynamic string construction |
