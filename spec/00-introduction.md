@@ -147,11 +147,11 @@ Throughout this specification:
 
 The following design decisions are noted here for future specification work:
 
-### Network Access as an Effect
+### Network Access as an Effect ([#57](https://github.com/aallan/vera/issues/57))
 
 Network I/O SHOULD be modelled as an algebraic effect (e.g., `<Http>` or `<Net>`) with operations like `get`, `post`, etc. Functions performing network access declare `effects(<Http>)`. Handlers provide the implementation — real HTTP in production, mocks in tests. This fits naturally with Vera's algebraic effect system and makes network I/O explicit and testable. Almost all practical programs need network access; this should be a first-class part of the standard library (Chapter 9).
 
-### JSON as a Standard Library Type
+### JSON as a Standard Library Type ([#58](https://github.com/aallan/vera/issues/58))
 
 JSON SHOULD be a standard library ADT, not a primitive type:
 
@@ -168,7 +168,7 @@ data Json {
 
 Parse and serialize operations belong in the standard library. Refinement types can express JSON schemas (e.g., `type ApiResponse = { @Json | has_field(@Json.0, "status") }`). This approach keeps the core language small while providing ergonomic JSON support.
 
-### Asynchronous Promises/Futures
+### Asynchronous Promises/Futures ([#59](https://github.com/aallan/vera/issues/59))
 
 Async operations SHOULD be first-class citizens in Vera, modelled as an algebraic effect. An `<Async>` effect with an `await` operation fits naturally:
 
@@ -196,7 +196,7 @@ Key design points:
 
 This avoids coloured-function problems (async vs sync) because algebraic effects already separate the description of an operation from its execution. A handler can run `<Http>` operations sequentially or concurrently — the function code is the same either way.
 
-### Abilities (Restricted Type Constraints)
+### Abilities (Restricted Type Constraints) ([#60](https://github.com/aallan/vera/issues/60))
 
 Vera's type variables are currently unconstrained (`forall<T>`). To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera SHOULD adopt **Roc-style restricted abilities** rather than full Haskell-style typeclasses:
 
@@ -231,7 +231,7 @@ This design draws on Roc's abilities (deliberately no HKTs, auto-derivable), Gle
 
 Abilities are a post-v0.1 feature. They will be specified in Chapter 2 when implemented.
 
-### LLM Inference as an Effect
+### LLM Inference as an Effect ([#61](https://github.com/aallan/vera/issues/61))
 
 Vera is designed for LLMs to write. It SHOULD also support LLMs as a runtime component, modelled as an algebraic effect:
 
@@ -264,7 +264,7 @@ Key design points:
 
 The `Inference` effect belongs in the standard library (Chapter 9). The WASM runtime provides handler implementations that bind to HTTP APIs or local model runtimes. No language changes are needed — the existing effect system supports this directly.
 
-### Standard Library Collections
+### Standard Library Collections ([#62](https://github.com/aallan/vera/issues/62))
 
 The standard library (Chapter 9) SHOULD include:
 

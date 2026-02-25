@@ -179,7 +179,7 @@ fn abs(@Int -> @Nat)
 @Array<Int>                              -- array of ints
 @Tuple<Int, String>                      -- tuple
 @Option<Int>                             -- Option type (Some/None)
-Fn(@Int -> @Int) effects(pure)           -- function type
+Fn(Int -> Int) effects(pure)              -- function type
 { @Int | @Int.0 > 0 }                   -- refinement type
 ```
 

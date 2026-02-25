@@ -2,6 +2,20 @@
 
 Vera is a programming language designed for LLMs to write. It has mandatory contracts, algebraic effects, typed slot references (`@T.n`), and compiles to WebAssembly. The reference compiler is written in Python.
 
+## Virtual environment
+
+Always use the project venv. All commands below assume it is active:
+
+```bash
+source .venv/bin/activate
+```
+
+If the venv does not exist, create it first:
+
+```bash
+python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
+```
+
 ## Key commands
 
 ```bash
@@ -74,3 +88,11 @@ Each stage is a module with a public API function and is independently testable.
 ```
 
 Each diagnostic includes: `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, and `spec_ref`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts.
+
+## Git commits
+
+When creating commits, use this co-author trailer:
+
+    Co-Authored-By: Claude <noreply@anthropic.invalid>
+
+Do NOT use `noreply@anthropic.com` — that email resolves to an unrelated GitHub account. The `.invalid` TLD (RFC 2606) is reserved and will never resolve to a real address.
