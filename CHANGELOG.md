@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.20] - 2026-02-25
+
+### Fixed
+- **Spec @T notation mismatch**: fixed 30 code blocks across 5 spec files where `@T` was used in data constructor fields and effect operation signatures (value-level `@` is for binding sites only); 16 blocks now parse, 14 recategorized as fragments for unrelated syntax reasons (empty effects, handler `with` clauses, inline function types)
+- **Stale README limitation rows**: removed "No closure codegen" and "No effect handler codegen" rows (closed in v0.0.18 and v0.0.19 respectively)
+- **Spec limitation issue tracking**: created GitHub issues [#50](https://github.com/aallan/vera/issues/50)–[#53](https://github.com/aallan/vera/issues/53) for all unlinked limitations in spec Chapter 11; updated spec and README tables
+
+### Added
+- **Test coverage**: 104 new tests across 4 modules (795 total, up from 691)
+  - `tests/test_types.py` (new): 55 tests for `is_subtype`, `types_equal`, `substitute`, `pretty_type`, `canonical_type_name`, `base_type`
+  - `tests/test_wasm.py` (new): 22 tests for `StringPool`, `WasmSlotEnv`, and translation edge cases via full compilation pipeline
+  - `tests/test_errors.py`: 18 new tests for `SourceLocation`, `Diagnostic.to_dict`, `diagnose_lark_error`, `unclosed_block`, `unexpected_token`, `VeraError`
+  - `tests/test_cli.py`: 10 new tests for compile/run/verify error paths in both text and JSON modes
+
+### Changed
+- **Spec allowlist**: removed all 30 MISMATCH entries from `check_spec_examples.py`; added 14 FRAGMENT entries for genuine syntax fragments; parsed blocks increased from 21 to 37
+
 ## [0.0.19] - 2026-02-25
 
 ### Added
@@ -325,7 +342,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.19...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.20...HEAD
+[0.0.20]: https://github.com/aallan/vera/compare/v0.0.19...v0.0.20
 [0.0.19]: https://github.com/aallan/vera/compare/v0.0.18...v0.0.19
 [0.0.18]: https://github.com/aallan/vera/compare/v0.0.17...v0.0.18
 [0.0.17]: https://github.com/aallan/vera/compare/v0.0.16...v0.0.17

@@ -236,7 +236,7 @@ In the else branch after the let:
 ### Example 8: Higher-Order Functions
 
 ```
-fn map_array<A, B>(@Array<A>, Fn(@A -> @B) effects(pure) -> @Array<B>)
+fn map_array<A, B>(@Array<A>, fn(A -> B) effects(pure) -> @Array<B>)
   requires(true)
   ensures(length(@Array<B>.result) == length(@Array<A>.0))
   effects(pure)
@@ -252,8 +252,8 @@ Here `@Array<A>.0` refers to the first argument and `@Fn<A, B>.0` is a shorthand
 
 ```
 data List<T> {
-  Cons(@T, @List<T>),
-  Nil,
+  Cons(T, List<T>),
+  Nil
 }
 
 fn list_head<T>(@List<T> -> @Option<T>)
@@ -325,7 +325,7 @@ Here `@Tuple<Int, String>.result` refers to the entire return tuple, and `.0` ac
 Function-type parameters use the same `@T.n` system, where `T` is the full function type. Since function types can be long, a type alias is recommended:
 
 ```
-type IntTransform = Fn(@Int -> @Int) effects(pure);
+type IntTransform = fn(Int -> Int) effects(pure);
 
 fn apply_to_array(@Array<Int>, @IntTransform -> @Array<Int>)
   requires(length(@Array<Int>.0) > 0)

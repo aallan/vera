@@ -17,27 +17,27 @@ An effect is a named set of operations:
 
 ```
 effect State<T> {
-  op get(@Unit -> @T);
-  op put(@T -> @Unit);
+  op get(Unit -> T);
+  op put(T -> Unit);
 }
 ```
 
 ```
 effect Exn<E> {
-  op throw(@E -> @Never);
+  op throw(E -> Never);
 }
 ```
 
 ```
 effect IO {
-  op print(@String -> @Unit);
-  op read_line(@Unit -> @String);
+  op print(String -> Unit);
+  op read_line(Unit -> String);
 }
 ```
 
 ```
 effect Choice {
-  op choose(@Bool -> @Bool);
+  op choose(Bool -> Bool);
 }
 ```
 
@@ -116,7 +116,7 @@ If two effects in scope define an operation with the same name, the call is ambi
 
 ```
 effect Logger {
-  op put(@String -> @Unit);
+  op put(String -> Unit);
 }
 
 fn(@Unit -> @Unit)
@@ -249,7 +249,7 @@ This demonstrates that `resume` is a first-class continuation: it can be called 
 Functions can be polymorphic over effects:
 
 ```
-forall<A, B> fn map_option(@Option<A>, Fn(@A -> @B) effects(<E>) -> @Option<B>)
+forall<A, B> fn map_option(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
   requires(true)
   ensures(true)
   effects(<E>)
@@ -268,7 +268,7 @@ The effect variable `E` is unified at each call site. If the passed function is 
 Effect row variables can appear alongside concrete effects:
 
 ```
-forall<A> fn with_logging(Fn(@Unit -> @A) effects(<E>) -> @A)
+forall<A> fn with_logging(fn(Unit -> A) effects(<E>) -> @A)
   requires(true)
   ensures(true)
   effects(<IO, E>)
@@ -288,10 +288,10 @@ This function always performs `IO` (for the logging), plus whatever effects `E` 
 
 ```
 effect IO {
-  op print(@String -> @Unit);
-  op read_line(@Unit -> @String);
-  op write_file(@String, @String -> @Unit);    -- path, contents
-  op read_file(@String -> @String);            -- path -> contents
+  op print(String -> Unit);
+  op read_line(Unit -> String);
+  op write_file(String, String -> Unit);    -- path, contents
+  op read_file(String -> String);            -- path -> contents
 }
 ```
 
@@ -301,7 +301,7 @@ IO operations interact with the outside world. They cannot be handled by user co
 
 ```
 effect Exn<E> {
-  op throw(@E -> @Never);
+  op throw(E -> Never);
 }
 ```
 

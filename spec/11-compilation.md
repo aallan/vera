@@ -432,7 +432,7 @@ The current compilation model has the following limitations, each tracked as a G
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
 | No Byte type codegen | [#30](https://github.com/aallan/vera/issues/30) | Needs linear memory byte operations |
-| No module-level code generation | — | Each file compiles independently |
-| No garbage collection | — | Bump allocator only; linear memory is not reclaimed |
-| String constants only | — | No dynamic string construction |
-| Only State\<T\> handlers | — | Exn\<E\> and custom effect handlers not yet compilable |
+| No module-level code generation | [#50](https://github.com/aallan/vera/issues/50) | Each file compiles independently |
+| No garbage collection | [#51](https://github.com/aallan/vera/issues/51) | Bump allocator only; linear memory is not reclaimed |
+| String constants only | [#52](https://github.com/aallan/vera/issues/52) | No dynamic string construction |
+| Only State\<T\> handlers | [#53](https://github.com/aallan/vera/issues/53) | Exn\<E\> and custom effect handlers not yet compilable |
