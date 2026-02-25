@@ -273,6 +273,17 @@ class CodeGenerator:
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
         self._needs_alloc: bool = False
 
+        # Type aliases (populated during registration)
+        # Maps alias name -> TypeExpr (for resolving function type aliases)
+        self._type_aliases: dict[str, ast.TypeExpr] = {}
+
+        # Closure compilation state
+        self._closure_table: list[str] = []  # lifted fn names for table
+        self._closure_sigs: dict[str, str] = {}  # sig_key -> WAT type decl
+        self._closure_fns_wat: list[str] = []  # WAT for lifted closures
+        self._needs_table: bool = False
+        self._next_closure_id: int = 0
+
     # -----------------------------------------------------------------
     # Diagnostics
     # -----------------------------------------------------------------
@@ -376,13 +387,15 @@ class CodeGenerator:
     # -----------------------------------------------------------------
 
     def _register_all(self, program: ast.Program) -> None:
-        """Register all function signatures and ADT layouts."""
+        """Register all function signatures, ADT layouts, and type aliases."""
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl):
                 self._register_fn(decl)
             elif isinstance(decl, ast.DataDecl):
                 self._register_data(decl)
+            elif isinstance(decl, ast.TypeAliasDecl):
+                self._type_aliases[decl.name] = decl.type_expr
 
     def _register_fn(self, decl: ast.FnDecl) -> None:
         """Register a function's WASM signature."""
@@ -946,6 +959,9 @@ class CodeGenerator:
             if ret_wt != "unsupported":
                 fn_ret_types[fn_name] = ret_wt
         ctx.set_fn_ret_types(fn_ret_types)
+        # Provide type aliases so closures can resolve FnType return types
+        ctx.set_type_aliases(self._type_aliases)
+        ctx.set_closure_id_start(self._next_closure_id)
         env = WasmSlotEnv()
 
         # Allocate parameters
@@ -998,6 +1014,9 @@ class CodeGenerator:
             )
             return None
 
+        # Collect closures created during body compilation and lift them
+        self._lift_pending_closures(ctx)
+
         # Compile postcondition checks (wrap around body result)
         post_instrs = self._compile_postconditions(ctx, decl, env, ret_wt)
 
@@ -1026,6 +1045,171 @@ class CodeGenerator:
         for instr in post_instrs:
             lines.append(f"    {instr}")
 
+        lines.append("  )")
+        return "\n".join(lines)
+
+    # -----------------------------------------------------------------
+    # Closure lifting
+    # -----------------------------------------------------------------
+
+    def _lift_pending_closures(self, ctx: WasmContext) -> None:
+        """Lift all anonymous functions created during body compilation.
+
+        Each pending closure is compiled to a module-level WASM function
+        and added to the function table.
+        """
+        for anon_fn, captures, closure_id in ctx._pending_closures:
+            lifted_wat = self._compile_lifted_closure(
+                closure_id, anon_fn, captures,
+            )
+            if lifted_wat is not None:
+                self._closure_fns_wat.append(lifted_wat)
+                self._closure_table.append(f"$anon_{closure_id}")
+                self._needs_table = True
+                self._needs_alloc = True
+                self._needs_memory = True
+
+                # Register the closure signature for call_indirect
+                param_wasm: list[str] = ["i32"]  # env param
+                for p in anon_fn.params:
+                    pname = self._type_expr_to_slot_name(p)
+                    pwt = self._type_expr_to_wasm_type(p)
+                    if pwt and pwt != "unsupported":
+                        param_wasm.append(pwt)
+                ret_wt = self._type_expr_to_wasm_type(anon_fn.return_type)
+                param_part = " ".join(
+                    f"(param {wt})" for wt in param_wasm
+                )
+                result_part = (
+                    f" (result {ret_wt})" if ret_wt else ""
+                )
+                sig_content = f"{param_part}{result_part}"
+                if sig_content not in self._closure_sigs:
+                    sig_name = (
+                        f"$closure_sig_{len(self._closure_sigs)}"
+                    )
+                    self._closure_sigs[sig_content] = sig_name
+
+        # Update next closure ID for subsequent functions
+        self._next_closure_id = ctx._next_closure_id
+        # Merge closure sigs from the context (content → name)
+        for sig_content, sig_name in ctx._closure_sigs.items():
+            if sig_content not in self._closure_sigs:
+                self._closure_sigs[sig_content] = sig_name
+
+    def _compile_lifted_closure(
+        self,
+        closure_id: int,
+        anon_fn: ast.AnonFn,
+        captures: list[tuple[str, int, str]],
+    ) -> str | None:
+        """Compile an anonymous function to a module-level WASM function.
+
+        The lifted function signature:
+          (func $anon_N (param $env i32) (param ...) (result ...))
+
+        The first parameter is the closure environment pointer.
+        Captured values are loaded from the environment into locals.
+        """
+        # Flatten ADT layouts for context
+        ctor_layouts: dict[str, ConstructorLayout] = {}
+        ctor_to_adt: dict[str, str] = {}
+        for adt_name, layouts in self._adt_layouts.items():
+            ctor_layouts.update(layouts)
+            for ctor_name in layouts:
+                ctor_to_adt[ctor_name] = adt_name
+
+        ctx = WasmContext(
+            self.string_pool,
+            ctor_layouts=ctor_layouts,
+            adt_type_names=set(self._adt_layouts.keys()),
+            ctor_to_adt=ctor_to_adt,
+        )
+        fn_ret_types: dict[str, str | None] = {}
+        for fn_name, (_, ret_wt) in self._fn_sigs.items():
+            if ret_wt != "unsupported":
+                fn_ret_types[fn_name] = ret_wt
+        ctx.set_fn_ret_types(fn_ret_types)
+        ctx.set_type_aliases(self._type_aliases)
+        env = WasmSlotEnv()
+
+        # Parameter 0: $env (i32 — closure environment pointer)
+        env_idx = ctx.alloc_param()
+        param_parts = ["(param $env i32)"]
+
+        # Allocate ALL function parameters BEFORE any locals.
+        # WASM requires params to be contiguous at indices 0..N-1,
+        # with locals following at N, N+1, etc.
+        param_info: list[tuple[int, ast.TypeExpr, int]] = []
+        for i, param_te in enumerate(anon_fn.params):
+            wt = self._type_expr_to_wasm_type(param_te)
+            if wt is None:
+                continue  # Unit param, skip
+            if wt == "unsupported":
+                return None
+            local_idx = ctx.alloc_param()
+            param_parts.append(f"(param $p{i} {wt})")
+            param_info.append((i, param_te, local_idx))
+
+        # Compute capture layout (must match _translate_anon_fn)
+        cap_offsets: list[tuple[int, str]] = []
+        offset = 4  # skip func_table_idx
+        for _tname, _cidx, cap_wt in captures:
+            align = 8 if cap_wt in ("i64", "f64") else 4
+            offset = _align_up(offset, align)
+            cap_offsets.append((offset, cap_wt))
+            offset += 8 if cap_wt in ("i64", "f64") else 4
+
+        # Load captured values from env into locals (allocated AFTER params)
+        cap_locals: list[tuple[str, int]] = []  # (type_name, local_idx)
+        load_instrs: list[str] = []
+        for i, (tname, _cidx, cap_wt) in enumerate(captures):
+            cap_local = ctx.alloc_local(cap_wt)
+            cap_offset, _ = cap_offsets[i]
+            load_op = (
+                "i64.load" if cap_wt == "i64"
+                else "f64.load" if cap_wt == "f64"
+                else "i32.load"
+            )
+            load_instrs.append(f"local.get {env_idx}")
+            load_instrs.append(f"{load_op} offset={cap_offset}")
+            load_instrs.append(f"local.set {cap_local}")
+            cap_locals.append((tname, cap_local))
+
+        # Build slot environment: captures first (outer scope, higher
+        # De Bruijn indices), then function params on top (most recent).
+        for tname, local_idx in cap_locals:
+            env = env.push(tname, local_idx)
+        for _i, param_te, local_idx in param_info:
+            type_name = self._type_expr_to_slot_name(param_te)
+            if type_name:
+                env = env.push(type_name, local_idx)
+
+        # Return type
+        ret_wt = self._type_expr_to_wasm_type(anon_fn.return_type)
+        if ret_wt == "unsupported":
+            return None
+        result_part = f" (result {ret_wt})" if ret_wt else ""
+
+        # Compile the body
+        body_instrs = ctx.translate_block(anon_fn.body, env)
+        if body_instrs is None:
+            return None
+
+        # Assemble the lifted function WAT (not exported)
+        fn_name = f"$anon_{closure_id}"
+        header = f"  (func {fn_name}"
+        if param_parts:
+            header += " " + " ".join(param_parts)
+        header += result_part
+
+        lines = [header]
+        for local_decl in ctx.extra_locals_wat():
+            lines.append(f"    {local_decl}")
+        for instr in load_instrs:
+            lines.append(f"    {instr}")
+        for instr in body_instrs:
+            lines.append(f"    {instr}")
         lines.append("  )")
         return "\n".join(lines)
 
@@ -1209,9 +1393,26 @@ class CodeGenerator:
                 "  )"
             )
 
-        # Functions
+        # Closure type declarations (for call_indirect)
+        for sig_content, sig_name in self._closure_sigs.items():
+            parts.append(f"  (type {sig_name} (func {sig_content}))")
+
+        # Function table (for indirect calls via closures)
+        if self._needs_table and self._closure_table:
+            table_size = len(self._closure_table)
+            parts.append(f"  (table {table_size} funcref)")
+            elem_entries = " ".join(self._closure_table)
+            parts.append(
+                f"  (elem (i32.const 0) func {elem_entries})"
+            )
+
+        # Functions (user-defined)
         for fn_wat in functions:
             parts.append(fn_wat)
+
+        # Lifted closure functions
+        for closure_wat in self._closure_fns_wat:
+            parts.append(closure_wat)
 
         parts.append(")")
         return "\n".join(parts)
@@ -1332,9 +1533,17 @@ class CodeGenerator:
             # ADT types compile to i32 (heap pointer)
             if name in self._adt_layouts:
                 return "i32"
+            # Function type aliases compile to i32 (closure pointer)
+            if name in self._type_aliases:
+                alias_te = self._type_aliases[name]
+                if isinstance(alias_te, ast.FnType):
+                    return "i32"
             return "unsupported"
         if isinstance(te, ast.RefinementType):
             return self._type_expr_to_wasm_type(te.base_type)
+        # Function types compile to i32 (closure pointer)
+        if isinstance(te, ast.FnType):
+            return "i32"
         return "unsupported"
 
     def _type_expr_to_slot_name(self, te: ast.TypeExpr) -> str | None:
@@ -1351,6 +1560,8 @@ class CodeGenerator:
             return te.name
         if isinstance(te, ast.RefinementType):
             return self._type_expr_to_slot_name(te.base_type)
+        if isinstance(te, ast.FnType):
+            return "Fn"
         return None
 
     @staticmethod
