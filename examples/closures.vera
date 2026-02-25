@@ -3,6 +3,15 @@
 -- A type alias for a pure function from Int to Int
 type IntToInt = fn(Int -> Int) effects(pure);
 
+-- Create a closure that captures a value from the enclosing scope
+fn make_adder(@Int -> @IntToInt)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+}
+
 -- Apply a function to a value
 fn apply(@IntToInt, @Int -> @Int)
   requires(true)
@@ -17,7 +26,7 @@ data Option<T> { None, Some(T) }
 
 type IntMapper = fn(Int -> Int) effects(pure);
 
-forall<T> fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
+fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -28,11 +37,26 @@ forall<T> fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
   }
 }
 
--- Pass an anonymous function as an argument
-fn double_all(@Array<Int> -> @Array<Int>)
+-- End-to-end test: create a closure, apply it, return the result
+fn test_closure(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 * 2 })
+  let @IntToInt = make_adder(10);
+  apply(@IntToInt.0, 5)
+}
+
+-- Test: map a closure over an Option
+fn test_map_option(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @IntToInt = make_adder(100);
+  let @Option<Int> = map_option(Some(5), @IntToInt.0);
+  match @Option<Int>.0 {
+    None -> 0,
+    Some(@Int) -> @Int.0
+  }
 }

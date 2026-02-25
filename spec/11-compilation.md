@@ -33,8 +33,9 @@ Vera types map to WASM value types as follows:
 | `Unit` | *(none)* | Functions returning `Unit` have no WASM result type |
 | `String` | `i32, i32` | Pointer and length pair (UTF-8 bytes in linear memory) |
 | ADTs | `i32` | Heap pointer to tagged union (see Section 11.6) |
+| Function types | `i32` | Heap pointer to closure struct (see Section 11.11) |
 
-Generic type variables are resolved via monomorphization — each concrete instantiation of a `forall<T>` function produces a specialized copy with type variables replaced by concrete types (e.g. `identity$Int`). Types not in this table (arrays, closures) are not yet compilable. Functions using non-compilable types are skipped with a warning.
+Generic type variables are resolved via monomorphization — each concrete instantiation of a `forall<T>` function produces a specialized copy with type variables replaced by concrete types (e.g. `identity$Int`). Type aliases for function types (e.g. `type IntToInt = fn(Int -> Int) effects(pure)`) are also resolved to `i32` closure pointers. Types not in this table (arrays) are not yet compilable. Functions using non-compilable types are skipped with a warning.
 
 ### 11.2.1 Nat as i64
 
@@ -319,13 +320,82 @@ Flags:
 - `--json` — JSON output with result, stdout capture, and diagnostics
 - Arguments after `--` are passed to the function (parsed as integers)
 
-## 11.10 Limitations
+## 11.10 Closures and Anonymous Functions
+
+Anonymous functions (`AnonFn`) compile to closure values — heap-allocated structs containing a function table index and captured variables.
+
+### 11.10.1 Closure Representation
+
+A closure is an `i32` heap pointer to a struct:
+
+```
+offset 0:   func_table_idx (i32) — index into the WASM function table
+offset 4+:  capture_0 (type varies, 8-byte aligned)
+offset N:   capture_1 ...
+```
+
+This follows the same bump-allocation pattern as ADTs (Section 11.6). The single `i32` pointer representation means closures flow through let bindings, function parameters, match arms, and return values without breaking the one-value-per-expression invariant.
+
+### 11.10.2 Function Tables
+
+The WASM module includes a `funcref` table for indirect function calls:
+
+```wat
+(type $closure_sig_0 (func (param i32) (param i64) (result i64)))
+(table N funcref)
+(elem (i32.const 0) func $anon_0 $anon_1 ...)
+```
+
+Each closure signature (unique combination of parameter and return types) gets a `$closure_sig_N` type declaration. The table is sized to hold all lifted functions, and the element section maps table indices to function names.
+
+### 11.10.3 Closure Lifting
+
+Anonymous functions are compiled as module-level WASM functions (not nested). Each lifted function has:
+
+- `$env` (i32) as the first parameter — the closure environment pointer
+- The original function parameters after `$env`
+- Load instructions at the function entry to extract captured values from the environment
+
+```wat
+(func $anon_0 (param $env i32) (param $p0 i64) (result i64)
+    (local $l2 i64)
+    local.get 0          ;; env pointer
+    i64.load offset=8    ;; load captured value
+    local.set 2          ;; store in capture local
+    local.get 1          ;; function parameter
+    local.get 2          ;; captured value
+    i64.add
+)
+```
+
+### 11.10.4 Free Variable Capture
+
+The compiler walks the `AnonFn` body to find `SlotRef` nodes that reference outer-scope bindings. A `SlotRef(@T.n)` is a capture if its De Bruijn index `n` is greater than or equal to the number of parameters of that type within the anonymous function.
+
+Captured values are evaluated at closure creation time and stored in the heap environment. Each capture occupies 4 bytes (i32) or 8 bytes (i64, f64), with appropriate alignment.
+
+### 11.10.5 Closure Invocation (apply_fn)
+
+The built-in `apply_fn(closure, args...)` invokes a closure via `call_indirect`:
+
+```wat
+local.get <closure>                    ;; save closure pointer
+local.set <tmp>
+local.get <tmp>                        ;; push env as first arg
+[args...]                              ;; push remaining arguments
+local.get <tmp>
+i32.load offset=0                      ;; load func_table_idx
+call_indirect (type $closure_sig_N)    ;; indirect call
+```
+
+`apply_fn` is a compiler built-in, not a user-defined function. The checker issues a warning about it being unresolved, but the code generator recognizes it and emits the appropriate `call_indirect` sequence.
+
+## 11.11 Limitations
 
 The current compilation model has the following limitations, each tracked as a GitHub issue:
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| No closure / anonymous function codegen | [#27](https://github.com/aallan/vera/issues/27) | Needs closure conversion pass |
 | No effect handler codegen | [#28](https://github.com/aallan/vera/issues/28) | Needs continuation-passing transform |
 | No Byte type codegen | [#30](https://github.com/aallan/vera/issues/30) | Needs linear memory byte operations |
 | No module-level code generation | — | Each file compiles independently |

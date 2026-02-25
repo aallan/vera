@@ -16,6 +16,9 @@ build/
 venv/
 env/
 
+# Lock files
+uv.lock
+
 # IDE
 .idea/
 .vscode/
