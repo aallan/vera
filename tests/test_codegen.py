@@ -3007,3 +3007,234 @@ fn test(@Unit -> @Int)
 }
 """
         assert _run(src, "test") == 101  # 1 + 100
+
+
+# =====================================================================
+# C6j: Effect Handlers
+# =====================================================================
+
+
+class TestEffectHandlers:
+    """Tests for handle[State<T>] compilation — State handlers via
+    host imports, state initialization, get/put in handler body."""
+
+    _STATE_HANDLER = """\
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+"""
+
+    def test_handle_state_get_init(self) -> None:
+        """handle[State<Int>](@Int = 42) in { get(()) } returns 42."""
+        src = """\
+fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 42) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+"""
+        assert _run(src, "test") == 42
+
+    def test_handle_state_put_get(self) -> None:
+        """put then get returns the put value."""
+        src = """\
+fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(99);
+    get(())
+  }
+}
+"""
+        assert _run(src, "test") == 99
+
+    def test_handle_state_increment(self) -> None:
+        """put(get(()) + 1) increments the state."""
+        src = """\
+fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(get(()) + 1);
+    get(())
+  }
+}
+"""
+        assert _run(src, "test") == 1
+
+    def test_handle_state_run_counter(self) -> None:
+        """The run_counter pattern: init 0, put 0, then 3x increment."""
+        src = """\
+fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(0);
+    put(get(()) + 1);
+    put(get(()) + 1);
+    put(get(()) + 1);
+    get(())
+  }
+}
+"""
+        assert _run(src, "test") == 3
+
+    def test_handle_state_initial_value(self) -> None:
+        """Non-zero initial state is set correctly."""
+        src = """\
+fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 100) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(get(()) + 5);
+    get(())
+  }
+}
+"""
+        assert _run(src, "test") == 105
+
+    def test_handle_state_in_let(self) -> None:
+        """Handler body can use let bindings."""
+        src = """\
+fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(10);
+    let @Int = get(());
+    put(@Int.0 + 5);
+    get(())
+  }
+}
+"""
+        assert _run(src, "test") == 15
+
+    def test_handle_state_pure_function(self) -> None:
+        """A pure function with handle[State<T>] compiles (not skipped)."""
+        src = """\
+fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 7) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+"""
+        result = _compile_ok(src)
+        assert "test" in result.exports
+
+    def test_handle_state_bool(self) -> None:
+        """State<Bool> handler works."""
+        src = """\
+fn test(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Bool>](@Bool = false) {
+    get(@Unit) -> { resume(@Bool.0) },
+    put(@Bool) -> { resume(()) }
+  } in {
+    put(true);
+    get(())
+  }
+}
+"""
+        assert _run(src, "test") == 1  # true = 1
+
+    def test_handle_state_wat_has_imports(self) -> None:
+        """WAT output contains state host imports."""
+        src = """\
+fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+"""
+        result = _compile_ok(src)
+        assert result.wat is not None
+        assert "state_get_Int" in result.wat
+        assert "state_put_Int" in result.wat
+        assert "(import" in result.wat
+
+    def test_unsupported_handler_skipped(self) -> None:
+        """Non-State handler causes function to be skipped."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Unit);
+}
+data Option<T> { None, Some(T) }
+fn test(@Int -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { None }
+  } in {
+    Some(@Int.0)
+  }
+}
+"""
+        result = _compile(src)
+        # Function should be skipped (Exn handler not supported)
+        assert "test" not in result.exports
+
+    def test_effect_handler_example_compiles(self) -> None:
+        """examples/effect_handler.vera compiles without errors."""
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
+        source = path.read_text()
+        result = _compile(source)
+        assert result.ok
+
+    def test_effect_handler_example_run_counter(self) -> None:
+        """examples/effect_handler.vera run_counter returns 3."""
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
+        source = path.read_text()
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="run_counter")
+        assert exec_result.value == 3
+
+    def test_effect_handler_example_test_state_init(self) -> None:
+        """examples/effect_handler.vera test_state_init returns 42."""
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
+        source = path.read_text()
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="test_state_init")
+        assert exec_result.value == 42
+
+    def test_effect_handler_example_test_put_get(self) -> None:
+        """examples/effect_handler.vera test_put_get returns 99."""
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
+        source = path.read_text()
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="test_put_get")
+        assert exec_result.value == 99

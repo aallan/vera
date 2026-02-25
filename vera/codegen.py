@@ -998,6 +998,9 @@ class CodeGenerator:
             return None
         result_part = f" (result {ret_wt})" if ret_wt else ""
 
+        # Scan body for handle[State<T>] expressions to register imports
+        self._scan_body_for_state_handlers(decl.body)
+
         # Compile precondition checks
         pre_instrs = self._compile_preconditions(ctx, decl, env)
 
@@ -1508,6 +1511,50 @@ class CodeGenerator:
         if type_name and (type_name, wt) not in self._state_types:
             self._state_types.append((type_name, wt))
         return True
+
+    def _scan_body_for_state_handlers(self, body: ast.Block) -> None:
+        """Walk a function body to find handle[State<T>] expressions.
+
+        Registers any State<T> types found so that the WASM module
+        emits the necessary host import declarations, even if the
+        function itself is declared as pure.
+        """
+        self._scan_expr_for_handlers(body)
+
+    def _scan_expr_for_handlers(self, node: ast.Node) -> None:
+        """Recursively walk an AST node looking for HandleExpr."""
+        if isinstance(node, ast.HandleExpr):
+            effect = node.effect
+            if (isinstance(effect, ast.EffectRef)
+                    and effect.name == "State"
+                    and effect.type_args
+                    and len(effect.type_args) == 1):
+                type_arg = effect.type_args[0]
+                wt = self._type_expr_to_wasm_type(type_arg)
+                if wt and wt != "unsupported":
+                    type_name = self._type_expr_to_slot_name(type_arg)
+                    if type_name and (type_name, wt) not in self._state_types:
+                        self._state_types.append((type_name, wt))
+                        self._needs_memory = True
+            # Continue scanning inside the handler body
+            self._scan_expr_for_handlers(node.body)
+        elif isinstance(node, ast.Block):
+            for stmt in node.statements:
+                if isinstance(stmt, ast.LetStmt):
+                    self._scan_expr_for_handlers(stmt.value)
+                elif isinstance(stmt, ast.ExprStmt):
+                    self._scan_expr_for_handlers(stmt.expr)
+            if node.expr:
+                self._scan_expr_for_handlers(node.expr)
+        elif isinstance(node, ast.IfExpr):
+            self._scan_expr_for_handlers(node.condition)
+            self._scan_expr_for_handlers(node.then_branch)
+            if node.else_branch:
+                self._scan_expr_for_handlers(node.else_branch)
+        elif isinstance(node, ast.MatchExpr):
+            self._scan_expr_for_handlers(node.scrutinee)
+            for arm in node.arms:
+                self._scan_expr_for_handlers(arm.body)
 
     # -----------------------------------------------------------------
     # Type helpers

@@ -159,7 +159,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
 | C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
 | C5 | v0.0.9 | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
-| C6 | v0.0.10–0.0.23 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | **In progress** (C6a–C6i, C6h done) |
+| C6 | v0.0.10–0.0.23 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | **In progress** (C6a–C6j done) |
 | C7 | — | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
 
@@ -190,7 +190,7 @@ C6 extends WASM compilation to all language constructs, working through the depe
 | Sub-phase | Scope | Closes | Unlocks |
 |-----------|-------|--------|---------|
 | ~~C6h~~ | ~~Closures — closure conversion, `call_indirect`~~ | ~~[#27](https://github.com/aallan/vera/issues/27)~~ | ~~Done (v0.0.18)~~ |
-| C6j | Effect handlers — handle/resume compilation | [#28](https://github.com/aallan/vera/issues/28) | effect_handler.vera |
+| ~~C6j~~ | ~~Effect handlers — handle/resume compilation~~ | ~~[#28](https://github.com/aallan/vera/issues/28)~~ | ~~Done (v0.0.19)~~ |
 
 **Collections, runtime, and documentation:**
 

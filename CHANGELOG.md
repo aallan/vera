@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.19] - 2026-02-25
+
+### Added
+- **Effect handler compilation** (C6j — closes [#28](https://github.com/aallan/vera/issues/28)): compile `handle[State<T>]` expressions to WASM via host imports
+  - State handler translation: `handle[State<T>](@T = init) { get/put clauses } in { body }` compiles by initializing state via `state_put_T`, then compiling body with get/put mapped to host imports
+  - Handler clauses serve as specifications (not compiled) — `resume()` calls describe the default State semantics, validated by type checker
+  - Effect discharge: pure functions containing `handle[State<T>]` are compilable — state imports registered by scanning function body for handle expressions
+  - Unsupported handlers (`Exn<E>`, custom effects) cause function to be skipped with warning
+- **Reworked `examples/effect_handler.vera`**: removed `safe_parse` (uses String + undefined `parse_int`), added `test_state_init` and `test_put_get` (simple compilable tests)
+- **Codegen tests**: 14 new tests — state initialization, put/get, increment pattern, run_counter, let bindings, Bool state, WAT inspection, unsupported handler skip, example file round-trips (691 total, up from 677)
+
 ## [0.0.18] - 2026-02-25
 
 ### Added
@@ -314,7 +325,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.17...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.19...HEAD
+[0.0.19]: https://github.com/aallan/vera/compare/v0.0.18...v0.0.19
+[0.0.18]: https://github.com/aallan/vera/compare/v0.0.17...v0.0.18
 [0.0.17]: https://github.com/aallan/vera/compare/v0.0.16...v0.0.17
 [0.0.16]: https://github.com/aallan/vera/compare/v0.0.15...v0.0.16
 [0.0.15]: https://github.com/aallan/vera/compare/v0.0.14...v0.0.15
