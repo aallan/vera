@@ -49,7 +49,7 @@ An invariant is a predicate declared on a data type that MUST hold for all value
 data SortedArray
   invariant(is_sorted_impl(@SortedArray.0))
 {
-  Mk(@Array<Int>),
+  Mk(Array<Int>)
 }
 ```
 
@@ -306,7 +306,7 @@ After this point, the verifier knows that `@Nat.0 + @Nat.1 > @Nat.0`.
 When a function type is used as a parameter, the caller can rely on the contracts of the concrete function passed:
 
 ```
-type SafeDiv = Fn(@Int, { @Int | @Int.0 != 0 } -> @Int) effects(pure);
+type SafeDiv = fn(Int, { @Int | @Int.0 != 0 } -> Int) effects(pure);
 
 fn apply_div(@Int, @Int, @SafeDiv -> @Int)
   requires(@Int.1 != 0)

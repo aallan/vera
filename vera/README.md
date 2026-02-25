@@ -452,7 +452,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**660 tests** across 8 files, plus 4 validation scripts and CI infrastructure.
+**795 tests** across 10 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -462,12 +462,14 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 108 | 1,203 | Type synthesis, slot resolution, effects, contracts, exhaustiveness |
 | `test_verifier.py` | 68 | 894 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions |
-| `test_codegen.py` | 220 | 2,686 | WASM compilation, arithmetic, Float64, ADTs, match, generics, State\<T\>, control flow, strings, IO, contracts, example round-trips |
-| `test_cli.py` | 67 | 833 | CLI commands (check, verify, compile, run), subprocess integration, runtime traps, arg validation |
+| `test_codegen.py` | 251 | 3,240 | WASM compilation, arithmetic, Float64, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, example round-trips |
+| `test_cli.py` | 76 | 932 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation |
+| `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
+| `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
-| `test_errors.py` | 16 | 129 | Diagnostic formatting, error patterns |
+| `test_errors.py` | 34 | 287 | Diagnostic formatting, serialisation, error patterns, SourceLocation, diagnose_lark_error |
 
-Total: 7,500 lines of test code (82% of source code size).
+Total: 8,845 lines of test code.
 
 ### Round-trip testing
 
@@ -535,27 +537,16 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **No closure codegen** | Needs closure conversion pass | [#27](https://github.com/aallan/vera/issues/27) |
-| **No effect handler codegen** | Needs continuation-passing transform | [#28](https://github.com/aallan/vera/issues/28) |
 | **No Byte type codegen** | Needs linear memory byte operations | [#30](https://github.com/aallan/vera/issues/30) |
-| **No module resolution** | `import` declarations parsed but not resolved | C7 (module system) |
+| **No module resolution** | `import` declarations parsed but not resolved | [#50](https://github.com/aallan/vera/issues/50) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | Incremental |
 | **No termination verification** | `decreases` clauses parsed but always Tier 3 | Future |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | Tier 2 |
 | **No match/constructor body verification** | Untranslatable to Z3, always Tier 3 | Tier 2 |
 | **Minimal type inference** | Call-site generic instantiation only, no Hindley-Milner | Incremental |
 | **No incremental compilation** | Full file processed from scratch each time | Low priority |
-| **No garbage collection** | Bump allocator only; linear memory is not reclaimed | Future |
-| **String constants only** | No dynamic string construction | Future |
-| **Spec/parser `@T` notation mismatch** | Spec uses `@T` in data/effect declarations; parser expects bare `T` — see below | Reconciliation |
-
-### Spec/parser notation mismatch
-
-The language specification uses `@T` notation in data type constructor fields and effect operation signatures (e.g., `data Option<T> { Some(@T), None }`, `op get(@Unit -> @T)`). The parser expects bare types in these positions (e.g., `Some(T)`, `op get(Unit -> T)`).
-
-This is an intentional design distinction: the grammar reserves `@` for value-level bindings (function parameters, where `@T.0` creates a slot reference) and uses bare types in type-level signatures (constructor fields, effect ops) where no runtime bindings are created. The spec aspirationally shows `@T` for visual consistency with function parameters.
-
-There are 30 spec code blocks affected, tracked as MISMATCH entries in `scripts/check_spec_examples.py`. Reconciliation will update either the spec or the parser to match; the question is whether binding-site notation should be syntactically uniform across all declaration forms.
+| **No garbage collection** | Bump allocator only; linear memory is not reclaimed | [#51](https://github.com/aallan/vera/issues/51) |
+| **String constants only** | No dynamic string construction | [#52](https://github.com/aallan/vera/issues/52) |
 
 ## Extending the Compiler
 

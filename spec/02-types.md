@@ -61,8 +61,8 @@ Option<Int>
 
 ```
 data Option<T> {
-  Some(@T),
-  None,
+  Some(T),
+  None
 }
 ```
 
@@ -78,8 +78,8 @@ Result<Int, String>
 
 ```
 data Result<T, E> {
-  Ok(@T),
-  Err(@E),
+  Ok(T),
+  Err(E)
 }
 ```
 
@@ -91,15 +91,15 @@ User-defined algebraic data types are declared with the `data` keyword:
 
 ```
 data List<T> {
-  Cons(@T, @List<T>),
-  Nil,
+  Cons(T, List<T>),
+  Nil
 }
 ```
 
 ```
 data Tree<T> {
-  Leaf(@T),
-  Node(@Tree<T>, @Tree<T>),
+  Leaf(T),
+  Node(Tree<T>, Tree<T>)
 }
 ```
 
@@ -107,7 +107,7 @@ data Tree<T> {
 data Color {
   Red,
   Green,
-  Blue,
+  Blue
 }
 ```
 
@@ -130,8 +130,8 @@ An ADT may declare an invariant that all values must satisfy:
 data SortedList<T>
   invariant(is_sorted(@SortedList<T>.0))
 {
-  SCons(@T, @SortedList<T>),
-  SNil,
+  SCons(T, SortedList<T>),
+  SNil
 }
 ```
 
@@ -213,10 +213,10 @@ The base type `T` is equivalent to `{ @T | true }`.
 Type aliases can capture commonly used refinements:
 
 ```
-type PosInt = { @Int | @Int.0 > 0 }
-type NonEmptyArray<T> = { @Array<T> | length(@Array<T>.0) > 0 }
-type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 }
-type Byte = { @Int | @Int.0 >= 0 && @Int.0 <= 255 }
+type PosInt = { @Int | @Int.0 > 0 };
+type NonEmptyArray<T> = { @Array<T> | length(@Array<T>.0) > 0 };
+type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
+type Byte = { @Int | @Int.0 >= 0 && @Int.0 <= 255 };
 ```
 
 Type aliases are transparent for refinement subtyping: `PosInt` and `{ @Int | @Int.0 > 0 }` are the same type for subtyping purposes.

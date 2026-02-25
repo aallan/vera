@@ -201,7 +201,7 @@ Anonymous functions:
 Anonymous functions capture bindings from enclosing scopes by reference. The captured bindings are immutable (since all bindings in Vera are immutable):
 
 ```
-fn make_adder(@Int -> Fn(@Int -> @Int) effects(pure))
+fn make_adder(@Int -> fn(Int -> Int) effects(pure))
   requires(true)
   ensures(true)
   effects(pure)
@@ -217,7 +217,7 @@ fn make_adder(@Int -> Fn(@Int -> @Int) effects(pure))
 When passing closures to higher-order functions:
 
 ```
-type IntPred = Fn(@Int -> @Bool) effects(pure);
+type IntPred = fn(Int -> Bool) effects(pure);
 
 fn filter_positive(@Array<Int> -> @Array<Int>)
   requires(true)
@@ -275,7 +275,7 @@ Type variables are introduced by `forall<...>` and are scoped to the entire func
 Functions can be polymorphic over effects:
 
 ```
-forall<A, B> fn map_option(@Option<A>, Fn(@A -> @B) effects(<E>) -> @Option<B>)
+forall<A, B> fn map_option(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
   requires(true)
   ensures(true)
   effects(<E>)

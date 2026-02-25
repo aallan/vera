@@ -54,52 +54,6 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("02-types.md", 250): "FUTURE",          # forall<T where Ord<T>> fn sort
 
     # =================================================================
-    # MISMATCH — spec uses @T in data/effect ops, parser expects bare T
-    # These are tracked for reconciliation. When the spec or parser is
-    # updated to match, remove the entry and the block should parse.
-    # =================================================================
-
-    # Chapter 2 — data declarations with @T constructor params
-    ("02-types.md", 62): "MISMATCH",    # data Option<T> { Some(@T), None }
-    ("02-types.md", 79): "MISMATCH",    # data Result<T, E> { Ok(@T), Err(@E) }
-    ("02-types.md", 92): "MISMATCH",    # data List<T> { Cons(@T, @List<T>), Nil }
-    ("02-types.md", 99): "MISMATCH",    # data Tree<T> { Leaf(@T), Node(...) }
-    ("02-types.md", 106): "MISMATCH",   # data Color { Red, Green, Blue }
-    ("02-types.md", 129): "MISMATCH",   # data SortedList<T> invariant(...)
-    ("02-types.md", 215): "MISMATCH",   # type aliases with refinements
-
-    # Chapter 3 — functions using non-canonical generic syntax or @T ops
-    ("03-slot-references.md", 238): "MISMATCH",  # fn map_array<A,B> (non-canonical)
-    ("03-slot-references.md", 253): "MISMATCH",  # data + fn list_head<T> (non-canonical)
-    ("03-slot-references.md", 327): "MISMATCH",  # type alias + fn apply_to_array
-    ("03-slot-references.md", 343): "MISMATCH",  # type alias + anonymous fn
-
-    # Chapter 5 — closures and effect-polymorphic functions
-    ("05-functions.md", 203): "MISMATCH",   # fn make_adder returning closure
-    ("05-functions.md", 219): "MISMATCH",   # type alias + fn filter_positive
-    ("05-functions.md", 277): "MISMATCH",   # forall<A,B> fn map_option effects(<E>)
-
-    # Chapter 6 — data with invariant, type alias + fn
-    ("06-contracts.md", 48): "MISMATCH",    # data SortedArray invariant(...)
-    ("06-contracts.md", 308): "MISMATCH",   # type SafeDiv = Fn(...) + fn apply_div
-
-    # Chapter 7 — effect declarations and handlers
-    ("07-effects.md", 18): "MISMATCH",    # effect State<T> { op get(@Unit -> @T) }
-    ("07-effects.md", 25): "MISMATCH",    # effect Exn<E> { op throw(@E -> @Never) }
-    ("07-effects.md", 31): "MISMATCH",    # effect IO { op print(@String -> @Unit) }
-    ("07-effects.md", 38): "MISMATCH",    # effect Choice { op choose(...) }
-    ("07-effects.md", 117): "MISMATCH",   # effect Logger + qualified ops
-    ("07-effects.md", 182): "MISMATCH",   # fn run_stateful handle[State<Int>]
-    ("07-effects.md", 204): "MISMATCH",   # fn safe_parse handle[Exn<String>]
-    ("07-effects.md", 224): "MISMATCH",   # fn all_choices handle[Choice]
-    ("07-effects.md", 251): "MISMATCH",   # forall<A,B> fn map_option effects(<E>)
-    ("07-effects.md", 270): "MISMATCH",   # forall<A> fn with_logging effects(<IO,E>)
-    ("07-effects.md", 289): "MISMATCH",   # effect IO (extended, with file ops)
-    ("07-effects.md", 302): "MISMATCH",   # effect Exn<E> (duplicate)
-    ("07-effects.md", 312): "MISMATCH",   # effect Diverge {}
-    ("07-effects.md", 320): "MISMATCH",   # effect Alloc {}
-
-    # =================================================================
     # FRAGMENT — heuristic false positives (look like declarations but
     # are templates, keyword listings, or partial syntax)
     # =================================================================
@@ -112,6 +66,42 @@ ALLOWLIST: dict[tuple[str, int], str] = {
 
     # Chapter 5 — template with metavariable placeholders
     ("05-functions.md", 19): "FRAGMENT",  # fn function_name(@ParamType1 ...)
+
+    # =================================================================
+    # FRAGMENT — spec examples using syntax the parser doesn't support
+    # (generics without forall, empty effects, handler with-clauses,
+    # anonymous top-level functions, inline function types in params)
+    # =================================================================
+
+    # Chapter 3 — generic functions without forall keyword
+    ("03-slot-references.md", 238): "FRAGMENT",  # fn map_array<A,B>(...) — needs forall
+    ("03-slot-references.md", 253): "FRAGMENT",  # fn list_head<T>(...) — needs forall
+
+    # Chapter 3 — anonymous function at top level
+    ("03-slot-references.md", 343): "FRAGMENT",  # fn(@PosInt, @Int -> @Int) — no name
+
+    # Chapter 5 — inline function types in return/param position
+    ("05-functions.md", 203): "FRAGMENT",   # fn make_adder returns fn(...) inline
+    ("05-functions.md", 277): "FRAGMENT",   # fn(A -> B) in param position
+
+    # Chapter 6 — inline function type in type alias
+    ("06-contracts.md", 308): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
+
+    # Chapter 7 — anonymous function at top level
+    ("07-effects.md", 117): "FRAGMENT",     # effect Logger + anonymous fn body
+
+    # Chapter 7 — handler with-clause syntax not in parser
+    ("07-effects.md", 182): "FRAGMENT",     # handle[State] with-clause in put handler
+    ("07-effects.md", 204): "FRAGMENT",     # handle[Exn] non-resuming handler
+    ("07-effects.md", 224): "FRAGMENT",     # handle[Choice] multi-shot resume
+
+    # Chapter 7 — inline function types in generic params
+    ("07-effects.md", 251): "FRAGMENT",     # fn(A -> B) in param position
+    ("07-effects.md", 270): "FRAGMENT",     # fn(Unit -> A) in param position
+
+    # Chapter 7 — empty effect bodies (parser requires op_decl+)
+    ("07-effects.md", 312): "FRAGMENT",     # effect Diverge {} — no operations
+    ("07-effects.md", 320): "FRAGMENT",     # effect Alloc {} — no operations
 }
 
 

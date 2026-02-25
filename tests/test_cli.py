@@ -288,6 +288,19 @@ class TestCmdVerify:
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is False
 
+    def test_json_syntax_error(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Syntax error in JSON verify mode produces valid JSON diagnostic."""
+        path = _bad_vera(tmp_path, _syntax_error_source())
+        rc = cmd_verify(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+
 
 # =====================================================================
 # cmd_compile
@@ -359,6 +372,49 @@ class TestCmdCompile:
         err = capsys.readouterr().err
         assert len(err) > 0
 
+    def test_compile_syntax_error(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = _bad_vera(tmp_path, _syntax_error_source())
+        rc = cmd_compile(path)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert len(err) > 0
+
+    def test_compile_syntax_error_json(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = _bad_vera(tmp_path, _syntax_error_source())
+        rc = cmd_compile(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+
+    def test_compile_type_error_json(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = _bad_vera(tmp_path, _type_error_source())
+        rc = cmd_compile(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+
+    def test_compile_missing_file_json(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc = cmd_compile("/nonexistent/file.vera", as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+
 
 # =====================================================================
 # cmd_run
@@ -422,6 +478,49 @@ class TestCmdRun:
         assert rc == 1
         err = capsys.readouterr().err
         assert len(err) > 0
+
+    def test_run_syntax_error(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = _bad_vera(tmp_path, _syntax_error_source())
+        rc = cmd_run(path)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert len(err) > 0
+
+    def test_run_syntax_error_json(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = _bad_vera(tmp_path, _syntax_error_source())
+        rc = cmd_run(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+
+    def test_run_type_error_json(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        path = _bad_vera(tmp_path, _type_error_source())
+        rc = cmd_run(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+
+    def test_run_missing_file_json(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc = cmd_run("/nonexistent/file.vera", as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
 
 
 # =====================================================================
