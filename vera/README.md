@@ -73,17 +73,17 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `transform.py` | 990 | Transform | Lark tree → AST transformer | `transform()` |
 | `ast.py` | 682 | Transform | Frozen dataclass AST nodes | `Program`, `Node`, `Expr` |
 | `types.py` | 302 | Type check | Semantic type representation | `Type`, `is_subtype()` |
-| `environment.py` | 299 | Type check | Type environment, scope stacks | `TypeEnv` |
+| `environment.py` | 300 | Type check | Type environment, scope stacks | `TypeEnv` |
 | `checker.py` | 1,668 | Type check | Two-pass type checker | `typecheck()` |
 | `smt.py` | 485 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
 | `verifier.py` | 601 | Verify | Contract verification | `verify()` |
-| `wasm.py` | 1,250 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
-| `codegen.py` | 1,376 | Compile | Codegen orchestrator | `compile()`, `execute()` |
+| `wasm.py` | 1,707 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
+| `codegen.py` | 1,634 | Compile | Codegen orchestrator | `compile()`, `execute()` |
 | `errors.py` | 354 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
 | `cli.py` | 563 | All | CLI commands | `main()` |
 | `registration.py` | 56 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~9,102 lines of Python + 328 lines of grammar.
+Total: ~9,489 lines of Python + 328 lines of grammar.
 
 ## Parsing
 
@@ -539,12 +539,12 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 |-----------|-----|---------|
 | **No Byte type codegen** | Needs linear memory byte operations | [#30](https://github.com/aallan/vera/issues/30) |
 | **No module resolution** | `import` declarations parsed but not resolved | [#50](https://github.com/aallan/vera/issues/50) |
-| **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | Incremental |
-| **No termination verification** | `decreases` clauses parsed but always Tier 3 | Future |
-| **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | Tier 2 |
-| **No match/constructor body verification** | Untranslatable to Z3, always Tier 3 | Tier 2 |
-| **Minimal type inference** | Call-site generic instantiation only, no Hindley-Milner | Incremental |
-| **No incremental compilation** | Full file processed from scratch each time | Low priority |
+| **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | [#21](https://github.com/aallan/vera/issues/21) |
+| **No termination verification** | `decreases` clauses parsed but always Tier 3 | [#45](https://github.com/aallan/vera/issues/45) |
+| **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
+| **No match/constructor body verification** | Untranslatable to Z3, always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
+| **Minimal type inference** | Call-site generic instantiation only, no Hindley-Milner | [#55](https://github.com/aallan/vera/issues/55) |
+| **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No garbage collection** | Bump allocator only; linear memory is not reclaimed | [#51](https://github.com/aallan/vera/issues/51) |
 | **String constants only** | No dynamic string construction | [#52](https://github.com/aallan/vera/issues/52) |
 
