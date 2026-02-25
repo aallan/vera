@@ -316,8 +316,10 @@ class WasmContext:
         if isinstance(expr, ast.AnonFn):
             return self._translate_anon_fn(expr, env)
 
-        # Unsupported: handle,
-        # quantifiers, old/new, assert/assume, arrays, etc.
+        if isinstance(expr, ast.HandleExpr):
+            return self._translate_handle_expr(expr, env)
+
+        # Unsupported: quantifiers, old/new, assert/assume, arrays, etc.
         return None
 
     # -----------------------------------------------------------------
@@ -491,6 +493,11 @@ class WasmContext:
         if isinstance(expr, ast.MatchExpr):
             if expr.arms:
                 return self._infer_expr_wasm_type(expr.arms[0].body)
+            return None
+        if isinstance(expr, ast.HandleExpr):
+            # Handle expression result type is the body's result type
+            if expr.body.expr:
+                return self._infer_expr_wasm_type(expr.body.expr)
             return None
         return None
 
@@ -1233,6 +1240,78 @@ class WasmContext:
             return "i32"  # shouldn't appear, safe fallback
         # ADT or function type alias → i32 pointer
         return "i32"
+
+    # -----------------------------------------------------------------
+    # Handle expressions — effect handler compilation
+    # -----------------------------------------------------------------
+
+    def _translate_handle_expr(
+        self, expr: ast.HandleExpr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate a handle expression to WASM.
+
+        Currently supports State<T> handlers via host imports.
+        Other handler types cause the function to be skipped.
+        """
+        effect = expr.effect
+        if not isinstance(effect, ast.EffectRef):
+            return None
+
+        if effect.name == "State" and effect.type_args and len(effect.type_args) == 1:
+            return self._translate_handle_state(expr, env)
+
+        # Unsupported handler type
+        return None
+
+    def _translate_handle_state(
+        self, expr: ast.HandleExpr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate handle[State<T>](@T = init) { ... } in { body }.
+
+        Compiles by:
+        1. Evaluating init_expr and calling state_put_T to set initial state
+        2. Temporarily injecting get/put effect ops for the body
+        3. Compiling the body with these ops active
+        4. Restoring the previous effect ops
+        """
+        assert isinstance(expr.effect, ast.EffectRef)
+        type_arg = expr.effect.type_args[0]  # type: ignore[index]
+        if isinstance(type_arg, ast.NamedType):
+            type_name = type_arg.name
+        else:
+            return None
+
+        wasm_type = self._type_name_to_wasm(type_name)
+        put_import = f"$vera.state_put_{type_name}"
+        get_import = f"$vera.state_get_{type_name}"
+
+        instructions: list[str] = []
+
+        # 1. Initialize state: compile init_expr, call state_put
+        if expr.state is not None:
+            init_instrs = self.translate_expr(expr.state.init_expr, env)
+            if init_instrs is None:
+                return None
+            instructions.extend(init_instrs)
+            instructions.append(f"call {put_import}")
+        # If no state clause, state starts at default (0)
+
+        # 2. Save current effect_ops and inject handler ops
+        saved_ops = dict(self._effect_ops)
+        self._effect_ops["get"] = (get_import, False)
+        self._effect_ops["put"] = (put_import, True)
+
+        # 3. Compile handler body
+        body_instrs = self.translate_block(expr.body, env)
+
+        # 4. Restore effect_ops
+        self._effect_ops = saved_ops
+
+        if body_instrs is None:
+            return None
+
+        instructions.extend(body_instrs)
+        return instructions
 
     # -----------------------------------------------------------------
     # Result references (postconditions)

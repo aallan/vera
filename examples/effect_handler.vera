@@ -1,12 +1,12 @@
--- Effect handlers — State and Exception patterns
+-- Effect handlers — State patterns
 
--- State effect: a counter
+-- A counter effect (user-defined effect)
 effect Counter {
   op get_count(Unit -> Int);
   op increment(Unit -> Unit);
 }
 
--- Use the counter effect
+-- Use the counter effect (not compilable — Counter is not a host effect)
 fn count_to_three(@Unit -> @Unit)
   requires(true)
   ensures(true)
@@ -17,7 +17,8 @@ fn count_to_three(@Unit -> @Unit)
   Counter.increment(())
 }
 
--- Handle the counter with a State handler
+-- Handle State<Int> to implement a counter
+-- The handle expression discharges the effect: run_counter is pure
 fn run_counter(@Unit -> @Int)
   requires(true)
   ensures(true)
@@ -35,23 +36,38 @@ fn run_counter(@Unit -> @Int)
   }
 }
 
--- Exception effect
+-- Simpler test: read the initial state value
+fn test_state_init(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 42) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+
+-- Test: put then get
+fn test_put_get(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(99);
+    get(())
+  }
+}
+
+-- Exception effect (demonstrates non-State handler, not compilable)
 effect Exn<E> {
   op throw(E -> Unit);
 }
 
 data Option<T> { None, Some(T) }
-
--- Handle exceptions by returning None on failure
-fn safe_parse(@String -> @Option<Int>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  handle[Exn<String>] {
-    throw(@String) -> { None }
-  } in {
-    let @Int = parse_int(@String.0);
-    Some(@Int.0)
-  }
-}

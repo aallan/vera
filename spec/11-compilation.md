@@ -390,14 +390,49 @@ call_indirect (type $closure_sig_N)    ;; indirect call
 
 `apply_fn` is a compiler built-in, not a user-defined function. The checker issues a warning about it being unresolved, but the code generator recognizes it and emits the appropriate `call_indirect` sequence.
 
-## 11.11 Limitations
+## 11.11 Effect Handler Compilation
+
+The `handle[Effect<T>]` expression compiles effect handlers to WASM. Currently, `State<T>` handlers are supported via the existing host import mechanism (Section 11.7.2).
+
+### 11.11.1 State Handler Compilation
+
+A `handle[State<T>](@T = init) { clauses } in { body }` expression compiles to:
+
+1. **Initialize state**: compile `init` expression, call `$vera.state_put_T`
+2. **Compile body**: with `get`/`put` mapped to `$vera.state_get_T`/`$vera.state_put_T` host imports
+3. **Return body result**: the handle expression evaluates to the body's final expression
+
+```wat
+;; handle[State<Int>](@Int = 42) { ... } in { put(get(()) + 1); get(()) }
+i64.const 42                ;; init expr
+call $vera.state_put_Int    ;; initialize state
+call $vera.state_get_Int    ;; get(())
+i64.const 1
+i64.add
+call $vera.state_put_Int    ;; put(get(()) + 1)
+call $vera.state_get_Int    ;; get(()) — body result
+```
+
+### 11.11.2 Handler Clauses as Specifications
+
+Handler clauses (e.g. `get(@Unit) -> { resume(@Int.0) }`) describe the handler's operational semantics but are not compiled to WASM. The host runtime already implements the correct `get`/`put` behavior. The `resume` calls in handler clauses serve as specifications validated by the type checker.
+
+### 11.11.3 Effect Discharge
+
+A `handle[State<T>]` expression discharges the `State<T>` effect. This means a function can be declared `effects(pure)` and still use `get`/`put` operations within a handler body. The compiler registers the State<T> host imports by scanning the function body for handle expressions, not just the function's declared effects.
+
+### 11.11.4 Unsupported Handlers
+
+Handler types other than `State<T>` (e.g. `Exn<E>`, custom effects) are not yet compilable. Functions containing unsupported handler types are skipped with a warning.
+
+## 11.12 Limitations
 
 The current compilation model has the following limitations, each tracked as a GitHub issue:
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| No effect handler codegen | [#28](https://github.com/aallan/vera/issues/28) | Needs continuation-passing transform |
 | No Byte type codegen | [#30](https://github.com/aallan/vera/issues/30) | Needs linear memory byte operations |
 | No module-level code generation | — | Each file compiles independently |
 | No garbage collection | — | Bump allocator only; linear memory is not reclaimed |
 | String constants only | — | No dynamic string construction |
+| Only State\<T\> handlers | — | Exn\<E\> and custom effect handlers not yet compilable |
