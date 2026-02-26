@@ -3583,8 +3583,8 @@ fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 """
         assert _run(src) == 5
 
-    def test_array_fn_param_skipped(self) -> None:
-        """Functions with Array params should be skipped with warning."""
+    def test_array_fn_param_compiles(self) -> None:
+        """Functions with Array params should compile with pair params."""
         src = """
 fn f(@Array<Int> -> @Int) requires(true) ensures(true) effects(pure) {
   @Array<Int>.0[0]
@@ -3594,8 +3594,12 @@ fn g(-> @Int) requires(true) ensures(true) effects(pure) {
 }
 """
         result = _compile_ok(src)
-        # f should be skipped, g should compile
+        # Both f and g should compile
+        assert "$f" in result.wat
         assert "$g" in result.wat
+        # f should have pair params
+        assert "(param $p0_ptr i32)" in result.wat
+        assert "(param $p0_len i32)" in result.wat
 
 
 # =====================================================================
@@ -3946,3 +3950,114 @@ fn to_percentage(@Int -> @Percentage)
 """)
         assert '(export "safe_divide"' in result.wat
         assert '(export "to_percentage"' in result.wat
+
+
+# =====================================================================
+# C6.5e: String and Array types in function signatures
+# =====================================================================
+
+
+class TestStringArraySignatures:
+    """Tests for String and Array types in function parameters and returns."""
+
+    def test_string_param(self) -> None:
+        """Function taking a String param compiles with pair params."""
+        src = """
+fn say(@String -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(@String.0) }
+"""
+        result = _compile_ok(src)
+        assert "say" in result.exports
+        assert "(param $p0_ptr i32)" in result.wat
+        assert "(param $p0_len i32)" in result.wat
+
+    def test_string_return(self) -> None:
+        """Function returning a String compiles with (result i32 i32)."""
+        src = '''
+fn greeting(-> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+'''
+        result = _compile_ok(src)
+        assert "greeting" in result.exports
+        assert "(result i32 i32)" in result.wat
+
+    def test_string_param_and_return(self) -> None:
+        """String param + String return: identity-like function."""
+        src = """
+fn echo(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ @String.0 }
+"""
+        result = _compile_ok(src)
+        assert "echo" in result.exports
+        assert "(param $p0_ptr i32)" in result.wat
+        assert "(result i32 i32)" in result.wat
+
+    def test_string_call_chain(self) -> None:
+        """String-returning fn called by another fn via IO.print."""
+        src = '''
+fn greeting(-> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello world" }
+
+fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(greeting()) }
+'''
+        result = _compile_ok(src)
+        exec_result = execute(result)
+        assert exec_result.stdout == "hello world"
+
+    def test_array_param(self) -> None:
+        """Function taking an Array<Int> param compiles with pair params."""
+        src = """
+fn get_len(@Array<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ length(@Array<Int>.0) }
+"""
+        result = _compile_ok(src)
+        assert "get_len" in result.exports
+        assert "(param $p0_ptr i32)" in result.wat
+        assert "(param $p0_len i32)" in result.wat
+
+    def test_array_return(self) -> None:
+        """Function returning an Array literal compiles."""
+        src = """
+fn nums(-> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{ [1, 2, 3] }
+"""
+        result = _compile_ok(src)
+        assert "nums" in result.exports
+        assert "(result i32 i32)" in result.wat
+
+    def test_mixed_params(self) -> None:
+        """Function with both pair and primitive params."""
+        src = """
+fn add_to(@Int, @String -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+"""
+        result = _compile_ok(src)
+        assert "add_to" in result.exports
+        # Int param is plain i64, String param is pair
+        assert "(param $p0 i64)" in result.wat
+        assert "(param $p1_ptr i32)" in result.wat
+        assert "(param $p1_len i32)" in result.wat
+        # Can execute with Int=10, String ptr=0, len=0
+        exec_result = execute(result, fn_name="add_to", args=[10, 0, 0])
+        assert exec_result.value == 11
+
+    def test_string_return_execution(self) -> None:
+        """Executing a String-returning function returns a pointer."""
+        src = '''
+fn hello(-> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+'''
+        result = _compile_ok(src)
+        exec_result = execute(result, fn_name="hello")
+        # Returns the data pointer (an integer)
+        assert isinstance(exec_result.value, int)

@@ -186,7 +186,7 @@ Before starting the module system, C6.5 addresses residual gaps in single-file c
 | ~~C6.5b~~ | ~~Handler `with` clause for state updates not in grammar~~ | [v0.0.26](https://github.com/aallan/vera/releases/tag/v0.0.26) |
 | ~~C6.5c~~ | ~~Pipe operator (`\|>`) compilation~~ | [v0.0.27](https://github.com/aallan/vera/releases/tag/v0.0.27) |
 | ~~C6.5d~~ | ~~Float64 modulo (`%`) — WASM has no `f64.rem`~~ | [v0.0.28](https://github.com/aallan/vera/releases/tag/v0.0.28) |
-| C6.5e | String and Array types in function signatures | [#69](https://github.com/aallan/vera/issues/69) |
+| ~~C6.5e~~ | ~~String and Array types in function signatures~~ | [v0.0.29](https://github.com/aallan/vera/releases/tag/v0.0.29) |
 | C6.5f | `old()`/`new()` state expressions in contracts | [#70](https://github.com/aallan/vera/issues/70) |
 
 <details>
@@ -466,7 +466,7 @@ vera/
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (866 tests)
+├── tests/                         # Test suite (874 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse

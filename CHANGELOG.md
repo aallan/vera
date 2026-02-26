@@ -9,6 +9,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **Project website** ([veralang.dev](https://veralang.dev)): single-page site deployed via GitHub Pages ([#81](https://github.com/aallan/vera/pull/81))
 
+## [0.0.29] - 2026-02-26
+
+### Added
+- **String and Array types in function signatures** (C6.5e — closes [#69](https://github.com/aallan/vera/issues/69)): functions with `String` or `Array<T>` parameters and return types now compile to WASM
+  - Each String/Array parameter expands to two consecutive `i32` WASM parameters (pointer and length)
+  - String/Array return types use WASM multi-value return `(result i32 i32)`
+  - `_type_expr_to_wasm_type()` returns `"i32_pair"` sentinel instead of `"unsupported"` for String/Array
+  - Generalised `_is_pair_type_name()` helper for String and Array<T> across slot refs, let bindings, and drop logic
+  - `execute()` handles multi-value (list) returns from wasmtime
+  - Postcondition checks skipped for pair return types (single-local save/restore pattern incompatible with two-value results)
+  - `if` and `match` blocks emit `(result i32 i32)` for pair-typed branches
+  - Functions previously skipped in `examples/pattern_matching.vera` and `examples/quantifiers.vera` now compile
+- 8 new codegen tests (874 total, up from 866)
+
 ## [0.0.28] - 2026-02-26
 
 ### Added
@@ -430,7 +444,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.28...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.29...HEAD
+[0.0.29]: https://github.com/aallan/vera/compare/v0.0.28...v0.0.29
 [0.0.28]: https://github.com/aallan/vera/compare/v0.0.27...v0.0.28
 [0.0.27]: https://github.com/aallan/vera/compare/v0.0.26...v0.0.27
 [0.0.26]: https://github.com/aallan/vera/compare/v0.0.25...v0.0.26
