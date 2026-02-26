@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **Project website** ([veralang.dev](https://veralang.dev)): single-page site deployed via GitHub Pages ([#81](https://github.com/aallan/vera/pull/81))
 
+## [0.0.25] - 2026-02-26
+
+### Fixed
+- **`resume` recognized in handler scope** (C6.5a — closes [#74](https://github.com/aallan/vera/issues/74)): the type checker now binds `resume` as a function in handler clause bodies with the correct type (takes operation return type, returns Unit), eliminating spurious "Unresolved function 'resume'" warnings
+- `effect_handler.vera` example now type-checks cleanly (moved from warn to clean examples)
+
+### Added
+- `_check_clean()` test helper asserts zero errors AND zero warnings
+- 3 new tests: `test_resume_wrong_arg_type`, `test_resume_wrong_arity`, `test_resume_outside_handler` (852 total, up from 849)
+
 ## [0.0.24] - 2026-02-26
 
 ### Added
