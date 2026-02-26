@@ -185,12 +185,19 @@ fn increment(-> @Unit)
 State is handled by providing an initial value and a handler that manages the mutable cell:
 
 ```
-handle {
-  increment()
-} with State<Int> {
-  initial: 0,
-  get: fn(-> @Int) effects(pure) { resume(0) },
-  put: fn(@Int -> @Unit) effects(pure) { resume(()) }
+fn run_increment(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    let @Int = get(());
+    put(@Int.0 + 1);
+    get(())
+  }
 }
 ```
 

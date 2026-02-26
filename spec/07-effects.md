@@ -31,7 +31,6 @@ effect Exn<E> {
 ```
 effect IO {
   op print(String -> Unit);
-  op read_line(Unit -> String);
 }
 ```
 
@@ -99,12 +98,12 @@ fn increment(@Unit -> @Unit)
 ```
 
 ```
-fn greet(@String -> @Unit)
-  requires(length(@String.0) > 0)
+fn hello(-> @Unit)
+  requires(true)
   ensures(true)
   effects(<IO>)
 {
-  IO.print(string_concat("Hello, ", @String.0))
+  IO.print("hello, world")
 }
 ```
 
@@ -136,8 +135,8 @@ An effect handler provides implementations for an effect's operations and discha
 
 ```
 handle[State<Int>](@Int = 0) {
-  get(@Unit) -> resume(@Int.0),
-  put(@Int) -> resume(()) with @Int = @Int.0,
+  get(@Unit) -> { resume(@Int.0) },
+  put(@Int) -> { resume(()) }
 } in {
   body_expression
 }
@@ -147,8 +146,8 @@ handle[State<Int>](@Int = 0) {
 
 ```
 handle[EffectName<TypeArgs>](initial_state) {
-  operation1(params) -> handler_body1,
-  operation2(params) -> handler_body2,
+  operation1(params) -> { handler_body1 },
+  operation2(params) -> { handler_body2 }
 } in {
   handled_body
 }
@@ -158,9 +157,8 @@ Components:
 
 - `[EffectName<TypeArgs>]`: the effect being handled
 - `(initial_state)`: initial value for stateful effects (optional; only for effects that carry state)
-- Operation clauses: one per operation in the effect, each providing an implementation
-- `resume`: a built-in that continues execution of the handled body with a return value
-- `with @T = expr`: updates the handler's state before resuming
+- Operation clauses: one per operation in the effect, each providing an implementation as a block
+- `resume(value)`: a built-in that continues execution of the handled body with a return value
 - `in { ... }`: the body in which the effect is handled
 
 ### 7.5.2 Handler Semantics
@@ -186,8 +184,8 @@ fn run_stateful(@Unit -> @Int)
   effects(pure)
 {
   handle[State<Int>](@Int = 0) {
-    get(@Unit) -> resume(@Int.0),
-    put(@Int) -> resume(()) with @Int = @Int.0,
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
   } in {
     let @Int = get(());           -- returns 0 (initial state)
     put(@Int.0 + 10);             -- state becomes 10
@@ -208,7 +206,7 @@ fn safe_parse(@String -> @Option<Int>)
   effects(pure)
 {
   handle[Exn<String>] {
-    throw(@String) -> None,       -- do NOT resume; return None
+    throw(@String) -> { None }    -- do NOT resume; return None
   } in {
     Some(parse_int(@String.0))    -- parse_int has effects(<Exn<String>>)
   }
@@ -289,13 +287,12 @@ This function always performs `IO` (for the logging), plus whatever effects `E` 
 ```
 effect IO {
   op print(String -> Unit);
-  op read_line(Unit -> String);
-  op write_file(String, String -> Unit);    -- path, contents
-  op read_file(String -> String);            -- path -> contents
 }
 ```
 
-IO operations interact with the outside world. They cannot be handled by user code — they are handled by the runtime.
+The `IO` effect currently exposes a single operation: `print`, which writes a UTF-8 string to standard output. IO operations interact with the outside world and are handled by the runtime (see Chapter 12, Section 12.4.1).
+
+Future operations (`read_line`, `read_file`, `write_file`) will extend the `IO` effect as the runtime grows. See Chapter 9, Section 9.5.1 for the full standard library documentation.
 
 ### 7.7.2 `Exn<E>`
 

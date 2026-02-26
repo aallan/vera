@@ -286,18 +286,19 @@ Indexing uses square brackets with an `Int` or `Nat` index. Array indexing is bo
 
 ### 4.12.3 Array Operations
 
-Array operations are provided by the standard library (`vera.array`), not by special syntax. Examples:
+The built-in `length` function returns the number of elements in an array (see Chapter 9, Section 9.6.1):
 
 ```
-array_length(@Array<Int>.0)          -- returns Nat
-array_map(@Array<Int>.0, @Fn.0)      -- returns Array<B>
-array_fold(@Array<Int>.0, @Int.0, @Fn.0)  -- returns B
-array_slice(@Array<Int>.0, @Nat.0, @Nat.1)  -- returns Array<Int>
+length(@Array<Int>.0)                -- returns Int (>= 0)
 ```
+
+Future array operations (`map`, `fold`, `slice`) will be added alongside the module system and abilities (see Chapter 9, Section 9.4.1).
 
 ## 4.13 String Operations
 
-String operations are provided by the standard library (`vera.string`):
+> **Status: Not yet implemented.** Depends on dynamic string construction ([#52](https://github.com/aallan/vera/issues/52)).
+
+String operations will be provided by the standard library:
 
 ```
 string_length(@String.0)             -- returns Nat
@@ -305,7 +306,7 @@ string_concat(@String.0, @String.1)  -- returns String
 string_slice(@String.0, @Nat.0, @Nat.1)  -- returns String
 ```
 
-String concatenation uses a function, not an operator. There is no `+` on strings.
+String concatenation will use a function, not an operator. There is no `+` on strings. Currently, only string constants (literals) are supported — see Chapter 9, Section 9.4.1 for the current state of collections and Chapter 11, Section 11.5 for the string pool implementation.
 
 ## 4.14 Expression Precedence (Complete)
 
