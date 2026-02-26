@@ -172,12 +172,22 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C4 | [v0.0.8](https://github.com/aallan/vera/releases/tag/v0.0.8) | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
 | C5 | [v0.0.9](https://github.com/aallan/vera/releases/tag/v0.0.9) | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
 | C6 | [v0.0.10](https://github.com/aallan/vera/releases/tag/v0.0.10)–[v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Done |
+| C6.5 | — | **Codegen cleanup** — handler fixes, missing operators, String/Array support | In Progress |
 | C7 | — | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
 
-### What's next: C7 — Module System
+### What's next: C6.5 — Codegen & Checker Cleanup
 
-C7 will implement cross-file imports, public/private visibility, and multi-module compilation. Tracked in [#14](https://github.com/aallan/vera/issues/14) and [#50](https://github.com/aallan/vera/issues/50). Spec Chapter 8 (Modules) will be written alongside the implementation.
+Before starting the module system, C6.5 addresses residual gaps in single-file compilation — handler bugs, missing operators, and type support limits. Each sub-phase closes a tracked issue.
+
+| Sub-phase | Scope | Issue |
+|-----------|-------|-------|
+| C6.5a | `resume` not recognized as built-in in handler scope | [#74](https://github.com/aallan/vera/issues/74) |
+| C6.5b | Handler `with` clause for state updates not in grammar | [#72](https://github.com/aallan/vera/issues/72) |
+| C6.5c | Pipe operator (`\|>`) compilation | [#44](https://github.com/aallan/vera/issues/44) |
+| C6.5d | Float64 modulo (`%`) — WASM has no `f64.rem` | [#46](https://github.com/aallan/vera/issues/46) |
+| C6.5e | String and Array types in function signatures | [#69](https://github.com/aallan/vera/issues/69) |
+| C6.5f | `old()`/`new()` state expressions in contracts | [#70](https://github.com/aallan/vera/issues/70) |
 
 <details>
 <summary>C6 — Codegen Completeness (<a href="https://github.com/aallan/vera/releases/tag/v0.0.10">v0.0.10</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.24">v0.0.24</a>) ✓</summary>
@@ -202,6 +212,10 @@ C6 extended WASM compilation to all language constructs, working through the dep
 | C6n | Spec chapters 9 (Standard library) and 12 (Runtime) | [v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) |
 
 </details>
+
+### Coming next: C7 — Module System
+
+C7 will implement cross-file imports, public/private visibility, and multi-module compilation. Tracked in [#14](https://github.com/aallan/vera/issues/14) and [#50](https://github.com/aallan/vera/issues/50). Spec Chapter 8 (Modules) will be written alongside the implementation.
 
 ## Getting Started
 
