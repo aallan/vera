@@ -46,9 +46,9 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("02-types.md", 250): "FUTURE",          # forall<T where Ord<T>> fn sort
 
     # Chapter 9 — future stdlib features and signature-only blocks
-    ("09-standard-library.md", 262): "FUTURE",   # fn classify — uses ++ (string concat)
-    ("09-standard-library.md", 276): "FRAGMENT",  # length signature (no body)
-    ("09-standard-library.md", 298): "FRAGMENT",  # similarity signature (no body)
+    ("09-standard-library.md", 269): "FUTURE",   # fn classify — uses ++ (string concat)
+    ("09-standard-library.md", 283): "FRAGMENT",  # length signature (no body)
+    ("09-standard-library.md", 305): "FRAGMENT",  # similarity signature (no body)
 
     # =================================================================
     # FRAGMENT — heuristic false positives (look like declarations but
@@ -85,20 +85,18 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("06-contracts.md", 308): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
 
     # Chapter 7 — anonymous function at top level
-    ("07-effects.md", 117): "FRAGMENT",     # effect Logger + anonymous fn body
+    ("07-effects.md", 116): "FRAGMENT",     # effect Logger + anonymous fn body
 
-    # Chapter 7 — handler with-clause syntax not in parser
-    ("07-effects.md", 182): "FRAGMENT",     # handle[State] with-clause in put handler
-    ("07-effects.md", 204): "FRAGMENT",     # handle[Exn] non-resuming handler
-    ("07-effects.md", 224): "FRAGMENT",     # handle[Choice] multi-shot resume
+    # Chapter 7 — multi-shot resume + array_concat (future)
+    ("07-effects.md", 222): "FUTURE",       # handle[Choice] multi-shot resume + array_concat
 
     # Chapter 7 — inline function types in generic params
-    ("07-effects.md", 251): "FRAGMENT",     # fn(A -> B) in param position
-    ("07-effects.md", 270): "FRAGMENT",     # fn(Unit -> A) in param position
+    ("07-effects.md", 249): "FRAGMENT",     # fn(A -> B) in param position
+    ("07-effects.md", 268): "FRAGMENT",     # fn(Unit -> A) in param position
 
     # Chapter 7 — empty effect bodies (parser requires op_decl+)
-    ("07-effects.md", 312): "FRAGMENT",     # effect Diverge {} — no operations
-    ("07-effects.md", 320): "FRAGMENT",     # effect Alloc {} — no operations
+    ("07-effects.md", 309): "FRAGMENT",     # effect Diverge {} — no operations
+    ("07-effects.md", 317): "FRAGMENT",     # effect Alloc {} — no operations
 }
 
 

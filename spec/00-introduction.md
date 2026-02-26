@@ -88,7 +88,7 @@ Error in examples/bad.vera at line 5, column 1:
       ...
     }
 
-  See: Chapter 5, Section 5.1 "Function Structure"
+  See: Chapter 5, Section 5.1
 ```
 
 ### 0.5.3 Diagnostic Categories
