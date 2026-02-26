@@ -37,7 +37,7 @@ Vera types map to WASM value types as follows:
 | ADTs | `i32` | Heap pointer to tagged union (see Section 11.6) |
 | Function types | `i32` | Heap pointer to closure struct (see Section 11.11) |
 
-Generic type variables are resolved via monomorphization — each concrete instantiation of a `forall<T>` function produces a specialized copy with type variables replaced by concrete types (e.g. `identity$Int`). Type aliases for function types (e.g. `type IntToInt = fn(Int -> Int) effects(pure)`) are also resolved to `i32` closure pointers. Array and String types are compilable within function bodies (as let bindings and expressions) but not yet as function parameters or return types. Functions using non-compilable types in their signatures are skipped with a warning.
+Generic type variables are resolved via monomorphization — each concrete instantiation of a `forall<T>` function produces a specialized copy with type variables replaced by concrete types (e.g. `identity$Int`). Type aliases are resolved through their definitions: function type aliases (e.g. `type IntToInt = fn(Int -> Int) effects(pure)`) resolve to `i32` closure pointers, and refinement type aliases (e.g. `type PosInt = { @Int | @Int.0 > 0 }`) resolve to their base WASM type (see Section 11.15). Array and String types are compilable within function bodies (as let bindings and expressions) but not yet as function parameters or return types. Functions using non-compilable types in their signatures are skipped with a warning.
 
 ### 11.2.1 Nat as i64
 
@@ -512,7 +512,19 @@ Both quantifiers short-circuit: `forall` exits on the first false result, `exist
 
 `assume(expr)` is a no-op at runtime. The verifier uses assumptions as axioms during contract verification, but at runtime the assumption is not checked. The compiler emits no instructions for `assume`.
 
-## 11.15 Limitations
+## 11.15 Refinement Type Alias Compilation
+
+Refinement type aliases (e.g. `type PosInt = { @Int | @Int.0 > 0 }`) are compiled by resolving through the alias and refinement to the underlying base type. The refinement predicate is a verification-only construct — it constrains the type statically but produces no runtime code.
+
+When the compiler encounters a type alias in a function signature or slot reference, it resolves the alias chain: if the alias target is a `RefinementType`, the compiler recurses into its base type. This continues until a concrete primitive or ADT type is reached. For example:
+
+- `PosInt` → `{ @Int | @Int.0 > 0 }` → `Int` → `i64`
+- `Percentage` → `{ @Int | @Int.0 >= 0 && @Int.0 <= 100 }` → `Int` → `i64`
+- `NonEmptyArray` → `{ @Array<Int> | length(...) > 0 }` → `Array<Int>` → skipped (Array param limitation)
+
+This resolution applies uniformly to parameter types, return types, let bindings, and slot references within function bodies.
+
+## 11.16 Limitations
 
 The current compilation model has the following limitations, each tracked as a GitHub issue:
 

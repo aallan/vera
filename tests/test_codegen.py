@@ -3759,3 +3759,113 @@ fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
 """)
         assert "loop" in result.wat
         assert "block" in result.wat
+
+
+# =====================================================================
+# Refinement type alias compilation
+# =====================================================================
+
+
+class TestRefinementTypeAlias:
+    """Refined type aliases (e.g. PosInt, Percentage) resolve to their
+    base WASM type for params, returns, and let bindings."""
+
+    _PREAMBLE = """
+type PosInt = { @Int | @Int.0 > 0 };
+type Nat = { @Int | @Int.0 >= 0 };
+type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
+"""
+
+    def test_safe_divide_basic(self) -> None:
+        val = _run(self._PREAMBLE + """
+fn safe_divide(@Int, @PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 / @PosInt.0 }
+""", fn="safe_divide", args=[10, 2])
+        assert val == 5
+
+    def test_safe_divide_integer_division(self) -> None:
+        val = _run(self._PREAMBLE + """
+fn safe_divide(@Int, @PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 / @PosInt.0 }
+""", fn="safe_divide", args=[7, 3])
+        assert val == 2
+
+    def test_to_percentage_clamp_low(self) -> None:
+        val = _run(self._PREAMBLE + """
+fn to_percentage(@Int -> @Percentage)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Int.0 < 0 then { 0 }
+  else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
+}
+""", fn="to_percentage", args=[-5])
+        assert val == 0
+
+    def test_to_percentage_passthrough(self) -> None:
+        val = _run(self._PREAMBLE + """
+fn to_percentage(@Int -> @Percentage)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Int.0 < 0 then { 0 }
+  else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
+}
+""", fn="to_percentage", args=[50])
+        assert val == 50
+
+    def test_to_percentage_clamp_high(self) -> None:
+        val = _run(self._PREAMBLE + """
+fn to_percentage(@Int -> @Percentage)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Int.0 < 0 then { 0 }
+  else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
+}
+""", fn="to_percentage", args=[150])
+        assert val == 100
+
+    def test_refined_type_let_binding(self) -> None:
+        """Let binding to a refined type alias resolves correctly."""
+        val = _run(self._PREAMBLE + """
+fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @PosInt = @Int.0;
+  @PosInt.0 + 1
+}
+""", fn="f", args=[10])
+        assert val == 11
+
+    def test_refined_return_in_expr(self) -> None:
+        """Function returning a refined type works in expressions."""
+        val = _run(self._PREAMBLE + """
+fn clamp(@Int -> @Percentage)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Int.0 < 0 then { 0 }
+  else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
+}
+
+fn main(-> @Int) requires(true) ensures(true) effects(pure) {
+  clamp(200) + clamp(50)
+}
+""")
+        assert val == 150
+
+    def test_refined_type_exports_in_wat(self) -> None:
+        """WAT should contain function exports for refined-type fns."""
+        result = _compile_ok(self._PREAMBLE + """
+fn safe_divide(@Int, @PosInt -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 / @PosInt.0 }
+
+fn to_percentage(@Int -> @Percentage)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Int.0 < 0 then { 0 }
+  else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
+}
+""")
+        assert '(export "safe_divide"' in result.wat
+        assert '(export "to_percentage"' in result.wat

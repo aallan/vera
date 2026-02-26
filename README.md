@@ -198,7 +198,7 @@ C6 extends WASM compilation to all language constructs, working through the depe
 |-----------|-------|--------|---------|
 | ~~C6k~~ | ~~Byte + arrays — linear memory arrays with bounds~~ | ~~[#30](https://github.com/aallan/vera/issues/30)~~ | ~~Done (v0.0.21)~~ |
 | ~~C6l~~ | ~~Quantifiers — forall/exists as runtime loops~~ | ~~—~~ | ~~Done (v0.0.22)~~ |
-| C6m | Refinement returns + stdlib utilities | — | refinement_types.vera |
+| ~~C6m~~ | ~~Refinement type alias compilation~~ | ~~—~~ | ~~Done (v0.0.23)~~ |
 | C6n | Spec chapters 9 (Standard library) and 12 (Runtime) | — | — |
 
 ### Specification chapters
@@ -465,7 +465,7 @@ vera/
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (660 tests)
+├── tests/                         # Test suite (849 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse
