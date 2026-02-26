@@ -5,7 +5,7 @@ Architecture documentation for the Vera compiler (`vera/` package). This is for 
 For other documentation:
 - [Root README](../README.md) — project overview, getting started, language examples
 - [SKILLS.md](../SKILLS.md) — language reference for LLM agents writing Vera code
-- [spec/](../spec/) — formal language specification (10 chapters)
+- [spec/](../spec/) — formal language specification (12 chapters)
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — contributor workflow and conventions
 
 ## Pipeline Overview

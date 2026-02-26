@@ -42,7 +42,7 @@ python scripts/check_version_sync.py  # Verify version consistency
 
 ## Project layout
 
-- `spec/` — Language specification (Chapters 0-7, 10-11)
+- `spec/` — Language specification (Chapters 0-7, 9-12)
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
 - `examples/` — 14 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite

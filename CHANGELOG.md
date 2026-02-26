@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.24] - 2026-02-26
+
+### Added
+- **Spec Chapter 9: Standard Library** (C6n): documents all built-in types (`Option<T>`, `Result<T, E>`), collections (`Array<T>`), effects (`IO`, `State<T>`), and functions (`length`, future `similarity`); includes future features (Http, Async, Inference effects; Json, Decimal types; Set, Map collections; Abilities) with issue cross-references
+- **Spec Chapter 12: Runtime and Execution** (C6n — closes [#63](https://github.com/aallan/vera/issues/63)): documents WASM module structure, wasmtime host runtime, host function bindings (IO.print, State\<T\>), linear memory model, bump allocator, execution flow, argument passing, error handling, and runtime limitations
+
+### Changed
+- **Spec Chapter 0**: condensed Section 0.8 design notes to a cross-reference table pointing to Chapter 9 sections (previously contained full feature designs inline)
+
 ## [0.0.23] - 2026-02-26
 
 ### Added
@@ -380,7 +389,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.23...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.24...HEAD
+[0.0.24]: https://github.com/aallan/vera/compare/v0.0.23...v0.0.24
 [0.0.23]: https://github.com/aallan/vera/compare/v0.0.22...v0.0.23
 [0.0.22]: https://github.com/aallan/vera/compare/v0.0.21...v0.0.22
 [0.0.21]: https://github.com/aallan/vera/compare/v0.0.20...v0.0.21

@@ -143,133 +143,15 @@ Throughout this specification:
 | 11 | Compilation Model |
 | 12 | Runtime and Execution |
 
-## 0.8 Design Notes (Future Chapters)
+## 0.8 Design Notes (Future Features)
 
-The following design decisions are noted here for future specification work:
+The following features are planned for future versions. Each is specified in its target chapter with full design details; this section provides a brief index.
 
-### Network Access as an Effect ([#57](https://github.com/aallan/vera/issues/57))
-
-Network I/O SHOULD be modelled as an algebraic effect (e.g., `<Http>` or `<Net>`) with operations like `get`, `post`, etc. Functions performing network access declare `effects(<Http>)`. Handlers provide the implementation — real HTTP in production, mocks in tests. This fits naturally with Vera's algebraic effect system and makes network I/O explicit and testable. Almost all practical programs need network access; this should be a first-class part of the standard library (Chapter 9).
-
-### JSON as a Standard Library Type ([#58](https://github.com/aallan/vera/issues/58))
-
-JSON SHOULD be a standard library ADT, not a primitive type:
-
-```vera
-data Json {
-  JNull,
-  JBool(Bool),
-  JNumber(Float),
-  JString(String),
-  JArray(Array<Json>),
-  JObject(Map<String, Json>)
-}
-```
-
-Parse and serialize operations belong in the standard library. Refinement types can express JSON schemas (e.g., `type ApiResponse = { @Json | has_field(@Json.0, "status") }`). This approach keeps the core language small while providing ergonomic JSON support.
-
-### Asynchronous Promises/Futures ([#59](https://github.com/aallan/vera/issues/59))
-
-Async operations SHOULD be first-class citizens in Vera, modelled as an algebraic effect. An `<Async>` effect with an `await` operation fits naturally:
-
-```vera
-fn fetch_both(@String, @String -> @Tuple<Json, Json>)
-  requires(true)
-  ensures(true)
-  effects(<Http, Async>)
-{
-  let @Future<Json> = async(http_get(@String.0));
-  let @Future<Json> = async(http_get(@String.1));
-  let @Json = await(@Future<Json>.1);
-  let @Json = await(@Future<Json>.0);
-  Tuple(@Json.1, @Json.0)
-}
-```
-
-Key design points:
-- `async(expr)` wraps an effectful computation in a `Future<T>`, starting it concurrently
-- `await(@Future<T>.n)` suspends until the future resolves, yielding the result
-- Futures can be passed around, stored in data structures, and composed
-- The `<Async>` effect must be declared, making concurrency explicit and trackable
-- Handlers can provide different scheduling strategies (thread pool, event loop, sequential)
-- This integrates with the `<Http>` effect: network calls are naturally async
-
-This avoids coloured-function problems (async vs sync) because algebraic effects already separate the description of an operation from its execution. A handler can run `<Http>` operations sequentially or concurrently — the function code is the same either way.
-
-### Abilities (Restricted Type Constraints) ([#60](https://github.com/aallan/vera/issues/60))
-
-Vera's type variables are currently unconstrained (`forall<T>`). To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera SHOULD adopt **Roc-style restricted abilities** rather than full Haskell-style typeclasses:
-
-```vera
-ability Eq<T> {
-  op eq(@T, @T -> @Bool);
-}
-
-ability Ord<T> {
-  op compare(@T, @T -> @Ordering);
-}
-
-forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  exists(@Nat, length(@Array<T>.0), fn(@Nat -> @Bool) effects(pure) {
-    eq(@Array<T>.0[@Nat.0], @T.0)
-  })
-}
-```
-
-Key design points:
-- **No higher-kinded types.** No `Functor`, `Monad`, or `Applicative`. Abilities are first-order only: `Eq<T>`, not `Mappable<F>` where F is a type constructor. This preserves decidable type checking and prevents the abstraction hierarchy that makes code harder for LLMs to generate correctly.
-- **Built-in abilities** auto-derivable for ADTs composed of types that already support them: `Eq`, `Ord`, `Hash`, `Encode`, `Decode`, `Show`. If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically — the LLM writes less, and there are fewer things to get wrong.
-- **User-defined abilities** are permitted but restricted to first-order type parameters. This allows library authors to define domain-specific abilities (e.g., `Serializable<T>`) without the complexity of higher-kinded polymorphism.
-- **`ability` declarations** look like `effect` declarations (using `op` for operations), keeping the language syntactically consistent.
-- **Constraint syntax** uses `forall<T where Ability<T>>`, consistent with the placeholder noted in Chapter 2, Section 2.7.1.
-
-This design draws on Roc's abilities (deliberately no HKTs, auto-derivable), Gleam's validation that useful languages need not have typeclasses, and Unison's abilities system. The consensus among modern functional languages is that restricted abilities provide sufficient extensibility for practical programming without the complexity explosion of full typeclasses.
-
-Abilities are a post-v0.1 feature. They will be specified in Chapter 2 when implemented.
-
-### LLM Inference as an Effect ([#61](https://github.com/aallan/vera/issues/61))
-
-Vera is designed for LLMs to write. It SHOULD also support LLMs as a runtime component, modelled as an algebraic effect:
-
-```vera
-effect Inference {
-  op complete(@String -> @String);
-  op embed(@String -> @Array<Float64>);
-}
-
-fn classify(@String -> @Category)
-  requires(length(@String.0) > 0)
-  ensures(true)
-  effects(<Inference>)
-{
-  let @String = complete("Classify as Spam or Ham: " ++ @String.0);
-  match parse_category(@String.0) {
-    Some(@Category) -> @Category.0,
-    None -> Category.Unknown
-  }
-}
-```
-
-Key design points:
-- **Effect, not primitive.** LLM inference is inherently side-effectful, non-deterministic, and requires external resources. The effect system models this naturally.
-- **Testability.** A mock handler returns canned responses. No API calls in tests.
-- **Handler flexibility.** One handler uses the Anthropic API, another uses a local model, another uses cached replay for deterministic testing.
-- **Explicit in the type.** Any function that calls an LLM declares `effects(<Inference>)`. Pure functions cannot secretly call models.
-- **Contracts still apply.** Preconditions on inference inputs are verified normally. Postconditions on outputs can use refinement types to constrain response format.
-- **Constrained decoding potential.** Refinement types on the return type (e.g., `{ @String | is_json(@String.0) }`) could eventually guide model output, similar to LMQL's constrained decoding approach.
-
-The `Inference` effect belongs in the standard library (Chapter 9). The WASM runtime provides handler implementations that bind to HTTP APIs or local model runtimes. No language changes are needed — the existing effect system supports this directly.
-
-### Standard Library Collections ([#62](https://github.com/aallan/vera/issues/62))
-
-The standard library (Chapter 9) SHOULD include:
-
-- **`Set<T>`** — an unordered collection of unique elements. Requires `Eq` and `Hash` abilities on `T`. Supports union, intersection, difference.
-- **`Map<K, V>`** — a key-value mapping. Requires `Eq` and `Hash` abilities on `K`. Already implicitly needed by the JSON ADT (`JObject(Map<String, Json>)`).
-- **`Decimal`** — exact decimal arithmetic for financial and precision-sensitive applications. Implemented as a library type (not a primitive) since WebAssembly does not have native decimal floating-point. Software implementation in the runtime.
-
-These types depend on the abilities system for their type constraints. `Set` and `Map` are standard library ADTs, not primitives — keeping the core language small while providing the collections that practical programs need.
+| Feature | Issue | Specification |
+|---------|-------|---------------|
+| Network access (`Http` effect) | [#57](https://github.com/aallan/vera/issues/57) | Chapter 9, Section 9.5.3 |
+| JSON standard library type | [#58](https://github.com/aallan/vera/issues/58) | Chapter 9, Section 9.7.1 |
+| Async futures and promises | [#59](https://github.com/aallan/vera/issues/59) | Chapter 9, Section 9.5.4 |
+| Abilities (type constraints) | [#60](https://github.com/aallan/vera/issues/60) | Chapter 9, Section 9.8 |
+| LLM inference effect | [#61](https://github.com/aallan/vera/issues/61) | Chapter 9, Section 9.5.5 |
+| Collections (`Set`, `Map`, `Decimal`) | [#62](https://github.com/aallan/vera/issues/62) | Chapter 9, Sections 9.4.2-3, 9.7.2 |

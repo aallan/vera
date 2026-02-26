@@ -42,16 +42,13 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     # FUTURE — design notes using syntax not yet in the parser
     # =================================================================
 
-    # Chapter 0 — Section 0.8 design notes (abilities, async, inference)
-    ("00-introduction.md", 158): "FUTURE",   # JSON ADT
-    ("00-introduction.md", 175): "FUTURE",   # fetch_both async example
-    # Note: 00-introduction.md abilities block (~line 203) starts with
-    # "ability" keyword, which the heuristic correctly skips as a fragment
-    # since abilities aren't in the parser yet.
-    ("00-introduction.md", 238): "FUTURE",   # effect Inference + fn classify
-
     # Chapter 2 — type constraint syntax (post-v0.1)
     ("02-types.md", 250): "FUTURE",          # forall<T where Ord<T>> fn sort
+
+    # Chapter 9 — future stdlib features and signature-only blocks
+    ("09-standard-library.md", 262): "FUTURE",   # fn classify — uses ++ (string concat)
+    ("09-standard-library.md", 276): "FRAGMENT",  # length signature (no body)
+    ("09-standard-library.md", 298): "FRAGMENT",  # similarity signature (no body)
 
     # =================================================================
     # FRAGMENT — heuristic false positives (look like declarations but
