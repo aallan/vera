@@ -154,12 +154,12 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 | Phase | Version | Layer | Status |
 |-------|---------|-------|--------|
-| C1 | v0.0.1–0.0.3 | **Parser** — Lark LALR(1) grammar, LLM diagnostics, 13 examples | Done |
-| C2 | v0.0.4 | **AST** — typed syntax tree, Lark→AST transformer | Done |
-| C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
-| C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
-| C5 | v0.0.9 | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
-| C6 | v0.0.10–0.0.24 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Done |
+| C1 | [v0.0.1](https://github.com/aallan/vera/releases/tag/v0.0.1)–[v0.0.3](https://github.com/aallan/vera/releases/tag/v0.0.3) | **Parser** — Lark LALR(1) grammar, LLM diagnostics, 13 examples | Done |
+| C2 | [v0.0.4](https://github.com/aallan/vera/releases/tag/v0.0.4) | **AST** — typed syntax tree, Lark→AST transformer | Done |
+| C3 | [v0.0.5](https://github.com/aallan/vera/releases/tag/v0.0.5) | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
+| C4 | [v0.0.8](https://github.com/aallan/vera/releases/tag/v0.0.8) | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
+| C5 | [v0.0.9](https://github.com/aallan/vera/releases/tag/v0.0.9) | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
+| C6 | [v0.0.10](https://github.com/aallan/vera/releases/tag/v0.0.10)–[v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Done |
 | C7 | — | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
 
@@ -168,26 +168,26 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 C7 will implement cross-file imports, public/private visibility, and multi-module compilation. Tracked in [#14](https://github.com/aallan/vera/issues/14) and [#50](https://github.com/aallan/vera/issues/50). Spec Chapter 8 (Modules) will be written alongside the implementation.
 
 <details>
-<summary>C6 — Codegen Completeness (v0.0.10–v0.0.24) ✓</summary>
+<summary>C6 — Codegen Completeness (<a href="https://github.com/aallan/vera/releases/tag/v0.0.10">v0.0.10</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.24">v0.0.24</a>) ✓</summary>
 
 C6 extended WASM compilation to all language constructs, working through the dependency graph from simplest to most complex. All 14 examples now compile.
 
 | Sub-phase | Scope | Version |
 |-----------|-------|---------|
-| C6a | Float64 — `f64` literals, arithmetic, comparisons | v0.0.10 |
-| C6b | Callee preconditions — verify `requires()` at call sites | v0.0.11 |
-| C6c | Match exhaustiveness — verify all constructors covered | v0.0.12 |
-| C6d | State\<T\> operations — get/put as host imports | v0.0.13 |
-| C6e | Bump allocator — heap allocation for tagged values | v0.0.14 |
-| C6f | ADT constructors — heap-allocated tagged unions | v0.0.15 |
-| C6g | Match expressions — tag dispatch, field extraction | v0.0.16 |
-| C6h | Closures — closure conversion, `call_indirect` | v0.0.18 |
-| C6i | Generics — monomorphization of `forall<T>` functions | v0.0.17 |
-| C6j | Effect handlers — handle/resume compilation | v0.0.19 |
-| C6k | Byte + arrays — linear memory arrays with bounds | v0.0.21 |
-| C6l | Quantifiers — forall/exists as runtime loops | v0.0.22 |
-| C6m | Refinement type alias compilation | v0.0.23 |
-| C6n | Spec chapters 9 (Standard library) and 12 (Runtime) | v0.0.24 |
+| C6a | Float64 — `f64` literals, arithmetic, comparisons | [v0.0.10](https://github.com/aallan/vera/releases/tag/v0.0.10) |
+| C6b | Callee preconditions — verify `requires()` at call sites | [v0.0.11](https://github.com/aallan/vera/releases/tag/v0.0.11) |
+| C6c | Match exhaustiveness — verify all constructors covered | [v0.0.12](https://github.com/aallan/vera/releases/tag/v0.0.12) |
+| C6d | State\<T\> operations — get/put as host imports | [v0.0.13](https://github.com/aallan/vera/releases/tag/v0.0.13) |
+| C6e | Bump allocator — heap allocation for tagged values | [v0.0.14](https://github.com/aallan/vera/releases/tag/v0.0.14) |
+| C6f | ADT constructors — heap-allocated tagged unions | [v0.0.15](https://github.com/aallan/vera/releases/tag/v0.0.15) |
+| C6g | Match expressions — tag dispatch, field extraction | [v0.0.16](https://github.com/aallan/vera/releases/tag/v0.0.16) |
+| C6h | Closures — closure conversion, `call_indirect` | [v0.0.18](https://github.com/aallan/vera/releases/tag/v0.0.18) |
+| C6i | Generics — monomorphization of `forall<T>` functions | [v0.0.17](https://github.com/aallan/vera/releases/tag/v0.0.17) |
+| C6j | Effect handlers — handle/resume compilation | [v0.0.19](https://github.com/aallan/vera/releases/tag/v0.0.19) |
+| C6k | Byte + arrays — linear memory arrays with bounds | [v0.0.21](https://github.com/aallan/vera/releases/tag/v0.0.21) |
+| C6l | Quantifiers — forall/exists as runtime loops | [v0.0.22](https://github.com/aallan/vera/releases/tag/v0.0.22) |
+| C6m | Refinement type alias compilation | [v0.0.23](https://github.com/aallan/vera/releases/tag/v0.0.23) |
+| C6n | Spec chapters 9 (Standard library) and 12 (Runtime) | [v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) |
 
 </details>
 
@@ -212,10 +212,8 @@ pip install -e ".[dev]"
 
 ### Check a program
 
-```bash
-vera check examples/absolute_value.vera
 ```
-```
+$ vera check examples/absolute_value.vera
 OK: examples/absolute_value.vera
 ```
 
@@ -223,10 +221,8 @@ OK: examples/absolute_value.vera
 
 ### Verify contracts
 
-```bash
-vera verify examples/safe_divide.vera
 ```
-```
+$ vera verify examples/safe_divide.vera
 OK: examples/safe_divide.vera
 Verification: 2 verified (Tier 1)
 ```
@@ -235,10 +231,8 @@ Verification: 2 verified (Tier 1)
 
 ### Compile a program
 
-```bash
-vera compile examples/hello_world.vera
 ```
-```
+$ vera compile examples/hello_world.vera
 Compiled: examples/hello_world.wasm (1 function exported)
 ```
 
@@ -250,19 +244,15 @@ vera compile --wat examples/hello_world.vera
 
 ### Run a program
 
-```bash
-vera run examples/hello_world.vera
 ```
-```
+$ vera run examples/hello_world.vera
 Hello, World!
 ```
 
 `vera run` compiles and executes the program. By default it calls `main`. Use `--fn` to call a different function, and pass arguments after `--`:
 
-```bash
-vera run examples/factorial.vera --fn factorial -- 5
 ```
-```
+$ vera run examples/factorial.vera --fn factorial -- 5
 120
 ```
 
@@ -418,7 +408,10 @@ vera/
 ├── SKILLS.md                      # Language reference for LLM agents
 ├── AGENTS.md                      # Instructions for any AI agent system
 ├── CLAUDE.md                      # Project orientation for Claude Code
-├── spec/                          # Language specification
+├── CONTRIBUTING.md                # Contributor guidelines
+├── CHANGELOG.md                   # Version history
+├── pyproject.toml                 # Package configuration
+├── spec/                          # Language specification (12 chapters)
 │   ├── 00-introduction.md         # Design goals and philosophy
 │   ├── 01-lexical-structure.md    # Tokens, operators, formatting rules
 │   ├── 02-types.md                # Type system with refinement types
@@ -427,14 +420,17 @@ vera/
 │   ├── 05-functions.md            # Function declarations and contracts
 │   ├── 06-contracts.md            # Verification system
 │   ├── 07-effects.md              # Algebraic effect system
+│   ├── 09-standard-library.md     # Built-in types, effects, functions
 │   ├── 10-grammar.md              # Formal EBNF grammar
-│   └── 11-compilation.md          # Compilation model and WASM target
+│   ├── 11-compilation.md          # Compilation model and WASM target
+│   └── 12-runtime.md              # Runtime execution and host bindings
 ├── vera/                          # Reference compiler (Python)
 │   ├── grammar.lark               # Lark LALR(1) grammar
 │   ├── parser.py                  # Parser module
 │   ├── ast.py                     # Typed AST node definitions
 │   ├── transform.py               # Lark parse tree → AST transformer
 │   ├── types.py                   # Internal type representation
+│   ├── registration.py            # Function signature registration
 │   ├── environment.py             # Type environment and slot resolution
 │   ├── checker.py                 # Type checker
 │   ├── smt.py                     # Z3 SMT translation layer
@@ -464,7 +460,7 @@ For compiler architecture, pipeline internals, design patterns, and how to exten
 | Contracts | Mandatory on all functions | Programs must be checkable |
 | Effects | Algebraic, row-polymorphic | All state and side effects explicit |
 | Verification | Z3 via SMT-LIB | Industry standard, decidable fragment |
-| Memory | Garbage collected | Models focus on logic, not memory |
+| Memory | Managed (bump allocator; GC planned — [#51](https://github.com/aallan/vera/issues/51)) | Models focus on logic, not memory |
 | Target | WebAssembly | Portable, sandboxed, no ambient capabilities |
 | Compiler | Python reference impl | Correctness over performance — see [architecture docs](vera/README.md) |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about |
