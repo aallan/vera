@@ -66,8 +66,8 @@ ALLOWLIST: dict[tuple[str, int], str] = {
 
     # =================================================================
     # FRAGMENT — spec examples using syntax the parser doesn't support
-    # (generics without forall, empty effects, handler with-clauses,
-    # anonymous top-level functions, inline function types in params)
+    # (generics without forall, empty effects, anonymous top-level
+    # functions, inline function types in params)
     # =================================================================
 
     # Chapter 3 — generic functions without forall keyword

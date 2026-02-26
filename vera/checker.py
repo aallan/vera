@@ -1464,6 +1464,12 @@ class TypeChecker:
                         f"{pretty_type(state_type)}.",
                     )
 
+        # Compute handler state canonical type name (for with-clause checks)
+        state_tname_outer: str | None = None
+        if state_type and expr.state:
+            state_tname_outer = self._type_expr_to_slot_name(
+                expr.state.type_expr)
+
         # Check handler clauses
         for clause in expr.clauses:
             op_info = eff_info.operations.get(clause.op_name)
@@ -1502,6 +1508,35 @@ class TypeChecker:
             )
 
             self._synth_expr(clause.body)
+
+            # Type-check with clause (state update) if present
+            if clause.state_update is not None:
+                upd_te, upd_expr = clause.state_update
+                if state_type is None:
+                    self._error(
+                        clause,
+                        "Handler clause has 'with' state update but "
+                        "handler has no state declaration.",
+                    )
+                else:
+                    upd_slot = self._type_expr_to_slot_name(upd_te)
+                    if upd_slot != state_tname_outer:
+                        self._error(
+                            clause,
+                            f"State update type '{upd_slot}' does not "
+                            f"match handler state type "
+                            f"'{state_tname_outer}'.",
+                        )
+                    upd_type = self._synth_expr(upd_expr)
+                    if (upd_type and state_type
+                            and not isinstance(upd_type, UnknownType)
+                            and not is_subtype(upd_type, state_type)):
+                        self._error(
+                            upd_expr,
+                            f"State update expression has type "
+                            f"{pretty_type(upd_type)}, expected "
+                            f"{pretty_type(state_type)}.",
+                        )
 
             # Restore previous resume binding (if any)
             if saved_resume is not None:

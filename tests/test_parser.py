@@ -740,6 +740,44 @@ class TestHandlerVariations:
         """)
 
 
+    def test_handler_with_clause(self) -> None:
+        """Handler clause with state update parses."""
+        parse("""
+        fn f(@Unit -> @Int)
+          requires(true) ensures(true) effects(pure)
+        {
+          handle[State<Int>](@Int = 0) {
+            get(@Unit) -> { resume(@Int.0) },
+            put(@Int) -> { resume(()) } with @Int = @Int.0
+          } in {
+            get(())
+          }
+        }
+        """)
+
+    def test_handler_with_clause_ast(self) -> None:
+        """Handler with-clause populates state_update on HandlerClause."""
+        from vera.parser import parse_to_ast
+        prog = parse_to_ast("""
+fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    get(())
+  }
+}
+""")
+        fn = prog.declarations[0].decl
+        clauses = fn.body.expr.clauses
+        assert clauses[0].state_update is None
+        assert clauses[1].state_update is not None
+        upd_te, upd_expr = clauses[1].state_update
+        assert upd_te.name == "Int"
+
+
 class TestImpliesOperator:
     def test_implies_in_contract(self) -> None:
         parse("""

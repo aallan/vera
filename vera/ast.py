@@ -459,10 +459,18 @@ class HandlerState(Node):
 
 @dataclass(frozen=True)
 class HandlerClause(Node):
-    """Handler operation clause: op_name(params) -> body."""
+    """Handler operation clause: op_name(params) -> body [with @T = expr]."""
     op_name: str
     params: tuple[TypeExpr, ...]
     body: Expr
+    state_update: tuple[TypeExpr, Expr] | None = None
+
+
+@dataclass(frozen=True)
+class _WithClause:
+    """Internal sentinel for transformer: carries parsed with-clause data."""
+    type_expr: TypeExpr
+    init_expr: Expr
 
 
 # -- Contract expressions --

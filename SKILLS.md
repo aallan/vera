@@ -396,13 +396,20 @@ Handler syntax:
 ```vera
 handle[EffectName<TypeArgs>](@StateType = initial_value) {
   operation(@ParamType) -> { handler_body },
+  operation(@ParamType) -> { handler_body } with @StateType = new_value,
   ...
 } in {
   handled_body
 }
 ```
 
-Use `resume(value)` in a handler clause to continue the handled computation with the given return value.
+Use `resume(value)` in a handler clause to continue the handled computation with the given return value. Optionally update handler state with a `with` clause:
+
+```vera
+put(@Int) -> { resume(()) } with @Int = @Int.0
+```
+
+The `with @T = expr` clause updates the handler's state when resuming. The type must match the handler's state type declaration.
 
 ### Qualified operation calls
 

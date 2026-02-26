@@ -274,12 +274,14 @@ handle_expr: "handle" "[" effect_ref "]" handler_state? "{" handler_clause ("," 
 
 handler_state: "(" "@" type_expr "=" expr ")"
 
-handler_clause: LOWER_IDENT "(" handler_params? ")" "->" handler_body
+handler_clause: LOWER_IDENT "(" handler_params? ")" "->" handler_body with_clause?
 
 handler_params: "@" type_expr ("," "@" type_expr)*
 
 // handler_body is just an expr — block_expr is already reachable via expr
 ?handler_body: expr
+
+with_clause: "with" "@" type_expr "=" expr
 
 // =====================================================================
 // Array Literals
