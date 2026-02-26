@@ -357,6 +357,17 @@
       color: var(--brown-500);
     }
 
+    .status-link {
+      color: var(--brown-500);
+      text-decoration: underline;
+      text-decoration-color: var(--orange-400);
+      text-underline-offset: 2px;
+    }
+
+    .status-link:hover {
+      color: var(--orange-300);
+    }
+
     .status-dot {
       width: 8px;
       height: 8px;
@@ -651,7 +662,7 @@ cp /path/to/vera/SKILLS.md ~/.claude/skills/vera-language/SKILL.md</pre>
     <div class="container">
       <div class="status-badge">
         <span class="status-dot"></span>
-        Vera is under active development
+        Vera is under <a href="https://github.com/aallan/vera/blob/main/README.md#roadmap" class="status-link">active development</a>
       </div>
       <p class="status-text">
         The language specification, parser, type checker, contract verifier, and WASM code generator are functional.
