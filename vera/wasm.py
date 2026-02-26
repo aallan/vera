@@ -473,6 +473,17 @@ class WasmContext:
         self, expr: ast.BinaryExpr, env: WasmSlotEnv
     ) -> list[str] | None:
         """Translate binary operators to WAT."""
+        # Pipe: a |> f(x, y) → f(a, x, y)
+        if expr.op == ast.BinOp.PIPE:
+            if isinstance(expr.right, ast.FnCall):
+                desugared = ast.FnCall(
+                    name=expr.right.name,
+                    args=(expr.left,) + expr.right.args,
+                    span=expr.span,
+                )
+                return self._translate_call(desugared, env)
+            return None  # non-FnCall RHS — unsupported
+
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
         if left is None or right is None:
@@ -517,7 +528,6 @@ class WasmContext:
         if op == ast.BinOp.IMPLIES:
             return left + ["i32.eqz"] + right + ["i32.or"]
 
-        # Pipe — unsupported
         return None
 
     def _infer_expr_wasm_type(self, expr: ast.Expr) -> str | None:

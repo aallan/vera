@@ -892,3 +892,27 @@ fn bad(@Int -> @Int)
 """, "precondition")
         # Check that the error mentions the callee name
         assert any("non_zero" in e.description for e in errors)
+
+
+# =====================================================================
+# Pipe operator verification
+# =====================================================================
+
+class TestPipeVerification:
+    """Pipe operator desugars correctly in SMT translation."""
+
+    def test_pipe_verifies(self) -> None:
+        """Pipe expression in verified function."""
+        _verify_ok("""
+fn inc(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 + 1 }
+
+fn main(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 |> inc() }
+""")

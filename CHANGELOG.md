@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **Project website** ([veralang.dev](https://veralang.dev)): single-page site deployed via GitHub Pages ([#81](https://github.com/aallan/vera/pull/81))
 
+## [0.0.27] - 2026-02-26
+
+### Added
+- **Pipe operator compilation** (C6.5c — closes [#44](https://github.com/aallan/vera/issues/44)): `a |> f(x, y)` now compiles to WASM and verifies via Z3, desugaring to `f(a, x, y)` in both backends
+  - WASM codegen: intercept `BinOp.PIPE` in `_translate_binary()`, construct synthetic `FnCall`, delegate to `_translate_call()`
+  - SMT verifier: same desugaring pattern in `_translate_binary()`
+  - No grammar, AST, transformer, or checker changes needed (pipe already parsed and type-checked)
+- 4 new tests: 3 codegen, 1 verifier (862 total, up from 858)
+
 ## [0.0.26] - 2026-02-26
 
 ### Added

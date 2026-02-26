@@ -753,6 +753,51 @@ fn fib(@Nat -> @Nat)
 
 
 # =====================================================================
+# 5d-pipe: Pipe operator compilation
+# =====================================================================
+
+
+class TestPipeOperator:
+    """Pipe operator |> desugars to function call in codegen."""
+
+    def test_pipe_basic(self) -> None:
+        source = """\
+fn inc(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+
+fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 |> inc() }
+"""
+        assert _run(source, fn="main", args=[42]) == 43
+
+    def test_pipe_chain(self) -> None:
+        source = """\
+fn inc(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+
+fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 |> inc() |> inc() }
+"""
+        assert _run(source, fn="main", args=[10]) == 12
+
+    def test_pipe_multi_arg(self) -> None:
+        source = """\
+fn add(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + @Int.1 }
+
+fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 |> add(10) }
+"""
+        assert _run(source, fn="main", args=[42]) == 52
+
+
+# =====================================================================
 # 5e: String literals + IO host bindings
 # =====================================================================
 
