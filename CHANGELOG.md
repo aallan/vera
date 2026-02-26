@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.21] - 2026-02-26
+
+### Added
+- **Byte type compilation** (C6k): `Byte` maps to `i32` in WASM with unsigned comparison operators (`i32.lt_u`, `i32.gt_u`, `i32.le_u`, `i32.ge_u`); `i32.wrap_i64` coercion for Byte-returning functions with integer literal bodies
+- **Array compilation** (C6k — closes [#30](https://github.com/aallan/vera/issues/30)): compile `Array<T>` literals, indexing, and `length()` to WASM via linear memory
+  - Array representation: `(ptr: i32, len: i32)` pairs, allocated via bump allocator
+  - Element types: `Byte` (1 byte, `i32.load8_u`/`i32.store8`), `Bool` (4 bytes), `Int`/`Nat` (8 bytes, `i64`), `Float64` (8 bytes, `f64`)
+  - Bounds checking: `i32.ge_u` unsigned comparison + `unreachable` trap on out-of-bounds
+  - `length()` built-in: extracts len from `(ptr, len)` pair, extends to `i64`
+  - Array let bindings: two WASM locals (ptr at N, len at N+1)
+  - Array slot refs: emit two `local.get` ops for `(ptr, len)` pair
+  - Array function params/returns unsupported (skipped with warning, same as String)
+- **Spec Section 11.12**: new "Array Compilation" section covering representation, allocation, indexing, bounds checking, length, let bindings, and scope
+- **Codegen tests**: 26 new tests — Byte identity/zero/max/let/comparisons, array literals/indexing/bounds-check/length, WAT inspection (821 total, up from 795)
+
 ## [0.0.20] - 2026-02-25
 
 ### Fixed

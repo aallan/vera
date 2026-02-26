@@ -130,7 +130,7 @@ def wasm_type(t: Type) -> str | None:
             return "i64"
         if t.name in ("Float64", "Float"):
             return "f64"
-        if t.name == "Bool":
+        if t.name in ("Bool", "Byte"):
             return "i32"
         if t.name == "Unit":
             return None
@@ -153,6 +153,63 @@ def wasm_type_or_none(t: Type) -> str | None:
 def is_compilable_type(t: Type) -> bool:
     """Check if a type can be compiled to WASM."""
     return wasm_type(t) != "unsupported"
+
+
+# =====================================================================
+# Array helpers — element sizing, load/store ops
+# =====================================================================
+
+def _element_mem_size(elem_type: str) -> int | None:
+    """Return byte size of an array element given a Vera type name.
+
+    Returns None for unsupported element types.
+    """
+    if elem_type == "Byte":
+        return 1
+    if elem_type == "Bool":
+        return 4  # i32
+    if elem_type in ("Int", "Nat"):
+        return 8  # i64
+    if elem_type in ("Float64", "Float"):
+        return 8  # f64
+    return None
+
+
+def _element_load_op(elem_type: str) -> str | None:
+    """Return the WASM load instruction for an array element type."""
+    if elem_type == "Byte":
+        return "i32.load8_u"
+    if elem_type == "Bool":
+        return "i32.load"
+    if elem_type in ("Int", "Nat"):
+        return "i64.load"
+    if elem_type in ("Float64", "Float"):
+        return "f64.load"
+    return None
+
+
+def _element_store_op(elem_type: str) -> str | None:
+    """Return the WASM store instruction for an array element type."""
+    if elem_type == "Byte":
+        return "i32.store8"
+    if elem_type == "Bool":
+        return "i32.store"
+    if elem_type in ("Int", "Nat"):
+        return "i64.store"
+    if elem_type in ("Float64", "Float"):
+        return "f64.store"
+    return None
+
+
+def _element_wasm_type(elem_type: str) -> str | None:
+    """Return the WASM value type for an array element."""
+    if elem_type in ("Byte", "Bool"):
+        return "i32"
+    if elem_type in ("Int", "Nat"):
+        return "i64"
+    if elem_type in ("Float64", "Float"):
+        return "f64"
+    return None
 
 
 # =====================================================================
@@ -209,6 +266,8 @@ class WasmContext:
         self._type_aliases: dict[str, ast.TypeExpr] = {}
         # Closure signature registry: sig_key -> (type_name, param/result WAT)
         self._closure_sigs: dict[str, str] = {}
+        # Flags for resource requirements detected during translation
+        self.needs_alloc: bool = False
         # Next closure id (may be overwritten by codegen)
         self._next_closure_id: int = 0
 
@@ -319,7 +378,13 @@ class WasmContext:
         if isinstance(expr, ast.HandleExpr):
             return self._translate_handle_expr(expr, env)
 
-        # Unsupported: quantifiers, old/new, assert/assume, arrays, etc.
+        if isinstance(expr, ast.ArrayLit):
+            return self._translate_array_lit(expr, env)
+
+        if isinstance(expr, ast.IndexExpr):
+            return self._translate_index_expr(expr, env)
+
+        # Unsupported: quantifiers, old/new, assert/assume, etc.
         return None
 
     # -----------------------------------------------------------------
@@ -343,6 +408,9 @@ class WasmContext:
         local_idx = env.resolve(type_name, ref.index)
         if local_idx is None:
             return None
+        # Array types push (ptr, len) — two locals
+        if self._is_array_type_name(type_name):
+            return [f"local.get {local_idx}", f"local.get {local_idx + 1}"]
         return [f"local.get {local_idx}"]
 
     # -----------------------------------------------------------------
@@ -413,7 +481,14 @@ class WasmContext:
             if ltype == "f64" or rtype == "f64":
                 return left + right + [self._CMP_OPS_F64[op]]
             if ltype == "i32" and rtype == "i32":
-                # Bool operands — use i32 comparison
+                # Byte operands use unsigned i32 comparison
+                lv = self._infer_vera_type(expr.left)
+                rv = self._infer_vera_type(expr.right)
+                if lv == "Byte" or rv == "Byte":
+                    i32_op = self._CMP_OPS[op].replace("i64.", "i32.")
+                    i32_op = i32_op.replace("_s", "_u")
+                    return left + right + [i32_op]
+                # Bool operands — use i32 comparison (signed)
                 i32_op = self._CMP_OPS[op].replace("i64.", "i32.")
                 return left + right + [i32_op]
             return left + right + [self._CMP_OPS[op]]
@@ -450,7 +525,7 @@ class WasmContext:
                 return "i64"
             if expr.type_name in ("Float64", "Float"):
                 return "f64"
-            if expr.type_name == "Bool":
+            if expr.type_name in ("Bool", "Byte"):
                 return "i32"
             base = (expr.type_name.split("<")[0]
                     if "<" in expr.type_name else expr.type_name)
@@ -466,7 +541,7 @@ class WasmContext:
                 return "i64"
             if expr.type_name in ("Float64", "Float"):
                 return "f64"
-            if expr.type_name == "Bool":
+            if expr.type_name in ("Bool", "Byte"):
                 return "i32"
             return None
         if isinstance(expr, ast.BinaryExpr):
@@ -499,6 +574,11 @@ class WasmContext:
             if expr.body.expr:
                 return self._infer_expr_wasm_type(expr.body.expr)
             return None
+        if isinstance(expr, ast.IndexExpr):
+            elem_type = self._infer_index_element_type(expr)
+            return _element_wasm_type(elem_type) if elem_type else None
+        if isinstance(expr, ast.ArrayLit):
+            return None  # arrays are (i32, i32) — handled specially
         return None
 
     def _infer_fncall_wasm_type(self, expr: ast.FnCall) -> str | None:
@@ -509,6 +589,9 @@ class WasmContext:
         registered return type directly.  For apply_fn, infers from
         the closure's function type.
         """
+        # length(array) → Int (i64)
+        if expr.name == "length":
+            return "i64"
         # apply_fn(closure, args...) — infer from closure type
         if expr.name == "apply_fn" and len(expr.args) >= 1:
             return self._infer_apply_fn_return_type(expr.args[0])
@@ -598,7 +681,7 @@ class WasmContext:
                 return "i64"
             if name in ("Float64", "Float"):
                 return "f64"
-            if name == "Bool":
+            if name in ("Bool", "Byte"):
                 return "i32"
             base = name.split("<")[0] if "<" in name else name
             if base in self._adt_type_names:
@@ -636,6 +719,11 @@ class WasmContext:
             if expr.arms:
                 return self._infer_expr_wasm_type(expr.arms[0].body)
             return None
+        if isinstance(expr, ast.IndexExpr):
+            elem_type = self._infer_index_element_type(expr)
+            return _element_wasm_type(elem_type) if elem_type else None
+        if isinstance(expr, ast.ArrayLit):
+            return None  # arrays are (i32, i32) — handled specially
         return None
 
     # -----------------------------------------------------------------
@@ -658,6 +746,15 @@ class WasmContext:
                 type_name = self._type_expr_to_slot_name(stmt.type_expr)
                 if type_name is None:
                     return None
+                # Array bindings need two locals: (ptr, len)
+                if self._is_array_type_name(type_name):
+                    ptr_idx = self.alloc_local("i32")
+                    len_idx = self.alloc_local("i32")
+                    instructions.extend(val_instrs)
+                    instructions.append(f"local.set {len_idx}")
+                    instructions.append(f"local.set {ptr_idx}")
+                    current_env = current_env.push(type_name, ptr_idx)
+                    continue
                 wat_t = self._slot_name_to_wasm_type(type_name)
                 if wat_t is None:
                     return None
@@ -698,6 +795,10 @@ class WasmContext:
         If the call name matches an effect operation (e.g. get/put for
         State<T>), redirects to the corresponding host import.
         """
+        # Built-in: length(array) → Int
+        if call.name == "length" and len(call.args) == 1:
+            return self._translate_length(call.args[0], env)
+
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:
             return self._translate_apply_fn(call, env)
@@ -846,6 +947,8 @@ class WasmContext:
         the return TypeExpr.  For non-generic calls, maps from WASM
         return type back to Vera type name.
         """
+        if call.name == "length":
+            return "Int"
         if call.name in self._generic_fn_info:
             forall_vars, param_types = self._generic_fn_info[call.name]
             mapping: dict[str, str] = {}
@@ -884,6 +987,31 @@ class WasmContext:
         """Find the ADT type name for a constructor name."""
         return self._ctor_to_adt.get(ctor_name)
 
+    @staticmethod
+    def _is_array_type_name(type_name: str) -> bool:
+        """Check if a slot type name is an Array<T> type."""
+        return type_name.startswith("Array<")
+
+    def _infer_array_element_type(self, expr: ast.ArrayLit) -> str | None:
+        """Infer the Vera element type name from an array literal."""
+        if not expr.elements:
+            return None
+        return self._infer_vera_type(expr.elements[0])
+
+    def _infer_index_element_type(self, expr: ast.IndexExpr) -> str | None:
+        """Infer the Vera element type from an index expression's collection.
+
+        The collection should be a slot ref like @Array<Int>.0, whose
+        type_name is "Array" with type_args (NamedType("Int"),).
+        """
+        coll = expr.collection
+        if isinstance(coll, ast.SlotRef):
+            if coll.type_name == "Array" and coll.type_args:
+                ta = coll.type_args[0]
+                if isinstance(ta, ast.NamedType):
+                    return ta.name
+        return None
+
     def _get_arg_type_info_wasm(
         self, expr: ast.Expr,
     ) -> tuple[str, tuple[str, ...]] | None:
@@ -920,6 +1048,136 @@ class WasmContext:
         """Translate a string literal to (ptr, len) on the stack."""
         offset, length = self.string_pool.intern(expr.value)
         return [f"i32.const {offset}", f"i32.const {length}"]
+
+    # -----------------------------------------------------------------
+    # Array literals
+    # -----------------------------------------------------------------
+
+    def _translate_array_lit(
+        self, expr: ast.ArrayLit, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate an array literal to (ptr, len) on the stack.
+
+        Allocates heap memory via $alloc, stores each element, then
+        pushes (ptr, len) as an i32 pair.  Empty arrays push (0, 0).
+        """
+        n = len(expr.elements)
+        if n == 0:
+            return ["i32.const 0", "i32.const 0"]
+
+        elem_type = self._infer_array_element_type(expr)
+        if elem_type is None:
+            return None
+        elem_size = _element_mem_size(elem_type)
+        store_op = _element_store_op(elem_type)
+        if elem_size is None or store_op is None:
+            return None
+
+        self.needs_alloc = True
+        total_bytes = n * elem_size
+        tmp_ptr = self.alloc_local("i32")
+
+        instructions: list[str] = []
+        # Allocate
+        instructions.append(f"i32.const {total_bytes}")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {tmp_ptr}")
+
+        # Store each element
+        for i, elem in enumerate(expr.elements):
+            elem_instrs = self.translate_expr(elem, env)
+            if elem_instrs is None:
+                return None
+            offset = i * elem_size
+            instructions.append(f"local.get {tmp_ptr}")
+            instructions.extend(elem_instrs)
+            instructions.append(f"{store_op} offset={offset}")
+
+        # Push (ptr, len)
+        instructions.append(f"local.get {tmp_ptr}")
+        instructions.append(f"i32.const {n}")
+        return instructions
+
+    def _translate_index_expr(
+        self, expr: ast.IndexExpr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate array indexing with bounds check.
+
+        Evaluates collection → (ptr, len), evaluates index,
+        performs bounds check (trap on OOB), then loads the element.
+        """
+        elem_type = self._infer_index_element_type(expr)
+        if elem_type is None:
+            return None
+        elem_size = _element_mem_size(elem_type)
+        load_op = _element_load_op(elem_type)
+        if elem_size is None or load_op is None:
+            return None
+
+        # Evaluate collection → (ptr, len) on stack
+        coll_instrs = self.translate_expr(expr.collection, env)
+        if coll_instrs is None:
+            return None
+
+        # Evaluate index (Int → i64)
+        idx_instrs = self.translate_expr(expr.index, env)
+        if idx_instrs is None:
+            return None
+
+        # Temp locals for ptr, len, index
+        tmp_ptr = self.alloc_local("i32")
+        tmp_len = self.alloc_local("i32")
+        tmp_idx = self.alloc_local("i32")
+
+        instructions: list[str] = []
+        # Save (ptr, len)
+        instructions.extend(coll_instrs)
+        instructions.append(f"local.set {tmp_len}")
+        instructions.append(f"local.set {tmp_ptr}")
+        # Evaluate and wrap index from i64 to i32
+        instructions.extend(idx_instrs)
+        instructions.append("i32.wrap_i64")
+        instructions.append(f"local.set {tmp_idx}")
+        # Bounds check: if (u32)idx >= (u32)len then trap
+        instructions.append(f"local.get {tmp_idx}")
+        instructions.append(f"local.get {tmp_len}")
+        instructions.append("i32.ge_u")
+        instructions.append("if")
+        instructions.append("  unreachable")
+        instructions.append("end")
+        # Compute address: ptr + idx * elem_size
+        instructions.append(f"local.get {tmp_ptr}")
+        if elem_size == 1:
+            instructions.append(f"local.get {tmp_idx}")
+            instructions.append("i32.add")
+        else:
+            instructions.append(f"local.get {tmp_idx}")
+            instructions.append(f"i32.const {elem_size}")
+            instructions.append("i32.mul")
+            instructions.append("i32.add")
+        # Load element
+        instructions.append(load_op)
+        return instructions
+
+    def _translate_length(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate length(array) → Int (i64).
+
+        Evaluates the array → (ptr, len), drops ptr, extends len to i64.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        tmp_len = self.alloc_local("i32")
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        # Stack has (ptr, len); save len, drop ptr
+        instructions.append(f"local.set {tmp_len}")
+        instructions.append("drop")
+        instructions.append(f"local.get {tmp_len}")
+        instructions.append("i64.extend_i32_u")
+        return instructions
 
     # -----------------------------------------------------------------
     # Closures — anonymous function compilation
@@ -1234,7 +1492,7 @@ class WasmContext:
             return "i64"
         if type_name in ("Float64", "Float"):
             return "f64"
-        if type_name == "Bool":
+        if type_name in ("Bool", "Byte"):
             return "i32"
         if type_name == "Unit":
             return "i32"  # shouldn't appear, safe fallback
@@ -1690,7 +1948,7 @@ class WasmContext:
             return "i64"
         if name in ("Float64", "Float"):
             return "f64"
-        if name == "Bool":
+        if name in ("Bool", "Byte"):
             return "i32"
         # ADT types are heap pointers
         base = name.split("<")[0] if "<" in name else name

@@ -29,13 +29,15 @@ Vera types map to WASM value types as follows:
 | `Int` | `i64` | 64-bit signed integer |
 | `Nat` | `i64` | Non-negativity enforced by contracts, not by WASM type |
 | `Bool` | `i32` | `0` = `false`, `1` = `true` |
+| `Byte` | `i32` | Unsigned 0-255; uses unsigned comparison ops (`i32.lt_u`, etc.) |
 | `Float64` / `Float` | `f64` | 64-bit IEEE 754 floating point |
 | `Unit` | *(none)* | Functions returning `Unit` have no WASM result type |
 | `String` | `i32, i32` | Pointer and length pair (UTF-8 bytes in linear memory) |
+| `Array<T>` | `i32, i32` | Pointer and length pair (elements in linear memory); see Section 11.13 |
 | ADTs | `i32` | Heap pointer to tagged union (see Section 11.6) |
 | Function types | `i32` | Heap pointer to closure struct (see Section 11.11) |
 
-Generic type variables are resolved via monomorphization — each concrete instantiation of a `forall<T>` function produces a specialized copy with type variables replaced by concrete types (e.g. `identity$Int`). Type aliases for function types (e.g. `type IntToInt = fn(Int -> Int) effects(pure)`) are also resolved to `i32` closure pointers. Types not in this table (arrays) are not yet compilable. Functions using non-compilable types are skipped with a warning.
+Generic type variables are resolved via monomorphization — each concrete instantiation of a `forall<T>` function produces a specialized copy with type variables replaced by concrete types (e.g. `identity$Int`). Type aliases for function types (e.g. `type IntToInt = fn(Int -> Int) effects(pure)`) are also resolved to `i32` closure pointers. Array and String types are compilable within function bodies (as let bindings and expressions) but not yet as function parameters or return types. Functions using non-compilable types in their signatures are skipped with a warning.
 
 ### 11.2.1 Nat as i64
 
@@ -425,13 +427,60 @@ A `handle[State<T>]` expression discharges the `State<T>` effect. This means a f
 
 Handler types other than `State<T>` (e.g. `Exn<E>`, custom effects) are not yet compilable. Functions containing unsupported handler types are skipped with a warning.
 
-## 11.12 Limitations
+## 11.12 Array Compilation
+
+### 11.12.1 Array Representation
+
+Array values, like strings, are `(ptr: i32, len: i32)` pairs. The pointer references a contiguous block of elements in linear memory. The length is the number of elements (not bytes). Empty arrays are represented as `(0, 0)` with no allocation.
+
+Element sizes in linear memory:
+
+| Element Type | Byte Size | Load Op | Store Op |
+|-------------|-----------|---------|----------|
+| `Byte` | 1 | `i32.load8_u` | `i32.store8` |
+| `Bool` | 4 | `i32.load` | `i32.store` |
+| `Int` / `Nat` | 8 | `i64.load` | `i64.store` |
+| `Float64` | 8 | `f64.load` | `f64.store` |
+
+### 11.12.2 Array Literal Allocation
+
+An array literal `[a, b, c]` compiles to:
+
+1. Compute `total_bytes = n * element_size`
+2. `call $alloc` to allocate contiguous memory
+3. Store each element at `ptr + i * element_size`
+4. Push `(ptr, n)` on the WASM stack
+
+### 11.12.3 Array Indexing
+
+Array indexing `arr[i]` compiles to a bounds-checked element load:
+
+1. Evaluate the array expression to `(ptr, len)`
+2. Evaluate the index expression to `i64`, wrap to `i32`
+3. Bounds check: `if (u32)idx >= (u32)len then unreachable` (trap)
+4. Compute address: `ptr + idx * element_size`
+5. Load the element with the type-appropriate instruction
+
+The unsigned comparison `i32.ge_u` handles negative indices (which wrap to large unsigned values and always fail the bounds check).
+
+### 11.12.4 Length
+
+The built-in `length(array)` function extracts the length component from the `(ptr, len)` pair and extends it to `i64` (since `length` returns `Int`).
+
+### 11.12.5 Array Let Bindings
+
+A `let @Array<T> = expr` binding allocates two WASM locals (ptr and len) and stores both components. The slot environment maps the type name to the ptr local index; the len local is always at `ptr_index + 1`.
+
+### 11.12.6 Scope
+
+Array types are compilable within function bodies (as let bindings, literals, indexing, and `length` calls) but not yet as function parameters or return types. Functions with `Array<T>` in their signatures are skipped with a warning.
+
+## 11.13 Limitations
 
 The current compilation model has the following limitations, each tracked as a GitHub issue:
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| No Byte type codegen | [#30](https://github.com/aallan/vera/issues/30) | Needs linear memory byte operations |
 | No module-level code generation | [#50](https://github.com/aallan/vera/issues/50) | Each file compiles independently |
 | No garbage collection | [#51](https://github.com/aallan/vera/issues/51) | Bump allocator only; linear memory is not reclaimed |
 | String constants only | [#52](https://github.com/aallan/vera/issues/52) | No dynamic string construction |

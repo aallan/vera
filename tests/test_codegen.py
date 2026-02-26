@@ -3238,3 +3238,284 @@ fn test(@Int -> @Option<Int>)
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="test_put_get")
         assert exec_result.value == 99
+
+
+# =====================================================================
+# C6k: Byte type
+# =====================================================================
+
+
+class TestByteType:
+    def test_byte_identity(self) -> None:
+        src = """
+fn f(@Byte -> @Byte) requires(true) ensures(true) effects(pure) {
+  @Byte.0
+}
+"""
+        assert _run(src, fn="f", args=[42]) == 42
+
+    def test_byte_zero(self) -> None:
+        src = """
+fn f(-> @Byte) requires(true) ensures(true) effects(pure) {
+  0
+}
+"""
+        assert _run(src) == 0
+
+    def test_byte_max(self) -> None:
+        src = """
+fn f(-> @Byte) requires(true) ensures(true) effects(pure) {
+  255
+}
+"""
+        assert _run(src) == 255
+
+    def test_byte_let_binding(self) -> None:
+        src = """
+fn f(@Byte -> @Byte) requires(true) ensures(true) effects(pure) {
+  let @Byte = @Byte.0;
+  @Byte.0
+}
+"""
+        assert _run(src, fn="f", args=[100]) == 100
+
+    def test_byte_eq(self) -> None:
+        src = """
+fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+  @Byte.0 == @Byte.1
+}
+"""
+        assert _run(src, fn="f", args=[5, 5]) == 1
+        assert _run(src, fn="f", args=[5, 6]) == 0
+
+    def test_byte_lt_unsigned(self) -> None:
+        # @Byte.0 = second param (de Bruijn 0), @Byte.1 = first param
+        src = """
+fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+  @Byte.0 < @Byte.1
+}
+"""
+        # f(200, 10): @Byte.0=10, @Byte.1=200 → 10 < 200 = true
+        assert _run(src, fn="f", args=[200, 10]) == 1
+        # f(10, 200): @Byte.0=200, @Byte.1=10 → 200 < 10 = false
+        assert _run(src, fn="f", args=[10, 200]) == 0
+
+    def test_byte_gt_unsigned(self) -> None:
+        src = """
+fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+  @Byte.0 > @Byte.1
+}
+"""
+        # f(10, 200): @Byte.0=200, @Byte.1=10 → 200 > 10 = true
+        assert _run(src, fn="f", args=[10, 200]) == 1
+        # f(200, 10): @Byte.0=10, @Byte.1=200 → 10 > 200 = false
+        assert _run(src, fn="f", args=[200, 10]) == 0
+
+    def test_byte_le(self) -> None:
+        src = """
+fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+  @Byte.0 <= @Byte.1
+}
+"""
+        assert _run(src, fn="f", args=[5, 5]) == 1
+        # f(6, 5): @Byte.0=5, @Byte.1=6 → 5 <= 6 = true
+        assert _run(src, fn="f", args=[6, 5]) == 1
+        # f(5, 6): @Byte.0=6, @Byte.1=5 → 6 <= 5 = false
+        assert _run(src, fn="f", args=[5, 6]) == 0
+
+    def test_byte_ge(self) -> None:
+        src = """
+fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+  @Byte.0 >= @Byte.1
+}
+"""
+        assert _run(src, fn="f", args=[5, 5]) == 1
+        # f(5, 6): @Byte.0=6, @Byte.1=5 → 6 >= 5 = true
+        assert _run(src, fn="f", args=[5, 6]) == 1
+        # f(6, 5): @Byte.0=5, @Byte.1=6 → 5 >= 6 = false
+        assert _run(src, fn="f", args=[6, 5]) == 0
+
+    def test_byte_unsigned_comparison_wat(self) -> None:
+        """Byte comparisons should use unsigned i32 ops."""
+        src = """
+fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+  @Byte.0 < @Byte.1
+}
+"""
+        result = _compile_ok(src)
+        assert "i32.lt_u" in result.wat
+
+
+# =====================================================================
+# C6k: Array literals
+# =====================================================================
+
+
+class TestArrayLit:
+    def test_int_array_index_0(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20, 30];
+  @Array<Int>.0[0]
+}
+"""
+        assert _run(src) == 10
+
+    def test_int_array_index_1(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20, 30];
+  @Array<Int>.0[1]
+}
+"""
+        assert _run(src) == 20
+
+    def test_int_array_index_2(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20, 30];
+  @Array<Int>.0[2]
+}
+"""
+        assert _run(src) == 30
+
+    def test_single_element_array(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [42];
+  @Array<Int>.0[0]
+}
+"""
+        assert _run(src) == 42
+
+    def test_bool_array(self) -> None:
+        src = """
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Bool> = [true, false, true];
+  @Array<Bool>.0[1]
+}
+"""
+        assert _run(src) == 0
+
+    def test_array_wat_has_alloc(self) -> None:
+        """Array literal WAT should contain call $alloc."""
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [1, 2, 3];
+  @Array<Int>.0[0]
+}
+"""
+        result = _compile_ok(src)
+        assert "call $alloc" in result.wat
+
+    def test_array_wat_has_bounds_check(self) -> None:
+        """Array indexing WAT should contain unreachable for OOB."""
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [1, 2, 3];
+  @Array<Int>.0[0]
+}
+"""
+        result = _compile_ok(src)
+        assert "unreachable" in result.wat
+
+
+# =====================================================================
+# C6k: Array bounds checking
+# =====================================================================
+
+
+class TestArrayBoundsCheck:
+    def test_oob_positive_index(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20, 30];
+  @Array<Int>.0[3]
+}
+"""
+        _run_trap(src)
+
+    def test_oob_large_index(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20, 30];
+  @Array<Int>.0[100]
+}
+"""
+        _run_trap(src)
+
+    def test_last_valid_index(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20, 30];
+  @Array<Int>.0[2]
+}
+"""
+        assert _run(src) == 30
+
+    def test_first_valid_index(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20, 30];
+  @Array<Int>.0[0]
+}
+"""
+        assert _run(src) == 10
+
+
+# =====================================================================
+# C6k: Array length
+# =====================================================================
+
+
+class TestArrayLength:
+    def test_length_three(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20, 30];
+  length(@Array<Int>.0)
+}
+"""
+        assert _run(src) == 3
+
+    def test_length_one(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [42];
+  length(@Array<Int>.0)
+}
+"""
+        assert _run(src) == 1
+
+    def test_length_in_comparison(self) -> None:
+        src = """
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20, 30];
+  length(@Array<Int>.0) == 3
+}
+"""
+        assert _run(src) == 1
+
+    def test_length_in_let(self) -> None:
+        src = """
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [1, 2, 3, 4, 5];
+  let @Int = length(@Array<Int>.0);
+  @Int.0
+}
+"""
+        assert _run(src) == 5
+
+    def test_array_fn_param_skipped(self) -> None:
+        """Functions with Array params should be skipped with warning."""
+        src = """
+fn f(@Array<Int> -> @Int) requires(true) ensures(true) effects(pure) {
+  @Array<Int>.0[0]
+}
+fn g(-> @Int) requires(true) ensures(true) effects(pure) {
+  42
+}
+"""
+        result = _compile_ok(src)
+        # f should be skipped, g should compile
+        assert "$g" in result.wat

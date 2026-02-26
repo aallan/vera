@@ -1017,6 +1017,18 @@ class CodeGenerator:
             )
             return None
 
+        # Propagate resource flags from WasmContext (e.g. array allocation)
+        if ctx.needs_alloc:
+            self._needs_alloc = True
+            self._needs_memory = True
+
+        # Coerce body result if return type is i32 but body produces i64
+        # (e.g. IntLit in a Byte-returning function)
+        if ret_wt == "i32":
+            body_result_type = ctx._infer_block_result_type(decl.body)
+            if body_result_type == "i64":
+                body_instrs.append("i32.wrap_i64")
+
         # Collect closures created during body compilation and lift them
         self._lift_pending_closures(ctx)
 
@@ -1571,11 +1583,11 @@ class CodeGenerator:
                 return "i64"
             if name in ("Float64", "Float"):
                 return "f64"
-            if name == "Bool":
+            if name in ("Bool", "Byte"):
                 return "i32"
             if name == "Unit":
                 return None
-            if name == "String":
+            if name in ("String", "Array"):
                 return "unsupported"
             # ADT types compile to i32 (heap pointer)
             if name in self._adt_layouts:
