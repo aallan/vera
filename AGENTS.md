@@ -108,7 +108,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 ### Testing
 
 ```bash
-pytest tests/ -v                       # Run all tests (866 tests)
+pytest tests/ -v                       # Run all tests (874 tests)
 mypy vera/                             # Type-check the compiler
 python scripts/check_examples.py       # All 14 examples must pass
 ```
@@ -119,7 +119,7 @@ Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)`
 
 - All 14 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
-- `pytest tests/ -v` must pass (currently 866 tests)
+- `pytest tests/ -v` must pass (currently 874 tests)
 - Version must be in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 
 ### Contributing

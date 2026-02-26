@@ -123,6 +123,7 @@ def wasm_type(t: Type) -> str | None:
 
     Returns None for types with no WASM representation (Unit).
     Returns "unsupported" for types that cannot be compiled.
+    Returns "i32_pair" for types represented as (i32, i32) pairs.
     """
     t = base_type(t)
     if isinstance(t, PrimitiveType):
@@ -135,7 +136,7 @@ def wasm_type(t: Type) -> str | None:
         if t.name == "Unit":
             return None
         if t.name == "String":
-            return "unsupported"  # handled specially in 5e
+            return "i32_pair"
     if isinstance(t, FunctionType):
         return "i32"  # closure pointer (heap-allocated struct)
     return "unsupported"
@@ -422,8 +423,8 @@ class WasmContext:
         local_idx = env.resolve(type_name, ref.index)
         if local_idx is None:
             return None
-        # Array types push (ptr, len) — two locals
-        if self._is_array_type_name(type_name):
+        # Pair types (String, Array<T>) push (ptr, len) — two locals
+        if self._is_pair_type_name(type_name):
             return [f"local.get {local_idx}", f"local.get {local_idx + 1}"]
         return [f"local.get {local_idx}"]
 
@@ -580,6 +581,8 @@ class WasmContext:
                 return "f64"
             if resolved in ("Bool", "Byte"):
                 return "i32"
+            if self._is_pair_type_name(resolved):
+                return "i32_pair"
             base = (resolved.split("<")[0]
                     if "<" in resolved else resolved)
             if base in self._adt_type_names:
@@ -631,7 +634,9 @@ class WasmContext:
             elem_type = self._infer_index_element_type(expr)
             return _element_wasm_type(elem_type) if elem_type else None
         if isinstance(expr, ast.ArrayLit):
-            return None  # arrays are (i32, i32) — handled specially
+            return "i32_pair"
+        if isinstance(expr, ast.StringLit):
+            return "i32_pair"
         if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
             return "i32"  # quantifiers return Bool
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
@@ -711,9 +716,15 @@ class WasmContext:
                 + ["end"]
             )
 
+        # i32_pair → two i32 results (ptr, len)
+        if result_type == "i32_pair":
+            result_annot = "if (result i32 i32)"
+        else:
+            result_annot = f"if (result {result_type})"
+
         return (
             cond
-            + [f"if (result {result_type})"]
+            + [result_annot]
             + ["  " + i for i in then]
             + ["else"]
             + ["  " + i for i in else_]
@@ -740,6 +751,8 @@ class WasmContext:
                 return "f64"
             if name in ("Bool", "Byte"):
                 return "i32"
+            if self._is_pair_type_name(name):
+                return "i32_pair"
             base = name.split("<")[0] if "<" in name else name
             if base in self._adt_type_names:
                 return "i32"
@@ -765,7 +778,7 @@ class WasmContext:
         if isinstance(expr, ast.QualifiedCall):
             return None  # effect ops return Unit (void)
         if isinstance(expr, ast.StringLit):
-            return None  # strings are (i32, i32) — handled specially
+            return "i32_pair"
         if isinstance(expr, ast.Block):
             return self._infer_block_result_type(expr)
         if isinstance(expr, ast.ConstructorCall):
@@ -780,7 +793,7 @@ class WasmContext:
             elem_type = self._infer_index_element_type(expr)
             return _element_wasm_type(elem_type) if elem_type else None
         if isinstance(expr, ast.ArrayLit):
-            return None  # arrays are (i32, i32) — handled specially
+            return "i32_pair"
         if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
             return "i32"  # quantifiers return Bool
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
@@ -807,8 +820,8 @@ class WasmContext:
                 type_name = self._type_expr_to_slot_name(stmt.type_expr)
                 if type_name is None:
                     return None
-                # Array bindings need two locals: (ptr, len)
-                if self._is_array_type_name(type_name):
+                # Pair bindings (String, Array<T>) need two locals: (ptr, len)
+                if self._is_pair_type_name(type_name):
                     ptr_idx = self.alloc_local("i32")
                     len_idx = self.alloc_local("i32")
                     instructions.extend(val_instrs)
@@ -832,7 +845,10 @@ class WasmContext:
                 # QualifiedCalls (effect ops like IO.print) return void.
                 # UnitLit produces nothing.
                 if stmt_instrs and not self._is_void_expr(stmt.expr):
-                    instructions.append("drop")
+                    if self._is_pair_result_expr(stmt.expr):
+                        instructions.extend(["drop", "drop"])
+                    else:
+                        instructions.append("drop")
             else:
                 # LetDestruct or unknown
                 return None
@@ -1052,6 +1068,14 @@ class WasmContext:
     def _is_array_type_name(type_name: str) -> bool:
         """Check if a slot type name is an Array<T> type."""
         return type_name.startswith("Array<")
+
+    @staticmethod
+    def _is_pair_type_name(type_name: str) -> bool:
+        """Check if a slot type name is a pair type (ptr, len).
+
+        String and Array<T> are represented as two consecutive i32 locals.
+        """
+        return type_name == "String" or type_name.startswith("Array<")
 
     def _infer_array_element_type(self, expr: ast.ArrayLit) -> str | None:
         """Infer the Vera element type name from an array literal."""
@@ -1524,7 +1548,12 @@ class WasmContext:
         param_parts = " ".join(
             f"(param {wt})" for wt in ["i32"] + arg_wasm_types
         )
-        result_part = f" (result {ret_wt})" if ret_wt else ""
+        if ret_wt == "i32_pair":
+            result_part = " (result i32 i32)"
+        elif ret_wt:
+            result_part = f" (result {ret_wt})"
+        else:
+            result_part = ""
         sig_key = f"{param_parts}{result_part}"
 
         # Register this signature for the codegen to emit as a type decl
@@ -1988,7 +2017,12 @@ class WasmContext:
             return None
 
         # Build if-else block
-        result_annot = f" (result {result_type})" if result_type else ""
+        if result_type == "i32_pair":
+            result_annot = " (result i32 i32)"
+        elif result_type:
+            result_annot = f" (result {result_type})"
+        else:
+            result_annot = ""
         instrs: list[str] = list(cond)
         instrs.append(f"if{result_annot}")
         for i in setup_instrs:
@@ -2149,6 +2183,24 @@ class WasmContext:
             return is_void
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
             return True  # assert/assume return Unit (void)
+        return False
+
+    def _is_pair_result_expr(self, expr: ast.Expr) -> bool:
+        """Check if an expression produces two values (ptr, len) on the stack.
+
+        String literals, array literals, pair-type slot refs, and function
+        calls returning i32_pair all produce two values.
+        """
+        if isinstance(expr, ast.StringLit):
+            return True
+        if isinstance(expr, ast.ArrayLit):
+            return True
+        if isinstance(expr, ast.SlotRef):
+            name = self._resolve_base_type_name(expr.type_name)
+            return self._is_pair_type_name(name)
+        if isinstance(expr, ast.FnCall):
+            ret = self._infer_fncall_wasm_type(expr)
+            return ret == "i32_pair"
         return False
 
     def _type_expr_to_slot_name(self, te: ast.TypeExpr) -> str | None:

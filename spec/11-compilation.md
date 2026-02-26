@@ -37,7 +37,7 @@ Vera types map to WASM value types as follows:
 | ADTs | `i32` | Heap pointer to tagged union (see Section 11.6) |
 | Function types | `i32` | Heap pointer to closure struct (see Section 11.11) |
 
-Generic type variables are resolved via monomorphization — each concrete instantiation of a `forall<T>` function produces a specialized copy with type variables replaced by concrete types (e.g. `identity$Int`). Type aliases are resolved through their definitions: function type aliases (e.g. `type IntToInt = fn(Int -> Int) effects(pure)`) resolve to `i32` closure pointers, and refinement type aliases (e.g. `type PosInt = { @Int | @Int.0 > 0 }`) resolve to their base WASM type (see Section 11.15). Array and String types are compilable within function bodies (as let bindings and expressions) but not yet as function parameters or return types. Functions using non-compilable types in their signatures are skipped with a warning.
+Generic type variables are resolved via monomorphization — each concrete instantiation of a `forall<T>` function produces a specialized copy with type variables replaced by concrete types (e.g. `identity$Int`). Type aliases are resolved through their definitions: function type aliases (e.g. `type IntToInt = fn(Int -> Int) effects(pure)`) resolve to `i32` closure pointers, and refinement type aliases (e.g. `type PosInt = { @Int | @Int.0 > 0 }`) resolve to their base WASM type (see Section 11.15). String and Array types compile to `(i32, i32)` pairs in function signatures — each Vera parameter expands to two WASM parameters (pointer and length), and String/Array return types use WASM multi-value return `(result i32 i32)`. Functions using non-compilable types in their signatures are skipped with a warning.
 
 ### 11.2.1 Nat as i64
 
@@ -475,7 +475,7 @@ A `let @Array<T> = expr` binding allocates two WASM locals (ptr and len) and sto
 
 ### 11.12.6 Scope
 
-Array types are compilable within function bodies (as let bindings, literals, indexing, and `length` calls) but not yet as function parameters or return types. Functions with `Array<T>` in their signatures are skipped with a warning.
+Array and String types are compilable both within function bodies (as let bindings, literals, indexing, and `length` calls) and as function parameters and return types. Each Array or String parameter expands to two WASM parameters `(i32, i32)` for the pointer and length, and Array/String return types use WASM multi-value return `(result i32 i32)`.
 
 ## 11.13 Quantifier Compilation
 
@@ -522,7 +522,7 @@ When the compiler encounters a type alias in a function signature or slot refere
 
 - `PosInt` → `{ @Int | @Int.0 > 0 }` → `Int` → `i64`
 - `Percentage` → `{ @Int | @Int.0 >= 0 && @Int.0 <= 100 }` → `Int` → `i64`
-- `NonEmptyArray` → `{ @Array<Int> | length(...) > 0 }` → `Array<Int>` → skipped (Array param limitation)
+- `NonEmptyArray` → `{ @Array<Int> | length(...) > 0 }` → `Array<Int>` → `(i32, i32)` pair
 
 This resolution applies uniformly to parameter types, return types, let bindings, and slot references within function bodies.
 

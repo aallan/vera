@@ -226,6 +226,9 @@ def execute(
     value: int | float | None
     if raw_result is None:
         value = None
+    elif isinstance(raw_result, (tuple, list)):
+        # Multi-value return (e.g. String/Array as (ptr, len))
+        value = raw_result[0] if raw_result else None
     elif isinstance(raw_result, float):
         value = raw_result
     elif isinstance(raw_result, int):
@@ -956,7 +959,7 @@ class CodeGenerator:
         # Build function return type map for FnCall type inference
         fn_ret_types: dict[str, str | None] = {}
         for fn_name, (_, ret_wt) in self._fn_sigs.items():
-            if ret_wt != "unsupported":
+            if ret_wt and ret_wt != "unsupported":
                 fn_ret_types[fn_name] = ret_wt
         ctx.set_fn_ret_types(fn_ret_types)
         # Provide type aliases so closures can resolve FnType return types
@@ -979,6 +982,16 @@ class CodeGenerator:
                     "are compilable in the current WASM backend.",
                 )
                 return None
+            if wt == "i32_pair":
+                # String/Array types use two consecutive i32 params (ptr, len)
+                ptr_idx = ctx.alloc_param()
+                _len_idx = ctx.alloc_param()
+                param_parts.append(f"(param $p{i}_ptr i32)")
+                param_parts.append(f"(param $p{i}_len i32)")
+                type_name = self._type_expr_to_slot_name(param_te)
+                if type_name:
+                    env = env.push(type_name, ptr_idx)
+                continue
             local_idx = ctx.alloc_param()
             param_parts.append(f"(param $p{i} {wt})")
             # Push into slot environment
@@ -996,7 +1009,12 @@ class CodeGenerator:
                 "compilable in the current WASM backend.",
             )
             return None
-        result_part = f" (result {ret_wt})" if ret_wt else ""
+        if ret_wt == "i32_pair":
+            result_part = " (result i32 i32)"
+        elif ret_wt:
+            result_part = f" (result {ret_wt})"
+        else:
+            result_part = ""
 
         # Scan body for handle[State<T>] expressions to register imports
         self._scan_body_for_state_handlers(decl.body)
@@ -1087,17 +1105,21 @@ class CodeGenerator:
                 # Register the closure signature for call_indirect
                 param_wasm: list[str] = ["i32"]  # env param
                 for p in anon_fn.params:
-                    pname = self._type_expr_to_slot_name(p)
                     pwt = self._type_expr_to_wasm_type(p)
-                    if pwt and pwt != "unsupported":
+                    if pwt == "i32_pair":
+                        param_wasm.extend(["i32", "i32"])
+                    elif pwt and pwt != "unsupported":
                         param_wasm.append(pwt)
                 ret_wt = self._type_expr_to_wasm_type(anon_fn.return_type)
                 param_part = " ".join(
                     f"(param {wt})" for wt in param_wasm
                 )
-                result_part = (
-                    f" (result {ret_wt})" if ret_wt else ""
-                )
+                if ret_wt == "i32_pair":
+                    result_part = " (result i32 i32)"
+                elif ret_wt:
+                    result_part = f" (result {ret_wt})"
+                else:
+                    result_part = ""
                 sig_content = f"{param_part}{result_part}"
                 if sig_content not in self._closure_sigs:
                     sig_name = (
@@ -1296,6 +1318,11 @@ class CodeGenerator:
                     ensures_clauses.append(contract)
 
         if not ensures_clauses:
+            return []
+
+        # Pair returns (String/Array) don't support postcondition checks
+        # — can't save/restore a two-value result with a single local
+        if ret_wt == "i32_pair":
             return []
 
         instrs: list[str] = []
@@ -1510,7 +1537,7 @@ class CodeGenerator:
             return False
         type_arg = eff.type_args[0]
         wt = self._type_expr_to_wasm_type(type_arg)
-        if wt is None or wt == "unsupported":
+        if wt is None or wt in ("unsupported", "i32_pair"):
             self._warning(
                 decl,
                 f"Function '{decl.name}' uses State with "
@@ -1575,7 +1602,8 @@ class CodeGenerator:
     def _type_expr_to_wasm_type(self, te: ast.TypeExpr) -> str | None:
         """Map a Vera TypeExpr to a WAT type string.
 
-        Returns None for Unit, "unsupported" for non-compilable types.
+        Returns None for Unit, "unsupported" for non-compilable types,
+        "i32_pair" for types represented as (i32, i32) pairs (String, Array).
         """
         if isinstance(te, ast.NamedType):
             name = te.name
@@ -1588,7 +1616,7 @@ class CodeGenerator:
             if name == "Unit":
                 return None
             if name in ("String", "Array"):
-                return "unsupported"
+                return "i32_pair"
             # ADT types compile to i32 (heap pointer)
             if name in self._adt_layouts:
                 return "i32"
