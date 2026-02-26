@@ -139,8 +139,20 @@ Vera is in **active development**. The language specification, parser, AST, type
 
 | Component | Status |
 |-----------|--------|
-| Language specification (Chapters 0-7, 9-12) | Draft |
-| Language specification (Chapter 8) | Not started |
+| Language specification | Draft |
+| — Ch 0: Introduction and Philosophy | Draft |
+| — Ch 1: Lexical Structure | Draft |
+| — Ch 2: Types | Draft |
+| — Ch 3: Slot References | Draft |
+| — Ch 4: Expressions and Statements | Draft |
+| — Ch 5: Functions | Draft |
+| — Ch 6: Contracts | Draft |
+| — Ch 7: Effects | Draft |
+| — Ch 8: Modules | Not started |
+| — Ch 9: Standard Library | Draft |
+| — Ch 10: Formal Grammar | Draft |
+| — Ch 11: Compilation Model | Draft |
+| — Ch 12: Runtime and Execution | Draft |
 | Parser (Lark LALR(1)) | Working |
 | AST (typed syntax tree) | Working |
 | Type checker | Working |
