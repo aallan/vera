@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.23] - 2026-02-26
+
+### Added
+- **Refinement type alias compilation** (C6m): type aliases like `PosInt`, `Percentage`, `Nat` that resolve through refinement types now compile to their base WASM type
+  - `_type_expr_to_wasm_type()` in codegen.py now recurses on any alias type (not just FnType)
+  - `_resolve_base_type_name()` helper in wasm.py follows alias chains through refinement types to the underlying primitive (e.g. `PosInt` → `Int` → `i64`)
+  - Applied uniformly to parameter types, return types, let bindings, and slot references
+- **Spec Section 11.15**: new "Refinement Type Alias Compilation" section
+- **Codegen tests**: 8 new tests — safe_divide, to_percentage (clamp low/pass/high), refined let bindings, refined return in expr, WAT exports (849 total, up from 841)
+
 ## [0.0.22] - 2026-02-26
 
 ### Added
@@ -370,7 +380,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.22...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.23...HEAD
+[0.0.23]: https://github.com/aallan/vera/compare/v0.0.22...v0.0.23
 [0.0.22]: https://github.com/aallan/vera/compare/v0.0.21...v0.0.22
 [0.0.21]: https://github.com/aallan/vera/compare/v0.0.20...v0.0.21
 [0.0.20]: https://github.com/aallan/vera/compare/v0.0.19...v0.0.20

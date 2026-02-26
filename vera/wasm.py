@@ -535,14 +535,15 @@ class WasmContext:
         if isinstance(expr, ast.UnitLit):
             return None
         if isinstance(expr, ast.SlotRef):
-            if expr.type_name in ("Int", "Nat"):
+            resolved = self._resolve_base_type_name(expr.type_name)
+            if resolved in ("Int", "Nat"):
                 return "i64"
-            if expr.type_name in ("Float64", "Float"):
+            if resolved in ("Float64", "Float"):
                 return "f64"
-            if expr.type_name in ("Bool", "Byte"):
+            if resolved in ("Bool", "Byte"):
                 return "i32"
-            base = (expr.type_name.split("<")[0]
-                    if "<" in expr.type_name else expr.type_name)
+            base = (resolved.split("<")[0]
+                    if "<" in resolved else resolved)
             if base in self._adt_type_names:
                 return "i32"
             # Function type aliases → i32 (closure pointer)
@@ -694,7 +695,7 @@ class WasmContext:
             return None
         if isinstance(expr, ast.SlotRef):
             # Check type name to infer WAT type
-            name = expr.type_name
+            name = self._resolve_base_type_name(expr.type_name)
             if name in ("Int", "Nat"):
                 return "i64"
             if name in ("Float64", "Float"):
@@ -2128,8 +2129,25 @@ class WasmContext:
             return self._type_expr_to_slot_name(te.base_type)
         return None
 
+    def _resolve_base_type_name(self, name: str) -> str:
+        """Resolve a type alias to its base type name.
+
+        Follows alias chains through refinement types to the underlying
+        primitive or ADT name.  E.g. "PosInt" -> "Int".
+        """
+        if name not in self._type_aliases:
+            return name
+        alias = self._type_aliases[name]
+        if isinstance(alias, ast.RefinementType):
+            if isinstance(alias.base_type, ast.NamedType):
+                return self._resolve_base_type_name(alias.base_type.name)
+        if isinstance(alias, ast.NamedType):
+            return self._resolve_base_type_name(alias.name)
+        return name
+
     def _slot_name_to_wasm_type(self, name: str) -> str | None:
         """Map a slot type name to a WAT type string."""
+        name = self._resolve_base_type_name(name)
         if name in ("Int", "Nat"):
             return "i64"
         if name in ("Float64", "Float"):

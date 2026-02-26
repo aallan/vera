@@ -1592,11 +1592,9 @@ class CodeGenerator:
             # ADT types compile to i32 (heap pointer)
             if name in self._adt_layouts:
                 return "i32"
-            # Function type aliases compile to i32 (closure pointer)
+            # Type aliases — recurse to resolve the underlying type
             if name in self._type_aliases:
-                alias_te = self._type_aliases[name]
-                if isinstance(alias_te, ast.FnType):
-                    return "i32"
+                return self._type_expr_to_wasm_type(self._type_aliases[name])
             return "unsupported"
         if isinstance(te, ast.RefinementType):
             return self._type_expr_to_wasm_type(te.base_type)
