@@ -1022,6 +1022,9 @@ class CodeGenerator:
         # Compile precondition checks
         pre_instrs = self._compile_preconditions(ctx, decl, env)
 
+        # Snapshot old state for postcondition old() references
+        snapshot_instrs = self._snapshot_old_state(ctx, decl)
+
         # Compile body
         body_instrs = ctx.translate_block(decl.body, env)
         if body_instrs is None:
@@ -1068,6 +1071,10 @@ class CodeGenerator:
 
         # Precondition checks (at function entry)
         for instr in pre_instrs:
+            lines.append(f"    {instr}")
+
+        # Old state snapshots (for postcondition old() references)
+        for instr in snapshot_instrs:
             lines.append(f"    {instr}")
 
         # Body instructions
@@ -1371,6 +1378,100 @@ class CodeGenerator:
         if isinstance(contract, ast.Ensures):
             return isinstance(contract.expr, ast.BoolLit) and contract.expr.value
         return False
+
+    def _snapshot_old_state(
+        self,
+        ctx: WasmContext,
+        decl: ast.FnDecl,
+    ) -> list[str]:
+        """Emit instructions to snapshot state at function entry for old().
+
+        Walks ensures clauses to find old(State<T>) references.
+        For each unique State<T>, calls the host state_get import and
+        saves the result to a temp local. Registers the mapping on ctx
+        so translate_expr can resolve OldExpr later.
+
+        Returns WASM instructions (call + local.set) to insert after
+        preconditions and before the function body.
+        """
+        old_types = self._find_old_state_types(decl)
+        if not old_types:
+            return []
+
+        instrs: list[str] = []
+        old_locals: dict[str, int] = {}
+
+        for type_name in sorted(old_types):
+            # Determine the WASM type for this State<T>
+            wasm_t = self._state_type_to_wasm(type_name)
+            if wasm_t is None:
+                continue
+            # Allocate a temp local for the snapshot
+            local_idx = ctx.alloc_local(wasm_t)
+            # Emit: call $vera.state_get_<Type> ; local.set <idx>
+            instrs.append(f"call $vera.state_get_{type_name}")
+            instrs.append(f"local.set {local_idx}")
+            old_locals[type_name] = local_idx
+
+        if old_locals:
+            ctx.set_old_state_locals(old_locals)
+
+        return instrs
+
+    def _find_old_state_types(self, decl: ast.FnDecl) -> set[str]:
+        """Find all State<T> type names referenced by old() in ensures clauses.
+
+        Walks each non-trivial ensures expression looking for OldExpr nodes.
+        Returns a set of type names, e.g. {"Int"}.
+        """
+        types: set[str] = set()
+        for contract in decl.contracts:
+            if not isinstance(contract, ast.Ensures):
+                continue
+            if self._is_trivial_contract(contract):
+                continue
+            self._collect_old_types(contract.expr, types)
+        return types
+
+    def _collect_old_types(
+        self, expr: ast.Expr, types: set[str],
+    ) -> None:
+        """Recursively collect State<T> type names from OldExpr nodes."""
+        if isinstance(expr, ast.OldExpr):
+            type_name = WasmContext._extract_state_type_name(
+                expr.effect_ref,
+            )
+            if type_name is not None:
+                types.add(type_name)
+            return
+        # Walk child expressions
+        for child in self._expr_children(expr):
+            self._collect_old_types(child, types)
+
+    @staticmethod
+    def _expr_children(expr: ast.Expr) -> list[ast.Expr]:
+        """Return direct child expressions for AST walking."""
+        children: list[ast.Expr] = []
+        if isinstance(expr, ast.BinaryExpr):
+            children.extend([expr.left, expr.right])
+        elif isinstance(expr, ast.UnaryExpr):
+            children.append(expr.operand)
+        elif isinstance(expr, ast.FnCall):
+            children.extend(expr.args)
+        elif isinstance(expr, ast.IfExpr):
+            children.append(expr.condition)
+        elif isinstance(expr, ast.NewExpr):
+            pass  # No child expressions to walk
+        elif isinstance(expr, ast.OldExpr):
+            pass  # Already handled by caller
+        return children
+
+    def _state_type_to_wasm(self, type_name: str) -> str | None:
+        """Map a State type name (e.g. 'Int') to its WASM type."""
+        for registered_name, wasm_t in self._state_types:
+            if registered_name == type_name:
+                return wasm_t
+        return None
 
     # -----------------------------------------------------------------
     # Module assembly

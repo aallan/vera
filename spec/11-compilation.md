@@ -292,7 +292,34 @@ local.get $result    ;; push result back for return
 
 The body's return value is stored in a temporary local. The `@T.result` reference in the ensures clause resolves to this local. After the check passes, the result is pushed back onto the stack for return.
 
-### 11.8.4 Trap Handling
+### 11.8.4 State Expressions in Postconditions
+
+Postconditions may reference `old(State<T>)` (the state value before the function body) and `new(State<T>)` (the state value after). The compiler handles these by snapshotting state at function entry.
+
+For a function with `ensures(new(State<Int>) == old(State<Int>) + 1)`:
+
+```wat
+;; Snapshot old state at function entry (after preconditions)
+call $vera.state_get_Int
+local.set $old_state    ;; save pre-execution value
+
+;; [function body — may call state_get/state_put]
+
+;; Postcondition check
+call $vera.state_get_Int   ;; new(State<Int>) — reads current value
+local.get $old_state       ;; old(State<Int>) — reads snapshot
+i64.const 1
+i64.add
+i64.eq
+i32.eqz
+if
+  unreachable              ;; trap: postcondition violated
+end
+```
+
+`old(State<T>)` resolves to a `local.get` of the saved snapshot. `new(State<T>)` resolves to a fresh `call $vera.state_get_<Type>` that reads the current value. The snapshot local is allocated only when the function's ensures clauses actually reference `old()`.
+
+### 11.8.5 Trap Handling
 
 When a runtime contract check fails, the WASM `unreachable` instruction causes a trap. The host runtime catches the trap and reports it as a contract violation.
 

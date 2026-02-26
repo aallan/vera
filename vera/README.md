@@ -77,13 +77,13 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `checker.py` | 1,668 | Type check | Two-pass type checker | `typecheck()` |
 | `smt.py` | 485 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
 | `verifier.py` | 601 | Verify | Contract verification | `verify()` |
-| `wasm.py` | 2,259 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
-| `codegen.py` | 1,672 | Compile | Codegen orchestrator | `compile()`, `execute()` |
+| `wasm.py` | 2,317 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
+| `codegen.py` | 1,773 | Compile | Codegen orchestrator | `compile()`, `execute()` |
 | `errors.py` | 354 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
 | `cli.py` | 563 | All | CLI commands | `main()` |
 | `registration.py` | 56 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~9,964 lines of Python + 328 lines of grammar.
+Total: ~10,323 lines of Python + 328 lines of grammar.
 
 ## Parsing
 
@@ -348,7 +348,7 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen.py` (1,672 lines), `wasm.py` (2,259 lines)
+**Files:** `codegen.py` (1,773 lines), `wasm.py` (2,317 lines)
 
 ### Compilation pipeline
 
@@ -454,7 +454,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**874 tests** across 10 files, plus 4 validation scripts and CI infrastructure.
+**880 tests** across 10 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -464,14 +464,14 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 115 | 1,320 | Type synthesis, slot resolution, effects, contracts, exhaustiveness |
 | `test_verifier.py` | 69 | 918 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions, pipe operator |
-| `test_codegen.py` | 320 | 4,063 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, example round-trips |
+| `test_codegen.py` | 326 | 4,198 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, old/new state postconditions, example round-trips |
 | `test_cli.py` | 76 | 932 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation |
 | `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 34 | 287 | Diagnostic formatting, serialisation, error patterns, SourceLocation, diagnose_lark_error |
 
-Total: 9,847 lines of test code.
+Total: 9,982 lines of test code.
 
 ### Round-trip testing
 

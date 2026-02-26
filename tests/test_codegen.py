@@ -4061,3 +4061,138 @@ fn hello(-> @String)
         exec_result = execute(result, fn_name="hello")
         # Returns the data pointer (an integer)
         assert isinstance(exec_result.value, int)
+
+
+# =====================================================================
+# 6.5f: old()/new() state expressions in postconditions
+# =====================================================================
+
+
+class TestOldNewContracts:
+    """Tests for old()/new() state expression compilation in postconditions."""
+
+    def test_old_new_postcondition_compiles(self) -> None:
+        """Function with old()/new() in ensures clause compiles to WASM."""
+        src = """
+fn increment(@Unit -> @Unit)
+  requires(true)
+  ensures(new(State<Int>) == old(State<Int>) + 1)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+  put(@Int.0 + 1);
+  ()
+}
+"""
+        result = _compile_ok(src)
+        assert "increment" in result.exports
+
+    def test_old_new_postcondition_passes(self) -> None:
+        """Postcondition holds — no trap when new == old + 1."""
+        src = """
+fn increment(@Unit -> @Unit)
+  requires(true)
+  ensures(new(State<Int>) == old(State<Int>) + 1)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+  put(@Int.0 + 1);
+  ()
+}
+"""
+        result = _compile_ok(src)
+        exec_result = execute(
+            result, fn_name="increment",
+            initial_state={"State_Int": 10},
+        )
+        # Should complete without trap
+        assert exec_result.value is None  # Unit return
+
+    def test_old_new_postcondition_traps(self) -> None:
+        """Postcondition violated — traps when increment is wrong."""
+        src = """
+fn bad_increment(@Unit -> @Unit)
+  requires(true)
+  ensures(new(State<Int>) == old(State<Int>) + 1)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+  put(@Int.0 + 2);
+  ()
+}
+"""
+        result = _compile_ok(src)
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap)):
+            execute(
+                result, fn_name="bad_increment",
+                initial_state={"State_Int": 5},
+            )
+
+    def test_trivial_ensures_no_snapshot(self) -> None:
+        """ensures(true) with State effect does NOT emit a snapshot."""
+        src = """
+fn inc(@Unit -> @Unit)
+  requires(true) ensures(true)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+  put(@Int.0 + 1);
+  ()
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        assert "inc" in result.exports
+        # Body should call state_get for the let binding,
+        # but no snapshot local.set before the body
+        lines = wat.split("\n")
+        # Find the function body — there should be exactly one
+        # state_get call (the let binding), not two (snapshot + let)
+        state_get_count = sum(
+            1 for l in lines if "call $vera.state_get_Int" in l
+        )
+        # Only the body's get() call — no snapshot
+        assert state_get_count == 1
+
+    def test_old_new_wat_structure(self) -> None:
+        """WAT contains state_get snapshot before body and new() in postcondition."""
+        src = """
+fn increment(@Unit -> @Unit)
+  requires(true)
+  ensures(new(State<Int>) == old(State<Int>) + 1)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+  put(@Int.0 + 1);
+  ()
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        lines = wat.split("\n")
+        state_get_count = sum(
+            1 for l in lines if "call $vera.state_get_Int" in l
+        )
+        # 3 calls: snapshot (old), body get(), postcondition new()
+        assert state_get_count == 3
+
+    def test_new_reads_current_state(self) -> None:
+        """new(State<T>) reads the current value, not the snapshot."""
+        # Increment by 5 but claim increment by 5 in postcondition
+        src = """
+fn add_five(@Unit -> @Unit)
+  requires(true)
+  ensures(new(State<Int>) == old(State<Int>) + 5)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+  put(@Int.0 + 5);
+  ()
+}
+"""
+        result = _compile_ok(src)
+        exec_result = execute(
+            result, fn_name="add_five",
+            initial_state={"State_Int": 100},
+        )
+        assert exec_result.value is None  # Unit, no trap
