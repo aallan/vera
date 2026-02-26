@@ -9,6 +9,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **Project website** ([veralang.dev](https://veralang.dev)): single-page site deployed via GitHub Pages ([#81](https://github.com/aallan/vera/pull/81))
 
+## [0.0.30] - 2026-02-26
+
+### Added
+- **old()/new() state expressions in postconditions** (C6.5f — closes [#70](https://github.com/aallan/vera/issues/70)): postconditions containing `old(State<T>)` and `new(State<T>)` now compile to WASM runtime checks
+  - `old(State<T>)` snapshots the state value at function entry into a temp local
+  - `new(State<T>)` reads the current state value at postcondition check time via `state_get`
+  - `_snapshot_old_state()` in codegen.py walks ensures clauses to detect `OldExpr` nodes and emits snapshot instructions
+  - `WasmContext._translate_old_expr()` and `_translate_new_expr()` handle the AST→WAT translation
+  - Snapshot is only emitted when ensures clauses actually reference `old()` (trivial contracts skip it)
+  - Completes the C6.5 codegen cleanup phase
+- README restructured: C7 (Module System) is now the "What's next" section with sub-phase plan; C6.5 and C6 are collapsed
+- 6 new codegen tests (880 total, up from 874)
+
 ## [0.0.29] - 2026-02-26
 
 ### Added
@@ -444,7 +457,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.29...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.30...HEAD
+[0.0.30]: https://github.com/aallan/vera/compare/v0.0.29...v0.0.30
 [0.0.29]: https://github.com/aallan/vera/compare/v0.0.28...v0.0.29
 [0.0.28]: https://github.com/aallan/vera/compare/v0.0.27...v0.0.28
 [0.0.27]: https://github.com/aallan/vera/compare/v0.0.26...v0.0.27

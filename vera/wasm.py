@@ -273,6 +273,8 @@ class WasmContext:
         self._next_closure_id: int = 0
         # Next quantifier label id (for unique block/loop labels)
         self._next_quant_id: int = 0
+        # Old state snapshots: type_name -> local_idx (for old() in postconditions)
+        self._old_state_locals: dict[str, int] = {}
 
     def set_fn_ret_types(
         self, ret_types: dict[str, str | None],
@@ -293,6 +295,16 @@ class WasmContext:
     def set_result_local(self, local_idx: int) -> None:
         """Set the local index used for @T.result in postconditions."""
         self._result_local = local_idx
+
+    def set_old_state_locals(
+        self, locals_map: dict[str, int],
+    ) -> None:
+        """Set old-state snapshot locals for old() in postconditions."""
+        self._old_state_locals = locals_map
+
+    def get_old_state_local(self, type_name: str) -> int | None:
+        """Get the local index holding the old() snapshot for a State type."""
+        return self._old_state_locals.get(type_name)
 
     def alloc_param(self) -> int:
         """Allocate a parameter slot (already in WASM signature).
@@ -399,7 +411,12 @@ class WasmContext:
         if isinstance(expr, ast.ExistsExpr):
             return self._translate_exists(expr, env)
 
-        # Unsupported: old/new, etc.
+        if isinstance(expr, ast.OldExpr):
+            return self._translate_old_expr(expr)
+
+        if isinstance(expr, ast.NewExpr):
+            return self._translate_new_expr(expr)
+
         return None
 
     # -----------------------------------------------------------------
@@ -1314,6 +1331,47 @@ class WasmContext:
         first true result.
         """
         return self._translate_quantifier(expr, env, is_forall=False)
+
+    # -----------------------------------------------------------------
+    # old/new state expressions (postconditions)
+    # -----------------------------------------------------------------
+
+    def _translate_old_expr(self, expr: ast.OldExpr) -> list[str] | None:
+        """Translate old(State<T>) → local.get of saved pre-execution state."""
+        type_name = self._extract_state_type_name(expr.effect_ref)
+        if type_name is None:
+            return None
+        local_idx = self.get_old_state_local(type_name)
+        if local_idx is None:
+            return None
+        return [f"local.get {local_idx}"]
+
+    def _translate_new_expr(self, expr: ast.NewExpr) -> list[str] | None:
+        """Translate new(State<T>) → call state_get to read current value."""
+        type_name = self._extract_state_type_name(expr.effect_ref)
+        if type_name is None:
+            return None
+        # Look up the state getter import
+        if "get" not in self._effect_ops:
+            return None
+        call_target, _is_void = self._effect_ops["get"]
+        return [f"call {call_target}"]
+
+    @staticmethod
+    def _extract_state_type_name(
+        effect_ref: ast.EffectRefNode,
+    ) -> str | None:
+        """Extract the type name from a State<T> effect reference."""
+        if not isinstance(effect_ref, ast.EffectRef):
+            return None
+        if effect_ref.name != "State":
+            return None
+        if not effect_ref.type_args or len(effect_ref.type_args) != 1:
+            return None
+        arg = effect_ref.type_args[0]
+        if isinstance(arg, ast.NamedType):
+            return arg.name
+        return None
 
     def _translate_quantifier(
         self,
