@@ -222,6 +222,17 @@ class SmtContext:
         self, expr: ast.BinaryExpr, env: SlotEnv
     ) -> z3.ExprRef | None:
         """Translate binary operators."""
+        # Pipe: a |> f(x, y) → f(a, x, y)
+        if expr.op == ast.BinOp.PIPE:
+            if isinstance(expr.right, ast.FnCall):
+                desugared = ast.FnCall(
+                    name=expr.right.name,
+                    args=(expr.left,) + expr.right.args,
+                    span=expr.span,
+                )
+                return self._translate_call(desugared, env)
+            return None  # non-FnCall RHS — unsupported
+
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
         if left is None or right is None:
@@ -262,7 +273,6 @@ class SmtContext:
         if op == ast.BinOp.IMPLIES:
             return z3.Implies(left, right)
 
-        # Pipe — unsupported in verification context
         return None
 
     def _translate_unary(
