@@ -758,5 +758,7 @@ The full language specification is in `spec/`:
 | 5 | `spec/05-functions.md` | Functions and contracts |
 | 6 | `spec/06-contracts.md` | Verification system |
 | 7 | `spec/07-effects.md` | Algebraic effect system |
+| 9 | `spec/09-standard-library.md` | Built-in types, effects, functions |
 | 10 | `spec/10-grammar.md` | Formal EBNF grammar |
 | 11 | `spec/11-compilation.md` | Compilation model and WASM target |
+| 12 | `spec/12-runtime.md` | Runtime execution, host bindings, memory model |

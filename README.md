@@ -139,8 +139,8 @@ Vera is in **active development**. The language specification, parser, AST, type
 
 | Component | Status |
 |-----------|--------|
-| Language specification (Chapters 0-7, 10-11) | Draft |
-| Language specification (Chapters 8-9, 12) | Not started |
+| Language specification (Chapters 0-7, 9-12) | Draft |
+| Language specification (Chapter 8) | Not started |
 | Parser (Lark LALR(1)) | Working |
 | AST (typed syntax tree) | Working |
 | Type checker | Working |
@@ -159,58 +159,37 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C3 | v0.0.5 | **Type checker** — decidable type checking, slot resolution, effect tracking | Done |
 | C4 | v0.0.8 | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
 | C5 | v0.0.9 | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
-| C6 | v0.0.10–0.0.23 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | **In progress** (C6a–C6j done) |
+| C6 | v0.0.10–0.0.24 | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Done |
 | C7 | — | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
 
-### What's next: C6 — Codegen Completeness (v0.0.10–v0.0.23)
+### What's next: C7 — Module System
 
-C6 extends WASM compilation to all language constructs, working through the dependency graph from simplest to most complex. All 14 examples now compile.
+C7 will implement cross-file imports, public/private visibility, and multi-module compilation. Tracked in [#14](https://github.com/aallan/vera/issues/14) and [#50](https://github.com/aallan/vera/issues/50). Spec Chapter 8 (Modules) will be written alongside the implementation.
 
-**Independent tasks (no dependencies on each other):**
+<details>
+<summary>C6 — Codegen Completeness (v0.0.10–v0.0.24) ✓</summary>
 
-| Sub-phase | Scope | Closes | Unlocks |
-|-----------|-------|--------|---------|
-| ~~C6a~~ | ~~Float64 — `f64` literals, arithmetic, comparisons~~ | ~~[#25](https://github.com/aallan/vera/issues/25)~~ | ~~Done (v0.0.10, [#35](https://github.com/aallan/vera/pull/35))~~ |
-| ~~C6b~~ | ~~Callee preconditions — verify `requires()` at call sites~~ | ~~[#19](https://github.com/aallan/vera/issues/19)~~ | ~~Done (v0.0.11, [#36](https://github.com/aallan/vera/pull/36))~~ |
-| ~~C6c~~ | ~~Match exhaustiveness — verify all constructors covered~~ | ~~[#18](https://github.com/aallan/vera/issues/18)~~ | ~~Done (v0.0.12, [#37](https://github.com/aallan/vera/pull/37))~~ |
-| ~~C6d~~ | ~~State\<T\> operations — get/put as host imports~~ | — | ~~Done (v0.0.13, [#38](https://github.com/aallan/vera/pull/38))~~ |
+C6 extended WASM compilation to all language constructs, working through the dependency graph from simplest to most complex. All 14 examples now compile.
 
-**Allocator and data types (sequential chain):**
+| Sub-phase | Scope | Version |
+|-----------|-------|---------|
+| C6a | Float64 — `f64` literals, arithmetic, comparisons | v0.0.10 |
+| C6b | Callee preconditions — verify `requires()` at call sites | v0.0.11 |
+| C6c | Match exhaustiveness — verify all constructors covered | v0.0.12 |
+| C6d | State\<T\> operations — get/put as host imports | v0.0.13 |
+| C6e | Bump allocator — heap allocation for tagged values | v0.0.14 |
+| C6f | ADT constructors — heap-allocated tagged unions | v0.0.15 |
+| C6g | Match expressions — tag dispatch, field extraction | v0.0.16 |
+| C6h | Closures — closure conversion, `call_indirect` | v0.0.18 |
+| C6i | Generics — monomorphization of `forall<T>` functions | v0.0.17 |
+| C6j | Effect handlers — handle/resume compilation | v0.0.19 |
+| C6k | Byte + arrays — linear memory arrays with bounds | v0.0.21 |
+| C6l | Quantifiers — forall/exists as runtime loops | v0.0.22 |
+| C6m | Refinement type alias compilation | v0.0.23 |
+| C6n | Spec chapters 9 (Standard library) and 12 (Runtime) | v0.0.24 |
 
-| Sub-phase | Scope | Closes | Unlocks |
-|-----------|-------|--------|---------|
-| ~~C6e~~ | ~~Bump allocator — heap allocation for tagged values~~ | — | ~~Done (v0.0.14, [#39](https://github.com/aallan/vera/pull/39))~~ |
-| ~~C6f~~ | ~~ADT constructors — heap-allocated tagged unions~~ | — | ~~Done (v0.0.15, [#40](https://github.com/aallan/vera/pull/40))~~ |
-| ~~C6g~~ | ~~Match expressions — tag dispatch, field extraction~~ | ~~[#26](https://github.com/aallan/vera/issues/26)~~ | ~~Done (v0.0.16, [#41](https://github.com/aallan/vera/pull/41))~~ |
-| ~~C6i~~ | ~~Generics — monomorphization of `forall<T>` functions~~ | ~~[#29](https://github.com/aallan/vera/issues/29)~~ | ~~Done (v0.0.17, [#42](https://github.com/aallan/vera/pull/42))~~ |
-
-**Higher-order and effects:**
-
-| Sub-phase | Scope | Closes | Unlocks |
-|-----------|-------|--------|---------|
-| ~~C6h~~ | ~~Closures — closure conversion, `call_indirect`~~ | ~~[#27](https://github.com/aallan/vera/issues/27)~~ | ~~Done (v0.0.18)~~ |
-| ~~C6j~~ | ~~Effect handlers — handle/resume compilation~~ | ~~[#28](https://github.com/aallan/vera/issues/28)~~ | ~~Done (v0.0.19)~~ |
-
-**Collections, runtime, and documentation:**
-
-| Sub-phase | Scope | Closes | Unlocks |
-|-----------|-------|--------|---------|
-| ~~C6k~~ | ~~Byte + arrays — linear memory arrays with bounds~~ | ~~[#30](https://github.com/aallan/vera/issues/30)~~ | ~~Done (v0.0.21)~~ |
-| ~~C6l~~ | ~~Quantifiers — forall/exists as runtime loops~~ | ~~—~~ | ~~Done (v0.0.22)~~ |
-| ~~C6m~~ | ~~Refinement type alias compilation~~ | ~~—~~ | ~~Done (v0.0.23)~~ |
-| C6n | Spec chapters 9 (Standard library) and 12 (Runtime) | — | — |
-
-### Specification chapters
-
-The language specification grows alongside the compiler. Chapters 0–7 and 10 are drafted. The remaining chapters will be written with their corresponding compiler phases:
-
-| Chapter | Topic | Written with |
-|---------|-------|-------------|
-| 8 | Modules and imports | C7 |
-| 9 | Standard library | C6n |
-| 11 | Compilation model | C5 ✓ |
-| 12 | Runtime and execution | C6n |
+</details>
 
 ## Getting Started
 
