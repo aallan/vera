@@ -172,7 +172,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C4 | [v0.0.8](https://github.com/aallan/vera/releases/tag/v0.0.8) | **Contract verifier** — Z3 integration, refinement types, counterexamples | Done |
 | C5 | [v0.0.9](https://github.com/aallan/vera/releases/tag/v0.0.9) | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
 | C6 | [v0.0.10](https://github.com/aallan/vera/releases/tag/v0.0.10)–[v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Done |
-| C6.5 | — | **Codegen cleanup** — handler fixes, missing operators, String/Array support | In Progress |
+| C6.5 | [v0.0.25](https://github.com/aallan/vera/releases/tag/v0.0.25)– | **Codegen cleanup** — handler fixes, missing operators, String/Array support | In Progress |
 | C7 | — | **Module system** — cross-file imports, public/private visibility | Planned |
 | C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
 
@@ -182,7 +182,7 @@ Before starting the module system, C6.5 addresses residual gaps in single-file c
 
 | Sub-phase | Scope | Issue |
 |-----------|-------|-------|
-| C6.5a | `resume` not recognized as built-in in handler scope | [#74](https://github.com/aallan/vera/issues/74) |
+| C6.5a | `resume` not recognized as built-in in handler scope | [#74](https://github.com/aallan/vera/issues/74) ✓ |
 | C6.5b | Handler `with` clause for state updates not in grammar | [#72](https://github.com/aallan/vera/issues/72) |
 | C6.5c | Pipe operator (`\|>`) compilation | [#44](https://github.com/aallan/vera/issues/44) |
 | C6.5d | Float64 modulo (`%`) — WASM has no `f64.rem` | [#46](https://github.com/aallan/vera/issues/46) |

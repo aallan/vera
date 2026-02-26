@@ -24,6 +24,7 @@ EXAMPLE_FILES = sorted(f.name for f in EXAMPLES_DIR.glob("*.vera"))
 # Self-contained examples (no unresolved external references)
 CLEAN_EXAMPLES = [
     "absolute_value.vera",
+    "effect_handler.vera",
     "factorial.vera",
     "generics.vera",
     "increment.vera",
@@ -39,7 +40,6 @@ CLEAN_EXAMPLES = [
 # Examples with unresolved external references (warnings expected)
 WARN_EXAMPLES = [
     "closures.vera",
-    "effect_handler.vera",
 ]
 
 
@@ -64,6 +64,13 @@ def _check_ok(source: str) -> None:
     errs = _errors(source)
     assert errs == [], \
         f"Expected no errors, got: {[e.description for e in errs]}"
+
+
+def _check_clean(source: str) -> None:
+    """Assert the source type-checks with no errors AND no warnings."""
+    diags = _check(source)
+    assert diags == [], \
+        f"Expected no diagnostics, got: {[d.description for d in diags]}"
 
 
 def _check_err(source: str, match: str) -> list[Diagnostic]:
@@ -644,7 +651,8 @@ fn bad(@String -> @Unit)
 """, "Pure function")
 
     def test_handler_basic(self) -> None:
-        _check_ok("""
+        """Handler with resume produces no errors or warnings."""
+        _check_clean("""
 fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -656,6 +664,52 @@ fn foo(@Unit -> @Int)
   }
 }
 """)
+
+    def test_resume_wrong_arg_type(self) -> None:
+        """resume() type-checks its argument against operation return type."""
+        # get(Unit) -> Int, so resume expects Int; passing Unit is a mismatch
+        _check_err("""
+fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(()) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+""", "has type Unit, expected Int")
+
+    def test_resume_wrong_arity(self) -> None:
+        """resume() takes exactly one argument."""
+        _check_err("""
+fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0, @Int.1) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+""", "expects 1 argument")
+
+    def test_resume_outside_handler(self) -> None:
+        """resume() outside a handler scope is unresolved."""
+        diags = _check("""
+fn foo(@Unit -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{
+  resume(42)
+}
+""")
+        warns = [d for d in diags if d.severity == "warning"]
+        assert any("Unresolved function 'resume'" in w.description
+                    for w in warns), \
+            f"Expected unresolved resume warning, got: " \
+            f"{[w.description for w in warns]}"
 
     def test_state_effect_builtin(self) -> None:
         """The built-in State<T> effect is available."""

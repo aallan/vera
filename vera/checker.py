@@ -1489,7 +1489,26 @@ class TypeChecker:
                     expr.state.type_expr) if expr.state else "?"
                 self.env.bind(state_tname, state_type, "handler")
 
+            # Bind resume — takes the operation's return type, returns Unit.
+            # resume is only available inside handler clause bodies.
+            op_return_type = substitute(op_info.return_type, mapping)
+            saved_resume = self.env.functions.get("resume")
+            self.env.functions["resume"] = FunctionInfo(
+                name="resume",
+                forall_vars=None,
+                param_types=(op_return_type,),
+                return_type=UNIT,
+                effect=PureEffectRow(),
+            )
+
             self._synth_expr(clause.body)
+
+            # Restore previous resume binding (if any)
+            if saved_resume is not None:
+                self.env.functions["resume"] = saved_resume
+            else:
+                del self.env.functions["resume"]
+
             self.env.pop_scope()
 
         # Check handler body — temporarily add handled effect to context

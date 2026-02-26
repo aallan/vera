@@ -260,6 +260,8 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `IO` | Effect | No operations exposed at type level |
 | `length` | Function | `forall<T> Array<T> → Int`, pure |
 
+Additionally, `resume` is bound as a temporary function inside handler clause bodies (in `_check_handle()`). Its type is derived from the operation: for `op(params) → ReturnType`, `resume` has type `fn(ReturnType) → Unit effects(pure)`. The binding is added to `env.functions` before checking the clause body and removed afterward.
+
 ## Contract Verification
 
 **Files:** `verifier.py` (601 lines), `smt.py` (485 lines)
