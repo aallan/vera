@@ -19,6 +19,7 @@ fn count_to_three(@Unit -> @Unit)
 
 -- Handle State<Int> to implement a counter
 -- The handle expression discharges the effect: run_counter is pure
+-- The put clause uses 'with' to explicitly update handler state
 fn run_counter(@Unit -> @Int)
   requires(true)
   ensures(true)
@@ -26,7 +27,7 @@ fn run_counter(@Unit -> @Int)
 {
   handle[State<Int>](@Int = 0) {
     get(@Unit) -> { resume(@Int.0) },
-    put(@Int) -> { resume(()) }
+    put(@Int) -> { resume(()) } with @Int = @Int.0
   } in {
     put(0);
     put(get(()) + 1);

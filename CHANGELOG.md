@@ -9,6 +9,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **Project website** ([veralang.dev](https://veralang.dev)): single-page site deployed via GitHub Pages ([#81](https://github.com/aallan/vera/pull/81))
 
+## [0.0.26] - 2026-02-26
+
+### Added
+- **Handler `with` clause** (C6.5b — closes [#72](https://github.com/aallan/vera/issues/72)): handler operation clauses can now update handler state via `with @T = expr` after the clause body
+  - Grammar: `with_clause` rule added to `handler_clause`
+  - AST: `state_update` field on `HandlerClause`
+  - Type checker: validates state update type matches handler state declaration
+  - No codegen changes (handler clauses remain specifications per spec 11.11.2)
+- 6 new tests: 2 parser, 4 checker (858 total, up from 852)
+
 ## [0.0.25] - 2026-02-26
 
 ### Fixed

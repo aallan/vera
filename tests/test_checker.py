@@ -711,6 +711,69 @@ fn foo(@Unit -> @Unit)
             f"Expected unresolved resume warning, got: " \
             f"{[w.description for w in warns]}"
 
+    def test_with_clause_valid(self) -> None:
+        """Handler with-clause with correct type produces no errors."""
+        _check_ok("""
+fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    put(42);
+    get(())
+  }
+}
+""")
+
+    def test_with_clause_type_mismatch(self) -> None:
+        """Handler with-clause value must match state type."""
+        _check_err("""
+fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = true
+  } in {
+    get(())
+  }
+}
+""", "expected Int")
+
+    def test_with_clause_no_state(self) -> None:
+        """Handler with-clause without handler state is an error."""
+        _check_err("""
+effect Exn<E> {
+  op throw(E -> Never);
+}
+fn bar(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> { 0 } with @String = @String.0
+  } in {
+    42
+  }
+}
+""", "no state declaration")
+
+    def test_with_clause_wrong_slot_type(self) -> None:
+        """Handler with-clause type must match handler state type."""
+        _check_err("""
+fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Bool = true
+  } in {
+    get(())
+  }
+}
+""", "does not match handler state type")
+
     def test_state_effect_builtin(self) -> None:
         """The built-in State<T> effect is available."""
         _check_ok("""

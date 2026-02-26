@@ -88,6 +88,7 @@ from vera.ast import (
     _TupleDestruct,
     _TypeParams,
     _WhereFns,
+    _WithClause,
 )
 from vera.errors import Diagnostic, SourceLocation, TransformError
 
@@ -815,8 +816,13 @@ class VeraTransformer(Transformer):
 
     @v_args(meta=True)
     def handler_clause(self, meta, children):
-        # children: [str, tuple[TypeExpr, ...]?, Expr]
+        # children: [str, tuple[TypeExpr, ...]?, Expr, _WithClause?]
         name = children[0]
+        state_update = None
+        if isinstance(children[-1], _WithClause):
+            wc = children[-1]
+            state_update = (wc.type_expr, wc.init_expr)
+            children = children[:-1]
         if len(children) == 3:
             params = children[1]
             body = children[2]
@@ -825,8 +831,12 @@ class VeraTransformer(Transformer):
             body = children[1]
         return HandlerClause(
             op_name=name, params=params, body=body,
-            span=_span_from_meta(meta),
+            state_update=state_update, span=_span_from_meta(meta),
         )
+
+    def with_clause(self, children):
+        # children: [TypeExpr, Expr]
+        return _WithClause(type_expr=children[0], init_expr=children[1])
 
     def handler_params(self, children):
         return tuple(children)
