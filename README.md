@@ -182,7 +182,7 @@ Before starting the module system, C6.5 addresses residual gaps in single-file c
 
 | Sub-phase | Scope | Issue |
 |-----------|-------|-------|
-| C6.5a | `resume` not recognized as built-in in handler scope | [#74](https://github.com/aallan/vera/issues/74) ✓ |
+| ~~C6.5a~~ | ~~`resume` not recognized as built-in in handler scope~~ | [v0.0.25](https://github.com/aallan/vera/releases/tag/v0.0.25) |
 | C6.5b | Handler `with` clause for state updates not in grammar | [#72](https://github.com/aallan/vera/issues/72) |
 | C6.5c | Pipe operator (`\|>`) compilation | [#44](https://github.com/aallan/vera/issues/44) |
 | C6.5d | Float64 modulo (`%`) — WASM has no `f64.rem` | [#46](https://github.com/aallan/vera/issues/46) |
@@ -466,7 +466,7 @@ vera/
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (849 tests)
+├── tests/                         # Test suite (852 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse

@@ -454,7 +454,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**849 tests** across 10 files, plus 4 validation scripts and CI infrastructure.
+**852 tests** across 10 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -462,7 +462,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 |------|------:|------:|----------------|
 | `test_parser.py` | 95 | 791 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 108 | 1,203 | Type synthesis, slot resolution, effects, contracts, exhaustiveness |
+| `test_checker.py` | 111 | 1,257 | Type synthesis, slot resolution, effects, contracts, exhaustiveness |
 | `test_verifier.py` | 68 | 894 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions |
 | `test_codegen.py` | 305 | 3,871 | WASM compilation, arithmetic, Float64, Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, bounds checking, length, quantifiers, assert/assume, refinement type aliases, example round-trips |
 | `test_cli.py` | 76 | 932 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation |
@@ -471,7 +471,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 34 | 287 | Diagnostic formatting, serialisation, error patterns, SourceLocation, diagnose_lark_error |
 
-Total: 9,476 lines of test code.
+Total: 9,530 lines of test code.
 
 ### Round-trip testing
 
