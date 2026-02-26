@@ -3519,3 +3519,243 @@ fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         result = _compile_ok(src)
         # f should be skipped, g should compile
         assert "$g" in result.wat
+
+
+# =====================================================================
+# C6l: Assert and assume
+# =====================================================================
+
+
+class TestAssertAssume:
+    def test_assert_true(self) -> None:
+        """assert(true) should not trap."""
+        assert _run("""
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  assert(true);
+  42
+}
+""") == 42
+
+    def test_assert_false(self) -> None:
+        """assert(false) should trap."""
+        _run_trap("""
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  assert(false);
+  42
+}
+""")
+
+    def test_assert_with_expression(self) -> None:
+        """assert with a computed expression."""
+        assert _run("""
+fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
+  assert(@Int.0 > 0);
+  @Int.0 + 1
+}
+""", args=[5]) == 6
+
+    def test_assert_expression_false_traps(self) -> None:
+        """assert with expression that evaluates to false."""
+        _run_trap("""
+fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
+  assert(@Int.0 > 0);
+  @Int.0
+}
+""", args=[0])
+
+    def test_assert_in_sequence(self) -> None:
+        """assert followed by computation."""
+        assert _run("""
+fn f(@Int, @Int -> @Int) requires(true) ensures(true) effects(pure) {
+  assert(@Int.1 > 0);
+  let @Int = @Int.1 + @Int.0;
+  assert(@Int.0 > 0);
+  @Int.0
+}
+""", args=[3, 5]) == 8
+
+    def test_assume_is_noop(self) -> None:
+        """assume should be a no-op at runtime."""
+        assert _run("""
+fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
+  assume(@Int.0 > 0);
+  @Int.0 * 2
+}
+""", args=[5]) == 10
+
+    def test_assert_wat_contains_unreachable(self) -> None:
+        """WAT should contain unreachable for assert."""
+        result = _compile_ok("""
+fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  assert(true);
+  1
+}
+""")
+        assert "unreachable" in result.wat
+
+
+# =====================================================================
+# C6l: Forall quantifier
+# =====================================================================
+
+
+class TestForall:
+    def test_forall_all_positive(self) -> None:
+        """forall over array where all elements satisfy predicate."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [1, 2, 3];
+  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] > 0
+  })
+}
+""") == 1
+
+    def test_forall_not_all_positive(self) -> None:
+        """forall over array where one element fails predicate."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [1, -2, 3];
+  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] > 0
+  })
+}
+""") == 0
+
+    def test_forall_empty_domain(self) -> None:
+        """forall with empty domain should be vacuously true."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  forall(@Int, 0, fn(@Int -> @Bool) effects(pure) {
+    false
+  })
+}
+""") == 1
+
+    def test_forall_single_element_true(self) -> None:
+        """forall with single element, predicate true."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [42];
+  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] > 0
+  })
+}
+""") == 1
+
+    def test_forall_single_element_false(self) -> None:
+        """forall with single element, predicate false."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [-1];
+  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] > 0
+  })
+}
+""") == 0
+
+    def test_forall_all_equal(self) -> None:
+        """forall checking all elements equal a value."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [7, 7, 7];
+  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] == 7
+  })
+}
+""") == 1
+
+
+# =====================================================================
+# C6l: Exists quantifier
+# =====================================================================
+
+
+class TestExists:
+    def test_exists_has_zero(self) -> None:
+        """exists with one matching element."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [1, 0, 3];
+  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] == 0
+  })
+}
+""") == 1
+
+    def test_exists_no_match(self) -> None:
+        """exists with no matching element."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [1, 2, 3];
+  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] == 0
+  })
+}
+""") == 0
+
+    def test_exists_empty_domain(self) -> None:
+        """exists with empty domain should be false."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  exists(@Int, 0, fn(@Int -> @Bool) effects(pure) {
+    true
+  })
+}
+""") == 0
+
+    def test_exists_single_element_true(self) -> None:
+        """exists with single matching element."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [0];
+  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] == 0
+  })
+}
+""") == 1
+
+    def test_exists_single_element_false(self) -> None:
+        """exists with single non-matching element."""
+        assert _run("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [5];
+  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] == 0
+  })
+}
+""") == 0
+
+
+# =====================================================================
+# C6l: Quantifier WAT inspection
+# =====================================================================
+
+
+class TestQuantifierWat:
+    def test_forall_wat_has_loop(self) -> None:
+        """WAT for forall should contain loop and block."""
+        result = _compile_ok("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [1, 2, 3];
+  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] > 0
+  })
+}
+""")
+        assert "loop" in result.wat
+        assert "block" in result.wat
+        assert "br_if" in result.wat
+
+    def test_exists_wat_has_loop(self) -> None:
+        """WAT for exists should contain loop and block."""
+        result = _compile_ok("""
+fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [1, 2, 3];
+  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+    @Array<Int>.0[@Int.0] == 0
+  })
+}
+""")
+        assert "loop" in result.wat
+        assert "block" in result.wat

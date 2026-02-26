@@ -270,6 +270,8 @@ class WasmContext:
         self.needs_alloc: bool = False
         # Next closure id (may be overwritten by codegen)
         self._next_closure_id: int = 0
+        # Next quantifier label id (for unique block/loop labels)
+        self._next_quant_id: int = 0
 
     def set_fn_ret_types(
         self, ret_types: dict[str, str | None],
@@ -384,7 +386,19 @@ class WasmContext:
         if isinstance(expr, ast.IndexExpr):
             return self._translate_index_expr(expr, env)
 
-        # Unsupported: quantifiers, old/new, assert/assume, etc.
+        if isinstance(expr, ast.AssertExpr):
+            return self._translate_assert(expr, env)
+
+        if isinstance(expr, ast.AssumeExpr):
+            return self._translate_assume()
+
+        if isinstance(expr, ast.ForallExpr):
+            return self._translate_forall(expr, env)
+
+        if isinstance(expr, ast.ExistsExpr):
+            return self._translate_exists(expr, env)
+
+        # Unsupported: old/new, etc.
         return None
 
     # -----------------------------------------------------------------
@@ -579,6 +593,10 @@ class WasmContext:
             return _element_wasm_type(elem_type) if elem_type else None
         if isinstance(expr, ast.ArrayLit):
             return None  # arrays are (i32, i32) — handled specially
+        if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
+            return "i32"  # quantifiers return Bool
+        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
+            return None  # assert/assume return Unit
         return None
 
     def _infer_fncall_wasm_type(self, expr: ast.FnCall) -> str | None:
@@ -724,6 +742,10 @@ class WasmContext:
             return _element_wasm_type(elem_type) if elem_type else None
         if isinstance(expr, ast.ArrayLit):
             return None  # arrays are (i32, i32) — handled specially
+        if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
+            return "i32"  # quantifiers return Bool
+        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
+            return None  # assert/assume return Unit
         return None
 
     # -----------------------------------------------------------------
@@ -1177,6 +1199,168 @@ class WasmContext:
         instructions.append("drop")
         instructions.append(f"local.get {tmp_len}")
         instructions.append("i64.extend_i32_u")
+        return instructions
+
+    # -----------------------------------------------------------------
+    # Assert and assume
+    # -----------------------------------------------------------------
+
+    def _translate_assert(
+        self, expr: ast.AssertExpr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate assert(expr) → trap if false.
+
+        Evaluates the condition; if it's false (i32.eqz), executes
+        unreachable (WASM trap).  Returns no value (Unit).
+        """
+        cond = self.translate_expr(expr.expr, env)
+        if cond is None:
+            return None
+        return cond + ["i32.eqz", "if", "unreachable", "end"]
+
+    def _translate_assume(self) -> list[str]:
+        """Translate assume(expr) → no-op at runtime.
+
+        The verifier uses assume as an axiom; at runtime it has no
+        effect.  Returns empty instructions (Unit).
+        """
+        return []
+
+    # -----------------------------------------------------------------
+    # Quantifiers — forall/exists as runtime loops
+    # -----------------------------------------------------------------
+
+    def _translate_forall(
+        self, expr: ast.ForallExpr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate forall(@T, domain, predicate) → loop returning Bool.
+
+        Iterates counter from 0 to domain-1, inlining the predicate
+        body with counter as the @T binding.  Short-circuits on the
+        first false result.
+        """
+        return self._translate_quantifier(expr, env, is_forall=True)
+
+    def _translate_exists(
+        self, expr: ast.ExistsExpr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate exists(@T, domain, predicate) → loop returning Bool.
+
+        Iterates counter from 0 to domain-1, inlining the predicate
+        body with counter as the @T binding.  Short-circuits on the
+        first true result.
+        """
+        return self._translate_quantifier(expr, env, is_forall=False)
+
+    def _translate_quantifier(
+        self,
+        expr: ast.ForallExpr | ast.ExistsExpr,
+        env: WasmSlotEnv,
+        *,
+        is_forall: bool,
+    ) -> list[str] | None:
+        """Shared implementation for forall/exists compilation.
+
+        Layout:
+          counter (i64) = 0
+          limit   (i64) = domain
+          result  (i32) = 1 (forall) or 0 (exists)
+          block $qbreak_N
+            loop $qloop_N
+              if counter >= limit → br $qbreak_N
+              push counter as @T binding
+              evaluate predicate body → i32
+              forall: if false → result=0, br $qbreak_N
+              exists: if true  → result=1, br $qbreak_N
+              counter++
+              br $qloop_N
+            end
+          end
+          local.get result
+        """
+        # Evaluate domain
+        domain_instrs = self.translate_expr(expr.domain, env)
+        if domain_instrs is None:
+            return None
+
+        # Translate predicate body with counter as binding
+        pred = expr.predicate
+        if not pred.params:
+            return None
+        param_te = pred.params[0]
+        if not isinstance(param_te, ast.NamedType):
+            return None
+        param_type_name = param_te.name
+        counter_local = self.alloc_local("i64")
+        limit_local = self.alloc_local("i64")
+        result_local = self.alloc_local("i32")
+        inner_env = env.push(param_type_name, counter_local)
+
+        body_instrs = self.translate_block(pred.body, inner_env)
+        if body_instrs is None:
+            return None
+
+        # Unique labels
+        qid = self._next_quant_id
+        self._next_quant_id += 1
+        brk = f"$qbreak_{qid}"
+        lp = f"$qloop_{qid}"
+
+        init_val = "1" if is_forall else "0"
+        instructions: list[str] = []
+
+        # Initialize
+        instructions.extend(domain_instrs)
+        instructions.append(f"local.set {limit_local}")
+        instructions.append("i64.const 0")
+        instructions.append(f"local.set {counter_local}")
+        instructions.append(f"i32.const {init_val}")
+        instructions.append(f"local.set {result_local}")
+
+        # Loop structure
+        instructions.append(f"block {brk}")
+        instructions.append(f"  loop {lp}")
+
+        # Termination check: counter >= limit → break
+        instructions.append(f"    local.get {counter_local}")
+        instructions.append(f"    local.get {limit_local}")
+        instructions.append("    i64.ge_s")
+        instructions.append(f"    br_if {brk}")
+
+        # Evaluate predicate body (counter is in env as @T)
+        for instr in body_instrs:
+            instructions.append(f"    {instr}")
+
+        # Short-circuit check
+        if is_forall:
+            # forall: if predicate is false → result=0, break
+            instructions.append("    i32.eqz")
+            instructions.append("    if")
+            instructions.append(f"      i32.const 0")
+            instructions.append(f"      local.set {result_local}")
+            instructions.append(f"      br {brk}")
+            instructions.append("    end")
+        else:
+            # exists: if predicate is true → result=1, break
+            instructions.append("    if")
+            instructions.append(f"      i32.const 1")
+            instructions.append(f"      local.set {result_local}")
+            instructions.append(f"      br {brk}")
+            instructions.append("    end")
+
+        # Increment counter
+        instructions.append(f"    local.get {counter_local}")
+        instructions.append("    i64.const 1")
+        instructions.append("    i64.add")
+        instructions.append(f"    local.set {counter_local}")
+        instructions.append(f"    br {lp}")
+
+        instructions.append("  end")  # loop
+        instructions.append("end")    # block
+
+        # Push result
+        instructions.append(f"local.get {result_local}")
+
         return instructions
 
     # -----------------------------------------------------------------
@@ -1924,6 +2108,8 @@ class WasmContext:
         if isinstance(expr, ast.FnCall) and expr.name in self._effect_ops:
             _name, is_void = self._effect_ops[expr.name]
             return is_void
+        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
+            return True  # assert/assume return Unit (void)
         return False
 
     def _type_expr_to_slot_name(self, te: ast.TypeExpr) -> str | None:

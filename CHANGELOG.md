@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.22] - 2026-02-26
+
+### Added
+- **Quantifier compilation** (C6l): compile `forall`/`exists` as runtime loops with short-circuit evaluation
+  - Counted loop over `[0, domain)` with predicate inlined (no closure overhead)
+  - `forall` returns true if all iterations satisfy predicate, short-circuits on first false
+  - `exists` returns true if any iteration satisfies predicate, short-circuits on first true
+  - Empty domain: `forall` → true (vacuously), `exists` → false
+- **Assert compilation** (C6l): `assert(expr)` compiles to conditional `unreachable` trap
+- **Assume compilation** (C6l): `assume(expr)` compiles to no-op at runtime (verifier-only construct)
+- **Spec Sections 11.13-11.14**: new "Quantifier Compilation" and "Assert and Assume Compilation" sections
+- **Codegen tests**: 20 new tests — assert/assume, forall, exists, WAT inspection (841 total, up from 821)
+
 ## [0.0.21] - 2026-02-26
 
 ### Added
@@ -357,7 +370,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.21...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.22...HEAD
+[0.0.22]: https://github.com/aallan/vera/compare/v0.0.21...v0.0.22
 [0.0.21]: https://github.com/aallan/vera/compare/v0.0.20...v0.0.21
 [0.0.20]: https://github.com/aallan/vera/compare/v0.0.19...v0.0.20
 [0.0.19]: https://github.com/aallan/vera/compare/v0.0.18...v0.0.19

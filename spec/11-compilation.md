@@ -475,7 +475,44 @@ A `let @Array<T> = expr` binding allocates two WASM locals (ptr and len) and sto
 
 Array types are compilable within function bodies (as let bindings, literals, indexing, and `length` calls) but not yet as function parameters or return types. Functions with `Array<T>` in their signatures are skipped with a warning.
 
-## 11.13 Limitations
+## 11.13 Quantifier Compilation
+
+Bounded quantifiers (`forall` and `exists`) are compiled as runtime loops that iterate over a finite domain.
+
+### 11.13.1 Loop Structure
+
+`forall(@T, domain, predicate)` compiles to a counted loop over `[0, domain)`:
+
+1. Evaluate `domain` to an `i64` value and save to a limit local
+2. Initialize a counter local (`i64`) to 0 and a result local (`i32`) to 1 (true)
+3. Emit a WASM `block`/`loop` pair:
+   - If `counter >= limit` (`i64.ge_s`), break out of the loop
+   - Evaluate the predicate body inline with the counter as the `@T` binding
+   - If the predicate returns false, set result to 0 and break (short-circuit)
+   - Increment the counter and branch back to loop start
+4. Push the result local onto the stack
+
+`exists` uses the same structure but initializes result to 0 (false) and short-circuits on the first true result (setting result to 1).
+
+### 11.13.2 Predicate Inlining
+
+The predicate is always a syntactic anonymous function (`fn(@T -> @Bool) effects(pure) { ... }`). Rather than lifting it as a closure and using `call_indirect`, the compiler inlines the predicate body directly into the loop. The predicate's parameter is pushed into the slot environment as a local bound to the loop counter. This avoids heap allocation and indirect call overhead.
+
+### 11.13.3 Short-Circuit Evaluation
+
+Both quantifiers short-circuit: `forall` exits on the first false result, `exists` exits on the first true result. This matches the logical semantics and avoids unnecessary iterations.
+
+## 11.14 Assert and Assume Compilation
+
+### 11.14.1 Assert
+
+`assert(expr)` compiles to a conditional trap: evaluate the expression, and if it is false (`i32.eqz`), execute `unreachable` (WASM trap). Assert produces no value on the stack (Unit).
+
+### 11.14.2 Assume
+
+`assume(expr)` is a no-op at runtime. The verifier uses assumptions as axioms during contract verification, but at runtime the assumption is not checked. The compiler emits no instructions for `assume`.
+
+## 11.15 Limitations
 
 The current compilation model has the following limitations, each tracked as a GitHub issue:
 

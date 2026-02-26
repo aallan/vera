@@ -305,7 +305,7 @@ fn factorial(@Nat -> @Nat)
 
 For nested recursion, use lexicographic ordering: `decreases(@Nat.0, @Nat.1)`.
 
-### Quantified expressions (in contracts only)
+### Quantified expressions
 
 ```vera
 -- For all indices in [0, bound):
