@@ -454,7 +454,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**862 tests** across 10 files, plus 4 validation scripts and CI infrastructure.
+**866 tests** across 10 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -464,14 +464,14 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 115 | 1,320 | Type synthesis, slot resolution, effects, contracts, exhaustiveness |
 | `test_verifier.py` | 69 | 918 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions, pipe operator |
-| `test_codegen.py` | 308 | 3,916 | WASM compilation, arithmetic, Float64, Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, example round-trips |
+| `test_codegen.py` | 312 | 3,948 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, example round-trips |
 | `test_cli.py` | 76 | 932 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation |
 | `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 34 | 287 | Diagnostic formatting, serialisation, error patterns, SourceLocation, diagnose_lark_error |
 
-Total: 9,700 lines of test code.
+Total: 9,732 lines of test code.
 
 ### Round-trip testing
 

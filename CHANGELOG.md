@@ -9,6 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **Project website** ([veralang.dev](https://veralang.dev)): single-page site deployed via GitHub Pages ([#81](https://github.com/aallan/vera/pull/81))
 
+## [0.0.28] - 2026-02-26
+
+### Added
+- **Float64 modulo compilation** (C6.5d — closes [#46](https://github.com/aallan/vera/issues/46)): `%` on Float64 operands now compiles to WASM via the decomposition `a % b = a - trunc(a / b) * b`
+  - Uses `f64.trunc` (truncation toward zero), matching C `fmod` semantics and consistent with `i64.rem_s` for integer modulo
+  - Multi-instruction WAT sequence with temporary locals (same pattern as array indexing, closures)
+  - WASM has no native `f64.rem` instruction; this was previously unsupported (function silently skipped)
+- 4 new codegen tests: exact division, remainder, negative operand, parameterized (866 total, up from 862)
+
 ## [0.0.27] - 2026-02-26
 
 ### Added
@@ -421,7 +430,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.27...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.28...HEAD
+[0.0.28]: https://github.com/aallan/vera/compare/v0.0.27...v0.0.28
 [0.0.27]: https://github.com/aallan/vera/compare/v0.0.26...v0.0.27
 [0.0.26]: https://github.com/aallan/vera/compare/v0.0.25...v0.0.26
 [0.0.25]: https://github.com/aallan/vera/compare/v0.0.24...v0.0.25

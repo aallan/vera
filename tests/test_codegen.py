@@ -209,6 +209,38 @@ class TestFloatArithmetic:
             "{ (1.0 + 2.0) * 3.0 }"
         ) == 9.0
 
+    def test_mod(self) -> None:
+        """7.5 % 2.5 = 0.0 (exact division)."""
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "{ 7.5 % 2.5 }"
+        ) == 0.0
+
+    def test_mod_remainder(self) -> None:
+        """10.0 % 3.0 = 1.0."""
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "{ 10.0 % 3.0 }"
+        ) == 1.0
+
+    def test_mod_negative(self) -> None:
+        """-7.0 % 3.0 = -1.0 (truncation toward zero, matching fmod)."""
+        assert _run_float(
+            "fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "{ -7.0 % 3.0 }"
+        ) == -1.0
+
+    def test_mod_with_params(self) -> None:
+        """Float mod with slot-ref operands (not just literals)."""
+        source = (
+            "fn fmod(@Float64, @Float64 -> @Float64) requires(true) "
+            "ensures(true) effects(pure) { @Float64.1 % @Float64.0 }"
+        )
+        result = _compile_ok(source)
+        # @Float64.1 = first arg (10.0), @Float64.0 = second arg (3.0)
+        exec_result = execute(result, fn_name="fmod", args=[10.0, 3.0])
+        assert exec_result.value == 1.0
+
 
 class TestFloatComparison:
     def test_eq_true(self) -> None:

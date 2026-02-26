@@ -80,7 +80,7 @@ Binary operators compile to their WASM equivalents:
 | `-` | `i64.sub` | `f64.sub` | — |
 | `*` | `i64.mul` | `f64.mul` | — |
 | `/` | `i64.div_s` | `f64.div` | — |
-| `%` | `i64.rem_s` | *(unsupported)* | — |
+| `%` | `i64.rem_s` | `a - trunc(a/b) * b` | — |
 | `==` | `i64.eq` | `f64.eq` | `i32.eq` |
 | `!=` | `i64.ne` | `f64.ne` | `i32.ne` |
 | `<` | `i64.lt_s` | `f64.lt` | `i32.lt_s` |
@@ -89,6 +89,8 @@ Binary operators compile to their WASM equivalents:
 | `>=` | `i64.ge_s` | `f64.ge` | `i32.ge_s` |
 | `&&` | — | — | `i32.and` |
 | `\|\|` | — | — | `i32.or` |
+
+Float64 modulo uses the decomposition `a % b = a - trunc(a / b) * b`, where `trunc` is `f64.trunc` (truncation toward zero). This matches C's `fmod` semantics and is consistent with integer `%` (which uses `i64.rem_s`, also truncated toward zero). WASM has no native `f64.rem` instruction, so the compiler emits a multi-instruction sequence using temporary locals.
 
 Float64 comparisons return `i32` (0 or 1), matching WASM's native comparison semantics.
 
