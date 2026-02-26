@@ -446,7 +446,7 @@ class WasmContext:
         ast.BinOp.SUB: "f64.sub",
         ast.BinOp.MUL: "f64.mul",
         ast.BinOp.DIV: "f64.div",
-        # MOD: WASM has no f64.rem — unsupported for floats
+        # MOD: handled by _translate_f64_mod() — WASM has no f64.rem
     }
 
     # Comparison: i64 → i32 (default)
@@ -495,8 +495,10 @@ class WasmContext:
         # Arithmetic
         if op in self._ARITH_OPS:
             if ltype == "f64":
+                if op == ast.BinOp.MOD:
+                    return self._translate_f64_mod(left, right)
                 if op not in self._ARITH_OPS_F64:
-                    return None  # MOD unsupported for f64
+                    return None  # unsupported float op
                 return left + right + [self._ARITH_OPS_F64[op]]
             return left + right + [self._ARITH_OPS[op]]
 
@@ -529,6 +531,32 @@ class WasmContext:
             return left + ["i32.eqz"] + right + ["i32.or"]
 
         return None
+
+    def _translate_f64_mod(
+        self, left: list[str], right: list[str]
+    ) -> list[str]:
+        """Translate f64 modulo: a % b = a - trunc(a / b) * b.
+
+        WASM has no f64.rem instruction, so we decompose using
+        f64.trunc (truncation toward zero), matching C fmod semantics
+        and consistent with i64.rem_s for integer modulo.
+        """
+        tmp_a = self.alloc_local("f64")
+        tmp_b = self.alloc_local("f64")
+        return [
+            *left,
+            f"local.set {tmp_a}",
+            *right,
+            f"local.set {tmp_b}",
+            f"local.get {tmp_a}",          # a
+            f"local.get {tmp_a}",          # a  (for a / b)
+            f"local.get {tmp_b}",          # b  (for a / b)
+            "f64.div",                      # a / b
+            "f64.trunc",                    # trunc(a / b)
+            f"local.get {tmp_b}",          # b  (for * b)
+            "f64.mul",                      # trunc(a / b) * b
+            "f64.sub",                      # a - trunc(a / b) * b
+        ]
 
     def _infer_expr_wasm_type(self, expr: ast.Expr) -> str | None:
         """Infer the WAT result type of an expression.

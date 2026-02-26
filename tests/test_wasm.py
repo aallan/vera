@@ -165,8 +165,8 @@ fn hello(@Unit -> @Unit)
         result = _compile_ok(source)
         assert b"hello world" in result.wasm_bytes
 
-    def test_float_mod_skipped(self) -> None:
-        """Float MOD is unsupported — function should be skipped."""
+    def test_float_mod_compiles(self) -> None:
+        """Float MOD compiles to f64 instruction sequence (not skipped)."""
         source = """\
 fn fmod(@Float64, @Float64 -> @Float64)
   requires(true) ensures(true) effects(pure)
@@ -174,9 +174,9 @@ fn fmod(@Float64, @Float64 -> @Float64)
   @Float64.1 % @Float64.0
 }
 """
-        result = _compile(source)
-        # Function should be skipped (WASM has no f64.rem)
-        assert "fmod" not in (result.exports or [])
+        result = _compile_ok(source)
+        assert "fmod" in (result.exports or [])
+        assert "f64.trunc" in result.wat
 
     def test_call_helper_function(self) -> None:
         """Calling a helper function compiles correctly."""
