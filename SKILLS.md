@@ -474,6 +474,8 @@ public fn exported(@Int -> @Int)
 
 Functions are private by default. Add `public` for external visibility.
 
+Import paths resolve to files on disk: `import vera.math;` looks for `vera/math.vera` relative to the importing file's directory (or the project root). Imported files are parsed and cached automatically. Circular imports are detected and reported as errors.
+
 ## Comments
 
 ```vera

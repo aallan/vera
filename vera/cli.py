@@ -54,13 +54,22 @@ def cmd_parse(path: str) -> int:
 def cmd_check(path: str, as_json: bool = False) -> int:
     """Parse, transform, and type-check a .vera file."""
     from vera.checker import typecheck
+    from vera.resolver import ModuleResolver
 
     try:
         p = Path(path)
         source = p.read_text(encoding="utf-8")
         tree = parse_file(path)
         ast = transform(tree)
-        diagnostics = typecheck(ast, source, file=str(p))
+
+        # Resolve imports (C7a)
+        resolver = ModuleResolver(_root=p.parent)
+        resolved = resolver.resolve_imports(ast, p)
+        resolve_diags = resolver.errors
+
+        diagnostics = resolve_diags + typecheck(
+            ast, source, file=str(p), resolved_modules=resolved,
+        )
 
         errors = [d for d in diagnostics if d.severity == "error"]
         warnings = [d for d in diagnostics if d.severity == "warning"]
@@ -108,6 +117,7 @@ def cmd_check(path: str, as_json: bool = False) -> int:
 def cmd_verify(path: str, as_json: bool = False) -> int:
     """Parse, transform, type-check, and verify a .vera file."""
     from vera.checker import typecheck
+    from vera.resolver import ModuleResolver
     from vera.verifier import verify
 
     try:
@@ -116,8 +126,14 @@ def cmd_verify(path: str, as_json: bool = False) -> int:
         tree = parse_file(path)
         ast = transform(tree)
 
+        # Resolve imports (C7a)
+        resolver = ModuleResolver(_root=p.parent)
+        resolved = resolver.resolve_imports(ast, p)
+
         # First type-check
-        type_diags = typecheck(ast, source, file=str(p))
+        type_diags = resolver.errors + typecheck(
+            ast, source, file=str(p), resolved_modules=resolved,
+        )
         type_errors = [d for d in type_diags if d.severity == "error"]
         type_warnings = [d for d in type_diags if d.severity == "warning"]
 
@@ -136,7 +152,8 @@ def cmd_verify(path: str, as_json: bool = False) -> int:
             return 1
 
         # Then verify contracts
-        result = verify(ast, source, file=str(p))
+        result = verify(ast, source, file=str(p),
+                        resolved_modules=resolved)
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
         warnings = [d for d in result.diagnostics if d.severity == "warning"]
@@ -208,6 +225,7 @@ def cmd_compile(
     """Parse, type-check, and compile a .vera file to WebAssembly."""
     from vera.checker import typecheck
     from vera.codegen import compile as codegen_compile
+    from vera.resolver import ModuleResolver
 
     try:
         p = Path(path)
@@ -215,8 +233,14 @@ def cmd_compile(
         tree = parse_file(path)
         ast = transform(tree)
 
+        # Resolve imports (C7a)
+        resolver = ModuleResolver(_root=p.parent)
+        resolved = resolver.resolve_imports(ast, p)
+
         # Type-check first
-        type_diags = typecheck(ast, source, file=str(p))
+        type_diags = resolver.errors + typecheck(
+            ast, source, file=str(p), resolved_modules=resolved,
+        )
         type_errors = [d for d in type_diags if d.severity == "error"]
         type_warnings = [d for d in type_diags if d.severity == "warning"]
 
@@ -313,6 +337,7 @@ def cmd_run(
     """Parse, type-check, compile, and execute a .vera file."""
     from vera.checker import typecheck
     from vera.codegen import compile as codegen_compile, execute
+    from vera.resolver import ModuleResolver
 
     try:
         p = Path(path)
@@ -320,8 +345,14 @@ def cmd_run(
         tree = parse_file(path)
         ast = transform(tree)
 
+        # Resolve imports (C7a)
+        resolver = ModuleResolver(_root=p.parent)
+        resolved = resolver.resolve_imports(ast, p)
+
         # Type-check
-        type_diags = typecheck(ast, source, file=str(p))
+        type_diags = resolver.errors + typecheck(
+            ast, source, file=str(p), resolved_modules=resolved,
+        )
         type_errors = [d for d in type_diags if d.severity == "error"]
 
         if type_errors:

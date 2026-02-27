@@ -930,3 +930,73 @@ fn id(@Int -> @Int)
         data = json.loads(result.stdout)
         assert data["ok"] is False
         assert "Invalid integer" in data["diagnostics"][0]["description"]
+
+
+# =====================================================================
+# Multi-file resolution (C7a)
+# =====================================================================
+
+class TestMultiFileResolution:
+    """Test CLI commands with import resolution."""
+
+    def test_check_with_resolved_import(self, tmp_path: Path) -> None:
+        """vera check resolves imports from sibling files."""
+        main_src = """\
+import lib;
+
+fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+"""
+        lib_src = """\
+fn helper(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+"""
+        main_file = tmp_path / "main.vera"
+        lib_file = tmp_path / "lib.vera"
+        main_file.write_text(main_src, encoding="utf-8")
+        lib_file.write_text(lib_src, encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", str(main_file)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "OK:" in result.stdout
+
+    def test_check_unresolved_import_error(self, tmp_path: Path) -> None:
+        """vera check reports error for unresolved imports."""
+        main_src = """\
+import missing;
+
+fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+"""
+        main_file = tmp_path / "main.vera"
+        main_file.write_text(main_src, encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", str(main_file)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "Cannot resolve import" in result.stderr
+
+    def test_check_json_with_unresolved_import(self, tmp_path: Path) -> None:
+        """vera check --json includes resolver diagnostics."""
+        main_src = """\
+import missing;
+
+fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+"""
+        main_file = tmp_path / "main.vera"
+        main_file.write_text(main_src, encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--json",
+             str(main_file)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["ok"] is False
+        assert any(
+            "Cannot resolve import" in d["description"]
+            for d in data["diagnostics"]
+        )

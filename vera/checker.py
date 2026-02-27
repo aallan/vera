@@ -10,6 +10,11 @@ by the contract verifier (vera/verifier.py) via Z3.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vera.resolver import ResolvedModule
+
 from vera import ast
 from vera.errors import Diagnostic, SourceLocation
 from vera.environment import (
@@ -59,14 +64,24 @@ from vera.types import (
 # Public API
 # =====================================================================
 
-def typecheck(program: ast.Program,
-              source: str = "",
-              file: str | None = None) -> list[Diagnostic]:
+def typecheck(
+    program: ast.Program,
+    source: str = "",
+    file: str | None = None,
+    resolved_modules: list[ResolvedModule] | None = None,
+) -> list[Diagnostic]:
     """Type-check a Vera Program AST.
 
     Returns a list of Diagnostics (empty = no errors).
+
+    *resolved_modules* — modules resolved from ``import`` declarations
+    (see :class:`~vera.resolver.ModuleResolver`).  Used in C7a to
+    improve diagnostics for cross-module calls; actual type merging
+    is deferred to C7b.
     """
-    checker = TypeChecker(source=source, file=file)
+    checker = TypeChecker(
+        source=source, file=file, resolved_modules=resolved_modules,
+    )
     checker.check_program(program)
     return checker.errors
 
@@ -78,12 +93,22 @@ def typecheck(program: ast.Program,
 class TypeChecker:
     """Top-down type checker with error accumulation."""
 
-    def __init__(self, source: str = "", file: str | None = None) -> None:
+    def __init__(
+        self,
+        source: str = "",
+        file: str | None = None,
+        resolved_modules: list[ResolvedModule] | None = None,
+    ) -> None:
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
         self.source = source
         self.file = file
         self._effect_ops_used: set[str] = set()
+        # Resolved module paths for improved diagnostics (C7a).
+        # Actual type merging is deferred to C7b.
+        self._resolved_module_paths: set[tuple[str, ...]] = {
+            m.path for m in (resolved_modules or [])
+        }
 
     # -----------------------------------------------------------------
     # Diagnostics
@@ -1077,12 +1102,33 @@ class TypeChecker:
 
     def _check_module_call(self, expr: ast.ModuleCall) -> Type | None:
         """Type-check a module call: path.to.fn(args)."""
-        self._error(
-            expr,
-            f"Module call '{'.'.join(expr.path)}.{expr.name}' cannot be "
-            f"resolved (cross-module resolution not yet implemented).",
-            severity="warning",
-        )
+        mod_path = tuple(expr.path)
+        if mod_path in self._resolved_module_paths:
+            # Module was resolved by the resolver (C7a) but cross-module
+            # type merging is not yet implemented (C7b).
+            self._error(
+                expr,
+                f"Module '{'.'.join(expr.path)}' resolved, but "
+                f"cross-module type checking is not yet implemented "
+                f"(C7b). Call to '{expr.name}' is unchecked.",
+                severity="warning",
+                rationale=(
+                    "The module was found and parsed successfully. "
+                    "Type merging across module boundaries will be "
+                    "available in a future release (C7b)."
+                ),
+            )
+        else:
+            self._error(
+                expr,
+                f"Module '{'.'.join(expr.path)}' not found. "
+                f"Cannot resolve call to '{expr.name}'.",
+                severity="warning",
+                rationale=(
+                    "No module matching this import path was resolved. "
+                    "Check that the file exists and is imported."
+                ),
+            )
         for arg in expr.args:
             self._synth_expr(arg)
         return UnknownType()
