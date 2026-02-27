@@ -376,7 +376,14 @@ class WasmContext:
             return self._translate_qualified_call(expr, env)
 
         if isinstance(expr, ast.ModuleCall):
-            return None  # cross-module codegen not yet implemented (C7e)
+            # C7e: desugar to flat FnCall — imported function is compiled
+            # into the same WASM module via flattening.
+            desugared = ast.FnCall(
+                name=expr.name,
+                args=expr.args,
+                span=expr.span,
+            )
+            return self._translate_call(desugared, env)
 
         if isinstance(expr, ast.StringLit):
             return self._translate_string_lit(expr)
@@ -500,6 +507,14 @@ class WasmContext:
         # Pipe: a |> f(x, y) → f(a, x, y)
         if expr.op == ast.BinOp.PIPE:
             if isinstance(expr.right, ast.FnCall):
+                desugared = ast.FnCall(
+                    name=expr.right.name,
+                    args=(expr.left,) + expr.right.args,
+                    span=expr.span,
+                )
+                return self._translate_call(desugared, env)
+            # C7e: a |> Module.f(x) → f(a, x)
+            if isinstance(expr.right, ast.ModuleCall):
                 desugared = ast.FnCall(
                     name=expr.right.name,
                     args=(expr.left,) + expr.right.args,

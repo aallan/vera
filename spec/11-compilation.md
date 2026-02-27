@@ -553,13 +553,27 @@ When the compiler encounters a type alias in a function signature or slot refere
 
 This resolution applies uniformly to parameter types, return types, let bindings, and slot references within function bodies.
 
-## 11.16 Limitations
+## 11.16 Cross-Module Compilation
+
+When a program imports functions from other modules, the compiler uses a **flattening** strategy: imported function bodies are compiled into the same WASM module as the importing program. This produces a single self-contained `.wasm` binary with no external dependencies beyond host imports (IO, State).
+
+The compilation process:
+
+1. **Registration**: For each resolved module, register all function signatures, ADT layouts, and type aliases. Imported names are injected via `setdefault` so local definitions shadow imports.
+2. **Compilation**: After compiling local functions, compile all imported function bodies (including private helpers) as internal (non-exported) WASM functions.
+3. **Call desugaring**: `ModuleCall` nodes (e.g. `math.abs(x)`) are desugared to flat `FnCall` nodes (e.g. `abs(x)`) since the imported function exists in the same WASM module.
+
+Imported functions are **not** exported from the WASM module — only the importing program's `public` functions are exports.
+
+**Known limitation**: If two imported modules define functions with the same name, the flat namespace may produce collisions ([#110](https://github.com/aallan/vera/issues/110)).
+
+## 11.17 Limitations
 
 The current compilation model has the following limitations, each tracked as a GitHub issue:
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| No module-level code generation | [#50](https://github.com/aallan/vera/issues/50) | Each file compiles independently |
+| Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions between modules are not yet detected |
 | No garbage collection | [#51](https://github.com/aallan/vera/issues/51) | Bump allocator only; linear memory is not reclaimed |
 | String constants only | [#52](https://github.com/aallan/vera/issues/52) | No dynamic string construction |
 | Only State\<T\> handlers | [#53](https://github.com/aallan/vera/issues/53) | Exn\<E\> and custom effect handlers not yet compilable |

@@ -228,7 +228,7 @@ Tracked in [#14](https://github.com/aallan/vera/issues/14) (type-checking) and [
 | C7b | Cross-module type environment — merge public declarations across files | [v0.0.32](https://github.com/aallan/vera/releases/tag/v0.0.32) |
 | C7c | Visibility enforcement — `public`/`private` access control in the checker | [v0.0.34](https://github.com/aallan/vera/releases/tag/v0.0.34)–[v0.0.35](https://github.com/aallan/vera/releases/tag/v0.0.35) |
 | C7d | Cross-module verification — verify contracts that reference imported symbols | [v0.0.37](https://github.com/aallan/vera/releases/tag/v0.0.37) |
-| C7e | Multi-module codegen — WASM import/export tables linking multiple modules | Planned |
+| C7e | Multi-module codegen — flatten imported functions into the WASM module | [v0.0.38](https://github.com/aallan/vera/releases/tag/v0.0.38) |
 | C7f | Spec Chapter 8 — formal module semantics, resolution algorithm, examples | Planned |
 
 ### Next after C7: refactoring
@@ -239,7 +239,7 @@ Tracked in [#14](https://github.com/aallan/vera/issues/14) (type-checking) and [
 
 Open issues grouped by area. These are tracked for future phases beyond C7.
 
-**Codegen gaps** — [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory, [#52](https://github.com/aallan/vera/issues/52) dynamic string construction, [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation, [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display) for all types
+**Codegen gaps** — [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory, [#52](https://github.com/aallan/vera/issues/52) dynamic string construction, [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation, [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display) for all types, [#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation
 
 **Verification** — [#13](https://github.com/aallan/vera/issues/13) expand SMT decidable fragment (Tier 2), [#45](https://github.com/aallan/vera/issues/45) decreases clause termination verification
 
