@@ -28,3 +28,13 @@ private fn sum(@List<Int> -> @Int)
     Cons(@Int, @List<Int>) -> @Int.0 + sum(@List<Int>.0)
   }
 }
+
+-- Entry point: exercise list operations
+public fn test_list(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @List<Int> = Cons(10, Cons(20, Cons(30, Nil)));
+  sum(@List<Int>.0)
+}

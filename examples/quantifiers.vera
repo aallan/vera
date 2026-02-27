@@ -33,3 +33,12 @@ private fn process(@Int -> @Int)
   assume(@Int.0 > 0);
   @Int.0
 }
+
+-- Entry point: exercise process with a positive value
+public fn test_process(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  process(5)
+}

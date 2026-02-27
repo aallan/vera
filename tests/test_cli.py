@@ -784,7 +784,7 @@ class TestCmdRunEdgeCases:
         # Create a temp file with a two-arg function
         import tempfile
         source = """\
-private fn add(@Int, @Int -> @Int)
+public fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.1 + @Int.0 }
 """
@@ -804,7 +804,7 @@ private fn add(@Int, @Int -> @Int)
         """Run a function with negative integer arguments."""
         import tempfile
         source = """\
-private fn abs(@Int -> @Int)
+public fn abs(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 } }
 """
@@ -824,7 +824,7 @@ private fn abs(@Int -> @Int)
         """Run a function that triggers a runtime precondition trap."""
         import tempfile
         source = """\
-private fn positive(@Int -> @Int)
+public fn positive(@Int -> @Int)
   requires(@Int.0 > 0) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -870,7 +870,7 @@ private fn simple(-> @Int)
         """Non-integer arguments after -- produce a clean error."""
         import tempfile
         source = """\
-private fn id(@Int -> @Int)
+public fn id(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -891,7 +891,7 @@ private fn id(@Int -> @Int)
         """Float arguments after -- produce a clean error."""
         import tempfile
         source = """\
-private fn id(@Int -> @Int)
+public fn id(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -912,7 +912,7 @@ private fn id(@Int -> @Int)
         """Invalid args with --json produce JSON error."""
         import tempfile
         source = """\
-private fn id(@Int -> @Int)
+public fn id(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -937,7 +937,7 @@ private fn id(@Int -> @Int)
         """vera run on file without main and no args gives helpful error."""
         import tempfile
         source = """\
-private fn add(@Int, @Int -> @Int)
+public fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.1 }
 """
@@ -959,7 +959,7 @@ private fn add(@Int, @Int -> @Int)
         """JSON mode returns structured error for missing args."""
         import tempfile
         source = """\
-private fn add(@Int, @Int -> @Int)
+public fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.1 }
 """
@@ -973,6 +973,74 @@ private fn add(@Int, @Int -> @Int)
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is False
         assert "expects 2 parameters" in data["diagnostics"][0]["description"]
+
+    def test_run_no_exports(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera run with only private functions gives helpful no-exports error."""
+        import tempfile
+        source = """\
+private fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        rc = cmd_run(path)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "No exported functions to call" in err
+        assert "private fn helper" in err
+        assert "public fn main" in err
+
+    def test_run_no_exports_json(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """JSON mode returns structured error for no exports."""
+        import tempfile
+        source = """\
+private fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        rc = cmd_run(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert "No exported functions" in data["diagnostics"][0]["description"]
+
+    def test_run_private_fn_targeted(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera run --fn targeting a private function gives helpful error."""
+        import tempfile
+        source = """\
+private fn secret(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        rc = cmd_run(path, fn_name="secret", fn_args=[1])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "declared private" in err
+        assert "public fn secret" in err
 
 
 # =====================================================================

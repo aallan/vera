@@ -29,7 +29,7 @@ private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
 ### 5.2.1 Complete Example
 
 ```
-private fn absolute_value(@Int -> @Nat)
+public fn absolute_value(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result == if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 })
   effects(pure)
@@ -47,7 +47,7 @@ private fn absolute_value(@Int -> @Nat)
 Multiple `requires` and `ensures` clauses may be specified. They are conjunctive (all must hold):
 
 ```
-private fn safe_divide(@Int, @Int -> @Int)
+public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   requires(@Int.0 >= 0)
   ensures(@Int.result >= 0)
@@ -109,7 +109,7 @@ Effect syntax and semantics are detailed in Chapter 7.
 Recursive functions are functions that call themselves (directly or mutually). A recursive function MUST declare a `decreases` clause:
 
 ```
-private fn factorial(@Nat -> @Nat)
+public fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -160,7 +160,7 @@ The tuple `(@Nat.1, @Nat.0)` decreases lexicographically on each recursive call.
 Mutually recursive functions are declared together in a `where` block. Each must have its own `decreases` clause:
 
 ```
-private fn is_even(@Nat -> @Bool)
+public fn is_even(@Nat -> @Bool)
   requires(true)
   ensures(true)
   decreases(@Nat.0)

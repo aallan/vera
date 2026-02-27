@@ -1,9 +1,18 @@
 -- Safe division: demonstrates a non-trivial precondition.
 
-private fn safe_divide(@Int, @Int -> @Int)
+public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
 {
   @Int.0 / @Int.1
+}
+
+-- Entry point: exercise safe_divide(10, 2) = 5
+public fn test_divide(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  safe_divide(10, 2)
 }

@@ -104,44 +104,44 @@ def _run_trap(
 
 class TestIntLit:
     def test_zero(self) -> None:
-        assert _run("private fn f(-> @Int) requires(true) ensures(true) effects(pure) { 0 }") == 0
+        assert _run("public fn f(-> @Int) requires(true) ensures(true) effects(pure) { 0 }") == 0
 
     def test_positive(self) -> None:
-        assert _run("private fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }") == 42
+        assert _run("public fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }") == 42
 
     def test_negative(self) -> None:
-        assert _run("private fn f(-> @Int) requires(true) ensures(true) effects(pure) { -1 }") == -1
+        assert _run("public fn f(-> @Int) requires(true) ensures(true) effects(pure) { -1 }") == -1
 
     def test_large(self) -> None:
         assert _run(
-            "private fn f(-> @Int) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Int) requires(true) ensures(true) effects(pure) "
             "{ 9999999999 }"
         ) == 9999999999
 
 
 class TestBoolLit:
     def test_true(self) -> None:
-        assert _run("private fn f(-> @Bool) requires(true) ensures(true) effects(pure) { true }") == 1
+        assert _run("public fn f(-> @Bool) requires(true) ensures(true) effects(pure) { true }") == 1
 
     def test_false(self) -> None:
-        assert _run("private fn f(-> @Bool) requires(true) ensures(true) effects(pure) { false }") == 0
+        assert _run("public fn f(-> @Bool) requires(true) ensures(true) effects(pure) { false }") == 0
 
 
 class TestFloatLit:
     def test_zero(self) -> None:
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 0.0 }"
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 0.0 }"
         ) == 0.0
 
     def test_positive(self) -> None:
         result = _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 3.14 }"
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 3.14 }"
         )
         assert abs(result - 3.14) < 1e-10
 
     def test_one(self) -> None:
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 1.0 }"
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 1.0 }"
         ) == 1.0
 
 
@@ -149,7 +149,7 @@ class TestFloatSlotRef:
     def test_identity_float64(self) -> None:
         """Float64 identity function: param in, same value out."""
         source = (
-            "private fn id(@Float64 -> @Float64) requires(true) ensures(true) "
+            "public fn id(@Float64 -> @Float64) requires(true) ensures(true) "
             "effects(pure) { @Float64.0 }"
         )
         result = _compile_ok(source)
@@ -159,7 +159,7 @@ class TestFloatSlotRef:
     def test_two_float_params(self) -> None:
         """@Float64.0 = most recent (second), @Float64.1 = first."""
         source = (
-            "private fn second(@Float64, @Float64 -> @Float64) requires(true) "
+            "public fn second(@Float64, @Float64 -> @Float64) requires(true) "
             "ensures(true) effects(pure) { @Float64.0 }"
         )
         result = _compile_ok(source)
@@ -169,7 +169,7 @@ class TestFloatSlotRef:
     def test_float_param_arithmetic(self) -> None:
         """Float64 param used in arithmetic."""
         source = (
-            "private fn add_one(@Float64 -> @Float64) requires(true) ensures(true) "
+            "public fn add_one(@Float64 -> @Float64) requires(true) ensures(true) "
             "effects(pure) { @Float64.0 + 1.0 }"
         )
         result = _compile_ok(source)
@@ -180,60 +180,60 @@ class TestFloatSlotRef:
 class TestFloatArithmetic:
     def test_add(self) -> None:
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
             "{ 1.5 + 2.5 }"
         ) == 4.0
 
     def test_sub(self) -> None:
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
             "{ 5.0 - 2.5 }"
         ) == 2.5
 
     def test_mul(self) -> None:
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
             "{ 3.0 * 2.5 }"
         ) == 7.5
 
     def test_div(self) -> None:
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
             "{ 7.5 / 2.5 }"
         ) == 3.0
 
     def test_nested(self) -> None:
         """(1.0 + 2.0) * 3.0 = 9.0"""
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
             "{ (1.0 + 2.0) * 3.0 }"
         ) == 9.0
 
     def test_mod(self) -> None:
         """7.5 % 2.5 = 0.0 (exact division)."""
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
             "{ 7.5 % 2.5 }"
         ) == 0.0
 
     def test_mod_remainder(self) -> None:
         """10.0 % 3.0 = 1.0."""
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
             "{ 10.0 % 3.0 }"
         ) == 1.0
 
     def test_mod_negative(self) -> None:
         """-7.0 % 3.0 = -1.0 (truncation toward zero, matching fmod)."""
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
             "{ -7.0 % 3.0 }"
         ) == -1.0
 
     def test_mod_with_params(self) -> None:
         """Float mod with slot-ref operands (not just literals)."""
         source = (
-            "private fn fmod(@Float64, @Float64 -> @Float64) requires(true) "
+            "public fn fmod(@Float64, @Float64 -> @Float64) requires(true) "
             "ensures(true) effects(pure) { @Float64.1 % @Float64.0 }"
         )
         result = _compile_ok(source)
@@ -245,43 +245,43 @@ class TestFloatArithmetic:
 class TestFloatComparison:
     def test_eq_true(self) -> None:
         assert _run(
-            "private fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
             "{ 1.5 == 1.5 }"
         ) == 1
 
     def test_eq_false(self) -> None:
         assert _run(
-            "private fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
             "{ 1.5 == 2.5 }"
         ) == 0
 
     def test_neq(self) -> None:
         assert _run(
-            "private fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
             "{ 1.5 != 2.5 }"
         ) == 1
 
     def test_lt(self) -> None:
         assert _run(
-            "private fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
             "{ 1.5 < 2.5 }"
         ) == 1
 
     def test_gt(self) -> None:
         assert _run(
-            "private fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
             "{ 2.5 > 1.5 }"
         ) == 1
 
     def test_le(self) -> None:
         assert _run(
-            "private fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
             "{ 1.5 <= 1.5 }"
         ) == 1
 
     def test_ge(self) -> None:
         assert _run(
-            "private fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Bool) requires(true) ensures(true) effects(pure) "
             "{ 2.5 >= 1.5 }"
         ) == 1
 
@@ -289,13 +289,13 @@ class TestFloatComparison:
 class TestFloatNeg:
     def test_neg_literal(self) -> None:
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
             "{ -3.5 }"
         ) == -3.5
 
     def test_neg_expr(self) -> None:
         assert _run_float(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) "
             "{ -(1.0 + 2.5) }"
         ) == -3.5
 
@@ -304,7 +304,7 @@ class TestFloatIfExpr:
     def test_if_float_result(self) -> None:
         """If expression returning Float64."""
         source = """\
-private fn f(-> @Float64)
+public fn f(-> @Float64)
   requires(true) ensures(true) effects(pure)
 { if true then { 1.5 } else { 2.5 } }
 """
@@ -312,7 +312,7 @@ private fn f(-> @Float64)
 
     def test_if_float_else(self) -> None:
         source = """\
-private fn f(-> @Float64)
+public fn f(-> @Float64)
   requires(true) ensures(true) effects(pure)
 { if false then { 1.5 } else { 2.5 } }
 """
@@ -323,7 +323,7 @@ class TestFloatLet:
     def test_let_float(self) -> None:
         """Let binding with Float64 type."""
         source = """\
-private fn f(-> @Float64)
+public fn f(-> @Float64)
   requires(true) ensures(true) effects(pure)
 {
   let @Float64 = 1.5 + 2.5;
@@ -335,7 +335,7 @@ private fn f(-> @Float64)
     def test_let_float_chain(self) -> None:
         """Multiple let bindings with Float64."""
         source = """\
-private fn f(-> @Float64)
+public fn f(-> @Float64)
   requires(true) ensures(true) effects(pure)
 {
   let @Float64 = 3.0;
@@ -350,34 +350,34 @@ class TestFloatCompileResult:
     def test_wat_has_f64(self) -> None:
         """WAT output contains f64 instructions."""
         result = _compile_ok(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 3.14 }"
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 3.14 }"
         )
         assert "f64.const" in result.wat
 
     def test_float_fn_exported(self) -> None:
         """Float64 functions are exported (no longer skipped)."""
         result = _compile_ok(
-            "private fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 1.0 }"
+            "public fn f(-> @Float64) requires(true) ensures(true) effects(pure) { 1.0 }"
         )
         assert "f" in result.exports
 
 
 class TestCompileResult:
     def test_wat_not_empty(self) -> None:
-        result = _compile_ok("private fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }")
+        result = _compile_ok("public fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }")
         assert "(module" in result.wat
         assert "i64.const 42" in result.wat
 
     def test_wasm_bytes_not_empty(self) -> None:
-        result = _compile_ok("private fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }")
+        result = _compile_ok("public fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }")
         assert len(result.wasm_bytes) > 0
 
     def test_exports_list(self) -> None:
-        result = _compile_ok("private fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }")
+        result = _compile_ok("public fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }")
         assert "f" in result.exports
 
     def test_ok_property(self) -> None:
-        result = _compile_ok("private fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }")
+        result = _compile_ok("public fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }")
         assert result.ok is True
 
 
@@ -387,7 +387,7 @@ class TestCrossModuleGuardRail:
     def test_undefined_fn_call_diagnostic(self) -> None:
         """Calling a function not defined in this module emits a diagnostic."""
         source = """\
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { unknown_fn(42) }
 """
@@ -401,7 +401,7 @@ private fn f(-> @Int)
     def test_undefined_fn_no_raw_wasmtime_error(self) -> None:
         """No raw WAT compilation error — guard rail catches it first."""
         source = """\
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { missing(1) }
 """
@@ -412,8 +412,8 @@ private fn f(-> @Int)
     def test_locally_defined_fn_compiles(self) -> None:
         """Calls to locally defined functions still work."""
         source = """\
-private fn helper(-> @Int) requires(true) ensures(true) effects(pure) { 1 }
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) { helper() }
+public fn helper(-> @Int) requires(true) ensures(true) effects(pure) { 1 }
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) { helper() }
 """
         result = _compile_ok(source)
         assert result.ok is True
@@ -428,14 +428,14 @@ class TestSlotRef:
     def test_identity_int(self) -> None:
         """fn id(@Int -> @Int) { @Int.0 }"""
         assert _run(
-            "private fn id(@Int -> @Int) requires(true) ensures(true) effects(pure) "
+            "public fn id(@Int -> @Int) requires(true) ensures(true) effects(pure) "
             "{ @Int.0 }",
             fn="id", args=[7],
         ) == 7
 
     def test_identity_bool(self) -> None:
         assert _run(
-            "private fn id(@Bool -> @Bool) requires(true) ensures(true) effects(pure) "
+            "public fn id(@Bool -> @Bool) requires(true) ensures(true) effects(pure) "
             "{ @Bool.0 }",
             fn="id", args=[1],
         ) == 1
@@ -443,14 +443,14 @@ class TestSlotRef:
     def test_two_params_same_type(self) -> None:
         """@Int.0 = second param, @Int.1 = first param."""
         assert _run(
-            "private fn first(@Int, @Int -> @Int) requires(true) ensures(true) "
+            "public fn first(@Int, @Int -> @Int) requires(true) ensures(true) "
             "effects(pure) { @Int.1 }",
             fn="first", args=[10, 20],
         ) == 10
 
     def test_second_param(self) -> None:
         assert _run(
-            "private fn second(@Int, @Int -> @Int) requires(true) ensures(true) "
+            "public fn second(@Int, @Int -> @Int) requires(true) ensures(true) "
             "effects(pure) { @Int.0 }",
             fn="second", args=[10, 20],
         ) == 20
@@ -459,35 +459,35 @@ class TestSlotRef:
 class TestArithmetic:
     def test_add(self) -> None:
         assert _run(
-            "private fn add(@Int, @Int -> @Int) requires(true) ensures(true) "
+            "public fn add(@Int, @Int -> @Int) requires(true) ensures(true) "
             "effects(pure) { @Int.1 + @Int.0 }",
             fn="add", args=[3, 4],
         ) == 7
 
     def test_sub(self) -> None:
         assert _run(
-            "private fn sub(@Int, @Int -> @Int) requires(true) ensures(true) "
+            "public fn sub(@Int, @Int -> @Int) requires(true) ensures(true) "
             "effects(pure) { @Int.1 - @Int.0 }",
             fn="sub", args=[10, 3],
         ) == 7
 
     def test_mul(self) -> None:
         assert _run(
-            "private fn mul(@Int, @Int -> @Int) requires(true) ensures(true) "
+            "public fn mul(@Int, @Int -> @Int) requires(true) ensures(true) "
             "effects(pure) { @Int.1 * @Int.0 }",
             fn="mul", args=[6, 7],
         ) == 42
 
     def test_div(self) -> None:
         assert _run(
-            "private fn div(@Int, @Int -> @Int) requires(@Int.0 != 0) ensures(true) "
+            "public fn div(@Int, @Int -> @Int) requires(@Int.0 != 0) ensures(true) "
             "effects(pure) { @Int.1 / @Int.0 }",
             fn="div", args=[10, 3],
         ) == 3
 
     def test_mod(self) -> None:
         assert _run(
-            "private fn rem(@Int, @Int -> @Int) requires(@Int.0 != 0) ensures(true) "
+            "public fn rem(@Int, @Int -> @Int) requires(@Int.0 != 0) ensures(true) "
             "effects(pure) { @Int.1 % @Int.0 }",
             fn="rem", args=[10, 3],
         ) == 1
@@ -495,7 +495,7 @@ class TestArithmetic:
     def test_nested_arithmetic(self) -> None:
         """(a + b) * (a - b)"""
         assert _run(
-            "private fn f(@Int, @Int -> @Int) requires(true) ensures(true) "
+            "public fn f(@Int, @Int -> @Int) requires(true) ensures(true) "
             "effects(pure) { (@Int.1 + @Int.0) * (@Int.1 - @Int.0) }",
             fn="f", args=[5, 3],
         ) == (5 + 3) * (5 - 3)
@@ -504,49 +504,49 @@ class TestArithmetic:
 class TestComparison:
     def test_eq_true(self) -> None:
         assert _run(
-            "private fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Int.1 == @Int.0 }",
             fn="f", args=[5, 5],
         ) == 1
 
     def test_eq_false(self) -> None:
         assert _run(
-            "private fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Int.1 == @Int.0 }",
             fn="f", args=[5, 6],
         ) == 0
 
     def test_neq(self) -> None:
         assert _run(
-            "private fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Int.1 != @Int.0 }",
             fn="f", args=[5, 6],
         ) == 1
 
     def test_lt(self) -> None:
         assert _run(
-            "private fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Int.1 < @Int.0 }",
             fn="f", args=[3, 5],
         ) == 1
 
     def test_gt(self) -> None:
         assert _run(
-            "private fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Int.1 > @Int.0 }",
             fn="f", args=[5, 3],
         ) == 1
 
     def test_le(self) -> None:
         assert _run(
-            "private fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Int.1 <= @Int.0 }",
             fn="f", args=[5, 5],
         ) == 1
 
     def test_ge(self) -> None:
         assert _run(
-            "private fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Int, @Int -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Int.1 >= @Int.0 }",
             fn="f", args=[5, 3],
         ) == 1
@@ -555,28 +555,28 @@ class TestComparison:
 class TestBooleanLogic:
     def test_and(self) -> None:
         assert _run(
-            "private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Bool.1 && @Bool.0 }",
             fn="f", args=[1, 1],
         ) == 1
 
     def test_and_false(self) -> None:
         assert _run(
-            "private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Bool.1 && @Bool.0 }",
             fn="f", args=[1, 0],
         ) == 0
 
     def test_or(self) -> None:
         assert _run(
-            "private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Bool.1 || @Bool.0 }",
             fn="f", args=[0, 1],
         ) == 1
 
     def test_not(self) -> None:
         assert _run(
-            "private fn f(@Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { !@Bool.0 }",
             fn="f", args=[1],
         ) == 0
@@ -584,7 +584,7 @@ class TestBooleanLogic:
     def test_implies_true(self) -> None:
         """false ==> anything is true."""
         assert _run(
-            "private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Bool.1 ==> @Bool.0 }",
             fn="f", args=[0, 0],
         ) == 1
@@ -592,7 +592,7 @@ class TestBooleanLogic:
     def test_implies_false(self) -> None:
         """true ==> false is false."""
         assert _run(
-            "private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Bool.1 ==> @Bool.0 }",
             fn="f", args=[1, 0],
         ) == 0
@@ -601,28 +601,28 @@ class TestBooleanLogic:
 class TestUnaryOps:
     def test_neg(self) -> None:
         assert _run(
-            "private fn neg(@Int -> @Int) requires(true) ensures(true) "
+            "public fn neg(@Int -> @Int) requires(true) ensures(true) "
             "effects(pure) { -@Int.0 }",
             fn="neg", args=[5],
         ) == -5
 
     def test_neg_negative(self) -> None:
         assert _run(
-            "private fn neg(@Int -> @Int) requires(true) ensures(true) "
+            "public fn neg(@Int -> @Int) requires(true) ensures(true) "
             "effects(pure) { -@Int.0 }",
             fn="neg", args=[-3],
         ) == 3
 
     def test_not_true(self) -> None:
         assert _run(
-            "private fn f(@Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { !@Bool.0 }",
             fn="f", args=[1],
         ) == 0
 
     def test_not_false(self) -> None:
         assert _run(
-            "private fn f(@Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { !@Bool.0 }",
             fn="f", args=[0],
         ) == 1
@@ -636,7 +636,7 @@ class TestUnaryOps:
 class TestIfExpr:
     def test_if_true(self) -> None:
         source = """\
-private fn f(@Bool -> @Int)
+public fn f(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
 { if @Bool.0 then { 1 } else { 0 } }
 """
@@ -644,7 +644,7 @@ private fn f(@Bool -> @Int)
 
     def test_if_false(self) -> None:
         source = """\
-private fn f(@Bool -> @Int)
+public fn f(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
 { if @Bool.0 then { 1 } else { 0 } }
 """
@@ -652,7 +652,7 @@ private fn f(@Bool -> @Int)
 
     def test_absolute_value(self) -> None:
         source = """\
-private fn absolute_value(@Int -> @Int)
+public fn absolute_value(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 } }
 """
@@ -662,7 +662,7 @@ private fn absolute_value(@Int -> @Int)
 
     def test_nested_if(self) -> None:
         source = """\
-private fn clamp(@Int -> @Int)
+public fn clamp(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 < 0 then { 0 }
@@ -675,7 +675,7 @@ private fn clamp(@Int -> @Int)
 
     def test_if_bool_result(self) -> None:
         source = """\
-private fn is_positive(@Int -> @Bool)
+public fn is_positive(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 { if @Int.0 > 0 then { true } else { false } }
 """
@@ -686,7 +686,7 @@ private fn is_positive(@Int -> @Bool)
 class TestLetBindings:
     def test_simple_let(self) -> None:
         source = """\
-private fn f(@Int -> @Int)
+public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = @Int.0 + 1;
@@ -697,7 +697,7 @@ private fn f(@Int -> @Int)
 
     def test_multiple_lets(self) -> None:
         source = """\
-private fn f(@Int -> @Int)
+public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = @Int.0 + 1;
@@ -710,7 +710,7 @@ private fn f(@Int -> @Int)
     def test_let_with_original(self) -> None:
         """After let @Int, the original param is @Int.1."""
         source = """\
-private fn f(@Int -> @Int)
+public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = @Int.0 * 2;
@@ -721,7 +721,7 @@ private fn f(@Int -> @Int)
 
     def test_let_different_types(self) -> None:
         source = """\
-private fn f(@Int -> @Bool)
+public fn f(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
   let @Bool = @Int.0 > 0;
@@ -733,7 +733,7 @@ private fn f(@Int -> @Bool)
 
     def test_let_in_if_branches(self) -> None:
         source = """\
-private fn f(@Int -> @Int)
+public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = if @Int.0 > 0 then { @Int.0 } else { -@Int.0 };
@@ -752,11 +752,11 @@ private fn f(@Int -> @Int)
 class TestFnCall:
     def test_call_simple(self) -> None:
         source = """\
-private fn double(@Int -> @Int)
+public fn double(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 * 2 }
 
-private fn f(@Int -> @Int)
+public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { double(@Int.0) }
 """
@@ -764,11 +764,11 @@ private fn f(@Int -> @Int)
 
     def test_call_chain(self) -> None:
         source = """\
-private fn inc(@Int -> @Int)
+public fn inc(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + 1 }
 
-private fn double_inc(@Int -> @Int)
+public fn double_inc(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { inc(inc(@Int.0)) }
 """
@@ -776,11 +776,11 @@ private fn double_inc(@Int -> @Int)
 
     def test_multiple_args(self) -> None:
         source = """\
-private fn add(@Int, @Int -> @Int)
+public fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.1 + @Int.0 }
 
-private fn f(@Int -> @Int)
+public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { add(@Int.0, @Int.0) }
 """
@@ -790,7 +790,7 @@ private fn f(@Int -> @Int)
 class TestRecursion:
     def test_factorial(self) -> None:
         source = """\
-private fn factorial(@Nat -> @Nat)
+public fn factorial(@Nat -> @Nat)
   requires(@Nat.0 >= 0)
   ensures(true)
   decreases(@Nat.0)
@@ -807,7 +807,7 @@ private fn factorial(@Nat -> @Nat)
 
     def test_fibonacci(self) -> None:
         source = """\
-private fn fib(@Nat -> @Nat)
+public fn fib(@Nat -> @Nat)
   requires(@Nat.0 >= 0)
   ensures(true)
   decreases(@Nat.0)
@@ -832,11 +832,11 @@ class TestPipeOperator:
 
     def test_pipe_basic(self) -> None:
         source = """\
-private fn inc(@Int -> @Int)
+public fn inc(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + 1 }
 
-private fn main(@Int -> @Int)
+public fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 |> inc() }
 """
@@ -844,11 +844,11 @@ private fn main(@Int -> @Int)
 
     def test_pipe_chain(self) -> None:
         source = """\
-private fn inc(@Int -> @Int)
+public fn inc(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + 1 }
 
-private fn main(@Int -> @Int)
+public fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 |> inc() |> inc() }
 """
@@ -856,11 +856,11 @@ private fn main(@Int -> @Int)
 
     def test_pipe_multi_arg(self) -> None:
         source = """\
-private fn add(@Int, @Int -> @Int)
+public fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.1 }
 
-private fn main(@Int -> @Int)
+public fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 |> add(10) }
 """
@@ -882,7 +882,7 @@ class TestStringLitIO:
     def test_hello_world(self) -> None:
         """First light: Hello, World!"""
         source = _IO_PRELUDE + """\
-private fn main(@Unit -> @Unit)
+public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 { IO.print("Hello, World!") }
 """
@@ -890,7 +890,7 @@ private fn main(@Unit -> @Unit)
 
     def test_empty_string(self) -> None:
         source = _IO_PRELUDE + """\
-private fn main(@Unit -> @Unit)
+public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 { IO.print("") }
 """
@@ -898,7 +898,7 @@ private fn main(@Unit -> @Unit)
 
     def test_multiple_prints(self) -> None:
         source = _IO_PRELUDE + """\
-private fn main(@Unit -> @Unit)
+public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
   IO.print("Hello, ");
@@ -910,7 +910,7 @@ private fn main(@Unit -> @Unit)
     def test_string_dedup(self) -> None:
         """Identical strings should be deduplicated in the data section."""
         source = _IO_PRELUDE + """\
-private fn main(@Unit -> @Unit)
+public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
   IO.print("abc");
@@ -926,7 +926,7 @@ private fn main(@Unit -> @Unit)
     def test_special_characters(self) -> None:
         """Strings with punctuation and spaces."""
         source = _IO_PRELUDE + """\
-private fn main(@Unit -> @Unit)
+public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 { IO.print("Hello, World! 123 @#$") }
 """
@@ -935,11 +935,11 @@ private fn main(@Unit -> @Unit)
     def test_io_with_pure_functions(self) -> None:
         """IO functions coexist with pure functions in the same module."""
         source = _IO_PRELUDE + """\
-private fn add(@Int, @Int -> @Int)
+public fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.1 + @Int.0 }
 
-private fn main(@Unit -> @Unit)
+public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 { IO.print("hello") }
 """
@@ -970,7 +970,7 @@ class TestPreconditions:
     def test_requires_holds(self) -> None:
         """Non-trivial precondition that holds — no trap."""
         source = """\
-private fn positive(@Int -> @Int)
+public fn positive(@Int -> @Int)
   requires(@Int.0 > 0)
   ensures(true)
   effects(pure)
@@ -981,7 +981,7 @@ private fn positive(@Int -> @Int)
     def test_requires_traps(self) -> None:
         """Non-trivial precondition violated — WASM trap."""
         source = """\
-private fn positive(@Int -> @Int)
+public fn positive(@Int -> @Int)
   requires(@Int.0 > 0)
   ensures(true)
   effects(pure)
@@ -992,7 +992,7 @@ private fn positive(@Int -> @Int)
     def test_requires_boundary(self) -> None:
         """Precondition with exact boundary value."""
         source = """\
-private fn nonneg(@Int -> @Int)
+public fn nonneg(@Int -> @Int)
   requires(@Int.0 >= 0)
   ensures(true)
   effects(pure)
@@ -1004,7 +1004,7 @@ private fn nonneg(@Int -> @Int)
     def test_requires_neq_zero(self) -> None:
         """Precondition: denominator != 0."""
         source = """\
-private fn safe_div(@Int, @Int -> @Int)
+public fn safe_div(@Int, @Int -> @Int)
   requires(@Int.0 != 0)
   ensures(true)
   effects(pure)
@@ -1016,7 +1016,7 @@ private fn safe_div(@Int, @Int -> @Int)
     def test_trivial_requires_no_overhead(self) -> None:
         """requires(true) should not produce any trap instructions."""
         source = """\
-private fn f(@Int -> @Int)
+public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -1027,7 +1027,7 @@ private fn f(@Int -> @Int)
     def test_multiple_requires(self) -> None:
         """Multiple preconditions — all must hold."""
         source = """\
-private fn bounded(@Int -> @Int)
+public fn bounded(@Int -> @Int)
   requires(@Int.0 >= 0)
   requires(@Int.0 <= 100)
   ensures(true)
@@ -1043,7 +1043,7 @@ class TestPostconditions:
     def test_ensures_holds(self) -> None:
         """Postcondition that holds — no trap."""
         source = """\
-private fn double(@Int -> @Int)
+public fn double(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
@@ -1054,7 +1054,7 @@ private fn double(@Int -> @Int)
     def test_ensures_traps(self) -> None:
         """Postcondition violated — WASM trap."""
         source = """\
-private fn negate(@Int -> @Int)
+public fn negate(@Int -> @Int)
   requires(true)
   ensures(@Int.result > 0)
   effects(pure)
@@ -1066,7 +1066,7 @@ private fn negate(@Int -> @Int)
     def test_ensures_with_params(self) -> None:
         """Postcondition referencing both result and parameters."""
         source = """\
-private fn inc(@Int -> @Int)
+public fn inc(@Int -> @Int)
   requires(true)
   ensures(@Int.result > @Int.0)
   effects(pure)
@@ -1077,7 +1077,7 @@ private fn inc(@Int -> @Int)
     def test_ensures_result_eq(self) -> None:
         """Postcondition checking exact result value."""
         source = """\
-private fn always_zero(-> @Int)
+public fn always_zero(-> @Int)
   requires(true)
   ensures(@Int.result == 0)
   effects(pure)
@@ -1088,7 +1088,7 @@ private fn always_zero(-> @Int)
     def test_ensures_result_traps(self) -> None:
         """Postcondition checking exact value — wrong result traps."""
         source = """\
-private fn buggy(-> @Int)
+public fn buggy(-> @Int)
   requires(true)
   ensures(@Int.result == 0)
   effects(pure)
@@ -1099,7 +1099,7 @@ private fn buggy(-> @Int)
     def test_trivial_ensures_no_overhead(self) -> None:
         """ensures(true) should not produce any trap instructions."""
         source = """\
-private fn f(@Int -> @Int)
+public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -1109,7 +1109,7 @@ private fn f(@Int -> @Int)
     def test_ensures_bool_result(self) -> None:
         """Postcondition on a Bool-returning function."""
         source = """\
-private fn is_pos(@Int -> @Bool)
+public fn is_pos(@Int -> @Bool)
   requires(true)
   ensures(@Bool.result == true)
   effects(pure)
@@ -1124,7 +1124,7 @@ class TestCombinedContracts:
     def test_both_hold(self) -> None:
         """Both requires and ensures hold — normal execution."""
         source = """\
-private fn safe_inc(@Int -> @Int)
+public fn safe_inc(@Int -> @Int)
   requires(@Int.0 >= 0)
   ensures(@Int.result > @Int.0)
   effects(pure)
@@ -1136,7 +1136,7 @@ private fn safe_inc(@Int -> @Int)
     def test_requires_fails_first(self) -> None:
         """Precondition fails before postcondition is checked."""
         source = """\
-private fn safe_inc(@Int -> @Int)
+public fn safe_inc(@Int -> @Int)
   requires(@Int.0 >= 0)
   ensures(@Int.result > @Int.0)
   effects(pure)
@@ -1147,7 +1147,7 @@ private fn safe_inc(@Int -> @Int)
     def test_contracts_with_recursion(self) -> None:
         """Runtime contracts on a recursive function."""
         source = """\
-private fn factorial(@Nat -> @Nat)
+public fn factorial(@Nat -> @Nat)
   requires(@Nat.0 >= 0)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -1172,11 +1172,11 @@ class TestUnsupportedSkipped:
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn make_none(-> @Option<Int>)
+public fn make_none(-> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 { None }
 
-private fn simple(-> @Int)
+public fn simple(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 1 }
 """
@@ -1194,13 +1194,13 @@ effect Counter {
   op tick(Unit -> Unit);
 }
 
-private fn count(@Unit -> @Unit)
+public fn count(@Unit -> @Unit)
   requires(true) ensures(true) effects(<Counter>)
 {
   Counter.tick(())
 }
 
-private fn simple(-> @Int)
+public fn simple(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1387,21 +1387,21 @@ class TestBoolComparison:
 
     def test_bool_eq_true(self) -> None:
         assert _run(
-            "private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Bool.1 == @Bool.0 }",
             fn="f", args=[1, 1],
         ) == 1
 
     def test_bool_eq_false(self) -> None:
         assert _run(
-            "private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Bool.1 == @Bool.0 }",
             fn="f", args=[1, 0],
         ) == 0
 
     def test_bool_neq(self) -> None:
         assert _run(
-            "private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Bool.1 != @Bool.0 }",
             fn="f", args=[1, 0],
         ) == 1
@@ -1409,7 +1409,7 @@ class TestBoolComparison:
     def test_bool_comparison_uses_i32(self) -> None:
         """Verify WAT uses i32.eq for Bool == Bool, not i64.eq."""
         result = _compile_ok(
-            "private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
+            "public fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) "
             "effects(pure) { @Bool.1 == @Bool.0 }"
         )
         assert "i32.eq" in result.wat
@@ -1428,21 +1428,21 @@ class TestModuleAssembly:
     def test_pure_no_io_import(self) -> None:
         """Pure functions should not import vera.print."""
         result = _compile_ok(
-            "private fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }"
+            "public fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }"
         )
         assert "vera.print" not in result.wat
 
     def test_pure_no_memory(self) -> None:
         """Pure functions without strings should not declare memory."""
         result = _compile_ok(
-            "private fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }"
+            "public fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }"
         )
         assert "(memory" not in result.wat
 
     def test_io_has_import_and_memory(self) -> None:
         """IO functions import vera.print and declare memory."""
         source = _IO_PRELUDE + """\
-private fn main(@Unit -> @Unit)
+public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 { IO.print("hello") }
 """
@@ -1454,15 +1454,15 @@ private fn main(@Unit -> @Unit)
     def test_multiple_exports(self) -> None:
         """Multiple compilable functions are all exported."""
         source = """\
-private fn add(@Int, @Int -> @Int)
+public fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.1 + @Int.0 }
 
-private fn mul(@Int, @Int -> @Int)
+public fn mul(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.1 * @Int.0 }
 
-private fn neg(@Int -> @Int)
+public fn neg(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { -@Int.0 }
 """
@@ -1484,7 +1484,7 @@ class TestExecuteErrors:
     def test_function_not_found(self) -> None:
         """execute() with unknown function name raises RuntimeError."""
         result = _compile_ok(
-            "private fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }"
+            "public fn f(-> @Int) requires(true) ensures(true) effects(pure) { 42 }"
         )
         with pytest.raises(RuntimeError, match="not found"):
             execute(result, fn_name="nonexistent")
@@ -1510,7 +1510,7 @@ class TestExecuteErrors:
     def test_first_export_used_when_no_main(self) -> None:
         """When no 'main' function, the first exported function is called."""
         source = """\
-private fn compute(-> @Int)
+public fn compute(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 99 }
 """
@@ -1540,7 +1540,7 @@ class TestStateEffect:
     def test_state_int_get_default(self) -> None:
         """get(()) returns 0 by default for State<Int>."""
         source = """\
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(<State<Int>>)
 { get(()) }
 """
@@ -1550,7 +1550,7 @@ private fn f(-> @Int)
     def test_state_int_put_then_get(self) -> None:
         """put(42) then get(()) returns 42."""
         source = """\
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(<State<Int>>)
 {
   put(42);
@@ -1563,7 +1563,7 @@ private fn f(-> @Int)
     def test_increment_pattern(self) -> None:
         """Classic increment: get, add 1, put — state goes from 0 to 1."""
         source = """\
-private fn increment(@Unit -> @Unit)
+public fn increment(@Unit -> @Unit)
   requires(true) ensures(true) effects(<State<Int>>)
 {
   let @Int = get(());
@@ -1591,7 +1591,7 @@ private fn increment(@Unit -> @Unit)
     def test_state_bool_get_default(self) -> None:
         """Bool state defaults to 0 (false)."""
         source = """\
-private fn f(-> @Bool)
+public fn f(-> @Bool)
   requires(true) ensures(true) effects(<State<Bool>>)
 { get(()) }
 """
@@ -1601,7 +1601,7 @@ private fn f(-> @Bool)
     def test_state_bool_put_get(self) -> None:
         """put(true) then get(()) returns 1."""
         source = """\
-private fn f(-> @Bool)
+public fn f(-> @Bool)
   requires(true) ensures(true) effects(<State<Bool>>)
 {
   put(true);
@@ -1614,7 +1614,7 @@ private fn f(-> @Bool)
     def test_state_float64_get_default(self) -> None:
         """Float64 state defaults to 0.0."""
         source = """\
-private fn f(-> @Float64)
+public fn f(-> @Float64)
   requires(true) ensures(true) effects(<State<Float64>>)
 { get(()) }
 """
@@ -1624,7 +1624,7 @@ private fn f(-> @Float64)
     def test_state_nat_compiles(self) -> None:
         """State<Nat> compiles (Nat maps to i64)."""
         source = """\
-private fn f(-> @Nat)
+public fn f(-> @Nat)
   requires(true) ensures(true) effects(<State<Nat>>)
 { get(()) }
 """
@@ -1634,7 +1634,7 @@ private fn f(-> @Nat)
     def test_state_string_rejected(self) -> None:
         """State<String> is unsupported — function skipped with warning."""
         source = """\
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(<State<String>>)
 { 42 }
 """
@@ -1646,7 +1646,7 @@ private fn f(-> @Int)
     def test_state_with_io(self) -> None:
         """Mixed effects(<State<Int>, IO>) compiles and both work."""
         source = """\
-private fn f(@Unit -> @Unit)
+public fn f(@Unit -> @Unit)
   requires(true) ensures(true) effects(<State<Int>, IO>)
 {
   put(42);
@@ -1661,7 +1661,7 @@ private fn f(@Unit -> @Unit)
     def test_state_wat_has_imports(self) -> None:
         """WAT output contains State import declarations."""
         source = """\
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(<State<Int>>)
 { get(()) }
 """
@@ -1672,7 +1672,7 @@ private fn f(-> @Int)
     def test_multiple_state_types(self) -> None:
         """Multiple State types emit all imports."""
         source = """\
-private fn f(@Int -> @Unit)
+public fn f(@Int -> @Unit)
   requires(true) ensures(true) effects(<State<Int>, State<Bool>>)
 {
   put(@Int.0);
@@ -1689,7 +1689,7 @@ private fn f(@Int -> @Unit)
     def test_put_void_no_drop(self) -> None:
         """put(x) in ExprStmt does not emit a drop instruction."""
         source = """\
-private fn f(@Unit -> @Unit)
+public fn f(@Unit -> @Unit)
   requires(true) ensures(true) effects(<State<Int>>)
 {
   put(42);
@@ -1707,7 +1707,7 @@ private fn f(@Unit -> @Unit)
     def test_state_initial_value(self) -> None:
         """Initial state override: get(()) returns the initial value."""
         source = """\
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(<State<Int>>)
 { get(()) }
 """
@@ -1719,7 +1719,7 @@ private fn f(-> @Int)
     def test_pure_no_state_imports(self) -> None:
         """Pure functions don't produce State imports."""
         source = """\
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1797,7 +1797,7 @@ class TestHeapAllocation:
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1810,7 +1810,7 @@ private fn f(-> @Int)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1822,7 +1822,7 @@ private fn f(-> @Int)
     def test_no_alloc_without_adt(self) -> None:
         """Pure programs without ADTs should NOT emit allocator."""
         source = """\
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1835,7 +1835,7 @@ private fn f(-> @Int)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn main(@Unit -> @Unit)
+public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 { IO.print("hello") }
 """
@@ -1849,7 +1849,7 @@ private fn main(@Unit -> @Unit)
         source = """\
 private data Flag { On, Off }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1861,7 +1861,7 @@ private fn f(-> @Int)
         source = """\
 private data Bit { Zero, One }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1874,7 +1874,7 @@ private fn f(-> @Int)
         source = """\
 private data Flag { On, Off }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1890,7 +1890,7 @@ class TestAdtMetadata:
         source = """\
 private data Unit2 { MkUnit }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1905,7 +1905,7 @@ private fn f(-> @Int)
         source = """\
 private data Wrapper { Wrap(Int) }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1920,7 +1920,7 @@ private fn f(-> @Int)
         source = """\
 private data Pair { MkPair(Int, Bool) }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1936,7 +1936,7 @@ private fn f(-> @Int)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1951,7 +1951,7 @@ private fn f(-> @Int)
         source = """\
 private data Box { MkBox(Float64) }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1965,7 +1965,7 @@ private fn f(-> @Int)
         source = """\
 private data Toggle { MkToggle(Bool) }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1979,7 +1979,7 @@ private fn f(-> @Int)
         source = """\
 private data Box<T> { MkBox(T) }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -1993,7 +1993,7 @@ private fn f(-> @Int)
         source = """\
 private data MyOption<T> { MyNone, MySome(T) }
 
-private fn f(-> @Int)
+public fn f(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -2020,7 +2020,7 @@ class TestAdtConstructors:
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn make_red(-> @Color)
+public fn make_red(-> @Color)
   requires(true) ensures(true) effects(pure)
 { Red }
 """
@@ -2035,15 +2035,15 @@ private fn make_red(-> @Color)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn make_red(-> @Color)
+public fn make_red(-> @Color)
   requires(true) ensures(true) effects(pure)
 { Red }
 
-private fn make_green(-> @Color)
+public fn make_green(-> @Color)
   requires(true) ensures(true) effects(pure)
 { Green }
 
-private fn make_blue(-> @Color)
+public fn make_blue(-> @Color)
   requires(true) ensures(true) effects(pure)
 { Blue }
 """
@@ -2057,7 +2057,7 @@ private fn make_blue(-> @Color)
         source = """\
 private data Wrapper { Wrap(Int) }
 
-private fn wrap(@Int -> @Wrapper)
+public fn wrap(@Int -> @Wrapper)
   requires(true) ensures(true) effects(pure)
 { Wrap(@Int.0) }
 """
@@ -2072,7 +2072,7 @@ private fn wrap(@Int -> @Wrapper)
         source = """\
 private data Toggle { MkToggle(Bool) }
 
-private fn toggle(@Bool -> @Toggle)
+public fn toggle(@Bool -> @Toggle)
   requires(true) ensures(true) effects(pure)
 { MkToggle(@Bool.0) }
 """
@@ -2087,7 +2087,7 @@ private fn toggle(@Bool -> @Toggle)
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn make_none(-> @Option<Int>)
+public fn make_none(-> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 { None }
 """
@@ -2101,7 +2101,7 @@ private fn make_none(-> @Option<Int>)
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn make_some(@Int -> @Option<Int>)
+public fn make_some(@Int -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 { Some(@Int.0) }
 """
@@ -2116,7 +2116,7 @@ private fn make_some(@Int -> @Option<Int>)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn make_red(-> @Color)
+public fn make_red(-> @Color)
   requires(true) ensures(true) effects(pure)
 { Red }
 """
@@ -2128,7 +2128,7 @@ private fn make_red(-> @Color)
         source = """\
 private data Wrapper { Wrap(Int) }
 
-private fn wrap(@Int -> @Wrapper)
+public fn wrap(@Int -> @Wrapper)
   requires(true) ensures(true) effects(pure)
 { Wrap(@Int.0) }
 """
@@ -2140,7 +2140,7 @@ private fn wrap(@Int -> @Wrapper)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn make_green(-> @Color)
+public fn make_green(-> @Color)
   requires(true) ensures(true) effects(pure)
 { Green }
 """
@@ -2154,7 +2154,7 @@ private fn make_green(-> @Color)
         source = """\
 private data Wrapper { Wrap(Int) }
 
-private fn make_wrap(@Int -> @Wrapper)
+public fn make_wrap(@Int -> @Wrapper)
   requires(true) ensures(true) effects(pure)
 {
   let @Wrapper = Wrap(@Int.0);
@@ -2171,7 +2171,7 @@ private fn make_wrap(@Int -> @Wrapper)
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn maybe(@Bool -> @Option<Int>)
+public fn maybe(@Bool -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
   if @Bool.0 then { Some(42) }
@@ -2191,7 +2191,7 @@ private fn maybe(@Bool -> @Option<Int>)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn identity(@Color -> @Color)
+public fn identity(@Color -> @Color)
   requires(true) ensures(true) effects(pure)
 { @Color.0 }
 """
@@ -2213,7 +2213,7 @@ class TestMatchExpressions:
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn test_none(-> @Int)
+public fn test_none(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Int> = None;
@@ -2230,7 +2230,7 @@ private fn test_none(-> @Int)
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn test_some(-> @Int)
+public fn test_some(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Int> = Some(42);
@@ -2247,7 +2247,7 @@ private fn test_some(-> @Int)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn test_red(-> @Int)
+public fn test_red(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Color = Red;
@@ -2265,7 +2265,7 @@ private fn test_red(-> @Int)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn test_green(-> @Int)
+public fn test_green(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Color = Green;
@@ -2283,7 +2283,7 @@ private fn test_green(-> @Int)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn test_blue(-> @Int)
+public fn test_blue(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Color = Blue;
@@ -2301,7 +2301,7 @@ private fn test_blue(-> @Int)
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn test(-> @Int)
+public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Int> = Some(99);
@@ -2318,7 +2318,7 @@ private fn test(-> @Int)
         source = """\
 private data Toggle { MkToggle(Bool) }
 
-private fn test(-> @Bool)
+public fn test(-> @Bool)
   requires(true) ensures(true) effects(pure)
 {
   let @Toggle = MkToggle(true);
@@ -2334,7 +2334,7 @@ private fn test(-> @Bool)
         source = """\
 private data Pair { MkPair(Int, Bool) }
 
-private fn test(-> @Int)
+public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Pair = MkPair(42, true);
@@ -2350,7 +2350,7 @@ private fn test(-> @Int)
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn test(-> @Int)
+public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Int> = None;
@@ -2365,7 +2365,7 @@ private fn test(-> @Int)
     def test_match_wildcard_only(self) -> None:
         """Single wildcard arm on Int."""
         source = """\
-private fn test(@Int -> @Int)
+public fn test(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -2380,7 +2380,7 @@ private fn test(@Int -> @Int)
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn test(-> @Int)
+public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Int> = Some(77);
@@ -2395,7 +2395,7 @@ private fn test(-> @Int)
     def test_match_bool_true(self) -> None:
         """Bool match on true arm."""
         source = """\
-private fn test(@Bool -> @Int)
+public fn test(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Bool.0 {
@@ -2409,7 +2409,7 @@ private fn test(@Bool -> @Int)
     def test_match_bool_false(self) -> None:
         """Bool match on false arm."""
         source = """\
-private fn test(@Bool -> @Int)
+public fn test(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Bool.0 {
@@ -2423,7 +2423,7 @@ private fn test(@Bool -> @Int)
     def test_match_int_literal(self) -> None:
         """Int literal match, first arm."""
         source = """\
-private fn test(@Int -> @Int)
+public fn test(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -2438,7 +2438,7 @@ private fn test(@Int -> @Int)
     def test_match_int_second_arm(self) -> None:
         """Int literal match, second arm."""
         source = """\
-private fn test(@Int -> @Int)
+public fn test(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -2453,7 +2453,7 @@ private fn test(@Int -> @Int)
     def test_match_int_wildcard_fallback(self) -> None:
         """Int literal match, wildcard fallback."""
         source = """\
-private fn test(@Int -> @Int)
+public fn test(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -2470,7 +2470,7 @@ private fn test(@Int -> @Int)
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn test(-> @Int)
+public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Int> = None;
@@ -2487,7 +2487,7 @@ private fn test(-> @Int)
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn test(-> @Int)
+public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Int> = Some(10);
@@ -2505,7 +2505,7 @@ private fn test(-> @Int)
         source = """\
 private data Color { Red, Green, Blue }
 
-private fn test(-> @Int)
+public fn test(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Color = Red;
@@ -2524,7 +2524,7 @@ private fn test(-> @Int)
         source = """\
 private data Option<T> { None, Some(T) }
 
-private fn unwrap_or(@Option<Int> -> @Int)
+public fn unwrap_or(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -2552,7 +2552,7 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn main(-> @Int)
+public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 { identity(42) }
 """
@@ -2565,7 +2565,7 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn main(-> @Bool)
+public fn main(-> @Bool)
   requires(true) ensures(true) effects(pure)
 { identity(true) }
 """
@@ -2578,17 +2578,21 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn test_int(-> @Int)
+public fn test_int(-> @Int)
   requires(true) ensures(true) effects(pure)
 { identity(42) }
 
-private fn test_bool(-> @Bool)
+public fn test_bool(-> @Bool)
   requires(true) ensures(true) effects(pure)
 { identity(false) }
 """
         result = _compile_ok(source)
-        assert "identity$Int" in result.exports
-        assert "identity$Bool" in result.exports
+        # Private generic → monomorphized variants not exported
+        assert "identity$Int" not in result.exports
+        assert "identity$Bool" not in result.exports
+        # Public callers are exported
+        assert "test_int" in result.exports
+        assert "test_bool" in result.exports
         # Run both
         exec_int = execute(result, fn_name="test_int")
         assert exec_int.value == 42
@@ -2602,7 +2606,7 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn main(@Int -> @Int)
+public fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { identity(@Int.0) }
 """
@@ -2615,7 +2619,7 @@ private forall<A, B> fn const(@A, @B -> @A)
   requires(true) ensures(true) effects(pure)
 { @A.0 }
 
-private fn main(-> @Int)
+public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 { const(42, true) }
 """
@@ -2635,7 +2639,7 @@ private forall<T> fn is_some(@Option<T> -> @Bool)
   }
 }
 
-private fn main(-> @Bool)
+public fn main(-> @Bool)
   requires(true) ensures(true) effects(pure)
 { is_some(Some(1)) }
 """
@@ -2655,7 +2659,7 @@ private forall<T> fn is_some(@Option<T> -> @Bool)
   }
 }
 
-private fn main(-> @Bool)
+public fn main(-> @Bool)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Int> = None;
@@ -2671,7 +2675,7 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn main(-> @Int)
+public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 { identity(42) }
 """
@@ -2679,19 +2683,22 @@ private fn main(-> @Int)
         assert "$identity$Int" in result.wat
 
     def test_generic_fn_mangled_in_exports(self) -> None:
-        """Mangled name appears in exports, original generic does not."""
+        """Private generic's mangled names not exported; public caller is."""
         source = """\
 private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn main(-> @Int)
+public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 { identity(42) }
 """
         result = _compile_ok(source)
-        assert "identity$Int" in result.exports
+        # Private generic → monomorphized variants not exported
+        assert "identity$Int" not in result.exports
         assert "identity" not in result.exports
+        # Public caller is exported
+        assert "main" in result.exports
 
     def test_non_generic_fn_unaffected(self) -> None:
         """Non-generic functions compile normally alongside generic ones."""
@@ -2700,11 +2707,11 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn double(@Int -> @Int)
+public fn double(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.0 }
 
-private fn main(-> @Int)
+public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 { double(identity(21)) }
 """
@@ -2717,7 +2724,7 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn main(-> @Int)
+public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = identity(10);
@@ -2733,7 +2740,7 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn main(-> @Int)
+public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 { identity(identity(99)) }
 """
@@ -2746,7 +2753,7 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn main(@Bool -> @Int)
+public fn main(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   if @Bool.0 then { identity(1) } else { identity(2) }
@@ -2762,7 +2769,7 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn main(-> @Int)
+public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 { identity(3 + 4) }
 """
@@ -2775,7 +2782,7 @@ private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-private fn main(-> @Int)
+public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -2814,12 +2821,12 @@ class TestClosures:
         """An anonymous function with no free variables compiles and runs."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn make_fn(@Unit -> @IntToInt)
+public fn make_fn(@Unit -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntToInt = make_fn(());
@@ -2832,12 +2839,12 @@ private fn test(@Unit -> @Int)
         """An anonymous function that captures an outer binding."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn make_adder(@Int -> @IntToInt)
+public fn make_adder(@Int -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntToInt = make_adder(10);
@@ -2850,12 +2857,12 @@ private fn test(@Unit -> @Int)
         """apply_fn invokes a closure with the correct argument."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn make_doubler(@Unit -> @IntToInt)
+public fn make_doubler(@Unit -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntToInt = make_doubler(());
@@ -2868,12 +2875,12 @@ private fn test(@Unit -> @Int)
         """apply_fn on a capturing closure produces the correct result."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn make_multiplier(@Int -> @IntToInt)
+public fn make_multiplier(@Int -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 * @Int.1 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntToInt = make_multiplier(3);
@@ -2886,12 +2893,12 @@ private fn test(@Unit -> @Int)
         """Store a closure in a let binding, then use it."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn make_fn(@Int -> @IntToInt)
+public fn make_fn(@Int -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntToInt = make_fn(100);
@@ -2905,17 +2912,17 @@ private fn test(@Unit -> @Int)
         """Pass a closure as a function parameter."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn apply(@IntToInt, @Int -> @Int)
+public fn apply(@IntToInt, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   apply_fn(@IntToInt.0, @Int.0)
 }
-private fn make_fn(@Int -> @IntToInt)
+public fn make_fn(@Int -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntToInt = make_fn(50);
@@ -2929,7 +2936,7 @@ private fn test(@Unit -> @Int)
         src = """\
 private data Option<T> { None, Some(T) }
 type IntMapper = fn(Int -> Int) effects(pure);
-private fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
+public fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -2937,12 +2944,12 @@ private fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
     Some(@Int) -> Some(apply_fn(@IntMapper.0, @Int.0))
   }
 }
-private fn make_adder(@Int -> @IntMapper)
+public fn make_adder(@Int -> @IntMapper)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntMapper = make_adder(100);
@@ -2960,7 +2967,7 @@ private fn test(@Unit -> @Int)
         src = """\
 private data Option<T> { None, Some(T) }
 type IntMapper = fn(Int -> Int) effects(pure);
-private fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
+public fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -2968,12 +2975,12 @@ private fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
     Some(@Int) -> Some(apply_fn(@IntMapper.0, @Int.0))
   }
 }
-private fn make_adder(@Int -> @IntMapper)
+public fn make_adder(@Int -> @IntMapper)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntMapper = make_adder(100);
@@ -2990,7 +2997,7 @@ private fn test(@Unit -> @Int)
         """A function with a function-type parameter is not skipped."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn apply(@IntToInt, @Int -> @Int)
+public fn apply(@IntToInt, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   apply_fn(@IntToInt.0, @Int.0)
@@ -3003,7 +3010,7 @@ private fn apply(@IntToInt, @Int -> @Int)
         """WAT output includes a funcref table when closures are used."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn make_fn(@Unit -> @IntToInt)
+public fn make_fn(@Unit -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 }
@@ -3019,17 +3026,17 @@ private fn make_fn(@Unit -> @IntToInt)
         """WAT output contains call_indirect for apply_fn."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn apply(@IntToInt, @Int -> @Int)
+public fn apply(@IntToInt, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   apply_fn(@IntToInt.0, @Int.0)
 }
-private fn make_fn(@Unit -> @IntToInt)
+public fn make_fn(@Unit -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntToInt = make_fn(());
@@ -3044,7 +3051,7 @@ private fn test(@Unit -> @Int)
         """WAT output contains a closure type signature declaration."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn make_fn(@Unit -> @IntToInt)
+public fn make_fn(@Unit -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 }
@@ -3085,12 +3092,12 @@ private fn make_fn(@Unit -> @IntToInt)
         """Multiple closures get distinct table entries."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn make_adder(@Int -> @IntToInt)
+public fn make_adder(@Int -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntToInt = make_adder(10);
@@ -3106,12 +3113,12 @@ private fn test(@Unit -> @Int)
         """Each closure captures the value at its creation point."""
         src = """\
 type IntToInt = fn(Int -> Int) effects(pure);
-private fn make_adder(@Int -> @IntToInt)
+public fn make_adder(@Int -> @IntToInt)
   requires(true) ensures(true) effects(pure)
 {
   fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
 }
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntToInt = make_adder(1);
@@ -3141,7 +3148,7 @@ class TestEffectHandlers:
     def test_handle_state_get_init(self) -> None:
         """handle[State<Int>](@Int = 42) in { get(()) } returns 42."""
         src = """\
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 42) {
@@ -3157,7 +3164,7 @@ private fn test(@Unit -> @Int)
     def test_handle_state_put_get(self) -> None:
         """put then get returns the put value."""
         src = """\
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -3174,7 +3181,7 @@ private fn test(@Unit -> @Int)
     def test_handle_state_increment(self) -> None:
         """put(get(()) + 1) increments the state."""
         src = """\
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -3191,7 +3198,7 @@ private fn test(@Unit -> @Int)
     def test_handle_state_run_counter(self) -> None:
         """The run_counter pattern: init 0, put 0, then 3x increment."""
         src = """\
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -3211,7 +3218,7 @@ private fn test(@Unit -> @Int)
     def test_handle_state_initial_value(self) -> None:
         """Non-zero initial state is set correctly."""
         src = """\
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 100) {
@@ -3228,7 +3235,7 @@ private fn test(@Unit -> @Int)
     def test_handle_state_in_let(self) -> None:
         """Handler body can use let bindings."""
         src = """\
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -3247,7 +3254,7 @@ private fn test(@Unit -> @Int)
     def test_handle_state_pure_function(self) -> None:
         """A pure function with handle[State<T>] compiles (not skipped)."""
         src = """\
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 7) {
@@ -3264,7 +3271,7 @@ private fn test(@Unit -> @Int)
     def test_handle_state_bool(self) -> None:
         """State<Bool> handler works."""
         src = """\
-private fn test(@Unit -> @Bool)
+public fn test(@Unit -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Bool>](@Bool = false) {
@@ -3281,7 +3288,7 @@ private fn test(@Unit -> @Bool)
     def test_handle_state_wat_has_imports(self) -> None:
         """WAT output contains state host imports."""
         src = """\
-private fn test(@Unit -> @Int)
+public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -3305,7 +3312,7 @@ effect Exn<E> {
   op throw(E -> Unit);
 }
 private data Option<T> { None, Some(T) }
-private fn test(@Int -> @Option<Int>)
+public fn test(@Int -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
   handle[Exn<Int>] {
@@ -3363,7 +3370,7 @@ private fn test(@Int -> @Option<Int>)
 class TestByteType:
     def test_byte_identity(self) -> None:
         src = """
-private fn f(@Byte -> @Byte) requires(true) ensures(true) effects(pure) {
+public fn f(@Byte -> @Byte) requires(true) ensures(true) effects(pure) {
   @Byte.0
 }
 """
@@ -3371,7 +3378,7 @@ private fn f(@Byte -> @Byte) requires(true) ensures(true) effects(pure) {
 
     def test_byte_zero(self) -> None:
         src = """
-private fn f(-> @Byte) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Byte) requires(true) ensures(true) effects(pure) {
   0
 }
 """
@@ -3379,7 +3386,7 @@ private fn f(-> @Byte) requires(true) ensures(true) effects(pure) {
 
     def test_byte_max(self) -> None:
         src = """
-private fn f(-> @Byte) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Byte) requires(true) ensures(true) effects(pure) {
   255
 }
 """
@@ -3387,7 +3394,7 @@ private fn f(-> @Byte) requires(true) ensures(true) effects(pure) {
 
     def test_byte_let_binding(self) -> None:
         src = """
-private fn f(@Byte -> @Byte) requires(true) ensures(true) effects(pure) {
+public fn f(@Byte -> @Byte) requires(true) ensures(true) effects(pure) {
   let @Byte = @Byte.0;
   @Byte.0
 }
@@ -3396,7 +3403,7 @@ private fn f(@Byte -> @Byte) requires(true) ensures(true) effects(pure) {
 
     def test_byte_eq(self) -> None:
         src = """
-private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
   @Byte.0 == @Byte.1
 }
 """
@@ -3406,7 +3413,7 @@ private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
     def test_byte_lt_unsigned(self) -> None:
         # @Byte.0 = second param (de Bruijn 0), @Byte.1 = first param
         src = """
-private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
   @Byte.0 < @Byte.1
 }
 """
@@ -3417,7 +3424,7 @@ private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
 
     def test_byte_gt_unsigned(self) -> None:
         src = """
-private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
   @Byte.0 > @Byte.1
 }
 """
@@ -3428,7 +3435,7 @@ private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
 
     def test_byte_le(self) -> None:
         src = """
-private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
   @Byte.0 <= @Byte.1
 }
 """
@@ -3440,7 +3447,7 @@ private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
 
     def test_byte_ge(self) -> None:
         src = """
-private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
   @Byte.0 >= @Byte.1
 }
 """
@@ -3453,7 +3460,7 @@ private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
     def test_byte_unsigned_comparison_wat(self) -> None:
         """Byte comparisons should use unsigned i32 ops."""
         src = """
-private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
   @Byte.0 < @Byte.1
 }
 """
@@ -3469,7 +3476,7 @@ private fn f(@Byte, @Byte -> @Bool) requires(true) ensures(true) effects(pure) {
 class TestArrayLit:
     def test_int_array_index_0(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
   @Array<Int>.0[0]
 }
@@ -3478,7 +3485,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_int_array_index_1(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
   @Array<Int>.0[1]
 }
@@ -3487,7 +3494,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_int_array_index_2(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
   @Array<Int>.0[2]
 }
@@ -3496,7 +3503,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_single_element_array(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [42];
   @Array<Int>.0[0]
 }
@@ -3505,7 +3512,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_bool_array(self) -> None:
         src = """
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Bool> = [true, false, true];
   @Array<Bool>.0[1]
 }
@@ -3515,7 +3522,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_array_wat_has_alloc(self) -> None:
         """Array literal WAT should contain call $alloc."""
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
   @Array<Int>.0[0]
 }
@@ -3526,7 +3533,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_array_wat_has_bounds_check(self) -> None:
         """Array indexing WAT should contain unreachable for OOB."""
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
   @Array<Int>.0[0]
 }
@@ -3543,7 +3550,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 class TestArrayBoundsCheck:
     def test_oob_positive_index(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
   @Array<Int>.0[3]
 }
@@ -3552,7 +3559,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_oob_large_index(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
   @Array<Int>.0[100]
 }
@@ -3561,7 +3568,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_last_valid_index(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
   @Array<Int>.0[2]
 }
@@ -3570,7 +3577,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_first_valid_index(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
   @Array<Int>.0[0]
 }
@@ -3586,7 +3593,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 class TestArrayLength:
     def test_length_three(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
   length(@Array<Int>.0)
 }
@@ -3595,7 +3602,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_length_one(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [42];
   length(@Array<Int>.0)
 }
@@ -3604,7 +3611,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_length_in_comparison(self) -> None:
         src = """
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
   length(@Array<Int>.0) == 3
 }
@@ -3613,7 +3620,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
 
     def test_length_in_let(self) -> None:
         src = """
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3, 4, 5];
   let @Int = length(@Array<Int>.0);
   @Int.0
@@ -3624,10 +3631,10 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_array_fn_param_compiles(self) -> None:
         """Functions with Array params should compile with pair params."""
         src = """
-private fn f(@Array<Int> -> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(@Array<Int> -> @Int) requires(true) ensures(true) effects(pure) {
   @Array<Int>.0[0]
 }
-private fn g(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
   42
 }
 """
@@ -3649,7 +3656,7 @@ class TestAssertAssume:
     def test_assert_true(self) -> None:
         """assert(true) should not trap."""
         assert _run("""
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   assert(true);
   42
 }
@@ -3658,7 +3665,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_assert_false(self) -> None:
         """assert(false) should trap."""
         _run_trap("""
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   assert(false);
   42
 }
@@ -3667,7 +3674,7 @@ private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_assert_with_expression(self) -> None:
         """assert with a computed expression."""
         assert _run("""
-private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
   assert(@Int.0 > 0);
   @Int.0 + 1
 }
@@ -3676,7 +3683,7 @@ private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
     def test_assert_expression_false_traps(self) -> None:
         """assert with expression that evaluates to false."""
         _run_trap("""
-private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
   assert(@Int.0 > 0);
   @Int.0
 }
@@ -3685,7 +3692,7 @@ private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
     def test_assert_in_sequence(self) -> None:
         """assert followed by computation."""
         assert _run("""
-private fn f(@Int, @Int -> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(@Int, @Int -> @Int) requires(true) ensures(true) effects(pure) {
   assert(@Int.1 > 0);
   let @Int = @Int.1 + @Int.0;
   assert(@Int.0 > 0);
@@ -3696,7 +3703,7 @@ private fn f(@Int, @Int -> @Int) requires(true) ensures(true) effects(pure) {
     def test_assume_is_noop(self) -> None:
         """assume should be a no-op at runtime."""
         assert _run("""
-private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
   assume(@Int.0 > 0);
   @Int.0 * 2
 }
@@ -3705,7 +3712,7 @@ private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) {
     def test_assert_wat_contains_unreachable(self) -> None:
         """WAT should contain unreachable for assert."""
         result = _compile_ok("""
-private fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   assert(true);
   1
 }
@@ -3722,7 +3729,7 @@ class TestForall:
     def test_forall_all_positive(self) -> None:
         """forall over array where all elements satisfy predicate."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
   forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] > 0
@@ -3733,7 +3740,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_forall_not_all_positive(self) -> None:
         """forall over array where one element fails predicate."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, -2, 3];
   forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] > 0
@@ -3744,7 +3751,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_forall_empty_domain(self) -> None:
         """forall with empty domain should be vacuously true."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   forall(@Int, 0, fn(@Int -> @Bool) effects(pure) {
     false
   })
@@ -3754,7 +3761,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_forall_single_element_true(self) -> None:
         """forall with single element, predicate true."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [42];
   forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] > 0
@@ -3765,7 +3772,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_forall_single_element_false(self) -> None:
         """forall with single element, predicate false."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [-1];
   forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] > 0
@@ -3776,7 +3783,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_forall_all_equal(self) -> None:
         """forall checking all elements equal a value."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [7, 7, 7];
   forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 7
@@ -3794,7 +3801,7 @@ class TestExists:
     def test_exists_has_zero(self) -> None:
         """exists with one matching element."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 0, 3];
   exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 0
@@ -3805,7 +3812,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_exists_no_match(self) -> None:
         """exists with no matching element."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
   exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 0
@@ -3816,7 +3823,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_exists_empty_domain(self) -> None:
         """exists with empty domain should be false."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   exists(@Int, 0, fn(@Int -> @Bool) effects(pure) {
     true
   })
@@ -3826,7 +3833,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_exists_single_element_true(self) -> None:
         """exists with single matching element."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [0];
   exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 0
@@ -3837,7 +3844,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_exists_single_element_false(self) -> None:
         """exists with single non-matching element."""
         assert _run("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [5];
   exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 0
@@ -3855,7 +3862,7 @@ class TestQuantifierWat:
     def test_forall_wat_has_loop(self) -> None:
         """WAT for forall should contain loop and block."""
         result = _compile_ok("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
   forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] > 0
@@ -3869,7 +3876,7 @@ private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
     def test_exists_wat_has_loop(self) -> None:
         """WAT for exists should contain loop and block."""
         result = _compile_ok("""
-private fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
   exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 0
@@ -3897,7 +3904,7 @@ type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
 
     def test_safe_divide_basic(self) -> None:
         val = _run(self._PREAMBLE + """
-private fn safe_divide(@Int, @PosInt -> @Int)
+public fn safe_divide(@Int, @PosInt -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 / @PosInt.0 }
 """, fn="safe_divide", args=[10, 2])
@@ -3905,7 +3912,7 @@ private fn safe_divide(@Int, @PosInt -> @Int)
 
     def test_safe_divide_integer_division(self) -> None:
         val = _run(self._PREAMBLE + """
-private fn safe_divide(@Int, @PosInt -> @Int)
+public fn safe_divide(@Int, @PosInt -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 / @PosInt.0 }
 """, fn="safe_divide", args=[7, 3])
@@ -3913,7 +3920,7 @@ private fn safe_divide(@Int, @PosInt -> @Int)
 
     def test_to_percentage_clamp_low(self) -> None:
         val = _run(self._PREAMBLE + """
-private fn to_percentage(@Int -> @Percentage)
+public fn to_percentage(@Int -> @Percentage)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 < 0 then { 0 }
@@ -3924,7 +3931,7 @@ private fn to_percentage(@Int -> @Percentage)
 
     def test_to_percentage_passthrough(self) -> None:
         val = _run(self._PREAMBLE + """
-private fn to_percentage(@Int -> @Percentage)
+public fn to_percentage(@Int -> @Percentage)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 < 0 then { 0 }
@@ -3935,7 +3942,7 @@ private fn to_percentage(@Int -> @Percentage)
 
     def test_to_percentage_clamp_high(self) -> None:
         val = _run(self._PREAMBLE + """
-private fn to_percentage(@Int -> @Percentage)
+public fn to_percentage(@Int -> @Percentage)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 < 0 then { 0 }
@@ -3947,7 +3954,7 @@ private fn to_percentage(@Int -> @Percentage)
     def test_refined_type_let_binding(self) -> None:
         """Let binding to a refined type alias resolves correctly."""
         val = _run(self._PREAMBLE + """
-private fn f(@Int -> @Int)
+public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @PosInt = @Int.0;
@@ -3959,14 +3966,14 @@ private fn f(@Int -> @Int)
     def test_refined_return_in_expr(self) -> None:
         """Function returning a refined type works in expressions."""
         val = _run(self._PREAMBLE + """
-private fn clamp(@Int -> @Percentage)
+public fn clamp(@Int -> @Percentage)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 < 0 then { 0 }
   else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
 }
 
-private fn main(-> @Int) requires(true) ensures(true) effects(pure) {
+public fn main(-> @Int) requires(true) ensures(true) effects(pure) {
   clamp(200) + clamp(50)
 }
 """)
@@ -3975,11 +3982,11 @@ private fn main(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_refined_type_exports_in_wat(self) -> None:
         """WAT should contain function exports for refined-type fns."""
         result = _compile_ok(self._PREAMBLE + """
-private fn safe_divide(@Int, @PosInt -> @Int)
+public fn safe_divide(@Int, @PosInt -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 / @PosInt.0 }
 
-private fn to_percentage(@Int -> @Percentage)
+public fn to_percentage(@Int -> @Percentage)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 < 0 then { 0 }
@@ -4001,7 +4008,7 @@ class TestStringArraySignatures:
     def test_string_param(self) -> None:
         """Function taking a String param compiles with pair params."""
         src = """
-private fn say(@String -> @Unit)
+public fn say(@String -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 { IO.print(@String.0) }
 """
@@ -4013,7 +4020,7 @@ private fn say(@String -> @Unit)
     def test_string_return(self) -> None:
         """Function returning a String compiles with (result i32 i32)."""
         src = '''
-private fn greeting(-> @String)
+public fn greeting(-> @String)
   requires(true) ensures(true) effects(pure)
 { "hello" }
 '''
@@ -4024,7 +4031,7 @@ private fn greeting(-> @String)
     def test_string_param_and_return(self) -> None:
         """String param + String return: identity-like function."""
         src = """
-private fn echo(@String -> @String)
+public fn echo(@String -> @String)
   requires(true) ensures(true) effects(pure)
 { @String.0 }
 """
@@ -4036,11 +4043,11 @@ private fn echo(@String -> @String)
     def test_string_call_chain(self) -> None:
         """String-returning fn called by another fn via IO.print."""
         src = '''
-private fn greeting(-> @String)
+public fn greeting(-> @String)
   requires(true) ensures(true) effects(pure)
 { "hello world" }
 
-private fn main(-> @Unit)
+public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 { IO.print(greeting()) }
 '''
@@ -4051,7 +4058,7 @@ private fn main(-> @Unit)
     def test_array_param(self) -> None:
         """Function taking an Array<Int> param compiles with pair params."""
         src = """
-private fn get_len(@Array<Int> -> @Int)
+public fn get_len(@Array<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 { length(@Array<Int>.0) }
 """
@@ -4063,7 +4070,7 @@ private fn get_len(@Array<Int> -> @Int)
     def test_array_return(self) -> None:
         """Function returning an Array literal compiles."""
         src = """
-private fn nums(-> @Array<Int>)
+public fn nums(-> @Array<Int>)
   requires(true) ensures(true) effects(pure)
 { [1, 2, 3] }
 """
@@ -4074,7 +4081,7 @@ private fn nums(-> @Array<Int>)
     def test_mixed_params(self) -> None:
         """Function with both pair and primitive params."""
         src = """
-private fn add_to(@Int, @String -> @Int)
+public fn add_to(@Int, @String -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + 1 }
 """
@@ -4091,7 +4098,7 @@ private fn add_to(@Int, @String -> @Int)
     def test_string_return_execution(self) -> None:
         """Executing a String-returning function returns a pointer."""
         src = '''
-private fn hello(-> @String)
+public fn hello(-> @String)
   requires(true) ensures(true) effects(pure)
 { "hello" }
 '''
@@ -4112,7 +4119,7 @@ class TestOldNewContracts:
     def test_old_new_postcondition_compiles(self) -> None:
         """Function with old()/new() in ensures clause compiles to WASM."""
         src = """
-private fn increment(@Unit -> @Unit)
+public fn increment(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -4128,7 +4135,7 @@ private fn increment(@Unit -> @Unit)
     def test_old_new_postcondition_passes(self) -> None:
         """Postcondition holds — no trap when new == old + 1."""
         src = """
-private fn increment(@Unit -> @Unit)
+public fn increment(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -4149,7 +4156,7 @@ private fn increment(@Unit -> @Unit)
     def test_old_new_postcondition_traps(self) -> None:
         """Postcondition violated — traps when increment is wrong."""
         src = """
-private fn bad_increment(@Unit -> @Unit)
+public fn bad_increment(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -4169,7 +4176,7 @@ private fn bad_increment(@Unit -> @Unit)
     def test_trivial_ensures_no_snapshot(self) -> None:
         """ensures(true) with State effect does NOT emit a snapshot."""
         src = """
-private fn inc(@Unit -> @Unit)
+public fn inc(@Unit -> @Unit)
   requires(true) ensures(true)
   effects(<State<Int>>)
 {
@@ -4195,7 +4202,7 @@ private fn inc(@Unit -> @Unit)
     def test_old_new_wat_structure(self) -> None:
         """WAT contains state_get snapshot before body and new() in postcondition."""
         src = """
-private fn increment(@Unit -> @Unit)
+public fn increment(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -4218,7 +4225,7 @@ private fn increment(@Unit -> @Unit)
         """new(State<T>) reads the current value, not the snapshot."""
         # Increment by 5 but claim increment by 5 in postcondition
         src = """
-private fn add_five(@Unit -> @Unit)
+public fn add_five(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 5)
   effects(<State<Int>>)

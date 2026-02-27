@@ -1,7 +1,7 @@
 -- Mutual recursion with where blocks
 
 -- is_even and is_odd defined together
-private fn is_even(@Nat -> @Bool)
+public fn is_even(@Nat -> @Bool)
   requires(true)
   ensures(true)
   decreases(@Nat.0)
@@ -18,4 +18,13 @@ where {
   {
     if @Nat.0 == 0 then { false } else { is_even(@Nat.0 - 1) }
   }
+}
+
+-- Entry point: exercise is_even(4) = true
+public fn test_even(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  is_even(4)
 }

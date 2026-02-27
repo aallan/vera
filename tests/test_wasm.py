@@ -156,7 +156,7 @@ class TestTranslationEdgeCases:
     def test_string_in_io_print(self) -> None:
         """IO.print with string literal compiles and runs."""
         source = """\
-fn hello(@Unit -> @Unit)
+public fn hello(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
   IO.print("hello world")
@@ -168,7 +168,7 @@ fn hello(@Unit -> @Unit)
     def test_float_mod_compiles(self) -> None:
         """Float MOD compiles to f64 instruction sequence (not skipped)."""
         source = """\
-fn fmod(@Float64, @Float64 -> @Float64)
+public fn fmod(@Float64, @Float64 -> @Float64)
   requires(true) ensures(true) effects(pure)
 {
   @Float64.1 % @Float64.0
@@ -181,11 +181,11 @@ fn fmod(@Float64, @Float64 -> @Float64)
     def test_call_helper_function(self) -> None:
         """Calling a helper function compiles correctly."""
         source = """\
-fn helper(@Int -> @Int)
+public fn helper(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + 1 }
 
-fn outer(@Int -> @Int)
+public fn outer(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   helper(@Int.0)
@@ -196,7 +196,7 @@ fn outer(@Int -> @Int)
     def test_nested_if_in_let(self) -> None:
         """Nested if-then-else inside let binding."""
         source = """\
-fn f(@Int -> @Int)
+public fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = if @Int.0 > 0 then { 1 } else { 0 };
@@ -209,7 +209,7 @@ fn f(@Int -> @Int)
     def test_bool_comparison_result(self) -> None:
         """Boolean comparison operations return i32."""
         source = """\
-fn is_positive(@Int -> @Bool)
+public fn is_positive(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
   @Int.0 > 0
@@ -221,7 +221,7 @@ fn is_positive(@Int -> @Bool)
     def test_multiple_let_bindings(self) -> None:
         """Chain of let bindings with different types."""
         source = """\
-fn chain(@Int -> @Int)
+public fn chain(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = @Int.0 + 1;
@@ -234,7 +234,7 @@ fn chain(@Int -> @Int)
     def test_negation_int(self) -> None:
         """Unary negation on integers."""
         source = """\
-fn negate(@Int -> @Int)
+public fn negate(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   -@Int.0
@@ -245,7 +245,7 @@ fn negate(@Int -> @Int)
     def test_boolean_not(self) -> None:
         """Boolean not operation."""
         source = """\
-fn invert(@Bool -> @Bool)
+public fn invert(@Bool -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
   !@Bool.0

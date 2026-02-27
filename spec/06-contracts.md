@@ -13,7 +13,7 @@ Contracts serve as executable specifications. They are the source of truth about
 A precondition is a predicate that MUST hold when the function is called. It is the caller's responsibility to ensure preconditions are met.
 
 ```
-private fn safe_divide(@Int, @Int -> @Int)
+public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
@@ -29,7 +29,7 @@ At every call site of `safe_divide`, the compiler verifies that the second argum
 A postcondition is a predicate that MUST hold when the function returns. It is the function's responsibility to ensure postconditions are met.
 
 ```
-private fn absolute_value(@Int -> @Nat)
+public fn absolute_value(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)

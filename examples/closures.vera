@@ -38,7 +38,7 @@ private fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
 }
 
 -- End-to-end test: create a closure, apply it, return the result
-private fn test_closure(@Unit -> @Int)
+public fn test_closure(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -48,7 +48,7 @@ private fn test_closure(@Unit -> @Int)
 }
 
 -- Test: map a closure over an Option
-private fn test_map_option(@Unit -> @Int)
+public fn test_map_option(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)

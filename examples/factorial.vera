@@ -1,6 +1,6 @@
 -- Factorial: demonstrates recursion with a decreases clause.
 
-private fn factorial(@Nat -> @Nat)
+public fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -11,4 +11,13 @@ private fn factorial(@Nat -> @Nat)
   } else {
     @Nat.0 * factorial(@Nat.0 - 1)
   }
+}
+
+-- Entry point: exercise factorial(5) = 120
+public fn test_factorial(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  factorial(5)
 }
