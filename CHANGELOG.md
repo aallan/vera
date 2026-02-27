@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.39] - 2026-02-27
+
+### Added
+- **Spec Chapter 8: Modules** (C7f):
+  - New specification chapter covering module declarations, imports, visibility, name resolution, module resolution algorithm, cross-module type checking, verification, and compilation
+  - Formal semantics for the flattening compilation strategy, transitive resolution, circular import detection, and shadowing rules
+  - Clarification that type aliases and effect declarations are module-local (not importable)
+  - Complete worked example with `vera/math.vera`, `vera/collections.vera`, and `modules.vera`
+  - Limitations section tracking #95 (LALR grammar), #110 (name collisions), and future extensions
+
+### Changed
+- **Roadmap restructured**: C7 collapsed as complete (v0.0.31-v0.0.39), C8 defined as the polish phase with sub-phases C8a-C8e grouping all open issues by area
+- Cross-references added from spec Chapters 5, 10, 11, and 12 pointing to Chapter 8
+- `SKILLS.md` module section updated with type-alias/effect locality note and spec reference
+- `vera/README.md` limitations table updated: module system marked complete
+- `docs/index.html` feature grid updated with "Module system" entry
+- README project status: Chapter 8 status changed from "Not started" to "Draft"
+
 ## [0.0.38] - 2026-02-27
 
 ### Added

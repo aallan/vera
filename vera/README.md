@@ -5,7 +5,7 @@ Architecture documentation for the Vera compiler (`vera/` package). This is for 
 For other documentation:
 - [Root README](../README.md) — project overview, getting started, language examples
 - [SKILLS.md](../SKILLS.md) — language reference for LLM agents writing Vera code
-- [spec/](../spec/) — formal language specification (12 chapters)
+- [spec/](../spec/) — formal language specification (13 chapters, 0-12)
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — contributor workflow and conventions
 
 ## Pipeline Overview
@@ -547,7 +547,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Partial module system** | Resolution (C7a), type merging (C7b), visibility (C7c), verification (C7d), and codegen (C7e) complete; spec chapter (C7f) pending | [#14](https://github.com/aallan/vera/issues/14), [#95](https://github.com/aallan/vera/issues/95), [#110](https://github.com/aallan/vera/issues/110) |
+| **Module system limitations** | Module system complete (C7a-C7f); remaining issues: LALR grammar limitation for qualified calls, flat-compilation name collisions | [#95](https://github.com/aallan/vera/issues/95), [#110](https://github.com/aallan/vera/issues/110) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | [#21](https://github.com/aallan/vera/issues/21) |
 | **No termination verification** | `decreases` clauses parsed but always Tier 3 | [#45](https://github.com/aallan/vera/issues/45) |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |

@@ -281,6 +281,8 @@ private forall<T> fn identity(@T -> @T)
 
 Type aliases (`type Foo = ...`), effect declarations (`effect E { ... }`), module declarations, and import statements do not take visibility modifiers. Functions declared inside `where` blocks do not take visibility modifiers (they are always local to the parent function).
 
+For the full module system — imports, resolution, cross-module type checking, verification, and compilation — see Chapter 8.
+
 ## 5.9 Generic Functions
 
 Functions may be parameterised by type variables using `forall`:
