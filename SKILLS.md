@@ -524,6 +524,8 @@ Import paths resolve to files on disk: `import vera.math;` looks for `vera/math.
 
 Imported functions can be called by name (bare calls): `import vera.math(abs); abs(-5)` resolves `abs` from the imported module. Selective imports restrict available names; wildcard imports (`import m;`) make all declarations available. Local definitions shadow imported names. Imported ADT constructors are also available: `import col(List); Cons(1, Nil)`.
 
+Imported function contracts are verified at call sites by the SMT solver (C7d). Preconditions of imported functions are checked at each call site; postconditions are assumed. This means `abs(x)` with `ensures(@Int.result >= 0)` lets the caller rely on the result being non-negative.
+
 Note: module-qualified call syntax (`vera.math.abs(42)`) is not yet parseable due to an LALR grammar limitation. Use bare calls instead.
 
 ## Comments

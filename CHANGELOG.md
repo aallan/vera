@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.37] - 2026-02-27
+
+### Added
+- **Cross-module contract verification** (C7d — [#14](https://github.com/aallan/vera/issues/14)):
+  - Imported function preconditions are now checked at call sites by the SMT solver
+  - Imported function postconditions are assumed, allowing callers to rely on them
+  - Chained imported calls compose correctly (e.g. `abs(max(x, y)) >= 0`)
+  - Only `public` functions from imported modules are available for verification
+  - Selective imports are respected — only named imports are registered
+  - Refactored SMT call translation into shared `_translate_call_with_info` for both local and cross-module calls
+  - Added `ModuleCall` handling in SMT translator (including pipe operator desugaring)
+  - `modules.vera` example now verifies `abs_max` postcondition (`ensures(@Int.result >= 0)`) at Tier 1
+- 8 new cross-module verification tests (943 total, up from 935)
+
 ## [0.0.36] - 2026-02-27
 
 ### Fixed
