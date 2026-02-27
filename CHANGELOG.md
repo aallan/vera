@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.40] - 2026-02-27
+
+### Changed
+- **Decompose checker.py into checker/ package** (C8a, [#99](https://github.com/aallan/vera/issues/99)):
+  - Split 2,043-line monolith into 8 focused modules using mixin-based composition
+  - `core.py` (349) — TypeChecker class, orchestration, diagnostics, contracts
+  - `resolution.py` (190) — AST TypeExpr → semantic Type, type inference
+  - `modules.py` (153) — cross-module registration (C7b/C7c)
+  - `registration.py` (138) — Pass 1 forward declarations
+  - `expressions.py` (530) — expression synthesis, operators, statements
+  - `calls.py` (390) — function, constructor, and module-qualified calls
+  - `control.py` (439) — if/match, patterns, exhaustiveness, effect handlers
+  - Zero test changes — public API (`typecheck()`) unchanged
+
 ## [0.0.39] - 2026-02-27
 
 ### Added
@@ -591,7 +605,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.39...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.40...HEAD
+[0.0.40]: https://github.com/aallan/vera/compare/v0.0.39...v0.0.40
 [0.0.39]: https://github.com/aallan/vera/compare/v0.0.38...v0.0.39
 [0.0.38]: https://github.com/aallan/vera/compare/v0.0.37...v0.0.38
 [0.0.37]: https://github.com/aallan/vera/compare/v0.0.36...v0.0.37

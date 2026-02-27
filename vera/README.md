@@ -33,7 +33,7 @@ Source (.vera)
 └────────────────────────┬─────────────────────────────────┘
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  3. Type Check             checker.py + environment.py   │
+│  3. Type Check            checker/ + environment.py      │
 │     AST → list[Diagnostic]        types.py               │
 │     Two-pass: register declarations, then check bodies   │
 └────────────────────────┬─────────────────────────────────┘
@@ -80,7 +80,14 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `ast.py` | 690 | Transform | Frozen dataclass AST nodes | `Program`, `Node`, `Expr` |
 | `types.py` | 307 | Type check | Semantic type representation | `Type`, `is_subtype()` |
 | `environment.py` | 302 | Type check | Type environment, scope stacks | `TypeEnv` |
-| `checker.py` | 2,043 | Type check | Two-pass type checker, cross-module merging | `typecheck()` |
+| `checker/` | 2,194 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
+| `  core.py` | 349 | | TypeChecker class, orchestration, contracts | |
+| `  resolution.py` | 190 | | AST TypeExpr → semantic Type, inference | |
+| `  modules.py` | 153 | | Cross-module registration (C7b/C7c) | |
+| `  registration.py` | 138 | | Pass 1 forward declarations | |
+| `  expressions.py` | 530 | | Expression synthesis, operators, statements | |
+| `  calls.py` | 390 | | Function/constructor/module calls | |
+| `  control.py` | 439 | | If/match, patterns, effect handlers | |
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `smt.py` | 547 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
 | `verifier.py` | 691 | Verify | Contract verification | `verify()` |
@@ -90,7 +97,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `cli.py` | 682 | All | CLI commands | `main()` |
 | `registration.py` | 58 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~11,413 lines of Python + 330 lines of grammar.
+Total: ~11,567 lines of Python + 330 lines of grammar.
 
 ## Parsing
 
@@ -176,7 +183,7 @@ Node
 
 ## Type Checking
 
-**Files:** `checker.py` (2,043 lines), `types.py` (307 lines), `environment.py` (302 lines)
+**Files:** `checker/` (2,194 lines across 8 modules), `types.py` (307 lines), `environment.py` (302 lines)
 
 This is the most architecturally complex stage.
 
@@ -572,7 +579,7 @@ Practical recipes for common extensions.
 
 1. Add a `Type` subclass to `types.py`
 2. Update `is_subtype()`, `types_equal()`, `substitute()`, and `pretty_type()` in `types.py`
-3. Update `_resolve_type()` in `checker.py` to handle the new `TypeExpr` → `Type` mapping
+3. Update `_resolve_type()` in `checker/resolution.py` to handle the new `TypeExpr` → `Type` mapping
 
 ### New built-in function or effect
 

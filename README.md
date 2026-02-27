@@ -239,7 +239,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 
 **C8a — Refactoring** — reduce file sizes to improve maintainability
 
-- [#99](https://github.com/aallan/vera/issues/99) decompose `checker.py` (~1,900 lines) into `checker/` submodules
+- ~[#99](https://github.com/aallan/vera/issues/99) decompose `checker.py` (~1,900 lines) into `checker/` submodules~ ([v0.0.40](https://github.com/aallan/vera/releases/tag/v0.0.40))
 - [#100](https://github.com/aallan/vera/issues/100) decompose `wasm.py` (~2,300 lines) into `wasm/` submodules
 
 **C8b — Diagnostics and tooling** — improve the developer (human and LLM) experience
@@ -501,7 +501,7 @@ vera/
 ├── CONTRIBUTING.md                # Contributor guidelines
 ├── CHANGELOG.md                   # Version history
 ├── pyproject.toml                 # Package configuration
-├── spec/                          # Language specification (12 chapters)
+├── spec/                          # Language specification (13 chapters)
 │   ├── 00-introduction.md         # Design goals and philosophy
 │   ├── 01-lexical-structure.md    # Tokens, operators, formatting rules
 │   ├── 02-types.md                # Type system with refinement types
@@ -510,6 +510,7 @@ vera/
 │   ├── 05-functions.md            # Function declarations and contracts
 │   ├── 06-contracts.md            # Verification system
 │   ├── 07-effects.md              # Algebraic effect system
+│   ├── 08-modules.md              # Module system
 │   ├── 09-standard-library.md     # Built-in types, effects, functions
 │   ├── 10-grammar.md              # Formal EBNF grammar
 │   ├── 11-compilation.md          # Compilation model and WASM target
@@ -522,16 +523,23 @@ vera/
 │   ├── types.py                   # Internal type representation
 │   ├── registration.py            # Function signature registration
 │   ├── environment.py             # Type environment and slot resolution
-│   ├── checker.py                 # Type checker
+│   ├── checker/                   # Type checker (mixin package)
+│   │   ├── core.py                #   Orchestration, diagnostics, contracts
+│   │   ├── resolution.py          #   AST TypeExpr → semantic Type
+│   │   ├── modules.py             #   Cross-module registration
+│   │   ├── registration.py        #   Pass 1 forward declarations
+│   │   ├── expressions.py         #   Expression synthesis, operators
+│   │   ├── calls.py               #   Function/constructor/module calls
+│   │   └── control.py             #   If/match, patterns, handlers
 │   ├── smt.py                     # Z3 SMT translation layer
 │   ├── verifier.py                # Contract verifier
 │   ├── wasm.py                    # WASM translation layer
 │   ├── codegen.py                 # Code generation orchestrator
-│   ├── resolver.py                # Module resolver (C7a)
+│   ├── resolver.py                # Module resolver
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (900 tests)
+├── tests/                         # Test suite (951 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse
