@@ -119,42 +119,42 @@ class TestLiterals:
 
     def test_int_lit(self) -> None:
         _check_ok("""
-fn foo(@Unit -> @Int)
+private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """)
 
     def test_negative_int_lit(self) -> None:
         _check_ok("""
-fn foo(@Unit -> @Int)
+private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { 0 - 1 }
 """)
 
     def test_float_lit(self) -> None:
         _check_ok("""
-fn foo(@Unit -> @Float64)
+private fn foo(@Unit -> @Float64)
   requires(true) ensures(true) effects(pure)
 { 3.14 }
 """)
 
     def test_string_lit(self) -> None:
         _check_ok("""
-fn foo(@Unit -> @String)
+private fn foo(@Unit -> @String)
   requires(true) ensures(true) effects(pure)
 { "hello" }
 """)
 
     def test_bool_lit(self) -> None:
         _check_ok("""
-fn foo(@Unit -> @Bool)
+private fn foo(@Unit -> @Bool)
   requires(true) ensures(true) effects(pure)
 { true }
 """)
 
     def test_unit_lit(self) -> None:
         _check_ok("""
-fn foo(@Unit -> @Unit)
+private fn foo(@Unit -> @Unit)
   requires(true) ensures(true) effects(pure)
 { () }
 """)
@@ -162,7 +162,7 @@ fn foo(@Unit -> @Unit)
     def test_float_alias_rejected(self) -> None:
         """'Float' is not a type — only 'Float64' is accepted (#76)."""
         _check_err("""
-fn foo(@Unit -> @Float)
+private fn foo(@Unit -> @Float)
   requires(true) ensures(true) effects(pure)
 { 3.14 }
 """, "'Float' is not a type. Did you mean 'Float64'?")
@@ -176,42 +176,42 @@ class TestSlotRefs:
 
     def test_simple_ref(self) -> None:
         _check_ok("""
-fn id(@Int -> @Int)
+private fn id(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """)
 
     def test_multiple_same_type(self) -> None:
         _check_ok("""
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.1 }
 """)
 
     def test_different_types(self) -> None:
         _check_ok("""
-fn pick(@Int, @String -> @Int)
+private fn pick(@Int, @String -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """)
 
     def test_out_of_bounds(self) -> None:
         _check_err("""
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.1 }
 """, "Cannot resolve @Int.1")
 
     def test_no_bindings(self) -> None:
         _check_err("""
-fn bad(@Unit -> @Int)
+private fn bad(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """, "Cannot resolve @Int.0")
 
     def test_let_introduces_binding(self) -> None:
         _check_ok("""
-fn foo(@Unit -> @Int)
+private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = 42;
@@ -221,7 +221,7 @@ fn foo(@Unit -> @Int)
 
     def test_let_shadowing(self) -> None:
         _check_ok("""
-fn foo(@Int -> @Int)
+private fn foo(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = 99;
@@ -234,16 +234,16 @@ fn foo(@Int -> @Int)
         _check_ok("""
 type PosInt = { @Int | @Int.0 > 0 };
 
-fn foo(@PosInt, @Int -> @Int)
+private fn foo(@PosInt, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @PosInt.0 + @Int.0 }
 """)
 
     def test_parameterised_slot(self) -> None:
         _check_ok("""
-data Option<T> { None, Some(T) }
+private data Option<T> { None, Some(T) }
 
-fn foo(@Option<Int> -> @Bool)
+private fn foo(@Option<Int> -> @Bool)
   requires(true) ensures(true) effects(pure)
 { true }
 """)
@@ -257,7 +257,7 @@ class TestResultRefs:
 
     def test_result_in_ensures(self) -> None:
         _check_ok("""
-fn foo(@Int -> @Int)
+private fn foo(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0)
   effects(pure)
@@ -266,7 +266,7 @@ fn foo(@Int -> @Int)
 
     def test_result_outside_ensures(self) -> None:
         _check_err("""
-fn foo(@Int -> @Int)
+private fn foo(@Int -> @Int)
   requires(@Int.result > 0)
   ensures(true)
   effects(pure)
@@ -275,7 +275,7 @@ fn foo(@Int -> @Int)
 
     def test_result_in_body(self) -> None:
         _check_err("""
-fn foo(@Int -> @Int)
+private fn foo(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.result }
 """, "only valid inside ensures")
@@ -289,63 +289,63 @@ class TestBinaryOps:
 
     def test_add_int(self) -> None:
         _check_ok("""
-fn foo(@Int, @Int -> @Int)
+private fn foo(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.1 }
 """)
 
     def test_add_float(self) -> None:
         _check_ok("""
-fn foo(@Float64, @Float64 -> @Float64)
+private fn foo(@Float64, @Float64 -> @Float64)
   requires(true) ensures(true) effects(pure)
 { @Float64.0 + @Float64.1 }
 """)
 
     def test_add_mixed_error(self) -> None:
         _check_err("""
-fn bad(@Int, @String -> @Int)
+private fn bad(@Int, @String -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @String.0 }
 """, "requires numeric operands")
 
     def test_comparison(self) -> None:
         _check_ok("""
-fn foo(@Int, @Int -> @Bool)
+private fn foo(@Int, @Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Int.0 < @Int.1 }
 """)
 
     def test_equality(self) -> None:
         _check_ok("""
-fn foo(@Int, @Int -> @Bool)
+private fn foo(@Int, @Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Int.0 == @Int.1 }
 """)
 
     def test_logical_and(self) -> None:
         _check_ok("""
-fn foo(@Bool, @Bool -> @Bool)
+private fn foo(@Bool, @Bool -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Bool.0 && @Bool.1 }
 """)
 
     def test_logical_implies(self) -> None:
         _check_ok("""
-fn foo(@Bool, @Bool -> @Bool)
+private fn foo(@Bool, @Bool -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Bool.0 ==> @Bool.1 }
 """)
 
     def test_logical_not_bool_error(self) -> None:
         _check_err("""
-fn bad(@Int, @Bool -> @Bool)
+private fn bad(@Int, @Bool -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Int.0 && @Bool.0 }
 """, "must be Bool")
 
     def test_modulo(self) -> None:
         _check_ok("""
-fn foo(@Int, @Int -> @Int)
+private fn foo(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 % @Int.1 }
 """)
@@ -359,21 +359,21 @@ class TestUnaryOps:
 
     def test_not(self) -> None:
         _check_ok("""
-fn foo(@Bool -> @Bool)
+private fn foo(@Bool -> @Bool)
   requires(true) ensures(true) effects(pure)
 { !@Bool.0 }
 """)
 
     def test_neg(self) -> None:
         _check_ok("""
-fn foo(@Int -> @Int)
+private fn foo(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { 0 - @Int.0 }
 """)
 
     def test_not_non_bool_error(self) -> None:
         _check_err("""
-fn bad(@Int -> @Bool)
+private fn bad(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 { !@Int.0 }
 """, "requires Bool operand")
@@ -387,40 +387,40 @@ class TestFnCalls:
 
     def test_simple_call(self) -> None:
         _check_ok("""
-fn double(@Int -> @Int)
+private fn double(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.0 }
 
-fn main(@Int -> @Int)
+private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { double(@Int.0) }
 """)
 
     def test_arity_mismatch(self) -> None:
         _check_err("""
-fn double(@Int -> @Int)
+private fn double(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.0 }
 
-fn main(@Int -> @Int)
+private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { double(@Int.0, @Int.0) }
 """, "expects 1 argument")
 
     def test_type_mismatch_arg(self) -> None:
         _check_err("""
-fn double(@Int -> @Int)
+private fn double(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.0 }
 
-fn main(@String -> @Int)
+private fn main(@String -> @Int)
   requires(true) ensures(true) effects(pure)
 { double(@String.0) }
 """, "has type String, expected Int")
 
     def test_recursive_call(self) -> None:
         _check_ok("""
-fn factorial(@Nat -> @Nat)
+private fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -434,7 +434,7 @@ fn factorial(@Nat -> @Nat)
     def test_unresolved_function_warning(self) -> None:
         """Unresolved functions emit warnings, not errors."""
         diags = _check("""
-fn foo(@Int -> @Int)
+private fn foo(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { unknown_fn(@Int.0) }
 """)
@@ -453,18 +453,18 @@ class TestGenerics:
 
     def test_identity(self) -> None:
         _check_ok("""
-forall<T> fn identity(@T -> @T)
+private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 """)
 
     def test_generic_call(self) -> None:
         _check_ok("""
-forall<T> fn identity(@T -> @T)
+private forall<T> fn identity(@T -> @T)
   requires(true) ensures(true) effects(pure)
 { @T.0 }
 
-fn main(@Int -> @Int)
+private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { identity(@Int.0) }
 """)
@@ -478,36 +478,36 @@ class TestConstructors:
 
     def test_nullary_constructor(self) -> None:
         _check_ok("""
-data Color { Red, Green, Blue }
+private data Color { Red, Green, Blue }
 
-fn foo(@Unit -> @Color)
+private fn foo(@Unit -> @Color)
   requires(true) ensures(true) effects(pure)
 { Red }
 """)
 
     def test_constructor_with_fields(self) -> None:
         _check_ok("""
-data Pair { MkPair(Int, String) }
+private data Pair { MkPair(Int, String) }
 
-fn foo(@Int, @String -> @Pair)
+private fn foo(@Int, @String -> @Pair)
   requires(true) ensures(true) effects(pure)
 { MkPair(@Int.0, @String.0) }
 """)
 
     def test_constructor_arity_mismatch(self) -> None:
         _check_err("""
-data Pair { MkPair(Int, String) }
+private data Pair { MkPair(Int, String) }
 
-fn foo(@Int -> @Pair)
+private fn foo(@Int -> @Pair)
   requires(true) ensures(true) effects(pure)
 { MkPair(@Int.0) }
 """, "expects 2 field")
 
     def test_parameterised_adt(self) -> None:
         _check_ok("""
-data Box<T> { MkBox(T) }
+private data Box<T> { MkBox(T) }
 
-fn foo(@Int -> @Box<Int>)
+private fn foo(@Int -> @Box<Int>)
   requires(true) ensures(true) effects(pure)
 { MkBox(@Int.0) }
 """)
@@ -521,9 +521,9 @@ class TestPatterns:
 
     def test_constructor_pattern(self) -> None:
         _check_ok("""
-data Option<T> { None, Some(T) }
+private data Option<T> { None, Some(T) }
 
-fn unwrap(@Option<Int> -> @Int)
+private fn unwrap(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -535,7 +535,7 @@ fn unwrap(@Option<Int> -> @Int)
 
     def test_wildcard_pattern(self) -> None:
         _check_ok("""
-fn classify(@Int -> @String)
+private fn classify(@Int -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -548,7 +548,7 @@ fn classify(@Int -> @String)
 
     def test_bool_pattern(self) -> None:
         _check_ok("""
-fn to_str(@Bool -> @String)
+private fn to_str(@Bool -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Bool.0 {
@@ -560,10 +560,10 @@ fn to_str(@Bool -> @String)
 
     def test_nested_pattern(self) -> None:
         _check_ok("""
-data Option<T> { None, Some(T) }
-data List<T> { Nil, Cons(T, List<T>) }
+private data Option<T> { None, Some(T) }
+private data List<T> { Nil, Cons(T, List<T>) }
 
-fn first(@List<Option<Int>> -> @Int)
+private fn first(@List<Option<Int>> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @List<Option<Int>>.0 {
@@ -583,7 +583,7 @@ class TestControlFlow:
 
     def test_if_then_else(self) -> None:
         _check_ok("""
-fn abs(@Int -> @Int)
+private fn abs(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 >= 0 then { @Int.0 }
@@ -593,7 +593,7 @@ fn abs(@Int -> @Int)
 
     def test_if_condition_not_bool(self) -> None:
         _check_err("""
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   if @Int.0 then { 1 } else { 2 }
@@ -602,7 +602,7 @@ fn bad(@Int -> @Int)
 
     def test_if_branch_mismatch(self) -> None:
         _check_err("""
-fn bad(@Bool -> @Int)
+private fn bad(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   if @Bool.0 then { 42 } else { "hello" }
@@ -611,7 +611,7 @@ fn bad(@Bool -> @Int)
 
     def test_block_with_let(self) -> None:
         _check_ok("""
-fn foo(@Int -> @Int)
+private fn foo(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = @Int.0 + 1;
@@ -629,7 +629,7 @@ class TestEffects:
 
     def test_pure_function(self) -> None:
         _check_ok("""
-fn pure_fn(@Int -> @Int)
+private fn pure_fn(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """)
@@ -640,7 +640,7 @@ effect Logger {
   op log(String -> Unit);
 }
 
-fn greet(@String -> @Unit)
+private fn greet(@String -> @Unit)
   requires(true) ensures(true) effects(<Logger>)
 {
   Logger.log(@String.0)
@@ -653,7 +653,7 @@ effect Logger {
   op log(String -> Unit);
 }
 
-fn bad(@String -> @Unit)
+private fn bad(@String -> @Unit)
   requires(true) ensures(true) effects(pure)
 {
   Logger.log(@String.0)
@@ -663,7 +663,7 @@ fn bad(@String -> @Unit)
     def test_handler_basic(self) -> None:
         """Handler with resume produces no errors or warnings."""
         _check_clean("""
-fn foo(@Unit -> @Int)
+private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -679,7 +679,7 @@ fn foo(@Unit -> @Int)
         """resume() type-checks its argument against operation return type."""
         # get(Unit) -> Int, so resume expects Int; passing Unit is a mismatch
         _check_err("""
-fn foo(@Unit -> @Int)
+private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -694,7 +694,7 @@ fn foo(@Unit -> @Int)
     def test_resume_wrong_arity(self) -> None:
         """resume() takes exactly one argument."""
         _check_err("""
-fn foo(@Unit -> @Int)
+private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -709,7 +709,7 @@ fn foo(@Unit -> @Int)
     def test_resume_outside_handler(self) -> None:
         """resume() outside a handler scope is unresolved."""
         diags = _check("""
-fn foo(@Unit -> @Unit)
+private fn foo(@Unit -> @Unit)
   requires(true) ensures(true) effects(pure)
 {
   resume(42)
@@ -724,7 +724,7 @@ fn foo(@Unit -> @Unit)
     def test_with_clause_valid(self) -> None:
         """Handler with-clause with correct type produces no errors."""
         _check_ok("""
-fn foo(@Unit -> @Int)
+private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -740,7 +740,7 @@ fn foo(@Unit -> @Int)
     def test_with_clause_type_mismatch(self) -> None:
         """Handler with-clause value must match state type."""
         _check_err("""
-fn foo(@Unit -> @Int)
+private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -758,7 +758,7 @@ fn foo(@Unit -> @Int)
 effect Exn<E> {
   op throw(E -> Never);
 }
-fn bar(@Unit -> @Int)
+private fn bar(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[Exn<String>] {
@@ -772,7 +772,7 @@ fn bar(@Unit -> @Int)
     def test_with_clause_wrong_slot_type(self) -> None:
         """Handler with-clause type must match handler state type."""
         _check_err("""
-fn foo(@Unit -> @Int)
+private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -787,7 +787,7 @@ fn foo(@Unit -> @Int)
     def test_state_effect_builtin(self) -> None:
         """The built-in State<T> effect is available."""
         _check_ok("""
-fn incr(@Unit -> @Unit)
+private fn incr(@Unit -> @Unit)
   requires(true) ensures(true) effects(<State<Int>>)
 {
   let @Int = get(());
@@ -803,7 +803,7 @@ effect Counter {
   op increment(Unit -> Unit);
 }
 
-fn use_counter(@Unit -> @Unit)
+private fn use_counter(@Unit -> @Unit)
   requires(true) ensures(true) effects(<Counter>)
 {
   Counter.increment(())
@@ -819,35 +819,35 @@ class TestContracts:
 
     def test_requires_bool(self) -> None:
         _check_ok("""
-fn foo(@Int -> @Int)
+private fn foo(@Int -> @Int)
   requires(@Int.0 > 0) ensures(true) effects(pure)
 { @Int.0 }
 """)
 
     def test_requires_non_bool_error(self) -> None:
         _check_err("""
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(@Int.0) ensures(true) effects(pure)
 { @Int.0 }
 """, "requires() predicate must be Bool")
 
     def test_ensures_bool(self) -> None:
         _check_ok("""
-fn foo(@Int -> @Int)
+private fn foo(@Int -> @Int)
   requires(true) ensures(@Int.result >= 0) effects(pure)
 { @Int.0 }
 """)
 
     def test_ensures_non_bool_error(self) -> None:
         _check_err("""
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(true) ensures(@Int.result) effects(pure)
 { @Int.0 }
 """, "ensures() predicate must be Bool")
 
     def test_decreases(self) -> None:
         _check_ok("""
-fn count(@Nat -> @Nat)
+private fn count(@Nat -> @Nat)
   requires(true) ensures(true)
   decreases(@Nat.0)
   effects(pure)
@@ -859,7 +859,7 @@ fn count(@Nat -> @Nat)
 
     def test_multiple_contracts(self) -> None:
         _check_ok("""
-fn clamp(@Int, @Int, @Int -> @Int)
+private fn clamp(@Int, @Int, @Int -> @Int)
   requires(@Int.1 <= @Int.2)
   ensures(@Int.result >= @Int.1)
   ensures(@Int.result <= @Int.2)
@@ -875,7 +875,7 @@ fn clamp(@Int, @Int, @Int -> @Int)
 
     def test_old_new_in_ensures(self) -> None:
         _check_ok("""
-fn incr(@Unit -> @Unit)
+private fn incr(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -888,7 +888,7 @@ fn incr(@Unit -> @Unit)
 
     def test_old_outside_ensures_error(self) -> None:
         _check_err("""
-fn bad(@Unit -> @Unit)
+private fn bad(@Unit -> @Unit)
   requires(old(State<Int>) > 0)
   ensures(true)
   effects(<State<Int>>)
@@ -904,7 +904,7 @@ class TestHigherOrder:
 
     def test_anon_fn(self) -> None:
         _check_ok("""
-fn foo(@Int -> @Int)
+private fn foo(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Int = 5;
@@ -916,7 +916,7 @@ fn foo(@Int -> @Int)
         _check_ok("""
 type IntToInt = fn(Int -> Int) effects(pure);
 
-fn apply(@IntToInt, @Int -> @Int)
+private fn apply(@IntToInt, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """)
@@ -932,7 +932,7 @@ class TestRefinementTypes:
         _check_ok("""
 type PosInt = { @Int | @Int.0 > 0 };
 
-fn foo(@PosInt -> @Int)
+private fn foo(@PosInt -> @Int)
   requires(true) ensures(true) effects(pure)
 { @PosInt.0 }
 """)
@@ -942,7 +942,7 @@ fn foo(@PosInt -> @Int)
         _check_ok("""
 type PosInt = { @Int | @Int.0 > 0 };
 
-fn foo(@PosInt -> @Int)
+private fn foo(@PosInt -> @Int)
   requires(true) ensures(true) effects(pure)
 { @PosInt.0 + 1 }
 """)
@@ -950,7 +950,7 @@ fn foo(@PosInt -> @Int)
     def test_int_to_nat_allowed(self) -> None:
         """Int -> Nat allowed by checker; verifier enforces >= 0 via Z3."""
         _check_ok("""
-fn foo(@Int -> @Nat)
+private fn foo(@Int -> @Nat)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """)
@@ -965,7 +965,7 @@ class TestErrorAccumulation:
     def test_multiple_errors(self) -> None:
         """Multiple type errors in one file are all reported."""
         errs = _errors("""
-fn bad(@Unit -> @Int)
+private fn bad(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @String = 42;
@@ -982,14 +982,14 @@ fn bad(@Unit -> @Int)
     def test_data_only_program(self) -> None:
         """A program with only data declarations type-checks cleanly."""
         _check_ok("""
-data Color { Red, Green, Blue }
-data Option<T> { None, Some(T) }
+private data Color { Red, Green, Blue }
+private data Option<T> { None, Some(T) }
 """)
 
     def test_type_error_has_location(self) -> None:
         """Type errors include source location."""
         errs = _errors("""
-fn bad(@Int -> @Bool)
+private fn bad(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """)
@@ -1005,7 +1005,7 @@ class TestWhereBlocks:
 
     def test_mutual_recursion(self) -> None:
         _check_ok("""
-fn is_even(@Nat -> @Bool)
+private fn is_even(@Nat -> @Bool)
   requires(true) ensures(true)
   decreases(@Nat.0)
   effects(pure)
@@ -1034,14 +1034,14 @@ class TestArrays:
 
     def test_array_index(self) -> None:
         _check_ok("""
-fn first(@Array<Int> -> @Int)
+private fn first(@Array<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Array<Int>.0[0] }
 """)
 
     def test_array_index_non_array_error(self) -> None:
         _check_err("""
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0[0] }
 """, "Cannot index")
@@ -1055,7 +1055,7 @@ class TestReturnTypes:
 
     def test_return_type_mismatch(self) -> None:
         _check_err("""
-fn bad(@Int -> @Bool)
+private fn bad(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """, "body has type")
@@ -1063,7 +1063,7 @@ fn bad(@Int -> @Bool)
     def test_nat_return_from_int_body(self) -> None:
         """Int body with Nat return: allowed in C3."""
         _check_ok("""
-fn foo(@Int -> @Nat)
+private fn foo(@Int -> @Nat)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """)
@@ -1071,7 +1071,7 @@ fn foo(@Int -> @Nat)
     def test_if_nat_literal_return(self) -> None:
         """Non-negative literal should satisfy Nat return."""
         _check_ok("""
-fn foo(@Unit -> @Nat)
+private fn foo(@Unit -> @Nat)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """)
@@ -1088,9 +1088,9 @@ class TestExhaustiveness:
     def test_adt_exhaustive(self) -> None:
         """All constructors covered → no error."""
         _check_ok("""
-data Option<T> { None, Some(T) }
+private data Option<T> { None, Some(T) }
 
-fn unwrap(@Option<Int> -> @Int)
+private fn unwrap(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -1103,9 +1103,9 @@ fn unwrap(@Option<Int> -> @Int)
     def test_adt_missing_constructor(self) -> None:
         """Missing None constructor → non-exhaustive error."""
         _check_err("""
-data Option<T> { None, Some(T) }
+private data Option<T> { None, Some(T) }
 
-fn unwrap(@Option<Int> -> @Int)
+private fn unwrap(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -1117,9 +1117,9 @@ fn unwrap(@Option<Int> -> @Int)
     def test_adt_missing_multiple(self) -> None:
         """Missing both Err constructor → error mentions missing ones."""
         errs = _check_err("""
-data Result<T, E> { Ok(T), Err(E) }
+private data Result<T, E> { Ok(T), Err(E) }
 
-fn get(@Result<Int, String> -> @Int)
+private fn get(@Result<Int, String> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Result<Int, String>.0 {
@@ -1133,9 +1133,9 @@ fn get(@Result<Int, String> -> @Int)
     def test_adt_with_wildcard(self) -> None:
         """Wildcard after Some covers None → exhaustive."""
         _check_ok("""
-data Option<T> { None, Some(T) }
+private data Option<T> { None, Some(T) }
 
-fn unwrap(@Option<Int> -> @Int)
+private fn unwrap(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -1148,9 +1148,9 @@ fn unwrap(@Option<Int> -> @Int)
     def test_adt_with_binding(self) -> None:
         """Binding pattern is a catch-all → exhaustive."""
         _check_ok("""
-data Option<T> { None, Some(T) }
+private data Option<T> { None, Some(T) }
 
-fn unwrap(@Option<Int> -> @Int)
+private fn unwrap(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -1165,7 +1165,7 @@ fn unwrap(@Option<Int> -> @Int)
     def test_bool_exhaustive(self) -> None:
         """Both true and false covered → no error."""
         _check_ok("""
-fn to_str(@Bool -> @String)
+private fn to_str(@Bool -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Bool.0 {
@@ -1178,7 +1178,7 @@ fn to_str(@Bool -> @String)
     def test_bool_missing_true(self) -> None:
         """Only false covered → non-exhaustive."""
         _check_err("""
-fn to_str(@Bool -> @String)
+private fn to_str(@Bool -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Bool.0 {
@@ -1190,7 +1190,7 @@ fn to_str(@Bool -> @String)
     def test_bool_missing_false(self) -> None:
         """Only true covered → non-exhaustive."""
         _check_err("""
-fn to_str(@Bool -> @String)
+private fn to_str(@Bool -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Bool.0 {
@@ -1202,7 +1202,7 @@ fn to_str(@Bool -> @String)
     def test_bool_with_wildcard(self) -> None:
         """true + wildcard → exhaustive."""
         _check_ok("""
-fn to_str(@Bool -> @String)
+private fn to_str(@Bool -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Bool.0 {
@@ -1217,7 +1217,7 @@ fn to_str(@Bool -> @String)
     def test_int_with_wildcard(self) -> None:
         """Int literals + wildcard → exhaustive."""
         _check_ok("""
-fn classify(@Int -> @String)
+private fn classify(@Int -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -1231,7 +1231,7 @@ fn classify(@Int -> @String)
     def test_int_without_wildcard(self) -> None:
         """Int with only literals → non-exhaustive."""
         _check_err("""
-fn classify(@Int -> @String)
+private fn classify(@Int -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -1244,7 +1244,7 @@ fn classify(@Int -> @String)
     def test_string_without_wildcard(self) -> None:
         """String with only literals → non-exhaustive."""
         _check_err("""
-fn classify(@String -> @Int)
+private fn classify(@String -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @String.0 {
@@ -1259,7 +1259,7 @@ fn classify(@String -> @Int)
     def test_unreachable_after_wildcard(self) -> None:
         """Arm after wildcard → unreachable warning."""
         warns = _warnings("""
-fn classify(@Int -> @String)
+private fn classify(@Int -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -1274,7 +1274,7 @@ fn classify(@Int -> @String)
     def test_unreachable_after_binding(self) -> None:
         """Arm after binding pattern → unreachable warning."""
         warns = _warnings("""
-fn classify(@Int -> @String)
+private fn classify(@Int -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -1289,7 +1289,7 @@ fn classify(@Int -> @String)
     def test_multiple_unreachable(self) -> None:
         """Multiple arms after wildcard → multiple warnings."""
         warns = _warnings("""
-fn classify(@Int -> @String)
+private fn classify(@Int -> @String)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -1307,7 +1307,7 @@ fn classify(@Int -> @String)
     def test_wildcard_only(self) -> None:
         """Single wildcard arm → exhaustive."""
         _check_ok("""
-fn identity(@Int -> @Int)
+private fn identity(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -1319,7 +1319,7 @@ fn identity(@Int -> @Int)
     def test_refined_type_stripped(self) -> None:
         """Refined Int scrutinee still needs wildcard."""
         _check_err("""
-fn classify(@Int -> @String)
+private fn classify(@Int -> @String)
   requires(@Int.0 > 0) ensures(true) effects(pure)
 {
   match @Int.0 {
@@ -1366,7 +1366,7 @@ class TestModuleCallDiagnostics:
             body=ast.Block(statements=(), expr=call),
             where_fns=None,
         )
-        tld = ast.TopLevelDecl(visibility=None, decl=fn)
+        tld = ast.TopLevelDecl(visibility="private", decl=fn)
         return ast.Program(
             module=None,
             imports=(),
@@ -1414,13 +1414,13 @@ class TestCrossModuleTyping:
 
     # Reusable module sources
     MATH_MODULE = """\
-fn abs(@Int -> @Int)
+public fn abs(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 { if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
 
-fn max(@Int, @Int -> @Int)
+public fn max(@Int, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -1428,7 +1428,7 @@ fn max(@Int, @Int -> @Int)
 """
 
     GENERIC_MODULE = """\
-forall<T> fn identity(@T -> @T)
+public forall<T> fn identity(@T -> @T)
   requires(true)
   ensures(true)
   effects(pure)
@@ -1436,8 +1436,8 @@ forall<T> fn identity(@T -> @T)
 """
 
     COLLECTIONS_MODULE = """\
-data List<T> { Nil, Cons(T, List<T>) }
-data Option<T> { None, Some(T) }
+public data List<T> { Nil, Cons(T, List<T>) }
+public data Option<T> { None, Some(T) }
 """
 
     @staticmethod
@@ -1461,7 +1461,7 @@ data Option<T> { None, Some(T) }
         mod = self._resolved(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
 import math(abs);
-fn main(@Int -> @Int)
+private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { abs(@Int.0) }
 """)
@@ -1474,7 +1474,7 @@ fn main(@Int -> @Int)
         mod = self._resolved(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
 import math(abs);
-fn main(@Int -> @Int)
+private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { abs(@Int.0, @Int.0) }
 """)
@@ -1487,7 +1487,7 @@ fn main(@Int -> @Int)
         mod = self._resolved(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
 import math(abs);
-fn main(@Bool -> @Int)
+private fn main(@Bool -> @Int)
   requires(true) ensures(true) effects(pure)
 { abs(@Bool.0) }
 """)
@@ -1501,7 +1501,7 @@ fn main(@Bool -> @Int)
         mod = self._resolved(("gen",), self.GENERIC_MODULE)
         prog = parse_to_ast("""\
 import gen(identity);
-fn main(@Int -> @Int)
+private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { identity(@Int.0) }
 """)
@@ -1514,7 +1514,7 @@ fn main(@Int -> @Int)
         mod = self._resolved(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
 import math;
-fn main(@Int -> @Int)
+private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { max(@Int.0, abs(@Int.0)) }
 """)
@@ -1527,10 +1527,10 @@ fn main(@Int -> @Int)
         mod = self._resolved(("math",), self.MATH_MODULE)
         prog = parse_to_ast("""\
 import math(abs);
-fn abs(@Int -> @Int)
+private fn abs(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + 1 }
-fn main(@Int -> @Int)
+private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { abs(@Int.0) }
 """)
@@ -1543,7 +1543,7 @@ fn main(@Int -> @Int)
         mod = self._resolved(("col",), self.COLLECTIONS_MODULE)
         prog = parse_to_ast("""\
 import col(List);
-fn main(@Int -> @List<Int>)
+private fn main(@Int -> @List<Int>)
   requires(true) ensures(true) effects(pure)
 { Cons(@Int.0, Nil) }
 """)
@@ -1575,7 +1575,7 @@ fn main(@Int -> @List<Int>)
         prog = ast.Program(
             module=None,
             imports=(imp,),
-            declarations=(ast.TopLevelDecl(visibility=None, decl=fn),),
+            declarations=(ast.TopLevelDecl(visibility="private", decl=fn),),
         )
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
@@ -1605,7 +1605,7 @@ fn main(@Int -> @List<Int>)
         prog = ast.Program(
             module=None,
             imports=(imp,),
-            declarations=(ast.TopLevelDecl(visibility=None, decl=fn),),
+            declarations=(ast.TopLevelDecl(visibility="private", decl=fn),),
         )
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
@@ -1634,7 +1634,7 @@ fn main(@Int -> @List<Int>)
         prog = ast.Program(
             module=None,
             imports=(imp,),
-            declarations=(ast.TopLevelDecl(visibility=None, decl=fn),),
+            declarations=(ast.TopLevelDecl(visibility="private", decl=fn),),
         )
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
@@ -1662,7 +1662,7 @@ fn main(@Int -> @List<Int>)
         prog = ast.Program(
             module=None,
             imports=(imp,),
-            declarations=(ast.TopLevelDecl(visibility=None, decl=fn),),
+            declarations=(ast.TopLevelDecl(visibility="private", decl=fn),),
         )
         diags = typecheck(prog, source="", resolved_modules=[mod])
         warns = [d for d in diags if d.severity == "warning"]
@@ -1691,8 +1691,232 @@ fn main(@Int -> @List<Int>)
         prog = ast.Program(
             module=None,
             imports=(imp,),
-            declarations=(ast.TopLevelDecl(visibility=None, decl=fn),),
+            declarations=(ast.TopLevelDecl(visibility="private", decl=fn),),
         )
         diags = typecheck(prog, source="", resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
         assert errors == [], [e.description for e in errors]
+
+
+# =====================================================================
+# C7c: Visibility enforcement
+# =====================================================================
+
+class TestVisibilityEnforcement:
+    """Test visibility enforcement (C7c).
+
+    Verifies that the checker:
+    - Requires explicit public/private on every fn/data declaration
+    - Prevents importing private declarations across module boundaries
+    - Allows calling own file's private declarations freely
+    """
+
+    # Reusable module sources
+    MIXED_MODULE = """\
+public fn pub_fn(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+
+private fn priv_fn(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+
+public data Color { Red, Green, Blue }
+
+private data Secret { Hidden }
+"""
+
+    @staticmethod
+    def _resolved(
+        path: tuple[str, ...], source: str,
+    ) -> ResolvedModule:
+        """Build a ResolvedModule from source text."""
+        from vera.resolver import ResolvedModule as RM
+        prog = parse_to_ast(source)
+        return RM(
+            path=path,
+            file_path=Path(f"/fake/{'/'.join(path)}.vera"),
+            program=prog,
+            source=source,
+        )
+
+    # -- Mandatory visibility -------------------------------------------
+
+    def test_missing_visibility_on_fn(self) -> None:
+        """Bare fn (no public/private) -> error."""
+        _check_err("""
+fn foo(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""", "Missing visibility on 'foo'")
+
+    def test_missing_visibility_on_data(self) -> None:
+        """Bare data (no public/private) -> error."""
+        _check_err("""
+data Color { Red, Green, Blue }
+""", "Missing visibility on 'Color'")
+
+    def test_private_fn_ok(self) -> None:
+        """Explicit private fn -> no error."""
+        _check_ok("""
+private fn foo(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+
+    def test_public_fn_ok(self) -> None:
+        """Explicit public fn -> no error."""
+        _check_ok("""
+public fn foo(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+
+    # -- Cross-module visibility (bare calls) ---------------------------
+
+    def test_public_fn_importable(self) -> None:
+        """Public fn from module can be imported and called."""
+        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        prog = parse_to_ast("""\
+import mod(pub_fn);
+private fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ pub_fn(@Int.0) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_private_fn_not_importable(self) -> None:
+        """Selective import of private fn -> error."""
+        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        prog = parse_to_ast("""\
+import mod(priv_fn);
+private fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ priv_fn(@Int.0) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert any("private" in e.description for e in errors), (
+            [e.description for e in errors]
+        )
+
+    def test_public_data_importable(self) -> None:
+        """Public data type and constructors can be imported."""
+        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        prog = parse_to_ast("""\
+import mod(Color);
+private fn main(@Unit -> @Color)
+  requires(true) ensures(true) effects(pure)
+{ Red }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_private_data_not_importable(self) -> None:
+        """Selective import of private data type -> error."""
+        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        prog = parse_to_ast("""\
+import mod(Secret);
+private fn main(@Unit -> @Secret)
+  requires(true) ensures(true) effects(pure)
+{ Hidden }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert any("private" in e.description for e in errors), (
+            [e.description for e in errors]
+        )
+
+    def test_wildcard_import_skips_private(self) -> None:
+        """Wildcard import only injects public names."""
+        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        prog = parse_to_ast("""\
+import mod;
+private fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ pub_fn(@Int.0) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_wildcard_import_private_fn_unresolved(self) -> None:
+        """Wildcard import: calling private fn -> unresolved warning."""
+        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        prog = parse_to_ast("""\
+import mod;
+private fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ priv_fn(@Int.0) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        warns = [d for d in diags if d.severity == "warning"]
+        assert any("Unresolved" in w.description or "not found" in w.description
+                    for w in warns), [d.description for d in diags]
+
+    # -- Module-qualified call visibility (C7c + ModuleCall AST) --------
+
+    def test_module_call_private_fn_rejected(self) -> None:
+        """ModuleCall to private function -> error."""
+        mod = self._resolved(("mod",), self.MIXED_MODULE)
+        call = ast.ModuleCall(
+            path=("mod",), name="priv_fn",
+            args=(ast.IntLit(value=42),),
+        )
+        imp = ast.ImportDecl(path=("mod",), names=None)
+        fn = ast.FnDecl(
+            name="main", forall_vars=None, params=(),
+            return_type=ast.NamedType(name="Int", type_args=None),
+            contracts=(
+                ast.Requires(expr=ast.BoolLit(value=True)),
+                ast.Ensures(expr=ast.BoolLit(value=True)),
+            ),
+            effect=ast.PureEffect(),
+            body=ast.Block(statements=(), expr=call),
+            where_fns=None,
+        )
+        prog = ast.Program(
+            module=None,
+            imports=(imp,),
+            declarations=(ast.TopLevelDecl(visibility="private", decl=fn),),
+        )
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert any("private" in e.description for e in errors), (
+            [e.description for e in errors]
+        )
+
+    # -- Own file's declarations always accessible ----------------------
+
+    def test_own_private_fn_callable(self) -> None:
+        """Private fn in own file -> callable, no errors."""
+        _check_ok("""
+private fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+
+private fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ helper(@Int.0) }
+""")
+
+    # -- Error message quality ------------------------------------------
+
+    def test_visibility_error_mentions_private(self) -> None:
+        """Error message includes 'private', fn name, and module name."""
+        mod = self._resolved(("mymod",), self.MIXED_MODULE)
+        prog = parse_to_ast("""\
+import mymod(priv_fn);
+private fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ priv_fn(@Int.0) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        msg = " ".join(e.description for e in errors)
+        assert "private" in msg.lower()
+        assert "priv_fn" in msg
+        assert "mymod" in msg

@@ -1,6 +1,6 @@
 -- Factorial: demonstrates recursion with a decreases clause.
 
-fn factorial(@Nat -> @Nat)
+private fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)

@@ -92,7 +92,7 @@ class TestTrivialContracts:
 
     def test_requires_true_ensures_true(self) -> None:
         _verify_ok("""
-fn f(@Int -> @Int)
+private fn f(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -101,7 +101,7 @@ fn f(@Int -> @Int)
 
     def test_trivial_counted_as_tier1(self) -> None:
         result = _verify("""
-fn f(@Int -> @Int)
+private fn f(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -120,7 +120,7 @@ class TestEnsuresVerification:
 
     def test_identity_postcondition(self) -> None:
         _verify_ok("""
-fn id(@Int -> @Int)
+private fn id(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0)
   effects(pure)
@@ -129,7 +129,7 @@ fn id(@Int -> @Int)
 
     def test_addition_postcondition(self) -> None:
         _verify_ok("""
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + @Int.1)
   effects(pure)
@@ -138,7 +138,7 @@ fn add(@Int, @Int -> @Int)
 
     def test_subtraction_postcondition(self) -> None:
         _verify_ok("""
-fn sub(@Int, @Int -> @Int)
+private fn sub(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 - @Int.1)
   effects(pure)
@@ -147,7 +147,7 @@ fn sub(@Int, @Int -> @Int)
 
     def test_negation_postcondition(self) -> None:
         _verify_ok("""
-fn neg(@Int -> @Int)
+private fn neg(@Int -> @Int)
   requires(true)
   ensures(@Int.result == 0 - @Int.0)
   effects(pure)
@@ -156,7 +156,7 @@ fn neg(@Int -> @Int)
 
     def test_safe_divide_postcondition(self) -> None:
         _verify_ok("""
-fn safe_divide(@Int, @Int -> @Int)
+private fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
@@ -165,7 +165,7 @@ fn safe_divide(@Int, @Int -> @Int)
 
     def test_constant_function(self) -> None:
         _verify_ok("""
-fn zero(@Int -> @Int)
+private fn zero(@Int -> @Int)
   requires(true)
   ensures(@Int.result == 0)
   effects(pure)
@@ -174,7 +174,7 @@ fn zero(@Int -> @Int)
 
     def test_boolean_postcondition(self) -> None:
         _verify_ok("""
-fn is_positive(@Int -> @Bool)
+private fn is_positive(@Int -> @Bool)
   requires(@Int.0 > 0)
   ensures(@Bool.result == true)
   effects(pure)
@@ -191,7 +191,7 @@ class TestIfThenElse:
 
     def test_absolute_value(self) -> None:
         _verify_ok("""
-fn absolute_value(@Int -> @Int)
+private fn absolute_value(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
@@ -202,7 +202,7 @@ fn absolute_value(@Int -> @Int)
 
     def test_max(self) -> None:
         _verify_ok("""
-fn max(@Int, @Int -> @Int)
+private fn max(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result >= @Int.0)
   ensures(@Int.result >= @Int.1)
@@ -214,7 +214,7 @@ fn max(@Int, @Int -> @Int)
 
     def test_min(self) -> None:
         _verify_ok("""
-fn min(@Int, @Int -> @Int)
+private fn min(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result <= @Int.0)
   ensures(@Int.result <= @Int.1)
@@ -226,7 +226,7 @@ fn min(@Int, @Int -> @Int)
 
     def test_clamp(self) -> None:
         _verify_ok("""
-fn clamp(@Int, @Int, @Int -> @Int)
+private fn clamp(@Int, @Int, @Int -> @Int)
   requires(@Int.1 <= @Int.2)
   ensures(@Int.result >= @Int.1)
   ensures(@Int.result <= @Int.2)
@@ -239,7 +239,7 @@ fn clamp(@Int, @Int, @Int -> @Int)
 
     def test_nested_if(self) -> None:
         _verify_ok("""
-fn sign(@Int -> @Int)
+private fn sign(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= -1)
   ensures(@Int.result <= 1)
@@ -260,7 +260,7 @@ class TestLetBindings:
 
     def test_let_identity(self) -> None:
         _verify_ok("""
-fn double(@Int -> @Int)
+private fn double(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + @Int.0)
   effects(pure)
@@ -272,7 +272,7 @@ fn double(@Int -> @Int)
 
     def test_chained_lets(self) -> None:
         _verify_ok("""
-fn triple(@Int -> @Int)
+private fn triple(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + @Int.0 + @Int.0)
   effects(pure)
@@ -293,7 +293,7 @@ class TestMultipleContracts:
 
     def test_multiple_ensures(self) -> None:
         _verify_ok("""
-fn bounded(@Int -> @Int)
+private fn bounded(@Int -> @Int)
   requires(@Int.0 >= 0)
   requires(@Int.0 <= 100)
   ensures(@Int.result >= 0)
@@ -304,7 +304,7 @@ fn bounded(@Int -> @Int)
 
     def test_multiple_requires_strengthen(self) -> None:
         _verify_ok("""
-fn positive_div(@Int, @Int -> @Int)
+private fn positive_div(@Int, @Int -> @Int)
   requires(@Int.0 > 0)
   requires(@Int.1 > 0)
   ensures(@Int.result >= 0)
@@ -323,7 +323,7 @@ class TestCounterexamples:
     def test_false_postcondition(self) -> None:
         """ensures(@Int.result > @Int.0) fails when result == input."""
         _verify_err("""
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(true)
   ensures(@Int.result > @Int.0)
   effects(pure)
@@ -333,7 +333,7 @@ fn bad(@Int -> @Int)
     def test_false_always(self) -> None:
         """ensures(false) always fails."""
         _verify_err("""
-fn always_fail(@Int -> @Int)
+private fn always_fail(@Int -> @Int)
   requires(true)
   ensures(false)
   effects(pure)
@@ -343,7 +343,7 @@ fn always_fail(@Int -> @Int)
     def test_counterexample_has_values(self) -> None:
         """Counterexample includes concrete slot values."""
         result = _verify("""
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(true)
   ensures(@Int.result > 0)
   effects(pure)
@@ -358,7 +358,7 @@ fn bad(@Int -> @Int)
     def test_violation_has_fix_suggestion(self) -> None:
         """Error diagnostic includes a fix suggestion."""
         result = _verify("""
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(true)
   ensures(@Int.result > @Int.0)
   effects(pure)
@@ -372,7 +372,7 @@ fn bad(@Int -> @Int)
     def test_violation_has_spec_ref(self) -> None:
         """Error diagnostic includes a spec reference."""
         result = _verify("""
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(true)
   ensures(@Int.result > @Int.0)
   effects(pure)
@@ -386,7 +386,7 @@ fn bad(@Int -> @Int)
         """Adding a precondition can make a failing postcondition valid."""
         # Without precondition: fails
         _verify_err("""
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(true)
   ensures(@Int.result > 0)
   effects(pure)
@@ -395,7 +395,7 @@ fn bad(@Int -> @Int)
 
         # With precondition: passes
         _verify_ok("""
-fn good(@Int -> @Int)
+private fn good(@Int -> @Int)
   requires(@Int.0 > 0)
   ensures(@Int.result > 0)
   effects(pure)
@@ -412,7 +412,7 @@ class TestTierClassification:
 
     def test_linear_arithmetic_is_tier1(self) -> None:
         result = _verify("""
-fn f(@Int, @Int -> @Int)
+private fn f(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   ensures(@Int.result == @Int.0 + @Int.1)
   effects(pure)
@@ -423,7 +423,7 @@ fn f(@Int, @Int -> @Int)
 
     def test_generic_function_is_tier3(self) -> None:
         result = _verify("""
-forall<T>
+private forall<T>
 fn id(@T -> @T)
   requires(true)
   ensures(@T.result == @T.0)
@@ -435,9 +435,9 @@ fn id(@T -> @T)
     def test_match_body_is_tier3(self) -> None:
         """Functions with match in the body fall to Tier 3."""
         result = _verify("""
-data Bool2 { True2, False2 }
+private data Bool2 { True2, False2 }
 
-fn invert(@Bool2 -> @Bool2)
+private fn invert(@Bool2 -> @Bool2)
   requires(true)
   ensures(true)
   effects(pure)
@@ -455,7 +455,7 @@ fn invert(@Bool2 -> @Bool2)
     def test_recursive_call_is_tier3(self) -> None:
         """Recursive functions still have Tier 3 for decreases."""
         result = _verify("""
-fn factorial(@Nat -> @Nat)
+private fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -479,7 +479,7 @@ class TestArithmetic:
 
     def test_nat_non_negative(self) -> None:
         _verify_ok("""
-fn nat_id(@Nat -> @Nat)
+private fn nat_id(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   effects(pure)
@@ -489,7 +489,7 @@ fn nat_id(@Nat -> @Nat)
     def test_nat_constraint_used(self) -> None:
         """Nat parameters are constrained >= 0 in Z3."""
         _verify_ok("""
-fn nat_plus_one(@Nat -> @Int)
+private fn nat_plus_one(@Nat -> @Int)
   requires(true)
   ensures(@Int.result > 0)
   effects(pure)
@@ -504,7 +504,7 @@ fn nat_plus_one(@Nat -> @Int)
         contradicts the Nat >= 0 constraint, so verification must fail.
         """
         _verify_err("""
-fn bad(@Unit -> @Nat)
+private fn bad(@Unit -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   effects(pure)
@@ -514,7 +514,7 @@ fn bad(@Unit -> @Nat)
     def test_int_to_nat_positive_ok(self) -> None:
         """Int expression returned as Nat: verifier passes when >= 0."""
         _verify_ok("""
-fn good(@Nat -> @Nat)
+private fn good(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   effects(pure)
@@ -524,7 +524,7 @@ fn good(@Nat -> @Nat)
     def test_int_to_nat_conditional(self) -> None:
         """Int body with conditional: verifier checks all paths >= 0."""
         _verify_ok("""
-fn abs_nat(@Int -> @Nat)
+private fn abs_nat(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   effects(pure)
@@ -536,7 +536,7 @@ fn abs_nat(@Int -> @Nat)
 
     def test_modular_arithmetic(self) -> None:
         _verify_ok("""
-fn remainder(@Int, @Int -> @Int)
+private fn remainder(@Int, @Int -> @Int)
   requires(@Int.1 > 0)
   ensures(true)
   effects(pure)
@@ -553,7 +553,7 @@ class TestSummary:
 
     def test_all_trivial(self) -> None:
         result = _verify("""
-fn f(@Int -> @Int)
+private fn f(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -565,7 +565,7 @@ fn f(@Int -> @Int)
 
     def test_mixed_tiers(self) -> None:
         result = _verify("""
-fn f(@Nat -> @Nat)
+private fn f(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   decreases(@Nat.0)
@@ -585,13 +585,13 @@ fn f(@Nat -> @Nat)
 
     def test_multiple_functions_accumulate(self) -> None:
         result = _verify("""
-fn f(@Int -> @Int)
+private fn f(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0)
   effects(pure)
 { @Int.0 }
 
-fn g(@Int -> @Int)
+private fn g(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + 1)
   effects(pure)
@@ -613,7 +613,7 @@ class TestEdgeCases:
     def test_empty_body_unit(self) -> None:
         """Unit-returning function with trivial contracts."""
         _verify_ok("""
-fn noop(@Unit -> @Unit)
+private fn noop(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(pure)
@@ -622,7 +622,7 @@ fn noop(@Unit -> @Unit)
 
     def test_deeply_nested_if(self) -> None:
         _verify_ok("""
-fn deep(@Int -> @Int)
+private fn deep(@Int -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   ensures(@Int.result <= 3)
@@ -638,7 +638,7 @@ fn deep(@Int -> @Int)
     def test_implies_in_contract(self) -> None:
         """The ==> operator works in contracts."""
         _verify_ok("""
-fn f(@Int -> @Int)
+private fn f(@Int -> @Int)
   requires(true)
   ensures(@Int.0 > 0 ==> @Int.result > 0)
   effects(pure)
@@ -647,7 +647,7 @@ fn f(@Int -> @Int)
 
     def test_boolean_logic_in_contract(self) -> None:
         _verify_ok("""
-fn f(@Int -> @Int)
+private fn f(@Int -> @Int)
   requires(@Int.0 > 0 && @Int.0 < 100)
   ensures(@Int.result > 0 || @Int.result == 0)
   effects(pure)
@@ -665,13 +665,13 @@ class TestCallSiteVerification:
     def test_call_satisfied_precondition(self) -> None:
         """Calling with a literal that satisfies requires(@Int.0 != 0)."""
         _verify_ok("""
-fn non_zero(@Int -> @Int)
+private fn non_zero(@Int -> @Int)
   requires(@Int.0 != 0)
   ensures(true)
   effects(pure)
 { @Int.0 }
 
-fn caller(@Unit -> @Int)
+private fn caller(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -681,13 +681,13 @@ fn caller(@Unit -> @Int)
     def test_call_violated_precondition(self) -> None:
         """Calling with literal 0 violates requires(@Int.0 != 0)."""
         _verify_err("""
-fn non_zero(@Int -> @Int)
+private fn non_zero(@Int -> @Int)
   requires(@Int.0 != 0)
   ensures(true)
   effects(pure)
 { @Int.0 }
 
-fn bad_caller(@Unit -> @Int)
+private fn bad_caller(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -697,13 +697,13 @@ fn bad_caller(@Unit -> @Int)
     def test_call_precondition_forwarded(self) -> None:
         """Caller's precondition implies callee's — passes."""
         _verify_ok("""
-fn non_zero(@Int -> @Int)
+private fn non_zero(@Int -> @Int)
   requires(@Int.0 != 0)
   ensures(true)
   effects(pure)
 { @Int.0 }
 
-fn safe_caller(@Int -> @Int)
+private fn safe_caller(@Int -> @Int)
   requires(@Int.0 != 0)
   ensures(true)
   effects(pure)
@@ -713,13 +713,13 @@ fn safe_caller(@Int -> @Int)
     def test_call_postcondition_assumed(self) -> None:
         """Caller's ensures relies on callee's postcondition."""
         _verify_ok("""
-fn succ(@Int -> @Int)
+private fn succ(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + 1)
   effects(pure)
 { @Int.0 + 1 }
 
-fn add_two(@Int -> @Int)
+private fn add_two(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + 2)
   effects(pure)
@@ -733,7 +733,7 @@ fn add_two(@Int -> @Int)
         and base case returns 1, so result >= 1 is provable.
         """
         result = _verify("""
-fn factorial(@Nat -> @Nat)
+private fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -751,13 +751,13 @@ fn factorial(@Nat -> @Nat)
     def test_call_trivial_precondition(self) -> None:
         """Callee with requires(true) — always satisfied."""
         _verify_ok("""
-fn id(@Int -> @Int)
+private fn id(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0)
   effects(pure)
 { @Int.0 }
 
-fn caller(@Int -> @Int)
+private fn caller(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0)
   effects(pure)
@@ -767,13 +767,13 @@ fn caller(@Int -> @Int)
     def test_call_in_let_binding(self) -> None:
         """Call result used via let binding, passed to second call."""
         _verify_ok("""
-fn succ(@Int -> @Int)
+private fn succ(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + 1)
   effects(pure)
 { @Int.0 + 1 }
 
-fn add_two_let(@Int -> @Int)
+private fn add_two_let(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + 2)
   effects(pure)
@@ -786,7 +786,7 @@ fn add_two_let(@Int -> @Int)
     def test_where_block_call(self) -> None:
         """Call to a where-block helper function."""
         _verify_ok("""
-fn outer(@Int -> @Int)
+private fn outer(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + 1)
   effects(pure)
@@ -803,14 +803,14 @@ where {
     def test_generic_call_falls_to_tier3(self) -> None:
         """Calls to generic functions bail to Tier 3."""
         result = _verify("""
-forall<T>
+private forall<T>
 fn id(@T -> @T)
   requires(true)
   ensures(@T.result == @T.0)
   effects(pure)
 { @T.0 }
 
-fn caller(@Int -> @Int)
+private fn caller(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -824,14 +824,14 @@ fn caller(@Int -> @Int)
     def test_multiple_preconditions_all_checked(self) -> None:
         """Two requires on callee, second one violated."""
         _verify_err("""
-fn guarded(@Int -> @Int)
+private fn guarded(@Int -> @Int)
   requires(@Int.0 > 0)
   requires(@Int.0 < 100)
   ensures(true)
   effects(pure)
 { @Int.0 }
 
-fn bad_caller(@Int -> @Int)
+private fn bad_caller(@Int -> @Int)
   requires(@Int.0 > 0)
   ensures(true)
   effects(pure)
@@ -841,14 +841,14 @@ fn bad_caller(@Int -> @Int)
     def test_precondition_via_caller_requires(self) -> None:
         """Caller's requires forwards two constraints to satisfy callee."""
         _verify_ok("""
-fn guarded(@Int -> @Int)
+private fn guarded(@Int -> @Int)
   requires(@Int.0 > 0)
   requires(@Int.0 < 100)
   ensures(true)
   effects(pure)
 { @Int.0 }
 
-fn good_caller(@Int -> @Int)
+private fn good_caller(@Int -> @Int)
   requires(@Int.0 > 0)
   requires(@Int.0 < 100)
   ensures(true)
@@ -859,13 +859,13 @@ fn good_caller(@Int -> @Int)
     def test_multiple_calls_in_sequence(self) -> None:
         """Two calls in sequence, each gets a fresh return variable."""
         _verify_ok("""
-fn inc(@Int -> @Int)
+private fn inc(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + 1)
   effects(pure)
 { @Int.0 + 1 }
 
-fn add_two_seq(@Int -> @Int)
+private fn add_two_seq(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + 2)
   effects(pure)
@@ -878,13 +878,13 @@ fn add_two_seq(@Int -> @Int)
     def test_violation_error_mentions_callee_name(self) -> None:
         """Error message includes the callee function name."""
         errors = _verify_err("""
-fn non_zero(@Int -> @Int)
+private fn non_zero(@Int -> @Int)
   requires(@Int.0 != 0)
   ensures(true)
   effects(pure)
 { @Int.0 }
 
-fn bad(@Int -> @Int)
+private fn bad(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -904,13 +904,13 @@ class TestPipeVerification:
     def test_pipe_verifies(self) -> None:
         """Pipe expression in verified function."""
         _verify_ok("""
-fn inc(@Int -> @Int)
+private fn inc(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 { @Int.0 + 1 }
 
-fn main(@Int -> @Int)
+private fn main(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)

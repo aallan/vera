@@ -84,7 +84,7 @@ In this example:
 ### Example 1: Simple Function
 
 ```
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + @Int.1)
   effects(pure)
@@ -214,7 +214,7 @@ After destructuring:
 ### Example 7: Recursive Function with Decreases
 
 ```
-fn factorial(@Nat -> @Nat)
+private fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -236,7 +236,7 @@ In the else branch after the let:
 ### Example 8: Higher-Order Functions
 
 ```
-fn map_array<A, B>(@Array<A>, fn(A -> B) effects(pure) -> @Array<B>)
+private fn map_array<A, B>(@Array<A>, fn(A -> B) effects(pure) -> @Array<B>)
   requires(true)
   ensures(length(@Array<B>.result) == length(@Array<A>.0))
   effects(pure)
@@ -251,12 +251,12 @@ Here `@Array<A>.0` refers to the first argument and `@Fn<A, B>.0` is a shorthand
 ### Example 9: ADT Construction and Matching
 
 ```
-data List<T> {
+private data List<T> {
   Cons(T, List<T>),
   Nil
 }
 
-fn list_head<T>(@List<T> -> @Option<T>)
+private fn list_head<T>(@List<T> -> @Option<T>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -275,7 +275,7 @@ In the `Cons` arm:
 ### Example 10: Multiple Return-Type References in Contracts
 
 ```
-fn clamp(@Int, @Int, @Int -> @Int)
+private fn clamp(@Int, @Int, @Int -> @Int)
   requires(@Int.2 <= @Int.1)
   ensures(@Int.result >= @Int.2 && @Int.result <= @Int.1)
   effects(pure)
@@ -327,7 +327,7 @@ Function-type parameters use the same `@T.n` system, where `T` is the full funct
 ```
 type IntTransform = fn(Int -> Int) effects(pure);
 
-fn apply_to_array(@Array<Int>, @IntTransform -> @Array<Int>)
+private fn apply_to_array(@Array<Int>, @IntTransform -> @Array<Int>)
   requires(length(@Array<Int>.0) > 0)
   ensures(length(@Array<Int>.result) == length(@Array<Int>.0))
   effects(pure)

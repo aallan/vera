@@ -17,7 +17,7 @@ All components are mandatory. There are no defaults, no shortcuts, and no omissi
 The canonical form of a function declaration:
 
 ```
-fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
+private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
   requires(precondition)
   ensures(postcondition)
   effects(effect_row)
@@ -29,7 +29,7 @@ fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
 ### 5.2.1 Complete Example
 
 ```
-fn absolute_value(@Int -> @Nat)
+private fn absolute_value(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result == if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 })
   effects(pure)
@@ -47,7 +47,7 @@ fn absolute_value(@Int -> @Nat)
 Multiple `requires` and `ensures` clauses may be specified. They are conjunctive (all must hold):
 
 ```
-fn safe_divide(@Int, @Int -> @Int)
+private fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   requires(@Int.0 >= 0)
   ensures(@Int.result >= 0)
@@ -109,7 +109,7 @@ Effect syntax and semantics are detailed in Chapter 7.
 Recursive functions are functions that call themselves (directly or mutually). A recursive function MUST declare a `decreases` clause:
 
 ```
-fn factorial(@Nat -> @Nat)
+private fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -135,7 +135,7 @@ The `decreases` clause specifies an expression that must strictly decrease (in a
 Lexicographic decrease:
 
 ```
-fn ackermann(@Nat, @Nat -> @Nat)
+private fn ackermann(@Nat, @Nat -> @Nat)
   requires(true)
   ensures(true)
   decreases(@Nat.1, @Nat.0)
@@ -160,7 +160,7 @@ The tuple `(@Nat.1, @Nat.0)` decreases lexicographically on each recursive call.
 Mutually recursive functions are declared together in a `where` block. Each must have its own `decreases` clause:
 
 ```
-fn is_even(@Nat -> @Bool)
+private fn is_even(@Nat -> @Bool)
   requires(true)
   ensures(true)
   decreases(@Nat.0)
@@ -201,7 +201,7 @@ Anonymous functions:
 Anonymous functions capture bindings from enclosing scopes by reference. The captured bindings are immutable (since all bindings in Vera are immutable):
 
 ```
-fn make_adder(@Int -> fn(Int -> Int) effects(pure))
+private fn make_adder(@Int -> fn(Int -> Int) effects(pure))
   requires(true)
   ensures(true)
   effects(pure)
@@ -219,7 +219,7 @@ When passing closures to higher-order functions:
 ```
 type IntPred = fn(Int -> Bool) effects(pure);
 
-fn filter_positive(@Array<Int> -> @Array<Int>)
+private fn filter_positive(@Array<Int> -> @Array<Int>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -230,7 +230,7 @@ fn filter_positive(@Array<Int> -> @Array<Int>)
 
 ## 5.8 Function Visibility
 
-Top-level functions are `private` by default. Use `public` to export:
+Every top-level `fn` and `data` declaration MUST have an explicit visibility modifier: either `public` or `private`. There is no default visibility. Omitting the modifier is a compile error.
 
 ```
 public fn add(@Int, @Int -> @Int)
@@ -240,16 +240,53 @@ public fn add(@Int, @Int -> @Int)
 {
   @Int.0 + @Int.1
 }
+
+private fn helper(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
+}
 ```
 
 `public` functions are visible to importing modules. `private` functions are visible only within their own module.
+
+The same rule applies to `data` declarations:
+
+```
+public data Color {
+  Red,
+  Green,
+  Blue
+}
+
+private data InternalState {
+  Active(Int),
+  Idle
+}
+```
+
+For generic functions, the visibility modifier precedes `forall`:
+
+```
+private forall<T> fn identity(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+```
+
+Type aliases (`type Foo = ...`), effect declarations (`effect E { ... }`), module declarations, and import statements do not take visibility modifiers. Functions declared inside `where` blocks do not take visibility modifiers (they are always local to the parent function).
 
 ## 5.9 Generic Functions
 
 Functions may be parameterised by type variables using `forall`:
 
 ```
-forall<T> fn identity(@T -> @T)
+private forall<T> fn identity(@T -> @T)
   requires(true)
   ensures(true)
   effects(pure)
@@ -259,7 +296,7 @@ forall<T> fn identity(@T -> @T)
 ```
 
 ```
-forall<A, B> fn pair(@A, @B -> @Tuple<A, B>)
+private forall<A, B> fn pair(@A, @B -> @Tuple<A, B>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -275,7 +312,7 @@ Type variables are introduced by `forall<...>` and are scoped to the entire func
 Functions can be polymorphic over effects:
 
 ```
-forall<A, B> fn map_option(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
+private forall<A, B> fn map_option(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
   requires(true)
   ensures(true)
   effects(<E>)
@@ -308,7 +345,7 @@ Functions are first-class values. They can be:
 A Vera program's entry point is a function named `main`:
 
 ```
-fn main(@Unit -> @Unit)
+public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)

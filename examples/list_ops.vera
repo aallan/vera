@@ -1,11 +1,11 @@
 -- List operations: demonstrates ADTs, pattern matching, and recursion.
 
-data List<T> {
+private data List<T> {
   Nil,
   Cons(T, List<T>)
 }
 
-fn length(@List<Int> -> @Nat)
+private fn length(@List<Int> -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   decreases(@List<Int>.0)
@@ -17,7 +17,7 @@ fn length(@List<Int> -> @Nat)
   }
 }
 
-fn sum(@List<Int> -> @Int)
+private fn sum(@List<Int> -> @Int)
   requires(true)
   ensures(true)
   decreases(@List<Int>.0)

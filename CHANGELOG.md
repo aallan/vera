@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.34] - 2026-02-27
+
+### Added
+- **Visibility enforcement** (C7c — partial [#14](https://github.com/aallan/vera/issues/14)):
+  - Every top-level `fn` and `data` declaration now requires an explicit `public` or `private` annotation — no implicit default, enforcing design principle 3 ("one canonical form")
+  - Cross-module access control: only `public` declarations are importable; private names produce targeted "is private" errors with fix suggestions
+  - Selective imports of private names caught at import site with clear diagnostics
+  - Wildcard imports (`import m;`) automatically filter to public declarations only
+  - Constructor visibility derived from parent ADT — private ADT means private constructors
+  - `FunctionInfo` and `AdtInfo` now carry a `visibility` field threaded through the registration pipeline
+  - Updated all 14 examples, all test inline sources, spec chapters, README, SKILLS.md, and docs site — no bare `fn`/`data` declarations remain anywhere in the repo
+- 13 new tests (927 total, up from 914)
+
 ## [0.0.33] - 2026-02-27
 
 ### Removed

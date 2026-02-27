@@ -60,7 +60,7 @@ Option<Int>
 `Option<T>` is a built-in algebraic data type equivalent to:
 
 ```
-data Option<T> {
+public data Option<T> {
   Some(T),
   None
 }
@@ -77,7 +77,7 @@ Result<Int, String>
 `Result<T, E>` is a built-in algebraic data type equivalent to:
 
 ```
-data Result<T, E> {
+public data Result<T, E> {
   Ok(T),
   Err(E)
 }
@@ -90,21 +90,21 @@ It represents a computation that may succeed with a value of type `T` or fail wi
 User-defined algebraic data types are declared with the `data` keyword:
 
 ```
-data List<T> {
+private data List<T> {
   Cons(T, List<T>),
   Nil
 }
 ```
 
 ```
-data Tree<T> {
+private data Tree<T> {
   Leaf(T),
   Node(Tree<T>, Tree<T>)
 }
 ```
 
 ```
-data Color {
+private data Color {
   Red,
   Green,
   Blue
@@ -127,7 +127,7 @@ Rules:
 An ADT may declare an invariant that all values must satisfy:
 
 ```
-data SortedList<T>
+private data SortedList<T>
   invariant(is_sorted(@SortedList<T>.0))
 {
   SCons(T, SortedList<T>),
@@ -228,7 +228,7 @@ However, type aliases create distinct namespaces for slot references (see Chapte
 Functions and data types may be parameterised by type variables:
 
 ```
-forall<A, B> fn swap(@Tuple<A, B> -> @Tuple<B, A>)
+private forall<A, B> fn swap(@Tuple<A, B> -> @Tuple<B, A>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -248,7 +248,7 @@ Type variables:
 Type variables may be constrained (future extension, not in v0.1):
 
 ```
-forall<T where Ord<T>> fn sort(@Array<T> -> @Array<T>)
+private forall<T where Ord<T>> fn sort(@Array<T> -> @Array<T>)
 ```
 
 For v0.1, type variables are unconstrained.

@@ -33,7 +33,7 @@ def _bad_vera(tmp_path: Path, content: str) -> str:
 def _type_error_source() -> str:
     """A .vera program that parses but fails type-checking."""
     return """\
-fn bad(@Int -> @Bool)
+private fn bad(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -784,7 +784,7 @@ class TestCmdRunEdgeCases:
         # Create a temp file with a two-arg function
         import tempfile
         source = """\
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.1 + @Int.0 }
 """
@@ -804,7 +804,7 @@ fn add(@Int, @Int -> @Int)
         """Run a function with negative integer arguments."""
         import tempfile
         source = """\
-fn abs(@Int -> @Int)
+private fn abs(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 } }
 """
@@ -824,7 +824,7 @@ fn abs(@Int -> @Int)
         """Run a function that triggers a runtime precondition trap."""
         import tempfile
         source = """\
-fn positive(@Int -> @Int)
+private fn positive(@Int -> @Int)
   requires(@Int.0 > 0) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -846,11 +846,11 @@ fn positive(@Int -> @Int)
         source = """\
 effect Counter { op inc(Unit -> Unit); }
 
-fn count(@Unit -> @Unit)
+private fn count(@Unit -> @Unit)
   requires(true) ensures(true) effects(<Counter>)
 { () }
 
-fn simple(-> @Int)
+private fn simple(-> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """
@@ -870,7 +870,7 @@ fn simple(-> @Int)
         """Non-integer arguments after -- produce a clean error."""
         import tempfile
         source = """\
-fn id(@Int -> @Int)
+private fn id(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -891,7 +891,7 @@ fn id(@Int -> @Int)
         """Float arguments after -- produce a clean error."""
         import tempfile
         source = """\
-fn id(@Int -> @Int)
+private fn id(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -912,7 +912,7 @@ fn id(@Int -> @Int)
         """Invalid args with --json produce JSON error."""
         import tempfile
         source = """\
-fn id(@Int -> @Int)
+private fn id(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 }
 """
@@ -944,10 +944,10 @@ class TestMultiFileResolution:
         main_src = """\
 import lib;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         lib_src = """\
-fn helper(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn helper(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         main_file = tmp_path / "main.vera"
         lib_file = tmp_path / "lib.vera"
@@ -966,7 +966,7 @@ fn helper(-> @Unit) requires(true) ensures(true) effects(pure) { () }
         main_src = """\
 import missing;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         main_file = tmp_path / "main.vera"
         main_file.write_text(main_src, encoding="utf-8")
@@ -983,7 +983,7 @@ fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
         main_src = """\
 import missing;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         main_file = tmp_path / "main.vera"
         main_file.write_text(main_src, encoding="utf-8")
@@ -1004,13 +1004,13 @@ fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
     def test_check_with_bare_imported_call(self, tmp_path: Path) -> None:
         """vera check passes when main.vera calls an imported function."""
         lib_src = """\
-fn double(@Int -> @Int)
+public fn double(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.0 }
 """
         main_src = """\
 import lib(double);
-fn main(@Int -> @Int)
+private fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { double(@Int.0) }
 """

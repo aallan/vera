@@ -127,22 +127,37 @@ class TypeChecker:
         self._import_names: dict[
             tuple[str, ...], set[str] | None
         ] = {}
+        # C7c: unfiltered module declarations (for "is private" errors).
+        self._module_all_functions: dict[
+            tuple[str, ...], dict[str, FunctionInfo]
+        ] = {}
+        self._module_all_data_types: dict[
+            tuple[str, ...], dict[str, AdtInfo]
+        ] = {}
         # De-dup removed-alias errors (emitted once per alias name).
         self._reported_alias_errors: set[str] = set()
 
+    @staticmethod
+    def _is_public(visibility: str | None) -> bool:
+        """True if the declaration is explicitly ``public``."""
+        return visibility == "public"
+
     # -----------------------------------------------------------------
-    # C7b: cross-module registration
+    # C7b/C7c: cross-module registration
     # -----------------------------------------------------------------
 
     def _register_modules(self, program: ast.Program) -> None:
-        """Register declarations from resolved modules (C7b).
+        """Register declarations from resolved modules (C7b/C7c).
 
         1. Build an import-name filter from the program's ``import``
            declarations (selective vs wildcard).
         2. For each resolved module, run the registration pass in an
            isolated TypeChecker to populate its ``TypeEnv``, then
            harvest the declarations into per-module dicts.
-        3. Inject selectively imported names into ``self.env`` so
+        3. C7c: filter to public declarations only.  Store unfiltered
+           dicts for better "is private" error messages.
+        4. C7c: emit errors when selective imports reference private names.
+        5. Inject selectively imported *public* names into ``self.env`` so
            bare calls (``abs(42)`` after ``import vera.math(abs)``)
            resolve through the normal ``_check_call_with_args`` path.
         """
@@ -163,26 +178,89 @@ class TypeChecker:
             temp = TypeChecker(source=mod.source)
             temp._register_all(mod.program)
 
-            # Keep only module-declared names (builtins have span=None)
-            mod_fns = {
+            # All module-declared names (exclude builtins)
+            all_fns = {
                 k: v for k, v in temp.env.functions.items()
                 if k not in builtin_fn_names or v.span is not None
             }
-            mod_data = {
+            all_data = {
                 k: v for k, v in temp.env.data_types.items()
                 if k not in builtin_data_names
             }
+
+            # C7c: keep unfiltered dicts for "is private" error messages
+            self._module_all_functions[mod.path] = all_fns
+            self._module_all_data_types[mod.path] = all_data
+
+            # 3. C7c: filter to public only
+            mod_fns = {
+                k: v for k, v in all_fns.items()
+                if self._is_public(v.visibility)
+            }
+            mod_data = {
+                k: v for k, v in all_data.items()
+                if self._is_public(v.visibility)
+            }
+            # Constructors: include only from public ADTs
+            public_adt_ctors: set[str] = set()
+            for dt_info in mod_data.values():
+                public_adt_ctors.update(dt_info.constructors)
             mod_ctors = {
                 k: v for k, v in temp.env.constructors.items()
                 if k not in builtin_ctor_names
+                and k in public_adt_ctors
             }
 
             self._module_functions[mod.path] = mod_fns
             self._module_data_types[mod.path] = mod_data
             self._module_constructors[mod.path] = mod_ctors
 
-            # 3. Inject into main env for bare calls
+            # 4. C7c: check selective imports for private names
             name_filter = self._import_names.get(mod.path)
+            mod_label = ".".join(mod.path)
+            if name_filter is not None:
+                imp_node = self._find_import_decl(program, mod.path)
+                for name in sorted(name_filter):
+                    priv_fn = all_fns.get(name)
+                    priv_dt = all_data.get(name)
+                    if (priv_fn is not None
+                            and not self._is_public(priv_fn.visibility)):
+                        self._error(
+                            imp_node,
+                            f"Cannot import '{name}' from module "
+                            f"'{mod_label}': it is private.",
+                            rationale=(
+                                "Only public declarations can be imported."
+                            ),
+                            fix=(
+                                f"Mark '{name}' as public in the module, "
+                                f"or remove it from the import list."
+                            ),
+                            spec_ref=(
+                                'Chapter 5, Section 5.8 '
+                                '"Function Visibility"'
+                            ),
+                        )
+                    elif (priv_dt is not None
+                            and not self._is_public(priv_dt.visibility)):
+                        self._error(
+                            imp_node,
+                            f"Cannot import '{name}' from module "
+                            f"'{mod_label}': it is private.",
+                            rationale=(
+                                "Only public declarations can be imported."
+                            ),
+                            fix=(
+                                f"Mark '{name}' as public in the module, "
+                                f"or remove it from the import list."
+                            ),
+                            spec_ref=(
+                                'Chapter 5, Section 5.8 '
+                                '"Function Visibility"'
+                            ),
+                        )
+
+            # 5. Inject public names into main env for bare calls
             for fn_name, fn_info in mod_fns.items():
                 if name_filter is None or fn_name in name_filter:
                     self.env.functions.setdefault(fn_name, fn_info)
@@ -190,10 +268,19 @@ class TypeChecker:
                 if name_filter is None or dt_name in name_filter:
                     self.env.data_types.setdefault(dt_name, dt_info)
             for ct_name, ct_info in mod_ctors.items():
-                # Constructors: include if parent type is in import list
                 parent = ct_info.parent_type
                 if name_filter is None or parent in name_filter:
                     self.env.constructors.setdefault(ct_name, ct_info)
+
+    @staticmethod
+    def _find_import_decl(
+        program: ast.Program, path: tuple[str, ...],
+    ) -> ast.Node:
+        """Find the ImportDecl node for a given module path."""
+        for imp in program.imports:
+            if imp.path == path:
+                return imp
+        return program  # fallback
 
     # -----------------------------------------------------------------
     # Diagnostics
@@ -360,20 +447,40 @@ class TypeChecker:
     def _register_all(self, program: ast.Program) -> None:
         """Register all top-level declarations (forward reference support)."""
         for tld in program.declarations:
-            self._register_decl(tld.decl)
+            # C7c: require explicit visibility on fn/data declarations
+            if (tld.visibility is None
+                    and isinstance(tld.decl, (ast.FnDecl, ast.DataDecl))):
+                name = tld.decl.name
+                kind = "fn" if isinstance(tld.decl, ast.FnDecl) else "data"
+                self._error(
+                    tld.decl,
+                    f"Missing visibility on '{name}'. "
+                    f"Add 'public' or 'private' before '{kind}'.",
+                    rationale=(
+                        "Every top-level function and data type must have "
+                        "an explicit visibility annotation."
+                    ),
+                    fix=f"private {kind} {name}(...) or public {kind} {name}(...)",
+                    spec_ref='Chapter 5, Section 5.8 "Function Visibility"',
+                )
+            self._register_decl(tld.decl, visibility=tld.visibility)
 
-    def _register_decl(self, decl: ast.Decl) -> None:
+    def _register_decl(
+        self, decl: ast.Decl, visibility: str | None = None,
+    ) -> None:
         """Register a single declaration's signature."""
         if isinstance(decl, ast.DataDecl):
-            self._register_data(decl)
+            self._register_data(decl, visibility=visibility)
         elif isinstance(decl, ast.TypeAliasDecl):
             self._register_alias(decl)
         elif isinstance(decl, ast.EffectDecl):
             self._register_effect(decl)
         elif isinstance(decl, ast.FnDecl):
-            self._register_fn(decl)
+            self._register_fn(decl, visibility=visibility)
 
-    def _register_data(self, decl: ast.DataDecl) -> None:
+    def _register_data(
+        self, decl: ast.DataDecl, visibility: str | None = None,
+    ) -> None:
         """Register an ADT and its constructors."""
         # Set up type params for resolving constructor field types
         saved_params = dict(self.env.type_params)
@@ -400,6 +507,7 @@ class TypeChecker:
             name=decl.name,
             type_params=decl.type_params,
             constructors=ctors,
+            visibility=visibility,
         )
 
         self.env.type_params = saved_params
@@ -446,12 +554,15 @@ class TypeChecker:
 
         self.env.type_params = saved_params
 
-    def _register_fn(self, decl: ast.FnDecl) -> None:
+    def _register_fn(
+        self, decl: ast.FnDecl, visibility: str | None = None,
+    ) -> None:
         """Register a function signature."""
         from vera.registration import register_fn
         register_fn(
             self.env, decl,
             self._resolve_type, self._resolve_effect_row,
+            visibility=visibility,
         )
 
     # -----------------------------------------------------------------
@@ -1207,7 +1318,8 @@ class TypeChecker:
         Lookup order:
         1. Module not resolved → warning (same as C7a).
         2. Name not in selective import list → error.
-        3. Function found → delegate to ``_check_fn_call_with_info``.
+        2.5. C7c: function is private → error.
+        3. Function found (public) → delegate to ``_check_fn_call_with_info``.
         4. Function not found in module → warning with available list.
         """
         mod_path = tuple(expr.path)
@@ -1246,6 +1358,31 @@ class TypeChecker:
                     f"Change the import to include '{fn_name}': "
                     f"import {mod_label}"
                     f"({', '.join(sorted(import_filter | {fn_name}))});"
+                ),
+            )
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
+
+        # 2.5 C7c: visibility check — is the function private?
+        all_fns = self._module_all_functions.get(mod_path, {})
+        fn_all = all_fns.get(fn_name)
+        if fn_all is not None and not self._is_public(fn_all.visibility):
+            self._error(
+                expr,
+                f"Function '{fn_name}' in module '{mod_label}' is "
+                f"private and cannot be accessed from outside "
+                f"its module.",
+                rationale=(
+                    "Only functions marked 'public' can be called "
+                    "from other modules."
+                ),
+                fix=(
+                    f"Mark the function as public in the module: "
+                    f"public fn {fn_name}(...)"
+                ),
+                spec_ref=(
+                    'Chapter 5, Section 5.8 "Function Visibility"'
                 ),
             )
             for arg in expr.args:

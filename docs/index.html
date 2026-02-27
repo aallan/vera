@@ -579,7 +579,7 @@
   <span class="kw">op</span> print(<span class="ty">String</span> -> <span class="ty">Unit</span>);
 }
 
-<span class="kw">fn</span> main(<span class="sl">@Unit</span> -> <span class="sl">@Unit</span>)
+<span class="kw">private</span> <span class="kw">fn</span> main(<span class="sl">@Unit</span> -> <span class="sl">@Unit</span>)
   <span class="ct">requires</span>(<span class="num">true</span>)
   <span class="ct">ensures</span>(<span class="num">true</span>)
   <span class="ct">effects</span>(&lt;<span class="ty">IO</span>&gt;)
@@ -593,7 +593,7 @@
         <div class="code-block">
 <pre><span class="err-head">Error in main.vera at line 12, column 1:</span>
 
-    <span class="err-code">fn add(@Int, @Int -> @Int)</span>
+    <span class="err-code">private fn add(@Int, @Int -> @Int)</span>
     <span class="err-caret">^</span>
 
   <span class="err-msg">Function "add" is missing its contract block. Every function in Vera
@@ -602,7 +602,7 @@
 
   <span class="err-fix">Add a contract block after the signature:
 
-    fn add(@Int, @Int -> @Int)
+    private fn add(@Int, @Int -> @Int)
       requires(true)
       ensures(@Int.result == @Int.0 + @Int.1)
       effects(pure)

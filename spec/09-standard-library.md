@@ -24,7 +24,7 @@ The primitive types (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`, `Unit`, 
 ### 9.3.1 Option\<T\>
 
 ```
-data Option<T> {
+public data Option<T> {
   Some(T),
   None
 }
@@ -39,7 +39,7 @@ Constructors:
 Pattern matching on `Option<T>` is exhaustive: both `Some` and `None` must be handled.
 
 ```
-fn safe_head(@Array<Int> -> @Option<Int>)
+private fn safe_head(@Array<Int> -> @Option<Int>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -55,7 +55,7 @@ fn safe_head(@Array<Int> -> @Option<Int>)
 ### 9.3.2 Result\<T, E\>
 
 ```
-data Result<T, E> {
+public data Result<T, E> {
   Ok(T),
   Err(E)
 }
@@ -70,7 +70,7 @@ Constructors:
 Pattern matching on `Result<T, E>` is exhaustive: both `Ok` and `Err` must be handled.
 
 ```
-fn parse_nat(@Int -> @Result<Nat, String>)
+private fn parse_nat(@Int -> @Result<Nat, String>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -142,7 +142,7 @@ Currently, `IO` exposes a single operation:
 The `IO` effect has no type parameters. At the type level, `IO.print` is invoked as a qualified call:
 
 ```
-fn hello(-> @Unit)
+private fn hello(-> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
@@ -171,7 +171,7 @@ Operations:
 Multiple independent state types can be used in the same function by declaring them in the effect row. State operations (`get`, `put`) are called without qualification — the type checker resolves which state cell is targeted from the types:
 
 ```
-fn increment(-> @Unit)
+private fn increment(-> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -185,7 +185,7 @@ fn increment(-> @Unit)
 State is handled by providing an initial value and a handler that manages the mutable cell:
 
 ```
-fn run_increment(@Unit -> @Int)
+private fn run_increment(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -225,7 +225,7 @@ This fits naturally with Vera's algebraic effect system and makes network I/O ex
 Asynchronous operations will be modelled as an algebraic effect. An `<Async>` effect with `async` and `await` operations will allow concurrent computation:
 
 ```
-fn fetch_both(@String, @String -> @Tuple<Json, Json>)
+private fn fetch_both(@String, @String -> @Tuple<Json, Json>)
   requires(true)
   ensures(true)
   effects(<Http, Async>)
@@ -267,7 +267,7 @@ Any function that calls an LLM declares `effects(<Inference>)`. Pure functions c
 Handlers provide the implementation: one handler uses an HTTP API, another uses a local model, another uses cached replay for deterministic testing.
 
 ```
-fn classify(@String -> @String)
+private fn classify(@String -> @String)
   requires(length(@String.0) > 0)
   ensures(true)
   effects(<Inference>)
@@ -281,7 +281,7 @@ fn classify(@String -> @String)
 ### 9.6.1 length
 
 ```
-forall<T> fn length(@Array<T> -> @Int)
+public forall<T> fn length(@Array<T> -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
@@ -303,7 +303,7 @@ For the compilation of `length`, see Chapter 11, Section 11.12.
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 
 ```
-fn similarity(@Array<Float64>, @Array<Float64> -> @Float64)
+public fn similarity(@Array<Float64>, @Array<Float64> -> @Float64)
   requires(length(@Array<Float64>.0) == length(@Array<Float64>.1))
   ensures(@Float64.result >= -1.0 && @Float64.result <= 1.0)
   effects(pure)
@@ -322,7 +322,7 @@ This function is pure — it performs no effects. It is intended for use with th
 JSON will be a standard library ADT, not a primitive type:
 
 ```
-data Json {
+public data Json {
   JNull,
   JBool(Bool),
   JNumber(Float64),
@@ -361,7 +361,7 @@ ability Ord<T> {
   op compare(T, T -> Ordering);
 }
 
-forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
+public forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
   requires(true)
   ensures(true)
   effects(pure)

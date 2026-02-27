@@ -4,7 +4,7 @@ effect IO {
   op print(String -> Unit);
 }
 
-fn main(@Unit -> @Unit)
+private fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)

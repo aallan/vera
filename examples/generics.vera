@@ -1,7 +1,7 @@
 -- Generic functions and parameterized types
 
 -- Identity function — works for any type
-forall<T> fn identity(@T -> @T)
+private forall<T> fn identity(@T -> @T)
   requires(true)
   ensures(@T.result == @T.0)
   effects(pure)
@@ -10,7 +10,7 @@ forall<T> fn identity(@T -> @T)
 }
 
 -- Constant function — returns the first argument, ignoring the second
-forall<A, B> fn const(@A, @B -> @A)
+private forall<A, B> fn const(@A, @B -> @A)
   requires(true)
   ensures(@A.result == @A.0)
   effects(pure)
@@ -19,10 +19,10 @@ forall<A, B> fn const(@A, @B -> @A)
 }
 
 -- Generic option type
-data Option<T> { None, Some(T) }
+private data Option<T> { None, Some(T) }
 
 -- Check if an option contains a value
-forall<T> fn is_some(@Option<T> -> @Bool)
+private forall<T> fn is_some(@Option<T> -> @Bool)
   requires(true)
   ensures(true)
   effects(pure)
@@ -34,13 +34,13 @@ forall<T> fn is_some(@Option<T> -> @Bool)
 }
 
 -- Either type — two type parameters
-data Either<L, R> {
+private data Either<L, R> {
   Left(L),
   Right(R)
 }
 
 -- Extract the right value or provide a default
-fn unwrap_right(@Either<String, Int>, @Int -> @Int)
+private fn unwrap_right(@Either<String, Int>, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)

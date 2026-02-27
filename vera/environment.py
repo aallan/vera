@@ -43,6 +43,7 @@ class FunctionInfo:
     span: object | None = None  # ast.Span
     contracts: tuple[object, ...] = ()  # ast.Contract nodes (for C4)
     param_type_exprs: tuple[object, ...] = ()  # ast.TypeExpr nodes (for C6b)
+    visibility: str | None = None  # "public" | "private" | None (C7c)
 
 
 @dataclass
@@ -51,6 +52,7 @@ class AdtInfo:
     name: str
     type_params: tuple[str, ...] | None
     constructors: dict[str, ConstructorInfo]
+    visibility: str | None = None  # "public" | "private" | None (C7c)
 
 
 @dataclass
