@@ -225,7 +225,7 @@ Tracked in [#14](https://github.com/aallan/vera/issues/14) (type-checking) and [
 | Sub-phase | Scope | Status |
 |-----------|-------|--------|
 | C7a | Module resolution — map `import` paths to source files and parse them | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31) |
-| C7b | Cross-module type environment — merge public declarations across files | In progress |
+| C7b | Cross-module type environment — merge public declarations across files | [v0.0.32](https://github.com/aallan/vera/releases/tag/v0.0.32) |
 | C7c | Visibility enforcement — `public`/`private` access control in the checker | Planned |
 | C7d | Cross-module verification — verify contracts that reference imported symbols | Planned |
 | C7e | Multi-module codegen — WASM import/export tables linking multiple modules | Planned |
