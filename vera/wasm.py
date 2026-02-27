@@ -234,6 +234,7 @@ class WasmContext:
             dict[str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]] | None
         ) = None,
         ctor_to_adt: dict[str, str] | None = None,
+        known_fns: set[str] | None = None,
     ) -> None:
         self.string_pool = string_pool
         self._next_local: int = 0
@@ -254,6 +255,8 @@ class WasmContext:
         ] = generic_fn_info or {}
         # Constructor name → ADT name reverse mapping
         self._ctor_to_adt: dict[str, str] = ctor_to_adt or {}
+        # Known locally-defined function names (for cross-module guard rail)
+        self._known_fns: set[str] = known_fns or set()
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}
@@ -371,6 +374,9 @@ class WasmContext:
 
         if isinstance(expr, ast.QualifiedCall):
             return self._translate_qualified_call(expr, env)
+
+        if isinstance(expr, ast.ModuleCall):
+            return None  # cross-module codegen not yet implemented (C7e)
 
         if isinstance(expr, ast.StringLit):
             return self._translate_string_lit(expr)
@@ -915,6 +921,12 @@ class WasmContext:
             resolved = self._resolve_generic_call(call)
             if resolved is not None:
                 call_target = resolved
+
+        # Guard rail: reject calls to functions not defined in this module
+        if (self._known_fns
+                and call_target not in self._known_fns
+                and call_target not in self._ctor_layouts):
+            return None
 
         # Regular function call
         instructions = []

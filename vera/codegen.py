@@ -205,21 +205,49 @@ def execute(
     instance = linker.instantiate(store, module)
 
     # Determine function to call
+    auto_selected = False
     if fn_name is None:
         # Try "main" first, then first export
         if "main" in result.exports:
             fn_name = "main"
         elif result.exports:
             fn_name = result.exports[0]
+            auto_selected = True
         else:
             raise RuntimeError("No exported functions to call")
 
     func = instance.exports(store).get(fn_name)
     if func is None or not isinstance(func, wasmtime.Func):
-        raise RuntimeError(f"Function '{fn_name}' not found in exports")
+        exports_str = ", ".join(result.exports) if result.exports else "(none)"
+        raise RuntimeError(
+            f"Function '{fn_name}' not found in exports. "
+            f"Available: {exports_str}"
+        )
 
-    # Call with arguments
+    # Check parameter count before calling
     call_args: list[int | float] = args or []
+    func_type = func.type(store)
+    expected = len(func_type.params)
+    given = len(call_args)
+    if given != expected:
+        exports_str = ", ".join(result.exports)
+        msg = (
+            f"Function '{fn_name}' expects {expected} "
+            f"parameter{'s' if expected != 1 else ''} "
+            f"but {given} {'were' if given != 1 else 'was'} provided."
+        )
+        if auto_selected:
+            msg += (
+                f"\n\nNo 'main' function found. "
+                f"'{fn_name}' was selected as the first export."
+            )
+        msg += (
+            f"\n\nAvailable exports: {exports_str}"
+            f"\n\nTo call a specific function with arguments:"
+            f"\n\n  vera run <file> --fn {fn_name} -- <args>"
+        )
+        raise RuntimeError(msg)
+
     raw_result = func(store, *call_args)
 
     # Extract return value
@@ -332,6 +360,17 @@ class CodeGenerator:
         for mdecl in mono_decls:
             self._register_fn(mdecl)
 
+        # Pass 1.9: check for cross-module calls that codegen can't handle
+        self._check_cross_module_calls(program)
+        if any(d.severity == "error" for d in self.diagnostics):
+            return CompileResult(
+                wat="",
+                wasm_bytes=b"",
+                exports=[],
+                diagnostics=self.diagnostics,
+                state_types=list(self._state_types),
+            )
+
         # Pass 2: compile function bodies
         functions_wat: list[str] = []
         exports: list[str] = []
@@ -384,6 +423,100 @@ class CodeGenerator:
             diagnostics=self.diagnostics,
             state_types=list(self._state_types),
         )
+
+    # -----------------------------------------------------------------
+    # Cross-module call detection
+    # -----------------------------------------------------------------
+
+    def _check_cross_module_calls(self, program: ast.Program) -> None:
+        """Detect calls to imported functions that codegen cannot compile.
+
+        Walks all function bodies looking for FnCall/ModuleCall nodes
+        whose targets have no local definition.  Emits a proper Vera
+        diagnostic instead of letting invalid WAT reach wasmtime.
+        """
+        # Build the set of locally-defined names the codegen knows about
+        known: set[str] = set(self._fn_sigs.keys())
+        for layouts in self._adt_layouts.values():
+            known.update(layouts.keys())
+        # Built-in names handled specially in _translate_call
+        known.update({"length", "apply_fn", "get", "put", "resume"})
+
+        seen: set[str] = set()  # deduplicate by function name
+
+        for tld in program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl):
+                self._scan_body_for_unknown_calls(
+                    decl.body, known, seen,
+                )
+
+    def _scan_body_for_unknown_calls(
+        self,
+        node: ast.Node,
+        known: set[str],
+        seen: set[str],
+    ) -> None:
+        """Recursively walk an AST node looking for unresolved calls."""
+        if isinstance(node, ast.ModuleCall):
+            qual = ".".join(node.path) + "." + node.name
+            if qual not in seen:
+                seen.add(qual)
+                self._emit_cross_module_error(node, node.name, qual)
+            return  # don't recurse into args — the call itself is the problem
+
+        if isinstance(node, ast.FnCall) and node.name not in known:
+            if node.name not in seen:
+                seen.add(node.name)
+                self._emit_cross_module_error(node, node.name)
+
+        # Recurse into child nodes
+        for f in fields(node):
+            val = getattr(node, f.name)
+            if f.name == "span":
+                continue
+            if isinstance(val, ast.Node):
+                self._scan_body_for_unknown_calls(val, known, seen)
+            elif isinstance(val, tuple):
+                for item in val:
+                    if isinstance(item, ast.Node):
+                        self._scan_body_for_unknown_calls(
+                            item, known, seen,
+                        )
+
+    def _emit_cross_module_error(
+        self,
+        node: ast.Node,
+        name: str,
+        qualified: str | None = None,
+    ) -> None:
+        """Emit a diagnostic for an imported function call."""
+        display = qualified or name
+        loc = SourceLocation(file=self.file)
+        if node.span:
+            loc.line = node.span.line
+            loc.column = node.span.column
+        self.diagnostics.append(Diagnostic(
+            description=(
+                f"Function '{display}' is not defined in this module. "
+                f"Cross-module compilation is not yet implemented (C7e)."
+            ),
+            location=loc,
+            source_line=self._get_source_line(loc.line),
+            rationale=(
+                "The type checker allows imported functions to be called "
+                "across module boundaries, but the WASM code generator "
+                "cannot yet link multiple modules together. Each compiled "
+                "module must be self-contained."
+            ),
+            fix=(
+                "Use 'vera check' or 'vera verify' to type-check and "
+                "verify multi-module programs. Single-module programs "
+                "compile and run normally."
+            ),
+            spec_ref='Chapter 11, "Compilation Model"',
+            severity="error",
+        ))
 
     # -----------------------------------------------------------------
     # Registration pass
@@ -955,6 +1088,7 @@ class CodeGenerator:
             adt_type_names=adt_type_names,
             generic_fn_info=getattr(self, "_generic_fn_info", None),
             ctor_to_adt=ctor_to_adt,
+            known_fns=set(self._fn_sigs.keys()),
         )
         # Build function return type map for FnCall type inference
         fn_ret_types: dict[str, str | None] = {}
