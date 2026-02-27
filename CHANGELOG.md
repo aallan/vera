@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.41] - 2026-02-27
+
+### Changed
+- **Decompose wasm.py into wasm/ package** (C8a, [#100](https://github.com/aallan/vera/issues/100)):
+  - Split 2,344-line monolith into 8 focused modules using mixin-based composition
+  - `context.py` (369) — composed WasmContext class, expression dispatcher, block translation
+  - `helpers.py` (211) — WasmSlotEnv, StringPool, type mapping, array element helpers
+  - `inference.py` (527) — type inference, slot/type utilities, operator lookup tables
+  - `operators.py` (430) — binary/unary operators, if, quantifiers, assert/assume, old/new
+  - `calls.py` (223) — function calls, generic resolution, effect handlers
+  - `closures.py` (248) — closures, anonymous functions, free variable analysis
+  - `data.py` (460) — constructors, match expressions, arrays, indexing
+  - Zero test changes — public API (`WasmContext`, `WasmSlotEnv`, `StringPool`, `wasm_type`) unchanged
+
 ## [0.0.40] - 2026-02-27
 
 ### Changed
@@ -605,7 +619,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.40...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.41...HEAD
+[0.0.41]: https://github.com/aallan/vera/compare/v0.0.40...v0.0.41
 [0.0.40]: https://github.com/aallan/vera/compare/v0.0.39...v0.0.40
 [0.0.39]: https://github.com/aallan/vera/compare/v0.0.38...v0.0.39
 [0.0.38]: https://github.com/aallan/vera/compare/v0.0.37...v0.0.38

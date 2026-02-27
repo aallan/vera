@@ -45,7 +45,7 @@ Source (.vera)
 └────────────────────────┬─────────────────────────────────┘
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  5. Compile                    codegen.py + wasm.py      │
+│  5. Compile                    codegen.py + wasm/        │
 │     AST → CompileResult          (WAT text + WASM binary)│
 │     Runtime contract insertion for Tier 3                │
 └────────────────────────┬─────────────────────────────────┘
@@ -91,13 +91,20 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `smt.py` | 547 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
 | `verifier.py` | 691 | Verify | Contract verification | `verify()` |
-| `wasm.py` | 2,344 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
+| `wasm/` | 2,474 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
+| ` ├ context.py` | 369 | | Composed WasmContext, expression dispatcher, block translation | |
+| ` ├ helpers.py` | 211 | | WasmSlotEnv, StringPool, type mapping, array element helpers | |
+| ` ├ inference.py` | 527 | | Type inference, slot/type utilities, operator tables | |
+| ` ├ operators.py` | 430 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
+| ` ├ calls.py` | 223 | | Function calls, generic resolution, effect handlers | |
+| ` ├ closures.py` | 248 | | Closures, anonymous functions, free variable analysis | |
+| ` └ data.py` | 460 | | Constructors, match expressions, arrays, indexing | |
 | `codegen.py` | 2,035 | Compile | Codegen orchestrator | `compile()`, `execute()` |
 | `errors.py` | 354 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
 | `cli.py` | 682 | All | CLI commands | `main()` |
 | `registration.py` | 58 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~11,567 lines of Python + 330 lines of grammar.
+Total: ~11,697 lines of Python + 330 lines of grammar.
 
 ## Parsing
 
@@ -362,7 +369,7 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen.py` (2,035 lines), `wasm.py` (2,344 lines)
+**Files:** `codegen.py` (2,035 lines), `wasm/` (2,474 lines across 7 modules)
 
 ### Compilation pipeline
 
@@ -379,7 +386,7 @@ The two-pass architecture mirrors the type checker: pass 1 registers all functio
 
 ### WASM translation
 
-`WasmContext` in `wasm.py` mirrors `SmtContext` in `smt.py`. It translates AST expressions to WAT instructions via `translate_expr()`, which dispatches on AST node type. Returns `None` for unsupported constructs (graceful degradation, same pattern as SMT translation).
+`WasmContext` in `wasm/` mirrors `SmtContext` in `smt.py`. It translates AST expressions to WAT instructions via `translate_expr()`, which dispatches on AST node type. Returns `None` for unsupported constructs (graceful degradation, same pattern as SMT translation).
 
 `WasmSlotEnv` mirrors `SlotEnv` — it maps typed De Bruijn indices (`@T.n`) to WASM local indices. Immutable: `push()` returns a new environment.
 
@@ -605,9 +612,9 @@ Add a case to `SmtContext.translate_expr()` in `smt.py`. Return a Z3 expression 
 
 ### Extending WASM compilation
 
-Add a case to `WasmContext.translate_expr()` in `wasm.py`. Return a list of WAT instruction strings for supported constructs. **Return `None`** for anything that can't be compiled — this triggers a "function skipped" warning rather than a compilation error.
+Add a case to `WasmContext.translate_expr()` in `wasm/context.py` (or the appropriate submodule). Return a list of WAT instruction strings for supported constructs. **Return `None`** for anything that can't be compiled — this triggers a "function skipped" warning rather than a compilation error.
 
-To add a new WASM type mapping, update `wasm_type()` in `wasm.py` and the type mapping table in `codegen.py`.
+To add a new WASM type mapping, update `wasm_type()` in `wasm/helpers.py` and the type mapping table in `codegen.py`.
 
 ### New CLI command
 

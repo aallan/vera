@@ -240,7 +240,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 **C8a — Refactoring** — reduce file sizes to improve maintainability
 
 - <del>[#99](https://github.com/aallan/vera/issues/99) decompose `checker.py` (~1,900 lines) into `checker/` submodules</del> ([v0.0.40](https://github.com/aallan/vera/releases/tag/v0.0.40))
-- [#100](https://github.com/aallan/vera/issues/100) decompose `wasm.py` (~2,300 lines) into `wasm/` submodules
+- <del>[#100](https://github.com/aallan/vera/issues/100) decompose `wasm.py` (~2,300 lines) into `wasm/` submodules</del> ([v0.0.41](https://github.com/aallan/vera/releases/tag/v0.0.41))
 
 **C8b — Diagnostics and tooling** — improve the developer (human and LLM) experience
 
@@ -533,7 +533,14 @@ vera/
 │   │   └── control.py             #   If/match, patterns, handlers
 │   ├── smt.py                     # Z3 SMT translation layer
 │   ├── verifier.py                # Contract verifier
-│   ├── wasm.py                    # WASM translation layer
+│   ├── wasm/                     # WASM translation layer (8 modules)
+│   │   ├── context.py            #   Composed WasmContext, expression dispatcher
+│   │   ├── helpers.py            #   WasmSlotEnv, StringPool, type mapping helpers
+│   │   ├── inference.py          #   Type inference and utilities
+│   │   ├── operators.py          #   Binary/unary operators, quantifiers
+│   │   ├── calls.py              #   Function calls, effect handlers
+│   │   ├── closures.py           #   Closures, free variable analysis
+│   │   └── data.py               #   Constructors, match, arrays
 │   ├── codegen.py                 # Code generation orchestrator
 │   ├── resolver.py                # Module resolver
 │   ├── errors.py                  # LLM-oriented diagnostics
