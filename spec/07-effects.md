@@ -86,7 +86,7 @@ The same effect with the same type parameters MUST NOT appear twice (it would be
 Within a function that declares an effect, operations are called like regular functions:
 
 ```
-private fn increment(@Unit -> @Unit)
+public fn increment(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<State<Int>>)
@@ -98,7 +98,7 @@ private fn increment(@Unit -> @Unit)
 ```
 
 ```
-private fn hello(-> @Unit)
+public fn hello(-> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)

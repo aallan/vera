@@ -59,3 +59,16 @@ private fn describe(@Shape -> @String)
     Triangle(@Float64, @Float64, @Float64) -> "triangle"
   }
 }
+
+-- Entry point: exercise literal pattern matching
+public fn test_match(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match 42 {
+    0 -> 0,
+    1 -> 1,
+    _ -> 99
+  }
+}

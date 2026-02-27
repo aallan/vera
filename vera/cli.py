@@ -335,6 +335,7 @@ def cmd_run(
     fn_args: list[int | float] | None = None,
 ) -> int:
     """Parse, type-check, compile, and execute a .vera file."""
+    from vera.ast import FnDecl
     from vera.checker import typecheck
     from vera.codegen import compile as codegen_compile, execute
     from vera.resolver import ModuleResolver
@@ -383,6 +384,89 @@ def cmd_run(
                 return 1
             for e in errors:
                 print(e.format(), file=sys.stderr)
+            return 1
+
+        # Check for no-exports or private-fn-targeted cases
+        if result.ok and not result.exports:
+            # Build a summary of declared functions and their visibility
+            fn_lines: list[str] = []
+            for tld in ast.declarations:
+                if isinstance(tld.decl, FnDecl):
+                    vis = tld.visibility or "private"
+                    fn_lines.append(f"  {vis} fn {tld.decl.name}")
+            warnings = [
+                d for d in result.diagnostics if d.severity == "warning"
+            ]
+            msg = "No exported functions to call.\n"
+            if fn_lines:
+                msg += "\nDeclared functions:\n"
+                msg += "\n".join(fn_lines)
+                msg += "\n"
+            if warnings:
+                msg += "\nCompilation notes:\n"
+                for w in warnings:
+                    msg += f"  - {w.description}\n"
+            msg += (
+                "\nOnly public functions are exported as WASM entry points."
+                "\nTo make a function callable, declare it as public:\n"
+                "\n  public fn main(-> @Int)"
+                "\n    requires(true)"
+                "\n    ensures(true)"
+                "\n    effects(pure)"
+                "\n  {\n    0\n  }"
+                "\n\nAlternatively, use 'vera check' or 'vera verify' "
+                "to validate without running."
+            )
+            if as_json:
+                print(json.dumps({
+                    "ok": False,
+                    "file": path,
+                    "diagnostics": [{
+                        "severity": "error",
+                        "description": msg,
+                        "location": {"line": 0, "column": 0},
+                    }],
+                }, indent=2))
+                return 1
+            print(f"Error: {msg}", file=sys.stderr)
+            return 1
+
+        if result.ok and fn_name and fn_name not in result.exports:
+            # Check if function exists but is private
+            is_private = any(
+                isinstance(tld.decl, FnDecl)
+                and tld.decl.name == fn_name
+                and tld.visibility == "private"
+                for tld in ast.declarations
+            )
+            if is_private:
+                msg = (
+                    f"Function '{fn_name}' is declared private "
+                    f"and cannot be called directly.\n"
+                    f"\nTo make it callable, change its declaration to:\n"
+                    f"\n  public fn {fn_name}"
+                )
+            else:
+                exports_str = (
+                    ", ".join(result.exports)
+                    if result.exports else "(none)"
+                )
+                msg = (
+                    f"Function '{fn_name}' not found in exports. "
+                    f"Available: {exports_str}"
+                )
+            if as_json:
+                print(json.dumps({
+                    "ok": False,
+                    "file": path,
+                    "diagnostics": [{
+                        "severity": "error",
+                        "description": msg,
+                        "location": {"line": 0, "column": 0},
+                    }],
+                }, indent=2))
+                return 1
+            print(f"Error: {msg}", file=sys.stderr)
             return 1
 
         # Execute

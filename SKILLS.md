@@ -56,7 +56,7 @@ private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
 Complete example:
 
 ```vera
-private fn safe_divide(@Int, @Int -> @Int)
+public fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
@@ -69,8 +69,8 @@ private fn safe_divide(@Int, @Int -> @Int)
 
 Every top-level `fn` and `data` declaration **must** have an explicit visibility modifier. There is no default visibility -- omitting it is an error.
 
-- `public` -- the declaration is visible to other modules that import this one. Use for library APIs and exported functions.
-- `private` -- the declaration is only visible within the current file/module. Use for internal helpers and standalone programs.
+- `public` -- the declaration is visible to other modules that import this one. Only `public` functions are exported as WASM entry points (callable via `vera run`). Use for library APIs, exported functions, and program entry points.
+- `private` -- the declaration is only visible within the current file/module. Private functions compile but are not WASM exports. Use for internal helpers.
 
 ```vera
 public fn exported_api(@Int -> @Int)
@@ -737,7 +737,7 @@ if @Bool.0 then { 1 } else { 0 }
 ### Pure function with postconditions
 
 ```vera
-private fn absolute_value(@Int -> @Nat)
+public fn absolute_value(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)
@@ -754,7 +754,7 @@ private fn absolute_value(@Int -> @Nat)
 ### Recursive function with termination proof
 
 ```vera
-private fn factorial(@Nat -> @Nat)
+public fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -771,7 +771,7 @@ private fn factorial(@Nat -> @Nat)
 ### Stateful effects with old/new
 
 ```vera
-private fn increment(@Unit -> @Unit)
+public fn increment(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -790,7 +790,7 @@ private data List<T> {
   Cons(T, List<T>)
 }
 
-private fn length(@List<Int> -> @Nat)
+public fn length(@List<Int> -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   decreases(@List<Int>.0)

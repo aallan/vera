@@ -50,3 +50,14 @@ private fn unwrap_right(@Either<String, Int>, @Int -> @Int)
     Right(@Int) -> @Int.0
   }
 }
+
+-- Entry point: exercise generics with concrete types
+public fn test_generics(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = identity(42);
+  let @Int = const(@Int.0, true);
+  if is_some(Some(1)) then { @Int.0 } else { 0 }
+}

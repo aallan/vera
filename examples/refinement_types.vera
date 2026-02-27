@@ -10,7 +10,7 @@ type Nat = { @Int | @Int.0 >= 0 };
 type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
 
 -- Safe division — denominator must be non-zero
-private fn safe_divide(@Int, @PosInt -> @Int)
+public fn safe_divide(@Int, @PosInt -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -45,4 +45,13 @@ private fn head(@NonEmptyArray -> @Int)
   effects(pure)
 {
   @NonEmptyArray.0[0]
+}
+
+-- Entry point: exercise safe_divide and to_percentage
+public fn test_refine(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  safe_divide(10, 3) + to_percentage(150)
 }

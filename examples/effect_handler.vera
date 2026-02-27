@@ -20,7 +20,7 @@ private fn count_to_three(@Unit -> @Unit)
 -- Handle State<Int> to implement a counter
 -- The handle expression discharges the effect: run_counter is pure
 -- The put clause uses 'with' to explicitly update handler state
-private fn run_counter(@Unit -> @Int)
+public fn run_counter(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -38,7 +38,7 @@ private fn run_counter(@Unit -> @Int)
 }
 
 -- Simpler test: read the initial state value
-private fn test_state_init(@Unit -> @Int)
+public fn test_state_init(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -52,7 +52,7 @@ private fn test_state_init(@Unit -> @Int)
 }
 
 -- Test: put then get
-private fn test_put_get(@Unit -> @Int)
+public fn test_put_get(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)

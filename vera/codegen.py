@@ -375,13 +375,21 @@ class CodeGenerator:
         functions_wat: list[str] = []
         exports: list[str] = []
 
+        # Build visibility map for export gating
+        fn_visibility: dict[str, str] = {}
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.FnDecl):
+                fn_visibility[tld.decl.name] = tld.visibility or "private"
+
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl):
-                fn_wat = self._compile_fn(decl)
+                is_public = tld.visibility == "public"
+                fn_wat = self._compile_fn(decl, export=is_public)
                 if fn_wat is not None:
                     functions_wat.append(fn_wat)
-                    exports.append(decl.name)
+                    if is_public:
+                        exports.append(decl.name)
                     # Also compile where-block functions
                     if decl.where_fns:
                         for wfn in decl.where_fns:
@@ -391,10 +399,13 @@ class CodeGenerator:
 
         # Compile monomorphized functions
         for mdecl in mono_decls:
-            fn_wat = self._compile_fn(mdecl)
+            orig_name = mdecl.name.split("$")[0]
+            is_public = fn_visibility.get(orig_name) == "public"
+            fn_wat = self._compile_fn(mdecl, export=is_public)
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
-                exports.append(mdecl.name)
+                if is_public:
+                    exports.append(mdecl.name)
 
         # Assemble the module
         wat = self._assemble_module(functions_wat)
