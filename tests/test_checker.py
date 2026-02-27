@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from vera import ast
 from vera.checker import typecheck
 from vera.errors import Diagnostic
 from vera.parser import parse_to_ast
@@ -1318,3 +1319,72 @@ fn classify(@Int -> @String)
   }
 }
 """, "Non-exhaustive")
+
+
+# =====================================================================
+# Module call diagnostics (C7a)
+# =====================================================================
+
+class TestModuleCallDiagnostics:
+    """Test improved module-call diagnostic messages (C7a).
+
+    Module call syntax has a known LALR limitation (grammar eats the
+    function name as part of the module_path). These tests construct
+    AST nodes manually to exercise the checker logic.
+    """
+
+    @staticmethod
+    def _make_program_with_module_call(
+        mod_path: tuple[str, ...],
+        fn_name: str,
+    ) -> ast.Program:
+        """Build a minimal Program with a module call in the body."""
+        call = ast.ModuleCall(
+            path=mod_path,
+            name=fn_name,
+            args=(ast.IntLit(value=42),),
+        )
+        fn = ast.FnDecl(
+            name="main",
+            forall_vars=None,
+            params=(),
+            return_type=ast.NamedType(name="Unit", type_args=None),
+            contracts=(
+                ast.Requires(expr=ast.BoolLit(value=True)),
+                ast.Ensures(expr=ast.BoolLit(value=True)),
+            ),
+            effect=ast.PureEffect(),
+            body=ast.Block(statements=(), expr=call),
+            where_fns=None,
+        )
+        tld = ast.TopLevelDecl(visibility=None, decl=fn)
+        return ast.Program(
+            module=None,
+            imports=(),
+            declarations=(tld,),
+        )
+
+    def test_module_not_found_warning(self) -> None:
+        """ModuleCall without resolved_modules gives 'not found' warning."""
+        prog = self._make_program_with_module_call(("foo",), "bar")
+        diags = typecheck(prog, source="")
+        warns = [d for d in diags if d.severity == "warning"]
+        assert any("not found" in w.description for w in warns)
+
+    def test_module_resolved_warning(self) -> None:
+        """ModuleCall with resolved module gives 'C7b' warning."""
+        from vera.resolver import ResolvedModule
+
+        prog = self._make_program_with_module_call(("foo",), "bar")
+        fake_mod = ResolvedModule(
+            path=("foo",),
+            file_path=Path("/fake/foo.vera"),
+            program=ast.Program(
+                module=None, imports=(), declarations=(),
+            ),
+            source="",
+        )
+        diags = typecheck(prog, source="", resolved_modules=[fake_mod])
+        warns = [d for d in diags if d.severity == "warning"]
+        assert any("C7b" in w.description for w in warns)
+        assert not any("not found" in w.description for w in warns)

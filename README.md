@@ -173,23 +173,8 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C5 | [v0.0.9](https://github.com/aallan/vera/releases/tag/v0.0.9) | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
 | C6 | [v0.0.10](https://github.com/aallan/vera/releases/tag/v0.0.10)–[v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Done |
 | C6.5 | [v0.0.25](https://github.com/aallan/vera/releases/tag/v0.0.25)–[v0.0.30](https://github.com/aallan/vera/releases/tag/v0.0.30) | **Codegen cleanup** — handler fixes, missing operators, String/Array support | Done |
-| C7 | — | **Module system** — cross-file imports, public/private visibility | Planned |
+| C7 | — | **Module system** — cross-file imports, public/private visibility | In progress |
 | C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
-
-### What's next: C7 — Module System
-
-C7 implements cross-file imports, public/private visibility, and multi-module compilation. The grammar already parses `module`, `import`, `public`, `private`, and module-qualified calls — the checker currently returns `UnknownType()` for cross-module references. C7 builds out the infrastructure to resolve those references end-to-end.
-
-Tracked in [#14](https://github.com/aallan/vera/issues/14) (type-checking) and [#50](https://github.com/aallan/vera/issues/50) (code generation). Spec Chapter 8 (Modules) will be written alongside the implementation.
-
-| Sub-phase | Scope |
-|-----------|-------|
-| C7a | Module resolution — map `import` paths to source files and parse them |
-| C7b | Cross-module type environment — merge public declarations across files |
-| C7c | Visibility enforcement — `public`/`private` access control in the checker |
-| C7d | Cross-module verification — verify contracts that reference imported symbols |
-| C7e | Multi-module codegen — WASM import/export tables linking multiple modules |
-| C7f | Spec Chapter 8 — formal module semantics, resolution algorithm, examples |
 
 <details>
 <summary>C6.5 — Codegen & Checker Cleanup (<a href="https://github.com/aallan/vera/releases/tag/v0.0.25">v0.0.25</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.30">v0.0.30</a>) ✓</summary>
@@ -230,6 +215,35 @@ C6 extended WASM compilation to all language constructs, working through the dep
 | C6n | Spec chapters 9 (Standard library) and 12 (Runtime) | [v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) |
 
 </details>
+
+### What's next: C7 — Module System
+
+C7 implements cross-file imports, public/private visibility, and multi-module compilation. The grammar already parses `module`, `import`, `public`, `private`, and module-qualified calls — the checker currently returns `UnknownType()` for cross-module references. C7 builds out the infrastructure to resolve those references end-to-end.
+
+Tracked in [#14](https://github.com/aallan/vera/issues/14) (type-checking) and [#50](https://github.com/aallan/vera/issues/50) (code generation). Spec Chapter 8 (Modules) will be written alongside the implementation.
+
+| Sub-phase | Scope | Status |
+|-----------|-------|--------|
+| C7a | Module resolution — map `import` paths to source files and parse them | In progress |
+| C7b | Cross-module type environment — merge public declarations across files | Planned |
+| C7c | Visibility enforcement — `public`/`private` access control in the checker | Planned |
+| C7d | Cross-module verification — verify contracts that reference imported symbols | Planned |
+| C7e | Multi-module codegen — WASM import/export tables linking multiple modules | Planned |
+| C7f | Spec Chapter 8 — formal module semantics, resolution algorithm, examples | Planned |
+
+### Longer term
+
+Open issues grouped by area. These are tracked for future phases beyond C7.
+
+**Codegen gaps** — [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory, [#52](https://github.com/aallan/vera/issues/52) dynamic string construction, [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation
+
+**Verification** — [#13](https://github.com/aallan/vera/issues/13) expand SMT decidable fragment (Tier 2), [#45](https://github.com/aallan/vera/issues/45) decreases clause termination verification
+
+**Type system** — [#20](https://github.com/aallan/vera/issues/20) TypeVar subtyping, [#21](https://github.com/aallan/vera/issues/21) effect row unification, [#55](https://github.com/aallan/vera/issues/55) minimal type inference
+
+**Tooling** — [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#75](https://github.com/aallan/vera/issues/75) `vera fmt` canonical formatter, [#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing, [#80](https://github.com/aallan/vera/issues/80) stable error code taxonomy
+
+**Language design (spec §0.8)** — [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect, [#58](https://github.com/aallan/vera/issues/58) JSON standard library type, [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises, [#60](https://github.com/aallan/vera/issues/60) abilities and type constraints, [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect, [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal), [#76](https://github.com/aallan/vera/issues/76) Float alias vs Float64 canonical form
 
 ## Getting Started
 
@@ -477,10 +491,11 @@ vera/
 │   ├── verifier.py                # Contract verifier
 │   ├── wasm.py                    # WASM translation layer
 │   ├── codegen.py                 # Code generation orchestrator
+│   ├── resolver.py                # Module resolver (C7a)
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (880 tests)
+├── tests/                         # Test suite (900 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse

@@ -9,6 +9,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **Project website** ([veralang.dev](https://veralang.dev)): single-page site deployed via GitHub Pages ([#81](https://github.com/aallan/vera/pull/81))
 
+## [0.0.31] - 2026-02-26
+
+### Added
+- **Module resolution** (C7a — partial [#14](https://github.com/aallan/vera/issues/14), [#50](https://github.com/aallan/vera/issues/50)): `import` paths now resolve to source files on disk
+  - New `vera/resolver.py`: `ModuleResolver` maps import paths (e.g., `vera.math`) to `.vera` files relative to the importing file or project root
+  - `ResolvedModule` dataclass: path tuple, file path, parsed Program AST, source text
+  - Parse cache: each imported module parsed at most once per compilation session
+  - Circular import detection via in-progress tracking set
+  - Resolver wired into all CLI commands (`check`, `verify`, `compile`, `run`)
+  - `typecheck()` accepts optional `resolved_modules` parameter; improved diagnostic messages distinguish "module resolved but type merging not yet implemented (C7b)" from "module not found"
+  - `verify()` accepts `resolved_modules` for forward-compatibility with C7d
+  - Stub modules `examples/vera/math.vera` and `examples/vera/collections.vera` for the `modules.vera` example
+- README restructured: C6/C6.5 collapsed sections moved above "What's next"; new "Longer term" section with all 19 open issues linked by category
+- 20 new tests (900 total, up from 880)
+
 ## [0.0.30] - 2026-02-26
 
 ### Added
@@ -457,7 +472,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.30...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.31...HEAD
+[0.0.31]: https://github.com/aallan/vera/compare/v0.0.30...v0.0.31
 [0.0.30]: https://github.com/aallan/vera/compare/v0.0.29...v0.0.30
 [0.0.29]: https://github.com/aallan/vera/compare/v0.0.28...v0.0.29
 [0.0.28]: https://github.com/aallan/vera/compare/v0.0.27...v0.0.28

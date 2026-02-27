@@ -1,0 +1,8 @@
+-- Stub module: vera.collections
+-- Provides collection type declarations for cross-module examples.
+
+module vera.collections;
+
+data List<T> { Nil, Cons(T, List<T>) }
+
+data Option<T> { None, Some(T) }

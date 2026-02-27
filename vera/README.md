@@ -10,7 +10,7 @@ For other documentation:
 
 ## Pipeline Overview
 
-The compiler is a six-stage pipeline. Each stage consumes the output of the previous one. Each stage has a single public entry point and is independently testable.
+The compiler is a seven-stage pipeline. Each stage consumes the output of the previous one. Each stage has a single public entry point and is independently testable.
 
 ```
 Source (.vera)
@@ -24,6 +24,12 @@ Source (.vera)
 ┌──────────────────────────────────────────────────────────┐
 │  2. Transform                          transform.py      │
 │     Lark parse tree → typed AST (ast.py)                 │
+└────────────────────────┬─────────────────────────────────┘
+                         ▼
+┌──────────────────────────────────────────────────────────┐
+│  2b. Resolve                           resolver.py       │
+│      Map import paths → source files, parse + cache      │
+│      Circular import detection                           │
 └────────────────────────┬─────────────────────────────────┘
                          ▼
 ┌──────────────────────────────────────────────────────────┐
@@ -74,16 +80,17 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `ast.py` | 682 | Transform | Frozen dataclass AST nodes | `Program`, `Node`, `Expr` |
 | `types.py` | 302 | Type check | Semantic type representation | `Type`, `is_subtype()` |
 | `environment.py` | 300 | Type check | Type environment, scope stacks | `TypeEnv` |
-| `checker.py` | 1,668 | Type check | Two-pass type checker | `typecheck()` |
+| `checker.py` | 1,768 | Type check | Two-pass type checker | `typecheck()` |
+| `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `smt.py` | 485 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
-| `verifier.py` | 601 | Verify | Contract verification | `verify()` |
+| `verifier.py` | 605 | Verify | Contract verification | `verify()` |
 | `wasm.py` | 2,317 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
 | `codegen.py` | 1,773 | Compile | Codegen orchestrator | `compile()`, `execute()` |
 | `errors.py` | 354 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
-| `cli.py` | 563 | All | CLI commands | `main()` |
+| `cli.py` | 594 | All | CLI commands | `main()` |
 | `registration.py` | 56 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~10,323 lines of Python + 328 lines of grammar.
+Total: ~10,636 lines of Python + 328 lines of grammar.
 
 ## Parsing
 
@@ -454,7 +461,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**880 tests** across 10 files, plus 4 validation scripts and CI infrastructure.
+**900 tests** across 11 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -462,10 +469,11 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 |------|------:|------:|----------------|
 | `test_parser.py` | 97 | 829 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 115 | 1,320 | Type synthesis, slot resolution, effects, contracts, exhaustiveness |
+| `test_checker.py` | 117 | 1,390 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, module call diagnostics |
 | `test_verifier.py` | 69 | 918 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions, pipe operator |
 | `test_codegen.py` | 326 | 4,198 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, old/new state postconditions, example round-trips |
-| `test_cli.py` | 76 | 932 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation |
+| `test_cli.py` | 79 | 1,002 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
+| `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
@@ -539,7 +547,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **No module resolution** | `import` declarations parsed but not resolved | [#50](https://github.com/aallan/vera/issues/50) |
+| **Partial module resolution** | `import` paths resolve to files (C7a), but cross-module types not merged (C7b) | [#14](https://github.com/aallan/vera/issues/14), [#50](https://github.com/aallan/vera/issues/50) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | [#21](https://github.com/aallan/vera/issues/21) |
 | **No termination verification** | `decreases` clauses parsed but always Tier 3 | [#45](https://github.com/aallan/vera/issues/45) |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |

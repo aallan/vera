@@ -61,11 +61,15 @@ def verify(
     source: str = "",
     file: str | None = None,
     timeout_ms: int = 10_000,
+    resolved_modules: object | None = None,
 ) -> VerifyResult:
     """Verify contracts in a type-checked Vera Program AST.
 
     Returns a VerifyResult with diagnostics and a verification summary.
     The program must already have passed type checking (C3).
+
+    *resolved_modules* is accepted for forward-compatibility with C7d
+    (cross-module verification) but is unused in this release.
     """
     verifier = ContractVerifier(source=source, file=file, timeout_ms=timeout_ms)
     verifier.verify_program(program)
