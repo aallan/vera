@@ -143,9 +143,9 @@ This principle applies at every stage: parse errors, type errors, effect mismatc
 
 ## Project Status
 
-Vera is in **active development**. The language specification, parser, AST, type checker, contract verifier, and WASM code generator are functional. Programs compile to WebAssembly and execute via wasmtime.
+Vera is in **active development**. The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, and runtime contract insertion — is working. Programs compile to WebAssembly and execute via wasmtime. See the [roadmap](#roadmap) for what's next.
 
-The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, and runtime contract insertion — is working. The language specification is in draft across 13 chapters:
+The language specification is in draft across 13 chapters:
 
 - **[Ch 0: Introduction and Philosophy](spec/00-introduction.md)** — Design goals, the LLM-first premise, and the principles behind mandatory contracts, slot references, and algebraic effects.
 - **[Ch 1: Lexical Structure](spec/01-lexical-structure.md)** — Source encoding (UTF-8), whitespace handling, indentation-free formatting, and token conventions.
