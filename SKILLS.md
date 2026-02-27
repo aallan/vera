@@ -526,6 +526,8 @@ Imported functions can be called by name (bare calls): `import vera.math(abs); a
 
 Imported function contracts are verified at call sites by the SMT solver (C7d). Preconditions of imported functions are checked at each call site; postconditions are assumed. This means `abs(x)` with `ensures(@Int.result >= 0)` lets the caller rely on the result being non-negative.
 
+Cross-module compilation uses a flattening strategy (C7e): imported function bodies are compiled into the same WASM module as the importing program. The result is a single self-contained `.wasm` binary. Imported functions are internal (not exported); only the importing program's `public` functions are WASM exports.
+
 Note: module-qualified call syntax (`vera.math.abs(42)`) is not yet parseable due to an LALR grammar limitation. Use bare calls instead.
 
 ## Comments

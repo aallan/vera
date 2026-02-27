@@ -258,8 +258,10 @@ def cmd_compile(
                 print(e.format(), file=sys.stderr)
             return 1
 
-        # Compile
-        result = codegen_compile(ast, source=source, file=str(p))
+        # Compile (C7e: pass resolved modules for cross-module codegen)
+        result = codegen_compile(
+            ast, source=source, file=str(p), resolved_modules=resolved,
+        )
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
         warnings = [d for d in result.diagnostics if d.severity == "warning"]
@@ -369,8 +371,10 @@ def cmd_run(
                 print(e.format(), file=sys.stderr)
             return 1
 
-        # Compile
-        result = codegen_compile(ast, source=source, file=str(p))
+        # Compile (C7e: pass resolved modules for cross-module codegen)
+        result = codegen_compile(
+            ast, source=source, file=str(p), resolved_modules=resolved,
+        )
 
         if not result.ok:
             errors = [d for d in result.diagnostics if d.severity == "error"]

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.38] - 2026-02-27
+
+### Added
+- **Multi-module codegen** (C7e — [#50](https://github.com/aallan/vera/issues/50)):
+  - Imported function bodies are now compiled into the WASM module via flattening
+  - `vera compile` and `vera run` work with multi-module programs (previously blocked by C7e guard rail)
+  - Private helper functions called by imported public functions are compiled automatically
+  - `ModuleCall` nodes are desugared to flat `FnCall` in WASM translation (including pipe operator)
+  - Guard rail updated: only truly undefined functions produce errors; imported functions pass through
+  - `modules.vera` example now compiles and runs end-to-end
+  - Spec Chapter 11 updated with cross-module compilation section (11.16)
+- 8 new cross-module codegen tests (951 total, up from 943)
+
+### Changed
+- Error messages for undefined functions no longer reference C7e; instead they report "not found in any imported module"
+
 ## [0.0.37] - 2026-02-27
 
 ### Added
