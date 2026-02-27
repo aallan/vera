@@ -111,7 +111,7 @@ Every error includes what went wrong, why, how to fix it with a concrete code ex
 ```
 Error in main.vera at line 12, column 1:
 
-    fn add(@Int, @Int -> @Int)
+    private fn add(@Int, @Int -> @Int)
     ^
 
   Function "add" is missing its contract block. Every function in Vera
@@ -120,7 +120,7 @@ Error in main.vera at line 12, column 1:
 
   Add a contract block after the signature:
 
-    fn add(@Int, @Int -> @Int)
+    private fn add(@Int, @Int -> @Int)
       requires(true)
       ensures(@Int.result == @Int.0 + @Int.1)
       effects(pure)

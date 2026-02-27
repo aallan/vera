@@ -216,7 +216,7 @@ The compiler maintains two distinct type representations:
 Vera uses typed De Bruijn indices instead of variable names. `@Int.0` means "the most recent `Int` binding", `@Int.1` means "the one before that".
 
 ```
-fn add(@Int, @Int -> @Int) {        Parameters bind left-to-right.
+private fn add(@Int, @Int -> @Int) {        Parameters bind left-to-right.
   let @Int = @Int.0 + @Int.1;       @Int.0 = param₂ (rightmost), @Int.1 = param₁
   @Int.0                             @Int.0 = let binding (shadows param₂)
 }
