@@ -90,10 +90,10 @@ class TestPathResolution:
         main = """
 import math;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         lib = """
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.1 }
 """
@@ -106,10 +106,10 @@ fn add(@Int, @Int -> @Int)
         main = """
 import vera.math;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         lib = """
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.1 }
 """
@@ -124,7 +124,7 @@ fn add(@Int, @Int -> @Int)
         main = """
 import nonexistent;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         _resolve_err(tmp_path, main, "Cannot resolve import")
 
@@ -133,7 +133,7 @@ fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
         main = """
 import deeply.nested.missing;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         errors = _resolve_err(tmp_path, main, "Cannot resolve import")
         assert any("deeply.nested.missing" in msg for msg in errors)
@@ -146,10 +146,10 @@ fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
         main = """
 import sibling;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         lib = """
-fn helper(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn helper(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         # main.vera in subdir/, sibling.vera also in subdir/
         main_file = _write_file(tmp_path, "subdir/main.vera", main)
@@ -181,10 +181,10 @@ class TestParseCaching:
         main = """
 import utils;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         utils_src = """
-fn helper(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn helper(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         main_file = _write_file(tmp_path, "main.vera", main)
         _write_file(tmp_path, "utils.vera", utils_src)
@@ -210,20 +210,20 @@ fn helper(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 import b;
 import c;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         b_src = """
 import d;
 
-fn fb(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn fb(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         c_src = """
 import d;
 
-fn fc(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn fc(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         d_src = """
-fn fd(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn fd(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         main_file = _write_file(tmp_path, "main.vera", main_src)
         _write_file(tmp_path, "b.vera", b_src)
@@ -257,12 +257,12 @@ class TestCircularImports:
         a_src = """
 import b;
 
-fn fa(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn fa(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         b_src = """
 import a;
 
-fn fb(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn fb(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         # a.vera imports b.vera, b.vera imports a.vera
         a_file = _write_file(tmp_path, "a.vera", a_src)
@@ -283,7 +283,7 @@ fn fb(-> @Unit) requires(true) ensures(true) effects(pure) { () }
         a_src = """
 import a;
 
-fn fa(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn fa(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         a_file = _write_file(tmp_path, "a.vera", a_src)
 
@@ -304,17 +304,17 @@ fn fa(-> @Unit) requires(true) ensures(true) effects(pure) { () }
         a_src = """
 import b;
 
-fn fa(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn fa(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         b_src = """
 import c;
 
-fn fb(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn fb(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         c_src = """
 import a;
 
-fn fc(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn fc(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         a_file = _write_file(tmp_path, "a.vera", a_src)
         _write_file(tmp_path, "b.vera", b_src)
@@ -344,14 +344,14 @@ class TestImportValidation:
         main = """
 import lib;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         lib = """
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.1 }
 
-fn sub(@Int, @Int -> @Int)
+private fn sub(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 - @Int.1 }
 """
@@ -365,7 +365,7 @@ fn sub(@Int, @Int -> @Int)
         main = """
 import broken;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         broken = "this is not valid vera syntax {{{"
         _resolve_err(
@@ -378,14 +378,14 @@ fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
         main = """
 import lib(add, sub);
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         lib = """
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 + @Int.1 }
 
-fn sub(@Int, @Int -> @Int)
+private fn sub(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 - @Int.1 }
 """
@@ -396,7 +396,7 @@ fn sub(@Int, @Int -> @Int)
     def test_no_imports(self, tmp_path: Path) -> None:
         """File with no imports → empty resolved list."""
         main = """
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         resolved = _resolve_ok(tmp_path, main)
         assert resolved == []
@@ -406,7 +406,7 @@ fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
         main = """
 module my.app;
 
-fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
+private fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
 """
         resolved = _resolve_ok(tmp_path, main)
         assert resolved == []

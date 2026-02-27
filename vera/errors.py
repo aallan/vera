@@ -187,7 +187,7 @@ def missing_contract_block(
         fix=(
             "Add a contract block after the signature:\n"
             "\n"
-            "  fn example(@Int -> @Int)\n"
+            "  private fn example(@Int -> @Int)\n"
             "    requires(true)\n"
             "    ensures(@Int.result >= 0)\n"
             "    effects(pure)\n"

@@ -234,7 +234,7 @@ When Z3 finds a counterexample (a VC is invalid), the compiler reports the speci
 ```
 ERROR: Contract violation in function foo (line 5)
 
-    fn foo(@Int -> @Int)
+    private fn foo(@Int -> @Int)
       requires(true)
       ensures(@Int.result > @Int.0)
       ...
