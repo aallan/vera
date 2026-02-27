@@ -1920,3 +1920,151 @@ private fn main(@Int -> @Int)
         assert "private" in msg.lower()
         assert "priv_fn" in msg
         assert "mymod" in msg
+
+
+# =====================================================================
+# Error code tests
+# =====================================================================
+
+class TestErrorCodes:
+    """Verify that diagnostics carry stable error codes."""
+
+    def test_error_code_in_format_output(self) -> None:
+        """Error codes appear in formatted diagnostic output."""
+        from vera.errors import Diagnostic, SourceLocation
+        d = Diagnostic(
+            description="test error",
+            location=SourceLocation(line=1, column=1),
+            error_code="E130",
+        )
+        formatted = d.format()
+        assert "[E130]" in formatted
+
+    def test_error_code_in_json_output(self) -> None:
+        """Error codes appear in to_dict() JSON output."""
+        from vera.errors import Diagnostic, SourceLocation
+        d = Diagnostic(
+            description="test error",
+            location=SourceLocation(line=1, column=1),
+            error_code="E130",
+        )
+        data = d.to_dict()
+        assert data["error_code"] == "E130"
+
+    def test_no_error_code_omitted_from_format(self) -> None:
+        """Diagnostics without codes don't show empty brackets."""
+        from vera.errors import Diagnostic, SourceLocation
+        d = Diagnostic(
+            description="test error",
+            location=SourceLocation(line=1, column=1),
+        )
+        formatted = d.format()
+        assert "[" not in formatted.split("\n")[0]
+
+    def test_no_error_code_omitted_from_json(self) -> None:
+        """Diagnostics without codes don't include error_code in JSON."""
+        from vera.errors import Diagnostic, SourceLocation
+        d = Diagnostic(
+            description="test error",
+            location=SourceLocation(line=1, column=1),
+        )
+        data = d.to_dict()
+        assert "error_code" not in data
+
+    def test_error_codes_registry_valid(self) -> None:
+        """All codes in ERROR_CODES are valid Exxx patterns and unique."""
+        import re
+        from vera.errors import ERROR_CODES
+        pattern = re.compile(r"^E\d{3}$")
+        seen: set[str] = set()
+        for code in ERROR_CODES:
+            assert pattern.match(code), f"Invalid code format: {code}"
+            assert code not in seen, f"Duplicate code: {code}"
+            seen.add(code)
+        assert len(ERROR_CODES) >= 70  # sanity: we defined ~80 codes
+
+    def test_slot_ref_error_has_code_E130(self) -> None:
+        """Unresolved slot reference produces E130."""
+        src = """\
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Bool.0 }
+"""
+        diags = _errors(src)
+        assert any(d.error_code == "E130" for d in diags)
+
+    def test_body_type_mismatch_has_code_E121(self) -> None:
+        """Function body type mismatch produces E121."""
+        src = """\
+private fn f(@Int -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        diags = _errors(src)
+        assert any(d.error_code == "E121" for d in diags)
+
+    def test_if_condition_not_bool_has_code_E300(self) -> None:
+        """If condition not Bool produces E300."""
+        src = """\
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if @Int.0 then { 1 } else { 0 } }
+"""
+        diags = _errors(src)
+        assert any(d.error_code == "E300" for d in diags)
+
+    def test_unresolved_function_has_code_E200(self) -> None:
+        """Unresolved function produces E200 (warning)."""
+        src = """\
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ unknown_fn(@Int.0) }
+"""
+        diags = _check(src)
+        assert any(d.error_code == "E200" for d in diags)
+
+    def test_requires_not_bool_has_code_E123(self) -> None:
+        """requires() with non-Bool predicate produces E123."""
+        src = """\
+private fn f(@Int -> @Int)
+  requires(@Int.0) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        diags = _errors(src)
+        assert any(d.error_code == "E123" for d in diags)
+
+    def test_let_binding_mismatch_has_code_E170(self) -> None:
+        """Let binding type mismatch produces E170."""
+        src = """\
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Bool = @Int.0;
+  @Int.0
+}
+"""
+        diags = _errors(src)
+        assert any(d.error_code == "E170" for d in diags)
+
+    def test_assert_not_bool_has_code_E172(self) -> None:
+        """assert() with non-Bool produces E172."""
+        src = """\
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  assert(@Int.0);
+  @Int.0
+}
+"""
+        diags = _errors(src)
+        assert any(d.error_code == "E172" for d in diags)
+
+    def test_arithmetic_non_numeric_has_code_E140(self) -> None:
+        """Arithmetic on non-numeric produces E140."""
+        src = """\
+private fn f(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Bool.0 + 1 }
+"""
+        diags = _errors(src)
+        assert any(d.error_code == "E140" for d in diags)

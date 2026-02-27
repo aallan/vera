@@ -38,6 +38,7 @@ class ControlFlowMixin:
                     f"If condition must be Bool, found "
                     f"{pretty_type(cond_ty)}.",
                     spec_ref='Chapter 4, Section 4.8 "Conditional Expressions"',
+                    error_code="E300",
                 )
 
         then_ty = self._synth_expr(expr.then_branch)
@@ -70,6 +71,7 @@ class ControlFlowMixin:
             rationale="Both branches of an if-expression must have "
                       "the same type.",
             spec_ref='Chapter 4, Section 4.8 "Conditional Expressions"',
+            error_code="E301",
         )
         return then_ty  # use then-branch type as best guess
 
@@ -110,6 +112,7 @@ class ControlFlowMixin:
                         f"{pretty_type(result_type)}.",
                         rationale="All match arms must have the same type.",
                         spec_ref='Chapter 4, Section 4.9 "Pattern Matching"',
+                        error_code="E302",
                     )
 
         self._check_exhaustiveness(expr, scrutinee_ty)
@@ -145,6 +148,7 @@ class ControlFlowMixin:
                     "matches all remaining values.",
                     fix="Remove this arm or move it before the catch-all.",
                     spec_ref='Chapter 4, Section 4.9.3 "Unreachable Arms"',
+                    error_code="E310",
                 )
             return  # catch-all guarantees exhaustiveness
 
@@ -172,6 +176,7 @@ class ControlFlowMixin:
                     fix="Add a wildcard '_' arm or cover all cases.",
                     spec_ref='Chapter 4, Section 4.9.2 '
                     '"Exhaustiveness Checking"',
+                    error_code="E311",
                 )
             return
 
@@ -196,6 +201,7 @@ class ControlFlowMixin:
                     fix="Add a wildcard '_' arm or cover all cases.",
                     spec_ref='Chapter 4, Section 4.9.2 '
                     '"Exhaustiveness Checking"',
+                    error_code="E312",
                 )
             return
 
@@ -210,6 +216,7 @@ class ControlFlowMixin:
             fix="Add a wildcard '_' arm or a binding pattern.",
             spec_ref='Chapter 4, Section 4.9.2 '
             '"Exhaustiveness Checking"',
+            error_code="E313",
         )
 
     # -----------------------------------------------------------------
@@ -241,7 +248,7 @@ class ControlFlowMixin:
         ci = self.env.lookup_constructor(pat.name)
         if ci is None:
             self._error(pat, f"Unknown constructor '{pat.name}' in pattern.",
-                        severity="warning")
+                        severity="warning", error_code="E320")
             return []
 
         # Infer type args from expected type
@@ -260,6 +267,7 @@ class ControlFlowMixin:
                 pat,
                 f"Constructor '{pat.name}' has {len(field_types)} field(s), "
                 f"pattern has {len(pat.sub_patterns)} sub-pattern(s).",
+                error_code="E321",
             )
             return []
 
@@ -274,7 +282,7 @@ class ControlFlowMixin:
         ci = self.env.lookup_constructor(pat.name)
         if ci is None:
             self._error(pat, f"Unknown constructor '{pat.name}' in pattern.",
-                        severity="warning")
+                        severity="warning", error_code="E322")
         return []
 
     def _check_binding_pattern(self, pat: ast.BindingPattern,
@@ -300,6 +308,7 @@ class ControlFlowMixin:
             self._error(
                 expr.effect,
                 f"Unknown effect '{effect_inst.name}' in handler.",
+                error_code="E330",
             )
             return UnknownType()
 
@@ -320,6 +329,7 @@ class ControlFlowMixin:
                         f"Handler state initial value has type "
                         f"{pretty_type(init_type)}, expected "
                         f"{pretty_type(state_type)}.",
+                        error_code="E331",
                     )
 
         # Compute handler state canonical type name (for with-clause checks)
@@ -336,6 +346,7 @@ class ControlFlowMixin:
                     clause if hasattr(clause, 'span') else expr,
                     f"Effect '{eff_info.name}' has no operation "
                     f"'{clause.op_name}'.",
+                    error_code="E332",
                 )
                 continue
 
@@ -375,6 +386,7 @@ class ControlFlowMixin:
                         clause,
                         "Handler clause has 'with' state update but "
                         "handler has no state declaration.",
+                        error_code="E333",
                     )
                 else:
                     upd_slot = self._type_expr_to_slot_name(upd_te)
@@ -384,6 +396,7 @@ class ControlFlowMixin:
                             f"State update type '{upd_slot}' does not "
                             f"match handler state type "
                             f"'{state_tname_outer}'.",
+                            error_code="E334",
                         )
                     upd_type = self._synth_expr(upd_expr)
                     if (upd_type and state_type
@@ -394,6 +407,7 @@ class ControlFlowMixin:
                             f"State update expression has type "
                             f"{pretty_type(upd_type)}, expected "
                             f"{pretty_type(state_type)}.",
+                            error_code="E335",
                         )
 
             # Restore previous resume binding (if any)

@@ -80,17 +80,17 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `ast.py` | 785 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
 | `types.py` | 307 | Type check | Semantic type representation | `Type`, `is_subtype()` |
 | `environment.py` | 302 | Type check | Type environment, scope stacks | `TypeEnv` |
-| `checker/` | 2,194 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
-| `  core.py` | 349 | | TypeChecker class, orchestration, contracts | |
+| `checker/` | 2,248 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
+| `  core.py` | 356 | | TypeChecker class, orchestration, contracts | |
 | `  resolution.py` | 190 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 153 | | Cross-module registration (C7b/C7c) | |
 | `  registration.py` | 138 | | Pass 1 forward declarations | |
-| `  expressions.py` | 530 | | Expression synthesis, operators, statements | |
-| `  calls.py` | 390 | | Function/constructor/module calls | |
-| `  control.py` | 439 | | If/match, patterns, effect handlers | |
+| `  expressions.py` | 548 | | Expression synthesis, operators, statements | |
+| `  calls.py` | 405 | | Function/constructor/module calls | |
+| `  control.py` | 453 | | If/match, patterns, effect handlers | |
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `smt.py` | 547 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
-| `verifier.py` | 691 | Verify | Contract verification | `verify()` |
+| `verifier.py` | 703 | Verify | Contract verification | `verify()` |
 | `wasm/` | 2,474 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
 | ` ├ context.py` | 369 | | Composed WasmContext, expression dispatcher, block translation | |
 | ` ├ helpers.py` | 211 | | WasmSlotEnv, StringPool, type mapping, array element helpers | |
@@ -99,12 +99,12 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls.py` | 223 | | Function calls, generic resolution, effect handlers | |
 | ` ├ closures.py` | 248 | | Closures, anonymous functions, free variable analysis | |
 | ` └ data.py` | 460 | | Constructors, match expressions, arrays, indexing | |
-| `codegen.py` | 2,035 | Compile | Codegen orchestrator | `compile()`, `execute()` |
-| `errors.py` | 354 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
+| `codegen.py` | 2,140 | Compile | Codegen orchestrator | `compile()`, `execute()` |
+| `errors.py` | 459 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
 | `cli.py` | 682 | All | CLI commands | `main()` |
 | `registration.py` | 58 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~11,792 lines of Python + 330 lines of grammar.
+Total: ~12,069 lines of Python + 330 lines of grammar.
 
 ## Parsing
 
@@ -190,7 +190,7 @@ Node
 
 ## Type Checking
 
-**Files:** `checker/` (2,194 lines across 8 modules), `types.py` (307 lines), `environment.py` (302 lines)
+**Files:** `checker/` (2,248 lines across 8 modules), `types.py` (307 lines), `environment.py` (302 lines)
 
 This is the most architecturally complex stage.
 
@@ -285,7 +285,7 @@ Additionally, `resume` is bound as a temporary function inside handler clause bo
 
 ## Contract Verification
 
-**Files:** `verifier.py` (691 lines), `smt.py` (547 lines)
+**Files:** `verifier.py` (703 lines), `smt.py` (547 lines)
 
 ### Tiered model
 
@@ -369,7 +369,7 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen.py` (2,035 lines), `wasm/` (2,474 lines across 7 modules)
+**Files:** `codegen.py` (2,140 lines), `wasm/` (2,474 lines across 7 modules)
 
 ### Compilation pipeline
 
@@ -411,7 +411,7 @@ Preconditions are checked at function entry. Postconditions store the return val
 
 ## Error System
 
-**File:** `errors.py` (354 lines)
+**File:** `errors.py` (459 lines)
 
 ```
 VeraError (exception hierarchy)
@@ -421,7 +421,7 @@ VeraError (exception hierarchy)
 └── VerifyError      ← accumulated as Diagnostic, never raised
 ```
 
-Every diagnostic includes six fields designed for LLM consumption:
+Every diagnostic includes eight fields designed for LLM consumption:
 
 ```
 ┌──────────────────────────────────────────────────────┐
@@ -434,6 +434,7 @@ Every diagnostic includes six fields designed for LLM consumption:
 │  fix           concrete corrected code               │
 │  spec_ref      "Chapter X, Section Y.Z"              │
 │  severity      "error" or "warning"                  │
+│  error_code    stable identifier ("E130", "E200")    │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -473,11 +474,27 @@ The type system includes open effect rows (`row_var` field in `ConcreteEffectRow
 
 ### 7. LLM-oriented diagnostics
 
-Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), and spec reference. The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable error code (`E001`–`E607`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+
+### 8. Stable error code taxonomy
+
+Every diagnostic has a unique code grouped by compiler phase:
+
+| Range | Phase | Source |
+|-------|-------|--------|
+| E001–E007 | Parse | `errors.py` factory functions |
+| E010 | Transform | `transform.py` |
+| E1xx | Type check: core + expressions | `checker/core.py`, `checker/expressions.py` |
+| E2xx | Type check: calls | `checker/calls.py` |
+| E3xx | Type check: control flow | `checker/control.py` |
+| E5xx | Verification | `verifier.py` |
+| E6xx | Codegen | `codegen.py` |
+
+The `ERROR_CODES` dict in `errors.py` maps every code to a short description (80 entries). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 
-**971 tests** across 11 files, plus 4 validation scripts and CI infrastructure.
+**984 tests** across 11 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -485,7 +502,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 |------|------:|------:|----------------|
 | `test_parser.py` | 97 | 829 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 143 | 1,922 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility |
+| `test_checker.py` | 156 | 2,070 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility, error codes |
 | `test_verifier.py` | 77 | 1,118 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions, pipe operator, cross-module contracts |
 | `test_codegen.py` | 357 | 4,680 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, contract fail messages, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, old/new state postconditions, cross-module codegen, example round-trips |
 | `test_cli.py` | 85 | 1,138 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
@@ -495,7 +512,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 34 | 287 | Diagnostic formatting, serialisation, error patterns, SourceLocation, diagnose_lark_error |
 
-Total: 11,660 lines of test code.
+Total: 12,032 lines of test code.
 
 ### Round-trip testing
 

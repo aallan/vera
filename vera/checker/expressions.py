@@ -96,7 +96,7 @@ class ExpressionsMixin:
             return self._check_old_expr(expr)
         if isinstance(expr, ast.NewExpr):
             return self._check_new_expr(expr)
-        self._error(expr, f"Unknown expression type: {type(expr).__name__}")
+        self._error(expr, f"Unknown expression type: {type(expr).__name__}", error_code="E176")
         return None
 
     # -----------------------------------------------------------------
@@ -122,6 +122,7 @@ class ExpressionsMixin:
                 fix=f"Ensure enough {tname} bindings are in scope, or use a "
                     f"lower index.",
                 spec_ref='Chapter 3, Section 3.4 "Reference Resolution"',
+                error_code="E130",
             )
             return UnknownType()
         return resolved
@@ -138,6 +139,7 @@ class ExpressionsMixin:
                           "postcondition context.",
                 fix="Move the @T.result reference inside an ensures() clause.",
                 spec_ref='Chapter 3, Section 3.6 "The @result Reference"',
+                error_code="E131",
             )
             return UnknownType()
 
@@ -178,6 +180,7 @@ class ExpressionsMixin:
                     rationale="Arithmetic operators work on Int, Nat, or "
                               "Float64.",
                     spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    error_code="E140",
                 )
                 return UnknownType()
             # Allow Nat+Int => Int, etc. Result is the more general type.
@@ -192,6 +195,7 @@ class ExpressionsMixin:
                 rationale="Both operands must be the same numeric type "
                           "(or Nat where Int is expected).",
                 spec_ref='Chapter 4, Section 4.3 "Operators"',
+                error_code="E141",
             )
             return UnknownType()
 
@@ -207,6 +211,7 @@ class ExpressionsMixin:
                     f"{pretty_type(right_ty)}.",
                     rationale="Equality comparison requires compatible types.",
                     spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    error_code="E142",
                 )
             return BOOL
 
@@ -221,6 +226,7 @@ class ExpressionsMixin:
                     f"found {pretty_type(left_ty)} and "
                     f"{pretty_type(right_ty)}.",
                     spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    error_code="E143",
                 )
             return BOOL
 
@@ -234,6 +240,7 @@ class ExpressionsMixin:
                     f"Left operand of '{op.value}' must be Bool, found "
                     f"{pretty_type(left_ty)}.",
                     spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    error_code="E144",
                 )
             if not is_subtype(right_base, BOOL):
                 self._error(
@@ -241,6 +248,7 @@ class ExpressionsMixin:
                     f"Right operand of '{op.value}' must be Bool, found "
                     f"{pretty_type(right_ty)}.",
                     spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    error_code="E145",
                 )
             return BOOL
 
@@ -282,6 +290,7 @@ class ExpressionsMixin:
                     f"Operator '!' requires Bool operand, found "
                     f"{pretty_type(operand_ty)}.",
                     spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    error_code="E146",
                 )
             return BOOL
 
@@ -292,6 +301,7 @@ class ExpressionsMixin:
                     f"Operator '-' requires numeric operand, found "
                     f"{pretty_type(operand_ty)}.",
                     spec_ref='Chapter 4, Section 4.3 "Operators"',
+                    error_code="E147",
                 )
                 return UnknownType()
             # Negating Nat produces Int (may go negative)
@@ -332,6 +342,7 @@ class ExpressionsMixin:
                         f"Array index must be Int or Nat, found "
                         f"{pretty_type(idx_ty)}.",
                         spec_ref='Chapter 4, Section 4.4 "Array Access"',
+                        error_code="E160",
                     )
             return elem_type
 
@@ -340,6 +351,7 @@ class ExpressionsMixin:
             f"Cannot index {pretty_type(coll_ty)}: indexing requires "
             f"Array<T>.",
             spec_ref='Chapter 4, Section 4.4 "Array Access"',
+            error_code="E161",
         )
         return UnknownType()
 
@@ -378,6 +390,7 @@ class ExpressionsMixin:
                         f"Let binding expects {pretty_type(declared_type)}, "
                         f"value has type {pretty_type(val_type)}.",
                         spec_ref='Chapter 4, Section 4.5 "Let Bindings"',
+                        error_code="E170",
                     )
 
         tname = self._type_expr_to_slot_name(stmt.type_expr)
@@ -418,6 +431,7 @@ class ExpressionsMixin:
                     f"{pretty_type(body_type)}, expected "
                     f"{pretty_type(ret_type)}.",
                     spec_ref='Chapter 5, Section 5.7 "Anonymous Functions"',
+                    error_code="E171",
                 )
 
         return FunctionType(param_types, ret_type, eff)
@@ -459,6 +473,7 @@ class ExpressionsMixin:
                     expr.expr,
                     f"assert() requires Bool, found {pretty_type(ty)}.",
                     spec_ref='Chapter 6, Section 6.6 "Assertions"',
+                    error_code="E172",
                 )
         return UNIT
 
@@ -471,6 +486,7 @@ class ExpressionsMixin:
                     expr.expr,
                     f"assume() requires Bool, found {pretty_type(ty)}.",
                     spec_ref='Chapter 6, Section 6.7 "Assumptions"',
+                    error_code="E173",
                 )
         return UNIT
 
@@ -503,6 +519,7 @@ class ExpressionsMixin:
                 expr,
                 "old() is only valid inside ensures() clauses.",
                 spec_ref='Chapter 7, Section 7.9 "Effect-Contract Interaction"',
+                error_code="E174",
             )
         ei = self._resolve_effect_ref(expr.effect_ref)
         if ei:
@@ -516,6 +533,7 @@ class ExpressionsMixin:
                 expr,
                 "new() is only valid inside ensures() clauses.",
                 spec_ref='Chapter 7, Section 7.9 "Effect-Contract Interaction"',
+                error_code="E175",
             )
         ei = self._resolve_effect_ref(expr.effect_ref)
         if ei:

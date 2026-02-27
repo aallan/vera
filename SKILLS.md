@@ -37,7 +37,26 @@ Use `--json` on `check` or `verify` for machine-readable output:
 {"ok": true, "file": "...", "diagnostics": [], "warnings": []}
 ```
 
-On error, each diagnostic includes `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, and `spec_ref`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts.
+On error, each diagnostic includes `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts.
+
+### Error codes
+
+Every diagnostic has a stable error code (`E001`–`E607`) grouped by compiler phase:
+
+- **E001–E007** — Parse errors (missing contracts, unexpected tokens)
+- **E010** — Transform errors (internal)
+- **E120–E176** — Type check: core + expressions (type mismatches, slot resolution, operators)
+- **E200–E233** — Type check: calls (unresolved functions, argument mismatches, module calls)
+- **E300–E335** — Type check: control flow (if/match, patterns, effect handlers)
+- **E500–E525** — Verification (contract violations, undecidable fallbacks)
+- **E600–E607** — Codegen (unsupported features)
+
+Common codes you'll encounter:
+- **E130** — Unresolved slot reference (`@T.n` has no matching binding)
+- **E121** — Function body type doesn't match return type
+- **E200** — Unresolved function call
+- **E300** — If condition is not Bool
+- **E001** — Missing contract block (requires/ensures/effects)
 
 ## Function Structure
 

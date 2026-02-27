@@ -58,6 +58,7 @@ class CallsMixin:
             rationale="The function is not defined in this file and may come "
                       "from an unresolved import.",
             severity="warning",
+            error_code="E200",
         )
         # Still synth arg types to find errors within them
         for arg in args:
@@ -80,6 +81,7 @@ class CallsMixin:
                 f"Function '{fn_info.name}' expects {len(fn_info.param_types)}"
                 f" argument(s), got {len(args)}.",
                 spec_ref='Chapter 5, Section 5.1 "Function Declarations"',
+                error_code="E201",
             )
             return fn_info.return_type
 
@@ -107,6 +109,7 @@ class CallsMixin:
                     f"{pretty_type(arg_ty)}, expected "
                     f"{pretty_type(param_ty)}.",
                     spec_ref='Chapter 5, Section 5.1 "Function Declarations"',
+                    error_code="E202",
                 )
 
         # Track effects
@@ -135,6 +138,7 @@ class CallsMixin:
                 node,
                 f"Effect operation '{op_info.name}' expects "
                 f"{len(param_types)} argument(s), got {len(args)}.",
+                error_code="E203",
             )
             return return_type
 
@@ -149,6 +153,7 @@ class CallsMixin:
                     f"Argument {i} of '{op_info.name}' has type "
                     f"{pretty_type(arg_ty)}, expected "
                     f"{pretty_type(param_ty)}.",
+                    error_code="E204",
                 )
 
         return return_type
@@ -177,6 +182,7 @@ class CallsMixin:
                 expr,
                 f"Unknown constructor '{expr.name}'.",
                 severity="warning",
+                error_code="E210",
             )
             for arg in expr.args:
                 self._synth_expr(arg)
@@ -193,6 +199,7 @@ class CallsMixin:
                     expr,
                     f"Constructor '{expr.name}' is nullary but was given "
                     f"{len(expr.args)} argument(s).",
+                    error_code="E211",
                 )
             return self._ctor_result_type(ci, arg_types)
 
@@ -201,6 +208,7 @@ class CallsMixin:
                 expr,
                 f"Constructor '{expr.name}' expects "
                 f"{len(ci.field_types)} field(s), got {len(expr.args)}.",
+                error_code="E212",
             )
             return self._ctor_result_type(ci, arg_types)
 
@@ -221,6 +229,7 @@ class CallsMixin:
                     f"Constructor '{expr.name}' field {i} has type "
                     f"{pretty_type(arg_ty)}, expected "
                     f"{pretty_type(field_ty)}.",
+                    error_code="E213",
                 )
 
         return self._ctor_result_type(ci, arg_types)
@@ -230,7 +239,7 @@ class CallsMixin:
         ci = self.env.lookup_constructor(expr.name)
         if ci is None:
             self._error(expr, f"Unknown constructor '{expr.name}'.",
-                        severity="warning")
+                        severity="warning", error_code="E214")
             return UnknownType()
 
         if ci.field_types is not None:
@@ -238,6 +247,7 @@ class CallsMixin:
                 expr,
                 f"Constructor '{expr.name}' requires "
                 f"{len(ci.field_types)} field(s) but was used as nullary.",
+                error_code="E215",
             )
 
         return self._ctor_result_type(ci, [])
@@ -288,6 +298,7 @@ class CallsMixin:
             expr,
             f"Unresolved qualified call '{expr.qualifier}.{expr.name}'.",
             severity="warning",
+            error_code="E220",
         )
         for arg in expr.args:
             self._synth_expr(arg)
@@ -318,6 +329,7 @@ class CallsMixin:
                     "No module matching this import path was resolved. "
                     "Check that the file exists and is imported."
                 ),
+                error_code="E230",
             )
             for arg in expr.args:
                 self._synth_expr(arg)
@@ -340,6 +352,7 @@ class CallsMixin:
                     f"import {mod_label}"
                     f"({', '.join(sorted(import_filter | {fn_name}))});"
                 ),
+                error_code="E231",
             )
             for arg in expr.args:
                 self._synth_expr(arg)
@@ -365,6 +378,7 @@ class CallsMixin:
                 spec_ref=(
                     'Chapter 5, Section 5.8 "Function Visibility"'
                 ),
+                error_code="E232",
             )
             for arg in expr.args:
                 self._synth_expr(arg)
@@ -384,6 +398,7 @@ class CallsMixin:
             f"'{mod_label}'."
             + (f" Available functions: {available}." if available else ""),
             severity="warning",
+            error_code="E233",
         )
         for arg in expr.args:
             self._synth_expr(arg)

@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.43] - 2026-02-27
+
+### Added
+- **Stable error code taxonomy for diagnostics** (C8b, [#80](https://github.com/aallan/vera/issues/80)):
+  - Every diagnostic now carries a stable error code (`E001`–`E607`)
+  - Codes are grouped by compiler phase: parse (E0xx), type check (E1xx–E3xx), verification (E5xx), codegen (E6xx)
+  - 80 error codes across 8 files, covering all 77+ diagnostic emission sites
+  - `Diagnostic` dataclass gains `error_code: str` field
+  - `format()` output shows `[Exxx]` prefix when code is present
+  - `to_dict()` includes `error_code` in JSON output
+  - Central `ERROR_CODES` registry in `vera/errors.py` maps codes to short descriptions
+  - 13 new tests (984 total, up from 971)
+
 ## [0.0.42] - 2026-02-27
 
 ### Changed
@@ -630,7 +643,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.42...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.43...HEAD
+[0.0.43]: https://github.com/aallan/vera/compare/v0.0.42...v0.0.43
 [0.0.42]: https://github.com/aallan/vera/compare/v0.0.41...v0.0.42
 [0.0.41]: https://github.com/aallan/vera/compare/v0.0.40...v0.0.41
 [0.0.40]: https://github.com/aallan/vera/compare/v0.0.39...v0.0.40
