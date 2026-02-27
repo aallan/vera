@@ -131,6 +131,7 @@ class ContractVerifier:
         rationale: str = "",
         fix: str = "",
         spec_ref: str = "",
+        error_code: str = "",
     ) -> None:
         """Record a verification error."""
         loc = SourceLocation(file=self.file)
@@ -145,6 +146,7 @@ class ContractVerifier:
             fix=fix,
             spec_ref=spec_ref,
             severity="error",
+            error_code=error_code,
         ))
 
     def _warning(
@@ -154,6 +156,7 @@ class ContractVerifier:
         *,
         rationale: str = "",
         spec_ref: str = "",
+        error_code: str = "",
     ) -> None:
         """Record a verification warning (Tier 3 fallback)."""
         loc = SourceLocation(file=self.file)
@@ -167,6 +170,7 @@ class ContractVerifier:
             rationale=rationale,
             spec_ref=spec_ref,
             severity="warning",
+            error_code=error_code,
         ))
 
     def _get_source_line(self, line: int) -> str:
@@ -379,6 +383,7 @@ class ContractVerifier:
                         rationale="Generic functions have type variables that "
                                   "cannot be represented in the SMT solver.",
                         spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
+                        error_code="E520",
                     )
                 else:
                     self.summary.tier1_verified += 1
@@ -439,6 +444,7 @@ class ContractVerifier:
                                   "pattern matching, effect operations, "
                                   "quantifiers).",
                         spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
+                        error_code="E521",
                     )
                     continue
                 assumptions.append(z3_pre)
@@ -480,6 +486,7 @@ class ContractVerifier:
                                   "pattern matching, effect operations, "
                                   "generic calls).",
                         spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
+                        error_code="E522",
                     )
                     continue
 
@@ -497,6 +504,7 @@ class ContractVerifier:
                         rationale="The postcondition expression contains "
                                   "constructs that cannot be translated to SMT.",
                         spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
+                        error_code="E523",
                     )
                     continue
 
@@ -521,6 +529,7 @@ class ContractVerifier:
                                   "may indicate the formula is too complex or "
                                   "the timeout was reached.",
                         spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
+                        error_code="E524",
                     )
 
         # 6. Handle decreases clauses (Tier 3 for now)
@@ -537,6 +546,7 @@ class ContractVerifier:
                               "functions requires reasoning about recursive "
                               "call sites, which is not yet implemented.",
                     spec_ref='Chapter 6, Section 6.6 "Termination"',
+                    error_code="E525",
                 )
 
     # -----------------------------------------------------------------
@@ -586,6 +596,7 @@ class ContractVerifier:
                 "postcondition to match the actual function behaviour."
             ),
             spec_ref='Chapter 6, Section 6.4 "Verification Conditions"',
+            error_code="E500",
         )
 
     def _report_call_violation(
@@ -633,6 +644,7 @@ class ContractVerifier:
                 f"precondition is satisfied."
             ),
             spec_ref='Chapter 6, Section 6.4.2 "Call-Site Verification"',
+            error_code="E501",
         )
 
     def _contract_source_text(self, contract: ast.Contract) -> str:

@@ -371,6 +371,7 @@ class CodeGenerator:
         description: str,
         *,
         rationale: str = "",
+        error_code: str = "",
     ) -> None:
         """Record a compilation warning (function skipped)."""
         loc = SourceLocation(file=self.file)
@@ -383,6 +384,7 @@ class CodeGenerator:
             source_line=self._get_source_line(loc.line),
             rationale=rationale,
             severity="warning",
+            error_code=error_code,
         ))
 
     def _get_source_line(self, line: int) -> str:
@@ -1274,6 +1276,7 @@ class CodeGenerator:
                     f"Function '{decl.name}' has unsupported parameter type.",
                     rationale="Only Int, Nat, Float64, Bool, and Unit types "
                     "are compilable in the current WASM backend.",
+                    error_code="E600",
                 )
                 return None
             if wt == "i32_pair":
@@ -1301,6 +1304,7 @@ class CodeGenerator:
                 f"Function '{decl.name}' has unsupported return type.",
                 rationale="Only Int, Nat, Bool, and Unit types are "
                 "compilable in the current WASM backend.",
+                error_code="E601",
             )
             return None
         if ret_wt == "i32_pair":
@@ -1329,6 +1333,7 @@ class CodeGenerator:
                 rationale="The WASM backend does not yet support all "
                 "Vera expression types. This function will not appear "
                 "in the compiled output.",
+                error_code="E602",
             )
             return None
 
@@ -1948,6 +1953,7 @@ class CodeGenerator:
                             f"effect '{eff.name}' — skipped.",
                             rationale="Only pure, IO, and State<T> effects "
                             "are compilable.",
+                            error_code="E603",
                         )
                         return False
                 else:
@@ -1963,6 +1969,7 @@ class CodeGenerator:
                     decl,
                     f"Function '{decl.name}' has unsupported parameter type "
                     f"— skipped.",
+                    error_code="E604",
                 )
                 return False
 
@@ -1973,6 +1980,7 @@ class CodeGenerator:
                 decl,
                 f"Function '{decl.name}' has unsupported return type "
                 f"— skipped.",
+                error_code="E605",
             )
             return False
 
@@ -1991,6 +1999,7 @@ class CodeGenerator:
                 f"Function '{decl.name}' uses State without "
                 f"a type argument — skipped.",
                 rationale="State<T> requires exactly one type argument.",
+                error_code="E606",
             )
             return False
         type_arg = eff.type_args[0]
@@ -2002,6 +2011,7 @@ class CodeGenerator:
                 f"unsupported type — skipped.",
                 rationale="State<T> requires a compilable primitive type "
                 "(Int, Nat, Bool, Float64).",
+                error_code="E607",
             )
             return False
         type_name = self._type_expr_to_slot_name(type_arg)

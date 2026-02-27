@@ -27,7 +27,7 @@ vera run file.vera --fn f -- 42   # Call function f with argument 42
 
 ### Error handling
 
-Error messages are natural language instructions explaining what went wrong and how to fix it. They include the offending source line, a rationale, a concrete code fix, and a spec reference. Feed the full error back into your context to correct the code.
+Error messages are natural language instructions explaining what went wrong and how to fix it. They include the offending source line, a rationale, a concrete code fix, a spec reference, and a stable error code. Feed the full error back into your context to correct the code.
 
 For machine-parseable errors, use the `--json` flag:
 
@@ -43,12 +43,30 @@ For machine-parseable errors, use the `--json` flag:
       "source_line": "private fn add(@Int, @Int -> @Int)",
       "rationale": "Vera requires all functions to have explicit contracts...",
       "fix": "Add a contract block after the signature:\n\n  private fn example(@Int -> @Int)\n    requires(true)\n    ensures(@Int.result >= 0)\n    effects(pure)\n  {\n    ...\n  }",
-      "spec_ref": "Chapter 5, Section 5.1 \"Function Structure\""
+      "spec_ref": "Chapter 5, Section 5.1 \"Function Structure\"",
+      "error_code": "E001"
     }
   ],
   "warnings": []
 }
 ```
+
+### Error codes
+
+Every diagnostic has a stable error code. Common codes:
+
+| Code | Meaning |
+|------|---------|
+| E001 | Missing contract block (requires/ensures/effects) |
+| E121 | Function body type doesn't match return type |
+| E130 | Unresolved slot reference (@T.n has no matching binding) |
+| E140 | Arithmetic requires numeric operands |
+| E170 | Let binding type mismatch |
+| E200 | Unresolved function call |
+| E300 | If condition is not Bool |
+| E311 | Non-exhaustive match |
+
+Full code ranges: E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen). See `vera/errors.py` `ERROR_CODES` for the complete registry.
 
 The `verify --json` output includes a verification summary:
 
@@ -108,7 +126,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 ### Testing
 
 ```bash
-pytest tests/ -v                       # Run all tests (913 tests)
+pytest tests/ -v                       # Run all tests (984 tests)
 mypy vera/                             # Type-check the compiler
 python scripts/check_examples.py       # All 14 examples must pass
 ```
@@ -119,7 +137,7 @@ Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)`
 
 - All 14 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
-- `pytest tests/ -v` must pass (currently 913 tests)
+- `pytest tests/ -v` must pass (currently 984 tests)
 - Version must be in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 
 ### Contributing

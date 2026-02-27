@@ -110,7 +110,8 @@ def _transform_error(msg: str, meta: Any = None) -> TransformError:
     loc = SourceLocation()
     if meta and hasattr(meta, "line") and meta.line is not None:
         loc = SourceLocation(line=meta.line, column=meta.column)
-    return TransformError(Diagnostic(description=msg, location=loc))
+    return TransformError(Diagnostic(description=msg, location=loc,
+                                      error_code="E010"))
 
 
 class VeraTransformer(Transformer):

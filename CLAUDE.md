@@ -87,7 +87,23 @@ Each stage is a module with a public API function and is independently testable.
 {"ok": true, "file": "...", "diagnostics": [], "warnings": []}
 ```
 
-Each diagnostic includes: `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, and `spec_ref`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts.
+Each diagnostic includes: `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts.
+
+### Error codes
+
+Every diagnostic has a stable error code (`E001`–`E607`). Codes are grouped by compiler phase:
+
+| Range | Phase |
+|-------|-------|
+| E001–E007 | Parse errors |
+| E010 | Transform errors |
+| E1xx | Type check: core + expressions |
+| E2xx | Type check: calls |
+| E3xx | Type check: control flow |
+| E5xx | Verification |
+| E6xx | Codegen |
+
+See `vera/errors.py` `ERROR_CODES` dict for the full registry.
 
 ## Git commits
 

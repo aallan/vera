@@ -149,7 +149,8 @@ class TypeChecker(
 
     def _error(self, node: ast.Node, description: str, *,
                rationale: str = "", fix: str = "",
-               spec_ref: str = "", severity: str = "error") -> None:
+               spec_ref: str = "", severity: str = "error",
+               error_code: str = "") -> None:
         """Record a type error diagnostic."""
         loc = SourceLocation(file=self.file)
         if node.span:
@@ -163,6 +164,7 @@ class TypeChecker(
             fix=fix,
             spec_ref=spec_ref,
             severity=severity,
+            error_code=error_code,
         ))
 
     def _source_line(self, node: ast.Node) -> str:
@@ -212,6 +214,7 @@ class TypeChecker(
                     rationale="Data type invariants are predicates that must "
                               "evaluate to Bool.",
                     spec_ref='Chapter 2, Section 2.5 "Algebraic Data Types"',
+                    error_code="E120",
                 )
 
             self.env.type_params = saved_params
@@ -263,6 +266,7 @@ class TypeChecker(
                     fix=f"Change the return type or adjust the body "
                         f"expression.",
                     spec_ref='Chapter 5, Section 5.1 "Function Declarations"',
+                    error_code="E121",
                 )
 
         # 7. Check effect compliance (basic)
@@ -277,6 +281,7 @@ class TypeChecker(
                 fix=f"Declare the appropriate effects, e.g. "
                     f"effects(<{next(iter(self._effect_ops_used), '...')}>).",
                 spec_ref='Chapter 7, Section 7.4 "Performing Effects"',
+                error_code="E122",
             )
 
         # 8. Check where-block functions
@@ -324,6 +329,7 @@ class TypeChecker(
                     f"{pretty_type(ty)}.",
                     rationale="Contract predicates must evaluate to Bool.",
                     spec_ref='Chapter 6, Section 6.2 "Preconditions"',
+                    error_code="E123",
                 )
 
         elif isinstance(contract, ast.Ensures):
@@ -339,6 +345,7 @@ class TypeChecker(
                     f"{pretty_type(ty)}.",
                     rationale="Contract predicates must evaluate to Bool.",
                     spec_ref='Chapter 6, Section 6.3 "Postconditions"',
+                    error_code="E124",
                 )
 
         elif isinstance(contract, ast.Decreases):
