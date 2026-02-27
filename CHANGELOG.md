@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.36] - 2026-02-27
+
+### Fixed
+- **WASM export visibility gate** (C7c — [#107](https://github.com/aallan/vera/pull/107)):
+  - Only `public` functions are now exported as WASM entry points; `private` functions compile but are not accessible via `vera run`
+  - Both the `exports` list and the WAT-level `(export ...)` annotation are gated on visibility
+  - Monomorphized generic functions inherit visibility from the original generic declaration
+- **Improved "no exports" error** ([#107](https://github.com/aallan/vera/pull/107)):
+  - `vera run` on a file with no public functions now lists all declared functions with their visibility, any compilation warnings, and suggests making a function public
+  - `vera run --fn <name>` targeting a private function gives a specific "declared private" error with fix suggestion
+  - Both plain-text and `--json` output modes supported
+- **Runnable examples** ([#107](https://github.com/aallan/vera/pull/107)):
+  - All 13 non-module examples now have `public` test entry points (e.g. `vera run examples/factorial.vera --fn test_factorial`)
+  - Entry-point functions in examples, README, SKILLS.md, spec chapters 5-7, and docs site updated from `private` to `public`
+- 3 new tests (935 total, up from 932)
+
+### Added
+- **Roadmap**: [#106](https://github.com/aallan/vera/issues/106) (universal to-string conversion / Show for all types) added to codegen gaps
+
 ## [0.0.35] - 2026-02-27
 
 ### Fixed
