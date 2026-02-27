@@ -239,7 +239,7 @@ Tracked in [#14](https://github.com/aallan/vera/issues/14) (type-checking) and [
 
 Open issues grouped by area. These are tracked for future phases beyond C7.
 
-**Codegen gaps** — [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory, [#52](https://github.com/aallan/vera/issues/52) dynamic string construction, [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation, [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display) for all types, [#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation
+**Codegen gaps** — [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory, [#52](https://github.com/aallan/vera/issues/52) dynamic string construction, [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation, [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display) for all types, [#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation, [#112](https://github.com/aallan/vera/issues/112) informative runtime contract violation messages
 
 **Verification** — [#13](https://github.com/aallan/vera/issues/13) expand SMT decidable fragment (Tier 2), [#45](https://github.com/aallan/vera/issues/45) decreases clause termination verification
 
