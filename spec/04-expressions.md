@@ -13,7 +13,7 @@ Literal expressions produce values of the corresponding primitive type:
 | Literal | Type | Examples |
 |---------|------|----------|
 | Integer | `Int` | `0`, `42`, `-17` |
-| Float | `Float64` | `3.14`, `-0.5`, `100.0` |
+| Floating-point | `Float64` | `3.14`, `-0.5`, `100.0` |
 | String | `String` | `"hello"`, `""`, `"line\nbreak"` |
 | Boolean | `Bool` | `true`, `false` |
 | Unit | `Unit` | `()` |

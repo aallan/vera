@@ -43,9 +43,9 @@ fn to_string(@Bool -> @String)
 
 -- Multi-variant ADT with exhaustive matching
 data Shape {
-  Circle(Float),
-  Rectangle(Float, Float),
-  Triangle(Float, Float, Float)
+  Circle(Float64),
+  Rectangle(Float64, Float64),
+  Triangle(Float64, Float64, Float64)
 }
 
 fn describe(@Shape -> @String)
@@ -54,8 +54,8 @@ fn describe(@Shape -> @String)
   effects(pure)
 {
   match @Shape.0 {
-    Circle(@Float) -> "circle",
-    Rectangle(@Float, @Float) -> "rectangle",
-    Triangle(@Float, @Float, @Float) -> "triangle"
+    Circle(@Float64) -> "circle",
+    Rectangle(@Float64, @Float64) -> "rectangle",
+    Triangle(@Float64, @Float64, @Float64) -> "triangle"
   }
 }

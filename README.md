@@ -231,6 +231,10 @@ Tracked in [#14](https://github.com/aallan/vera/issues/14) (type-checking) and [
 | C7e | Multi-module codegen — WASM import/export tables linking multiple modules | Planned |
 | C7f | Spec Chapter 8 — formal module semantics, resolution algorithm, examples | Planned |
 
+### Next after C7: refactoring
+
+[#99](https://github.com/aallan/vera/issues/99) decompose `checker.py` into `checker/` submodules, [#100](https://github.com/aallan/vera/issues/100) decompose `wasm.py` into `wasm/` submodules
+
 ### Longer term
 
 Open issues grouped by area. These are tracked for future phases beyond C7.
@@ -243,7 +247,7 @@ Open issues grouped by area. These are tracked for future phases beyond C7.
 
 **Tooling** — [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#75](https://github.com/aallan/vera/issues/75) `vera fmt` canonical formatter, [#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing, [#80](https://github.com/aallan/vera/issues/80) stable error code taxonomy, [#95](https://github.com/aallan/vera/issues/95) LALR grammar fix for module-qualified call syntax
 
-**Language design (spec §0.8)** — [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect, [#58](https://github.com/aallan/vera/issues/58) JSON standard library type, [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises, [#60](https://github.com/aallan/vera/issues/60) abilities and type constraints, [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect, [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal), [#76](https://github.com/aallan/vera/issues/76) Float alias vs Float64 canonical form
+**Language design (spec §0.8)** — [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect, [#58](https://github.com/aallan/vera/issues/58) JSON standard library type, [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises, [#60](https://github.com/aallan/vera/issues/60) abilities and type constraints, [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect, [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal)
 
 ## Getting Started
 

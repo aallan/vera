@@ -129,7 +129,7 @@ def wasm_type(t: Type) -> str | None:
     if isinstance(t, PrimitiveType):
         if t.name in ("Int", "Nat"):
             return "i64"
-        if t.name in ("Float64", "Float"):
+        if t.name == "Float64":
             return "f64"
         if t.name in ("Bool", "Byte"):
             return "i32"
@@ -171,7 +171,7 @@ def _element_mem_size(elem_type: str) -> int | None:
         return 4  # i32
     if elem_type in ("Int", "Nat"):
         return 8  # i64
-    if elem_type in ("Float64", "Float"):
+    if elem_type == "Float64":
         return 8  # f64
     return None
 
@@ -184,7 +184,7 @@ def _element_load_op(elem_type: str) -> str | None:
         return "i32.load"
     if elem_type in ("Int", "Nat"):
         return "i64.load"
-    if elem_type in ("Float64", "Float"):
+    if elem_type == "Float64":
         return "f64.load"
     return None
 
@@ -197,7 +197,7 @@ def _element_store_op(elem_type: str) -> str | None:
         return "i32.store"
     if elem_type in ("Int", "Nat"):
         return "i64.store"
-    if elem_type in ("Float64", "Float"):
+    if elem_type == "Float64":
         return "f64.store"
     return None
 
@@ -208,7 +208,7 @@ def _element_wasm_type(elem_type: str) -> str | None:
         return "i32"
     if elem_type in ("Int", "Nat"):
         return "i64"
-    if elem_type in ("Float64", "Float"):
+    if elem_type == "Float64":
         return "f64"
     return None
 
@@ -594,7 +594,7 @@ class WasmContext:
             resolved = self._resolve_base_type_name(expr.type_name)
             if resolved in ("Int", "Nat"):
                 return "i64"
-            if resolved in ("Float64", "Float"):
+            if resolved == "Float64":
                 return "f64"
             if resolved in ("Bool", "Byte"):
                 return "i32"
@@ -612,7 +612,7 @@ class WasmContext:
         if isinstance(expr, ast.ResultRef):
             if expr.type_name in ("Int", "Nat"):
                 return "i64"
-            if expr.type_name in ("Float64", "Float"):
+            if expr.type_name == "Float64":
                 return "f64"
             if expr.type_name in ("Bool", "Byte"):
                 return "i32"
@@ -764,7 +764,7 @@ class WasmContext:
             name = self._resolve_base_type_name(expr.type_name)
             if name in ("Int", "Nat"):
                 return "i64"
-            if name in ("Float64", "Float"):
+            if name == "Float64":
                 return "f64"
             if name in ("Bool", "Byte"):
                 return "i32"
@@ -1646,7 +1646,7 @@ class WasmContext:
             name = ret.name
             if name in ("Int", "Nat"):
                 return "i64"
-            if name in ("Float64", "Float"):
+            if name == "Float64":
                 return "f64"
             if name == "Bool":
                 return "i32"
@@ -1665,7 +1665,7 @@ class WasmContext:
                 name = p.name
                 if name in ("Int", "Nat"):
                     types.append("i64")
-                elif name in ("Float64", "Float"):
+                elif name == "Float64":
                     types.append("f64")
                 elif name == "Bool":
                     types.append("i32")
@@ -1800,7 +1800,7 @@ class WasmContext:
         """Map a Vera type name string to a WASM type string."""
         if type_name in ("Int", "Nat"):
             return "i64"
-        if type_name in ("Float64", "Float"):
+        if type_name == "Float64":
             return "f64"
         if type_name in ("Bool", "Byte"):
             return "i32"
@@ -2298,7 +2298,7 @@ class WasmContext:
         name = self._resolve_base_type_name(name)
         if name in ("Int", "Nat"):
             return "i64"
-        if name in ("Float64", "Float"):
+        if name == "Float64":
             return "f64"
         if name in ("Bool", "Byte"):
             return "i32"

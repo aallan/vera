@@ -36,6 +36,7 @@ from vera.types import (
     NUMERIC_TYPES,
     ORDERABLE_TYPES,
     PRIMITIVES,
+    REMOVED_ALIASES,
     STRING,
     UNIT,
     AdtType,
@@ -126,6 +127,8 @@ class TypeChecker:
         self._import_names: dict[
             tuple[str, ...], set[str] | None
         ] = {}
+        # De-dup removed-alias errors (emitted once per alias name).
+        self._reported_alias_errors: set[str] = set()
 
     # -----------------------------------------------------------------
     # C7b: cross-module registration
@@ -277,6 +280,21 @@ class TypeChecker:
                 args = tuple(self._resolve_type(a) for a in te.type_args)
                 return AdtType(name, args)
             return AdtType(name, ())
+
+        # Removed alias? — produce a helpful "did you mean" error.
+        canonical = REMOVED_ALIASES.get(name)
+        if canonical is not None:
+            if name not in self._reported_alias_errors:
+                self._reported_alias_errors.add(name)
+                self._error(
+                    te,
+                    f"'{name}' is not a type. Did you mean '{canonical}'?",
+                    rationale=(f"'{name}' was removed; "
+                               f"use '{canonical}' instead."),
+                    fix=f"Replace '{name}' with '{canonical}'.",
+                    spec_ref="Chapter 2 — Primitive Types",
+                )
+            return UnknownType()
 
         # Unknown — might be a type from an unresolved import
         return AdtType(name, tuple(
