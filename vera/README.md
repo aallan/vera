@@ -74,27 +74,27 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 
 | Module | Lines | Stage | Purpose | Key API |
 |--------|------:|-------|---------|---------|
-| `grammar.lark` | 328 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
+| `grammar.lark` | 330 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
 | `parser.py` | 147 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
-| `transform.py` | 990 | Transform | Lark tree → AST transformer | `transform()` |
-| `ast.py` | 682 | Transform | Frozen dataclass AST nodes | `Program`, `Node`, `Expr` |
-| `types.py` | 302 | Type check | Semantic type representation | `Type`, `is_subtype()` |
-| `environment.py` | 300 | Type check | Type environment, scope stacks | `TypeEnv` |
-| `checker.py` | 1,888 | Type check | Two-pass type checker, cross-module merging | `typecheck()` |
+| `transform.py` | 1,000 | Transform | Lark tree → AST transformer | `transform()` |
+| `ast.py` | 690 | Transform | Frozen dataclass AST nodes | `Program`, `Node`, `Expr` |
+| `types.py` | 307 | Type check | Semantic type representation | `Type`, `is_subtype()` |
+| `environment.py` | 302 | Type check | Type environment, scope stacks | `TypeEnv` |
+| `checker.py` | 2,043 | Type check | Two-pass type checker, cross-module merging | `typecheck()` |
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
-| `smt.py` | 485 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
-| `verifier.py` | 605 | Verify | Contract verification | `verify()` |
-| `wasm.py` | 2,317 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
-| `codegen.py` | 1,773 | Compile | Codegen orchestrator | `compile()`, `execute()` |
+| `smt.py` | 547 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
+| `verifier.py` | 691 | Verify | Contract verification | `verify()` |
+| `wasm.py` | 2,344 | Compile | WASM translation layer | `WasmContext`, `WasmSlotEnv` |
+| `codegen.py` | 2,035 | Compile | Codegen orchestrator | `compile()`, `execute()` |
 | `errors.py` | 354 | All | Diagnostic class, error hierarchy | `Diagnostic`, `VeraError` |
-| `cli.py` | 594 | All | CLI commands | `main()` |
-| `registration.py` | 56 | Type check | Shared function registration | `register_fn()` |
+| `cli.py` | 682 | All | CLI commands | `main()` |
+| `registration.py` | 58 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~10,737 lines of Python + 328 lines of grammar.
+Total: ~11,413 lines of Python + 330 lines of grammar.
 
 ## Parsing
 
-**Files:** `grammar.lark` (328 lines), `parser.py` (147 lines)
+**Files:** `grammar.lark` (330 lines), `parser.py` (147 lines)
 
 The grammar is a Lark LALR(1) grammar derived from the formal EBNF in spec Chapter 10. It uses:
 
@@ -109,7 +109,7 @@ The parser is **lazily constructed and cached** — `_get_parser()` builds the L
 
 ## AST
 
-**Files:** `ast.py` (682 lines), `transform.py` (990 lines)
+**Files:** `ast.py` (690 lines), `transform.py` (1,000 lines)
 
 ### Node hierarchy
 
@@ -176,7 +176,7 @@ Node
 
 ## Type Checking
 
-**Files:** `checker.py` (1,888 lines), `types.py` (302 lines), `environment.py` (300 lines)
+**Files:** `checker.py` (2,043 lines), `types.py` (307 lines), `environment.py` (302 lines)
 
 This is the most architecturally complex stage.
 
@@ -271,7 +271,7 @@ Additionally, `resume` is bound as a temporary function inside handler clause bo
 
 ## Contract Verification
 
-**Files:** `verifier.py` (601 lines), `smt.py` (485 lines)
+**Files:** `verifier.py` (691 lines), `smt.py` (547 lines)
 
 ### Tiered model
 
@@ -355,7 +355,7 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen.py` (1,773 lines), `wasm.py` (2,317 lines)
+**Files:** `codegen.py` (2,035 lines), `wasm.py` (2,344 lines)
 
 ### Compilation pipeline
 
@@ -461,7 +461,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**913 tests** across 11 files, plus 4 validation scripts and CI infrastructure.
+**951 tests** across 11 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -469,17 +469,17 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 |------|------:|------:|----------------|
 | `test_parser.py` | 97 | 829 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 130 | 1,690 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing |
-| `test_verifier.py` | 69 | 918 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions, pipe operator |
-| `test_codegen.py` | 326 | 4,198 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, old/new state postconditions, example round-trips |
-| `test_cli.py` | 80 | 1,027 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
+| `test_checker.py` | 143 | 1,922 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility |
+| `test_verifier.py` | 77 | 1,118 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions, pipe operator, cross-module contracts |
+| `test_codegen.py` | 337 | 4,456 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, old/new state postconditions, cross-module codegen, example round-trips |
+| `test_cli.py` | 85 | 1,138 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 | `test_errors.py` | 34 | 287 | Diagnostic formatting, serialisation, error patterns, SourceLocation, diagnose_lark_error |
 
-Total: 9,982 lines of test code.
+Total: 11,660 lines of test code.
 
 ### Round-trip testing
 

@@ -53,6 +53,8 @@ public fn main(@Unit -> @Unit)
 }
 ```
 
+> [`examples/hello_world.vera`](examples/hello_world.vera) — run with `vera run examples/hello_world.vera`
+
 ### Pure functions — postconditions the compiler can verify
 
 There are no variable names. `@Int.0` refers to the most recent `Int` binding — a typed positional index, like De Bruijn indices but namespaced by type. The `ensures` clause is a machine-checkable promise: the result is non-negative and equals the absolute value of the input. The compiler verifies this via SMT solver.
@@ -72,6 +74,8 @@ public fn absolute_value(@Int -> @Nat)
 }
 ```
 
+> [`examples/absolute_value.vera`](examples/absolute_value.vera) — run with `vera run examples/absolute_value.vera --fn absolute_value -- -42`
+
 ### Preconditions — rejecting bad inputs at compile time
 
 `requires(@Int.1 != 0)` means this function cannot be called with a zero divisor. The compiler checks every call site to prove the precondition holds. If it cannot prove it, the code does not compile. Division by zero is not a runtime error — it is a type error.
@@ -85,6 +89,8 @@ public fn safe_divide(@Int, @Int -> @Int)
   @Int.0 / @Int.1
 }
 ```
+
+> [`examples/safe_divide.vera`](examples/safe_divide.vera) — run with `vera run examples/safe_divide.vera --fn safe_divide -- 3 10`
 
 ### Algebraic effects — explicit state, no hidden mutation
 
@@ -101,6 +107,8 @@ public fn increment(@Unit -> @Unit)
   ()
 }
 ```
+
+> [`examples/increment.vera`](examples/increment.vera) — this example uses `State<Int>` effects (not directly runnable via `vera run`)
 
 ## What Errors Look Like
 
@@ -271,7 +279,14 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 
 ### Beyond C8
 
-**Language design (spec §0.8)** — [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect, [#58](https://github.com/aallan/vera/issues/58) JSON standard library type, [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises, [#60](https://github.com/aallan/vera/issues/60) abilities and type constraints, [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect, [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal)
+**Language design** (spec §0.8) — new effects, types, and standard library extensions
+
+- [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect
+- [#58](https://github.com/aallan/vera/issues/58) JSON standard library type
+- [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises
+- [#60](https://github.com/aallan/vera/issues/60) abilities and type constraints
+- [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
+- [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal)
 
 ## Getting Started
 

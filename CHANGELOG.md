@@ -591,7 +591,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.35...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.39...HEAD
+[0.0.39]: https://github.com/aallan/vera/compare/v0.0.38...v0.0.39
+[0.0.38]: https://github.com/aallan/vera/compare/v0.0.37...v0.0.38
+[0.0.37]: https://github.com/aallan/vera/compare/v0.0.36...v0.0.37
+[0.0.36]: https://github.com/aallan/vera/compare/v0.0.35...v0.0.36
 [0.0.35]: https://github.com/aallan/vera/compare/v0.0.34...v0.0.35
 [0.0.34]: https://github.com/aallan/vera/compare/v0.0.33...v0.0.34
 [0.0.33]: https://github.com/aallan/vera/compare/v0.0.32...v0.0.33
