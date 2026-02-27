@@ -80,7 +80,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `ast.py` | 682 | Transform | Frozen dataclass AST nodes | `Program`, `Node`, `Expr` |
 | `types.py` | 302 | Type check | Semantic type representation | `Type`, `is_subtype()` |
 | `environment.py` | 300 | Type check | Type environment, scope stacks | `TypeEnv` |
-| `checker.py` | 1,768 | Type check | Two-pass type checker | `typecheck()` |
+| `checker.py` | 1,888 | Type check | Two-pass type checker, cross-module merging | `typecheck()` |
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `smt.py` | 485 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
 | `verifier.py` | 605 | Verify | Contract verification | `verify()` |
@@ -90,7 +90,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `cli.py` | 594 | All | CLI commands | `main()` |
 | `registration.py` | 56 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~10,636 lines of Python + 328 lines of grammar.
+Total: ~10,737 lines of Python + 328 lines of grammar.
 
 ## Parsing
 
@@ -176,22 +176,22 @@ Node
 
 ## Type Checking
 
-**Files:** `checker.py` (1,668 lines), `types.py` (302 lines), `environment.py` (300 lines)
+**Files:** `checker.py` (1,888 lines), `types.py` (302 lines), `environment.py` (300 lines)
 
 This is the most architecturally complex stage.
 
-### Two-pass architecture
+### Three-pass architecture
 
 ```
-              Pass 1: Registration                  Pass 2: Checking
-         ┌────────────────────────┐          ┌──────────────────────────┐
-         │  Walk all declarations │          │  Walk all declarations   │
-         │                        │          │                          │
-         │  Register into TypeEnv:│          │  For each function:      │
-         │   • functions           │  TypeEnv │   • bind forall vars    │
-         │   • ADTs + constructors│ ───────▶ │   • resolve param types  │
-         │   • type aliases       │ populated│   • push scope, bind     │
-         │   • effects + ops      │          │   • check contracts      │
+ Pass 0: Module Registration       Pass 1: Local Registration         Pass 2: Checking
+  ┌──────────────────────┐          ┌────────────────────────┐          ┌──────────────────────────┐
+  │  For each resolved   │          │  Walk all declarations │          │  Walk all declarations   │
+  │  module:             │          │                        │          │                          │
+  │   • create temp      │          │  Register into TypeEnv:│          │  For each function:      │
+  │     TypeChecker      │  TypeEnv │   • functions           │  TypeEnv │   • bind forall vars    │
+  │   • register decls   │ ───────▶ │   • ADTs + constructors│ ───────▶ │   • resolve param types  │
+  │   • harvest into     │ imports  │   • type aliases       │ populated│   • push scope, bind     │
+  │     module-qual dicts│ injected │   • effects + ops      │          │   • check contracts      │
          │                        │          │   • synthesise body type │
          │  (signatures only,     │          │   • check effects        │
          │   no bodies checked)   │          │   • pop scope            │
@@ -461,7 +461,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**900 tests** across 11 files, plus 4 validation scripts and CI infrastructure.
+**913 tests** across 11 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -469,10 +469,10 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 |------|------:|------:|----------------|
 | `test_parser.py` | 97 | 829 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 117 | 1,390 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, module call diagnostics |
+| `test_checker.py` | 130 | 1,690 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing |
 | `test_verifier.py` | 69 | 918 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions, pipe operator |
 | `test_codegen.py` | 326 | 4,198 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, old/new state postconditions, example round-trips |
-| `test_cli.py` | 79 | 1,002 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
+| `test_cli.py` | 80 | 1,027 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
@@ -547,7 +547,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Partial module resolution** | `import` paths resolve to files (C7a), but cross-module types not merged (C7b) | [#14](https://github.com/aallan/vera/issues/14), [#50](https://github.com/aallan/vera/issues/50) |
+| **Partial module system** | Resolution (C7a) and type merging (C7b) complete; visibility (C7c), verification (C7d), and codegen (C7e) pending | [#14](https://github.com/aallan/vera/issues/14), [#50](https://github.com/aallan/vera/issues/50), [#95](https://github.com/aallan/vera/issues/95) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | [#21](https://github.com/aallan/vera/issues/21) |
 | **No termination verification** | `decreases` clauses parsed but always Tier 3 | [#45](https://github.com/aallan/vera/issues/45) |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |

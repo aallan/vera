@@ -1000,3 +1000,28 @@ fn main(-> @Unit) requires(true) ensures(true) effects(pure) { () }
             "Cannot resolve import" in d["description"]
             for d in data["diagnostics"]
         )
+
+    def test_check_with_bare_imported_call(self, tmp_path: Path) -> None:
+        """vera check passes when main.vera calls an imported function."""
+        lib_src = """\
+fn double(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + @Int.0 }
+"""
+        main_src = """\
+import lib(double);
+fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ double(@Int.0) }
+"""
+        lib_dir = tmp_path / "lib.vera"
+        lib_dir.write_text(lib_src, encoding="utf-8")
+        main_file = tmp_path / "main.vera"
+        main_file.write_text(main_src, encoding="utf-8")
+
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", str(main_file)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "OK" in result.stdout

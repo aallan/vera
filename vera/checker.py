@@ -75,9 +75,9 @@ def typecheck(
     Returns a list of Diagnostics (empty = no errors).
 
     *resolved_modules* — modules resolved from ``import`` declarations
-    (see :class:`~vera.resolver.ModuleResolver`).  Used in C7a to
-    improve diagnostics for cross-module calls; actual type merging
-    is deferred to C7b.
+    (see :class:`~vera.resolver.ModuleResolver`).  Cross-module type
+    merging (C7b): imported function signatures are registered and
+    used for arity, argument-type, and effect checking.
     """
     checker = TypeChecker(
         source=source, file=file, resolved_modules=resolved_modules,
@@ -104,11 +104,93 @@ class TypeChecker:
         self.source = source
         self.file = file
         self._effect_ops_used: set[str] = set()
-        # Resolved module paths for improved diagnostics (C7a).
-        # Actual type merging is deferred to C7b.
+        # Resolved modules (C7a: paths for diagnostics, C7b: full list
+        # for cross-module type merging).
+        self._resolved_modules: list[ResolvedModule] = (
+            resolved_modules or []
+        )
         self._resolved_module_paths: set[tuple[str, ...]] = {
-            m.path for m in (resolved_modules or [])
+            m.path for m in self._resolved_modules
         }
+        # C7b: per-module declaration registries (for ModuleCall path).
+        self._module_functions: dict[
+            tuple[str, ...], dict[str, FunctionInfo]
+        ] = {}
+        self._module_data_types: dict[
+            tuple[str, ...], dict[str, AdtInfo]
+        ] = {}
+        self._module_constructors: dict[
+            tuple[str, ...], dict[str, ConstructorInfo]
+        ] = {}
+        # C7b: import-name filter from ImportDecl nodes.
+        self._import_names: dict[
+            tuple[str, ...], set[str] | None
+        ] = {}
+
+    # -----------------------------------------------------------------
+    # C7b: cross-module registration
+    # -----------------------------------------------------------------
+
+    def _register_modules(self, program: ast.Program) -> None:
+        """Register declarations from resolved modules (C7b).
+
+        1. Build an import-name filter from the program's ``import``
+           declarations (selective vs wildcard).
+        2. For each resolved module, run the registration pass in an
+           isolated TypeChecker to populate its ``TypeEnv``, then
+           harvest the declarations into per-module dicts.
+        3. Inject selectively imported names into ``self.env`` so
+           bare calls (``abs(42)`` after ``import vera.math(abs)``)
+           resolve through the normal ``_check_call_with_args`` path.
+        """
+        # 1. Build import filter
+        for imp in program.imports:
+            self._import_names[imp.path] = (
+                set(imp.names) if imp.names is not None else None
+            )
+
+        # Snapshot builtin names (TypeEnv registers builtins in __post_init__)
+        _builtins = TypeEnv()
+        builtin_fn_names = set(_builtins.functions)
+        builtin_data_names = set(_builtins.data_types)
+        builtin_ctor_names = set(_builtins.constructors)
+
+        # 2. Register each module in isolation, harvest declarations
+        for mod in self._resolved_modules:
+            temp = TypeChecker(source=mod.source)
+            temp._register_all(mod.program)
+
+            # Keep only module-declared names (builtins have span=None)
+            mod_fns = {
+                k: v for k, v in temp.env.functions.items()
+                if k not in builtin_fn_names or v.span is not None
+            }
+            mod_data = {
+                k: v for k, v in temp.env.data_types.items()
+                if k not in builtin_data_names
+            }
+            mod_ctors = {
+                k: v for k, v in temp.env.constructors.items()
+                if k not in builtin_ctor_names
+            }
+
+            self._module_functions[mod.path] = mod_fns
+            self._module_data_types[mod.path] = mod_data
+            self._module_constructors[mod.path] = mod_ctors
+
+            # 3. Inject into main env for bare calls
+            name_filter = self._import_names.get(mod.path)
+            for fn_name, fn_info in mod_fns.items():
+                if name_filter is None or fn_name in name_filter:
+                    self.env.functions.setdefault(fn_name, fn_info)
+            for dt_name, dt_info in mod_data.items():
+                if name_filter is None or dt_name in name_filter:
+                    self.env.data_types.setdefault(dt_name, dt_info)
+            for ct_name, ct_info in mod_ctors.items():
+                # Constructors: include if parent type is in import list
+                parent = ct_info.parent_type
+                if name_filter is None or parent in name_filter:
+                    self.env.constructors.setdefault(ct_name, ct_info)
 
     # -----------------------------------------------------------------
     # Diagnostics
@@ -359,8 +441,9 @@ class TypeChecker:
     # -----------------------------------------------------------------
 
     def check_program(self, program: ast.Program) -> None:
-        """Entry point: register all declarations, then check each."""
-        self._register_all(program)
+        """Entry point: register modules, then local declarations, then check."""
+        self._register_modules(program)  # C7b: cross-module imports
+        self._register_all(program)  # local declarations shadow imports
         for tld in program.declarations:
             self._check_decl(tld.decl)
 
@@ -1101,34 +1184,71 @@ class TypeChecker:
         return UnknownType()
 
     def _check_module_call(self, expr: ast.ModuleCall) -> Type | None:
-        """Type-check a module call: path.to.fn(args)."""
+        """Type-check a module-qualified call: path.to.fn(args).
+
+        Lookup order:
+        1. Module not resolved → warning (same as C7a).
+        2. Name not in selective import list → error.
+        3. Function found → delegate to ``_check_fn_call_with_info``.
+        4. Function not found in module → warning with available list.
+        """
         mod_path = tuple(expr.path)
-        if mod_path in self._resolved_module_paths:
-            # Module was resolved by the resolver (C7a) but cross-module
-            # type merging is not yet implemented (C7b).
+        fn_name = expr.name
+        mod_label = ".".join(expr.path)
+
+        # 1. Module not resolved
+        if mod_path not in self._resolved_module_paths:
             self._error(
                 expr,
-                f"Module '{'.'.join(expr.path)}' resolved, but "
-                f"cross-module type checking is not yet implemented "
-                f"(C7b). Call to '{expr.name}' is unchecked.",
-                severity="warning",
-                rationale=(
-                    "The module was found and parsed successfully. "
-                    "Type merging across module boundaries will be "
-                    "available in a future release (C7b)."
-                ),
-            )
-        else:
-            self._error(
-                expr,
-                f"Module '{'.'.join(expr.path)}' not found. "
-                f"Cannot resolve call to '{expr.name}'.",
+                f"Module '{mod_label}' not found. "
+                f"Cannot resolve call to '{fn_name}'.",
                 severity="warning",
                 rationale=(
                     "No module matching this import path was resolved. "
                     "Check that the file exists and is imported."
                 ),
             )
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
+
+        # 2. Selective import filter
+        import_filter = self._import_names.get(mod_path)
+        if import_filter is not None and fn_name not in import_filter:
+            self._error(
+                expr,
+                f"'{fn_name}' is not imported from module "
+                f"'{mod_label}'. "
+                f"Imported names: {sorted(import_filter)}.",
+                rationale=(
+                    "The import declaration uses selective imports. "
+                    "Add the name to the import list to use it."
+                ),
+                fix=(
+                    f"Change the import to include '{fn_name}': "
+                    f"import {mod_label}"
+                    f"({', '.join(sorted(import_filter | {fn_name}))});"
+                ),
+            )
+            for arg in expr.args:
+                self._synth_expr(arg)
+            return UnknownType()
+
+        # 3. Look up function in module's registered declarations
+        mod_fns = self._module_functions.get(mod_path, {})
+        fn_info = mod_fns.get(fn_name)
+        if fn_info is not None:
+            return self._check_fn_call_with_info(fn_info, expr.args, expr)
+
+        # 4. Function not found in module
+        available = sorted(mod_fns.keys())
+        self._error(
+            expr,
+            f"Function '{fn_name}' not found in module "
+            f"'{mod_label}'."
+            + (f" Available functions: {available}." if available else ""),
+            severity="warning",
+        )
         for arg in expr.args:
             self._synth_expr(arg)
         return UnknownType()

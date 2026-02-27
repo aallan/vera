@@ -23,6 +23,15 @@ public fn clamp(@Int, @Int, @Int -> @Int)
   }
 }
 
+-- Use imported functions via bare calls (C7b)
+public fn abs_max(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  abs(max(@Int.0, @Int.1))
+}
+
 -- Private function — internal to this module
 private fn helper(@Int -> @Int)
   requires(true)
