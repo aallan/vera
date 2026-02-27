@@ -6,9 +6,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Added
-- **Project website** ([veralang.dev](https://veralang.dev)): single-page site deployed via GitHub Pages ([#81](https://github.com/aallan/vera/pull/81))
-
 ## [0.0.32] - 2026-02-27
 
 ### Added
@@ -23,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - Module declarations registered in isolated `TypeChecker` instances to avoid namespace pollution
   - `examples/modules.vera` now exercises bare cross-module calls (`abs`, `max` from `vera.math`)
 - LALR grammar limitation for module-qualified call syntax tracked as [#95](https://github.com/aallan/vera/issues/95)
+- **Project website** ([veralang.dev](https://veralang.dev)): single-page site deployed via GitHub Pages ([#81](https://github.com/aallan/vera/pull/81))
 - 13 new tests (913 total, up from 900)
 
 ## [0.0.31] - 2026-02-26
@@ -488,7 +486,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.31...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.32...HEAD
 [0.0.32]: https://github.com/aallan/vera/compare/v0.0.31...v0.0.32
 [0.0.31]: https://github.com/aallan/vera/compare/v0.0.30...v0.0.31
 [0.0.30]: https://github.com/aallan/vera/compare/v0.0.29...v0.0.30
