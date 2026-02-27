@@ -524,11 +524,15 @@ Import paths resolve to files on disk: `import vera.math;` looks for `vera/math.
 
 Imported functions can be called by name (bare calls): `import vera.math(abs); abs(-5)` resolves `abs` from the imported module. Selective imports restrict available names; wildcard imports (`import m;`) make all declarations available. Local definitions shadow imported names. Imported ADT constructors are also available: `import col(List); Cons(1, Nil)`.
 
-Imported function contracts are verified at call sites by the SMT solver (C7d). Preconditions of imported functions are checked at each call site; postconditions are assumed. This means `abs(x)` with `ensures(@Int.result >= 0)` lets the caller rely on the result being non-negative.
+Imported function contracts are verified at call sites by the SMT solver. Preconditions of imported functions are checked at each call site; postconditions are assumed. This means `abs(x)` with `ensures(@Int.result >= 0)` lets the caller rely on the result being non-negative.
 
-Cross-module compilation uses a flattening strategy (C7e): imported function bodies are compiled into the same WASM module as the importing program. The result is a single self-contained `.wasm` binary. Imported functions are internal (not exported); only the importing program's `public` functions are WASM exports.
+Cross-module compilation uses a flattening strategy: imported function bodies are compiled into the same WASM module as the importing program. The result is a single self-contained `.wasm` binary. Imported functions are internal (not exported); only the importing program's `public` functions are WASM exports.
 
-Note: module-qualified call syntax (`vera.math.abs(42)`) is not yet parseable due to an LALR grammar limitation. Use bare calls instead.
+Type aliases and effect declarations are module-local and cannot be imported. If another module needs the same alias or effect, it must declare its own copy.
+
+Note: module-qualified call syntax (`vera.math.abs(42)`) is not yet parseable due to an LALR grammar limitation ([#95](https://github.com/aallan/vera/issues/95)). Use bare calls instead.
+
+See: spec Chapter 8 for the full module system specification.
 
 ## Comments
 

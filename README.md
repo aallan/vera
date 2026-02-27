@@ -148,7 +148,7 @@ Vera is in **active development**. The language specification, parser, AST, type
 | — Ch 5: Functions | Draft |
 | — Ch 6: Contracts | Draft |
 | — Ch 7: Effects | Draft |
-| — Ch 8: Modules | Not started |
+| — Ch 8: Modules | Draft |
 | — Ch 9: Standard Library | Draft |
 | — Ch 10: Formal Grammar | Draft |
 | — Ch 11: Compilation Model | Draft |
@@ -173,8 +173,24 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C5 | [v0.0.9](https://github.com/aallan/vera/releases/tag/v0.0.9) | **WASM codegen** — compile to WebAssembly, `vera compile` / `vera run` | Done |
 | C6 | [v0.0.10](https://github.com/aallan/vera/releases/tag/v0.0.10)–[v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Done |
 | C6.5 | [v0.0.25](https://github.com/aallan/vera/releases/tag/v0.0.25)–[v0.0.30](https://github.com/aallan/vera/releases/tag/v0.0.30) | **Codegen cleanup** — handler fixes, missing operators, String/Array support | Done |
-| C7 | — | **Module system** — cross-file imports, public/private visibility | In progress |
-| C8 | v0.1.0 | **End-to-end** — all examples compile and run, spec complete, polish | Planned |
+| C7 | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31)–[v0.0.39](https://github.com/aallan/vera/releases/tag/v0.0.39) | **Module system** — cross-file imports, visibility, multi-module compilation | Done |
+| C8 | v0.1.0 | **Polish** — refactoring, tooling, diagnostics, verification depth | Next |
+
+<details>
+<summary>C7 — Module System (<a href="https://github.com/aallan/vera/releases/tag/v0.0.31">v0.0.31</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.39">v0.0.39</a>) ✓</summary>
+
+C7 implemented the full module system: file-based resolution, cross-module type checking with visibility enforcement, cross-module contract verification, and multi-module WASM compilation using a flattening strategy. Spec Chapter 8 (Modules) documents the formal semantics.
+
+| Sub-phase | Scope | Version |
+|-----------|-------|---------|
+| C7a | Module resolution — map `import` paths to source files and parse them | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31) |
+| C7b | Cross-module type environment — merge public declarations across files | [v0.0.32](https://github.com/aallan/vera/releases/tag/v0.0.32) |
+| C7c | Visibility enforcement — `public`/`private` access control in the checker | [v0.0.34](https://github.com/aallan/vera/releases/tag/v0.0.34)–[v0.0.35](https://github.com/aallan/vera/releases/tag/v0.0.35) |
+| C7d | Cross-module verification — verify contracts that reference imported symbols | [v0.0.37](https://github.com/aallan/vera/releases/tag/v0.0.37) |
+| C7e | Multi-module codegen — flatten imported functions into the WASM module | [v0.0.38](https://github.com/aallan/vera/releases/tag/v0.0.38) |
+| C7f | Spec Chapter 8 — formal module semantics, resolution algorithm, examples | [v0.0.39](https://github.com/aallan/vera/releases/tag/v0.0.39) |
+
+</details>
 
 <details>
 <summary>C6.5 — Codegen & Checker Cleanup (<a href="https://github.com/aallan/vera/releases/tag/v0.0.25">v0.0.25</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.30">v0.0.30</a>) ✓</summary>
@@ -216,36 +232,44 @@ C6 extended WASM compilation to all language constructs, working through the dep
 
 </details>
 
-### What's next: C7 — Module System
+### What's next: C8 — Polish
 
-C7 implements cross-file imports, public/private visibility, and multi-module compilation. The grammar already parses `module`, `import`, `public`, `private`, and module-qualified calls — the checker currently returns `UnknownType()` for cross-module references. C7 builds out the infrastructure to resolve those references end-to-end.
+C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issues are grouped into sub-phases ordered by impact and dependency.
 
-Tracked in [#14](https://github.com/aallan/vera/issues/14) (type-checking) and [#50](https://github.com/aallan/vera/issues/50) (code generation). Spec Chapter 8 (Modules) will be written alongside the implementation.
+**C8a — Refactoring** — reduce file sizes to improve maintainability
 
-| Sub-phase | Scope | Status |
-|-----------|-------|--------|
-| C7a | Module resolution — map `import` paths to source files and parse them | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31) |
-| C7b | Cross-module type environment — merge public declarations across files | [v0.0.32](https://github.com/aallan/vera/releases/tag/v0.0.32) |
-| C7c | Visibility enforcement — `public`/`private` access control in the checker | [v0.0.34](https://github.com/aallan/vera/releases/tag/v0.0.34)–[v0.0.35](https://github.com/aallan/vera/releases/tag/v0.0.35) |
-| C7d | Cross-module verification — verify contracts that reference imported symbols | [v0.0.37](https://github.com/aallan/vera/releases/tag/v0.0.37) |
-| C7e | Multi-module codegen — flatten imported functions into the WASM module | [v0.0.38](https://github.com/aallan/vera/releases/tag/v0.0.38) |
-| C7f | Spec Chapter 8 — formal module semantics, resolution algorithm, examples | Planned |
+- [#99](https://github.com/aallan/vera/issues/99) decompose `checker.py` (~1,900 lines) into `checker/` submodules
+- [#100](https://github.com/aallan/vera/issues/100) decompose `wasm.py` (~2,300 lines) into `wasm/` submodules
 
-### Next after C7: refactoring
+**C8b — Diagnostics and tooling** — improve the developer (human and LLM) experience
 
-[#99](https://github.com/aallan/vera/issues/99) decompose `checker.py` into `checker/` submodules, [#100](https://github.com/aallan/vera/issues/100) decompose `wasm.py` into `wasm/` submodules
+- [#112](https://github.com/aallan/vera/issues/112) informative runtime contract violation error messages
+- [#80](https://github.com/aallan/vera/issues/80) stable error code taxonomy for diagnostics
+- [#75](https://github.com/aallan/vera/issues/75) `vera fmt` canonical formatter
+- [#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing
+- [#95](https://github.com/aallan/vera/issues/95) LALR grammar fix for module-qualified call syntax
 
-### Longer term
+**C8c — Verification depth** — expand what the SMT solver can prove
 
-Open issues grouped by area. These are tracked for future phases beyond C7.
+- [#13](https://github.com/aallan/vera/issues/13) expand SMT decidable fragment (Tier 2 verification)
+- [#45](https://github.com/aallan/vera/issues/45) `decreases` clause termination verification
 
-**Codegen gaps** — [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory, [#52](https://github.com/aallan/vera/issues/52) dynamic string construction, [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation, [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display) for all types, [#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation, [#112](https://github.com/aallan/vera/issues/112) informative runtime contract violation messages
+**C8d — Type system** — close type-checking gaps
 
-**Verification** — [#13](https://github.com/aallan/vera/issues/13) expand SMT decidable fragment (Tier 2), [#45](https://github.com/aallan/vera/issues/45) decreases clause termination verification
+- [#20](https://github.com/aallan/vera/issues/20) TypeVar subtyping
+- [#21](https://github.com/aallan/vera/issues/21) effect row unification and subeffecting
+- [#55](https://github.com/aallan/vera/issues/55) minimal type inference
 
-**Type system** — [#20](https://github.com/aallan/vera/issues/20) TypeVar subtyping, [#21](https://github.com/aallan/vera/issues/21) effect row unification, [#55](https://github.com/aallan/vera/issues/55) minimal type inference
+**C8e — Codegen gaps** — extend WASM compilation
 
-**Tooling** — [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#75](https://github.com/aallan/vera/issues/75) `vera fmt` canonical formatter, [#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing, [#80](https://github.com/aallan/vera/issues/80) stable error code taxonomy, [#95](https://github.com/aallan/vera/issues/95) LALR grammar fix for module-qualified call syntax
+- [#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation
+- [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display)
+- [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation
+- [#52](https://github.com/aallan/vera/issues/52) dynamic string construction
+- [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory
+- [#56](https://github.com/aallan/vera/issues/56) incremental compilation
+
+### Beyond C8
 
 **Language design (spec §0.8)** — [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect, [#58](https://github.com/aallan/vera/issues/58) JSON standard library type, [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises, [#60](https://github.com/aallan/vera/issues/60) abilities and type constraints, [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect, [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal)
 

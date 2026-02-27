@@ -136,6 +136,8 @@ visibility: PUBLIC | PRIVATE
 
 > **Note:** The grammar marks `visibility` as optional (`?`) for parser flexibility, but the type checker enforces it as mandatory for `fn` and `data` declarations (see Section 5.8). Omitting the modifier is a compile error.
 
+For the semantics of module declarations, imports, visibility modifiers, and name resolution, see Chapter 8.
+
 ### 10.3.2 Function Declarations
 
 ```ebnf

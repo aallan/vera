@@ -555,7 +555,7 @@ This resolution applies uniformly to parameter types, return types, let bindings
 
 ## 11.16 Cross-Module Compilation
 
-When a program imports functions from other modules, the compiler uses a **flattening** strategy: imported function bodies are compiled into the same WASM module as the importing program. This produces a single self-contained `.wasm` binary with no external dependencies beyond host imports (IO, State).
+When a program imports functions from other modules (see Chapter 8 for the module system), the compiler uses a **flattening** strategy: imported function bodies are compiled into the same WASM module as the importing program. This produces a single self-contained `.wasm` binary with no external dependencies beyond host imports (IO, State).
 
 The compilation process:
 
