@@ -632,7 +632,7 @@ class TestFunctionTypes:
 class TestFloatLiterals:
     def test_float_in_expression(self) -> None:
         parse("""
-        fn f(@Unit -> @Float)
+        fn f(@Unit -> @Float64)
           requires(true)
           ensures(true)
           effects(pure)
@@ -643,12 +643,12 @@ class TestFloatLiterals:
 
     def test_float_arithmetic(self) -> None:
         parse("""
-        fn f(@Float -> @Float)
+        fn f(@Float64 -> @Float64)
           requires(true)
           ensures(true)
           effects(pure)
         {
-          @Float.0 * 2.0 + 1.5
+          @Float64.0 * 2.0 + 1.5
         }
         """)
 

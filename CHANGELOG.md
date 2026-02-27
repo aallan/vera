@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.33] - 2026-02-27
+
+### Removed
+- **`Float` type alias** (closes [#76](https://github.com/aallan/vera/issues/76)): `Float` is no longer accepted as a type name — use `Float64` exclusively
+  - Enforces design principle 3 ("one canonical form") from spec §1.8
+  - Removed `"Float": FLOAT64` alias from `vera/types.py` PRIMITIVES dict
+  - Simplified ~12 dual-name checks in `wasm.py` and `codegen.py`
+  - Updated `examples/pattern_matching.vera` to use `Float64`
+  - Updated spec chapters 4 and 11 to remove `Float` references
+  - Decomposition issues tracked: [#99](https://github.com/aallan/vera/issues/99) (checker.py), [#100](https://github.com/aallan/vera/issues/100) (wasm.py)
+- 1 new test (914 total, up from 913)
+
 ## [0.0.32] - 2026-02-27
 
 ### Added
@@ -486,7 +498,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.32...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.33...HEAD
+[0.0.33]: https://github.com/aallan/vera/compare/v0.0.32...v0.0.33
 [0.0.32]: https://github.com/aallan/vera/compare/v0.0.31...v0.0.32
 [0.0.31]: https://github.com/aallan/vera/compare/v0.0.30...v0.0.31
 [0.0.30]: https://github.com/aallan/vera/compare/v0.0.29...v0.0.30

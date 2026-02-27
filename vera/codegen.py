@@ -1710,7 +1710,7 @@ class CodeGenerator:
             name = te.name
             if name in ("Int", "Nat"):
                 return "i64"
-            if name in ("Float64", "Float"):
+            if name == "Float64":
                 return "f64"
             if name in ("Bool", "Byte"):
                 return "i32"

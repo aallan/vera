@@ -30,7 +30,7 @@ Vera types map to WASM value types as follows:
 | `Nat` | `i64` | Non-negativity enforced by contracts, not by WASM type |
 | `Bool` | `i32` | `0` = `false`, `1` = `true` |
 | `Byte` | `i32` | Unsigned 0-255; uses unsigned comparison ops (`i32.lt_u`, etc.) |
-| `Float64` / `Float` | `f64` | 64-bit IEEE 754 floating point |
+| `Float64` | `f64` | 64-bit IEEE 754 floating point |
 | `Unit` | *(none)* | Functions returning `Unit` have no WASM result type |
 | `String` | `i32, i32` | Pointer and length pair (UTF-8 bytes in linear memory) |
 | `Array<T>` | `i32, i32` | Pointer and length pair (elements in linear memory); see Section 11.13 |

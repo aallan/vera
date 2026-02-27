@@ -159,6 +159,14 @@ fn foo(@Unit -> @Unit)
 { () }
 """)
 
+    def test_float_alias_rejected(self) -> None:
+        """'Float' is not a type — only 'Float64' is accepted (#76)."""
+        _check_err("""
+fn foo(@Unit -> @Float)
+  requires(true) ensures(true) effects(pure)
+{ 3.14 }
+""", "'Float' is not a type. Did you mean 'Float64'?")
+
 
 # =====================================================================
 # Slot references

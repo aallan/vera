@@ -116,11 +116,16 @@ PRIMITIVES: dict[str, Type] = {
     "Nat": NAT,
     "Bool": BOOL,
     "Float64": FLOAT64,
-    "Float": FLOAT64,  # common alias used in examples
     "String": STRING,
     "Byte": BYTE,
     "Unit": UNIT,
     "Never": NEVER,
+}
+
+# Removed aliases — used by the checker to produce helpful error messages
+# when a user writes an old alias name instead of the canonical type.
+REMOVED_ALIASES: dict[str, str] = {
+    "Float": "Float64",
 }
 
 # Numeric types (for operator checking)
