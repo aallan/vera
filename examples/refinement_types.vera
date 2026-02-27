@@ -10,7 +10,7 @@ type Nat = { @Int | @Int.0 >= 0 };
 type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
 
 -- Safe division — denominator must be non-zero
-fn safe_divide(@Int, @PosInt -> @Int)
+private fn safe_divide(@Int, @PosInt -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -19,7 +19,7 @@ fn safe_divide(@Int, @PosInt -> @Int)
 }
 
 -- Clamp a value to a percentage
-fn to_percentage(@Int -> @Percentage)
+private fn to_percentage(@Int -> @Percentage)
   requires(true)
   ensures(true)
   effects(pure)
@@ -39,7 +39,7 @@ fn to_percentage(@Int -> @Percentage)
 type NonEmptyArray = { @Array<Int> | length(@Array<Int>.0) > 0 };
 
 -- Head of a non-empty array — always safe
-fn head(@NonEmptyArray -> @Int)
+private fn head(@NonEmptyArray -> @Int)
   requires(true)
   ensures(true)
   effects(pure)

@@ -1,7 +1,7 @@
 -- Mutual recursion with where blocks
 
 -- is_even and is_odd defined together
-fn is_even(@Nat -> @Bool)
+private fn is_even(@Nat -> @Bool)
   requires(true)
   ensures(true)
   decreases(@Nat.0)

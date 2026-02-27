@@ -31,64 +31,64 @@ def test_example_files_parse(filename: str) -> None:
 
 class TestExpressions:
     def test_integer_literal(self) -> None:
-        tree = parse("fn f(@Unit -> @Int) requires(true) ensures(true) effects(pure) { 42 }")
+        tree = parse("private fn f(@Unit -> @Int) requires(true) ensures(true) effects(pure) { 42 }")
         assert tree is not None
 
     def test_arithmetic(self) -> None:
-        parse("fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 + 1 }")
-        parse("fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 * 2 - 3 }")
-        parse("fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 / 2 % 3 }")
+        parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 + 1 }")
+        parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 * 2 - 3 }")
+        parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 / 2 % 3 }")
 
     def test_comparison(self) -> None:
-        parse("fn f(@Int -> @Bool) requires(true) ensures(true) effects(pure) { @Int.0 > 0 }")
-        parse("fn f(@Int -> @Bool) requires(true) ensures(true) effects(pure) { @Int.0 <= 10 }")
+        parse("private fn f(@Int -> @Bool) requires(true) ensures(true) effects(pure) { @Int.0 > 0 }")
+        parse("private fn f(@Int -> @Bool) requires(true) ensures(true) effects(pure) { @Int.0 <= 10 }")
 
     def test_boolean_operators(self) -> None:
-        parse("fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) effects(pure) { @Bool.0 && @Bool.1 }")
-        parse("fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) effects(pure) { @Bool.0 || @Bool.1 }")
-        parse("fn f(@Bool -> @Bool) requires(true) ensures(true) effects(pure) { !@Bool.0 }")
+        parse("private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) effects(pure) { @Bool.0 && @Bool.1 }")
+        parse("private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) effects(pure) { @Bool.0 || @Bool.1 }")
+        parse("private fn f(@Bool -> @Bool) requires(true) ensures(true) effects(pure) { !@Bool.0 }")
 
     def test_implies(self) -> None:
-        parse("fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) effects(pure) { @Bool.0 ==> @Bool.1 }")
+        parse("private fn f(@Bool, @Bool -> @Bool) requires(true) ensures(true) effects(pure) { @Bool.0 ==> @Bool.1 }")
 
     def test_pipe(self) -> None:
-        parse("fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 + 1 |> abs() }")
+        parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 + 1 |> abs() }")
 
     def test_negation(self) -> None:
-        parse("fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { -@Int.0 }")
+        parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { -@Int.0 }")
 
     def test_parenthesized(self) -> None:
-        parse("fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { (@Int.0 + 1) * 2 }")
+        parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { (@Int.0 + 1) * 2 }")
 
     def test_array_literal(self) -> None:
-        parse("fn f(@Unit -> @Array<Int>) requires(true) ensures(true) effects(pure) { [1, 2, 3] }")
+        parse("private fn f(@Unit -> @Array<Int>) requires(true) ensures(true) effects(pure) { [1, 2, 3] }")
 
     def test_array_index(self) -> None:
-        parse("fn f(@Array<Int> -> @Int) requires(true) ensures(true) effects(pure) { @Array<Int>.0[0] }")
+        parse("private fn f(@Array<Int> -> @Int) requires(true) ensures(true) effects(pure) { @Array<Int>.0[0] }")
 
     def test_string_literal(self) -> None:
-        parse('fn f(@Unit -> @String) requires(true) ensures(true) effects(pure) { "hello" }')
+        parse('private fn f(@Unit -> @String) requires(true) ensures(true) effects(pure) { "hello" }')
 
     def test_unit_literal(self) -> None:
-        parse("fn f(@Unit -> @Unit) requires(true) ensures(true) effects(pure) { () }")
+        parse("private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(pure) { () }")
 
 
 class TestFunctions:
     def test_multiple_params(self) -> None:
-        parse("fn f(@Int, @Bool, @String -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }")
+        parse("private fn f(@Int, @Bool, @String -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }")
 
     def test_multiple_requires(self) -> None:
-        parse("fn f(@Int -> @Int) requires(@Int.0 > 0) requires(@Int.0 < 100) ensures(true) effects(pure) { @Int.0 }")
+        parse("private fn f(@Int -> @Int) requires(@Int.0 > 0) requires(@Int.0 < 100) ensures(true) effects(pure) { @Int.0 }")
 
     def test_multiple_ensures(self) -> None:
-        parse("fn f(@Int -> @Nat) requires(true) ensures(@Nat.result >= 0) ensures(@Nat.result <= @Int.0) effects(pure) { @Int.0 }")
+        parse("private fn f(@Int -> @Nat) requires(true) ensures(@Nat.result >= 0) ensures(@Nat.result <= @Int.0) effects(pure) { @Int.0 }")
 
     def test_decreases_clause(self) -> None:
-        parse("fn f(@Nat -> @Nat) requires(true) ensures(true) decreases(@Nat.0) effects(pure) { @Nat.0 }")
+        parse("private fn f(@Nat -> @Nat) requires(true) ensures(true) decreases(@Nat.0) effects(pure) { @Nat.0 }")
 
     def test_recursive_call(self) -> None:
         parse("""
-        fn f(@Nat -> @Nat)
+        private fn f(@Nat -> @Nat)
           requires(true)
           ensures(true)
           decreases(@Nat.0)
@@ -100,7 +100,7 @@ class TestFunctions:
 
     def test_where_block(self) -> None:
         parse("""
-        fn outer(@Int -> @Int)
+        private fn outer(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -122,7 +122,7 @@ class TestFunctions:
 class TestConditionals:
     def test_if_then_else(self) -> None:
         parse("""
-        fn f(@Bool -> @Int)
+        private fn f(@Bool -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -135,9 +135,9 @@ class TestConditionals:
 class TestPatternMatching:
     def test_match_constructors(self) -> None:
         parse("""
-        data Color { Red, Green, Blue }
+        private data Color { Red, Green, Blue }
 
-        fn to_int(@Color -> @Int)
+        private fn to_int(@Color -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -152,9 +152,9 @@ class TestPatternMatching:
 
     def test_match_with_binding(self) -> None:
         parse("""
-        data Maybe<T> { Nothing, Just(T) }
+        private data Maybe<T> { Nothing, Just(T) }
 
-        fn unwrap_or(@Maybe<Int>, @Int -> @Int)
+        private fn unwrap_or(@Maybe<Int>, @Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -168,7 +168,7 @@ class TestPatternMatching:
 
     def test_wildcard_pattern(self) -> None:
         parse("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -183,16 +183,16 @@ class TestPatternMatching:
 
 class TestEffects:
     def test_pure(self) -> None:
-        parse("fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }")
+        parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }")
 
     def test_single_effect(self) -> None:
-        parse("fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) { () }")
+        parse("private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) { () }")
 
     def test_parameterized_effect(self) -> None:
-        parse("fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<State<Int>>) { () }")
+        parse("private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<State<Int>>) { () }")
 
     def test_multiple_effects(self) -> None:
-        parse("fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<State<Int>, IO>) { () }")
+        parse("private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<State<Int>, IO>) { () }")
 
     def test_effect_declaration(self) -> None:
         parse("""
@@ -204,7 +204,7 @@ class TestEffects:
 
     def test_handler(self) -> None:
         parse("""
-        fn f(@Unit -> @Int)
+        private fn f(@Unit -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -223,7 +223,7 @@ class TestEffects:
 class TestBlocks:
     def test_let_binding(self) -> None:
         parse("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -235,7 +235,7 @@ class TestBlocks:
 
     def test_multiple_statements(self) -> None:
         parse("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -248,7 +248,7 @@ class TestBlocks:
 
     def test_expression_statement(self) -> None:
         parse("""
-        fn f(@Unit -> @Unit)
+        private fn f(@Unit -> @Unit)
           requires(true)
           ensures(true)
           effects(<IO>)
@@ -262,7 +262,7 @@ class TestBlocks:
 class TestContracts:
     def test_old_new_in_ensures(self) -> None:
         parse("""
-        fn f(@Unit -> @Unit)
+        private fn f(@Unit -> @Unit)
           requires(true)
           ensures(new(State<Int>) == old(State<Int>) + 1)
           effects(<State<Int>>)
@@ -273,7 +273,7 @@ class TestContracts:
 
     def test_result_reference(self) -> None:
         parse("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(@Int.result >= 0)
           effects(pure)
@@ -285,14 +285,14 @@ class TestContracts:
 
 class TestDataTypes:
     def test_simple_adt(self) -> None:
-        parse("data Bool { True, False }")
+        parse("private data Bool { True, False }")
 
     def test_parameterized_adt(self) -> None:
-        parse("data Option<T> { None, Some(T) }")
+        parse("private data Option<T> { None, Some(T) }")
 
     def test_adt_with_invariant(self) -> None:
         parse("""
-        data Positive invariant(@Int.0 > 0) {
+        private data Positive invariant(@Int.0 > 0) {
           MkPositive(Int)
         }
         """)
@@ -330,7 +330,7 @@ class TestComments:
     def test_line_comment(self) -> None:
         parse("""
         -- this is a comment
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -342,7 +342,7 @@ class TestComments:
     def test_block_comment(self) -> None:
         parse("""
         {- block comment -}
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -353,7 +353,7 @@ class TestComments:
 
     def test_annotation_comment(self) -> None:
         parse("""
-        fn add(@Int /* left */, @Int /* right */ -> @Int /* sum */)
+        private fn add(@Int /* left */, @Int /* right */ -> @Int /* sum */)
           requires(true)
           ensures(@Int.result == @Int.0 + @Int.1)
           effects(pure)
@@ -365,7 +365,7 @@ class TestComments:
     def test_annotation_comment_standalone(self) -> None:
         parse("""
         /* Helper function */
-        fn id(@Int -> @Int)
+        private fn id(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -379,7 +379,7 @@ class TestComments:
         -- Line comment
         {- Block comment -}
         /* Annotation comment */
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -397,7 +397,7 @@ class TestComments:
 class TestAnonymousFunctions:
     def test_closure_as_argument(self) -> None:
         parse("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -411,7 +411,7 @@ class TestAnonymousFunctions:
         parse("""
         type IntToInt = fn(Int -> Int) effects(pure);
 
-        fn apply(@IntToInt, @Int -> @Int)
+        private fn apply(@IntToInt, @Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -423,7 +423,7 @@ class TestAnonymousFunctions:
     def test_closure_in_let(self) -> None:
         """Anonymous functions can be bound in let statements."""
         parse("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -437,7 +437,7 @@ class TestAnonymousFunctions:
 class TestGenerics:
     def test_forall_single_type_var(self) -> None:
         parse("""
-        forall<T> fn identity(@T -> @T)
+        private forall<T> fn identity(@T -> @T)
           requires(true)
           ensures(true)
           effects(pure)
@@ -448,7 +448,7 @@ class TestGenerics:
 
     def test_forall_multiple_type_vars(self) -> None:
         parse("""
-        forall<A, B> fn const(@A, @B -> @A)
+        private forall<A, B> fn const(@A, @B -> @A)
           requires(true)
           ensures(true)
           effects(pure)
@@ -459,7 +459,7 @@ class TestGenerics:
 
     def test_generic_data_type_multiple_params(self) -> None:
         parse("""
-        data Either<L, R> {
+        private data Either<L, R> {
           Left(L),
           Right(R)
         }
@@ -467,7 +467,7 @@ class TestGenerics:
 
     def test_generic_function_call(self) -> None:
         parse("""
-        forall<T> fn wrap(@T -> @Option<T>)
+        private forall<T> fn wrap(@T -> @Option<T>)
           requires(true)
           ensures(true)
           effects(pure)
@@ -486,7 +486,7 @@ class TestRefinementTypes:
         parse("""
         type NonNegInt = { @Int | @Int.0 >= 0 };
 
-        fn sqrt(@NonNegInt -> @Int)
+        private fn sqrt(@NonNegInt -> @Int)
           requires(true)
           ensures(@Int.result >= 0)
           effects(pure)
@@ -502,7 +502,7 @@ class TestRefinementTypes:
 class TestTupleDestructuring:
     def test_basic_destruct(self) -> None:
         parse("""
-        fn swap(@Tuple<Int, String> -> @Tuple<String, Int>)
+        private fn swap(@Tuple<Int, String> -> @Tuple<String, Int>)
           requires(true)
           ensures(true)
           effects(pure)
@@ -516,7 +516,7 @@ class TestTupleDestructuring:
 class TestQuantifiers:
     def test_forall_expr(self) -> None:
         parse("""
-        fn all_positive(@Array<Int> -> @Bool)
+        private fn all_positive(@Array<Int> -> @Bool)
           requires(true)
           ensures(true)
           effects(pure)
@@ -529,7 +529,7 @@ class TestQuantifiers:
 
     def test_exists_expr(self) -> None:
         parse("""
-        fn has_zero(@Array<Int> -> @Bool)
+        private fn has_zero(@Array<Int> -> @Bool)
           requires(true)
           ensures(true)
           effects(pure)
@@ -544,7 +544,7 @@ class TestQuantifiers:
 class TestAssertAssume:
     def test_assert(self) -> None:
         parse("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -556,7 +556,7 @@ class TestAssertAssume:
 
     def test_assume(self) -> None:
         parse("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -570,7 +570,7 @@ class TestAssertAssume:
 class TestQualifiedCalls:
     def test_effect_qualified_call(self) -> None:
         parse("""
-        fn f(@Unit -> @Int)
+        private fn f(@Unit -> @Int)
           requires(true)
           ensures(true)
           effects(<State<Int>>)
@@ -584,7 +584,7 @@ class TestQualifiedCalls:
         parse("""
         import vera.math(abs);
 
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -600,7 +600,7 @@ class TestFunctionTypes:
         parse("""
         type Mapper = fn(Int -> Int) effects(pure);
 
-        fn apply(@Mapper, @Int -> @Int)
+        private fn apply(@Mapper, @Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -614,7 +614,7 @@ class TestFunctionTypes:
         parse("""
         type Action = fn(Unit -> Unit) effects(<IO>);
 
-        fn run(@Action -> @Unit)
+        private fn run(@Action -> @Unit)
           requires(true)
           ensures(true)
           effects(<IO>)
@@ -632,7 +632,7 @@ class TestFunctionTypes:
 class TestFloatLiterals:
     def test_float_in_expression(self) -> None:
         parse("""
-        fn f(@Unit -> @Float64)
+        private fn f(@Unit -> @Float64)
           requires(true)
           ensures(true)
           effects(pure)
@@ -643,7 +643,7 @@ class TestFloatLiterals:
 
     def test_float_arithmetic(self) -> None:
         parse("""
-        fn f(@Float64 -> @Float64)
+        private fn f(@Float64 -> @Float64)
           requires(true)
           ensures(true)
           effects(pure)
@@ -656,10 +656,10 @@ class TestFloatLiterals:
 class TestNestedPatterns:
     def test_nested_constructor_pattern(self) -> None:
         parse("""
-        data Option<T> { None, Some(T) }
-        data List<T> { Nil, Cons(T, List<T>) }
+        private data Option<T> { None, Some(T) }
+        private data List<T> { Nil, Cons(T, List<T>) }
 
-        fn head_or_zero(@List<Option<Int>> -> @Int)
+        private fn head_or_zero(@List<Option<Int>> -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -673,7 +673,7 @@ class TestNestedPatterns:
 
     def test_literal_and_wildcard_patterns(self) -> None:
         parse("""
-        fn describe(@Int -> @String)
+        private fn describe(@Int -> @String)
           requires(true)
           ensures(true)
           effects(pure)
@@ -690,7 +690,7 @@ class TestNestedPatterns:
 class TestHandlerVariations:
     def test_handler_without_state(self) -> None:
         parse("""
-        fn f(@Unit -> @Option<Int>)
+        private fn f(@Unit -> @Option<Int>)
           requires(true)
           ensures(true)
           effects(pure)
@@ -706,7 +706,7 @@ class TestHandlerVariations:
 
     def test_handler_multiple_clauses(self) -> None:
         parse("""
-        fn f(@Unit -> @Int)
+        private fn f(@Unit -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -724,7 +724,7 @@ class TestHandlerVariations:
 
     def test_handler_with_qualified_effect(self) -> None:
         parse("""
-        fn f(@Unit -> @String)
+        private fn f(@Unit -> @String)
           requires(true)
           ensures(true)
           effects(pure)
@@ -743,7 +743,7 @@ class TestHandlerVariations:
     def test_handler_with_clause(self) -> None:
         """Handler clause with state update parses."""
         parse("""
-        fn f(@Unit -> @Int)
+        private fn f(@Unit -> @Int)
           requires(true) ensures(true) effects(pure)
         {
           handle[State<Int>](@Int = 0) {
@@ -759,7 +759,7 @@ class TestHandlerVariations:
         """Handler with-clause populates state_update on HandlerClause."""
         from vera.parser import parse_to_ast
         prog = parse_to_ast("""
-fn f(@Unit -> @Int)
+private fn f(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   handle[State<Int>](@Int = 0) {
@@ -781,7 +781,7 @@ fn f(@Unit -> @Int)
 class TestImpliesOperator:
     def test_implies_in_contract(self) -> None:
         parse("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(@Int.0 > 0 ==> @Int.0 < 100)
           ensures(true)
           effects(pure)
@@ -792,7 +792,7 @@ class TestImpliesOperator:
 
     def test_implies_right_associative(self) -> None:
         parse("""
-        fn f(@Bool, @Bool, @Bool -> @Bool)
+        private fn f(@Bool, @Bool, @Bool -> @Bool)
           requires(true)
           ensures(true)
           effects(pure)
@@ -810,20 +810,20 @@ class TestImpliesOperator:
 class TestParseErrors:
     def test_missing_contract_block(self) -> None:
         with pytest.raises(ParseError):
-            parse("fn f(@Int -> @Int) { @Int.0 }")
+            parse("private fn f(@Int -> @Int) { @Int.0 }")
 
     def test_missing_effects(self) -> None:
         with pytest.raises(ParseError):
-            parse("fn f(@Int -> @Int) requires(true) ensures(true) { @Int.0 }")
+            parse("private fn f(@Int -> @Int) requires(true) ensures(true) { @Int.0 }")
 
     def test_missing_body(self) -> None:
         with pytest.raises(ParseError):
-            parse("fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)")
+            parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)")
 
     def test_unclosed_brace(self) -> None:
         with pytest.raises(ParseError):
-            parse("fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0")
+            parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0")
 
     def test_invalid_token(self) -> None:
         with pytest.raises(ParseError):
-            parse("fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { $ }")
+            parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { $ }")

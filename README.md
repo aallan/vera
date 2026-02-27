@@ -44,7 +44,7 @@ effect IO {
   op print(String -> Unit);
 }
 
-fn main(@Unit -> @Unit)
+private fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
@@ -58,7 +58,7 @@ fn main(@Unit -> @Unit)
 There are no variable names. `@Int.0` refers to the most recent `Int` binding — a typed positional index, like De Bruijn indices but namespaced by type. The `ensures` clause is a machine-checkable promise: the result is non-negative and equals the absolute value of the input. The compiler verifies this via SMT solver.
 
 ```vera
-fn absolute_value(@Int -> @Nat)
+private fn absolute_value(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)
@@ -77,7 +77,7 @@ fn absolute_value(@Int -> @Nat)
 `requires(@Int.1 != 0)` means this function cannot be called with a zero divisor. The compiler checks every call site to prove the precondition holds. If it cannot prove it, the code does not compile. Division by zero is not a runtime error — it is a type error.
 
 ```vera
-fn safe_divide(@Int, @Int -> @Int)
+private fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
@@ -91,7 +91,7 @@ fn safe_divide(@Int, @Int -> @Int)
 Vera is pure by default. State changes must be declared as effects. `effects(<State<Int>>)` says this function reads and writes an integer. The `ensures` clause specifies exactly how the state changes: the new value equals the old value plus one. Handlers (not shown) provide the actual state implementation — an in-memory cell in production, a mock in tests.
 
 ```vera
-fn increment(@Unit -> @Unit)
+private fn increment(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -226,7 +226,7 @@ Tracked in [#14](https://github.com/aallan/vera/issues/14) (type-checking) and [
 |-----------|-------|--------|
 | C7a | Module resolution — map `import` paths to source files and parse them | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31) |
 | C7b | Cross-module type environment — merge public declarations across files | [v0.0.32](https://github.com/aallan/vera/releases/tag/v0.0.32) |
-| C7c | Visibility enforcement — `public`/`private` access control in the checker | Planned |
+| C7c | Visibility enforcement — `public`/`private` access control in the checker | [v0.0.34](https://github.com/aallan/vera/releases/tag/v0.0.34) |
 | C7d | Cross-module verification — verify contracts that reference imported symbols | Planned |
 | C7e | Multi-module codegen — WASM import/export tables linking multiple modules | Planned |
 | C7f | Spec Chapter 8 — formal module semantics, resolution algorithm, examples | Planned |
@@ -355,7 +355,7 @@ This runs mypy, pytest, trailing whitespace checks, and validates all examples o
 Create a file `hello.vera`:
 
 ```vera
-fn double(@Int -> @Int)
+private fn double(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 * 2)
   effects(pure)

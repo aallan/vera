@@ -86,7 +86,7 @@ The same effect with the same type parameters MUST NOT appear twice (it would be
 Within a function that declares an effect, operations are called like regular functions:
 
 ```
-fn increment(@Unit -> @Unit)
+private fn increment(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<State<Int>>)
@@ -98,7 +98,7 @@ fn increment(@Unit -> @Unit)
 ```
 
 ```
-fn hello(-> @Unit)
+private fn hello(-> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
@@ -178,7 +178,7 @@ The handler may also choose NOT to call `resume`, which aborts the handled body.
 **State handler:**
 
 ```
-fn run_stateful(@Unit -> @Int)
+private fn run_stateful(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -200,7 +200,7 @@ The result is `10`. The `handle` expression's type is the type of the handled bo
 **Exception handler:**
 
 ```
-fn safe_parse(@String -> @Option<Int>)
+private fn safe_parse(@String -> @Option<Int>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -220,7 +220,7 @@ Note: when the handler does not call `resume`, the handled body is abandoned. Th
 **Choice handler (non-determinism):**
 
 ```
-fn all_choices(@Unit -> @Array<Bool>)
+private fn all_choices(@Unit -> @Array<Bool>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -247,7 +247,7 @@ This demonstrates that `resume` is a first-class continuation: it can be called 
 Functions can be polymorphic over effects:
 
 ```
-forall<A, B> fn map_option(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
+private forall<A, B> fn map_option(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
   requires(true)
   ensures(true)
   effects(<E>)
@@ -266,7 +266,7 @@ The effect variable `E` is unified at each call site. If the passed function is 
 Effect row variables can appear alongside concrete effects:
 
 ```
-forall<A> fn with_logging(fn(Unit -> A) effects(<E>) -> @A)
+private forall<A> fn with_logging(fn(Unit -> A) effects(<E>) -> @A)
   requires(true)
   ensures(true)
   effects(<IO, E>)
@@ -346,7 +346,7 @@ Contract predicates (`requires`, `ensures`, `invariant`, `assert`, `assume`) MUS
 Since contract predicates must be pure (Section 7.9.1), they cannot call effect operations like `get()` or `put()` directly. Instead, contracts on stateful functions use `old` and `new` to refer to the state before and after the function call:
 
 ```
-fn increment_and_return(@Unit -> @Int)
+private fn increment_and_return(@Unit -> @Int)
   requires(true)
   ensures(@Int.result == old(State<Int>) && new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -367,7 +367,7 @@ These are contract-only syntax forms that do not perform effects.
 When a function calls other functions, the effects compose via row union:
 
 ```
-fn foo(@Unit -> @Unit)
+private fn foo(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO, State<Int>>)

@@ -13,7 +13,7 @@ Contracts serve as executable specifications. They are the source of truth about
 A precondition is a predicate that MUST hold when the function is called. It is the caller's responsibility to ensure preconditions are met.
 
 ```
-fn safe_divide(@Int, @Int -> @Int)
+private fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
@@ -29,7 +29,7 @@ At every call site of `safe_divide`, the compiler verifies that the second argum
 A postcondition is a predicate that MUST hold when the function returns. It is the function's responsibility to ensure postconditions are met.
 
 ```
-fn absolute_value(@Int -> @Nat)
+private fn absolute_value(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)
@@ -46,7 +46,7 @@ The special reference `@T.result` (where `T` is the return type) refers to the f
 An invariant is a predicate declared on a data type that MUST hold for all values of that type:
 
 ```
-data SortedArray
+private data SortedArray
   invariant(is_sorted_impl(@SortedArray.0))
 {
   Mk(Array<Int>)
@@ -62,7 +62,7 @@ Invariants on built-in types are expressed as refinement types (Chapter 2) rathe
 A `decreases` clause specifies an expression that strictly decreases on each recursive call (see Chapter 5, Section 5.6.1):
 
 ```
-fn sum_to(@Nat -> @Nat)
+private fn sum_to(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result == @Nat.0 * (@Nat.0 + 1) / 2)
   decreases(@Nat.0)
@@ -282,7 +282,7 @@ WARNING: Cannot statically verify contract at line 3: requires(@Int.0 > 0)
 A lemma function is a `pure` function whose sole purpose is to establish a fact for the verifier. Its body must type-check and its contract must verify, but it is never called at runtime:
 
 ```
-fn lemma_sum_positive(@Nat, @Nat -> @Unit)
+private fn lemma_sum_positive(@Nat, @Nat -> @Unit)
   requires(@Nat.0 > 0 && @Nat.1 > 0)
   ensures(@Nat.0 + @Nat.1 > @Nat.0)
   effects(pure)
@@ -308,7 +308,7 @@ When a function type is used as a parameter, the caller can rely on the contract
 ```
 type SafeDiv = fn(Int, { @Int | @Int.0 != 0 } -> Int) effects(pure);
 
-fn apply_div(@Int, @Int, @SafeDiv -> @Int)
+private fn apply_div(@Int, @Int, @SafeDiv -> @Int)
   requires(@Int.1 != 0)
   ensures(true)
   effects(pure)

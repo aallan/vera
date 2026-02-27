@@ -41,10 +41,10 @@ On error, each diagnostic includes `severity`, `description`, `location` (`file`
 
 ## Function Structure
 
-Every function has this exact structure. No part is optional except `decreases` and `where`.
+Every function has this exact structure. No part is optional except `decreases` and `where`. Visibility (`public` or `private`) is mandatory on every top-level `fn` and `data` declaration.
 
 ```vera
-fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
+private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
   requires(precondition_expression)
   ensures(postcondition_expression)
   effects(effect_row)
@@ -56,7 +56,7 @@ fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
 Complete example:
 
 ```vera
-fn safe_divide(@Int, @Int -> @Int)
+private fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
   ensures(@Int.result == @Int.0 / @Int.1)
   effects(pure)
@@ -65,10 +65,56 @@ fn safe_divide(@Int, @Int -> @Int)
 }
 ```
 
+## Function Visibility
+
+Every top-level `fn` and `data` declaration **must** have an explicit visibility modifier. There is no default visibility -- omitting it is an error.
+
+- `public` -- the declaration is visible to other modules that import this one. Use for library APIs and exported functions.
+- `private` -- the declaration is only visible within the current file/module. Use for internal helpers and standalone programs.
+
+```vera
+public fn exported_api(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+private fn internal_helper(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
+}
+
+public data Color { Red, Green, Blue }
+
+private data InternalState {
+  Ready,
+  Done(Int)
+}
+```
+
+For generic functions, visibility comes before `forall`:
+
+```vera
+private forall<T> fn identity(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+```
+
+Visibility does **not** apply to: type aliases (`type Foo = ...`), effect declarations (`effect E { ... }`), module declarations, or import statements. Functions inside `where` blocks also do not take visibility.
+
 Multiple `requires` and `ensures` clauses are allowed. They are conjunctive (AND'd together):
 
 ```vera
-fn clamp(@Int, @Int, @Int -> @Int)
+private fn clamp(@Int, @Int, @Int -> @Int)
   requires(@Int.1 <= @Int.2)
   ensures(@Int.result >= @Int.1)
   ensures(@Int.result <= @Int.2)
@@ -103,7 +149,7 @@ Vera has no variable names. Every binding is referenced by type and index:
 Parameters bind left-to-right. The **rightmost** parameter of a given type is `@T.0`:
 
 ```vera
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + @Int.1)
   effects(pure)
@@ -119,7 +165,7 @@ fn add(@Int, @Int -> @Int)
 Each type has its own index counter:
 
 ```vera
-fn repeat(@String, @Int -> @String)
+private fn repeat(@String, @Int -> @String)
   requires(@Int.0 >= 0)
   ensures(true)
   effects(pure)
@@ -133,7 +179,7 @@ fn repeat(@String, @Int -> @String)
 ### Let bindings push new slots
 
 ```vera
-fn example(@Int -> @Int)
+private fn example(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -149,7 +195,7 @@ fn example(@Int -> @Int)
 Only valid inside `ensures` clauses. Refers to the function's return value:
 
 ```vera
-fn abs(@Int -> @Nat)
+private fn abs(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   effects(pure)
@@ -193,20 +239,20 @@ type Name = String;
 ## Data Types (ADTs)
 
 ```vera
-data Color { Red, Green, Blue }
+private data Color { Red, Green, Blue }
 
-data List<T> {
+private data List<T> {
   Nil,
   Cons(T, List<T>)
 }
 
-data Option<T> { None, Some(T) }
+private data Option<T> { None, Some(T) }
 ```
 
 With an invariant:
 
 ```vera
-data Positive invariant(@Int.0 > 0) {
+private data Positive invariant(@Int.0 > 0) {
   MkPositive(Int)
 }
 ```
@@ -214,7 +260,7 @@ data Positive invariant(@Int.0 > 0) {
 ## Pattern Matching
 
 ```vera
-fn to_int(@Color -> @Int)
+private fn to_int(@Color -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -230,7 +276,7 @@ fn to_int(@Color -> @Int)
 Patterns can bind values:
 
 ```vera
-fn unwrap_or(@Option<Int>, @Int -> @Int)
+private fn unwrap_or(@Option<Int>, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -276,7 +322,7 @@ Statements end with `;`. The final expression (no `;`) is the block's value.
 Conditions that must hold when the function is called:
 
 ```vera
-fn safe_divide(@Int, @Int -> @Int)
+private fn safe_divide(@Int, @Int -> @Int)
   requires(@Int.1 != 0)
 ```
 
@@ -293,7 +339,7 @@ Conditions guaranteed when the function returns. Use `@T.result` to refer to the
 Required on recursive functions. The expression must decrease on each recursive call:
 
 ```vera
-fn factorial(@Nat -> @Nat)
+private fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -346,7 +392,7 @@ effect Console {
 Call the effect operations directly:
 
 ```vera
-fn greet(@String -> @Unit)
+private fn greet(@String -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
@@ -359,7 +405,7 @@ fn greet(@String -> @Unit)
 ### State effects
 
 ```vera
-fn increment(@Unit -> @Unit)
+private fn increment(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -377,7 +423,7 @@ In `ensures` clauses, `old(State<T>)` is the state before the call and `new(Stat
 Handlers eliminate an effect, converting effectful code to pure code:
 
 ```vera
-fn run_counter(@Unit -> @Int)
+private fn run_counter(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -423,7 +469,7 @@ Logger.put("message");
 ## Where Blocks (Mutual Recursion)
 
 ```vera
-fn is_even(@Nat -> @Bool)
+private fn is_even(@Nat -> @Bool)
   requires(true)
   ensures(true)
   decreases(@Nat.0)
@@ -446,7 +492,7 @@ where {
 ## Generic Functions
 
 ```vera
-forall<T> fn identity(@T -> @T)
+private forall<T> fn identity(@T -> @T)
   requires(true)
   ensures(true)
   effects(pure)
@@ -472,7 +518,7 @@ public fn exported(@Int -> @Int)
 }
 ```
 
-Functions are private by default. Add `public` for external visibility.
+Every top-level `fn` and `data` must have explicit `public` or `private` visibility. Use `public` for functions that other modules should be able to import.
 
 Import paths resolve to files on disk: `import vera.math;` looks for `vera/math.vera` relative to the importing file's directory (or the project root). Imported files are parsed and cached automatically. Circular imports are detected and reported as errors.
 
@@ -511,14 +557,14 @@ Note: module-qualified call syntax (`vera.math.abs(42)`) is not yet parseable du
 
 WRONG:
 ```vera
-fn add(@Int, @Int -> @Int) {
+private fn add(@Int, @Int -> @Int) {
   @Int.0 + @Int.1
 }
 ```
 
 CORRECT:
 ```vera
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 + @Int.1)
   effects(pure)
@@ -531,7 +577,7 @@ fn add(@Int, @Int -> @Int)
 
 WRONG:
 ```vera
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true)
   ensures(true)
 {
@@ -541,7 +587,7 @@ fn add(@Int, @Int -> @Int)
 
 CORRECT — add `effects(pure)` (or the appropriate effect row):
 ```vera
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -554,7 +600,7 @@ fn add(@Int, @Int -> @Int)
 
 WRONG — both `@Int.0` refer to the same binding (the second parameter):
 ```vera
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -565,7 +611,7 @@ fn add(@Int, @Int -> @Int)
 
 CORRECT — `@Int.1` is the first parameter, `@Int.0` is the second:
 ```vera
-fn add(@Int, @Int -> @Int)
+private fn add(@Int, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -590,7 +636,7 @@ CORRECT:
 
 WRONG:
 ```vera
-fn factorial(@Nat -> @Nat)
+private fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
@@ -601,7 +647,7 @@ fn factorial(@Nat -> @Nat)
 
 CORRECT:
 ```vera
-fn factorial(@Nat -> @Nat)
+private fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(true)
   decreases(@Nat.0)
@@ -615,7 +661,7 @@ fn factorial(@Nat -> @Nat)
 
 WRONG — `IO.print` performs IO but function declares `pure`:
 ```vera
-fn greet(@String -> @Unit)
+private fn greet(@String -> @Unit)
   requires(true)
   ensures(true)
   effects(pure)
@@ -627,7 +673,7 @@ fn greet(@String -> @Unit)
 
 CORRECT:
 ```vera
-fn greet(@String -> @Unit)
+private fn greet(@String -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
@@ -641,7 +687,7 @@ fn greet(@String -> @Unit)
 
 WRONG:
 ```vera
-fn f(@Int -> @Int)
+private fn f(@Int -> @Int)
   requires(@Int.result > 0)
   ensures(true)
   effects(pure)
@@ -650,7 +696,7 @@ fn f(@Int -> @Int)
 
 CORRECT — `@T.result` is only valid in `ensures`:
 ```vera
-fn f(@Int -> @Int)
+private fn f(@Int -> @Int)
   requires(true)
   ensures(@Int.result > 0)
   effects(pure)
@@ -691,7 +737,7 @@ if @Bool.0 then { 1 } else { 0 }
 ### Pure function with postconditions
 
 ```vera
-fn absolute_value(@Int -> @Nat)
+private fn absolute_value(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)
@@ -708,7 +754,7 @@ fn absolute_value(@Int -> @Nat)
 ### Recursive function with termination proof
 
 ```vera
-fn factorial(@Nat -> @Nat)
+private fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)
   decreases(@Nat.0)
@@ -725,7 +771,7 @@ fn factorial(@Nat -> @Nat)
 ### Stateful effects with old/new
 
 ```vera
-fn increment(@Unit -> @Unit)
+private fn increment(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)
@@ -739,12 +785,12 @@ fn increment(@Unit -> @Unit)
 ### ADT with pattern matching
 
 ```vera
-data List<T> {
+private data List<T> {
   Nil,
   Cons(T, List<T>)
 }
 
-fn length(@List<Int> -> @Nat)
+private fn length(@List<Int> -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   decreases(@List<Int>.0)

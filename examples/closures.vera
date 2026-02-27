@@ -4,7 +4,7 @@
 type IntToInt = fn(Int -> Int) effects(pure);
 
 -- Create a closure that captures a value from the enclosing scope
-fn make_adder(@Int -> @IntToInt)
+private fn make_adder(@Int -> @IntToInt)
   requires(true)
   ensures(true)
   effects(pure)
@@ -13,7 +13,7 @@ fn make_adder(@Int -> @IntToInt)
 }
 
 -- Apply a function to a value
-fn apply(@IntToInt, @Int -> @Int)
+private fn apply(@IntToInt, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -22,11 +22,11 @@ fn apply(@IntToInt, @Int -> @Int)
 }
 
 -- Map a function over an optional value
-data Option<T> { None, Some(T) }
+private data Option<T> { None, Some(T) }
 
 type IntMapper = fn(Int -> Int) effects(pure);
 
-fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
+private fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -38,7 +38,7 @@ fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
 }
 
 -- End-to-end test: create a closure, apply it, return the result
-fn test_closure(@Unit -> @Int)
+private fn test_closure(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -48,7 +48,7 @@ fn test_closure(@Unit -> @Int)
 }
 
 -- Test: map a closure over an Option
-fn test_map_option(@Unit -> @Int)
+private fn test_map_option(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)

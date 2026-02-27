@@ -1,6 +1,6 @@
 -- Absolute value: a simple pure function with postconditions.
 
-fn absolute_value(@Int -> @Nat)
+private fn absolute_value(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)
   ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)

@@ -7,7 +7,7 @@ effect Counter {
 }
 
 -- Use the counter effect (not compilable — Counter is not a host effect)
-fn count_to_three(@Unit -> @Unit)
+private fn count_to_three(@Unit -> @Unit)
   requires(true)
   ensures(true)
   effects(<Counter>)
@@ -20,7 +20,7 @@ fn count_to_three(@Unit -> @Unit)
 -- Handle State<Int> to implement a counter
 -- The handle expression discharges the effect: run_counter is pure
 -- The put clause uses 'with' to explicitly update handler state
-fn run_counter(@Unit -> @Int)
+private fn run_counter(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -38,7 +38,7 @@ fn run_counter(@Unit -> @Int)
 }
 
 -- Simpler test: read the initial state value
-fn test_state_init(@Unit -> @Int)
+private fn test_state_init(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -52,7 +52,7 @@ fn test_state_init(@Unit -> @Int)
 }
 
 -- Test: put then get
-fn test_put_get(@Unit -> @Int)
+private fn test_put_get(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -71,4 +71,4 @@ effect Exn<E> {
   op throw(E -> Unit);
 }
 
-data Option<T> { None, Some(T) }
+private data Option<T> { None, Some(T) }

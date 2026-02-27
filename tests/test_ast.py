@@ -190,7 +190,7 @@ class TestProgramStructure:
 class TestFunctions:
     def test_simple_fn(self):
         fn = _first_fn("""
-        fn inc(@Int -> @Int)
+        private fn inc(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -207,7 +207,7 @@ class TestFunctions:
 
     def test_fn_with_forall(self):
         fn = _first_fn("""
-        forall<T> fn identity(@T -> @T)
+        private forall<T> fn identity(@T -> @T)
           requires(true)
           ensures(true)
           effects(pure)
@@ -217,7 +217,7 @@ class TestFunctions:
 
     def test_fn_multiple_forall_vars(self):
         fn = _first_fn("""
-        forall<A, B> fn swap(@A, @B -> @B)
+        private forall<A, B> fn swap(@A, @B -> @B)
           requires(true)
           ensures(true)
           effects(pure)
@@ -227,7 +227,7 @@ class TestFunctions:
 
     def test_fn_with_where(self):
         fn = _first_fn("""
-        fn main(@Int -> @Int)
+        private fn main(@Int -> @Int)
           requires(true)
           ensures(true)
           effects(pure)
@@ -246,7 +246,7 @@ class TestFunctions:
 
     def test_multiple_contracts(self):
         fn = _first_fn("""
-        fn clamp(@Int -> @Int)
+        private fn clamp(@Int -> @Int)
           requires(@Int.0 >= 0)
           requires(@Int.0 <= 100)
           ensures(@Int.result >= 0)
@@ -260,7 +260,7 @@ class TestFunctions:
 
     def test_decreases_clause(self):
         fn = _first_fn("""
-        fn f(@Nat -> @Nat)
+        private fn f(@Nat -> @Nat)
           requires(true)
           ensures(true)
           decreases(@Nat.0)
@@ -277,7 +277,7 @@ class TestFunctions:
 class TestDataDecls:
     def test_simple_adt(self):
         prog = _ast("""
-        data Color { Red, Green, Blue }
+        private data Color { Red, Green, Blue }
         """)
         decl = prog.declarations[0].decl
         assert isinstance(decl, DataDecl)
@@ -288,7 +288,7 @@ class TestDataDecls:
 
     def test_parameterized_adt(self):
         prog = _ast("""
-        data Option<T> { None, Some(T) }
+        private data Option<T> { None, Some(T) }
         """)
         decl = prog.declarations[0].decl
         assert decl.type_params == ("T",)
@@ -299,7 +299,7 @@ class TestDataDecls:
 
     def test_adt_with_invariant(self):
         prog = _ast("""
-        data PosInt
+        private data PosInt
           invariant(@Int.0 > 0)
         { MkPosInt(Int) }
         """)
@@ -351,7 +351,7 @@ class TestEffectDecls:
 class TestTypeExprs:
     def test_named_type_simple(self):
         fn = _first_fn("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true) ensures(true) effects(pure)
         { @Int.0 }
         """)
@@ -361,7 +361,7 @@ class TestTypeExprs:
 
     def test_named_type_with_args(self):
         fn = _first_fn("""
-        fn f(@Option<Int> -> @Bool)
+        private fn f(@Option<Int> -> @Bool)
           requires(true) ensures(true) effects(pure)
         { true }
         """)
@@ -393,14 +393,14 @@ class TestTypeExprs:
 class TestExpressions:
     def test_int_lit(self):
         expr = _body_expr("""
-        fn f(@Unit -> @Int) requires(true) ensures(true) effects(pure) { 42 }
+        private fn f(@Unit -> @Int) requires(true) ensures(true) effects(pure) { 42 }
         """)
         assert isinstance(expr, IntLit)
         assert expr.value == 42
 
     def test_float_lit(self):
         expr = _body_expr("""
-        fn f(@Unit -> @Float64)
+        private fn f(@Unit -> @Float64)
           requires(true) ensures(true) effects(pure)
         { 3.14 }
         """)
@@ -409,7 +409,7 @@ class TestExpressions:
 
     def test_string_lit(self):
         expr = _body_expr("""
-        fn f(@Unit -> @String)
+        private fn f(@Unit -> @String)
           requires(true) ensures(true) effects(pure)
         { "hello" }
         """)
@@ -418,20 +418,20 @@ class TestExpressions:
 
     def test_bool_lit(self):
         expr = _body_expr("""
-        fn f(@Unit -> @Bool) requires(true) ensures(true) effects(pure) { true }
+        private fn f(@Unit -> @Bool) requires(true) ensures(true) effects(pure) { true }
         """)
         assert isinstance(expr, BoolLit)
         assert expr.value is True
 
     def test_unit_lit(self):
         expr = _body_expr("""
-        fn f(@Unit -> @Unit) requires(true) ensures(true) effects(pure) { () }
+        private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(pure) { () }
         """)
         assert isinstance(expr, UnitLit)
 
     def test_binary_add(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { @Int.0 + 1 }
         """)
         assert isinstance(expr, BinaryExpr)
@@ -441,7 +441,7 @@ class TestExpressions:
 
     def test_binary_implies(self):
         fn = _first_fn("""
-        fn f(@Bool -> @Bool)
+        private fn f(@Bool -> @Bool)
           requires(@Bool.0 ==> true)
           ensures(true)
           effects(pure)
@@ -453,7 +453,7 @@ class TestExpressions:
 
     def test_unary_not(self):
         expr = _body_expr("""
-        fn f(@Bool -> @Bool) requires(true) ensures(true) effects(pure)
+        private fn f(@Bool -> @Bool) requires(true) ensures(true) effects(pure)
         { !@Bool.0 }
         """)
         assert isinstance(expr, UnaryExpr)
@@ -461,7 +461,7 @@ class TestExpressions:
 
     def test_unary_neg(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { -@Int.0 }
         """)
         assert isinstance(expr, UnaryExpr)
@@ -469,7 +469,7 @@ class TestExpressions:
 
     def test_slot_ref(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { @Int.0 }
         """)
         assert isinstance(expr, SlotRef)
@@ -479,7 +479,7 @@ class TestExpressions:
 
     def test_result_ref(self):
         fn = _first_fn("""
-        fn f(@Int -> @Int)
+        private fn f(@Int -> @Int)
           requires(true)
           ensures(@Int.result >= 0)
           effects(pure)
@@ -491,7 +491,7 @@ class TestExpressions:
 
     def test_fn_call(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { add(@Int.0, 1) }
         """)
         assert isinstance(expr, FnCall)
@@ -500,7 +500,7 @@ class TestExpressions:
 
     def test_constructor_call(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { Some(@Int.0) }
         """)
         assert isinstance(expr, ConstructorCall)
@@ -508,7 +508,7 @@ class TestExpressions:
 
     def test_nullary_constructor(self):
         expr = _body_expr("""
-        fn f(@Unit -> @Unit) requires(true) ensures(true) effects(pure)
+        private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(pure)
         { None }
         """)
         assert isinstance(expr, NullaryConstructor)
@@ -516,7 +516,7 @@ class TestExpressions:
 
     def test_qualified_call(self):
         expr = _body_expr("""
-        fn f(@Unit -> @Int) requires(true) ensures(true) effects(<Counter>)
+        private fn f(@Unit -> @Int) requires(true) ensures(true) effects(<Counter>)
         { Counter.get(()) }
         """)
         assert isinstance(expr, QualifiedCall)
@@ -525,7 +525,7 @@ class TestExpressions:
 
     def test_if_expr(self):
         expr = _body_expr("""
-        fn f(@Bool -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Bool -> @Int) requires(true) ensures(true) effects(pure)
         { if @Bool.0 then { 1 } else { 0 } }
         """)
         assert isinstance(expr, IfExpr)
@@ -534,7 +534,7 @@ class TestExpressions:
 
     def test_match_expr(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { match @Int.0 { 0 -> 1, _ -> 0 } }
         """)
         assert isinstance(expr, MatchExpr)
@@ -545,7 +545,7 @@ class TestExpressions:
 
     def test_block_with_let(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         {
           let @Int = @Int.0 + 1;
           @Int.1
@@ -553,7 +553,7 @@ class TestExpressions:
         """)
         assert isinstance(expr, SlotRef)
         fn = _first_fn("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         {
           let @Int = @Int.0 + 1;
           @Int.1
@@ -564,7 +564,7 @@ class TestExpressions:
 
     def test_array_literal(self):
         expr = _body_expr("""
-        fn f(@Unit -> @Unit) requires(true) ensures(true) effects(pure)
+        private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(pure)
         { [1, 2, 3] }
         """)
         assert isinstance(expr, ArrayLit)
@@ -572,14 +572,14 @@ class TestExpressions:
 
     def test_index_expr(self):
         expr = _body_expr("""
-        fn f(@Unit -> @Unit) requires(true) ensures(true) effects(pure)
+        private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(pure)
         { [1, 2, 3][0] }
         """)
         assert isinstance(expr, IndexExpr)
 
     def test_pipe_expr(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { @Int.0 |> inc() }
         """)
         assert isinstance(expr, BinaryExpr)
@@ -588,7 +588,7 @@ class TestExpressions:
     def test_anonymous_fn(self):
         prog = _ast("""
         type IntToInt = fn(Int -> Int) effects(pure);
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { apply(fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }) }
         """)
         fn = prog.declarations[1].decl
@@ -605,7 +605,7 @@ class TestExpressions:
 class TestContractExprs:
     def test_old_new_expr(self):
         fn = _first_fn("""
-        fn f(@Unit -> @Int)
+        private fn f(@Unit -> @Int)
           requires(true)
           ensures(@Int.result == old(State<Int>) && new(State<Int>) == old(State<Int>) + 1)
           effects(<State<Int>>)
@@ -617,7 +617,7 @@ class TestContractExprs:
 
     def test_assert_assume(self):
         fn = _first_fn("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         {
           assert(@Int.0 > 0);
           assume(@Int.0 < 100);
@@ -636,7 +636,7 @@ class TestContractExprs:
 class TestQuantifiers:
     def test_forall_expr(self):
         fn = _first_fn("""
-        fn f(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
+        private fn f(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
         { forall(@Int, 10, fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 }) }
         """)
         expr = fn.body.expr
@@ -645,7 +645,7 @@ class TestQuantifiers:
 
     def test_exists_expr(self):
         fn = _first_fn("""
-        fn f(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
+        private fn f(@Unit -> @Bool) requires(true) ensures(true) effects(pure)
         { exists(@Int, 10, fn(@Int -> @Bool) effects(pure) { @Int.0 == 5 }) }
         """)
         expr = fn.body.expr
@@ -657,7 +657,7 @@ class TestQuantifiers:
 class TestHandlers:
     def test_handler_with_state(self):
         src = """
-        fn f(@Unit -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Unit -> @Int) requires(true) ensures(true) effects(pure)
         {
           handle[Counter] (@Int = 0) {
             get(@Unit) -> { resume(0) },
@@ -681,7 +681,7 @@ class TestHandlers:
 
     def test_handler_without_state(self):
         src = """
-        fn f(@Unit -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Unit -> @Int) requires(true) ensures(true) effects(pure)
         {
           handle[Abort] {
             abort(@Unit) -> { 0 }
@@ -705,7 +705,7 @@ class TestHandlers:
 class TestPatterns:
     def test_constructor_pattern(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { match Some(@Int.0) { Some(@Int) -> @Int.0, None -> 0 } }
         """)
         assert isinstance(expr, MatchExpr)
@@ -716,7 +716,7 @@ class TestPatterns:
 
     def test_nullary_pattern(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { match None { None -> 0 } }
         """)
         assert isinstance(expr.arms[0].pattern, NullaryPattern)
@@ -724,14 +724,14 @@ class TestPatterns:
 
     def test_wildcard_pattern(self):
         expr = _body_expr("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { match @Int.0 { _ -> 0 } }
         """)
         assert isinstance(expr.arms[0].pattern, WildcardPattern)
 
     def test_literal_patterns(self):
         expr = _body_expr("""
-        fn f(@Int -> @Bool) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Bool) requires(true) ensures(true) effects(pure)
         { match @Int.0 { 0 -> true, 1 -> false, _ -> false } }
         """)
         assert isinstance(expr.arms[0].pattern, IntPattern)
@@ -739,7 +739,7 @@ class TestPatterns:
 
     def test_bool_pattern(self):
         expr = _body_expr("""
-        fn f(@Bool -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Bool -> @Int) requires(true) ensures(true) effects(pure)
         { match @Bool.0 { true -> 1, false -> 0 } }
         """)
         assert isinstance(expr.arms[0].pattern, BoolPattern)
@@ -753,7 +753,7 @@ class TestPatterns:
 class TestStatements:
     def test_let_stmt(self):
         fn = _first_fn("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { let @Int = @Int.0 + 1; @Int.1 }
         """)
         stmt = fn.body.statements[0]
@@ -763,7 +763,7 @@ class TestStatements:
 
     def test_let_destruct(self):
         fn = _first_fn("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { let Tuple<@Int, @String> = make_pair(); @Int.1 }
         """)
         stmt = fn.body.statements[0]
@@ -773,7 +773,7 @@ class TestStatements:
 
     def test_expr_stmt(self):
         fn = _first_fn("""
-        fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>)
+        private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>)
         { print("hello"); () }
         """)
         stmt = fn.body.statements[0]
@@ -786,14 +786,14 @@ class TestStatements:
 class TestEffects:
     def test_pure_effect(self):
         fn = _first_fn("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { @Int.0 }
         """)
         assert isinstance(fn.effect, PureEffect)
 
     def test_single_effect(self):
         fn = _first_fn("""
-        fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>)
+        private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>)
         { () }
         """)
         assert isinstance(fn.effect, EffectSet)
@@ -802,7 +802,7 @@ class TestEffects:
 
     def test_multiple_effects(self):
         fn = _first_fn("""
-        fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO, State<Int>>)
+        private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO, State<Int>>)
         { () }
         """)
         assert isinstance(fn.effect, EffectSet)
@@ -810,7 +810,7 @@ class TestEffects:
 
     def test_parameterized_effect(self):
         fn = _first_fn("""
-        fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<State<Int>>)
+        private fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<State<Int>>)
         { () }
         """)
         eff = fn.effect.effects[0]
@@ -827,13 +827,13 @@ class TestEffects:
 class TestSpans:
     def test_span_populated(self):
         prog = _ast("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }
         """)
         assert prog.span is not None
         assert isinstance(prog.span, Span)
 
     def test_span_correct_line(self):
-        src = "fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n  effects(pure)\n{ @Int.0 }"
+        src = "private fn f(@Int -> @Int)\n  requires(true)\n  ensures(true)\n  effects(pure)\n{ @Int.0 }"
         prog = _ast(src)
         fn = prog.declarations[0].decl
         assert fn.span is not None
@@ -841,7 +841,7 @@ class TestSpans:
 
     def test_nested_spans(self):
         fn = _first_fn("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure)
         { @Int.0 + 1 }
         """)
         body_expr = fn.body.expr
@@ -852,7 +852,7 @@ class TestSpans:
 class TestSerialisation:
     def test_to_dict_structure(self):
         prog = _ast("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }
         """)
         d = prog.to_dict()
         assert d["_type"] == "Program"
@@ -862,7 +862,7 @@ class TestSerialisation:
 
     def test_json_roundtrip(self):
         prog = _ast("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }
         """)
         d = prog.to_dict()
         j = json.dumps(d)
@@ -872,7 +872,7 @@ class TestSerialisation:
 
     def test_pretty_format(self):
         prog = _ast("""
-        fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }
+        private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { @Int.0 }
         """)
         text = prog.pretty()
         assert text.startswith("Program")

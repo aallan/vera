@@ -1,6 +1,6 @@
 -- Increment: demonstrates stateful effects with State<Int>.
 
-fn increment(@Unit -> @Unit)
+private fn increment(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)
   effects(<State<Int>>)

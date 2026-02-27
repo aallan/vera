@@ -1,10 +1,10 @@
 -- Pattern matching — nested patterns, wildcards, multiple variants
 
-data Option<T> { None, Some(T) }
-data List<T> { Nil, Cons(T, List<T>) }
+private data Option<T> { None, Some(T) }
+private data List<T> { Nil, Cons(T, List<T>) }
 
 -- Nested pattern: match inside a list of options
-fn first_some(@List<Option<Int>> -> @Int)
+private fn first_some(@List<Option<Int>> -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
@@ -17,7 +17,7 @@ fn first_some(@List<Option<Int>> -> @Int)
 }
 
 -- Literal patterns with wildcard fallback
-fn classify(@Int -> @String)
+private fn classify(@Int -> @String)
   requires(true)
   ensures(true)
   effects(pure)
@@ -30,7 +30,7 @@ fn classify(@Int -> @String)
 }
 
 -- Boolean patterns
-fn to_string(@Bool -> @String)
+private fn to_string(@Bool -> @String)
   requires(true)
   ensures(true)
   effects(pure)
@@ -42,13 +42,13 @@ fn to_string(@Bool -> @String)
 }
 
 -- Multi-variant ADT with exhaustive matching
-data Shape {
+private data Shape {
   Circle(Float64),
   Rectangle(Float64, Float64),
   Triangle(Float64, Float64, Float64)
 }
 
-fn describe(@Shape -> @String)
+private fn describe(@Shape -> @String)
   requires(true)
   ensures(true)
   effects(pure)

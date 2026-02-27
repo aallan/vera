@@ -22,6 +22,7 @@ def register_fn(
     decl: ast.FnDecl,
     resolve_type: Callable[[ast.TypeExpr], Type],
     resolve_effect_row: Callable[[ast.EffectRow], EffectRowType],
+    visibility: str | None = None,
 ) -> None:
     """Register a function signature in the environment.
 
@@ -47,6 +48,7 @@ def register_fn(
         span=decl.span,
         contracts=decl.contracts,
         param_type_exprs=decl.params,
+        visibility=visibility,
     )
 
     if decl.where_fns:

@@ -1,7 +1,7 @@
 -- Quantifiers in contracts — forall and exists
 
 -- All elements in the array are positive
-fn all_positive(@Array<Int> -> @Bool)
+private fn all_positive(@Array<Int> -> @Bool)
   requires(true)
   ensures(true)
   effects(pure)
@@ -12,7 +12,7 @@ fn all_positive(@Array<Int> -> @Bool)
 }
 
 -- There exists a zero in the array
-fn has_zero(@Array<Int> -> @Bool)
+private fn has_zero(@Array<Int> -> @Bool)
   requires(true)
   ensures(true)
   effects(pure)
@@ -23,7 +23,7 @@ fn has_zero(@Array<Int> -> @Bool)
 }
 
 -- Assert and assume in function bodies
-fn process(@Int -> @Int)
+private fn process(@Int -> @Int)
   requires(@Int.0 > 0)
   ensures(@Int.result > 0)
   effects(pure)
