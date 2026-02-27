@@ -476,6 +476,10 @@ Functions are private by default. Add `public` for external visibility.
 
 Import paths resolve to files on disk: `import vera.math;` looks for `vera/math.vera` relative to the importing file's directory (or the project root). Imported files are parsed and cached automatically. Circular imports are detected and reported as errors.
 
+Imported functions can be called by name (bare calls): `import vera.math(abs); abs(-5)` resolves `abs` from the imported module. Selective imports restrict available names; wildcard imports (`import m;`) make all declarations available. Local definitions shadow imported names. Imported ADT constructors are also available: `import col(List); Cons(1, Nil)`.
+
+Note: module-qualified call syntax (`vera.math.abs(42)`) is not yet parseable due to an LALR grammar limitation. Use bare calls instead.
+
 ## Comments
 
 ```vera

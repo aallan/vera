@@ -14,6 +14,7 @@ from vera import ast
 from vera.checker import typecheck
 from vera.errors import Diagnostic
 from vera.parser import parse_to_ast
+from vera.resolver import ResolvedModule
 
 # =====================================================================
 # Helpers
@@ -1371,8 +1372,8 @@ class TestModuleCallDiagnostics:
         warns = [d for d in diags if d.severity == "warning"]
         assert any("not found" in w.description for w in warns)
 
-    def test_module_resolved_warning(self) -> None:
-        """ModuleCall with resolved module gives 'C7b' warning."""
+    def test_module_resolved_fn_not_found(self) -> None:
+        """ModuleCall with resolved empty module gives 'not found in module'."""
         from vera.resolver import ResolvedModule
 
         prog = self._make_program_with_module_call(("foo",), "bar")
@@ -1386,5 +1387,304 @@ class TestModuleCallDiagnostics:
         )
         diags = typecheck(prog, source="", resolved_modules=[fake_mod])
         warns = [d for d in diags if d.severity == "warning"]
-        assert any("C7b" in w.description for w in warns)
+        assert any("not found in module" in w.description for w in warns)
+
+
+# =====================================================================
+# C7b: Cross-module type checking
+# =====================================================================
+
+
+class TestCrossModuleTyping:
+    """Test cross-module type merging (C7b).
+
+    These tests verify that imported function signatures are registered
+    and used for type-checking.  Due to the LALR grammar limitation (#95),
+    ModuleCall tests construct AST nodes manually.  Bare-call tests use
+    ``parse_to_ast`` since ``fn_call`` parses fine.
+    """
+
+    # Reusable module sources
+    MATH_MODULE = """\
+fn abs(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
+
+fn max(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ if @Int.0 >= @Int.1 then { @Int.0 } else { @Int.1 } }
+"""
+
+    GENERIC_MODULE = """\
+forall<T> fn identity(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @T.0 }
+"""
+
+    COLLECTIONS_MODULE = """\
+data List<T> { Nil, Cons(T, List<T>) }
+data Option<T> { None, Some(T) }
+"""
+
+    @staticmethod
+    def _resolved(
+        path: tuple[str, ...], source: str,
+    ) -> ResolvedModule:
+        """Build a ResolvedModule from source text."""
+        from vera.resolver import ResolvedModule as RM
+        prog = parse_to_ast(source)
+        return RM(
+            path=path,
+            file_path=Path(f"/fake/{'/'.join(path)}.vera"),
+            program=prog,
+            source=source,
+        )
+
+    # -- Bare calls (parsed normally) -----------------------------------
+
+    def test_bare_call_resolves_type(self) -> None:
+        """import m(abs); abs(42) -> no errors."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        prog = parse_to_ast("""\
+import math(abs);
+fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ abs(@Int.0) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_bare_call_arity_mismatch(self) -> None:
+        """abs(1, 2) where abs takes 1 arg -> arity error."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        prog = parse_to_ast("""\
+import math(abs);
+fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ abs(@Int.0, @Int.0) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert any("expects 1" in e.description for e in errors)
+
+    def test_bare_call_type_mismatch(self) -> None:
+        """abs(true) where abs expects Int -> type error."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        prog = parse_to_ast("""\
+import math(abs);
+fn main(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ abs(@Bool.0) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert any("Bool" in e.description and "Int" in e.description
+                    for e in errors)
+
+    def test_bare_call_generic_inference(self) -> None:
+        """import m(identity); identity(42) -> infers Int, no errors."""
+        mod = self._resolved(("gen",), self.GENERIC_MODULE)
+        prog = parse_to_ast("""\
+import gen(identity);
+fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ identity(@Int.0) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_wildcard_import_allows_all(self) -> None:
+        """import math (no names) -> all functions available."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        prog = parse_to_ast("""\
+import math;
+fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ max(@Int.0, abs(@Int.0)) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_local_shadows_import(self) -> None:
+        """Local fn abs shadows imported abs."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        prog = parse_to_ast("""\
+import math(abs);
+fn abs(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ abs(@Int.0) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_imported_adt_constructors(self) -> None:
+        """import m(List) -> Cons and Nil constructors available."""
+        mod = self._resolved(("col",), self.COLLECTIONS_MODULE)
+        prog = parse_to_ast("""\
+import col(List);
+fn main(@Int -> @List<Int>)
+  requires(true) ensures(true) effects(pure)
+{ Cons(@Int.0, Nil) }
+""")
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    # -- Module-qualified calls (manual AST) ----------------------------
+
+    def test_module_call_resolves_type(self) -> None:
+        """ModuleCall to resolved function -> correct type, no errors."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        call = ast.ModuleCall(
+            path=("math",), name="abs",
+            args=(ast.IntLit(value=42),),
+        )
+        imp = ast.ImportDecl(path=("math",), names=("abs",))
+        fn = ast.FnDecl(
+            name="main", forall_vars=None, params=(),
+            return_type=ast.NamedType(name="Int", type_args=None),
+            contracts=(
+                ast.Requires(expr=ast.BoolLit(value=True)),
+                ast.Ensures(expr=ast.BoolLit(value=True)),
+            ),
+            effect=ast.PureEffect(),
+            body=ast.Block(statements=(), expr=call),
+            where_fns=None,
+        )
+        prog = ast.Program(
+            module=None,
+            imports=(imp,),
+            declarations=(ast.TopLevelDecl(visibility=None, decl=fn),),
+        )
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        warns = [d for d in diags if d.severity == "warning"]
+        assert errors == [], [e.description for e in errors]
         assert not any("not found" in w.description for w in warns)
+
+    def test_module_call_arity_mismatch(self) -> None:
+        """Module-qualified call with wrong arity -> error."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        call = ast.ModuleCall(
+            path=("math",), name="abs",
+            args=(ast.IntLit(value=1), ast.IntLit(value=2)),
+        )
+        imp = ast.ImportDecl(path=("math",), names=("abs",))
+        fn = ast.FnDecl(
+            name="main", forall_vars=None, params=(),
+            return_type=ast.NamedType(name="Int", type_args=None),
+            contracts=(
+                ast.Requires(expr=ast.BoolLit(value=True)),
+                ast.Ensures(expr=ast.BoolLit(value=True)),
+            ),
+            effect=ast.PureEffect(),
+            body=ast.Block(statements=(), expr=call),
+            where_fns=None,
+        )
+        prog = ast.Program(
+            module=None,
+            imports=(imp,),
+            declarations=(ast.TopLevelDecl(visibility=None, decl=fn),),
+        )
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert any("expects 1" in e.description for e in errors)
+
+    def test_selective_import_rejects_unimported(self) -> None:
+        """Module call to name not in selective import -> error."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        call = ast.ModuleCall(
+            path=("math",), name="max",
+            args=(ast.IntLit(value=1), ast.IntLit(value=2)),
+        )
+        # Only import "abs", not "max"
+        imp = ast.ImportDecl(path=("math",), names=("abs",))
+        fn = ast.FnDecl(
+            name="main", forall_vars=None, params=(),
+            return_type=ast.NamedType(name="Int", type_args=None),
+            contracts=(
+                ast.Requires(expr=ast.BoolLit(value=True)),
+                ast.Ensures(expr=ast.BoolLit(value=True)),
+            ),
+            effect=ast.PureEffect(),
+            body=ast.Block(statements=(), expr=call),
+            where_fns=None,
+        )
+        prog = ast.Program(
+            module=None,
+            imports=(imp,),
+            declarations=(ast.TopLevelDecl(visibility=None, decl=fn),),
+        )
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert any("not imported" in e.description for e in errors)
+
+    def test_fn_not_in_module(self) -> None:
+        """Module call to nonexistent function -> warning with available list."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        call = ast.ModuleCall(
+            path=("math",), name="nonexistent",
+            args=(ast.IntLit(value=42),),
+        )
+        imp = ast.ImportDecl(path=("math",), names=None)  # wildcard
+        fn = ast.FnDecl(
+            name="main", forall_vars=None, params=(),
+            return_type=ast.NamedType(name="Unit", type_args=None),
+            contracts=(
+                ast.Requires(expr=ast.BoolLit(value=True)),
+                ast.Ensures(expr=ast.BoolLit(value=True)),
+            ),
+            effect=ast.PureEffect(),
+            body=ast.Block(statements=(), expr=call),
+            where_fns=None,
+        )
+        prog = ast.Program(
+            module=None,
+            imports=(imp,),
+            declarations=(ast.TopLevelDecl(visibility=None, decl=fn),),
+        )
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        warns = [d for d in diags if d.severity == "warning"]
+        assert any("not found in module" in w.description for w in warns)
+        assert any("abs" in w.description for w in warns)  # available list
+
+    def test_multi_segment_path(self) -> None:
+        """Multi-segment module path (vera.math) works."""
+        mod = self._resolved(("vera", "math"), self.MATH_MODULE)
+        call = ast.ModuleCall(
+            path=("vera", "math"), name="abs",
+            args=(ast.IntLit(value=42),),
+        )
+        imp = ast.ImportDecl(path=("vera", "math"), names=("abs",))
+        fn = ast.FnDecl(
+            name="main", forall_vars=None, params=(),
+            return_type=ast.NamedType(name="Int", type_args=None),
+            contracts=(
+                ast.Requires(expr=ast.BoolLit(value=True)),
+                ast.Ensures(expr=ast.BoolLit(value=True)),
+            ),
+            effect=ast.PureEffect(),
+            body=ast.Block(statements=(), expr=call),
+            where_fns=None,
+        )
+        prog = ast.Program(
+            module=None,
+            imports=(imp,),
+            declarations=(ast.TopLevelDecl(visibility=None, decl=fn),),
+        )
+        diags = typecheck(prog, source="", resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]

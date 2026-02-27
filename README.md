@@ -224,8 +224,8 @@ Tracked in [#14](https://github.com/aallan/vera/issues/14) (type-checking) and [
 
 | Sub-phase | Scope | Status |
 |-----------|-------|--------|
-| C7a | Module resolution — map `import` paths to source files and parse them | v0.0.31 |
-| C7b | Cross-module type environment — merge public declarations across files | Planned |
+| C7a | Module resolution — map `import` paths to source files and parse them | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31) |
+| C7b | Cross-module type environment — merge public declarations across files | In progress |
 | C7c | Visibility enforcement — `public`/`private` access control in the checker | Planned |
 | C7d | Cross-module verification — verify contracts that reference imported symbols | Planned |
 | C7e | Multi-module codegen — WASM import/export tables linking multiple modules | Planned |
@@ -241,7 +241,7 @@ Open issues grouped by area. These are tracked for future phases beyond C7.
 
 **Type system** — [#20](https://github.com/aallan/vera/issues/20) TypeVar subtyping, [#21](https://github.com/aallan/vera/issues/21) effect row unification, [#55](https://github.com/aallan/vera/issues/55) minimal type inference
 
-**Tooling** — [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#75](https://github.com/aallan/vera/issues/75) `vera fmt` canonical formatter, [#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing, [#80](https://github.com/aallan/vera/issues/80) stable error code taxonomy
+**Tooling** — [#56](https://github.com/aallan/vera/issues/56) incremental compilation, [#75](https://github.com/aallan/vera/issues/75) `vera fmt` canonical formatter, [#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing, [#80](https://github.com/aallan/vera/issues/80) stable error code taxonomy, [#95](https://github.com/aallan/vera/issues/95) LALR grammar fix for module-qualified call syntax
 
 **Language design (spec §0.8)** — [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect, [#58](https://github.com/aallan/vera/issues/58) JSON standard library type, [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises, [#60](https://github.com/aallan/vera/issues/60) abilities and type constraints, [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect, [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal), [#76](https://github.com/aallan/vera/issues/76) Float alias vs Float64 canonical form
 
