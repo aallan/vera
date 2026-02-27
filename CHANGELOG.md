@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.35] - 2026-02-27
+
+### Fixed
+- **Cross-module codegen guard rail** (C7c — partial [#14](https://github.com/aallan/vera/issues/14)):
+  - `vera compile` and `vera run` on programs with imported functions now produce a proper Vera diagnostic instead of a raw wasmtime error (`unknown func: failed to find name $max`)
+  - Pre-compilation AST scan detects `FnCall` to undefined names and `ModuleCall` nodes before WAT generation, emitting LLM-oriented diagnostics with rationale, fix suggestion, and spec reference
+  - Belt-and-braces guard in `wasm.py` `_translate_call()` and explicit `ModuleCall` handler prevent any undefined call from reaching wasmtime
+  - Diagnostic directs users to `vera check` / `vera verify` for multi-module programs until C7e (multi-module codegen) is implemented
+- **Bare `fn`/`data` in error messages and docs** (merged in [#103](https://github.com/aallan/vera/pull/103)):
+  - Fixed remaining bare `fn` declarations in compiler error message fix suggestions (`vera/errors.py`), spec chapters, README, AGENTS.md, `vera/README.md`, and `tests/test_resolver.py`
+- **`vera run` parameter mismatch diagnostic**: when a function expects arguments but none are provided, the error now names the function, lists available exports, and shows the correct `--fn ... -- <args>` syntax (previously showed a raw "Runtime contract violation: too few parameters" wasmtime error)
+- 5 new tests (932 total, up from 927)
+
 ## [0.0.34] - 2026-02-27
 
 ### Added
@@ -511,7 +524,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.33...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.35...HEAD
+[0.0.35]: https://github.com/aallan/vera/compare/v0.0.34...v0.0.35
+[0.0.34]: https://github.com/aallan/vera/compare/v0.0.33...v0.0.34
 [0.0.33]: https://github.com/aallan/vera/compare/v0.0.32...v0.0.33
 [0.0.32]: https://github.com/aallan/vera/compare/v0.0.31...v0.0.32
 [0.0.31]: https://github.com/aallan/vera/compare/v0.0.30...v0.0.31

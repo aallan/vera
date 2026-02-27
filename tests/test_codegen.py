@@ -381,6 +381,44 @@ class TestCompileResult:
         assert result.ok is True
 
 
+class TestCrossModuleGuardRail:
+    """Calls to undefined functions produce a proper diagnostic."""
+
+    def test_undefined_fn_call_diagnostic(self) -> None:
+        """Calling a function not defined in this module emits a diagnostic."""
+        source = """\
+private fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ unknown_fn(42) }
+"""
+        result = _compile(source)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert len(errors) == 1
+        assert "unknown_fn" in errors[0].description
+        assert "not defined in this module" in errors[0].description
+        assert result.ok is False
+
+    def test_undefined_fn_no_raw_wasmtime_error(self) -> None:
+        """No raw WAT compilation error — guard rail catches it first."""
+        source = """\
+private fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ missing(1) }
+"""
+        result = _compile(source)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert all("WAT compilation failed" not in e.description for e in errors)
+
+    def test_locally_defined_fn_compiles(self) -> None:
+        """Calls to locally defined functions still work."""
+        source = """\
+private fn helper(-> @Int) requires(true) ensures(true) effects(pure) { 1 }
+private fn f(-> @Int) requires(true) ensures(true) effects(pure) { helper() }
+"""
+        result = _compile_ok(source)
+        assert result.ok is True
+
+
 # =====================================================================
 # 5b: Slot references + arithmetic
 # =====================================================================

@@ -931,6 +931,49 @@ private fn id(@Int -> @Int)
         assert data["ok"] is False
         assert "Invalid integer" in data["diagnostics"][0]["description"]
 
+    def test_run_no_main_no_args(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera run on file without main and no args gives helpful error."""
+        import tempfile
+        source = """\
+private fn add(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + @Int.1 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        rc = cmd_run(path)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "expects 2 parameters but 0 were provided" in err
+        assert "No 'main' function found" in err
+        assert "--fn add" in err
+
+    def test_run_no_main_no_args_json(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """JSON mode returns structured error for missing args."""
+        import tempfile
+        source = """\
+private fn add(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + @Int.1 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        rc = cmd_run(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert "expects 2 parameters" in data["diagnostics"][0]["description"]
+
 
 # =====================================================================
 # Multi-file resolution (C7a)
