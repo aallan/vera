@@ -93,7 +93,7 @@ def _run_trap(
 ) -> None:
     """Compile, execute, and assert a WASM trap."""
     result = _compile_ok(source)
-    with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap)):
+    with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
         execute(result, fn_name=fn, args=args)
 
 
@@ -1284,7 +1284,7 @@ class TestExampleRoundTrips:
         program = transform(tree)
         result = compile(program, source=source, file=str(path))
         # First param (divisor) is 0 → precondition @Int.1 != 0 violated
-        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap)):
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
             execute(result, fn_name="safe_divide", args=[0, 10])
 
     def test_mutual_recursion_is_even(self) -> None:
@@ -4168,7 +4168,7 @@ public fn bad_increment(@Unit -> @Unit)
 }
 """
         result = _compile_ok(src)
-        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap)):
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
             execute(
                 result, fn_name="bad_increment",
                 initial_state={"State_Int": 5},
@@ -4454,3 +4454,227 @@ public fn main(-> @Int)
 { pick() }
 """, [mod], fn="main")
         assert val == 42
+
+
+# =====================================================================
+# Contract failure messages (#112)
+# =====================================================================
+
+class TestContractFailMessages:
+    """Verify that contract violations produce informative error messages."""
+
+    def test_precondition_wat_has_contract_fail(self) -> None:
+        """WAT should call contract_fail before unreachable for requires."""
+        source = """\
+public fn positive(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+"""
+        result = _compile_ok(source)
+        assert "call $vera.contract_fail" in result.wat
+        assert "unreachable" in result.wat
+
+    def test_postcondition_wat_has_contract_fail(self) -> None:
+        """WAT should call contract_fail before unreachable for ensures."""
+        source = """\
+public fn negate(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ -@Int.0 }
+"""
+        result = _compile_ok(source)
+        assert "call $vera.contract_fail" in result.wat
+
+    def test_trivial_contract_no_contract_fail(self) -> None:
+        """Trivial contracts should not generate contract_fail calls."""
+        source = """\
+public fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        result = _compile_ok(source)
+        assert "contract_fail" not in result.wat
+
+    def test_precondition_violation_message(self) -> None:
+        """Precondition violation should produce an informative error."""
+        source = """\
+public fn positive(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+"""
+        result = _compile_ok(source)
+        with pytest.raises(RuntimeError, match="Precondition violation"):
+            execute(result, fn_name="positive", args=[0])
+
+    def test_postcondition_violation_message(self) -> None:
+        """Postcondition violation should produce an informative error."""
+        source = """\
+public fn negate(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ -@Int.0 }
+"""
+        result = _compile_ok(source)
+        with pytest.raises(RuntimeError, match="Postcondition violation"):
+            execute(result, fn_name="negate", args=[5])
+
+    def test_violation_includes_function_name(self) -> None:
+        """Error message should include the function name."""
+        source = """\
+public fn safe_div(@Int, @Int -> @Int)
+  requires(@Int.0 != 0)
+  ensures(true)
+  effects(pure)
+{ @Int.1 / @Int.0 }
+"""
+        result = _compile_ok(source)
+        with pytest.raises(RuntimeError, match="safe_div"):
+            execute(result, fn_name="safe_div", args=[10, 0])
+
+    def test_violation_includes_contract_text(self) -> None:
+        """Error message should include the contract expression."""
+        source = """\
+public fn bounded(@Int -> @Int)
+  requires(@Int.0 >= 0)
+  requires(@Int.0 <= 100)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+"""
+        result = _compile_ok(source)
+        with pytest.raises(RuntimeError, match=r"requires\(@Int.0 >= 0\)"):
+            execute(result, fn_name="bounded", args=[-1])
+
+    def test_postcondition_includes_ensures_text(self) -> None:
+        """Postcondition message should include the ensures expression."""
+        source = """\
+public fn double(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ @Int.0 * 2 }
+"""
+        result = _compile_ok(source)
+        with pytest.raises(RuntimeError, match=r"ensures\(@Int.result >= 0\)"):
+            execute(result, fn_name="double", args=[-1])
+
+    def test_precondition_full_message_format(self) -> None:
+        """Full message should have kind, signature, and clause."""
+        source = """\
+public fn clamp(@Int, @Int, @Int -> @Int)
+  requires(@Int.0 <= @Int.1)
+  ensures(true)
+  effects(pure)
+{ @Int.2 }
+"""
+        result = _compile_ok(source)
+        try:
+            execute(result, fn_name="clamp", args=[5, 3, 4])
+            assert False, "Expected RuntimeError"
+        except RuntimeError as exc:
+            msg = str(exc)
+            assert "Precondition violation" in msg
+            assert "clamp" in msg
+            assert "requires(" in msg
+            assert "@Int.0 <= @Int.1" in msg
+            assert "failed" in msg
+
+    def test_unit_postcondition_violation(self) -> None:
+        """Postcondition on Unit-returning function should report correctly."""
+        source = """\
+public fn bad_put(@Int -> @Unit)
+  requires(true)
+  ensures(new(State<Int>) == old(State<Int>) + 1)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+  put(@Int.0 + 2);
+  ()
+}
+"""
+        result = _compile_ok(source)
+        with pytest.raises(RuntimeError, match="Postcondition violation"):
+            execute(result, fn_name="bad_put", args=[0],
+                    initial_state={"State_Int": 5})
+
+
+class TestFormatExpr:
+    """Unit tests for ast.format_expr and related helpers."""
+
+    def test_int_lit(self) -> None:
+        from vera.ast import IntLit, format_expr
+        assert format_expr(IntLit(value=42)) == "42"
+
+    def test_bool_lit(self) -> None:
+        from vera.ast import BoolLit, format_expr
+        assert format_expr(BoolLit(value=True)) == "true"
+        assert format_expr(BoolLit(value=False)) == "false"
+
+    def test_slot_ref(self) -> None:
+        from vera.ast import SlotRef, format_expr
+        expr = SlotRef(type_name="Int", type_args=None, index=1)
+        assert format_expr(expr) == "@Int.1"
+
+    def test_slot_ref_with_type_args(self) -> None:
+        from vera.ast import NamedType, SlotRef, format_expr
+        expr = SlotRef(
+            type_name="Option",
+            type_args=(NamedType(name="Int", type_args=None),),
+            index=0,
+        )
+        assert format_expr(expr) == "@Option<@Int>.0"
+
+    def test_result_ref(self) -> None:
+        from vera.ast import ResultRef, format_expr
+        expr = ResultRef(type_name="Int", type_args=None)
+        assert format_expr(expr) == "@Int.result"
+
+    def test_binary_le(self) -> None:
+        from vera.ast import BinOp, BinaryExpr, SlotRef, format_expr
+        expr = BinaryExpr(
+            op=BinOp.LE,
+            left=SlotRef(type_name="Int", type_args=None, index=1),
+            right=SlotRef(type_name="Int", type_args=None, index=2),
+        )
+        assert format_expr(expr) == "@Int.1 <= @Int.2"
+
+    def test_unary_not(self) -> None:
+        from vera.ast import BoolLit, UnaryExpr, UnaryOp, format_expr
+        expr = UnaryExpr(op=UnaryOp.NOT, operand=BoolLit(value=True))
+        assert format_expr(expr) == "!true"
+
+    def test_unary_neg(self) -> None:
+        from vera.ast import IntLit, UnaryExpr, UnaryOp, format_expr
+        expr = UnaryExpr(op=UnaryOp.NEG, operand=IntLit(value=5))
+        assert format_expr(expr) == "-5"
+
+    def test_fn_call(self) -> None:
+        from vera.ast import FnCall, IntLit, format_expr
+        expr = FnCall(name="abs", args=(IntLit(value=3),))
+        assert format_expr(expr) == "abs(3)"
+
+    def test_format_fn_signature(self) -> None:
+        from vera.ast import (
+            BoolLit, FnDecl, NamedType, format_fn_signature,
+        )
+        decl = FnDecl(
+            name="clamp",
+            forall_vars=None,
+            params=(
+                NamedType(name="Int", type_args=None),
+                NamedType(name="Int", type_args=None),
+                NamedType(name="Int", type_args=None),
+            ),
+            return_type=NamedType(name="Int", type_args=None),
+            contracts=(),
+            effect=(),
+            body=(BoolLit(value=True),),
+            where_fns=None,
+        )
+        assert format_fn_signature(decl) == "clamp(@Int, @Int, @Int -> @Int)"

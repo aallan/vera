@@ -162,6 +162,29 @@ def execute(
         "vera", "print", print_type, host_print, access_caller=True
     )
 
+    # Host function: vera.contract_fail(ptr: i32, len: i32) -> ()
+    # Stores the violation message so it can be reported on trap.
+    last_violation: list[str] = []
+
+    def host_contract_fail(
+        caller: wasmtime.Caller, ptr: int, length: int,
+    ) -> None:
+        memory = caller["memory"]
+        assert isinstance(memory, wasmtime.Memory)
+        buf = memory.data_ptr(store)
+        data = bytes(buf[ptr:ptr + length])
+        last_violation.clear()
+        last_violation.append(data.decode("utf-8"))
+
+    contract_fail_type = wasmtime.FuncType(
+        [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+        [],
+    )
+    linker.define_func(
+        "vera", "contract_fail", contract_fail_type,
+        host_contract_fail, access_caller=True,
+    )
+
     # State<T> host functions
     _WASM_VAL_TYPE = {
         "i64": wasmtime.ValType.i64(),
@@ -254,7 +277,15 @@ def execute(
         )
         raise RuntimeError(msg)
 
-    raw_result = func(store, *call_args)
+    try:
+        raw_result = func(store, *call_args)
+    except Exception as exc:
+        # Convert contract violation traps to RuntimeError with
+        # the informative message stored by host_contract_fail.
+        exc_name = type(exc).__name__
+        if exc_name in ("Trap", "WasmtimeError") and last_violation:
+            raise RuntimeError(last_violation[0]) from exc
+        raise
 
     # Extract return value
     value: int | float | None
@@ -304,6 +335,7 @@ class CodeGenerator:
         self._fn_sigs: dict[str, tuple[list[str | None], str | None]] = {}
         # Track which effect operations are needed
         self._needs_io_print: bool = False
+        self._needs_contract_fail: bool = False
         self._needs_memory: bool = False
         self._state_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
 
@@ -1523,6 +1555,31 @@ class CodeGenerator:
     # Runtime contract insertion
     # -----------------------------------------------------------------
 
+    def _format_contract_message(
+        self,
+        decl: ast.FnDecl,
+        contract: ast.Requires | ast.Ensures,
+    ) -> str:
+        """Build a human-readable contract failure message string.
+
+        For a Requires:
+          Precondition violation in clamp(@Int, @Int, @Int -> @Int)
+            requires(@Int.1 <= @Int.2) failed
+
+        For an Ensures:
+          Postcondition violation in double(@Int -> @Int)
+            ensures(@Int.result >= 0) failed
+        """
+        if isinstance(contract, ast.Requires):
+            kind = "Precondition"
+            clause = "requires"
+        else:
+            kind = "Postcondition"
+            clause = "ensures"
+        sig = ast.format_fn_signature(decl)
+        expr_text = ast.format_expr(contract.expr)
+        return f"{kind} violation in {sig}\n  {clause}({expr_text}) failed"
+
     def _compile_preconditions(
         self,
         ctx: WasmContext,
@@ -1535,6 +1592,9 @@ class CodeGenerator:
             [condition]
             i32.eqz
             if
+              i32.const <msg_ptr>
+              i32.const <msg_len>
+              call $vera.contract_fail
               unreachable  ;; trap on precondition violation
             end
         """
@@ -1555,6 +1615,16 @@ class CodeGenerator:
             instrs.extend(cond_instrs)
             instrs.append("i32.eqz")
             instrs.append("if")
+
+            # Report which contract failed before trapping
+            msg = self._format_contract_message(decl, contract)
+            ptr, length = self.string_pool.intern(msg)
+            self._needs_contract_fail = True
+            self._needs_memory = True
+            instrs.append(f"  i32.const {ptr}")
+            instrs.append(f"  i32.const {length}")
+            instrs.append("  call $vera.contract_fail")
+
             instrs.append("  unreachable")
             instrs.append("end")
         return instrs
@@ -1610,6 +1680,15 @@ class CodeGenerator:
                 instrs.extend(cond_instrs)
                 instrs.append("i32.eqz")
                 instrs.append("if")
+
+                msg = self._format_contract_message(decl, ensures)
+                ptr, length = self.string_pool.intern(msg)
+                self._needs_contract_fail = True
+                self._needs_memory = True
+                instrs.append(f"  i32.const {ptr}")
+                instrs.append(f"  i32.const {length}")
+                instrs.append("  call $vera.contract_fail")
+
                 instrs.append("  unreachable")
                 instrs.append("end")
 
@@ -1624,6 +1703,15 @@ class CodeGenerator:
                 instrs.extend(cond_instrs)
                 instrs.append("i32.eqz")
                 instrs.append("if")
+
+                msg = self._format_contract_message(decl, ensures)
+                ptr, length = self.string_pool.intern(msg)
+                self._needs_contract_fail = True
+                self._needs_memory = True
+                instrs.append(f"  i32.const {ptr}")
+                instrs.append(f"  i32.const {length}")
+                instrs.append("  call $vera.contract_fail")
+
                 instrs.append("  unreachable")
                 instrs.append("end")
 
@@ -1748,6 +1836,13 @@ class CodeGenerator:
             parts.append(
                 '  (import "vera" "print" '
                 "(func $vera.print (param i32 i32)))"
+            )
+
+        # Import contract_fail for informative violation messages
+        if self._needs_contract_fail:
+            parts.append(
+                '  (import "vera" "contract_fail" '
+                "(func $vera.contract_fail (param i32 i32)))"
             )
 
         # Import State<T> host functions if needed
