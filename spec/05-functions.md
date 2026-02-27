@@ -230,7 +230,7 @@ private fn filter_positive(@Array<Int> -> @Array<Int>)
 
 ## 5.8 Function Visibility
 
-Every top-level `fn` and `data` declaration MUST have an explicit visibility modifier: either `public` or `private`. There is no default visibility. Omitting the modifier is a compile error.
+Every top-level `fn` and `data` declaration MUST have an explicit visibility modifier: either `public` or `private`. There is no default visibility. Omitting the modifier is a compile error. This enforces design principle 3 ("one canonical form"): every declaration has exactly one valid shape, eliminating ambiguity about whether an unadorned `fn` is public or private.
 
 ```
 public fn add(@Int, @Int -> @Int)
