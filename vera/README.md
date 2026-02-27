@@ -77,7 +77,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `grammar.lark` | 330 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
 | `parser.py` | 147 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
 | `transform.py` | 1,000 | Transform | Lark tree → AST transformer | `transform()` |
-| `ast.py` | 690 | Transform | Frozen dataclass AST nodes | `Program`, `Node`, `Expr` |
+| `ast.py` | 785 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
 | `types.py` | 307 | Type check | Semantic type representation | `Type`, `is_subtype()` |
 | `environment.py` | 302 | Type check | Type environment, scope stacks | `TypeEnv` |
 | `checker/` | 2,194 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
@@ -104,7 +104,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `cli.py` | 682 | All | CLI commands | `main()` |
 | `registration.py` | 58 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~11,697 lines of Python + 330 lines of grammar.
+Total: ~11,792 lines of Python + 330 lines of grammar.
 
 ## Parsing
 
@@ -407,6 +407,8 @@ The code generator classifies contracts using the verifier's tier results:
 
 Preconditions are checked at function entry. Postconditions store the return value in a temporary local, check the condition, and trap or return.
 
+**Informative violation messages:** Before each `unreachable`, the codegen emits a call to the `vera.contract_fail` host import with a pre-interned message string describing which contract failed (function name, contract kind, expression text). The host callback stores the message; when the trap is caught, `execute()` raises a `RuntimeError` with the stored message instead of a raw WASM trap. `format_expr()` and `format_fn_signature()` in `ast.py` reconstruct source text from AST nodes for the message.
+
 ## Error System
 
 **File:** `errors.py` (354 lines)
@@ -475,7 +477,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 
 ## Test Suite
 
-**951 tests** across 11 files, plus 4 validation scripts and CI infrastructure.
+**971 tests** across 11 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
@@ -485,7 +487,7 @@ Every diagnostic includes a description (what went wrong), rationale (which lang
 | `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 143 | 1,922 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility |
 | `test_verifier.py` | 77 | 1,118 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions, pipe operator, cross-module contracts |
-| `test_codegen.py` | 337 | 4,456 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, old/new state postconditions, cross-module codegen, example round-trips |
+| `test_codegen.py` | 357 | 4,680 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, contract fail messages, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, old/new state postconditions, cross-module codegen, example round-trips |
 | `test_cli.py` | 85 | 1,138 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |

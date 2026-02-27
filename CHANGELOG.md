@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.42] - 2026-02-27
+
+### Changed
+- **Informative runtime contract violation messages** (C8b, [#112](https://github.com/aallan/vera/issues/112)):
+  - Contract violations now report which function, contract kind, and expression failed
+  - Before: `Runtime contract violation: error while executing at wasm backtrace: ... wasm trap: wasm unreachable instruction executed`
+  - After: `Precondition violation in clamp(@Int, @Int, @Int -> @Int)\n  requires(@Int.1 <= @Int.2) failed`
+  - New `vera.contract_fail` host import passes pre-interned message strings from WASM to the runtime before trapping
+  - Added `format_expr()`, `format_type_expr()`, `format_fn_signature()` to `vera/ast.py` for AST-to-source reconstruction
+  - 20 new tests (971 total, up from 951)
+
 ## [0.0.41] - 2026-02-27
 
 ### Changed
@@ -619,7 +630,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.41...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.42...HEAD
+[0.0.42]: https://github.com/aallan/vera/compare/v0.0.41...v0.0.42
 [0.0.41]: https://github.com/aallan/vera/compare/v0.0.40...v0.0.41
 [0.0.40]: https://github.com/aallan/vera/compare/v0.0.39...v0.0.40
 [0.0.39]: https://github.com/aallan/vera/compare/v0.0.38...v0.0.39

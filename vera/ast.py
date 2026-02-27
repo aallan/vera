@@ -688,3 +688,98 @@ class _TupleDestruct:
     """Sentinel: tuple destructuring pattern."""
     constructor: str
     type_bindings: tuple[TypeExpr, ...]
+
+
+# =====================================================================
+# Source Text Formatting (for error messages)
+# =====================================================================
+
+def format_type_expr(te: TypeExpr) -> str:
+    """Reconstruct Vera source text from a type expression AST node."""
+    if isinstance(te, NamedType):
+        if te.type_args:
+            args = ", ".join(format_type_expr(a) for a in te.type_args)
+            return f"@{te.name}<{args}>"
+        return f"@{te.name}"
+    if isinstance(te, RefinementType):
+        return format_type_expr(te.base_type)
+    return "@?"
+
+
+def format_expr(expr: Expr) -> str:
+    """Reconstruct Vera source text from an expression AST node.
+
+    Produces human-readable representations for contract expressions
+    in runtime error messages.
+    """
+    if isinstance(expr, IntLit):
+        return str(expr.value)
+    if isinstance(expr, FloatLit):
+        return str(expr.value)
+    if isinstance(expr, BoolLit):
+        return "true" if expr.value else "false"
+    if isinstance(expr, StringLit):
+        return f'"{expr.value}"'
+    if isinstance(expr, SlotRef):
+        base = expr.type_name
+        if expr.type_args:
+            args = ", ".join(format_type_expr(a) for a in expr.type_args)
+            base = f"{base}<{args}>"
+        return f"@{base}.{expr.index}"
+    if isinstance(expr, ResultRef):
+        base = expr.type_name
+        if expr.type_args:
+            args = ", ".join(format_type_expr(a) for a in expr.type_args)
+            base = f"{base}<{args}>"
+        return f"@{base}.result"
+    if isinstance(expr, BinaryExpr):
+        left = format_expr(expr.left)
+        right = format_expr(expr.right)
+        return f"{left} {expr.op.value} {right}"
+    if isinstance(expr, UnaryExpr):
+        operand = format_expr(expr.operand)
+        if expr.op == UnaryOp.NEG:
+            return f"-{operand}"
+        return f"!{operand}"
+    if isinstance(expr, FnCall):
+        args = ", ".join(format_expr(a) for a in expr.args)
+        return f"{expr.name}({args})"
+    if isinstance(expr, OldExpr):
+        ref = expr.effect_ref
+        if isinstance(ref, EffectRef):
+            if ref.type_args:
+                args = ", ".join(format_type_expr(a) for a in ref.type_args)
+                return f"old({ref.name}<{args}>)"
+            return f"old({ref.name})"
+        return "old(...)"
+    if isinstance(expr, NewExpr):
+        ref = expr.effect_ref
+        if isinstance(ref, EffectRef):
+            if ref.type_args:
+                args = ", ".join(format_type_expr(a) for a in ref.type_args)
+                return f"new({ref.name}<{args}>)"
+            return f"new({ref.name})"
+        return "new(...)"
+    if isinstance(expr, ForallExpr):
+        binding = format_type_expr(expr.binding_type)
+        domain = format_expr(expr.domain)
+        return f"forall({binding}, {domain}, ...)"
+    if isinstance(expr, ExistsExpr):
+        binding = format_type_expr(expr.binding_type)
+        domain = format_expr(expr.domain)
+        return f"exists({binding}, {domain}, ...)"
+    if isinstance(expr, IndexExpr):
+        coll = format_expr(expr.collection)
+        idx = format_expr(expr.index)
+        return f"{coll}[{idx}]"
+    return "<expr>"
+
+
+def format_fn_signature(decl: FnDecl) -> str:
+    """Format a function signature for error messages.
+
+    Produces output like: clamp(@Int, @Int, @Int -> @Int)
+    """
+    params = ", ".join(format_type_expr(p) for p in decl.params)
+    ret = format_type_expr(decl.return_type)
+    return f"{decl.name}({params} -> {ret})"
