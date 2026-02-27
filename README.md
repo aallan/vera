@@ -108,7 +108,7 @@ public fn increment(@Unit -> @Unit)
 }
 ```
 
-> [`examples/increment.vera`](examples/increment.vera) — this example uses `State<Int>` effects (not directly runnable via `vera run`)
+> [`examples/increment.vera`](examples/increment.vera) — this example uses `State<Int>` effects, which require effect handler compilation ([#53](https://github.com/aallan/vera/issues/53)) before `vera run` can execute them
 
 ## What Errors Look Like
 
@@ -143,30 +143,23 @@ This principle applies at every stage: parse errors, type errors, effect mismatc
 
 ## Project Status
 
-Vera is in **active development**. The language specification, parser, AST, type checker, contract verifier, and WASM code generator are functional. Programs compile to WebAssembly and execute via wasmtime.
+Vera is in **active development**. The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, and runtime contract insertion — is working. Programs compile to WebAssembly and execute via wasmtime. See the [roadmap](#roadmap) for what's next.
 
-| Component | Status |
-|-----------|--------|
-| Language specification | Draft |
-| — Ch 0: Introduction and Philosophy | Draft |
-| — Ch 1: Lexical Structure | Draft |
-| — Ch 2: Types | Draft |
-| — Ch 3: Slot References | Draft |
-| — Ch 4: Expressions and Statements | Draft |
-| — Ch 5: Functions | Draft |
-| — Ch 6: Contracts | Draft |
-| — Ch 7: Effects | Draft |
-| — Ch 8: Modules | Draft |
-| — Ch 9: Standard Library | Draft |
-| — Ch 10: Formal Grammar | Draft |
-| — Ch 11: Compilation Model | Draft |
-| — Ch 12: Runtime and Execution | Draft |
-| Parser (Lark LALR(1)) | Working |
-| AST (typed syntax tree) | Working |
-| Type checker | Working |
-| Contract verifier (Z3) | Working |
-| WASM code generation | Working |
-| Runtime contract insertion | Working |
+The language specification is in draft across 13 chapters:
+
+- **[Ch 0: Introduction and Philosophy](spec/00-introduction.md)** — Design goals, the LLM-first premise, and the principles behind mandatory contracts, slot references, and algebraic effects.
+- **[Ch 1: Lexical Structure](spec/01-lexical-structure.md)** — Source encoding (UTF-8), whitespace handling, indentation-free formatting, and token conventions.
+- **[Ch 2: Types](spec/02-types.md)** — Primitive types, algebraic data types, parametric polymorphism, refinement types with logical predicates, and function types with effect annotations.
+- **[Ch 3: Slot References](spec/03-slot-references.md)** — The `@T.n` binding mechanism where bindings are referenced by type and positional index rather than variable names.
+- **[Ch 4: Expressions and Statements](spec/04-expressions.md)** — Expression-oriented design where blocks and nearly all constructs produce values. `let` bindings are the only statement form.
+- **[Ch 5: Functions](spec/05-functions.md)** — Mandatory parameter types, return types, contracts, effect declarations, and body expressions. Functions are the primary abstraction unit.
+- **[Ch 6: Contracts](spec/06-contracts.md)** — Preconditions, postconditions, and `decreases` clauses as executable specifications that the implementation must satisfy.
+- **[Ch 7: Effects](spec/07-effects.md)** — Pure-by-default semantics with algebraic effects for state, I/O, and exceptions, inspired by Koka.
+- **[Ch 8: Modules](spec/08-modules.md)** — File-based module system with dotted paths, selective and wildcard imports, public/private visibility, and cross-module verification.
+- **[Ch 9: Standard Library](spec/09-standard-library.md)** — Built-in types (Option, Result, Array), effects (IO, State), and functions that cannot be expressed purely in user code.
+- **[Ch 10: Formal Grammar](spec/10-grammar.md)** — Complete EBNF grammar compatible with the Lark LALR(1) parser generator.
+- **[Ch 11: Compilation Model](spec/11-compilation.md)** — The pipeline from source to WAT/WASM, including Tier 1 (static) and Tier 3 (runtime) contract classification.
+- **[Ch 12: Runtime and Execution](spec/12-runtime.md)** — The wasmtime-based runtime providing effect implementations, linear memory management, and trap handling.
 
 ## Roadmap
 
