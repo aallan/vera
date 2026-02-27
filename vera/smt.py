@@ -67,7 +67,7 @@ class CallViolation:
     """Records a call site where a callee's precondition may not hold."""
 
     callee_name: str
-    call_node: ast.FnCall
+    call_node: ast.FnCall | ast.ModuleCall
     precondition: ast.Requires
     counterexample: dict[str, str] | None = None
 
@@ -104,6 +104,9 @@ class SmtContext:
         self,
         timeout_ms: int = 10_000,
         fn_lookup: Callable[[str], Any] | None = None,
+        module_fn_lookup: (
+            Callable[[tuple[str, ...], str], Any] | None
+        ) = None,
     ) -> None:
         self.solver = z3.Solver()
         self.solver.set("timeout", timeout_ms)
@@ -113,6 +116,7 @@ class SmtContext:
         self._length_fn = z3.Function("length", z3.IntSort(), z3.IntSort())
         # Callee contract verification
         self._fn_lookup = fn_lookup
+        self._module_fn_lookup = module_fn_lookup
         self._call_violations: list[CallViolation] = []
         self._fresh_counter: int = 0
 
@@ -194,6 +198,9 @@ class SmtContext:
         if isinstance(expr, ast.FnCall):
             return self._translate_call(expr, env)
 
+        if isinstance(expr, ast.ModuleCall):
+            return self._translate_module_call(expr, env)
+
         if isinstance(expr, ast.Block):
             return self._translate_block(expr, env)
 
@@ -231,7 +238,15 @@ class SmtContext:
                     span=expr.span,
                 )
                 return self._translate_call(desugared, env)
-            return None  # non-FnCall RHS — unsupported
+            if isinstance(expr.right, ast.ModuleCall):
+                desugared_mc = ast.ModuleCall(
+                    path=expr.right.path,
+                    name=expr.right.name,
+                    args=(expr.left,) + expr.right.args,
+                    span=expr.span,
+                )
+                return self._translate_module_call(desugared_mc, env)
+            return None  # unsupported RHS
 
         left = self.translate_expr(expr.left, env)
         right = self.translate_expr(expr.right, env)
@@ -306,13 +321,8 @@ class SmtContext:
         """Translate a function call via modular contract verification.
 
         For ``length()``, uses the built-in uninterpreted function.
-        For user-defined functions:
-          1. Look up the callee's FunctionInfo
-          2. Translate actual arguments in the caller's env
-          3. Check each callee precondition holds (solver has caller assumptions)
-          4. Create a fresh return variable
-          5. Assume callee postconditions about the return variable
-          6. Return the fresh variable
+        For user-defined functions, looks up the callee and delegates
+        to ``_translate_call_with_info``.
         """
         # Built-in: length()
         if call.name == "length" and len(call.args) == 1:
@@ -331,17 +341,59 @@ class SmtContext:
         if callee_info is None:
             return None
 
+        return self._translate_call_with_info(
+            callee_info, call.name, call.args, call, env,
+        )
+
+    def _translate_module_call(
+        self, call: ast.ModuleCall, env: SlotEnv
+    ) -> z3.ExprRef | None:
+        """Translate a module-qualified call (C7d).
+
+        Looks up the callee via the module function lookup callback,
+        then delegates to the shared contract verification logic.
+        """
+        if self._module_fn_lookup is None:
+            return None
+
+        callee_info = self._module_fn_lookup(
+            tuple(call.path), call.name,
+        )
+        if callee_info is None:
+            return None
+
+        return self._translate_call_with_info(
+            callee_info, call.name, call.args, call, env,
+        )
+
+    def _translate_call_with_info(
+        self,
+        callee_info: Any,
+        callee_name: str,
+        args: tuple[ast.Expr, ...],
+        call_node: ast.FnCall | ast.ModuleCall,
+        env: SlotEnv,
+    ) -> z3.ExprRef | None:
+        """Core modular verification: check preconditions, assume postconditions.
+
+          1. Check callee is non-generic with matching arity
+          2. Translate actual arguments in the caller's env
+          3. Check each callee precondition holds (solver has caller assumptions)
+          4. Create a fresh return variable
+          5. Assume callee postconditions about the return variable
+          6. Return the fresh variable
+        """
         # Generic functions can't be translated to Z3
         if callee_info.forall_vars:
             return None
 
         # Must have matching arity
-        if len(call.args) != len(callee_info.param_type_exprs):
+        if len(args) != len(callee_info.param_type_exprs):
             return None
 
         # Translate actual arguments in the caller's env
         z3_args: list[z3.ExprRef] = []
-        for arg_expr in call.args:
+        for arg_expr in args:
             z3_arg = self.translate_expr(arg_expr, env)
             if z3_arg is None:
                 return None
@@ -370,8 +422,8 @@ class SmtContext:
             result = self.check_valid(z3_pre, [])
             if result.status != "verified":
                 self._call_violations.append(CallViolation(
-                    callee_name=call.name,
-                    call_node=call,
+                    callee_name=callee_name,
+                    call_node=call_node,
                     precondition=contract,
                     counterexample=result.counterexample,
                 ))
@@ -381,7 +433,7 @@ class SmtContext:
         from vera.types import NAT, BOOL, RefinedType
         ret_type = callee_info.return_type
         base_ret = ret_type.base if isinstance(ret_type, RefinedType) else ret_type
-        fresh = self._fresh_name(call.name)
+        fresh = self._fresh_name(callee_name)
         if base_ret == NAT:
             ret_var = self.declare_nat(fresh)
         elif base_ret == BOOL:

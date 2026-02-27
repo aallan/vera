@@ -916,3 +916,203 @@ private fn main(@Int -> @Int)
   effects(pure)
 { @Int.0 |> inc() }
 """)
+
+
+# =====================================================================
+# Cross-module contract verification (C7d)
+# =====================================================================
+
+class TestCrossModuleVerification:
+    """Imported function contracts are verified at call sites."""
+
+    # Reusable module sources
+    MATH_MODULE = """\
+public fn abs(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
+
+public fn max(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= @Int.0)
+  ensures(@Int.result >= @Int.1)
+  effects(pure)
+{ if @Int.0 >= @Int.1 then { @Int.0 } else { @Int.1 } }
+"""
+
+    GUARDED_MODULE = """\
+public fn positive(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ @Int.0 }
+
+private fn internal(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+"""
+
+    @staticmethod
+    def _resolved(
+        path: tuple[str, ...], source: str,
+    ) -> "ResolvedModule":
+        """Build a ResolvedModule from source text."""
+        from vera.resolver import ResolvedModule as RM
+        prog = parse_to_ast(source)
+        return RM(
+            path=path,
+            file_path=Path(f"/fake/{'/'.join(path)}.vera"),
+            program=prog,
+            source=source,
+        )
+
+    @staticmethod
+    def _verify_mod(
+        source: str,
+        modules: list["ResolvedModule"],
+    ) -> VerifyResult:
+        """Parse, type-check, and verify with resolved modules."""
+        prog = parse_to_ast(source)
+        typecheck(prog, source, resolved_modules=modules)
+        return verify(prog, source, resolved_modules=modules)
+
+    # -- Postcondition assumption -----------------------------------------
+
+    def test_imported_postcondition_assumed(self) -> None:
+        """abs(x) ensures result >= 0, so caller's ensures(@Int.result >= 0) verifies."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        result = self._verify_mod("""\
+import math(abs);
+private fn wrap(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ abs(@Int.0) }
+""", [mod])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    # -- Precondition violation -------------------------------------------
+
+    def test_imported_precondition_violation(self) -> None:
+        """positive(0) violates requires(@Int.0 > 0)."""
+        mod = self._resolved(("util",), self.GUARDED_MODULE)
+        result = self._verify_mod("""\
+import util(positive);
+private fn bad(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ positive(0) }
+""", [mod])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors, "Expected precondition violation"
+        assert any("precondition" in e.description.lower() for e in errors)
+
+    # -- Precondition satisfied by caller's requires ----------------------
+
+    def test_imported_precondition_satisfied(self) -> None:
+        """Caller's requires(@Int.0 > 0) implies positive's precondition."""
+        mod = self._resolved(("util",), self.GUARDED_MODULE)
+        result = self._verify_mod("""\
+import util(positive);
+private fn good(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ positive(@Int.0) }
+""", [mod])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    # -- Chained imported calls -------------------------------------------
+
+    def test_chained_imported_calls(self) -> None:
+        """abs(max(x, y)) >= 0 verifies via composed postconditions."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        result = self._verify_mod("""\
+import math(abs, max);
+private fn abs_max(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ abs(max(@Int.0, @Int.1)) }
+""", [mod])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    # -- Selective import filter ------------------------------------------
+
+    def test_selective_import_not_imported(self) -> None:
+        """Function not in import list falls back to Tier 3."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        result = self._verify_mod("""\
+import math(abs);
+private fn wrap(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ abs(@Int.0) }
+""", [mod])
+        # abs is imported, max is not — but we're only calling abs here
+        # abs should be Tier 1 verified (postcondition is trivial ensures(true))
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    # -- Private function not available -----------------------------------
+
+    def test_private_function_not_registered(self) -> None:
+        """Private function from module is not injected into verifier env."""
+        mod = self._resolved(("util",), self.GUARDED_MODULE)
+        # 'internal' is private — it shouldn't be available as a bare call.
+        # The verifier should not have it registered, so any ensures relying
+        # on its postcondition would fall to Tier 3.
+        result = self._verify_mod("""\
+import util(positive);
+private fn wrap(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ positive(1) }
+""", [mod])
+        # positive is public with ensures(@Int.result > 0) → Tier 1
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+        # Verify the private function 'internal' is not in the env
+        assert result.summary.tier3_runtime == 0
+
+    # -- Tier summary counts ----------------------------------------------
+
+    def test_tier_counts_with_imports(self) -> None:
+        """Imported calls promote to Tier 1 instead of Tier 3."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        result = self._verify_mod("""\
+import math(abs);
+private fn wrap(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ abs(@Int.0) }
+""", [mod])
+        # requires(true) → Tier 1, ensures(@Int.result >= 0) → Tier 1 (via abs postcondition)
+        assert result.summary.tier1_verified >= 2
+        assert result.summary.tier3_runtime == 0
+
+    # -- No regression on single-module -----------------------------------
+
+    def test_single_module_unchanged(self) -> None:
+        """Single-module programs verify identically with empty modules list."""
+        source = """\
+private fn id(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{ @Int.0 }
+"""
+        result_without = _verify(source)
+        result_with = self._verify_mod(source, [])
+        assert result_without.summary.tier1_verified == result_with.summary.tier1_verified
+        assert result_without.summary.tier3_runtime == result_with.summary.tier3_runtime

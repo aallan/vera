@@ -13,9 +13,13 @@ See spec/06-contracts.md for the full verification specification.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from vera import ast
 from vera.environment import FunctionInfo, TypeEnv
+
+if TYPE_CHECKING:
+    from vera.resolver import ResolvedModule
 from vera.errors import Diagnostic, SourceLocation
 from vera.smt import CallViolation, SlotEnv, SmtContext
 from vera.types import (
@@ -61,17 +65,21 @@ def verify(
     source: str = "",
     file: str | None = None,
     timeout_ms: int = 10_000,
-    resolved_modules: object | None = None,
+    resolved_modules: list[ResolvedModule] | None = None,
 ) -> VerifyResult:
     """Verify contracts in a type-checked Vera Program AST.
 
     Returns a VerifyResult with diagnostics and a verification summary.
     The program must already have passed type checking (C3).
 
-    *resolved_modules* is accepted for forward-compatibility with C7d
-    (cross-module verification) but is unused in this release.
+    *resolved_modules* provides imported module ASTs for cross-module
+    contract verification (C7d).  Imported function preconditions are
+    checked at call sites; postconditions are assumed.
     """
-    verifier = ContractVerifier(source=source, file=file, timeout_ms=timeout_ms)
+    verifier = ContractVerifier(
+        source=source, file=file, timeout_ms=timeout_ms,
+        resolved_modules=resolved_modules,
+    )
     verifier.verify_program(program)
     return VerifyResult(
         diagnostics=verifier.errors,
@@ -91,6 +99,7 @@ class ContractVerifier:
         source: str = "",
         file: str | None = None,
         timeout_ms: int = 10_000,
+        resolved_modules: list[ResolvedModule] | None = None,
     ) -> None:
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
@@ -98,6 +107,17 @@ class ContractVerifier:
         self.source = source
         self.file = file
         self.timeout_ms = timeout_ms
+        self._resolved_modules: list[ResolvedModule] = (
+            resolved_modules or []
+        )
+        # Per-module function registries for ModuleCall lookup (C7d)
+        self._module_functions: dict[
+            tuple[str, ...], dict[str, FunctionInfo]
+        ] = {}
+        # Import name filter from ImportDecl nodes
+        self._import_names: dict[
+            tuple[str, ...], set[str] | None
+        ] = {}
 
     # -----------------------------------------------------------------
     # Diagnostics
@@ -165,7 +185,7 @@ class ContractVerifier:
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl):
-                self._register_fn(decl)
+                self._register_fn(decl, visibility=tld.visibility)
             elif isinstance(decl, ast.DataDecl):
                 self._register_data(decl)
             elif isinstance(decl, ast.EffectDecl):
@@ -173,12 +193,15 @@ class ContractVerifier:
             elif isinstance(decl, ast.TypeAliasDecl):
                 self._register_alias(decl)
 
-    def _register_fn(self, decl: ast.FnDecl) -> None:
+    def _register_fn(
+        self, decl: ast.FnDecl, visibility: str | None = None,
+    ) -> None:
         """Register a function signature and its contracts."""
         from vera.registration import register_fn
         register_fn(
             self.env, decl,
             self._resolve_type, self._resolve_effect_row,
+            visibility=visibility,
         )
 
     def _register_data(self, decl: ast.DataDecl) -> None:
@@ -212,6 +235,67 @@ class ContractVerifier:
             type_params=decl.type_params,
             resolved_type=resolved,
         )
+
+    # -----------------------------------------------------------------
+    # Cross-module registration (C7d)
+    # -----------------------------------------------------------------
+
+    def _register_modules(self, program: ast.Program) -> None:
+        """Register imported function contracts for cross-module verification.
+
+        Mirrors the checker's ``_register_modules`` pattern (C7b):
+        1. Build import-name filter from ImportDecl nodes.
+        2. For each resolved module, register in isolation and harvest
+           public function signatures (including contracts).
+        3. Inject into ``self.env.functions`` for bare-call lookup.
+        4. Store per-module dicts for ModuleCall qualified lookup.
+        """
+        if not self._resolved_modules:
+            return
+
+        # 1. Build import filter
+        for imp in program.imports:
+            self._import_names[imp.path] = (
+                set(imp.names) if imp.names is not None else None
+            )
+
+        # Snapshot builtin function names
+        _builtins = TypeEnv()
+        builtin_fn_names = set(_builtins.functions)
+
+        # 2. Register each module in isolation
+        for mod in self._resolved_modules:
+            temp = ContractVerifier(source=mod.source)
+            temp._register_all(mod.program)
+
+            # All module-declared functions (exclude builtins)
+            all_fns = {
+                k: v for k, v in temp.env.functions.items()
+                if k not in builtin_fn_names or v.span is not None
+            }
+
+            # 3. Filter to public only
+            mod_fns = {
+                k: v for k, v in all_fns.items()
+                if v.visibility == "public"
+            }
+
+            self._module_functions[mod.path] = mod_fns
+
+            # 4. Inject into self.env for bare calls
+            name_filter = self._import_names.get(mod.path)
+            for fn_name, fn_info in mod_fns.items():
+                if name_filter is None or fn_name in name_filter:
+                    self.env.functions.setdefault(fn_name, fn_info)
+
+    def _lookup_module_function(
+        self, path: tuple[str, ...], name: str,
+    ) -> FunctionInfo | None:
+        """Look up a function in a specific module's public registry."""
+        mod_fns = self._module_functions.get(path)
+        if mod_fns is None:
+            return None
+        return mod_fns.get(name)
 
     # -----------------------------------------------------------------
     # Type resolution (simplified — reuses TypeEnv patterns)
@@ -273,8 +357,9 @@ class ContractVerifier:
     # -----------------------------------------------------------------
 
     def verify_program(self, program: ast.Program) -> None:
-        """Entry point: register declarations then verify each function."""
-        self._register_all(program)
+        """Entry point: register modules, then local declarations, then verify."""
+        self._register_modules(program)  # C7d: cross-module imports
+        self._register_all(program)      # local declarations shadow imports
         for tld in program.declarations:
             if isinstance(tld.decl, ast.FnDecl):
                 self._verify_fn(tld.decl)
@@ -303,6 +388,7 @@ class ContractVerifier:
         smt = SmtContext(
             timeout_ms=self.timeout_ms,
             fn_lookup=self.env.lookup_function,
+            module_fn_lookup=self._lookup_module_function,
         )
         slot_env = SlotEnv()
 
@@ -506,7 +592,7 @@ class ContractVerifier:
         self,
         caller: ast.FnDecl,
         callee_name: str,
-        call_node: ast.FnCall,
+        call_node: ast.FnCall | ast.ModuleCall,
         precondition: ast.Requires,
         counterexample: dict[str, str] | None,
     ) -> None:

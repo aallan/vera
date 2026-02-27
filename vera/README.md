@@ -547,7 +547,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Partial module system** | Resolution (C7a) and type merging (C7b) complete; visibility (C7c), verification (C7d), and codegen (C7e) pending | [#14](https://github.com/aallan/vera/issues/14), [#50](https://github.com/aallan/vera/issues/50), [#95](https://github.com/aallan/vera/issues/95) |
+| **Partial module system** | Resolution (C7a), type merging (C7b), visibility (C7c), and verification (C7d) complete; codegen (C7e) pending | [#14](https://github.com/aallan/vera/issues/14), [#50](https://github.com/aallan/vera/issues/50), [#95](https://github.com/aallan/vera/issues/95) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | [#21](https://github.com/aallan/vera/issues/21) |
 | **No termination verification** | `decreases` clauses parsed but always Tier 3 | [#45](https://github.com/aallan/vera/issues/45) |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
