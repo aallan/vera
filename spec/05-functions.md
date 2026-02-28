@@ -166,7 +166,11 @@ public fn is_even(@Nat -> @Bool)
   decreases(@Nat.0)
   effects(pure)
 {
-  if @Nat.0 == 0 then { true } else { is_odd(@Nat.0 - 1) }
+  if @Nat.0 == 0 then {
+    true
+  } else {
+    is_odd(@Nat.0 - 1)
+  }
 }
 where {
   fn is_odd(@Nat -> @Bool)
@@ -175,7 +179,11 @@ where {
     decreases(@Nat.0)
     effects(pure)
   {
-    if @Nat.0 == 0 then { false } else { is_even(@Nat.0 - 1) }
+    if @Nat.0 == 0 then {
+      false
+    } else {
+      is_even(@Nat.0 - 1)
+    }
   }
 }
 ```

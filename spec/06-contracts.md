@@ -35,7 +35,11 @@ public fn absolute_value(@Int -> @Nat)
   ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)
   effects(pure)
 {
-  if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 }
+  if @Int.0 >= 0 then {
+    @Int.0
+  } else {
+    -@Int.0
+  }
 }
 ```
 

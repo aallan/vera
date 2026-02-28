@@ -86,7 +86,11 @@ public fn abs(@Int -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 }
+  if @Int.0 < 0 then {
+    0 - @Int.0
+  } else {
+    @Int.0
+  }
 }
 
 private fn helper(@Int -> @Int)
@@ -110,8 +114,16 @@ private fn helper(@Int -> @Int)
 The same rules apply to `data` declarations:
 
 ```
-public data Color { Red, Green, Blue }
-private data InternalState { Active(Int), Idle }
+public data Color {
+  Red,
+  Green,
+  Blue
+}
+
+private data InternalState {
+  Active(Int),
+  Idle
+}
 ```
 
 When a `public` data type is imported, all of its constructors are also available. A `private` data type's constructors cannot be accessed from outside the module.
@@ -297,7 +309,11 @@ public fn abs(@Int -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 }
+  if @Int.0 < 0 then {
+    0 - @Int.0
+  } else {
+    @Int.0
+  }
 }
 ```
 
@@ -357,7 +373,11 @@ public fn abs(@Int -> @Int)
   ensures(@Int.result >= 0)
   effects(pure)
 {
-  if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 }
+  if @Int.0 < 0 then {
+    0 - @Int.0
+  } else {
+    @Int.0
+  }
 }
 
 public fn max(@Int, @Int -> @Int)
@@ -366,7 +386,11 @@ public fn max(@Int, @Int -> @Int)
   ensures(@Int.result >= @Int.1)
   effects(pure)
 {
-  if @Int.0 >= @Int.1 then { @Int.0 } else { @Int.1 }
+  if @Int.0 >= @Int.1 then {
+    @Int.0
+  } else {
+    @Int.1
+  }
 }
 ```
 
@@ -375,9 +399,15 @@ public fn max(@Int, @Int -> @Int)
 ```
 module vera.collections;
 
-public data List<T> { Nil, Cons(T, List<T>) }
+public data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
 
-public data Option<T> { None, Some(T) }
+public data Option<T> {
+  None,
+  Some(T)
+}
 ```
 
 **`modules.vera`** — the importing program:
