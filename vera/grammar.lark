@@ -217,7 +217,7 @@ fn_call: LOWER_IDENT "(" arg_list? ")"                         -> func_call
        | UPPER_IDENT "(" arg_list? ")"                         -> constructor_call
        | UPPER_IDENT                                            -> nullary_constructor_expr
        | UPPER_IDENT "." LOWER_IDENT "(" arg_list? ")"         -> qualified_call
-       | module_path "." LOWER_IDENT "(" arg_list? ")"         -> module_call
+       | module_path "::" LOWER_IDENT "(" arg_list? ")"        -> module_call
 
 arg_list: expr ("," expr)*
 

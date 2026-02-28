@@ -54,6 +54,7 @@ from vera.ast import (
     LetStmt,
     MatchArm,
     MatchExpr,
+    ModuleCall,
     ModuleDecl,
     NamedType,
     NullaryConstructor,
@@ -79,6 +80,7 @@ from vera.ast import (
     UnitLit,
     WildcardPattern,
 )
+from vera.ast import format_expr
 from vera.errors import TransformError, VeraError
 from vera.parser import parse, parse_to_ast
 from vera.transform import transform
@@ -598,6 +600,43 @@ class TestExpressions:
         anon = call.args[0]
         assert len(anon.params) == 1
         assert isinstance(anon.effect, PureEffect)
+
+    def test_module_call_ast_structure(self):
+        """Module-qualified call parses to ModuleCall AST (#95)."""
+        prog = _ast("""
+        import vera.math;
+        private fn f(@Int -> @Int)
+          requires(true) ensures(true) effects(pure)
+        { vera.math::abs(@Int.0) }
+        """)
+        fn = prog.declarations[0].decl
+        body = fn.body.expr
+        assert isinstance(body, ModuleCall)
+        assert body.path == ("vera", "math")
+        assert body.name == "abs"
+        assert len(body.args) == 1
+
+    def test_module_call_single_segment(self):
+        """Single-segment module call: math::abs(@Int.0)."""
+        prog = _ast("""
+        import math;
+        private fn f(@Int -> @Int)
+          requires(true) ensures(true) effects(pure)
+        { math::abs(@Int.0) }
+        """)
+        fn = prog.declarations[0].decl
+        body = fn.body.expr
+        assert isinstance(body, ModuleCall)
+        assert body.path == ("math",)
+        assert body.name == "abs"
+
+    def test_format_expr_module_call(self):
+        """format_expr produces :: syntax for ModuleCall."""
+        mc = ModuleCall(
+            path=("vera", "math"), name="abs",
+            args=(IntLit(value=42),),
+        )
+        assert format_expr(mc) == "vera.math::abs(42)"
 
 
 # -- Contract expressions --

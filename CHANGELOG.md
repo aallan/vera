@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.44] - 2026-02-28
+
+### Changed
+- **Module-qualified call syntax uses `::` delimiter** (C8b, [#95](https://github.com/aallan/vera/issues/95)):
+  - Module-qualified calls now use `::` between module path and function name: `vera.math::abs(42)`
+  - Resolves LALR(1) grammar ambiguity where `module_path` greedily consumed the function name
+  - Old dot syntax (`vera.math.abs(42)`) is rejected with a targeted "did you mean `::` ?" error (E008)
+  - Added `format_expr` support for `ModuleCall` AST nodes
+  - Updated spec chapters 8 and 10, examples, and all documentation
+  - 12 new tests (996 total, up from 984)
+
 ## [0.0.43] - 2026-02-27
 
 ### Added
@@ -643,7 +654,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.43...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.44...HEAD
+[0.0.44]: https://github.com/aallan/vera/compare/v0.0.43...v0.0.44
 [0.0.43]: https://github.com/aallan/vera/compare/v0.0.42...v0.0.43
 [0.0.42]: https://github.com/aallan/vera/compare/v0.0.41...v0.0.42
 [0.0.41]: https://github.com/aallan/vera/compare/v0.0.40...v0.0.41

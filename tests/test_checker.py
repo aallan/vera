@@ -1337,9 +1337,8 @@ private fn classify(@Int -> @String)
 class TestModuleCallDiagnostics:
     """Test improved module-call diagnostic messages (C7a).
 
-    Module call syntax has a known LALR limitation (grammar eats the
-    function name as part of the module_path). These tests construct
-    AST nodes manually to exercise the checker logic.
+    These tests construct AST nodes manually to exercise the checker
+    logic in isolation from the parser.
     """
 
     @staticmethod
@@ -1407,9 +1406,9 @@ class TestCrossModuleTyping:
     """Test cross-module type merging (C7b).
 
     These tests verify that imported function signatures are registered
-    and used for type-checking.  Due to the LALR grammar limitation (#95),
-    ModuleCall tests construct AST nodes manually.  Bare-call tests use
-    ``parse_to_ast`` since ``fn_call`` parses fine.
+    and used for type-checking.  Manual-AST ModuleCall tests are retained
+    for checker isolation; parse-from-source tests in TestModuleCallParsed
+    verify end-to-end parsing with :: syntax.
     """
 
     # Reusable module sources
@@ -1920,6 +1919,80 @@ private fn main(@Int -> @Int)
         assert "private" in msg.lower()
         assert "priv_fn" in msg
         assert "mymod" in msg
+
+
+# =====================================================================
+# Module-qualified call parse tests (#95)
+# =====================================================================
+
+class TestModuleCallParsed:
+    """Module-qualified call tests using parsed :: syntax (#95)."""
+
+    MATH_MODULE = """\
+public fn abs(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ if @Int.0 < 0 then { 0 - @Int.0 } else { @Int.0 } }
+
+public fn max(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ if @Int.0 > @Int.1 then { @Int.0 } else { @Int.1 } }
+"""
+
+    @staticmethod
+    def _resolved(
+        path: tuple[str, ...], source: str
+    ) -> "ResolvedModule":
+        from vera.resolver import ResolvedModule
+        prog = parse_to_ast(source)
+        return ResolvedModule(
+            path=path, file_path=Path("/fake"), program=prog, source=source,
+        )
+
+    def test_parsed_module_call_typechecks(self) -> None:
+        """Parsed :: syntax produces ModuleCall that type-checks."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        source = """\
+import math(abs);
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ math::abs(@Int.0) }
+"""
+        prog = parse_to_ast(source)
+        diags = typecheck(prog, source=source, resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_parsed_multi_segment_path(self) -> None:
+        """Multi-segment path vera.math::abs type-checks."""
+        mod = self._resolved(("vera", "math"), self.MATH_MODULE)
+        source = """\
+import vera.math(abs);
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ vera.math::abs(@Int.0) }
+"""
+        prog = parse_to_ast(source)
+        diags = typecheck(prog, source=source, resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_parsed_module_call_arity_error(self) -> None:
+        """Parsed :: call with wrong arity produces error."""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        source = """\
+import math(abs);
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ math::abs(@Int.0, @Int.0) }
+"""
+        prog = parse_to_ast(source)
+        diags = typecheck(prog, source=source, resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert any("argument" in e.description.lower() for e in errors)
 
 
 # =====================================================================
