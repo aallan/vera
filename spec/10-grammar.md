@@ -300,10 +300,12 @@ result_ref: AT type_expr DOT RESULT
 fn_call: LOWER_IDENT LPAREN arg_list? RPAREN          // function call
        | UPPER_IDENT LPAREN arg_list? RPAREN           // constructor call
        | UPPER_IDENT                                    // nullary constructor
-       | qualified_call                                 // Effect.op(args) or module.fn(args)
+       | qualified_call                                 // Effect.op(args)
+       | module_call                                    // module::fn(args)
 
 qualified_call: UPPER_IDENT DOT LOWER_IDENT LPAREN arg_list? RPAREN  // Effect.operation(args)
-             | module_path DOT LOWER_IDENT LPAREN arg_list? RPAREN   // module.function(args)
+
+module_call: module_path DOUBLE_COLON LOWER_IDENT LPAREN arg_list? RPAREN  // module::function(args)
 
 arg_list: expr (COMMA expr)*
 ```

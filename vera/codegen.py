@@ -537,7 +537,7 @@ class CodeGenerator:
             # C7e: if the function is known (imported), skip it — wasm.py
             # will desugar the ModuleCall to a flat FnCall.
             if node.name not in known:
-                qual = ".".join(node.path) + "." + node.name
+                qual = ".".join(node.path) + "::" + node.name
                 if qual not in seen:
                     seen.add(qual)
                     self._emit_cross_module_error(node, node.name, qual)

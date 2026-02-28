@@ -580,7 +580,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Module system limitations** | Module system complete (C7a-C7f); remaining issues: LALR grammar limitation for qualified calls, flat-compilation name collisions | [#95](https://github.com/aallan/vera/issues/95), [#110](https://github.com/aallan/vera/issues/110) |
+| **Module system limitations** | Module system complete (C7a-C7f); remaining issue: flat-compilation name collisions | [#110](https://github.com/aallan/vera/issues/110) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | [#21](https://github.com/aallan/vera/issues/21) |
 | **No termination verification** | `decreases` clauses parsed but always Tier 3 | [#45](https://github.com/aallan/vera/issues/45) |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |

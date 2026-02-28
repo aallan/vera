@@ -32,6 +32,15 @@ public fn abs_max(@Int, @Int -> @Int)
   abs(max(@Int.0, @Int.1))
 }
 
+-- Module-qualified call syntax (C8b, #95)
+public fn qualified_abs(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  vera.math::abs(@Int.0)
+}
+
 -- Private function — internal to this module
 private fn helper(@Int -> @Int)
   requires(true)

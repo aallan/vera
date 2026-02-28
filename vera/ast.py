@@ -391,7 +391,7 @@ class QualifiedCall(Expr):
 
 @dataclass(frozen=True)
 class ModuleCall(Expr):
-    """Module-path call: path.to.module.function(args)."""
+    """Module-path call: path.to.module::function(args)."""
     path: tuple[str, ...]
     name: str
     args: tuple[Expr, ...]
@@ -744,6 +744,10 @@ def format_expr(expr: Expr) -> str:
     if isinstance(expr, FnCall):
         args = ", ".join(format_expr(a) for a in expr.args)
         return f"{expr.name}({args})"
+    if isinstance(expr, ModuleCall):
+        path = ".".join(expr.path)
+        args = ", ".join(format_expr(a) for a in expr.args)
+        return f"{path}::{expr.name}({args})"
     if isinstance(expr, OldExpr):
         ref = expr.effect_ref
         if isinstance(ref, EffectRef):

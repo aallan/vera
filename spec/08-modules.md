@@ -158,13 +158,21 @@ The shadowing rule is implemented via `setdefault`: imported names are injected 
 
 ### 8.5.3 Module-Qualified Calls
 
-Vera's grammar defines a `ModuleCall` syntax for module-qualified function calls:
+Vera supports module-qualified function calls using `::` to separate the module path from the function name:
 
 ```
-vera.math.abs(-5)
+vera.math::abs(-5)
 ```
 
-The path portion (`vera.math`) identifies the module and the final segment (`abs`) identifies the function. This syntax is defined in the grammar and the AST but is currently limited by an LALR parser ambiguity ([#95](https://github.com/aallan/vera/issues/95)). Use bare calls (Section 8.5.1) instead.
+The path portion (`vera.math`) identifies the module using dot separators, and `::` separates the path from the function name (`abs`). Arguments follow in parentheses. This syntax can be used anywhere a function call is valid.
+
+The grammar is:
+
+```ebnf
+module_call: module_path "::" LOWER_IDENT "(" arg_list? ")"
+```
+
+Module-qualified calls always resolve against the specific module's public declarations. They are not affected by local shadowing -- if the importer defines its own `abs`, a module-qualified call `vera.math::abs(x)` still calls the module's version.
 
 ### 8.5.4 Constructor Resolution
 
@@ -432,7 +440,6 @@ The current module system has the following limitations, each tracked as a GitHu
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| Module-qualified call syntax | [#95](https://github.com/aallan/vera/issues/95) | LALR grammar limitation prevents parsing `path.fn(args)` — use bare calls |
 | Name collision in flat compilation | [#110](https://github.com/aallan/vera/issues/110) | If two imported modules define functions with the same name, the flat namespace may collide |
 | No re-exports | — | A module cannot re-export declarations imported from other modules |
 | No wildcard exclusion | — | Cannot import all names except specific ones |

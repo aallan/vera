@@ -549,7 +549,7 @@ Cross-module compilation uses a flattening strategy: imported function bodies ar
 
 Type aliases and effect declarations are module-local and cannot be imported. If another module needs the same alias or effect, it must declare its own copy.
 
-Note: module-qualified call syntax (`vera.math.abs(42)`) is not yet parseable due to an LALR grammar limitation ([#95](https://github.com/aallan/vera/issues/95)). Use bare calls instead.
+Module-qualified calls use `::` between the module path and the function name: `vera.math::abs(42)`. The dot-separated path identifies the module and `::` separates it from the function name. This syntax can be used anywhere a function call is valid, and always resolves against the specific module's public declarations — it is not affected by local shadowing.
 
 See: spec Chapter 8 for the full module system specification.
 

@@ -282,6 +282,38 @@ def unclosed_block(
     )
 
 
+def module_call_dot_syntax(
+    file: Optional[str],
+    source: str,
+    line: int,
+    column: int,
+) -> Diagnostic:
+    """Diagnostic for old dot syntax in module-qualified calls."""
+    return Diagnostic(
+        description=(
+            "Module-qualified calls use '::' between the module path "
+            "and the function name, not '.'. "
+            "Did you mean to use '::' syntax?"
+        ),
+        location=SourceLocation(file=file, line=line, column=column),
+        source_line=_get_source_line(source, line),
+        rationale=(
+            "Vera uses '::' to separate the module path from the function "
+            "name in module-qualified calls. The dot-separated module path "
+            "is ambiguous with the function name in an LALR(1) grammar, so "
+            "'::' provides an unambiguous delimiter."
+        ),
+        fix=(
+            "Use '::' between the module path and the function name:\n"
+            "\n"
+            "  vera.math::abs(-5)\n"
+            "  collections::sort([3, 1, 2])"
+        ),
+        spec_ref='Chapter 8, Section 8.5.3 "Module-Qualified Calls"',
+        error_code="E008",
+    )
+
+
 def unexpected_token(
     file: Optional[str],
     source: str,
@@ -339,6 +371,12 @@ def diagnose_lark_error(
         if expected & {"EFFECTS", "effects"}:
             return missing_effect_clause(file, source, line, column)
 
+        # Pattern: old dot syntax for module-qualified calls
+        # module_path consumed all idents including the fn name, parser
+        # expects "::" (__ANON_9) but got "("
+        if token == "(" and "__ANON_9" in expected:
+            return module_call_dot_syntax(file, source, line, column)
+
         # Fallback
         return unexpected_token(file, source, line, column, token, expected)
 
@@ -378,6 +416,7 @@ ERROR_CODES: dict[str, str] = {
     "E005": "Unexpected token",
     "E006": "Unexpected character",
     "E007": "Internal parser error",
+    "E008": "Module-qualified call uses dot instead of ::",
     "E010": "Unhandled grammar rule",
     # E1xx — Type Checker: Core & Expressions
     "E120": "Data invariant not Bool",

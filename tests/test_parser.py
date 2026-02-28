@@ -580,7 +580,7 @@ class TestQualifiedCalls:
         """)
 
     def test_import_and_direct_call(self) -> None:
-        """After importing, call functions directly (module_call has LALR limitation with multi-segment paths)."""
+        """After importing, call functions directly via bare calls."""
         parse("""
         import vera.math(abs);
 
@@ -592,6 +592,65 @@ class TestQualifiedCalls:
           abs(@Int.0)
         }
         """)
+
+
+class TestModuleQualifiedCalls:
+    """Module-qualified calls use :: syntax (#95)."""
+
+    def test_single_segment_module_call(self) -> None:
+        """Single-segment path: math::abs(42)."""
+        parse("""
+        import math;
+        private fn f(@Int -> @Int)
+          requires(true) ensures(true) effects(pure)
+        { math::abs(@Int.0) }
+        """)
+
+    def test_multi_segment_module_call(self) -> None:
+        """Multi-segment path: vera.math::abs(42)."""
+        parse("""
+        import vera.math;
+        private fn f(@Int -> @Int)
+          requires(true) ensures(true) effects(pure)
+        { vera.math::abs(@Int.0) }
+        """)
+
+    def test_module_call_no_args(self) -> None:
+        """Module-qualified call with no arguments."""
+        parse("""
+        import util;
+        private fn f(@Unit -> @Int)
+          requires(true) ensures(true) effects(pure)
+        { util::get_value() }
+        """)
+
+    def test_module_call_multiple_args(self) -> None:
+        """Module-qualified call with multiple arguments."""
+        parse("""
+        import math;
+        private fn f(@Int, @Int -> @Int)
+          requires(true) ensures(true) effects(pure)
+        { math::max(@Int.0, @Int.1) }
+        """)
+
+    def test_module_call_in_expression(self) -> None:
+        """Module-qualified call nested in an expression."""
+        parse("""
+        import math;
+        private fn f(@Int -> @Int)
+          requires(true) ensures(true) effects(pure)
+        { math::abs(@Int.0) + 1 }
+        """)
+
+    def test_old_dot_syntax_rejected(self) -> None:
+        """Old dot syntax produces a 'did you mean ::' error (E008)."""
+        with pytest.raises(ParseError, match="::"):
+            parse("""
+            import math;
+            private fn f(@Int -> @Int)
+              requires(true) ensures(true) effects(pure)
+            { math.abs(@Int.0) }
+            """)
 
 
 class TestFunctionTypes:

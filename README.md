@@ -246,7 +246,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 
 - <del>[#112](https://github.com/aallan/vera/issues/112) informative runtime contract violation error messages</del> ([v0.0.42](https://github.com/aallan/vera/releases/tag/v0.0.42))
 - <del>[#80](https://github.com/aallan/vera/issues/80) stable error code taxonomy for diagnostics</del> (v0.0.43)
-- [#95](https://github.com/aallan/vera/issues/95) LALR grammar fix for module-qualified call syntax
+- <del>[#95](https://github.com/aallan/vera/issues/95) LALR grammar fix for module-qualified call syntax</del> (v0.0.44)
 - [#75](https://github.com/aallan/vera/issues/75) `vera fmt` canonical formatter
 - [#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing
 
