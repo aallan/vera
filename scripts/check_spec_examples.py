@@ -96,6 +96,14 @@ ALLOWLIST: dict[tuple[str, int], str] = {
 
     # Chapter 7 — empty effect bodies (parser requires op_decl+)
     ("07-effects.md", 311): "FRAGMENT",     # effect Diverge {} — no operations
+
+    # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
+    ("09-standard-library.md", 409): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 418): "FUTURE",   # md_render(@MdBlock -> @String)
+    ("09-standard-library.md", 429): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
+    ("09-standard-library.md", 438): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
+    ("09-standard-library.md", 447): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
+    ("09-standard-library.md", 471): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
 }
 
 

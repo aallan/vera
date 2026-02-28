@@ -155,3 +155,4 @@ The following features are planned for future versions. Each is specified in its
 | Abilities (type constraints) | [#60](https://github.com/aallan/vera/issues/60) | Chapter 9, Section 9.8 |
 | LLM inference effect | [#61](https://github.com/aallan/vera/issues/61) | Chapter 9, Section 9.5.5 |
 | Collections (`Set`, `Map`, `Decimal`) | [#62](https://github.com/aallan/vera/issues/62) | Chapter 9, Sections 9.4.2-3, 9.7.2 |
+| Markdown standard library type | [#147](https://github.com/aallan/vera/issues/147) | Chapter 9, Section 9.7.3 |

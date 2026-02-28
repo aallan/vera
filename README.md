@@ -293,6 +293,7 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 - [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal)
 - [#133](https://github.com/aallan/vera/issues/133) array operations (map, fold, slice)
 - [#58](https://github.com/aallan/vera/issues/58) JSON standard library type
+- [#147](https://github.com/aallan/vera/issues/147) Markdown standard library type
 - [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect
 - [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises
 - [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
