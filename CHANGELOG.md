@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.45] - 2026-02-28
+
+### Added
+- **`vera fmt` canonical code formatter** ([#75](https://github.com/aallan/vera/issues/75)):
+  - New `vera fmt` command formats Vera source to the canonical form defined in Spec §1.8
+  - `--write` flag for in-place formatting, `--check` flag for CI (exit 1 if non-canonical)
+  - AST-based formatter with pre-pass comment extraction and reattachment
+  - Precedence-aware parenthesization for binary expressions
+  - All 10 formatting rules enforced: indentation, braces, commas, operators, semicolons, parentheses, contracts, one-per-line, no trailing whitespace, final newline
+  - New `vera/formatter.py` module (1,018 lines)
+  - 75 new tests (1,071 total, up from 996)
+  - All 14 examples reformatted to canonical form
+  - SKILLS.md and spec examples updated to canonical form ([#150](https://github.com/aallan/vera/issues/150))
+
 ## [0.0.44] - 2026-02-28
 
 ### Changed
