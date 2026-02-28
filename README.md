@@ -304,6 +304,7 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 ### C10 — Ecosystem
 
 - [#130](https://github.com/aallan/vera/issues/130) package system and registry
+- [#143](https://github.com/aallan/vera/issues/143) comprehensive example programs
 
 ## Getting Started
 
