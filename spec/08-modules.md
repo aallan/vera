@@ -64,6 +64,8 @@ A selective import makes only the named declarations available. Each name in the
 Error: Cannot import 'helper' from module 'vera.math': it is private.
 ```
 
+**Design note.** Vera does not support wildcard exclusion syntax (e.g., `import m hiding(x)`). When a module exports names that conflict with local definitions or other imports, the canonical mechanism is selective import: list exactly the names needed. Wildcard exclusion would be a semantic equivalent of selective import — the same import set expressible two ways — violating the one-canonical-form principle (§0.2.3). When wildcard import causes a name clash, the local definition shadows the import (§8.5.2), and the imported version remains accessible via module-qualified call syntax (§8.5.3).
+
 ### 8.3.3 Grammar
 
 ```ebnf
@@ -173,6 +175,8 @@ module_call: module_path "::" LOWER_IDENT "(" arg_list? ")"
 ```
 
 Module-qualified calls always resolve against the specific module's public declarations. They are not affected by local shadowing -- if the importer defines its own `abs`, a module-qualified call `vera.math::abs(x)` still calls the module's version.
+
+**Design note.** Vera does not support import aliasing (renaming a declaration at the import site). When two imported modules export identically-named functions, the module-qualified call syntax (`vera.math::abs(x)`) provides unambiguous disambiguation without introducing a second name for the same declaration. Aliasing would violate the one-canonical-form principle (§0.2.3): the same function could be referenced by different names in different files, making semantically identical call sites textually distinct.
 
 ### 8.5.4 Constructor Resolution
 
@@ -442,6 +446,4 @@ The current module system has the following limitations, each tracked as a GitHu
 |-----------|-------|-------|
 | Name collision in flat compilation | [#110](https://github.com/aallan/vera/issues/110) | If two imported modules define functions with the same name, the flat namespace may collide |
 | No re-exports | — | A module cannot re-export declarations imported from other modules |
-| No wildcard exclusion | — | Cannot import all names except specific ones |
-| No import aliasing | — | Cannot rename imported declarations (e.g., `import m(abs as absolute)`) |
 | No package system | — | Module resolution is file-system-only; no package manager or registry |

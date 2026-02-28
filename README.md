@@ -282,11 +282,8 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 Module refinements, lexical extensions, and IO runtime — completing the existing language before adding new features.
 
 - [#127](https://github.com/aallan/vera/issues/127) module re-exports
-- [#129](https://github.com/aallan/vera/issues/129) import aliasing
-- [#128](https://github.com/aallan/vera/issues/128) wildcard exclusion in imports
 - [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file)
 - [#139](https://github.com/aallan/vera/issues/139) scientific notation for float literals
-- [#140](https://github.com/aallan/vera/issues/140) raw strings and multi-line string literals
 
 ### C9 — Language design
 

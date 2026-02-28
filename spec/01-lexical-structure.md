@@ -172,7 +172,9 @@ Escape sequences:
 | `\0`     | Null |
 | `\u{XXXX}` | Unicode code point (1-6 hex digits) |
 
-No other escape sequences are valid. Raw strings and multi-line string literals are not supported.
+No other escape sequences are valid.
+
+**Design note.** Vera does not support raw string syntax or multi-line string literals. A raw string (`r"..."`) would be an alternative representation for any string containing backslash characters, and a multi-line literal would be an alternative representation for any string containing newline characters. Both would violate the one-canonical-form principle (§0.2.3): the same string value would be expressible in two syntactically distinct ways. Since Vera targets LLM emission rather than human authoring (§0.3.1), the readability benefit of alternative string syntaxes does not justify the representational ambiguity. The escape sequence table above is the canonical and only mechanism for embedding special characters in strings.
 
 ### Boolean Literals
 
