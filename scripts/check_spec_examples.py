@@ -78,11 +78,11 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("03-slot-references.md", 343): "FRAGMENT",  # fn(@PosInt, @Int -> @Int) — no name
 
     # Chapter 5 — inline function types in return/param position
-    ("05-functions.md", 203): "FRAGMENT",   # fn make_adder returns fn(...) inline
-    ("05-functions.md", 316): "FRAGMENT",   # fn(A -> B) in param position
+    ("05-functions.md", 211): "FRAGMENT",   # fn make_adder returns fn(...) inline
+    ("05-functions.md", 324): "FRAGMENT",   # fn(A -> B) in param position
 
     # Chapter 6 — inline function type in type alias
-    ("06-contracts.md", 308): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
+    ("06-contracts.md", 312): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
 
     # Chapter 7 — anonymous function at top level
     ("07-effects.md", 116): "FRAGMENT",     # effect Logger + anonymous fn body

@@ -154,7 +154,11 @@ The braces around branch bodies are mandatory, even for single expressions. This
 
 ```
 -- VALID:
-if @Bool.0 then { 1 } else { 0 }
+if @Bool.0 then {
+  1
+} else {
+  0
+}
 
 -- INVALID (no braces):
 if @Bool.0 then 1 else 0
