@@ -1,5 +1,4 @@
 -- Hello, World! — First light for Vera compilation.
-
 effect IO {
   op print(String -> Unit);
 }

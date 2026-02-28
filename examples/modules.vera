@@ -1,5 +1,3 @@
--- Module declaration and imports
-
 module vera.examples.modules;
 
 import vera.math(abs, max);

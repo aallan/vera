@@ -1,5 +1,4 @@
 -- List operations: demonstrates ADTs, pattern matching, and recursion.
-
 private data List<T> {
   Nil,
   Cons(T, List<T>)

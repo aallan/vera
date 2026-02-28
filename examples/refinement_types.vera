@@ -1,5 +1,4 @@
 -- Refinement types — types constrained by predicates
-
 -- A positive integer
 type PosInt = { @Int | @Int.0 > 0 };
 

@@ -1,5 +1,4 @@
 -- Increment: demonstrates stateful effects with State<Int>.
-
 public fn increment(@Unit -> @Unit)
   requires(true)
   ensures(new(State<Int>) == old(State<Int>) + 1)

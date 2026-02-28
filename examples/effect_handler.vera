@@ -1,5 +1,4 @@
 -- Effect handlers — State patterns
-
 -- A counter effect (user-defined effect)
 effect Counter {
   op get_count(Unit -> Int);
@@ -71,4 +70,7 @@ effect Exn<E> {
   op throw(E -> Unit);
 }
 
-private data Option<T> { None, Some(T) }
+private data Option<T> {
+  None,
+  Some(T)
+}

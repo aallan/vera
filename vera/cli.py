@@ -15,6 +15,9 @@ Usage:
     vera run       <file.vera> -- 5 10      Pass arguments to the function
     vera ast       <file.vera>              Parse and print the AST
     vera ast       --json <file.vera>       Parse and print the AST as JSON
+    vera fmt       <file.vera>              Format to canonical form (stdout)
+    vera fmt       --write <file.vera>      Format in place
+    vera fmt       --check <file.vera>      Check if already canonical
 """
 
 from __future__ import annotations
@@ -567,6 +570,43 @@ def cmd_ast(path: str, as_json: bool = False) -> int:
         return 1
 
 
+def cmd_fmt(
+    path: str,
+    *,
+    write: bool = False,
+    check: bool = False,
+) -> int:
+    """Format a .vera file to canonical form."""
+    from vera.formatter import format_source
+
+    try:
+        p = Path(path)
+        source = p.read_text(encoding="utf-8")
+        formatted = format_source(source, file=str(p))
+
+        if check:
+            if source == formatted:
+                print(f"OK: {path}")
+                return 0
+            print(f"Would reformat: {path}", file=sys.stderr)
+            return 1
+
+        if write:
+            p.write_text(formatted, encoding="utf-8")
+            print(f"Formatted: {path}")
+            return 0
+
+        # Default: print to stdout
+        sys.stdout.write(formatted)
+        return 0
+    except FileNotFoundError:
+        print(f"Error: file not found: {path}", file=sys.stderr)
+        return 1
+    except VeraError as exc:
+        print(exc.diagnostic.format(), file=sys.stderr)
+        return 1
+
+
 USAGE = """\
 Usage: vera <command> [options] <file>
 
@@ -578,12 +618,15 @@ Commands:
     compile [--wat]      Compile a .vera file to WebAssembly
     run [--fn name]      Compile and execute a .vera file
     ast [--json]         Parse a .vera file and print the AST
+    fmt [--write|--check] Format a .vera file to canonical form
 
 Options:
     --json               Output machine-readable JSON diagnostics
     --wat                Print WAT text instead of writing .wasm binary
     --fn <name>          Function to execute (default: main or first export)
     -o <path>            Output path for .wasm binary
+    --write              Format in place (vera fmt)
+    --check              Check if already canonical (vera fmt)
     -- <args...>         Arguments to pass to the executed function
 """
 
@@ -598,6 +641,8 @@ def main() -> None:
     command = args[0]
     use_json = "--json" in args
     use_wat = "--wat" in args
+    use_write = "--write" in args
+    use_check_fmt = "--check" in args and command == "fmt"
 
     # Parse --fn <name> option
     fn_name: str | None = None
@@ -634,7 +679,7 @@ def main() -> None:
                 sys.exit(1)
 
     # Remove flags from remaining args to find the filepath
-    skip_flags = {"--json", "--wat"}
+    skip_flags = {"--json", "--wat", "--write", "--check"}
     skip_next = {"--fn", "-o"}
     remaining: list[str] = []
     i = 1  # skip command
@@ -672,6 +717,8 @@ def main() -> None:
         ))
     elif command == "ast":
         sys.exit(cmd_ast(filepath, as_json=use_json))
+    elif command == "fmt":
+        sys.exit(cmd_fmt(filepath, write=use_write, check=use_check_fmt))
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
         print(USAGE, file=sys.stderr)

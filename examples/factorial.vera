@@ -1,5 +1,4 @@
 -- Factorial: demonstrates recursion with a decreases clause.
-
 public fn factorial(@Nat -> @Nat)
   requires(true)
   ensures(@Nat.result >= 1)

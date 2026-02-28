@@ -1,7 +1,13 @@
 -- Pattern matching — nested patterns, wildcards, multiple variants
+private data Option<T> {
+  None,
+  Some(T)
+}
 
-private data Option<T> { None, Some(T) }
-private data List<T> { Nil, Cons(T, List<T>) }
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
 
 -- Nested pattern: match inside a list of options
 private fn first_some(@List<Option<Int>> -> @Int)

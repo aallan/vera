@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from vera.cli import cmd_ast, cmd_check, cmd_compile, cmd_parse, cmd_run, cmd_verify
+from vera.cli import cmd_ast, cmd_check, cmd_compile, cmd_fmt, cmd_parse, cmd_run, cmd_verify
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 INCREMENT = str(EXAMPLES_DIR / "increment.vera")
@@ -1136,3 +1136,164 @@ private fn main(@Int -> @Int)
         )
         assert result.returncode == 0, result.stderr
         assert "OK" in result.stdout
+
+
+# =====================================================================
+# cmd_fmt
+# =====================================================================
+
+
+def _canonical_source() -> str:
+    """A .vera program already in canonical form."""
+    return """\
+public fn id(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+
+def _non_canonical_source() -> str:
+    """A .vera program NOT in canonical form (extra blank lines, spacing)."""
+    return """\
+public fn id(  @Int   ->   @Int  )
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+"""
+
+
+class TestCmdFmt:
+    def test_stdout_output(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Default mode prints formatted source to stdout."""
+        path = tmp_path / "test.vera"
+        path.write_text(_non_canonical_source())
+        rc = cmd_fmt(str(path))
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "public fn id(@Int -> @Int)" in out
+
+    def test_check_canonical(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--check returns 0 for already-canonical source."""
+        path = tmp_path / "test.vera"
+        path.write_text(_canonical_source())
+        rc = cmd_fmt(str(path), check=True)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "OK:" in out
+
+    def test_check_non_canonical(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """--check returns 1 for non-canonical source."""
+        path = tmp_path / "test.vera"
+        path.write_text(_non_canonical_source())
+        rc = cmd_fmt(str(path), check=True)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "Would reformat" in err
+
+    def test_write_in_place(self, tmp_path: Path) -> None:
+        """--write overwrites the file with canonical form."""
+        path = tmp_path / "test.vera"
+        path.write_text(_non_canonical_source())
+        rc = cmd_fmt(str(path), write=True)
+        assert rc == 0
+        result = path.read_text()
+        assert result == _canonical_source()
+
+    def test_write_idempotent(self, tmp_path: Path) -> None:
+        """--write on already-canonical file leaves it unchanged."""
+        path = tmp_path / "test.vera"
+        path.write_text(_canonical_source())
+        rc = cmd_fmt(str(path), write=True)
+        assert rc == 0
+        assert path.read_text() == _canonical_source()
+
+    def test_missing_file(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        rc = cmd_fmt("/nonexistent/file.vera")
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "file not found" in err
+
+    def test_syntax_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        path = _bad_vera(tmp_path, _syntax_error_source())
+        rc = cmd_fmt(path)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert len(err) > 0
+
+    def test_example_file(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Formatting increment.vera produces valid output."""
+        rc = cmd_fmt(INCREMENT)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "fn increment" in out
+        assert out.endswith("\n")
+
+
+class TestCmdFmtMain:
+    """Subprocess integration tests for vera fmt."""
+
+    def test_dispatch_fmt(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "fmt", INCREMENT],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "fn increment" in result.stdout
+
+    def test_dispatch_fmt_check_canonical(self, tmp_path: Path) -> None:
+        path = tmp_path / "test.vera"
+        path.write_text(_canonical_source())
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "fmt", "--check", str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "OK:" in result.stdout
+
+    def test_dispatch_fmt_check_non_canonical(self, tmp_path: Path) -> None:
+        path = tmp_path / "test.vera"
+        path.write_text(_non_canonical_source())
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "fmt", "--check", str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "Would reformat" in result.stderr
+
+    def test_dispatch_fmt_write(self, tmp_path: Path) -> None:
+        path = tmp_path / "test.vera"
+        path.write_text(_non_canonical_source())
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "fmt", "--write", str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "Formatted:" in result.stdout
+        assert path.read_text() == _canonical_source()
+
+    def test_dispatch_fmt_missing_file(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "fmt", "/nonexistent/file.vera"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "file not found" in result.stderr
