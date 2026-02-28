@@ -111,7 +111,11 @@ private fn internal_helper(@Int -> @Int)
   @Int.0 + 1
 }
 
-public data Color { Red, Green, Blue }
+public data Color {
+  Red,
+  Green,
+  Blue
+}
 
 private data InternalState {
   Ready,
@@ -222,7 +226,11 @@ private fn abs(@Int -> @Nat)
   ensures(@Nat.result >= 0)
   effects(pure)
 {
-  if @Int.0 >= 0 then { @Int.0 } else { -@Int.0 }
+  if @Int.0 >= 0 then {
+    @Int.0
+  } else {
+    -@Int.0
+  }
 }
 ```
 
@@ -261,14 +269,21 @@ type Name = String;
 ## Data Types (ADTs)
 
 ```vera
-private data Color { Red, Green, Blue }
+private data Color {
+  Red,
+  Green,
+  Blue
+}
 
 private data List<T> {
   Nil,
   Cons(T, List<T>)
 }
 
-private data Option<T> { None, Some(T) }
+private data Option<T> {
+  None,
+  Some(T)
+}
 ```
 
 With an invariant:
@@ -317,10 +332,14 @@ Match must be exhaustive.
 ## Conditional Expressions
 
 ```vera
-if @Bool.0 then { expr1 } else { expr2 }
+if @Bool.0 then {
+  expr1
+} else {
+  expr2
+}
 ```
 
-Both branches are mandatory. Braces are mandatory.
+Both branches are mandatory. Braces are mandatory. Each branch is always multi-line (closing brace on its own line).
 
 ## Block Expressions
 
@@ -367,7 +386,11 @@ private fn factorial(@Nat -> @Nat)
   decreases(@Nat.0)
   effects(pure)
 {
-  if @Nat.0 == 0 then { 1 } else { @Nat.0 * factorial(@Nat.0 - 1) }
+  if @Nat.0 == 0 then {
+    1
+  } else {
+    @Nat.0 * factorial(@Nat.0 - 1)
+  }
 }
 ```
 
@@ -497,7 +520,11 @@ private fn is_even(@Nat -> @Bool)
   decreases(@Nat.0)
   effects(pure)
 {
-  if @Nat.0 == 0 then { true } else { is_odd(@Nat.0 - 1) }
+  if @Nat.0 == 0 then {
+    true
+  } else {
+    is_odd(@Nat.0 - 1)
+  }
 }
 where {
   fn is_odd(@Nat -> @Bool)
@@ -506,7 +533,11 @@ where {
     decreases(@Nat.0)
     effects(pure)
   {
-    if @Nat.0 == 0 then { false } else { is_even(@Nat.0 - 1) }
+    if @Nat.0 == 0 then {
+      false
+    } else {
+      is_even(@Nat.0 - 1)
+    }
   }
 }
 ```
@@ -675,7 +706,11 @@ private fn factorial(@Nat -> @Nat)
   ensures(true)
   effects(pure)
 {
-  if @Nat.0 == 0 then { 1 } else { @Nat.0 * factorial(@Nat.0 - 1) }
+  if @Nat.0 == 0 then {
+    1
+  } else {
+    @Nat.0 * factorial(@Nat.0 - 1)
+  }
 }
 ```
 
@@ -687,7 +722,11 @@ private fn factorial(@Nat -> @Nat)
   decreases(@Nat.0)
   effects(pure)
 {
-  if @Nat.0 == 0 then { 1 } else { @Nat.0 * factorial(@Nat.0 - 1) }
+  if @Nat.0 == 0 then {
+    1
+  } else {
+    @Nat.0 * factorial(@Nat.0 - 1)
+  }
 }
 ```
 
@@ -725,7 +764,9 @@ private fn f(@Int -> @Int)
   requires(@Int.result > 0)
   ensures(true)
   effects(pure)
-{ @Int.0 }
+{
+  @Int.0
+}
 ```
 
 CORRECT — `@T.result` is only valid in `ensures`:
@@ -734,7 +775,9 @@ private fn f(@Int -> @Int)
   requires(true)
   ensures(@Int.result > 0)
   effects(pure)
-{ @Int.0 }
+{
+  @Int.0
+}
 ```
 
 ### Non-exhaustive match
@@ -763,7 +806,11 @@ if @Bool.0 then 1 else 0
 
 CORRECT:
 ```vera
-if @Bool.0 then { 1 } else { 0 }
+if @Bool.0 then {
+  1
+} else {
+  0
+}
 ```
 
 ### Trying to use import aliasing
