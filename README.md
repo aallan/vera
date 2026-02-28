@@ -256,7 +256,6 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 **C8c — Verification depth** — expand what the SMT solver can prove
 
 - [#136](https://github.com/aallan/vera/issues/136) register `Diverge` as built-in effect
-- [#137](https://github.com/aallan/vera/issues/137) register `Alloc` as built-in effect
 - [#13](https://github.com/aallan/vera/issues/13) expand SMT decidable fragment (Tier 2 verification)
 - [#45](https://github.com/aallan/vera/issues/45) `decreases` clause termination verification
 

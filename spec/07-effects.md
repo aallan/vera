@@ -282,6 +282,8 @@ This function always performs `IO` (for the logging), plus whatever effects `E` 
 
 ## 7.7 Built-in Effects
 
+**Design note.** An alternative implementation targeting memory-constrained environments may wish to introduce an `Alloc` marker effect to distinguish allocating from non-allocating functions. The reference implementation omits this because WASM's managed linear memory makes allocation-tracking uninformative at the type level — nearly every non-trivial function allocates, so the effect would carry little signal.
+
 ### 7.7.1 `IO`
 
 ```
@@ -311,14 +313,6 @@ effect Diverge {}
 ```
 
 The `Diverge` effect has no operations. Declaring `effects(<Diverge>)` means the function may not terminate. Functions without `Diverge` in their effect row MUST be proven to terminate (via `decreases` clauses on recursion).
-
-### 7.7.4 `Alloc`
-
-```
-effect Alloc {}
-```
-
-The `Alloc` effect has no operations. It marks functions that allocate heap memory. In the reference implementation, all functions that create arrays, strings, closures, or ADT values implicitly have `Alloc`. This effect is automatically inferred and does not need to be declared manually — it is the one exception to the "all effects declared" rule.
 
 ## 7.8 Effect Subtyping
 
