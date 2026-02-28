@@ -551,6 +551,10 @@ Type aliases and effect declarations are module-local and cannot be imported. If
 
 Module-qualified calls use `::` between the module path and the function name: `vera.math::abs(42)`. The dot-separated path identifies the module and `::` separates it from the function name. This syntax can be used anywhere a function call is valid, and always resolves against the specific module's public declarations — it is not affected by local shadowing.
 
+There is no import aliasing (`import m(abs as math_abs)`) and no wildcard exclusion (`import m hiding(x)`). These are intentional design decisions, not limitations. When names clash, use selective imports to pick the names you need, and use `::` syntax to disambiguate: `vera.math::abs(x)`. This preserves the one-canonical-form principle — every function has exactly one name.
+
+There are no raw strings (`r"..."`) or multi-line string literals. Use escape sequences (`\\`, `\n`, `\t`, `\"`) for special characters. This is by design — alternative string syntaxes would create two representations for the same value.
+
 See: spec Chapter 8 for the full module system specification.
 
 ## Comments
@@ -757,6 +761,46 @@ if @Bool.0 then 1 else 0
 CORRECT:
 ```vera
 if @Bool.0 then { 1 } else { 0 }
+```
+
+### Trying to use import aliasing
+
+WRONG — Vera does not support renaming imports:
+```vera
+import vera.math(abs as math_abs);
+```
+
+CORRECT — use selective import and `::` syntax to disambiguate:
+```vera
+import vera.math(abs);
+vera.math::abs(-5)
+```
+
+### Trying to use wildcard exclusion
+
+WRONG — Vera does not support `hiding` syntax:
+```vera
+import vera.math hiding(max);
+```
+
+CORRECT — use selective import to list the names you need:
+```vera
+import vera.math(abs, min);
+```
+
+### Trying to use raw or multi-line strings
+
+WRONG — Vera does not support raw strings or multi-line literals:
+```
+r"path\to\file"
+"""multi-line
+string"""
+```
+
+CORRECT — use escape sequences:
+```vera
+"path\\to\\file"
+"line one\nline two"
 ```
 
 ## Complete Program Examples
