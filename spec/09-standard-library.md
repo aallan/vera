@@ -10,7 +10,7 @@ The standard library comprises:
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, plus future collections (`Set<T>`, `Map<K, V>`).
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
 - **Built-in functions**: `length` for arrays, plus future functions for vector similarity.
-- **Future types**: `Json` for structured data interchange, `Decimal` for exact arithmetic.
+- **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
 - **Future abilities**: Type constraints for generic programming (post-v0.1).
 
 All built-in types participate fully in the type system: they can appear in contracts, be verified by the SMT solver, and be used with refinement types and pattern matching. Built-in effects follow the same algebraic effect semantics as user-defined effects (see Chapter 7).
@@ -345,6 +345,151 @@ This approach keeps the core language small while providing ergonomic JSON suppo
 > **Status: Not yet implemented.** Tracked in [#62](https://github.com/aallan/vera/issues/62).
 
 `Decimal` will provide exact decimal arithmetic for financial and precision-sensitive applications. It will be implemented as a library type (not a primitive) since WebAssembly does not have native decimal floating-point. The runtime will provide a software implementation.
+
+### 9.7.3 Markdown (Future)
+
+> **Status: Not yet implemented.** Tracked in [#147](https://github.com/aallan/vera/issues/147). Depends on dynamic string construction ([#52](https://github.com/aallan/vera/issues/52)), string built-in operations ([#134](https://github.com/aallan/vera/issues/134)), and arrays of compound types ([#132](https://github.com/aallan/vera/issues/132)). Does **not** depend on `Map<K, V>`.
+
+Markdown is the lingua franca of large language models — they understand it natively and generate it naturally. A typed Markdown ADT makes document structure visible to the type system, enabling contracts that verify the structural properties of agent output.
+
+Markdown will be represented as two mutually defined ADTs: `MdBlock` for block-level elements and `MdInline` for inline-level content. The two-level design makes illegal states unrepresentable — a heading cannot contain another heading at the type level.
+
+```
+public data MdInline {
+  MdText(String),
+  MdCode(String),
+  MdEmph(Array<MdInline>),
+  MdStrong(Array<MdInline>),
+  MdLink(Array<MdInline>, String),
+  MdImage(String, String)
+}
+```
+
+`MdInline` constructors:
+- `MdText(@String)` — plain text run. The leaf node of all inline content.
+- `MdCode(@String)` — inline code span. Essential for agent communication about code.
+- `MdEmph(@Array<MdInline>)` — emphasis (italic). Contains recursive inline content.
+- `MdStrong(@Array<MdInline>)` — strong emphasis (bold). Contains recursive inline content.
+- `MdLink(@Array<MdInline>, @String)` — hyperlink: display text (inline content) and target URL.
+- `MdImage(@String, @String)` — image: alt text and source URL.
+
+```
+public data MdBlock {
+  MdParagraph(Array<MdInline>),
+  MdHeading(Nat, Array<MdInline>),
+  MdCodeBlock(String, String),
+  MdBlockQuote(Array<MdBlock>),
+  MdList(Bool, Array<Array<MdBlock>>),
+  MdThematicBreak,
+  MdTable(Array<Array<Array<MdInline>>>),
+  MdDocument(Array<MdBlock>)
+}
+```
+
+`MdBlock` constructors:
+- `MdParagraph(@Array<MdInline>)` — paragraph: a sequence of inline content.
+- `MdHeading(@Nat, @Array<MdInline>)` — heading: level (1--6) as `Nat`, plus inline content. The level is a number rather than six separate constructors, allowing contracts like `@Nat.0 >= 1 && @Nat.0 <= 6`.
+- `MdCodeBlock(@String, @String)` — fenced code block: language tag and code body. Critical for agents working with source code.
+- `MdBlockQuote(@Array<MdBlock>)` — block quote: contains recursive block content.
+- `MdList(@Bool, @Array<Array<MdBlock>>)` — list: ordered (`true`) or unordered (`false`), with each item containing block content.
+- `MdThematicBreak` — horizontal rule. Nullary constructor.
+- `MdTable(@Array<Array<Array<MdInline>>>)` — table: rows of cells, each cell containing inline content. Tables are a GitHub Flavored Markdown extension, not strict CommonMark, but they are ubiquitous in agent communication and document conversion output.
+- `MdDocument(@Array<MdBlock>)` — top-level document: a sequence of blocks.
+
+**Design note.** The following Markdown constructs are intentionally excluded per the one-canonical-form principle (§0.2.3). Each has a canonical equivalent in the ADT:
+
+- **Raw HTML** (block and inline) — not safe for verification, not appropriate for agent-to-agent communication.
+- **Link reference definitions** — resolved to inline `MdLink` during parsing. The parsed ADT has no reference indirection.
+- **Setext headings** — merged with ATX headings into `MdHeading`. Both surface syntaxes parse to the same constructor.
+- **Indented code blocks** — merged with fenced code blocks into `MdCodeBlock` (with an empty language string).
+- **Hard and soft line breaks** — collapsed into paragraph text. Not structurally significant for agent communication.
+
+**Parse and render operations:**
+
+```
+public fn md_parse(@String -> @Result<MdBlock, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Parses a Markdown string into an `MdDocument`. Returns `Err` if parsing fails. This is pure — it transforms one value to another with no side effects.
+
+```
+public fn md_render(@MdBlock -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Renders an `MdBlock` to a canonical Markdown string. Always succeeds. The round-trip property `md_parse(md_render(b)) == Ok(b)` should hold: rendering then re-parsing preserves structure.
+
+**Accessor functions for contracts:**
+
+```
+public fn md_has_heading(@MdBlock, @Nat -> @Bool)
+  requires(@Nat.0 >= 1 && @Nat.0 <= 6)
+  ensures(true)
+  effects(pure)
+```
+
+Returns `true` if the document contains a heading of the given level.
+
+```
+public fn md_has_code_block(@MdBlock, @String -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns `true` if the document contains a code block with the given language tag.
+
+```
+public fn md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Extracts the code content from all code blocks with the given language tag. This is the key agent operation: extract code from documentation.
+
+**Refinement type examples:**
+
+Refinement types can express structural requirements on Markdown documents:
+
+```
+type HasTitle = { @MdBlock | md_has_heading(@MdBlock.0, 1) };
+type HasVeraCode = { @MdBlock | md_has_code_block(@MdBlock.0, "vera") };
+```
+
+These predicates call pure functions, placing them in Tier 2 (extended, function calls in contracts). For small documents they may be verifiable by Z3 with function unrolling; for larger documents they fall to Tier 3 (runtime checks).
+
+**Document conversion:**
+
+Document conversion (PDF, Word, HTML, etc. to Markdown) is not part of the language specification. Vera provides the types; conversion uses the `IO` effect with host bindings that delegate to external tools:
+
+```
+public fn convert_to_markdown(@String -> @Result<MdBlock, String>)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+```
+
+The host runtime can import tools like MarkItDown or pandoc. The WASM module receives a clean `MdBlock` value through the host binding.
+
+**Connection to the Inference effect:**
+
+`Inference.complete()` (Section 9.5.5) returns `String`. Callers compose explicitly to get Markdown:
+
+```
+let @String = Inference.complete("Write a report about: " ++ @String.0);
+match md_parse(@String.0) {
+  Ok(@MdBlock) -> @MdBlock.0,
+  Err(@String) -> MdDocument([MdParagraph([MdText(@String.0)])])
+}
+```
+
+This follows the same pattern as JSON: `json_parse(Http.get(url))`, not a dedicated `get_json` operation. One way to do things (§0.2.3).
 
 ## 9.8 Abilities (Future)
 
