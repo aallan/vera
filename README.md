@@ -175,7 +175,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C6 | [v0.0.10](https://github.com/aallan/vera/releases/tag/v0.0.10)–[v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Done |
 | C6.5 | [v0.0.25](https://github.com/aallan/vera/releases/tag/v0.0.25)–[v0.0.30](https://github.com/aallan/vera/releases/tag/v0.0.30) | **Codegen cleanup** — handler fixes, missing operators, String/Array support | Done |
 | C7 | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31)–[v0.0.39](https://github.com/aallan/vera/releases/tag/v0.0.39) | **Module system** — cross-file imports, visibility, multi-module compilation | Done |
-| C8 | v0.1.0 | **Polish** — refactoring, tooling, diagnostics, verification depth | Next |
+| C8 | v0.1.0 | **Polish** — refactoring, tooling, diagnostics, verification depth | In progress |
 
 <details>
 <summary>C7 — Module System (<a href="https://github.com/aallan/vera/releases/tag/v0.0.31">v0.0.31</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.39">v0.0.39</a>) ✓</summary>
@@ -233,7 +233,7 @@ C6 extended WASM compilation to all language constructs, working through the dep
 
 </details>
 
-### What's next: C8 — Polish
+### Working on C8 — Polish
 
 C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issues are grouped into sub-phases ordered by impact and dependency.
 
@@ -245,8 +245,8 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 **C8b — Diagnostics and tooling** — improve the developer (human and LLM) experience
 
 - <del>[#112](https://github.com/aallan/vera/issues/112) informative runtime contract violation error messages</del> ([v0.0.42](https://github.com/aallan/vera/releases/tag/v0.0.42))
-- <del>[#80](https://github.com/aallan/vera/issues/80) stable error code taxonomy for diagnostics</del> (v0.0.43)
-- <del>[#95](https://github.com/aallan/vera/issues/95) LALR grammar fix for module-qualified call syntax</del> (v0.0.44)
+- <del>[#80](https://github.com/aallan/vera/issues/80) stable error code taxonomy for diagnostics</del> ([v0.0.43](https://github.com/aallan/vera/releases/tag/v0.0.43))
+- <del>[#95](https://github.com/aallan/vera/issues/95) LALR grammar fix for module-qualified call syntax</del> ([v0.0.44](https://github.com/aallan/vera/releases/tag/v0.0.44))
 - [#75](https://github.com/aallan/vera/issues/75) `vera fmt` canonical formatter
 - [#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing
 
@@ -270,7 +270,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 - [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory
 - [#56](https://github.com/aallan/vera/issues/56) incremental compilation
 
-### Beyond C8
+### Beyond C8 — Extending the language
 
 **Language design** (spec §0.8) — new effects, types, and standard library extensions
 
