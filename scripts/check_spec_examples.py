@@ -95,8 +95,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("07-effects.md", 268): "FRAGMENT",     # fn(Unit -> A) in param position
 
     # Chapter 7 — empty effect bodies (parser requires op_decl+)
-    ("07-effects.md", 309): "FRAGMENT",     # effect Diverge {} — no operations
-    ("07-effects.md", 317): "FRAGMENT",     # effect Alloc {} — no operations
+    ("07-effects.md", 311): "FRAGMENT",     # effect Diverge {} — no operations
 }
 
 
