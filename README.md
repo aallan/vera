@@ -176,6 +176,9 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C6.5 | [v0.0.25](https://github.com/aallan/vera/releases/tag/v0.0.25)–[v0.0.30](https://github.com/aallan/vera/releases/tag/v0.0.30) | **Codegen cleanup** — handler fixes, missing operators, String/Array support | Done |
 | C7 | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31)–[v0.0.39](https://github.com/aallan/vera/releases/tag/v0.0.39) | **Module system** — cross-file imports, visibility, multi-module compilation | Done |
 | C8 | v0.1.0 | **Polish** — refactoring, tooling, diagnostics, verification depth | In progress |
+| C8.5 | — | **Completeness** — module refinements, lexical extensions, IO runtime | Planned |
+| C9 | — | **Language design** — abilities, new effects, stdlib extensions | Planned |
+| C10 | — | **Ecosystem** — package management and registry | Planned |
 
 <details>
 <summary>C7 — Module System (<a href="https://github.com/aallan/vera/releases/tag/v0.0.31">v0.0.31</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.39">v0.0.39</a>) ✓</summary>
@@ -252,6 +255,8 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 
 **C8c — Verification depth** — expand what the SMT solver can prove
 
+- [#136](https://github.com/aallan/vera/issues/136) register `Diverge` as built-in effect
+- [#137](https://github.com/aallan/vera/issues/137) register `Alloc` as built-in effect
 - [#13](https://github.com/aallan/vera/issues/13) expand SMT decidable fragment (Tier 2 verification)
 - [#45](https://github.com/aallan/vera/issues/45) `decreases` clause termination verification
 
@@ -264,22 +269,41 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 **C8e — Codegen gaps** — extend WASM compilation
 
 - [#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation
-- [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display)
+- [#131](https://github.com/aallan/vera/issues/131) nested constructor pattern codegen
 - [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation
-- [#52](https://github.com/aallan/vera/issues/52) dynamic string construction
 - [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory
+- [#132](https://github.com/aallan/vera/issues/132) arrays of compound types in codegen
+- [#52](https://github.com/aallan/vera/issues/52) dynamic string construction
+- [#134](https://github.com/aallan/vera/issues/134) string built-in operations (length, concat, slice)
+- [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display)
 - [#56](https://github.com/aallan/vera/issues/56) incremental compilation
 
-### Beyond C8 — Extending the language
+### C8.5 — Completeness
 
-**Language design** (spec §0.8) — new effects, types, and standard library extensions
+Module refinements, lexical extensions, and IO runtime — completing the existing language before adding new features.
 
-- [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect
-- [#58](https://github.com/aallan/vera/issues/58) JSON standard library type
-- [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises
+- [#127](https://github.com/aallan/vera/issues/127) module re-exports
+- [#129](https://github.com/aallan/vera/issues/129) import aliasing
+- [#128](https://github.com/aallan/vera/issues/128) wildcard exclusion in imports
+- [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file)
+- [#139](https://github.com/aallan/vera/issues/139) scientific notation for float literals
+- [#140](https://github.com/aallan/vera/issues/140) raw strings and multi-line string literals
+
+### C9 — Language design
+
+New effects, types, abilities, and standard library extensions (spec §0.8).
+
 - [#60](https://github.com/aallan/vera/issues/60) abilities and type constraints
-- [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
 - [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal)
+- [#133](https://github.com/aallan/vera/issues/133) array operations (map, fold, slice)
+- [#58](https://github.com/aallan/vera/issues/58) JSON standard library type
+- [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect
+- [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises
+- [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
+
+### C10 — Ecosystem
+
+- [#130](https://github.com/aallan/vera/issues/130) package system and registry
 
 ## Getting Started
 
