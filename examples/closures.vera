@@ -1,5 +1,4 @@
 -- Closures and higher-order functions
-
 -- A type alias for a pure function from Int to Int
 type IntToInt = fn(Int -> Int) effects(pure);
 
@@ -22,7 +21,10 @@ private fn apply(@IntToInt, @Int -> @Int)
 }
 
 -- Map a function over an optional value
-private data Option<T> { None, Some(T) }
+private data Option<T> {
+  None,
+  Some(T)
+}
 
 type IntMapper = fn(Int -> Int) effects(pure);
 

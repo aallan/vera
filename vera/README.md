@@ -100,8 +100,9 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ closures.py` | 248 | | Closures, anonymous functions, free variable analysis | |
 | ` └ data.py` | 460 | | Constructors, match expressions, arrays, indexing | |
 | `codegen.py` | 2,140 | Compile | Codegen orchestrator | `compile()`, `execute()` |
+| `formatter.py` | 1,018 | Format | Canonical code formatter | `format_source()` |
 | `errors.py` | 459 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
-| `cli.py` | 682 | All | CLI commands | `main()` |
+| `cli.py` | 725 | All | CLI commands | `main()` |
 | `registration.py` | 58 | Type check | Shared function registration | `register_fn()` |
 
 Total: ~12,069 lines of Python + 330 lines of grammar.
@@ -505,7 +506,8 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (80
 | `test_checker.py` | 156 | 2,070 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility, error codes |
 | `test_verifier.py` | 77 | 1,118 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions, pipe operator, cross-module contracts |
 | `test_codegen.py` | 357 | 4,680 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, contract fail messages, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, old/new state postconditions, cross-module codegen, example round-trips |
-| `test_cli.py` | 85 | 1,138 | CLI commands (check, verify, compile, run), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
+| `test_formatter.py` | 62 | 495 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
+| `test_cli.py` | 98 | 1,310 | CLI commands (check, verify, compile, run, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |

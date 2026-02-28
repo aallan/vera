@@ -1,5 +1,4 @@
 -- Absolute value: a simple pure function with postconditions.
-
 public fn absolute_value(@Int -> @Nat)
   requires(true)
   ensures(@Nat.result >= 0)

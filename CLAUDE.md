@@ -30,6 +30,9 @@ vera run file.vera --fn f -- 42   # Call function f with argument 42
 vera parse file.vera              # Print the parse tree
 vera ast file.vera                # Print the typed AST
 vera ast --json file.vera         # Print the AST as JSON
+vera fmt file.vera                # Format to canonical form (stdout)
+vera fmt --write file.vera        # Format in place
+vera fmt --check file.vera        # Check if already canonical
 
 pytest tests/ -v                  # Run the test suite (913 tests)
 mypy vera/                        # Type-check the compiler itself

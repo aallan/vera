@@ -1,14 +1,11 @@
 -- Quantifiers in contracts — forall and exists
-
 -- All elements in the array are positive
 private fn all_positive(@Array<Int> -> @Bool)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
-    @Array<Int>.0[@Int.0] > 0
-  })
+  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.0[@Int.0] > 0 })
 }
 
 -- There exists a zero in the array
@@ -17,9 +14,7 @@ private fn has_zero(@Array<Int> -> @Bool)
   ensures(true)
   effects(pure)
 {
-  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
-    @Array<Int>.0[@Int.0] == 0
-  })
+  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.0[@Int.0] == 0 })
 }
 
 -- Assert and assume in function bodies
