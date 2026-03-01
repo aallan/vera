@@ -23,6 +23,9 @@ vera compile file.vera            # Compile to .wasm binary
 vera compile --wat file.vera      # Print WAT text (human-readable WASM)
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42   # Call function f with argument 42
+vera fmt file.vera                # Format to canonical form (stdout)
+vera fmt --write file.vera        # Format in place
+vera fmt --check file.vera        # Check if already canonical
 ```
 
 ### Error handling

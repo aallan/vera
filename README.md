@@ -341,6 +341,19 @@ Verification: 2 verified (Tier 1)
 
 `vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning.
 
+### Format a program
+
+```bash
+vera fmt examples/absolute_value.vera
+```
+
+`vera fmt` prints the canonical form of a Vera source file to stdout. Add `--write` to reformat in place, or `--check` to verify a file is already canonical (exits 1 if not):
+
+```bash
+vera fmt --write examples/absolute_value.vera   # reformat in place
+vera fmt --check examples/absolute_value.vera   # check only (for CI)
+```
+
 ### Compile a program
 
 ```
@@ -501,6 +514,7 @@ vera verify your_file.vera             # type-check + verify contracts
 vera compile your_file.vera            # compile to .wasm binary
 vera run your_file.vera                # compile + execute
 vera run your_file.vera --fn f -- 42   # call function f with argument 42
+vera fmt your_file.vera                # format to canonical form (stdout)
 vera verify --json your_file.vera      # verify with JSON diagnostics
 ```
 
