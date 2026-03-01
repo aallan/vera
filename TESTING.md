@@ -6,8 +6,8 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,100 across 18 files (~12,500 lines of test code) |
-| **Compiler code coverage** | 87% of 6,446 statements (CI minimum: 80%) |
+| **Tests** | 1,209 across 19 files (~14,200 lines of test code) |
+| **Compiler code coverage** | 88% of 6,861 statements (CI minimum: 80%) |
 | **Example programs** | 14, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
 | **README code blocks** | 6 Vera blocks (5 validated, 1 allowlisted future syntax) |
@@ -54,6 +54,7 @@ python scripts/check_version_sync.py                 # version consistency
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
+| `test_wasm_coverage.py` | 109 | 1,720 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
 | `test_tester.py` | 13 | 320 | Contract-driven testing: tier classification, input generation, test execution |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 
@@ -63,9 +64,9 @@ Coverage by module, measured by `pytest --cov=vera`:
 
 | Module | Stmts | Miss | Coverage |
 |--------|------:|-----:|---------:|
-| `codegen/` | 1,154 | 85 | 93% |
+| `codegen/` | 1,154 | 81 | 93% |
 | `checker/` | 986 | 137 | 86% |
-| `wasm/` | 1,311 | 269 | 79% |
+| `wasm/` | 1,311 | 187 | 86% |
 | `verifier.py` | 290 | 21 | 93% |
 | `transform.py` | 451 | 15 | 97% |
 | `formatter.py` | 605 | 82 | 86% |
@@ -74,14 +75,14 @@ Coverage by module, measured by `pytest --cov=vera`:
 | `types.py` | 146 | 3 | 98% |
 | `errors.py` | 126 | 1 | 99% |
 | `environment.py` | 125 | 9 | 93% |
-| `cli.py` | 398 | 111 | 72% |
+| `cli.py` | 478 | 142 | 70% |
 | `parser.py` | 45 | 16 | 64% |
 | `resolver.py` | 68 | 2 | 97% |
-| `tester.py` | ~350 | ~60 | ~83% |
+| `tester.py` | 335 | 51 | 85% |
 | `registration.py` | 18 | 0 | 100% |
-| **Total** | **6,446** | **823** | **87%** |
+| **Total** | **6,861** | **819** | **88%** |
 
-The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 72%) reflect auto-generated parser internals and CLI help/flag paths. The `wasm/` subsystem at 79% has the most room for improvement, particularly `wasm/inference.py` (71%) and `wasm/helpers.py` (62%).
+The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 70%) reflect auto-generated parser internals and CLI help/flag paths. The `wasm/` subsystem was improved from 79% to 86% by [#156](https://github.com/aallan/vera/issues/156); the remaining gaps are mostly in `wasm/inference.py` (74%) deep utility branches.
 
 ## Language Feature Coverage
 
@@ -203,7 +204,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs thr
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
 | **lint** | Python 3.12 x Ubuntu | `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py` |
 
-The coverage threshold of **80%** is enforced in CI. Current coverage is 87%.
+The coverage threshold of **80%** is enforced in CI. Current coverage is 88%.
 
 ## Opportunities
 
@@ -211,5 +212,5 @@ Testing infrastructure that could be added in the future:
 
 - **Property-based testing** -- `hypothesis` is installed as a dev dependency but not yet used. Could generate random programs to test parser robustness and formatter idempotency at scale.
 - **Formatter round-trip invariant** -- verify `parse(format(parse(src))) == parse(src)` for all valid programs, not just the examples.
-- **WASM coverage improvement** -- `wasm/` is the lowest-coverage subsystem at 79%. `wasm/inference.py` (71%) and `wasm/helpers.py` (62%) have the most gaps. See [#156](https://github.com/aallan/vera/issues/156).
+- **WASM inference.py coverage** -- `wasm/inference.py` at 74% has the most remaining gaps, mostly in deep utility branches (`_fn_type_param_wasm_types`, `_type_expr_name` with generics, `_infer_fncall_vera_type`). These branches require very specific expression nesting patterns to reach.
 - **Performance benchmarks** -- no benchmark infrastructure exists. Could track compilation time and Z3 verification time across releases.

@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.48] - 2026-03-01
+
+### Added
+- **Improve WASM translation test coverage** (C8.5, [#156](https://github.com/aallan/vera/issues/156)):
+  - New `tests/test_wasm_coverage.py` with 109 tests targeting coverage gaps in `vera/wasm/`
+  - Direct unit tests for `helpers.py` pure functions (`wasm_type`, `wasm_type_or_none`, `is_compilable_type`, element helpers)
+  - Full pipeline tests for `inference.py` deep branches (block result type inference, Vera type inference, expression type propagation)
+  - Closure free-variable walking coverage (`closures.py`): capture in binary, if, call, let, match contexts
+  - Operator edge cases: Float64 comparisons, Byte unsigned comparisons, Boolean implies, AND/OR
+  - Data/match coverage: nullary constructors, wildcard patterns, Bool/Int patterns, Option<T>
+  - Effect handler coverage: State<Int> init/get/put/increment patterns
+  - `wasm/` coverage improved from 79% to 86% (helpers.py 62%→96%, closures.py 72%→92%, inference.py 71%→74%)
+  - Overall compiler coverage improved from 87% to 88% (6,861 stmts, 819 missed)
+  - 1,209 tests (up from 1,100)
+
+### Fixed
+- Fixed approximate (`~`) coverage values for `tester.py` in TESTING.md (335/51/85%, not ~350/~60/~83%)
+
 ## [0.0.47] - 2026-03-01
 
 ### Added
