@@ -244,6 +244,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 
 - <del>[#99](https://github.com/aallan/vera/issues/99) decompose `checker.py` (~1,900 lines) into `checker/` submodules</del> ([v0.0.40](https://github.com/aallan/vera/releases/tag/v0.0.40))
 - <del>[#100](https://github.com/aallan/vera/issues/100) decompose `wasm.py` (~2,300 lines) into `wasm/` submodules</del> ([v0.0.41](https://github.com/aallan/vera/releases/tag/v0.0.41))
+- [#155](https://github.com/aallan/vera/issues/155) decompose `codegen.py` (~2,140 lines) into `codegen/` submodules
 
 **C8b — Diagnostics and tooling** — improve the developer (human and LLM) experience
 
@@ -252,6 +253,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 - <del>[#95](https://github.com/aallan/vera/issues/95) LALR grammar fix for module-qualified call syntax</del> ([v0.0.44](https://github.com/aallan/vera/releases/tag/v0.0.44))
 - <del>[#75](https://github.com/aallan/vera/issues/75) `vera fmt` canonical formatter</del> ([v0.0.45](https://github.com/aallan/vera/releases/tag/v0.0.45))
 - [#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing
+- [#156](https://github.com/aallan/vera/issues/156) improve test coverage for WASM translation modules
 
 **C8c — Verification depth** — expand what the SMT solver can prove
 
@@ -267,6 +269,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 
 **C8e — Codegen gaps** — extend WASM compilation
 
+- [#154](https://github.com/aallan/vera/issues/154) `list_ops.vera` runtime failure — recursive generic ADT codegen
 - [#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation
 - [#131](https://github.com/aallan/vera/issues/131) nested constructor pattern codegen
 - [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation
@@ -579,10 +582,11 @@ vera/
 │   │   └── data.py               #   Constructors, match, arrays
 │   ├── codegen.py                 # Code generation orchestrator
 │   ├── resolver.py                # Module resolver
+│   ├── formatter.py               # Canonical code formatter
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (951 tests)
+├── tests/                         # Test suite (1,071 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse
