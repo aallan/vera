@@ -426,7 +426,13 @@ effects(pure)                    -- no effects
 effects(<IO>)                    -- performs IO
 effects(<State<Int>>)            -- uses integer state
 effects(<State<Int>, IO>)        -- multiple effects
+effects(<Diverge>)               -- may not terminate
+effects(<Diverge, IO>)           -- divergent with IO
 ```
+
+`Diverge` is a built-in marker effect with no operations. Its presence in the
+effect row signals that the function may not terminate. Functions without
+`Diverge` must be proven total (via `decreases` clauses on recursion).
 
 ### Effect declarations
 
