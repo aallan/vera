@@ -23,6 +23,9 @@ vera compile file.vera            # Compile to .wasm binary
 vera compile --wat file.vera      # Print WAT text (human-readable WASM)
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42   # Call function f with argument 42
+vera test file.vera               # Contract-driven testing via Z3 + WASM
+vera test --json file.vera        # Test with JSON output
+vera test --trials 50 file.vera   # Limit trials per function (default 100)
 vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
@@ -69,7 +72,7 @@ Every diagnostic has a stable error code. Common codes:
 | E300 | If condition is not Bool |
 | E311 | Non-exhaustive match |
 
-Full code ranges: E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen). See `vera/errors.py` `ERROR_CODES` for the complete registry.
+Full code ranges: E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing). See `vera/errors.py` `ERROR_CODES` for the complete registry.
 
 The `verify --json` output includes a verification summary:
 
@@ -105,7 +108,7 @@ Read `vera/README.md` for architecture docs, module map, and design patterns.
 source -> parse (parser.py) -> transform (transform.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime)
 ```
 
-Each stage is a module with a single public API function (`parse_file`, `transform`, `typecheck`, `verify`, `compile`, `execute`) and is independently testable.
+Each stage is a module with a single public API function (`parse_file`, `transform`, `typecheck`, `verify`, `compile`, `execute`, `test`) and is independently testable.
 
 ### Key modules
 
@@ -124,6 +127,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 | `vera/errors.py` | LLM-oriented diagnostics |
 | `vera/wasm/` | WASM translation layer (mixin package) |
 | `vera/codegen/` | Code generation orchestrator (mixin package) |
+| `vera/tester.py` | Contract-driven testing engine |
 | `vera/cli.py` | Command-line interface |
 
 ### Testing

@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,076 across 17 files (~12,000 lines of test code) |
+| **Tests** | 1,100 across 18 files (~12,500 lines of test code) |
 | **Compiler code coverage** | 87% of 6,446 statements (CI minimum: 80%) |
 | **Example programs** | 14, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
@@ -50,10 +50,11 @@ python scripts/check_version_sync.py                 # version consistency
 | `test_codegen_coverage.py` | 5 | 249 | Defensive error paths: E600, E601, E605, E606, unknown module calls |
 | `test_errors.py` | 34 | 287 | Error code registry, diagnostic formatting, serialisation, SourceLocation |
 | `test_formatter.py` | 62 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
-| `test_cli.py` | 98 | 1,299 | CLI commands (check, verify, compile, run, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
+| `test_cli.py` | 109 | 1,550 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
+| `test_tester.py` | 13 | 320 | Contract-driven testing: tier classification, input generation, test execution |
 | `test_readme.py` | 2 | 68 | README code sample parsing |
 
 ## Compiler Code Coverage
@@ -76,6 +77,7 @@ Coverage by module, measured by `pytest --cov=vera`:
 | `cli.py` | 398 | 111 | 72% |
 | `parser.py` | 45 | 16 | 64% |
 | `resolver.py` | 68 | 2 | 97% |
+| `tester.py` | ~350 | ~60 | ~83% |
 | `registration.py` | 18 | 0 | 100% |
 | **Total** | **6,446** | **823** | **87%** |
 
@@ -104,6 +106,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker | hello_world, increment |
 | Ch 7: Effects | Effect handlers (handle/resume) | test_codegen, test_checker | effect_handler |
 | Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | modules |
+| Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_cli | safe_divide, factorial |
 
 ## Test Helpers
 
@@ -143,6 +146,7 @@ When extending the compiler, add tests following the existing patterns:
 5. **New codegen support:** Add compilation tests to `test_codegen.py` using `_compile_ok()`/`_run()`/`_run_trap()`
 6. **New example program:** Add to `examples/` -- it is automatically included in round-trip tests
 7. **New error pattern:** Add formatting tests to `test_errors.py`
+8. **New tester feature:** Add tests to `test_tester.py` using `_test(source)` helper
 
 ## Validation Scripts
 

@@ -9,13 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from vera.cli import cmd_ast, cmd_check, cmd_compile, cmd_fmt, cmd_parse, cmd_run, cmd_verify
+from vera.cli import cmd_ast, cmd_check, cmd_compile, cmd_fmt, cmd_parse, cmd_run, cmd_test, cmd_verify
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 INCREMENT = str(EXAMPLES_DIR / "increment.vera")
 FACTORIAL = str(EXAMPLES_DIR / "factorial.vera")
 CLOSURES = str(EXAMPLES_DIR / "closures.vera")
 HELLO_WORLD = str(EXAMPLES_DIR / "hello_world.vera")
+SAFE_DIVIDE = str(EXAMPLES_DIR / "safe_divide.vera")
+ABS_VALUE = str(EXAMPLES_DIR / "absolute_value.vera")
 
 
 # =====================================================================
@@ -1297,3 +1299,102 @@ class TestCmdFmtMain:
         )
         assert result.returncode == 1
         assert "file not found" in result.stderr
+
+
+# =====================================================================
+# cmd_test
+# =====================================================================
+
+
+class TestCmdTest:
+    """Tests for vera test command."""
+
+    def test_verified_example(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """safe_divide should report all functions as verified."""
+        rc = cmd_test(SAFE_DIVIDE)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "VERIFIED" in out
+
+    def test_tier1_example(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """absolute_value should be verified (Tier 1)."""
+        rc = cmd_test(ABS_VALUE)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "VERIFIED" in out or "TESTED" in out or "SKIPPED" in out
+
+    def test_json_output(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """--json should produce valid JSON."""
+        rc = cmd_test(SAFE_DIVIDE, as_json=True)
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["ok"] is True
+        assert "functions" in data
+        assert "summary" in data
+
+    def test_trials_flag(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """--trials should limit trial count."""
+        rc = cmd_test(SAFE_DIVIDE, trials=5)
+        assert rc == 0
+
+    def test_file_not_found(self, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = cmd_test("/nonexistent/file.vera")
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "file not found" in err
+
+    def test_file_not_found_json(self, capsys: pytest.CaptureFixture[str]) -> None:
+        rc = cmd_test("/nonexistent/file.vera", as_json=True)
+        assert rc == 1
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["ok"] is False
+
+    def test_type_errors_abort(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Type errors should abort before testing."""
+        bad = tmp_path / "bad.vera"
+        bad.write_text("""\
+private fn bad(@Int -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+        rc = cmd_test(str(bad))
+        assert rc == 1
+
+
+class TestCmdTestMain:
+    """Subprocess integration tests for vera test."""
+
+    def test_dispatch_test(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "test", SAFE_DIVIDE],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "Testing:" in result.stdout
+
+    def test_dispatch_test_json(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "test", "--json", SAFE_DIVIDE],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        data = json.loads(result.stdout)
+        assert data["ok"] is True
+
+    def test_dispatch_test_trials(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "test", "--trials", "5", SAFE_DIVIDE],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+
+    def test_dispatch_test_fn(self) -> None:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "test", "--fn", "safe_divide", SAFE_DIVIDE],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0

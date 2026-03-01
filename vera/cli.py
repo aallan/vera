@@ -15,6 +15,10 @@ Usage:
     vera run       <file.vera> -- 5 10      Pass arguments to the function
     vera ast       <file.vera>              Parse and print the AST
     vera ast       --json <file.vera>       Parse and print the AST as JSON
+    vera test      <file.vera>              Test contracts via Z3-guided inputs
+    vera test      --json <file.vera>       Test with JSON output
+    vera test      --trials 50 <file.vera>  Set trial count (default 100)
+    vera test      --fn name <file.vera>    Test a specific function
     vera fmt       <file.vera>              Format to canonical form (stdout)
     vera fmt       --write <file.vera>      Format in place
     vera fmt       --check <file.vera>      Check if already canonical
@@ -570,6 +574,178 @@ def cmd_ast(path: str, as_json: bool = False) -> int:
         return 1
 
 
+def cmd_test(
+    path: str,
+    *,
+    as_json: bool = False,
+    trials: int = 100,
+    fn_name: str | None = None,
+) -> int:
+    """Parse, type-check, and test a .vera file via contract-driven testing."""
+    from vera.checker import typecheck
+    from vera.resolver import ModuleResolver
+    from vera.tester import test as run_test
+
+    try:
+        p = Path(path)
+        source = p.read_text(encoding="utf-8")
+        tree = parse_file(path)
+        ast = transform(tree)
+
+        # Resolve imports (C7a)
+        resolver = ModuleResolver(_root=p.parent)
+        resolved = resolver.resolve_imports(ast, p)
+
+        # Type-check first
+        type_diags = resolver.errors + typecheck(
+            ast, source, file=str(p), resolved_modules=resolved,
+        )
+        type_errors = [d for d in type_diags if d.severity == "error"]
+
+        if type_errors:
+            if as_json:
+                result_dict = {
+                    "ok": False,
+                    "file": path,
+                    "diagnostics": [e.to_dict() for e in type_errors],
+                }
+                print(json.dumps(result_dict, indent=2))
+                return 1
+            for e in type_errors:
+                print(e.format(), file=sys.stderr)
+            return 1
+
+        # Run tests
+        result = run_test(
+            ast,
+            source=source,
+            file=str(p),
+            trials=trials,
+            fn_name=fn_name,
+            resolved_modules=resolved,
+        )
+
+        if as_json:
+            s = result.summary
+            result_dict = {
+                "ok": s.failed == 0 and not any(
+                    d.severity == "error" for d in result.diagnostics
+                ),
+                "file": path,
+                "functions": [
+                    {
+                        "name": f.fn_name,
+                        "category": f.category,
+                        "reason": f.reason,
+                        "trials_run": f.trials_run,
+                        "trials_passed": f.trials_passed,
+                        "trials_failed": f.trials_failed,
+                        "failures": [
+                            {
+                                "args": t.args,
+                                "status": t.status,
+                                "message": t.message,
+                            }
+                            for t in f.failures[:5]
+                        ],
+                    }
+                    for f in result.functions
+                ],
+                "summary": {
+                    "verified": s.verified,
+                    "tested": s.tested,
+                    "passed": s.passed,
+                    "failed": s.failed,
+                    "skipped": s.skipped,
+                    "total_trials": s.total_trials,
+                    "total_passes": s.total_passes,
+                    "total_failures": s.total_failures,
+                },
+                "diagnostics": [d.to_dict() for d in result.diagnostics],
+            }
+            print(json.dumps(result_dict, indent=2))
+            return 1 if s.failed > 0 else 0
+
+        # Human-readable output
+        print(f"\nTesting: {path}\n")
+        for f in result.functions:
+            if f.category == "tested":
+                if f.trials_failed > 0:
+                    line = (
+                        f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
+                        f"FAILED  "
+                        f"({f.trials_passed}/{f.trials_run} passed, "
+                        f"{f.trials_failed} failed)"
+                    )
+                else:
+                    line = (
+                        f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
+                        f"TESTED  ({f.trials_run}/{f.trials_run} passed)"
+                    )
+            elif f.category == "verified":
+                line = (
+                    f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
+                    f"VERIFIED (Tier 1)"
+                )
+            else:
+                line = (
+                    f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
+                    f"SKIPPED ({f.reason})"
+                )
+            print(line)
+
+            # Show first few failures
+            if f.failures:
+                for trial in f.failures[:3]:
+                    args_str = ", ".join(
+                        f"{k} = {v}" for k, v in trial.args.items()
+                    )
+                    print(f"    {args_str} -> {trial.message}")
+
+        # Summary
+        s = result.summary
+        parts = []
+        if s.tested > 0:
+            parts.append(
+                f"{s.tested} tested ({s.passed} passed"
+                + (f", {s.failed} failed)" if s.failed else ")")
+            )
+        if s.verified > 0:
+            parts.append(f"{s.verified} verified")
+        if s.skipped > 0:
+            parts.append(f"{s.skipped} skipped")
+        summary_str = ", ".join(parts) if parts else "no testable functions"
+        print(f"\nResults: {summary_str}")
+
+        if s.total_trials > 0:
+            print(
+                f"Trials:  {s.total_trials} run, "
+                f"{s.total_passes} passed, "
+                f"{s.total_failures} failed"
+            )
+
+        return 1 if s.failed > 0 else 0
+
+    except FileNotFoundError:
+        if as_json:
+            print(json.dumps({"ok": False, "file": path,
+                              "diagnostics": [{"severity": "error",
+                                               "description": f"file not found: {path}",
+                                               "location": {"line": 0, "column": 0}}]},
+                              indent=2))
+            return 1
+        print(f"Error: file not found: {path}", file=sys.stderr)
+        return 1
+    except VeraError as exc:
+        if as_json:
+            print(json.dumps({"ok": False, "file": path,
+                              "diagnostics": [exc.diagnostic.to_dict()]},
+                              indent=2))
+            return 1
+        print(exc.diagnostic.format(), file=sys.stderr)
+        return 1
+
+
 def cmd_fmt(
     path: str,
     *,
@@ -615,6 +791,7 @@ Commands:
     check [--json]       Parse and type-check a .vera file
     typecheck [--json]   Same as check (explicit alias)
     verify [--json]      Parse, type-check, and verify contracts
+    test [--json]        Test contracts via Z3-guided input generation
     compile [--wat]      Compile a .vera file to WebAssembly
     run [--fn name]      Compile and execute a .vera file
     ast [--json]         Parse a .vera file and print the AST
@@ -623,7 +800,8 @@ Commands:
 Options:
     --json               Output machine-readable JSON diagnostics
     --wat                Print WAT text instead of writing .wasm binary
-    --fn <name>          Function to execute (default: main or first export)
+    --fn <name>          Function to execute or test
+    --trials <n>         Number of test trials (default: 100, for vera test)
     -o <path>            Output path for .wasm binary
     --write              Format in place (vera fmt)
     --check              Check if already canonical (vera fmt)
@@ -650,6 +828,24 @@ def main() -> None:
         fn_idx = args.index("--fn")
         if fn_idx + 1 < len(args):
             fn_name = args[fn_idx + 1]
+
+    # Parse --trials <n> option
+    trials: int = 100
+    if "--trials" in args:
+        trials_idx = args.index("--trials")
+        if trials_idx + 1 < len(args):
+            try:
+                trials = int(args[trials_idx + 1])
+            except ValueError:
+                msg = f"Invalid --trials value: {args[trials_idx + 1]}"
+                if use_json:
+                    print(json.dumps({"ok": False, "file": "",
+                                      "diagnostics": [{"severity": "error",
+                                                       "description": msg}]},
+                                     indent=2))
+                else:
+                    print(f"Error: {msg}", file=sys.stderr)
+                sys.exit(1)
 
     # Parse -o <path> option
     output_path: str | None = None
@@ -680,7 +876,7 @@ def main() -> None:
 
     # Remove flags from remaining args to find the filepath
     skip_flags = {"--json", "--wat", "--write", "--check"}
-    skip_next = {"--fn", "-o"}
+    skip_next = {"--fn", "-o", "--trials"}
     remaining: list[str] = []
     i = 1  # skip command
     while i < len(args):
@@ -707,6 +903,10 @@ def main() -> None:
         sys.exit(cmd_check(filepath, as_json=use_json))
     elif command == "verify":
         sys.exit(cmd_verify(filepath, as_json=use_json))
+    elif command == "test":
+        sys.exit(cmd_test(
+            filepath, as_json=use_json, trials=trials, fn_name=fn_name
+        ))
     elif command == "compile":
         sys.exit(cmd_compile(
             filepath, as_json=use_json, wat=use_wat, output=output_path

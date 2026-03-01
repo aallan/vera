@@ -163,7 +163,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-The compiler has 1,076 tests with 87% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 14 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
+The compiler has 1,100 tests with 87% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 14 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
 
 ## Roadmap
 
@@ -256,7 +256,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 - <del>[#80](https://github.com/aallan/vera/issues/80) stable error code taxonomy for diagnostics</del> ([v0.0.43](https://github.com/aallan/vera/releases/tag/v0.0.43))
 - <del>[#95](https://github.com/aallan/vera/issues/95) LALR grammar fix for module-qualified call syntax</del> ([v0.0.44](https://github.com/aallan/vera/releases/tag/v0.0.44))
 - <del>[#75](https://github.com/aallan/vera/issues/75) `vera fmt` canonical formatter</del> ([v0.0.45](https://github.com/aallan/vera/releases/tag/v0.0.45))
-- [#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing
+- <del>[#79](https://github.com/aallan/vera/issues/79) `vera test` contract-driven testing</del> ([v0.0.47](https://github.com/aallan/vera/releases/tag/v0.0.47))
 - [#156](https://github.com/aallan/vera/issues/156) improve test coverage for WASM translation modules
 
 **C8c — Verification depth** — expand what the SMT solver can prove
@@ -291,6 +291,8 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - [#127](https://github.com/aallan/vera/issues/127) module re-exports
 - [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file)
 - [#139](https://github.com/aallan/vera/issues/139) scientific notation for float literals
+- [#169](https://github.com/aallan/vera/issues/169) `vera test` Float64 and compound type input generation
+- [#170](https://github.com/aallan/vera/issues/170) `vera test` hypothesis integration and advanced testing
 
 ### C9 — Language design
 
@@ -541,6 +543,7 @@ Write a `.vera` file, then check, verify, and run it:
 ```bash
 vera check your_file.vera              # type-check
 vera verify your_file.vera             # type-check + verify contracts
+vera test your_file.vera               # contract-driven testing via Z3 + WASM
 vera compile your_file.vera            # compile to .wasm binary
 vera run your_file.vera                # compile + execute
 vera run your_file.vera --fn f -- 42   # call function f with argument 42
@@ -628,6 +631,7 @@ vera/
 │   │   ├── contracts.py         #   Runtime contract insertion
 │   │   ├── assembly.py          #   WAT module assembly
 │   │   └── compilability.py     #   Compilability checks
+│   ├── tester.py                  # Contract-driven testing engine
 │   ├── resolver.py                # Module resolver
 │   ├── formatter.py               # Canonical code formatter
 │   ├── errors.py                  # LLM-oriented diagnostics

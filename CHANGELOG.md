@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.47] - 2026-03-01
+
+### Added
+- **`vera test` contract-driven testing** (C8b, [#79](https://github.com/aallan/vera/issues/79)):
+  - New `vera test` command generates inputs from `requires()` clauses via Z3 and executes compiled WASM to validate `ensures()` at runtime
+  - Z3-based input generation for Int, Nat, Bool parameters with boundary value seeding
+  - Tier classification: Tier 1 functions reported as "verified", Tier 3 functions exercised with generated inputs, unsupported/generic functions skipped
+  - `--json` flag for machine-readable test results
+  - `--trials N` flag to configure trial count per function (default 100)
+  - `--fn name` flag to test a single function
+  - New `vera/tester.py` module (~530 lines) with public `test()` API
+  - E7xx error code range for testing diagnostics (E700-E702)
+  - 24 new tests: 13 unit tests in `test_tester.py`, 11 CLI tests in `test_cli.py`
+  - 1,100 tests (up from 1,076)
+
 ## [0.0.46] - 2026-03-01
 
 ### Changed
