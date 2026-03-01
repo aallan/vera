@@ -27,6 +27,9 @@ vera compile file.vera            # Compile to .wasm binary
 vera compile --wat file.vera      # Print WAT text (human-readable WASM)
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42   # Call function f with argument 42
+vera test file.vera               # Contract-driven testing via Z3 + WASM
+vera test --json file.vera        # Test with JSON output
+vera test --trials 50 file.vera   # Limit trials per function (default 100)
 vera parse file.vera              # Print the parse tree
 vera ast file.vera                # Print the typed AST
 vera ast --json file.vera         # Print the AST as JSON
@@ -93,7 +96,7 @@ Each diagnostic includes: `severity`, `description`, `location` (`file`, `line`,
 
 ### Error codes
 
-Every diagnostic has a stable error code (`E001`–`E607`). Codes are grouped by compiler phase:
+Every diagnostic has a stable error code (`E001`–`E702`). Codes are grouped by compiler phase:
 
 | Range | Phase |
 |-------|-------|
@@ -104,6 +107,7 @@ Every diagnostic has a stable error code (`E001`–`E607`). Codes are grouped by
 | E3xx | Type check: control flow |
 | E5xx | Verification |
 | E6xx | Codegen |
+| E7xx | Testing |
 
 See `vera/errors.py` `ERROR_CODES` dict for the full registry.
 

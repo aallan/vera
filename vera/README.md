@@ -110,6 +110,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  contracts.py` | 250 | | Runtime pre/postconditions, old state snapshots | |
 | `  assembly.py` | 100 | | WAT module assembly | |
 | `  compilability.py` | 155 | | Compilability checks, state handler scanning | |
+| `tester.py` | ~530 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
 | `formatter.py` | 1,018 | Format | Canonical code formatter | `format_source()` |
 | `errors.py` | 459 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
 | `cli.py` | 725 | All | CLI commands | `main()` |

@@ -21,6 +21,10 @@ vera compile --json file.vera     # Compile with JSON diagnostics
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42   # Call function f with argument 42
 vera run --json file.vera         # Run with JSON output
+vera test file.vera               # Contract-driven testing via Z3 + WASM
+vera test --json file.vera        # Test with JSON output
+vera test --trials 50 file.vera   # Limit trials per function (default 100)
+vera test file.vera --fn f        # Test a single function
 vera parse file.vera              # Print the parse tree
 vera ast file.vera                # Print the typed AST
 vera ast --json file.vera         # Print the AST as JSON
@@ -44,7 +48,7 @@ On error, each diagnostic includes `severity`, `description`, `location` (`file`
 
 ### Error codes
 
-Every diagnostic has a stable error code (`E001`–`E607`) grouped by compiler phase:
+Every diagnostic has a stable error code (`E001`–`E702`) grouped by compiler phase:
 
 - **E001–E007** — Parse errors (missing contracts, unexpected tokens)
 - **E010** — Transform errors (internal)
@@ -53,6 +57,7 @@ Every diagnostic has a stable error code (`E001`–`E607`) grouped by compiler p
 - **E300–E335** — Type check: control flow (if/match, patterns, effect handlers)
 - **E500–E525** — Verification (contract violations, undecidable fallbacks)
 - **E600–E607** — Codegen (unsupported features)
+- **E700–E702** — Testing (contract violations, input generation, execution errors)
 
 Common codes you'll encounter:
 - **E130** — Unresolved slot reference (`@T.n` has no matching binding)
