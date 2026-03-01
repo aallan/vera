@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.49] - 2026-03-01
+
+### Added
+- **Register `Diverge` as built-in effect** (C8c, [#136](https://github.com/aallan/vera/issues/136)):
+  `effects(<Diverge>)` now resolves to the spec-defined marker effect
+  (Chapter 7, Section 7.7.3). Diverge has no operations — it signals that a
+  function may not terminate. Precursor to #45 (termination verification).
+
 ## [0.0.48] - 2026-03-01
 
 ### Added

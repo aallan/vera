@@ -291,6 +291,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `Result<T, E>` | ADT | `Ok(T)`, `Err(E)` constructors |
 | `State<T>` | Effect | `get(Unit) → T`, `put(T) → Unit` operations |
 | `IO` | Effect | No operations exposed at type level |
+| `Diverge` | Effect | No operations — marker for non-termination |
 | `length` | Function | `forall<T> Array<T> → Int`, pure |
 
 Additionally, `resume` is bound as a temporary function inside handler clause bodies (in `_check_handle()`). Its type is derived from the operation: for `op(params) → ReturnType`, `resume` has type `fn(ReturnType) → Unit effects(pure)`. The binding is added to `env.functions` before checking the clause body and removed afterward.

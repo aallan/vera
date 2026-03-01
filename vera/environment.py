@@ -187,6 +187,15 @@ class TypeEnv:
             operations={},
         )
 
+        # Diverge effect — marker for potentially non-terminating functions.
+        # No operations; its presence in the effect row opts out of
+        # termination checking (Chapter 7, Section 7.7.3).
+        self.effects["Diverge"] = EffectInfo(
+            name="Diverge",
+            type_params=None,
+            operations={},
+        )
+
         # Built-in function: length
         self.functions["length"] = FunctionInfo(
             name="length",

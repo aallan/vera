@@ -604,6 +604,33 @@ private fn g(@Int -> @Int)
 
 
 # =====================================================================
+# Diverge built-in effect (Chapter 7, §7.7.3)
+# =====================================================================
+
+class TestDivergeEffect:
+    """Diverge is a recognised marker effect with no operations."""
+
+    def test_diverge_verifies(self) -> None:
+        """A function with effects(<Diverge>) should verify cleanly."""
+        _verify_ok("""
+private fn loop(@Unit -> @Int)
+  requires(true) ensures(true) effects(<Diverge>)
+{ 0 }
+""")
+
+    def test_diverge_with_io_verifies(self) -> None:
+        """Diverge composes with other effects for verification."""
+        _verify_ok("""
+private fn serve(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Diverge, IO>)
+{
+  IO.print("running");
+  ()
+}
+""")
+
+
+# =====================================================================
 # Edge cases
 # =====================================================================
 

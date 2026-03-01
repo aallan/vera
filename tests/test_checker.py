@@ -810,6 +810,49 @@ private fn use_counter(@Unit -> @Unit)
 }
 """)
 
+    # ----- Diverge (built-in marker effect, Chapter 7 §7.7.3) --------
+
+    def test_diverge_type_checks(self) -> None:
+        """effects(<Diverge>) is a recognised built-in effect."""
+        _check_ok("""
+private fn loop(@Unit -> @Int)
+  requires(true) ensures(true) effects(<Diverge>)
+{ 0 }
+""")
+
+    def test_diverge_combined_with_io(self) -> None:
+        """Diverge composes with other effects in the same row."""
+        _check_ok("""
+private fn serve(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Diverge, IO>)
+{
+  IO.print("running");
+  ()
+}
+""")
+
+    def test_diverge_no_operations(self) -> None:
+        """Diverge has no operations — qualified calls produce a warning."""
+        warns = _warnings("""
+private fn bad(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Diverge>)
+{
+  Diverge.stop(())
+}
+""")
+        assert any("Unresolved qualified call" in w.description for w in warns), \
+            f"Expected unresolved call warning, got: {[w.description for w in warns]}"
+
+    def test_diverge_registered_in_env(self) -> None:
+        """Diverge is present in the environment's effect registry."""
+        from vera.environment import TypeEnv
+        env = TypeEnv()
+        info = env.lookup_effect("Diverge")
+        assert info is not None
+        assert info.name == "Diverge"
+        assert info.type_params is None
+        assert info.operations == {}
+
 
 # =====================================================================
 # Contracts
