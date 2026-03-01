@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.46] - 2026-03-01
+
+### Changed
+- **Decompose `codegen.py` into `codegen/` mixin package** (C8a, [#155](https://github.com/aallan/vera/issues/155)):
+  - Split the 2,140-line `codegen.py` monolith into 11 focused modules following the mixin pattern from `checker/` and `wasm/`
+  - New modules: `api.py`, `core.py`, `modules.py`, `registration.py`, `monomorphize.py`, `functions.py`, `closures.py`, `contracts.py`, `assembly.py`, `compilability.py`
+  - Added 5 coverage gap tests reaching defensive error paths (E600, E601, E605, E606, unknown module calls)
+  - Split the 4,834-line `test_codegen.py` into 6 focused test files mirroring the module structure
+  - 1,076 tests (up from 1,071)
+  - Completes C8a refactoring: all three compiler monoliths (`checker.py`, `wasm.py`, `codegen.py`) are now mixin packages
+
 ## [0.0.45] - 2026-02-28
 
 ### Added
@@ -668,7 +679,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.44...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.46...HEAD
+[0.0.46]: https://github.com/aallan/vera/compare/v0.0.45...v0.0.46
+[0.0.45]: https://github.com/aallan/vera/compare/v0.0.44...v0.0.45
 [0.0.44]: https://github.com/aallan/vera/compare/v0.0.43...v0.0.44
 [0.0.43]: https://github.com/aallan/vera/compare/v0.0.42...v0.0.43
 [0.0.42]: https://github.com/aallan/vera/compare/v0.0.41...v0.0.42
