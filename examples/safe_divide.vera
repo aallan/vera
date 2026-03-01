@@ -7,11 +7,15 @@ public fn safe_divide(@Int, @Int -> @Int)
   @Int.0 / @Int.1
 }
 
--- Entry point: exercise safe_divide(10, 2) = 5
+-- Entry point: exercise safe_divide(2, 10) = 5
+--
+-- De Bruijn binding order: the rightmost parameter is @Int.0 (dividend = 10),
+-- the leftmost is @Int.1 (divisor = 2). The body computes @Int.0 / @Int.1 = 10 / 2 = 5.
+-- The requires clause guards @Int.1 != 0 (the divisor, i.e. the first argument).
 public fn test_divide(@Unit -> @Int)
   requires(true)
-  ensures(true)
+  ensures(@Int.result == 5)
   effects(pure)
 {
-  safe_divide(10, 2)
+  safe_divide(2, 10)
 }
