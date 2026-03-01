@@ -45,7 +45,7 @@ Source (.vera)
 └────────────────────────┬─────────────────────────────────┘
                          ▼
 ┌──────────────────────────────────────────────────────────┐
-│  5. Compile                    codegen.py + wasm/        │
+│  5. Compile                    codegen/ + wasm/           │
 │     AST → CompileResult          (WAT text + WASM binary)│
 │     Runtime contract insertion for Tier 3                │
 └────────────────────────┬─────────────────────────────────┘
@@ -58,7 +58,7 @@ Source (.vera)
 
 Errors never cause early exit. Parse errors raise exceptions (the tree is incomplete), but the type checker and verifier **accumulate** all diagnostics and return them as a list. This is critical for LLM consumption — the model gets all feedback in one pass.
 
-Public entry points (from `parser.py` and `codegen.py`):
+Public entry points (from `parser.py` and `codegen/`):
 
 ```python
 parse(source, file=None)        # → Lark Tree
@@ -99,7 +99,17 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls.py` | 223 | | Function calls, generic resolution, effect handlers | |
 | ` ├ closures.py` | 248 | | Closures, anonymous functions, free variable analysis | |
 | ` └ data.py` | 460 | | Constructors, match expressions, arrays, indexing | |
-| `codegen.py` | 2,140 | Compile | Codegen orchestrator | `compile()`, `execute()` |
+| `codegen/` | 2,140 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
+| `  api.py` | 265 | | Public API, dataclasses, host bindings, `execute()` | |
+| `  core.py` | 285 | | CodeGenerator class, orchestration, type helpers | |
+| `  modules.py` | 200 | | Cross-module registration + call detection (C7e) | |
+| `  registration.py` | 105 | | Pass 1 forward declarations, ADT layout | |
+| `  monomorphize.py` | 410 | | Generic instantiation, type inference (Pass 1.5) | |
+| `  functions.py` | 185 | | Function body compilation (Pass 2) | |
+| `  closures.py` | 175 | | Closure lifting | |
+| `  contracts.py` | 250 | | Runtime pre/postconditions, old state snapshots | |
+| `  assembly.py` | 100 | | WAT module assembly | |
+| `  compilability.py` | 155 | | Compilability checks, state handler scanning | |
 | `formatter.py` | 1,018 | Format | Canonical code formatter | `format_source()` |
 | `errors.py` | 459 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
 | `cli.py` | 725 | All | CLI commands | `main()` |
@@ -370,11 +380,11 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen.py` (2,140 lines), `wasm/` (2,474 lines across 7 modules)
+**Files:** `codegen/` (2,140 lines across 11 modules), `wasm/` (2,474 lines across 7 modules)
 
 ### Compilation pipeline
 
-`compile()` in `codegen.py` takes a `Program` AST and optional `VerifyResult`, and produces a `CompileResult` containing WAT text, WASM bytes, export names, and diagnostics.
+`compile()` in `codegen/api.py` takes a `Program` AST and optional `VerifyResult`, and produces a `CompileResult` containing WAT text, WASM bytes, export names, and diagnostics.
 
 ```
 Program AST → CodeGenerator._register_functions()  (pass 1)
@@ -397,7 +407,7 @@ The two-pass architecture mirrors the type checker: pass 1 registers all functio
 
 ### IO host bindings
 
-`IO.print` compiles to a call to an imported host function. The `execute()` function in `codegen.py` provides the host implementation via wasmtime's `Linker`: it reads UTF-8 bytes from WASM linear memory and writes to stdout (or a capture buffer for testing).
+`IO.print` compiles to a call to an imported host function. The `execute()` function in `codegen/api.py` provides the host implementation via wasmtime's `Linker`: it reads UTF-8 bytes from WASM linear memory and writes to stdout (or a capture buffer for testing).
 
 ### Runtime contracts
 
@@ -489,25 +499,31 @@ Every diagnostic has a unique code grouped by compiler phase:
 | E2xx | Type check: calls | `checker/calls.py` |
 | E3xx | Type check: control flow | `checker/control.py` |
 | E5xx | Verification | `verifier.py` |
-| E6xx | Codegen | `codegen.py` |
+| E6xx | Codegen | `codegen/` |
 
 The `ERROR_CODES` dict in `errors.py` maps every code to a short description (80 entries). Codes are stable across versions — they can be used for programmatic filtering, suppression, and documentation lookups. Formatted output shows the code in brackets: `[E130] Error at line 5, column 3:`.
 
 ## Test Suite
 
-**984 tests** across 11 files, plus 4 validation scripts and CI infrastructure.
+**1,076 tests** across 17 files, plus 4 validation scripts and CI infrastructure.
 
 ### Test files
 
 | File | Tests | Lines | What it covers |
 |------|------:|------:|----------------|
-| `test_parser.py` | 97 | 829 | Grammar rules, operator precedence, parse errors |
-| `test_ast.py` | 84 | 896 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 156 | 2,070 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility, error codes |
+| `test_parser.py` | 103 | 888 | Grammar rules, operator precedence, parse errors |
+| `test_ast.py` | 87 | 935 | AST transformation, node structure, serialisation |
+| `test_checker.py` | 159 | 2,143 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility, error codes |
 | `test_verifier.py` | 77 | 1,118 | Z3 verification, counterexamples, tier classification, Int→Nat enforcement, call-site preconditions, pipe operator, cross-module contracts |
-| `test_codegen.py` | 357 | 4,680 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, closures, State\<T\>, control flow, strings, IO, contracts, contract fail messages, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, old/new state postconditions, cross-module codegen, example round-trips |
-| `test_formatter.py` | 62 | 495 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
-| `test_cli.py` | 98 | 1,310 | CLI commands (check, verify, compile, run, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
+| `test_codegen.py` | 280 | 3,352 | WASM compilation, arithmetic, Float64 (incl. modulo), Byte, arrays, ADTs, match, generics, State\<T\>, control flow, strings, IO, bounds checking, length, quantifiers, assert/assume, refinement type aliases, pipe operator, String/Array signatures, example round-trips |
+| `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
+| `test_codegen_monomorphize.py` | 17 | 360 | Generic instantiation, type inference, monomorphization edge cases |
+| `test_codegen_closures.py` | 17 | 416 | Closure lifting, captured variables, higher-order functions |
+| `test_codegen_modules.py` | 11 | 349 | Cross-module guard rail, cross-module codegen |
+| `test_codegen_coverage.py` | 5 | 249 | Defensive error paths: E600, E601, E605, E606, unknown module calls |
+| `test_errors.py` | 34 | 287 | Error code registry, diagnostic formatting |
+| `test_formatter.py` | 62 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
+| `test_cli.py` | 98 | 1,299 | CLI commands (check, verify, compile, run, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
@@ -635,7 +651,7 @@ Add a case to `SmtContext.translate_expr()` in `smt.py`. Return a Z3 expression 
 
 Add a case to `WasmContext.translate_expr()` in `wasm/context.py` (or the appropriate submodule). Return a list of WAT instruction strings for supported constructs. **Return `None`** for anything that can't be compiled — this triggers a "function skipped" warning rather than a compilation error.
 
-To add a new WASM type mapping, update `wasm_type()` in `wasm/helpers.py` and the type mapping table in `codegen.py`.
+To add a new WASM type mapping, update `wasm_type()` in `wasm/helpers.py` and the type mapping table in `codegen/core.py`.
 
 ### New CLI command
 

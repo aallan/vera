@@ -102,7 +102,7 @@ Read `vera/README.md` for architecture docs, module map, and design patterns.
 ### Pipeline
 
 ```
-source -> parse (parser.py) -> transform (transform.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen.py + wasm.py) -> execute (wasmtime)
+source -> parse (parser.py) -> transform (transform.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime)
 ```
 
 Each stage is a module with a single public API function (`parse_file`, `transform`, `typecheck`, `verify`, `compile`, `execute`) and is independently testable.
@@ -117,13 +117,13 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 | `vera/ast.py` | AST node definitions |
 | `vera/types.py` | Internal type representation |
 | `vera/environment.py` | Type environment and slot resolution |
-| `vera/checker.py` | Type checker |
+| `vera/checker/` | Type checker (mixin package) |
 | `vera/smt.py` | Z3 SMT translation layer |
 | `vera/verifier.py` | Contract verifier |
 | `vera/registration.py` | Shared function registration for checker and verifier |
 | `vera/errors.py` | LLM-oriented diagnostics |
-| `vera/wasm.py` | WASM translation layer |
-| `vera/codegen.py` | Code generation orchestrator |
+| `vera/wasm/` | WASM translation layer (mixin package) |
+| `vera/codegen/` | Code generation orchestrator (mixin package) |
 | `vera/cli.py` | Command-line interface |
 
 ### Testing

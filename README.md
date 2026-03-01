@@ -580,13 +580,23 @@ vera/
 │   │   ├── calls.py              #   Function calls, effect handlers
 │   │   ├── closures.py           #   Closures, free variable analysis
 │   │   └── data.py               #   Constructors, match, arrays
-│   ├── codegen.py                 # Code generation orchestrator
+│   ├── codegen/                    # Code generation orchestrator (11 modules)
+│   │   ├── api.py               #   Public API, compile(), execute()
+│   │   ├── core.py              #   Composed CodeGenerator class
+│   │   ├── modules.py           #   Cross-module call detection
+│   │   ├── registration.py      #   Function/ADT registration
+│   │   ├── monomorphize.py      #   Generic instantiation
+│   │   ├── functions.py         #   Function body compilation
+│   │   ├── closures.py          #   Closure lifting
+│   │   ├── contracts.py         #   Runtime contract insertion
+│   │   ├── assembly.py          #   WAT module assembly
+│   │   └── compilability.py     #   Compilability checks
 │   ├── resolver.py                # Module resolver
 │   ├── formatter.py               # Canonical code formatter
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
-├── tests/                         # Test suite (1,071 tests)
+├── tests/                         # Test suite (1,076 tests)
 ├── scripts/                       # CI and validation scripts
 │   ├── check_examples.py          # Verify all .vera examples
 │   ├── check_spec_examples.py     # Verify spec code blocks parse
