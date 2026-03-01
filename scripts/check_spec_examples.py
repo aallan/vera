@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Extract code blocks from spec Markdown and verify parseable ones still parse.
+"""Extract code blocks from spec Markdown and validate them through the compiler pipeline.
 
 Strategy:
   1. Extract all fenced code blocks from spec/*.md files.
@@ -9,25 +9,36 @@ Strategy:
        module, import, public, private) or a comment (--) followed by one.
      - "fragment": everything else (type annotations, expressions, partial syntax).
   4. Try to parse each "parseable" block with the Vera parser.
-  5. Report failures. Maintain an allowlist for known-unparseable blocks.
+  5. Try to type-check each block that parsed successfully.
+  6. Try to verify contracts on each block that type-checked successfully.
+  7. Report failures. Maintain allowlists for known failures at each stage.
 
-The allowlist uses (filename, line_number) tuples so failures are stable
+The allowlists use (filename, line_number) tuples so failures are stable
 across spec edits. When a spec is updated and line numbers shift, the
-allowlist must be updated too — this is intentional, it forces you to
+allowlists must be updated too — this is intentional, it forces you to
 re-examine whether the block should still be skipped.
 
-Categories:
+Parse allowlist categories:
   FUTURE   — design proposals using syntax not yet in the parser
   MISMATCH — spec uses @T notation in data/effect declarations but parser
              expects bare types; tracked for reconciliation
   FRAGMENT — heuristic false positive (looks like a declaration but isn't)
+
+Check allowlist categories:
+  INCOMPLETE  — references functions/types not defined in the block
+  FUTURE      — uses checker features not yet implemented
+  ILLUSTRATIVE — demonstrates a concept but isn't a complete checkable program
+
+Verify allowlist categories:
+  INCOMPLETE — contracts reference undefined functions
+  EXPECTED   — verification errors that are intentional in the spec context
 """
 
 import re
 import sys
 from pathlib import Path
 
-# -- Allowlist: spec blocks that are intentionally unparseable. ----------
+# -- Parse allowlist: spec blocks that are intentionally unparseable. ------
 #
 # Each entry is (spec_filename, start_line_of_code_fence, category).
 #
@@ -107,6 +118,85 @@ ALLOWLIST: dict[tuple[str, int], str] = {
 }
 
 
+# -- Check allowlist: blocks that parse OK but fail type-checking. ---------
+#
+# Populated by running with --discover-check to find blocks that parse
+# but don't type-check. Each entry documents why the block is expected
+# to fail the checker.
+
+CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
+    # =================================================================
+    # INCOMPLETE — references functions, types, or effects not defined
+    # in the block. These are illustrative snippets that depend on
+    # external definitions (stdlib, other modules, etc.).
+    # =================================================================
+
+    # Chapter 2 — ADT invariant referencing undefined predicate
+    ("02-types.md", 129): "INCOMPLETE",      # is_sorted in SortedList invariant
+
+    # Chapter 2 — Tuple constructor (not a built-in ADT)
+    ("02-types.md", 230): "INCOMPLETE",      # forall<A,B> fn swap uses Tuple
+
+    # Chapter 3 — undefined stdlib function array_map
+    ("03-slot-references.md", 327): "INCOMPLETE",  # array_map in apply_to_array
+
+    # Chapter 5 — undefined stdlib function array_filter
+    ("05-functions.md", 227): "INCOMPLETE",  # array_filter in filter_positive
+
+    # Chapter 5 — Tuple constructor (not a built-in ADT)
+    ("05-functions.md", 308): "INCOMPLETE",  # forall<A,B> fn pair uses Tuple
+
+    # Chapter 5 — IO.print qualified call (IO effect not defined in block)
+    ("05-functions.md", 357): "INCOMPLETE",  # main function uses IO.print
+
+    # Chapter 6 — undefined predicate in data invariant
+    ("06-contracts.md", 52): "INCOMPLETE",   # is_sorted_impl in SortedArray
+
+    # Chapter 7 — IO.print qualified call (IO effect not defined in block)
+    ("07-effects.md", 100): "INCOMPLETE",    # fn hello uses IO.print
+
+    # Chapter 7 — effect composition referencing undefined functions
+    ("07-effects.md", 363): "INCOMPLETE",    # fn foo calls undefined bar/baz
+
+    # Chapter 8 — cross-module imports (imported modules don't exist)
+    ("08-modules.md", 151): "INCOMPLETE",    # import vera.math(abs, max)
+    ("08-modules.md", 322): "INCOMPLETE",    # import vera.math(abs)
+    ("08-modules.md", 415): "INCOMPLETE",    # import vera.math + vera.collections
+
+    # Chapter 9 — IO.print qualified call
+    ("09-standard-library.md", 144): "INCOMPLETE",  # fn hello uses IO.print
+
+    # =================================================================
+    # FUTURE — uses features not yet implemented in the checker
+    # =================================================================
+
+    # Chapter 7 — Exn effect handler (exception handling not implemented)
+    ("07-effects.md", 202): "FUTURE",        # handle[Exn<String>] + parse_int
+
+    # Chapter 9 — async/await (future feature, tracked in spec as not implemented)
+    ("09-standard-library.md", 227): "FUTURE",  # async, await, Http, Future
+}
+
+
+# -- Verify allowlist: blocks that type-check but fail verification. -------
+#
+# Populated by running with --discover-verify to find blocks that
+# type-check but don't verify cleanly.
+
+VERIFY_ALLOWLIST: dict[tuple[str, int], str] = {
+    # =================================================================
+    # ILLUSTRATIVE — spec example demonstrating syntax; the contract
+    # is intentionally loose and Z3 cannot prove it.
+    # =================================================================
+
+    # Chapter 5 — multiple postconditions example; @Int.result <= @Int.0
+    # doesn't hold for all valid inputs under integer division semantics.
+    # The block demonstrates multiple requires/ensures syntax, not
+    # contract correctness.
+    ("05-functions.md", 49): "ILLUSTRATIVE",  # safe_divide with imprecise ensures
+}
+
+
 def extract_code_blocks(path: Path) -> list[tuple[int, str, str]]:
     """Extract fenced code blocks from a Markdown file.
 
@@ -162,6 +252,45 @@ def try_parse(content: str) -> str | None:
         return str(exc).split("\n")[0][:200]
 
 
+def try_check(content: str) -> str | None:
+    """Parse, transform, and type-check. Returns error message or None."""
+    from vera.parser import parse
+    from vera.transform import transform
+    from vera.checker import typecheck
+
+    try:
+        tree = parse(content, file="<spec>")
+        program = transform(tree)
+        errors = typecheck(program, source=content, file="<spec>")
+        if errors:
+            return errors[0].description[:200]
+        return None
+    except Exception as exc:
+        return str(exc).split("\n")[0][:200]
+
+
+def try_verify(content: str) -> str | None:
+    """Parse, transform, type-check, and verify. Returns error message or None."""
+    from vera.parser import parse
+    from vera.transform import transform
+    from vera.checker import typecheck
+    from vera.verifier import verify
+
+    try:
+        tree = parse(content, file="<spec>")
+        program = transform(tree)
+        errors = typecheck(program, source=content, file="<spec>")
+        if errors:
+            return errors[0].description[:200]
+        result = verify(program, source=content, file="<spec>")
+        errs = [d for d in result.diagnostics if d.severity == "error"]
+        if errs:
+            return errs[0].description[:200]
+        return None
+    except Exception as exc:
+        return str(exc).split("\n")[0][:200]
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     spec_dir = root / "spec"
@@ -178,6 +307,7 @@ def main() -> int:
     # Non-Vera language tags to skip entirely
     skip_langs = {"ebnf", "bash", "python", "json", "toml", "yaml", "shell", "sh"}
 
+    # -- Parse stage counters --
     total_blocks = 0
     parseable_blocks = 0
     skipped_fragments = 0
@@ -185,12 +315,26 @@ def main() -> int:
     skipped_future = 0
     skipped_mismatch = 0
     skipped_fragment_allowlist = 0
-    passed = 0
-    stale_allowlist: list[tuple[str, int, str]] = []
-    failures: list[tuple[str, int, str]] = []
+    parse_passed = 0
+    parse_failures: list[tuple[str, int, str]] = []
+
+    # -- Check stage counters --
+    check_passed = 0
+    check_allowlisted = 0
+    check_failures: list[tuple[str, int, str]] = []
+
+    # -- Verify stage counters --
+    verify_passed = 0
+    verify_allowlisted = 0
+    verify_failures: list[tuple[str, int, str]] = []
 
     # Track which allowlist entries are used
     used_allowlist: set[tuple[str, int]] = set()
+    used_check_allowlist: set[tuple[str, int]] = set()
+    used_verify_allowlist: set[tuple[str, int]] = set()
+
+    # Collect blocks that parsed OK for the check stage
+    parsed_ok: list[tuple[str, int, str]] = []  # (filename, line_no, content)
 
     for spec_file in spec_files:
         filename = spec_file.name
@@ -211,7 +355,7 @@ def main() -> int:
 
             parseable_blocks += 1
 
-            # Check allowlist
+            # Check parse allowlist
             key = (filename, line_no)
             if key in ALLOWLIST:
                 used_allowlist.add(key)
@@ -227,66 +371,130 @@ def main() -> int:
             # Try to parse
             error = try_parse(content)
             if error is None:
-                passed += 1
+                parse_passed += 1
+                parsed_ok.append((filename, line_no, content))
             else:
-                failures.append((filename, line_no, error))
+                parse_failures.append((filename, line_no, error))
 
-    # Check for stale allowlist entries (entries that no longer correspond
-    # to a code block at that line — means spec was edited)
+    # -- Check stage: type-check blocks that parsed OK --
+    checked_ok: list[tuple[str, int, str]] = []  # (filename, line_no, content)
+
+    for filename, line_no, content in parsed_ok:
+        key = (filename, line_no)
+        if key in CHECK_ALLOWLIST:
+            used_check_allowlist.add(key)
+            check_allowlisted += 1
+            continue
+
+        error = try_check(content)
+        if error is None:
+            check_passed += 1
+            checked_ok.append((filename, line_no, content))
+        else:
+            check_failures.append((filename, line_no, error))
+
+    # -- Verify stage: verify blocks that type-checked OK --
+    for filename, line_no, content in checked_ok:
+        key = (filename, line_no)
+        if key in VERIFY_ALLOWLIST:
+            used_verify_allowlist.add(key)
+            verify_allowlisted += 1
+            continue
+
+        error = try_verify(content)
+        if error is None:
+            verify_passed += 1
+        else:
+            verify_failures.append((filename, line_no, error))
+
+    # -- Stale allowlist detection --
+    stale_entries: list[tuple[str, int, str, str]] = []  # (file, line, cat, stage)
+
     for key, category in ALLOWLIST.items():
         if key not in used_allowlist:
-            stale_allowlist.append((key[0], key[1], category))
+            stale_entries.append((key[0], key[1], category, "parse"))
 
-    # Report
+    for key, category in CHECK_ALLOWLIST.items():
+        if key not in used_check_allowlist:
+            stale_entries.append((key[0], key[1], category, "check"))
+
+    for key, category in VERIFY_ALLOWLIST.items():
+        if key not in used_verify_allowlist:
+            stale_entries.append((key[0], key[1], category, "verify"))
+
+    # -- Report --
     print(f"Spec code blocks: {total_blocks} total")
     print(f"  Skipped (non-Vera language): {skipped_lang}")
     print(f"  Skipped (fragments, heuristic): {skipped_fragments}")
     print(f"  Parseable: {parseable_blocks}")
-    print(f"    Parsed OK: {passed}")
+    print(f"    Parsed OK: {parse_passed}")
     print(f"    Allowlisted (future syntax): {skipped_future}")
     print(f"    Allowlisted (spec/parser mismatch): {skipped_mismatch}")
     print(f"    Allowlisted (fragment override): {skipped_fragment_allowlist}")
-    print(f"    FAILED: {len(failures)}")
+    print(f"    PARSE FAILED: {len(parse_failures)}")
+    print(f"  Type-checked: {parse_passed}")
+    print(f"    Check OK: {check_passed}")
+    print(f"    Allowlisted (check): {check_allowlisted}")
+    print(f"    CHECK FAILED: {len(check_failures)}")
+    print(f"  Verified: {check_passed}")
+    print(f"    Verify OK: {verify_passed}")
+    print(f"    Allowlisted (verify): {verify_allowlisted}")
+    print(f"    VERIFY FAILED: {len(verify_failures)}")
 
     exit_code = 0
 
-    if stale_allowlist:
+    if stale_entries:
         print("\nSTALE ALLOWLIST ENTRIES:", file=sys.stderr)
         print(
             "These entries no longer match a code block (spec was edited?):",
             file=sys.stderr,
         )
-        for filename, line_no, category in stale_allowlist:
+        for filename, line_no, category, stage in stale_entries:
             print(
-                f"  spec/{filename} line {line_no} [{category}]", file=sys.stderr
+                f"  spec/{filename} line {line_no} [{category}] ({stage} stage)",
+                file=sys.stderr,
             )
         print(
-            "\nUpdate the ALLOWLIST in scripts/check_spec_examples.py.",
+            "\nUpdate the allowlists in scripts/check_spec_examples.py.",
             file=sys.stderr,
         )
         exit_code = 1
 
-    if failures:
-        print("\nFAILURES:", file=sys.stderr)
-        for filename, line_no, error in failures:
+    if parse_failures:
+        print("\nPARSE FAILURES:", file=sys.stderr)
+        for filename, line_no, error in parse_failures:
             print(f"\n  spec/{filename} line {line_no}:", file=sys.stderr)
             print(f"    {error}", file=sys.stderr)
         print(
-            f"\n{len(failures)} spec code block(s) failed to parse.",
+            f"\n{len(parse_failures)} spec code block(s) failed to parse.",
             file=sys.stderr,
         )
+        exit_code = 1
+
+    if check_failures:
+        print("\nCHECK FAILURES:", file=sys.stderr)
+        for filename, line_no, error in check_failures:
+            print(f"\n  spec/{filename} line {line_no}:", file=sys.stderr)
+            print(f"    {error}", file=sys.stderr)
         print(
-            "If a block is intentionally unparseable, add it to the ALLOWLIST",
+            f"\n{len(check_failures)} spec code block(s) failed to type-check.",
             file=sys.stderr,
         )
+        exit_code = 1
+
+    if verify_failures:
+        print("\nVERIFY FAILURES:", file=sys.stderr)
+        for filename, line_no, error in verify_failures:
+            print(f"\n  spec/{filename} line {line_no}:", file=sys.stderr)
+            print(f"    {error}", file=sys.stderr)
         print(
-            "in scripts/check_spec_examples.py with the appropriate category.",
+            f"\n{len(verify_failures)} spec code block(s) failed to verify.",
             file=sys.stderr,
         )
         exit_code = 1
 
     if exit_code == 0:
-        print("\nAll parseable spec code blocks pass.")
+        print("\nAll parseable spec code blocks pass (parse + check + verify).")
 
     return exit_code
 
