@@ -34,7 +34,7 @@ vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
 
-pytest tests/ -v                  # Run the test suite (913 tests)
+pytest tests/ -v                  # Run the test suite (see TESTING.md)
 mypy vera/                        # Type-check the compiler itself
 
 python scripts/check_examples.py      # Verify all 14 examples parse + check + verify

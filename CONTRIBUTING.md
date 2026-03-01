@@ -78,6 +78,8 @@ pytest -v                 # verbose output
 pytest --cov=vera         # with coverage
 ```
 
+See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.
+
 ### Type Checking
 
 ```bash
