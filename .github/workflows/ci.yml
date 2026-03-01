@@ -70,3 +70,6 @@ jobs:
 
       - name: Check spec code blocks parse correctly
         run: python scripts/check_spec_examples.py
+
+      - name: Check README code blocks parse correctly
+        run: python scripts/check_readme_examples.py
