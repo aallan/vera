@@ -9,7 +9,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **Tests** | 1,076 across 17 files (~12,000 lines of test code) |
 | **Compiler code coverage** | 87% of 6,446 statements (CI minimum: 80%) |
 | **Example programs** | 14, all validated through `vera check` + `vera verify` |
-| **Spec code blocks** | 96 parseable blocks from 13 spec chapters, all validated |
+| **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
 | **README code blocks** | 6 Vera blocks (5 validated, 1 allowlisted future syntax) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) |
 
@@ -151,11 +151,23 @@ Four scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 | Script | What it validates |
 |--------|-------------------|
 | `check_examples.py` | All 14 `.vera` examples pass `vera check` + `vera verify` |
-| `check_spec_examples.py` | 96 parseable code blocks from spec chapters parse correctly |
+| `check_spec_examples.py` | 96 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
 
 These run in both pre-commit hooks and CI, so issues are caught locally before they reach the remote.
+
+### Spec validation pipeline
+
+`check_spec_examples.py` pushes spec code blocks through three compiler stages, with allowlists at each level:
+
+| Stage | Pass | Allowlisted | Categories |
+|-------|-----:|------------:|------------|
+| **Parse** | 72 | 24 | FUTURE (9), FRAGMENT (15) |
+| **Type-check** | 57 | 15 | INCOMPLETE (13), FUTURE (2) |
+| **Verify** | 56 | 1 | ILLUSTRATIVE (1) |
+
+Allowlisted entries have stale-detection: when a feature lands or a spec edit shifts line numbers, CI flags the entry for removal. The 13 INCOMPLETE check entries reference functions, types, or imports not defined in the block (e.g. `abs`, `Tuple`, `IO.print`, `array_map`). The 2 FUTURE check entries use `Exn` exception handling and `async/await`. The 1 ILLUSTRATIVE verify entry is a spec example demonstrating multiple postconditions syntax where the contract is intentionally imprecise.
 
 ## Pre-commit Hooks
 
@@ -195,6 +207,5 @@ Testing infrastructure that could be added in the future:
 
 - **Property-based testing** -- `hypothesis` is installed as a dev dependency but not yet used. Could generate random programs to test parser robustness and formatter idempotency at scale.
 - **Formatter round-trip invariant** -- verify `parse(format(parse(src))) == parse(src)` for all valid programs, not just the examples.
-- **Spec example type-checking** -- the spec validation script currently only checks that code blocks parse; it could also verify they type-check and verify.
 - **WASM coverage improvement** -- `wasm/` is the lowest-coverage subsystem at 79%. `wasm/inference.py` (71%) and `wasm/helpers.py` (62%) have the most gaps. See [#156](https://github.com/aallan/vera/issues/156).
 - **Performance benchmarks** -- no benchmark infrastructure exists. Could track compilation time and Z3 verification time across releases.
