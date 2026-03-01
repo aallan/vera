@@ -38,11 +38,17 @@ The name comes from the Latin *veritas* (truth). In Vera, verification is a firs
 
 Vera draws on ideas from several existing languages and systems:
 
+- **Eiffel**: The originator of Design by Contract. Eiffel introduced `require` and `ensure` as first-class language constructs. Vera's mandatory contract syntax is a direct descendant of this tradition.
+
 - **Dafny** (Microsoft Research): Full functional verification with preconditions, postconditions, loop invariants, and termination measures. Vera's contract system is directly inspired by Dafny's approach, adapted for a language without loops.
+
+- **F\*** (Microsoft Research): Refinement types, algebraic effects, and SMT-based verification in a single dependently-typed language. Vera draws on F\*'s combination of refinement types with effect tracking, simplified for an LLM-first context.
 
 - **Koka** (Microsoft Research): Row-polymorphic algebraic effects. Vera's effect system follows Koka's model of declared effects with handlers and row polymorphism.
 
 - **Liquid Haskell**: Refinement types where type predicates are restricted to a decidable logic fragment and checked via SMT solver. Vera's refinement type system uses this approach.
+
+- **Idris**: Totality checking and termination proofs. Vera's `decreases` clauses and the goal of total-function verification draw on Idris's approach to ensuring programs terminate.
 
 - **SPARK/Ada**: Industrial-strength contract-based verification. SPARK's philosophy of "if it compiles, it's correct" is a guiding principle for Vera.
 

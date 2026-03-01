@@ -637,16 +637,17 @@ For compiler architecture, pipeline internals, design patterns, and how to exten
 
 ## Prior Art
 
-Vera draws on ideas from:
+Vera draws on ideas from (see also [Spec Ch 0, Section 0.4](spec/00-introduction.md#04-prior-art)):
 
-- [Eiffel](https://www.eiffel.org/) — Design by Contract (the originator of `require`/`ensure`)
-- [Dafny](https://dafny.org/) — full functional verification with contracts
-- [F*](https://fstar-lang.org/) — refinement types, algebraic effects, and SMT verification
+- [Eiffel](https://www.eiffel.org/) — Design by Contract, the originator of `require`/`ensure`
+- [Dafny](https://dafny.org/) — full functional verification with preconditions, postconditions, and termination measures
+- [F*](https://fstar-lang.org/) — refinement types, algebraic effects, and SMT-based verification
 - [Koka](https://koka-lang.github.io/koka/doc/book.html) — row-polymorphic algebraic effects
-- [Liquid Haskell](https://ucsd-progsys.github.io/liquidhaskell/) — refinement types via SMT
+- [Liquid Haskell](https://ucsd-progsys.github.io/liquidhaskell/) — refinement types checked via SMT solver
 - [Idris](https://www.idris-lang.org/) — totality checking and termination proofs
-- [SPARK/Ada](https://www.adacore.com/about-spark) — contract-based industrial verification
+- [SPARK/Ada](https://www.adacore.com/about-spark) — contract-based industrial verification ("if it compiles, it's correct")
 - [bruijn](https://bruijn.marvinborner.de/) — De Bruijn indices as surface syntax
+- [TLA+](https://lamport.azurewebsites.net/tla/tla.html) / [Alloy](https://alloytools.org/) — executable specifications that constrain what implementations can do
 
 ## Contributing
 
