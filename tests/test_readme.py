@@ -14,6 +14,14 @@ from vera.parser import parse
 
 README = Path(__file__).parent.parent / "README.md"
 
+# -- Allowlist: README blocks that are intentionally unparseable. ----------
+# Must stay in sync with scripts/check_readme_examples.py.
+# Each key is the 1-based line number of the opening ```vera fence.
+ALLOWLIST: dict[int, str] = {
+    # "Where this is going" — depends on #57 (Http), #61 (Inference), #147 (Markdown)
+    319: "Vision example uses MdBlock, Http, Inference (issues #57, #61, #147)",
+}
+
 
 def _extract_vera_blocks(path: Path) -> list[tuple[int, str]]:
     """Extract all ```vera blocks from a Markdown file.
@@ -47,6 +55,8 @@ class TestReadmeCodeSamples:
 
         failures: list[tuple[int, str]] = []
         for line_no, content in blocks:
+            if line_no in ALLOWLIST:
+                continue
             try:
                 parse(content, file="<readme>")
             except Exception as exc:
@@ -62,7 +72,7 @@ class TestReadmeCodeSamples:
         """README should have the expected number of Vera code blocks."""
         blocks = _extract_vera_blocks(README)
         # Currently: hello_world, absolute_value, safe_divide,
-        # increment (State), double
-        assert len(blocks) == 5, (
-            f"Expected 5 Vera blocks in README.md, found {len(blocks)}"
+        # increment (State), double, research_topic (vision, allowlisted)
+        assert len(blocks) == 6, (
+            f"Expected 6 Vera blocks in README.md, found {len(blocks)}"
         )

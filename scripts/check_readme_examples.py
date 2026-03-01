@@ -28,6 +28,15 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
 
     # Section "Algebraic effects" — uses get(()) and put(...) unqualified
     # 93: ("MISMATCH", "State effect example uses unqualified get/put"),
+
+    # =================================================================
+    # FUTURE — uses syntax/types from unimplemented features.
+    # When the feature lands, this entry will go stale and CI will flag
+    # it for removal (meaning the block should then parse successfully).
+    # =================================================================
+
+    # Section "Where this is going" — depends on #57 (Http), #61 (Inference), #147 (Markdown)
+    319: ("FUTURE", "Vision example uses MdBlock, Http, Inference (issues #57, #61, #147)"),
 }
 
 

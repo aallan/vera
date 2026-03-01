@@ -310,6 +310,29 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 - [#130](https://github.com/aallan/vera/issues/130) package system and registry
 - [#143](https://github.com/aallan/vera/issues/143) comprehensive example programs
 
+### Where this is going
+
+The features on the C9 roadmap -- `<Http>` ([#57](https://github.com/aallan/vera/issues/57)), `<Inference>` ([#61](https://github.com/aallan/vera/issues/61)), and the `Markdown` type ([#147](https://github.com/aallan/vera/issues/147)) -- converge into a single design goal: an LLM should be able to write a short Vera function that searches the web, feeds the results into another model, and returns typed, contract-checked output. No scaffolding, no untyped string wrangling, no unchecked side effects.
+
+A research function that searches YouTube, summarises the results via LLM inference, and returns structured Markdown might look like this:
+
+```vera
+public fn research_topic(@String -> @MdBlock)
+  requires(length(@String.0) > 0)
+  ensures(md_has_heading(@MdBlock.result, 1))
+  effects(<Http, Inference>)
+{
+  let @Array<MdBlock> = youtube_search(@String.0, 5);
+  let @String = md_render_all(@Array<MdBlock>.0);
+  let @String = complete("Summarise this research:\n" ++ @String.0);
+  md_parse(@String.0)
+}
+```
+
+Five lines of logic. The signature carries all the ceremony -- parameter types, contracts, effect declarations -- so the body reads like a pipeline. The `<Http, Inference>` effect annotation means a caller that only permits `<Http>` cannot invoke this function, and an effect handler can mock both effects for deterministic testing. The postcondition `md_has_heading(@MdBlock.result, 1)` constrains the shape of the LLM response at the type level: if the model produces output that lacks a top-level heading, the contract fails.
+
+This is what "designed for LLMs to write" means in practice: the language makes the intent machine-checkable, the side effects explicit, and the output structurally typed -- in fewer lines than most languages need for a HTTP request.
+
 ## Getting Started
 
 ### Prerequisites
