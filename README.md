@@ -611,11 +611,11 @@ vera/
 │   └── cli.py                     # Command-line interface
 ├── examples/                      # 14 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
-├── scripts/                       # CI and validation scripts
-│   ├── check_examples.py          # Verify all .vera examples
-│   ├── check_spec_examples.py     # Verify spec code blocks parse
-│   ├── check_readme_examples.py   # Verify README code blocks parse
-│   └── check_version_sync.py      # Verify version consistency
+└── scripts/                       # CI and validation scripts
+    ├── check_examples.py          # Verify all .vera examples
+    ├── check_spec_examples.py     # Verify spec code blocks parse
+    ├── check_readme_examples.py   # Verify README code blocks parse
+    └── check_version_sync.py      # Verify version consistency
 ```
 
 For compiler architecture, pipeline internals, design patterns, and how to extend the compiler, see [`vera/README.md`](vera/README.md).
