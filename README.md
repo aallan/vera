@@ -541,9 +541,17 @@ vera/
 ├── SKILLS.md                      # Language reference for LLM agents
 ├── AGENTS.md                      # Instructions for any AI agent system
 ├── CLAUDE.md                      # Project orientation for Claude Code
+├── TESTING.md                     # Testing reference (single source of truth)
 ├── CONTRIBUTING.md                # Contributor guidelines
+├── CODE_OF_CONDUCT.md             # Contributor Covenant
+├── SECURITY.md                    # Security policy
 ├── CHANGELOG.md                   # Version history
+├── LICENSE                        # MIT licence
 ├── pyproject.toml                 # Package configuration
+├── .pre-commit-config.yaml        # Pre-commit hook configuration
+├── .github/workflows/             # CI pipeline
+│   ├── ci.yml                     #   Tests, type checking, linting
+│   └── codeql.yml                 #   GitHub CodeQL analysis
 ├── spec/                          # Language specification (13 chapters)
 │   ├── 00-introduction.md         # Design goals and philosophy
 │   ├── 01-lexical-structure.md    # Tokens, operators, formatting rules
@@ -559,6 +567,8 @@ vera/
 │   ├── 11-compilation.md          # Compilation model and WASM target
 │   └── 12-runtime.md              # Runtime execution and host bindings
 ├── vera/                          # Reference compiler (Python)
+│   ├── __init__.py                # Version constant
+│   ├── README.md                  # Compiler architecture docs
 │   ├── grammar.lark               # Lark LALR(1) grammar
 │   ├── parser.py                  # Parser module
 │   ├── ast.py                     # Typed AST node definitions
