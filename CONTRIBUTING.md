@@ -142,7 +142,6 @@ When proposing changes, consider whether they align with Vera's design goals:
 vera/
 ├── spec/          # Language specification (Markdown)
 ├── vera/          # Reference compiler (Python)
-├── runtime/       # WASM runtime support (future)
 ├── tests/         # Test suite
 ├── examples/      # Example Vera programs
 ├── scripts/       # CI and validation scripts
