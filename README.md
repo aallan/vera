@@ -244,7 +244,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 
 - <del>[#99](https://github.com/aallan/vera/issues/99) decompose `checker.py` (~1,900 lines) into `checker/` submodules</del> ([v0.0.40](https://github.com/aallan/vera/releases/tag/v0.0.40))
 - <del>[#100](https://github.com/aallan/vera/issues/100) decompose `wasm.py` (~2,300 lines) into `wasm/` submodules</del> ([v0.0.41](https://github.com/aallan/vera/releases/tag/v0.0.41))
-- [#155](https://github.com/aallan/vera/issues/155) decompose `codegen.py` (~2,140 lines) into `codegen/` submodules
+- <del>[#155](https://github.com/aallan/vera/issues/155) decompose `codegen.py` (~2,140 lines) into `codegen/` submodules</del> ([v0.0.46](https://github.com/aallan/vera/releases/tag/v0.0.46))
 
 **C8b — Diagnostics and tooling** — improve the developer (human and LLM) experience
 
