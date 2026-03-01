@@ -102,3 +102,19 @@ module = [
     "vera.wasm.data",
 ]
 disable_error_code = ["attr-defined", "no-any-return", "has-type"]
+
+[[tool.mypy.overrides]]
+# Codegen mixin classes reference attributes (self._fn_sigs, self.string_pool,
+# etc.) that live on the composed CodeGenerator class in core.py.  Same
+# mixin pattern as the checker and wasm modules above.
+module = [
+    "vera.codegen.modules",
+    "vera.codegen.registration",
+    "vera.codegen.monomorphize",
+    "vera.codegen.functions",
+    "vera.codegen.closures",
+    "vera.codegen.contracts",
+    "vera.codegen.assembly",
+    "vera.codegen.compilability",
+]
+disable_error_code = ["attr-defined", "no-any-return", "has-type"]

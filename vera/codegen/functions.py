@@ -1,0 +1,197 @@
+"""Mixin for function body compilation (Pass 2).
+
+Compiles individual function declarations to WAT text, including
+parameter allocation, body translation, and function assembly.
+"""
+
+from __future__ import annotations
+
+from vera import ast
+from vera.wasm import WasmContext, WasmSlotEnv
+
+
+class FunctionCompilationMixin:
+    """Methods for compiling function bodies to WAT."""
+
+    def _compile_fn(
+        self, decl: ast.FnDecl, *, export: bool = True
+    ) -> str | None:
+        """Compile a single function to WAT.
+
+        Returns the WAT function string, or None if not compilable
+        (with a warning diagnostic).
+        """
+        # Check if function is compilable
+        if not self._is_compilable(decl):
+            return None
+
+        # Build effect_ops mapping for State<T> operations
+        effect_ops: dict[str, tuple[str, bool]] = {}
+        if isinstance(decl.effect, ast.EffectSet):
+            for eff in decl.effect.effects:
+                if (isinstance(eff, ast.EffectRef) and eff.name == "State"
+                        and eff.type_args and len(eff.type_args) == 1):
+                    type_name = self._type_expr_to_slot_name(eff.type_args[0])
+                    if type_name:
+                        # Only map if no user-defined function shadows the op
+                        if "get" not in self._fn_sigs:
+                            effect_ops["get"] = (
+                                f"$vera.state_get_{type_name}", False
+                            )
+                        if "put" not in self._fn_sigs:
+                            effect_ops["put"] = (
+                                f"$vera.state_put_{type_name}", True
+                            )
+
+        # Flatten ADT layouts into ctor_name -> layout for WasmContext
+        ctor_layouts = {}
+        ctor_to_adt: dict[str, str] = {}
+        for adt_name, layouts in self._adt_layouts.items():
+            ctor_layouts.update(layouts)
+            for ctor_name in layouts:
+                ctor_to_adt[ctor_name] = adt_name
+        adt_type_names = set(self._adt_layouts.keys())
+
+        ctx = WasmContext(
+            self.string_pool,
+            effect_ops=effect_ops,
+            ctor_layouts=ctor_layouts,
+            adt_type_names=adt_type_names,
+            generic_fn_info=getattr(self, "_generic_fn_info", None),
+            ctor_to_adt=ctor_to_adt,
+            known_fns=set(self._fn_sigs.keys()),
+        )
+        # Build function return type map for FnCall type inference
+        fn_ret_types: dict[str, str | None] = {}
+        for fn_name, (_, ret_wt) in self._fn_sigs.items():
+            if ret_wt and ret_wt != "unsupported":
+                fn_ret_types[fn_name] = ret_wt
+        ctx.set_fn_ret_types(fn_ret_types)
+        # Provide type aliases so closures can resolve FnType return types
+        ctx.set_type_aliases(self._type_aliases)
+        ctx.set_closure_id_start(self._next_closure_id)
+        env = WasmSlotEnv()
+
+        # Allocate parameters
+        param_parts: list[str] = []
+        for i, param_te in enumerate(decl.params):
+            wt = self._type_expr_to_wasm_type(param_te)
+            if wt is None:
+                # Unit parameter — skip in WASM signature
+                continue
+            if wt == "unsupported":
+                self._warning(
+                    decl,
+                    f"Function '{decl.name}' has unsupported parameter type.",
+                    rationale="Only Int, Nat, Float64, Bool, and Unit types "
+                    "are compilable in the current WASM backend.",
+                    error_code="E600",
+                )
+                return None
+            if wt == "i32_pair":
+                # String/Array types use two consecutive i32 params (ptr, len)
+                ptr_idx = ctx.alloc_param()
+                _len_idx = ctx.alloc_param()
+                param_parts.append(f"(param $p{i}_ptr i32)")
+                param_parts.append(f"(param $p{i}_len i32)")
+                type_name = self._type_expr_to_slot_name(param_te)
+                if type_name:
+                    env = env.push(type_name, ptr_idx)
+                continue
+            local_idx = ctx.alloc_param()
+            param_parts.append(f"(param $p{i} {wt})")
+            # Push into slot environment
+            type_name = self._type_expr_to_slot_name(param_te)
+            if type_name:
+                env = env.push(type_name, local_idx)
+
+        # Return type
+        ret_wt = self._type_expr_to_wasm_type(decl.return_type)
+        if ret_wt == "unsupported":
+            self._warning(
+                decl,
+                f"Function '{decl.name}' has unsupported return type.",
+                rationale="Only Int, Nat, Bool, and Unit types are "
+                "compilable in the current WASM backend.",
+                error_code="E601",
+            )
+            return None
+        if ret_wt == "i32_pair":
+            result_part = " (result i32 i32)"
+        elif ret_wt:
+            result_part = f" (result {ret_wt})"
+        else:
+            result_part = ""
+
+        # Scan body for handle[State<T>] expressions to register imports
+        self._scan_body_for_state_handlers(decl.body)
+
+        # Compile precondition checks
+        pre_instrs = self._compile_preconditions(ctx, decl, env)
+
+        # Snapshot old state for postcondition old() references
+        snapshot_instrs = self._snapshot_old_state(ctx, decl)
+
+        # Compile body
+        body_instrs = ctx.translate_block(decl.body, env)
+        if body_instrs is None:
+            self._warning(
+                decl,
+                f"Function '{decl.name}' body contains unsupported "
+                f"expressions — skipped.",
+                rationale="The WASM backend does not yet support all "
+                "Vera expression types. This function will not appear "
+                "in the compiled output.",
+                error_code="E602",
+            )
+            return None
+
+        # Propagate resource flags from WasmContext (e.g. array allocation)
+        if ctx.needs_alloc:
+            self._needs_alloc = True
+            self._needs_memory = True
+
+        # Coerce body result if return type is i32 but body produces i64
+        # (e.g. IntLit in a Byte-returning function)
+        if ret_wt == "i32":
+            body_result_type = ctx._infer_block_result_type(decl.body)
+            if body_result_type == "i64":
+                body_instrs.append("i32.wrap_i64")
+
+        # Collect closures created during body compilation and lift them
+        self._lift_pending_closures(ctx)
+
+        # Compile postcondition checks (wrap around body result)
+        post_instrs = self._compile_postconditions(ctx, decl, env, ret_wt)
+
+        # Assemble function WAT
+        export_part = f' (export "{decl.name}")' if export else ""
+        header = f"  (func ${decl.name}{export_part}"
+        if param_parts:
+            header += " " + " ".join(param_parts)
+        header += result_part
+
+        lines = [header]
+
+        # Extra locals (from let bindings + contract temps)
+        for local_decl in ctx.extra_locals_wat():
+            lines.append(f"    {local_decl}")
+
+        # Precondition checks (at function entry)
+        for instr in pre_instrs:
+            lines.append(f"    {instr}")
+
+        # Old state snapshots (for postcondition old() references)
+        for instr in snapshot_instrs:
+            lines.append(f"    {instr}")
+
+        # Body instructions
+        for instr in body_instrs:
+            lines.append(f"    {instr}")
+
+        # Postcondition checks (after body, wraps result)
+        for instr in post_instrs:
+            lines.append(f"    {instr}")
+
+        lines.append("  )")
+        return "\n".join(lines)

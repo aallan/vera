@@ -60,7 +60,7 @@ Read `SKILLS.md` for the full language reference. It covers syntax, slot referen
 
 Read `vera/README.md` for architecture docs, module map, and design patterns.
 
-The compiler pipeline: source -> parse (`parser.py`) -> transform (`transform.py`) -> typecheck (`checker.py`) -> verify (`verifier.py`) -> compile (`codegen.py` + `wasm.py`) -> execute (wasmtime).
+The compiler pipeline: source -> parse (`parser.py`) -> transform (`transform.py`) -> typecheck (`checker.py`) -> verify (`verifier.py`) -> compile (`codegen/` + `wasm/`) -> execute (wasmtime).
 
 Each stage is a module with a public API function and is independently testable. See `CONTRIBUTING.md` for contribution guidelines.
 
