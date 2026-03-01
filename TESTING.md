@@ -10,7 +10,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **Compiler code coverage** | 87% of 6,446 statements (CI minimum: 80%) |
 | **Example programs** | 14, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters, all validated |
-| **README code blocks** | 5 Vera blocks, all validated |
+| **README code blocks** | 6 Vera blocks (5 validated, 1 allowlisted future syntax) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) |
 
 ## Running Tests
