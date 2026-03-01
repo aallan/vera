@@ -50,7 +50,6 @@ python scripts/check_version_sync.py  # Verify version consistency
 - `examples/` — 14 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite
 - `scripts/` — CI and validation scripts
-- `runtime/` — WASM runtime support (future)
 
 ## Writing Vera code
 

@@ -616,7 +616,6 @@ vera/
 │   ├── check_spec_examples.py     # Verify spec code blocks parse
 │   ├── check_readme_examples.py   # Verify README code blocks parse
 │   └── check_version_sync.py      # Verify version consistency
-└── runtime/                       # WASM runtime support (future)
 ```
 
 For compiler architecture, pipeline internals, design patterns, and how to extend the compiler, see [`vera/README.md`](vera/README.md).
