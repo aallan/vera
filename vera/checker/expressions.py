@@ -472,7 +472,7 @@ class ExpressionsMixin:
                 self._error(
                     expr.expr,
                     f"assert() requires Bool, found {pretty_type(ty)}.",
-                    spec_ref='Chapter 6, Section 6.6 "Assertions"',
+                    spec_ref='Chapter 6, Section 6.2.5 "Assertions"',
                     error_code="E172",
                 )
         return UNIT
@@ -485,7 +485,7 @@ class ExpressionsMixin:
                 self._error(
                     expr.expr,
                     f"assume() requires Bool, found {pretty_type(ty)}.",
-                    spec_ref='Chapter 6, Section 6.7 "Assumptions"',
+                    spec_ref='Chapter 6, Section 6.2.6 "Assumptions"',
                     error_code="E173",
                 )
         return UNIT
