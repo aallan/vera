@@ -3350,3 +3350,146 @@ class TestFormatExpr:
             where_fns=None,
         )
         assert format_fn_signature(decl) == "clamp(@Int, @Int, @Int -> @Int)"
+
+
+# =====================================================================
+# String operations
+# =====================================================================
+
+
+class TestStringLength:
+    def test_basic(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  string_length("hello")
+}
+"""
+        assert _run(src) == 5
+
+    def test_empty(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  string_length("")
+}
+"""
+        assert _run(src) == 0
+
+    def test_in_let(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Int = string_length("abc");
+  @Int.0
+}
+"""
+        assert _run(src) == 3
+
+
+class TestStringConcat:
+    def test_basic(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_concat("hello", " world"))
+}
+"""
+        assert _run_io(src) == "hello world"
+
+    def test_empty_left(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_concat("", "world"))
+}
+"""
+        assert _run_io(src) == "world"
+
+    def test_empty_right(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_concat("hello", ""))
+}
+"""
+        assert _run_io(src) == "hello"
+
+    def test_both_empty(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_concat("", ""))
+}
+"""
+        assert _run_io(src) == ""
+
+    def test_concat_length(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  string_length(string_concat("abc", "def"))
+}
+"""
+        assert _run(src) == 6
+
+
+class TestStringSlice:
+    def test_basic(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_slice("hello world", 6, 11))
+}
+"""
+        assert _run_io(src) == "world"
+
+    def test_prefix(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_slice("hello", 0, 3))
+}
+"""
+        assert _run_io(src) == "hel"
+
+    def test_empty_slice(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_slice("hello", 2, 2))
+}
+"""
+        assert _run_io(src) == ""
+
+    def test_slice_length(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  string_length(string_slice("hello world", 0, 5))
+}
+"""
+        assert _run(src) == 5
+
+    def test_slice_then_concat(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_concat(
+    string_slice("abcdef", 0, 3),
+    string_slice("abcdef", 3, 6)
+  ))
+}
+"""
+        assert _run_io(src) == "abcdef"

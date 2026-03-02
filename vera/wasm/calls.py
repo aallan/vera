@@ -21,6 +21,18 @@ class CallsMixin:
         if call.name == "length" and len(call.args) == 1:
             return self._translate_length(call.args[0], env)
 
+        # Built-in string operations
+        if call.name == "string_length" and len(call.args) == 1:
+            return self._translate_string_length(call.args[0], env)
+        if call.name == "string_concat" and len(call.args) == 2:
+            return self._translate_string_concat(
+                call.args[0], call.args[1], env,
+            )
+        if call.name == "string_slice" and len(call.args) == 3:
+            return self._translate_string_slice(
+                call.args[0], call.args[1], call.args[2], env,
+            )
+
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:
             return self._translate_apply_fn(call, env)
@@ -152,6 +164,220 @@ class CallsMixin:
         instructions.append("drop")
         instructions.append(f"local.get {tmp_len}")
         instructions.append("i64.extend_i32_u")
+        return instructions
+
+    def _translate_string_length(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate string_length(string) → Int (i64).
+
+        String is (ptr, len) on stack; extract len and extend to i64.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        tmp_len = self.alloc_local("i32")
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        # Stack has (ptr, len); save len, drop ptr
+        instructions.append(f"local.set {tmp_len}")
+        instructions.append("drop")
+        instructions.append(f"local.get {tmp_len}")
+        instructions.append("i64.extend_i32_u")
+        return instructions
+
+    def _translate_string_concat(
+        self, arg_a: ast.Expr, arg_b: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate string_concat(a, b) → String.
+
+        Allocates a new buffer of size len_a + len_b, copies both
+        strings into it, and returns (new_ptr, total_len).
+        """
+        a_instrs = self.translate_expr(arg_a, env)
+        b_instrs = self.translate_expr(arg_b, env)
+        if a_instrs is None or b_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        # Locals for both strings and the result
+        ptr_a = self.alloc_local("i32")
+        len_a = self.alloc_local("i32")
+        ptr_b = self.alloc_local("i32")
+        len_b = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+
+        instructions: list[str] = []
+
+        # Evaluate string a -> (ptr, len), save to locals
+        instructions.extend(a_instrs)
+        instructions.append(f"local.set {len_a}")
+        instructions.append(f"local.set {ptr_a}")
+
+        # Evaluate string b -> (ptr, len), save to locals
+        instructions.extend(b_instrs)
+        instructions.append(f"local.set {len_b}")
+        instructions.append(f"local.set {ptr_b}")
+
+        # Allocate: total_len = len_a + len_b
+        instructions.append(f"local.get {len_a}")
+        instructions.append(f"local.get {len_b}")
+        instructions.append("i32.add")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {dst}")
+
+        # Copy string a: byte-by-byte loop
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+        instructions.append("block $brk_a")
+        instructions.append("  loop $lp_a")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    local.get {len_a}")
+        instructions.append("    i32.ge_u")
+        instructions.append("    br_if $brk_a")
+        instructions.append(f"    local.get {dst}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.get {ptr_a}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.add")
+        instructions.append("    i32.load8_u offset=0")
+        instructions.append("    i32.store8 offset=0")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.const 1")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {idx}")
+        instructions.append("    br $lp_a")
+        instructions.append("  end")
+        instructions.append("end")
+
+        # Copy string b: byte-by-byte loop at offset len_a
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+        instructions.append("block $brk_b")
+        instructions.append("  loop $lp_b")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    local.get {len_b}")
+        instructions.append("    i32.ge_u")
+        instructions.append("    br_if $brk_b")
+        instructions.append(f"    local.get {dst}")
+        instructions.append(f"    local.get {len_a}")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.get {ptr_b}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.add")
+        instructions.append("    i32.load8_u offset=0")
+        instructions.append("    i32.store8 offset=0")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.const 1")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {idx}")
+        instructions.append("    br $lp_b")
+        instructions.append("  end")
+        instructions.append("end")
+
+        # Push result (ptr, len)
+        instructions.append(f"local.get {dst}")
+        instructions.append(f"local.get {len_a}")
+        instructions.append(f"local.get {len_b}")
+        instructions.append("i32.add")
+        return instructions
+
+    def _translate_string_slice(
+        self,
+        arg_s: ast.Expr,
+        arg_start: ast.Expr,
+        arg_end: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate string_slice(s, start, end) → String.
+
+        Allocates a new buffer of size (end - start), copies the
+        substring, and returns (new_ptr, new_len).  start and end
+        are Int (i64) and are wrapped to i32.
+        """
+        s_instrs = self.translate_expr(arg_s, env)
+        start_instrs = self.translate_expr(arg_start, env)
+        end_instrs = self.translate_expr(arg_end, env)
+        if s_instrs is None or start_instrs is None or end_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        ptr_s = self.alloc_local("i32")
+        len_s = self.alloc_local("i32")
+        start = self.alloc_local("i32")
+        end = self.alloc_local("i32")
+        new_len = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+
+        # Suppress unused-variable warning for len_s — reserved for
+        # future bounds checking
+        _ = len_s
+
+        instructions: list[str] = []
+
+        # Evaluate string -> (ptr, len)
+        instructions.extend(s_instrs)
+        instructions.append(f"local.set {len_s}")
+        instructions.append(f"local.set {ptr_s}")
+
+        # Evaluate start (i64 → i32)
+        instructions.extend(start_instrs)
+        instructions.append("i32.wrap_i64")
+        instructions.append(f"local.set {start}")
+
+        # Evaluate end (i64 → i32)
+        instructions.extend(end_instrs)
+        instructions.append("i32.wrap_i64")
+        instructions.append(f"local.set {end}")
+
+        # new_len = end - start
+        instructions.append(f"local.get {end}")
+        instructions.append(f"local.get {start}")
+        instructions.append("i32.sub")
+        instructions.append(f"local.set {new_len}")
+
+        # Allocate new buffer
+        instructions.append(f"local.get {new_len}")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {dst}")
+
+        # Copy bytes: byte-by-byte loop
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+        instructions.append("block $brk_s")
+        instructions.append("  loop $lp_s")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    local.get {new_len}")
+        instructions.append("    i32.ge_u")
+        instructions.append("    br_if $brk_s")
+        instructions.append(f"    local.get {dst}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.get {ptr_s}")
+        instructions.append(f"    local.get {start}")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.add")
+        instructions.append("    i32.load8_u offset=0")
+        instructions.append("    i32.store8 offset=0")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.const 1")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {idx}")
+        instructions.append("    br $lp_s")
+        instructions.append("  end")
+        instructions.append("end")
+
+        # Push result (ptr, len)
+        instructions.append(f"local.get {dst}")
+        instructions.append(f"local.get {new_len}")
         return instructions
 
     def _translate_handle_expr(

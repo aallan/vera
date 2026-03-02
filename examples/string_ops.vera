@@ -1,0 +1,30 @@
+-- String operations: length, concat, slice
+
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  -- string_length: returns Int (number of bytes)
+  let @Int = string_length("hello");
+
+  -- string_concat: joins two strings
+  let @String = string_concat("hello", " world");
+  IO.print(@String.0);
+
+  -- string_slice: extract substring [start, end)
+  let @String = string_slice("MPCORB", 0, 3);
+  IO.print(@String.0);
+
+  -- compose: slice then concat
+  let @String = string_concat(
+    string_slice("abcdef", 0, 3),
+    string_slice("abcdef", 3, 6)
+  );
+  IO.print(@String.0);
+  ()
+}

@@ -205,6 +205,29 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # Built-in string operations
+        self.functions["string_length"] = FunctionInfo(
+            name="string_length",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["string_concat"] = FunctionInfo(
+            name="string_concat",
+            forall_vars=None,
+            param_types=(STRING, STRING),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["string_slice"] = FunctionInfo(
+            name="string_slice",
+            forall_vars=None,
+            param_types=(STRING, INT, INT),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+
     # -----------------------------------------------------------------
     # Scope management
     # -----------------------------------------------------------------
