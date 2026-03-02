@@ -452,8 +452,8 @@ private fn invert(@Bool2 -> @Bool2)
         # No non-trivial ensures, so no Tier 3 from body translation
         assert result.summary.tier1_verified >= 2
 
-    def test_recursive_call_is_tier3(self) -> None:
-        """Recursive functions still have Tier 3 for decreases."""
+    def test_recursive_call_decreases_verified(self) -> None:
+        """Recursive functions with simple Nat decreases are Tier 1."""
         result = _verify("""
 private fn factorial(@Nat -> @Nat)
   requires(true)
@@ -465,9 +465,10 @@ private fn factorial(@Nat -> @Nat)
   else { @Nat.0 * factorial(@Nat.0 - 1) }
 }
 """)
-        # ensures(@Nat.result >= 1) — now Tier 1 via modular verification
-        # decreases — always Tier 3 for now
-        assert result.summary.tier3_runtime >= 1
+        # ensures(@Nat.result >= 1) — Tier 1 via modular verification
+        # decreases(@Nat.0) — Tier 1 via termination verification
+        assert result.summary.tier1_verified == 3
+        assert result.summary.tier3_runtime == 0
 
 
 # =====================================================================
@@ -576,12 +577,11 @@ private fn f(@Nat -> @Nat)
 }
 """)
         # requires(true) → Tier 1 trivial
-        # ensures — now Tier 1 via modular verification (recursive call
-        #   returns fresh Nat var with assumed postcondition)
-        # decreases → Tier 3
-        assert result.summary.total >= 3
-        assert result.summary.tier1_verified >= 1
-        assert result.summary.tier3_runtime >= 1
+        # ensures — Tier 1 via modular verification
+        # decreases — Tier 1 via termination verification
+        assert result.summary.total == 3
+        assert result.summary.tier1_verified == 3
+        assert result.summary.tier3_runtime == 0
 
     def test_multiple_functions_accumulate(self) -> None:
         result = _verify("""
@@ -1143,3 +1143,338 @@ private fn id(@Int -> @Int)
         result_with = self._verify_mod(source, [])
         assert result_without.summary.tier1_verified == result_with.summary.tier1_verified
         assert result_without.summary.tier3_runtime == result_with.summary.tier3_runtime
+
+
+# =====================================================================
+# Phase A: Match + ADT verification tests
+# =====================================================================
+
+class TestMatchAndAdtVerification:
+    """Tests for match expression and ADT constructor Z3 translation."""
+
+    # -- Simple match on ADT -----------------------------------------------
+
+    def test_match_trivial_nat_result(self) -> None:
+        """Match on ADT with Nat result verifies postcondition."""
+        source = """\
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+private fn length(@List<Int> -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + length(@List<Int>.0)
+  }
+}
+"""
+        result = _verify(source)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Unexpected errors: {[e.description for e in errors]}"
+        # The ensures should be Tier 1 verified (not T3 fallback)
+        warns_e522 = [d for d in result.diagnostics
+                      if d.error_code == "E522"]
+        assert warns_e522 == [], "Match body should be translatable (no E522)"
+
+    def test_match_simple_int_result(self) -> None:
+        """Match returning a simple int value is verifiable."""
+        source = """\
+private data Color {
+  Red,
+  Green,
+  Blue
+}
+
+private fn color_value(@Color -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Color.0 {
+    Red -> 1,
+    Green -> 2,
+    Blue -> 3
+  }
+}
+"""
+        _verify_ok(source)
+
+    def test_match_two_arm_postcondition(self) -> None:
+        """Match with two arms can verify a specific postcondition."""
+        source = """\
+private data Bit {
+  Zero,
+  One
+}
+
+private fn bit_value(@Bit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0 && @Int.result <= 1)
+  effects(pure)
+{
+  match @Bit.0 {
+    Zero -> 0,
+    One -> 1
+  }
+}
+"""
+        _verify_ok(source)
+
+    def test_match_postcondition_violation(self) -> None:
+        """Match with a wrong postcondition is caught."""
+        source = """\
+private data Bit {
+  Zero,
+  One
+}
+
+private fn bit_value(@Bit -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  match @Bit.0 {
+    Zero -> 0,
+    One -> 1
+  }
+}
+"""
+        _verify_err(source, "does not hold")
+
+    # -- Constructor translation -------------------------------------------
+
+    def test_nullary_constructor_in_body(self) -> None:
+        """Nullary constructors in function bodies are translatable."""
+        source = """\
+private data Maybe {
+  Nothing,
+  Just(Int)
+}
+
+private fn always_nothing(@Int -> @Maybe)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Nothing }
+"""
+        _verify_ok(source)
+
+    def test_constructor_call_in_body(self) -> None:
+        """Constructor calls with args in function bodies are translatable."""
+        source = """\
+private data Maybe {
+  Nothing,
+  Just(Int)
+}
+
+private fn wrap(@Int -> @Maybe)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Just(@Int.0) }
+"""
+        _verify_ok(source)
+
+    # -- ADT parameter declarations ----------------------------------------
+
+    def test_adt_param_declaration(self) -> None:
+        """Functions with ADT parameters should declare proper Z3 vars."""
+        source = """\
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+private fn is_nil(@List<Int> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> true,
+    Cons(@Int, @List<Int>) -> false
+  }
+}
+"""
+        _verify_ok(source)
+
+    # -- The list_ops.vera example -----------------------------------------
+
+    def test_list_ops_length_no_e522(self) -> None:
+        """Ensure list_ops.vera length() no longer gets E522."""
+        source = EXAMPLES_DIR / "list_ops.vera"
+        if not source.exists():
+            pytest.skip("list_ops.vera not found")
+        text = source.read_text()
+        ast = parse_to_ast(text)
+        typecheck(ast, text)
+        result = verify(ast, text, file=str(source))
+        e522 = [d for d in result.diagnostics if d.error_code == "E522"]
+        assert e522 == [], (
+            f"list_ops.vera should not have E522 warnings: "
+            f"{[d.description for d in e522]}"
+        )
+
+
+# =====================================================================
+# Phase B: Decreases verification tests
+# =====================================================================
+
+class TestDecreasesVerification:
+    """Tests for termination metric verification."""
+
+    def test_simple_nat_decreases(self) -> None:
+        """Simple Nat decreases on factorial is Tier 1."""
+        source = """\
+private fn factorial(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 1)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 1 }
+  else { @Nat.0 * factorial(@Nat.0 - 1) }
+}
+"""
+        result = _verify(source)
+        e525 = [d for d in result.diagnostics if d.error_code == "E525"]
+        assert e525 == [], "Nat decreases should be verified (no E525)"
+        assert result.summary.tier1_verified >= 3  # requires + ensures + decreases
+
+    def test_nat_decreases_sum(self) -> None:
+        """Nat decreases on a summation function is Tier 1."""
+        source = """\
+private fn sum_to(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 }
+  else { @Nat.0 + sum_to(@Nat.0 - 1) }
+}
+"""
+        result = _verify(source)
+        e525 = [d for d in result.diagnostics if d.error_code == "E525"]
+        assert e525 == [], "Nat decreases should be verified (no E525)"
+
+    def test_mutual_recursion_stays_tier3(self) -> None:
+        """Mutual recursion decreases cannot be verified yet."""
+        source = EXAMPLES_DIR / "mutual_recursion.vera"
+        if not source.exists():
+            pytest.skip("mutual_recursion.vera not found")
+        text = source.read_text()
+        ast = parse_to_ast(text)
+        typecheck(ast, text)
+        result = verify(ast, text, file=str(source))
+        e525 = [d for d in result.diagnostics if d.error_code == "E525"]
+        assert len(e525) >= 1, "Mutual recursion should remain Tier 3"
+
+    def test_factorial_example_all_t1(self) -> None:
+        """factorial.vera should have zero Tier 3 contracts."""
+        source = EXAMPLES_DIR / "factorial.vera"
+        if not source.exists():
+            pytest.skip("factorial.vera not found")
+        text = source.read_text()
+        ast = parse_to_ast(text)
+        typecheck(ast, text)
+        result = verify(ast, text, file=str(source))
+        assert result.summary.tier3_runtime == 0, (
+            f"factorial.vera should have 0 T3, got {result.summary.tier3_runtime}"
+        )
+
+
+# =====================================================================
+# Phase C: ADT decreases verification tests
+# =====================================================================
+
+class TestAdtDecreasesVerification:
+    """Tests for ADT structural ordering in decreases clauses."""
+
+    def test_list_length_decreases(self) -> None:
+        """List length with structural decreases is Tier 1."""
+        source = """\
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+private fn length(@List<Int> -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + length(@List<Int>.0)
+  }
+}
+"""
+        result = _verify(source)
+        e525 = [d for d in result.diagnostics if d.error_code == "E525"]
+        assert e525 == [], "ADT decreases should be verified (no E525)"
+        assert result.summary.tier3_runtime == 0
+
+    def test_list_sum_decreases(self) -> None:
+        """List sum with structural decreases is Tier 1."""
+        source = """\
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+private fn sum(@List<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> @Int.0 + sum(@List<Int>.0)
+  }
+}
+"""
+        result = _verify(source)
+        e525 = [d for d in result.diagnostics if d.error_code == "E525"]
+        assert e525 == [], "ADT decreases should be verified (no E525)"
+
+    def test_list_ops_all_tier1(self) -> None:
+        """list_ops.vera should have zero Tier 3 contracts."""
+        source = EXAMPLES_DIR / "list_ops.vera"
+        if not source.exists():
+            pytest.skip("list_ops.vera not found")
+        text = source.read_text()
+        ast = parse_to_ast(text)
+        typecheck(ast, text)
+        result = verify(ast, text, file=str(source))
+        assert result.summary.tier3_runtime == 0, (
+            f"list_ops.vera should have 0 T3, got {result.summary.tier3_runtime}"
+        )
+        assert result.summary.tier1_verified == 8
+
+    def test_overall_tier_counts(self) -> None:
+        """All examples together: 90 T1 / 6 T3 without module resolution.
+
+        With module resolution (via CLI), it's 92 T1 / 4 T3.
+        The 2-contract difference comes from modules.vera which needs
+        cross-module imports to verify call-site preconditions.
+        """
+        t1 = t3 = total = 0
+        for f in sorted(EXAMPLES_DIR.glob("*.vera")):
+            text = f.read_text()
+            prog = parse_to_ast(text)
+            typecheck(prog, text)
+            result = verify(prog, text, file=str(f))
+            t1 += result.summary.tier1_verified
+            t3 += result.summary.tier3_runtime
+            total += result.summary.total
+        assert t1 == 90, f"Expected 90 T1, got {t1}"
+        assert t3 == 6, f"Expected 6 T3, got {t3}"
+        assert total == 96, f"Expected 96 total, got {total}"

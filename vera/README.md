@@ -314,7 +314,7 @@ The spec defines three verification tiers. The compiler implements Tiers 1 and 3
 
 | Tier | What | How | Status |
 |------|------|-----|--------|
-| **1** | Decidable fragment: QF_LIA + Booleans + comparisons + if/else + let + `length` | Z3 proves automatically | Implemented |
+| **1** | Decidable fragment: QF_LIA + Booleans + comparisons + if/else + let + match + constructors + `length` + decreases | Z3 proves automatically | Implemented |
 | **2** | Extended: quantifiers, function call reasoning, array access | Z3 with hints/timeouts | Future |
 | **3** | Everything else | Runtime assertion fallback | Warning emitted |
 
@@ -371,7 +371,10 @@ When a contract or function body contains constructs that can't be translated to
 | `if c then t else e` | `z3.If(c, t, e)` |
 | `length(arr)` | Uninterpreted function, constrained `>= 0` |
 | `let @T = v; body` | Push `v` onto `SlotEnv`, translate body |
-| Match, handle, lambda, constructor, quantifier, old/new | `None` (Tier 3) |
+| `match ... { arms }` | Nested `z3.If` chain with recognizer conditions |
+| `Nil`, `Cons(a, b)` | Z3 ADT sort constructor applications |
+| `decreases(e)` | Verified via `e_callee < e_caller` (Nat) or rank function (ADT) |
+| Handle, lambda, quantifier, old/new | `None` (Tier 3) |
 
 ### Counterexample extraction
 
@@ -525,9 +528,8 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 |-----------|-----|---------|
 | **Module system limitations** | Module system complete (C7a-C7f); remaining issue: flat-compilation name collisions | [#110](https://github.com/aallan/vera/issues/110) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | [#21](https://github.com/aallan/vera/issues/21) |
-| **No termination verification** | `decreases` clauses parsed but always Tier 3 | [#45](https://github.com/aallan/vera/issues/45) |
+| **Partial termination verification** | `decreases` verified for self-recursive functions (Nat and structural ADT); mutual recursion still Tier 3 | [#45](https://github.com/aallan/vera/issues/45) |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
-| **No match/constructor body verification** | Untranslatable to Z3, always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
 | **Minimal type inference** | Call-site generic instantiation only, no Hindley-Milner | [#55](https://github.com/aallan/vera/issues/55) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No garbage collection** | Bump allocator only; linear memory is not reclaimed | [#51](https://github.com/aallan/vera/issues/51) |
