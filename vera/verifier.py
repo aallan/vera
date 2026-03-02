@@ -509,7 +509,7 @@ class ContractVerifier:
                         f"Contract will be checked at runtime.",
                         rationale="The function body contains constructs that "
                                   "cannot be translated to SMT (e.g., "
-                                  "pattern matching, effect operations, "
+                                  "effect operations, lambdas, "
                                   "generic calls).",
                         spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
                         error_code="E522",
@@ -571,10 +571,11 @@ class ContractVerifier:
                         f"Termination metric in '{decl.name}' cannot be "
                         f"statically verified yet. "
                         f"Contract will be checked at runtime.",
-                        rationale="Termination verification for recursive "
-                                  "functions requires reasoning about "
-                                  "recursive call sites, which is not yet "
-                                  "implemented.",
+                        rationale="Self-recursive functions with Nat or "
+                                  "structural ADT measures are verified "
+                                  "automatically. This function may use "
+                                  "mutual recursion or a measure that "
+                                  "cannot be translated to Z3.",
                         spec_ref='Chapter 6, Section 6.6 "Termination"',
                         error_code="E525",
                     )
