@@ -328,7 +328,7 @@ class TypeChecker(
                     f"requires() predicate must be Bool, found "
                     f"{pretty_type(ty)}.",
                     rationale="Contract predicates must evaluate to Bool.",
-                    spec_ref='Chapter 6, Section 6.2 "Preconditions"',
+                    spec_ref='Chapter 6, Section 6.2.1 "Preconditions"',
                     error_code="E123",
                 )
 
@@ -344,7 +344,7 @@ class TypeChecker(
                     f"ensures() predicate must be Bool, found "
                     f"{pretty_type(ty)}.",
                     rationale="Contract predicates must evaluate to Bool.",
-                    spec_ref='Chapter 6, Section 6.3 "Postconditions"',
+                    spec_ref='Chapter 6, Section 6.2.2 "Postconditions"',
                     error_code="E124",
                 )
 

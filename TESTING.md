@@ -199,7 +199,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-After running `pre-commit install`, every commit is checked by 10 hooks:
+After running `pre-commit install`, every commit is checked by 11 hooks:
 
 | Hook | What it does |
 |------|-------------|
@@ -211,7 +211,7 @@ After running `pre-commit install`, every commit is checked by 10 hooks:
 | `debug-statements` | Detect `pdb`/`ipdb` imports |
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
-| `check_examples.py` | All 14 examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 15 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 
 The example and README hooks are smart about triggers -- they only run when `.vera` files, `vera/**/*.py`, or `grammar.lark` change.

@@ -5,7 +5,7 @@ WASM, and validates ensures() contracts at runtime.  Functions already
 proved by the verifier (Tier 1) are reported as "verified"; functions
 with Tier 3 contracts are exercised with generated inputs.
 
-See spec/06-contracts.md, Section 6.5 "Verification Tiers".
+See spec/06-contracts.md, Section 6.8 "Summary of Verification Tiers".
 """
 
 from __future__ import annotations

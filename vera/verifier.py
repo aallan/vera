@@ -403,7 +403,7 @@ class ContractVerifier:
                         f"'{decl.name}'. Contract will be checked at runtime.",
                         rationale="Generic functions have type variables that "
                                   "cannot be represented in the SMT solver.",
-                        spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
+                        spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E520",
                     )
                 else:
@@ -473,7 +473,7 @@ class ContractVerifier:
                                   "that cannot be translated to SMT (e.g., "
                                   "pattern matching, effect operations, "
                                   "quantifiers).",
-                        spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
+                        spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E521",
                     )
                     continue
@@ -515,7 +515,7 @@ class ContractVerifier:
                                   "cannot be translated to SMT (e.g., "
                                   "effect operations, lambdas, "
                                   "generic calls).",
-                        spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
+                        spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E522",
                     )
                     continue
@@ -533,7 +533,7 @@ class ContractVerifier:
                         f"Contract will be checked at runtime.",
                         rationale="The postcondition expression contains "
                                   "constructs that cannot be translated to SMT.",
-                        spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
+                        spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E523",
                     )
                     continue
@@ -558,7 +558,7 @@ class ContractVerifier:
                         rationale="The SMT solver returned 'unknown', which "
                                   "may indicate the formula is too complex or "
                                   "the timeout was reached.",
-                        spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
+                        spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E524",
                     )
 
@@ -593,7 +593,7 @@ class ContractVerifier:
                                   "automatically. This function may use "
                                   "a measure that cannot be translated "
                                   "to Z3.",
-                        spec_ref='Chapter 6, Section 6.6 "Termination"',
+                        spec_ref='Chapter 5, Section 5.6.1 "Decreases Clauses"',
                         error_code="E525",
                     )
 
@@ -867,7 +867,7 @@ class ContractVerifier:
                 "that excludes the counterexample inputs) or weaken the "
                 "postcondition to match the actual function behaviour."
             ),
-            spec_ref='Chapter 6, Section 6.4 "Verification Conditions"',
+            spec_ref='Chapter 6, Section 6.4.1 "Verification Conditions"',
             error_code="E500",
         )
 

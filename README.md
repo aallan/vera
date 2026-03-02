@@ -163,7 +163,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-The compiler has 1,267 tests with 88% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 15 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
+The compiler has 1,287 tests with 88% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 15 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
 
 ## Roadmap
 
@@ -219,7 +219,7 @@ Before starting the module system, C6.5 addressed residual gaps in single-file c
 <details>
 <summary>C6 — Codegen Completeness (<a href="https://github.com/aallan/vera/releases/tag/v0.0.10">v0.0.10</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.24">v0.0.24</a>) ✓</summary>
 
-C6 extended WASM compilation to all language constructs, working through the dependency graph from simplest to most complex. All 14 examples now compile.
+C6 extended WASM compilation to all language constructs, working through the dependency graph from simplest to most complex. All 15 examples now compile.
 
 | Sub-phase | Scope | Version |
 |-----------|-------|---------|
@@ -637,7 +637,7 @@ vera/
 │   ├── formatter.py               # Canonical code formatter
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
-├── examples/                      # 14 example Vera programs
+├── examples/                      # 15 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
     ├── check_examples.py          # Verify all .vera examples
