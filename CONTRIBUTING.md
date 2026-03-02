@@ -39,6 +39,15 @@ For contributions to the reference compiler:
 6. Commit your changes with a clear commit message.
 7. Push to your fork and open a pull request.
 
+### Built-in functions and types
+
+When adding or modifying built-in functions (registered in `vera/environment.py`):
+
+- **Match the spec.** Type signatures should use the types specified in the language specification (e.g. `NAT` where the spec says `Nat`, not `INT`). Reference the relevant spec chapter and section in your PR description.
+- **Add type checker tests** in `tests/test_checker.py` — at minimum, one test with correct types and one with a wrong argument type.
+- **Add codegen/runtime tests** in `tests/test_codegen.py` — cover normal cases, edge cases (empty inputs, zero values), and composition with other built-ins.
+- **Update the example** if an existing example demonstrates the feature, or add a new one in `examples/`.
+
 ## Development Setup
 
 ### Prerequisites

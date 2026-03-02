@@ -163,7 +163,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-The compiler has 1,209 tests with 88% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 14 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
+The compiler has 1,267 tests with 88% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 15 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
 
 ## Roadmap
 
@@ -280,7 +280,8 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 - [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory
 - [#132](https://github.com/aallan/vera/issues/132) arrays of compound types in codegen
 - [#52](https://github.com/aallan/vera/issues/52) dynamic string construction
-- [#134](https://github.com/aallan/vera/issues/134) string built-in operations (length, concat, slice)
+- ~~[#134](https://github.com/aallan/vera/issues/134) string built-in operations (length, concat, slice)~~ — [v0.0.50](https://github.com/aallan/vera/releases/tag/v0.0.50)
+- [#174](https://github.com/aallan/vera/issues/174) `parse_nat` should return `Result<Nat, String>` per spec
 - [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display)
 - [#56](https://github.com/aallan/vera/issues/56) incremental compilation
 

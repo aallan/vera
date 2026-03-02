@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.50] - 2026-03-02
+
+### Added
+- **Eight string/conversion built-in operations** (C8e, [#134](https://github.com/aallan/vera/issues/134), [#52](https://github.com/aallan/vera/issues/52)):
+  First external contribution by [@rlseaman](https://github.com/rlseaman) in PR [#173](https://github.com/aallan/vera/pull/173).
+  - `string_length(@String -> @Nat)` — byte length of a string
+  - `string_concat(@String, @String -> @String)` — concatenation
+  - `string_slice(@String, @Nat, @Nat -> @String)` — substring extraction
+  - `char_code(@String, @Int -> @Nat)` — ASCII code at index
+  - `parse_nat(@String -> @Nat)` — decimal string to natural number
+  - `parse_float64(@String -> @Float64)` — decimal string to float
+  - `to_string(@Int -> @String)` — integer to decimal string
+  - `strip(@String -> @String)` — trim leading/trailing whitespace (zero-copy)
+  - New example: `examples/string_ops.vera` (15 examples total)
+  - 52 new tests: 10 type checker + 42 codegen/runtime
+  - Uses bump allocator (`$alloc`); GC deferred to [#51](https://github.com/aallan/vera/issues/51)
+  - `parse_nat` returns bare `Nat` pending [#174](https://github.com/aallan/vera/issues/174) (spec requires `Result<Nat, String>`)
+  - 1,267 tests total
+
 ## [0.0.49] - 2026-03-01
 
 ### Added
