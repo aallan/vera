@@ -3493,3 +3493,233 @@ public fn main(@Unit -> @Unit)
 }
 """
         assert _run_io(src) == "abcdef"
+
+
+class TestCharCode:
+    def test_uppercase_a(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = char_code("A", 0);
+  @Nat.0
+}
+"""
+        assert _run(src) == 65
+
+    def test_digit_zero(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = char_code("0", 0);
+  @Nat.0
+}
+"""
+        assert _run(src) == 48
+
+    def test_second_char(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = char_code("AB", 1);
+  @Nat.0
+}
+"""
+        assert _run(src) == 66
+
+    def test_space(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = char_code(" ", 0);
+  @Nat.0
+}
+"""
+        assert _run(src) == 32
+
+
+class TestParseNat:
+    def test_basic(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  parse_nat("42")
+}
+"""
+        assert _run(src) == 42
+
+    def test_zero(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  parse_nat("0")
+}
+"""
+        assert _run(src) == 0
+
+    def test_large(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  parse_nat("12345")
+}
+"""
+        assert _run(src) == 12345
+
+    def test_leading_spaces(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  parse_nat("  99")
+}
+"""
+        assert _run(src) == 99
+
+
+class TestParseFloat64:
+    def test_integer(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  parse_float64("42")
+}
+"""
+        assert _run_float(src) == 42.0
+
+    def test_decimal(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  parse_float64("3.14")
+}
+"""
+        assert abs(_run_float(src) - 3.14) < 1e-10
+
+    def test_negative(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  parse_float64("-2.5")
+}
+"""
+        assert _run_float(src) == -2.5
+
+    def test_leading_spaces(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  parse_float64("  1.0")
+}
+"""
+        assert _run_float(src) == 1.0
+
+    def test_no_decimal(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  parse_float64("100")
+}
+"""
+        assert _run_float(src) == 100.0
+
+
+class TestToString:
+    def test_positive(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(to_string(42))
+}
+"""
+        assert _run_io(src) == "42"
+
+    def test_zero(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(to_string(0))
+}
+"""
+        assert _run_io(src) == "0"
+
+    def test_large(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(to_string(2025))
+}
+"""
+        assert _run_io(src) == "2025"
+
+    def test_negative(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(to_string(-7))
+}
+"""
+        assert _run_io(src) == "-7"
+
+    def test_roundtrip(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  parse_nat(to_string(123))
+}
+"""
+        assert _run(src) == 123
+
+
+class TestStrip:
+    def test_both_sides(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(strip("  hello  "))
+}
+"""
+        assert _run_io(src) == "hello"
+
+    def test_leading_only(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(strip("   world"))
+}
+"""
+        assert _run_io(src) == "world"
+
+    def test_trailing_only(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(strip("test   "))
+}
+"""
+        assert _run_io(src) == "test"
+
+    def test_no_whitespace(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(strip("abc"))
+}
+"""
+        assert _run_io(src) == "abc"
+
+    def test_all_whitespace(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  string_length(strip("   "))
+}
+"""
+        assert _run(src) == 0
+
+    def test_strip_then_parse(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  parse_nat(strip("  42  "))
+}
+"""
+        assert _run(src) == 42

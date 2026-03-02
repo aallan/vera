@@ -171,9 +171,16 @@ class InferenceMixin:
         # string_length(string) → Int (i64)
         if expr.name == "string_length":
             return "i64"
-        # string_concat / string_slice → String (i32_pair)
-        if expr.name in ("string_concat", "string_slice"):
+        # string_concat / string_slice / strip → String (i32_pair)
+        if expr.name in ("string_concat", "string_slice", "strip",
+                          "to_string"):
             return "i32_pair"
+        # char_code / parse_nat → Nat (i64)
+        if expr.name in ("char_code", "parse_nat"):
+            return "i64"
+        # parse_float64 → Float64 (f64)
+        if expr.name == "parse_float64":
+            return "f64"
         # apply_fn(closure, args...) — infer from closure type
         if expr.name == "apply_fn" and len(expr.args) >= 1:
             return self._infer_apply_fn_return_type(expr.args[0])
@@ -297,8 +304,13 @@ class InferenceMixin:
             return "Int"
         if call.name == "string_length":
             return "Int"
-        if call.name in ("string_concat", "string_slice"):
+        if call.name in ("string_concat", "string_slice", "strip",
+                          "to_string"):
             return "String"
+        if call.name in ("char_code", "parse_nat"):
+            return "Nat"
+        if call.name == "parse_float64":
+            return "Float64"
         if call.name in self._generic_fn_info:
             forall_vars, param_types = self._generic_fn_info[call.name]
             mapping: dict[str, str] = {}

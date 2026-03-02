@@ -107,6 +107,8 @@ class CrossModuleMixin:
         known.update({
             "length", "apply_fn", "get", "put", "resume",
             "string_length", "string_concat", "string_slice",
+            "char_code", "parse_nat", "parse_float64",
+            "to_string", "strip",
         })
 
         seen: set[str] = set()  # deduplicate by function name

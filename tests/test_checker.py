@@ -2226,3 +2226,38 @@ private fn f(@String, @Int -> @String)
   requires(true) ensures(true) effects(pure)
 { string_concat(@String.0, @Int.0) }
 """, "type")
+
+    def test_char_code_ok(self) -> None:
+        _check_ok("""
+private fn f(@String, @Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ char_code(@String.0, @Int.0) }
+""")
+
+    def test_parse_nat_ok(self) -> None:
+        _check_ok("""
+private fn f(@String -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ parse_nat(@String.0) }
+""")
+
+    def test_parse_float64_ok(self) -> None:
+        _check_ok("""
+private fn f(@String -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ parse_float64(@String.0) }
+""")
+
+    def test_to_string_ok(self) -> None:
+        _check_ok("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ to_string(@Int.0) }
+""")
+
+    def test_strip_ok(self) -> None:
+        _check_ok("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ strip(@String.0) }
+""")
