@@ -84,32 +84,23 @@ class TestTier3:
     """Functions with runtime-checked contracts should be tested."""
 
     def test_tier3_passing(self) -> None:
-        """A function with a decreases clause should be tested (Tier 3).
+        """A function with an unverifiable decreases(0) should be tested.
 
-        Simple Nat decreases are now verified (Tier 1), so we use
-        mutual recursion which cannot be verified yet.
+        Mutual recursion is now verified (Tier 1), so we use a
+        non-recursive function with decreases(0) which stays Tier 3.
         """
         source = """\
-public fn is_even(@Nat -> @Bool)
+public fn identity(@Nat -> @Nat)
   requires(true)
   ensures(true)
-  decreases(@Nat.0)
+  decreases(0)
   effects(pure)
 {
-  if @Nat.0 == 0 then { true } else { is_odd(@Nat.0 - 1) }
+  @Nat.0
 }
-  where {
-    fn is_odd(@Nat -> @Bool)
-      requires(true)
-      ensures(true)
-      effects(pure)
-    {
-      if @Nat.0 == 0 then { false } else { is_even(@Nat.0 - 1) }
-    }
-  }
 """
         result = _test(source, trials=10)
-        f = _fn_result(result, "is_even")
+        f = _fn_result(result, "identity")
         assert f.category == "tested"
         assert f.trials_passed > 0
         assert f.trials_failed == 0
@@ -331,23 +322,14 @@ public fn proved(@Int -> @Int)
   @Int.0 + 1
 }
 
-public fn tested_fn(@Nat -> @Bool)
+public fn tested_fn(@Nat -> @Nat)
   requires(true)
   ensures(true)
-  decreases(@Nat.0)
+  decreases(0)
   effects(pure)
 {
-  if @Nat.0 == 0 then { true } else { is_odd(@Nat.0 - 1) }
+  @Nat.0
 }
-  where {
-    fn is_odd(@Nat -> @Bool)
-      requires(true)
-      ensures(true)
-      effects(pure)
-    {
-      if @Nat.0 == 0 then { false } else { tested_fn(@Nat.0 - 1) }
-    }
-  }
 
 public forall<T> fn generic_fn(@T -> @T)
   requires(true) ensures(true) effects(pure)
@@ -357,7 +339,7 @@ public forall<T> fn generic_fn(@T -> @T)
         s = result.summary
         # proved → verified (Tier 1)
         assert s.verified >= 1
-        # tested_fn → tested (Tier 3 due to mutual recursion decreases)
+        # tested_fn → tested (Tier 3 due to unverifiable decreases(0))
         assert s.tested >= 1
         # generic_fn → skipped
         assert s.skipped >= 1

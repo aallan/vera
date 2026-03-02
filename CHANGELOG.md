@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.52] - 2026-03-02
+
+### Added
+- **Mutual recursion termination verification** (C8c, [#45](https://github.com/aallan/vera/issues/45)):
+  Verifies `decreases` clauses across mutually recursive `where`-block function groups,
+  promoting the last E525 contract in `mutual_recursion.vera` from Tier 3 to Tier 1.
+  - Where-block functions now have their contracts verified (requires, ensures, decreases)
+  - Cross-function measure checking: callee measure evaluated in callee parameter env
+  - Verification rate: 96 T1, 3 T3, 99 total (97.0% static)
+  - 4 new verifier tests, 1,287 tests total
+
 ## [0.0.51] - 2026-03-02
 
 ### Added

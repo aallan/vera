@@ -528,7 +528,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 |-----------|-----|---------|
 | **Module system limitations** | Module system complete (C7a-C7f); remaining issue: flat-compilation name collisions | [#110](https://github.com/aallan/vera/issues/110) |
 | **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | [#21](https://github.com/aallan/vera/issues/21) |
-| **Partial termination verification** | `decreases` verified for self-recursive functions (Nat and structural ADT); mutual recursion still Tier 3 | [#45](https://github.com/aallan/vera/issues/45) |
+| **No quantifier termination** | `decreases` verified for self-recursive and mutual recursion (where-blocks); no support for lexicographic ordering or non-structural measures | [#45](https://github.com/aallan/vera/issues/45) |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
 | **Minimal type inference** | Call-site generic instantiation only, no Hindley-Milner | [#55](https://github.com/aallan/vera/issues/55) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |

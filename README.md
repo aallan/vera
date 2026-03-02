@@ -263,7 +263,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 
 - <del>[#136](https://github.com/aallan/vera/issues/136) register `Diverge` as built-in effect</del> ([v0.0.49](https://github.com/aallan/vera/releases/tag/v0.0.49))
 - <del>[#13](https://github.com/aallan/vera/issues/13) expand SMT decidable fragment (Tier 2 verification)</del> ([v0.0.51](https://github.com/aallan/vera/releases/tag/v0.0.51))
-- [#45](https://github.com/aallan/vera/issues/45) `decreases` clause termination verification (self-recursive Nat/ADT done in v0.0.51; mutual recursion pending)
+- <del>[#45](https://github.com/aallan/vera/issues/45) `decreases` clause termination verification</del> ([v0.0.52](https://github.com/aallan/vera/releases/tag/v0.0.52))
 
 **C8d — Type system** — close type-checking gaps
 
@@ -372,7 +372,7 @@ OK: examples/safe_divide.vera
 Verification: 2 verified (Tier 1)
 ```
 
-`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 15 examples, 92 of 96 contracts (95.8%) are verified statically.
+`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 15 examples, 96 of 99 contracts (97.0%) are verified statically.
 
 ### Format a program
 

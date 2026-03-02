@@ -1363,8 +1363,8 @@ private fn sum_to(@Nat -> @Nat)
         e525 = [d for d in result.diagnostics if d.error_code == "E525"]
         assert e525 == [], "Nat decreases should be verified (no E525)"
 
-    def test_mutual_recursion_stays_tier3(self) -> None:
-        """Mutual recursion decreases cannot be verified yet."""
+    def test_mutual_recursion_verified(self) -> None:
+        """Mutual recursion decreases are now verified via where-block groups."""
         source = EXAMPLES_DIR / "mutual_recursion.vera"
         if not source.exists():
             pytest.skip("mutual_recursion.vera not found")
@@ -1373,7 +1373,8 @@ private fn sum_to(@Nat -> @Nat)
         typecheck(ast, text)
         result = verify(ast, text, file=str(source))
         e525 = [d for d in result.diagnostics if d.error_code == "E525"]
-        assert len(e525) >= 1, "Mutual recursion should remain Tier 3"
+        assert e525 == [], "Mutual recursion decreases should be verified"
+        assert result.summary.tier3_runtime == 0
 
     def test_factorial_example_all_t1(self) -> None:
         """factorial.vera should have zero Tier 3 contracts."""
@@ -1460,11 +1461,13 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 90 T1 / 6 T3 without module resolution.
+        """All examples together: 94 T1 / 5 T3 without module resolution.
 
-        With module resolution (via CLI), it's 92 T1 / 4 T3.
+        With module resolution (via CLI), it's 96 T1 / 3 T3.
         The 2-contract difference comes from modules.vera which needs
         cross-module imports to verify call-site preconditions.
+        The 99 total (vs 96 in v0.0.51) reflects where-block functions
+        (is_odd) now having their contracts verified.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -1475,6 +1478,103 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 90, f"Expected 90 T1, got {t1}"
-        assert t3 == 6, f"Expected 6 T3, got {t3}"
-        assert total == 96, f"Expected 96 total, got {total}"
+        assert t1 == 94, f"Expected 94 T1, got {t1}"
+        assert t3 == 5, f"Expected 5 T3, got {t3}"
+        assert total == 99, f"Expected 99 total, got {total}"
+
+
+# =====================================================================
+# Mutual recursion decreases verification tests
+# =====================================================================
+
+class TestMutualRecursionDecreases:
+    """Verify decreases clauses for mutually recursive where-block functions."""
+
+    def test_mutual_recursion_decreases_verified(self) -> None:
+        """is_even/is_odd with matching decreases(@Nat.0) both verify."""
+        source = """\
+public fn is_even(@Nat -> @Bool)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { true } else { is_odd(@Nat.0 - 1) }
+}
+  where {
+    fn is_odd(@Nat -> @Bool)
+      requires(true)
+      ensures(true)
+      decreases(@Nat.0)
+      effects(pure)
+    {
+      if @Nat.0 == 0 then { false } else { is_even(@Nat.0 - 1) }
+    }
+  }
+"""
+        result = _verify(source)
+        e525 = [d for d in result.diagnostics if d.error_code == "E525"]
+        assert e525 == [], f"Expected no E525, got {e525}"
+        assert result.summary.tier3_runtime == 0
+
+    def test_sibling_without_decreases_stays_tier3(self) -> None:
+        """If a sibling has no decreases clause, caller stays Tier 3."""
+        source = """\
+public fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { g(@Nat.0 - 1) }
+}
+  where {
+    fn g(@Nat -> @Nat)
+      requires(true)
+      ensures(true)
+      effects(pure)
+    {
+      if @Nat.0 == 0 then { 0 } else { f(@Nat.0 - 1) }
+    }
+  }
+"""
+        result = _verify(source)
+        e525 = [d for d in result.diagnostics if d.error_code == "E525"]
+        assert len(e525) == 1, "f's decreases should be Tier 3 (sibling has none)"
+
+    def test_where_block_contracts_verified(self) -> None:
+        """Where-block functions have their own contracts verified."""
+        source = """\
+public fn outer(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{
+  helper(@Nat.0)
+}
+  where {
+    fn helper(@Nat -> @Nat)
+      requires(true)
+      ensures(@Nat.result >= 0)
+      effects(pure)
+    {
+      @Nat.0
+    }
+  }
+"""
+        result = _verify(source)
+        # Both outer and helper have requires + ensures = 4 contracts
+        assert result.summary.tier1_verified == 4
+        assert result.summary.tier3_runtime == 0
+
+    def test_mutual_recursion_example_all_t1(self) -> None:
+        """mutual_recursion.vera should have zero Tier 3 contracts."""
+        source = EXAMPLES_DIR / "mutual_recursion.vera"
+        if not source.exists():
+            pytest.skip("mutual_recursion.vera not found")
+        text = source.read_text()
+        prog = parse_to_ast(text)
+        typecheck(prog, text)
+        result = verify(prog, text, file=str(source))
+        assert result.summary.tier3_runtime == 0
+        assert result.summary.tier1_verified == 8
