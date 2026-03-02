@@ -199,14 +199,20 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     """Check if sub <: sup under the subtyping rules.
 
     Rules:
-    1. Reflexivity: T <: T
+    1. Reflexivity: T <: T (including TypeVar("X") <: TypeVar("X"))
     2. Never <: T for all T
     3a. Nat <: Int (widening — always safe)
     3b. Int <: Nat (checker permits; verifier enforces non-negativity via Z3)
-    4. RefinedType(base, _) <: base
-    5. RefinedType(base, _) <: T if base <: T
-    6. T <: RefinedType(base, _) if T <: base (predicate enforced by verifier)
-    7. UnknownType is compatible with everything (error recovery)
+    4. ADT structural: same name + covariant subtyping on type args
+    5. RefinedType(base, _) <: base
+    6. RefinedType(base, _) <: T if base <: T
+    7. T <: RefinedType(base, _) if T <: base (predicate enforced by verifier)
+    8. UnknownType is compatible with everything (error recovery)
+
+    TypeVar is NOT compatible with concrete types.  TypeVar equality is
+    handled by reflexivity (rule 1).  At call sites, type inference
+    substitutes TypeVars before subtype checks; unresolved TypeVars are
+    skipped by the caller.
     """
     # Unknown propagates silently
     if isinstance(sub, UnknownType) or isinstance(sup, UnknownType):
@@ -228,11 +234,7 @@ def is_subtype(sub: Type, sup: Type) -> bool:
         if sub.name == "Int" and sup.name == "Nat":
             return True
 
-    # TypeVar is compatible with anything (C3 — full unification deferred)
-    if isinstance(sub, TypeVar) or isinstance(sup, TypeVar):
-        return True
-
-    # ADT with compatible type args (e.g. Option<T> <: Option<Int>)
+    # ADT with compatible type args (e.g. Option<T> <: Option<T>)
     if isinstance(sub, AdtType) and isinstance(sup, AdtType):
         if sub.name == sup.name and len(sub.type_args) == len(sup.type_args):
             return all(
@@ -275,6 +277,20 @@ def types_equal(a: Type, b: Type) -> bool:
     if isinstance(a, TypeVar) and isinstance(b, TypeVar):
         return a.name == b.name
     return a == b
+
+
+def contains_typevar(ty: Type) -> bool:
+    """True if *ty* contains any TypeVar anywhere in its structure."""
+    if isinstance(ty, TypeVar):
+        return True
+    if isinstance(ty, AdtType):
+        return any(contains_typevar(a) for a in ty.type_args)
+    if isinstance(ty, FunctionType):
+        return (any(contains_typevar(p) for p in ty.params)
+                or contains_typevar(ty.return_type))
+    if isinstance(ty, RefinedType):
+        return contains_typevar(ty.base)
+    return False
 
 
 def substitute(ty: Type, mapping: dict[str, Type]) -> Type:

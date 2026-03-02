@@ -469,6 +469,83 @@ private fn main(@Int -> @Int)
 { identity(@Int.0) }
 """)
 
+    # -- Rejection tests: TypeVar vs concrete should now fail ------
+
+    def test_typevar_body_vs_concrete_return(self) -> None:
+        """TypeVar body should NOT satisfy a concrete return type."""
+        _check_err("""
+private forall<T> fn bad(@T -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+""", "T")
+
+    def test_concrete_body_vs_typevar_return(self) -> None:
+        """Concrete body should NOT satisfy a TypeVar return type."""
+        _check_err("""
+private forall<T> fn bad(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+""", "Nat")
+
+    def test_typevar_in_let_binding(self) -> None:
+        """TypeVar value should not bind to a concrete slot."""
+        _check_err("""
+private forall<T> fn bad(@T -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = @T.0;
+  @Int.0
+}
+""", "T")
+
+    # -- Regression tests: legitimate generic patterns still work --
+
+    def test_generic_calling_generic(self) -> None:
+        _check_ok("""
+private forall<T> fn identity(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+
+private forall<U> fn wrap(@U -> @U)
+  requires(true) ensures(true) effects(pure)
+{ identity(@U.0) }
+""")
+
+    def test_generic_constructor_wrapping(self) -> None:
+        _check_ok("""
+private data Box<T> { MkBox(T) }
+
+private forall<T> fn wrap(@T -> @Box<T>)
+  requires(true) ensures(true) effects(pure)
+{ MkBox(@T.0) }
+""")
+
+    def test_generic_match_returns_typevar(self) -> None:
+        _check_ok("""
+private forall<T> fn unwrap_or(@Option<T>, @T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<T>.0 {
+    None -> @T.0,
+    Some(@T) -> @T.0
+  }
+}
+""")
+
+    def test_generic_multi_typevar(self) -> None:
+        _check_ok("""
+private forall<A, B> fn const(@A, @B -> @A)
+  requires(true) ensures(true) effects(pure)
+{ @A.0 }
+""")
+
+    def test_generic_option_some(self) -> None:
+        _check_ok("""
+private forall<T> fn wrap(@T -> @Option<T>)
+  requires(true) ensures(true) effects(pure)
+{ Some(@T.0) }
+""")
+
 
 # =====================================================================
 # ADTs and constructors

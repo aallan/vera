@@ -272,8 +272,8 @@ The subtyping rules (in `types.py`) are:
 - `Nat <: Int` — naturals are integers
 - `Never <: T` — bottom type subtypes everything
 - `{ T | P } <: T` — refinement types subtype their base
-- `TypeVar` — compatible with anything (deferred to instantiation)
-- `AdtType` — structural equality on name and type arguments
+- `TypeVar("T") <: TypeVar("T")` — reflexive equality only; TypeVars are not compatible with concrete types
+- `AdtType` — structural: same name + covariant subtyping on type arguments
 
 ### Error accumulation
 

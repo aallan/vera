@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,287 across 19 files (~16,700 lines of test code) |
+| **Tests** | 1,300 across 19 files (~16,900 lines of test code) |
 | **Compiler code coverage** | 88% of 6,861 statements (CI minimum: 80%) |
 | **Example programs** | 15, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
@@ -41,7 +41,7 @@ python scripts/check_version_sync.py                 # version consistency
 |------|------:|------:|----------------|
 | `test_parser.py` | 103 | 888 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 87 | 935 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 173 | 2,263 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins |
+| `test_checker.py` | 181 | 2,340 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection |
 | `test_verifier.py` | 97 | 1,580 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
 | `test_codegen.py` | 317 | 3,725 | WASM compilation, arithmetic, Float64, Byte, arrays, ADTs, match, generics, State\<T\>, control flow, strings, IO, bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
@@ -53,7 +53,7 @@ python scripts/check_version_sync.py                 # version consistency
 | `test_formatter.py` | 62 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
 | `test_cli.py` | 109 | 1,550 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
-| `test_types.py` | 55 | 279 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
+| `test_types.py` | 60 | 301 | Type operations: subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_wasm_coverage.py` | 109 | 1,720 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
 | `test_tester.py` | 13 | 320 | Contract-driven testing: tier classification, input generation, test execution |
