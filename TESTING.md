@@ -11,6 +11,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **Example programs** | 15, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
 | **README code blocks** | 6 Vera blocks (5 validated, 1 allowlisted future syntax) |
+| **Contract verification** | 92 of 96 contracts (95.8%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) |
 
 ## Running Tests
@@ -84,6 +85,29 @@ Coverage by module, measured by `pytest --cov=vera`:
 
 The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 70%) reflect auto-generated parser internals and CLI help/flag paths. The `wasm/` subsystem was improved from 79% to 86% by [#156](https://github.com/aallan/vera/issues/156); the remaining gaps are mostly in `wasm/inference.py` (74%) deep utility branches.
 
+## Contract Verification Coverage
+
+Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved correct statically by Z3 — no runtime overhead. **Tier 3** contracts cannot be fully decided by the SMT solver and fall back to runtime assertion checks. The verifier never rejects a valid program; it simply warns when a contract drops to Tier 3.
+
+Across all 15 example programs:
+
+| Metric | Value |
+|--------|-------|
+| **Tier 1 (static)** | 92 contracts — proved automatically by Z3 |
+| **Tier 3 (runtime)** | 4 contracts — verified at runtime via assertion checks |
+| **Total** | 96 contracts (95.8% static) |
+
+The 4 remaining Tier 3 contracts and why they cannot be promoted:
+
+| Example | Contract | Reason |
+|---------|----------|--------|
+| generics.vera | `ensures(@T.result == @T.0)` | Generic type parameters have no Z3 sort |
+| generics.vera | `ensures(@A.result == @A.0)` | Generic type parameters have no Z3 sort |
+| increment.vera | `ensures(new(State<Int>) == old(State<Int>) + 1)` | `old`/`new` state modeling not yet implemented |
+| mutual_recursion.vera | `decreases(@Nat.0)` | Mutual recursion termination requires cross-function measure reasoning |
+
+The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `length`, and `decreases` clauses (self-recursive with Nat or structural ADT measures).
+
 ## Language Feature Coverage
 
 How Vera language features (by spec chapter) map to test files and example programs:
@@ -94,7 +118,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen, test_verifier | refinement_types, safe_divide |
 | Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | all 14 examples |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | all 15 examples |
 | Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker | factorial, absolute_value |
 | Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker | pattern_matching |
 | Ch 5: Functions | Declarations, recursion, mutual recursion | test_codegen, test_checker | factorial, mutual_recursion |
