@@ -2208,9 +2208,9 @@ private fn f(@String, @String -> @String)
 
     def test_string_slice_ok(self) -> None:
         _check_ok("""
-private fn f(@String, @Int, @Int -> @String)
+private fn f(@String, @Nat, @Nat -> @String)
   requires(true) ensures(true) effects(pure)
-{ string_slice(@String.0, @Int.0, @Int.1) }
+{ string_slice(@String.0, @Nat.0, @Nat.1) }
 """)
 
     def test_string_length_wrong_arg(self) -> None:

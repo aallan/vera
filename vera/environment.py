@@ -210,7 +210,7 @@ class TypeEnv:
             name="string_length",
             forall_vars=None,
             param_types=(STRING,),
-            return_type=INT,
+            return_type=NAT,
             effect=PureEffectRow(),
         )
         self.functions["string_concat"] = FunctionInfo(
@@ -223,7 +223,7 @@ class TypeEnv:
         self.functions["string_slice"] = FunctionInfo(
             name="string_slice",
             forall_vars=None,
-            param_types=(STRING, INT, INT),
+            param_types=(STRING, NAT, NAT),
             return_type=STRING,
             effect=PureEffectRow(),
         )
