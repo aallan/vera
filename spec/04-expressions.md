@@ -300,17 +300,24 @@ Future array operations (`map`, `fold`, `slice`) will be added alongside the mod
 
 ## 4.13 String Operations
 
-> **Status: Not yet implemented.** Depends on dynamic string construction ([#52](https://github.com/aallan/vera/issues/52)).
-
-String operations will be provided by the standard library:
+String operations are provided as built-in functions:
 
 ```
-string_length(@String.0)             -- returns Nat
-string_concat(@String.0, @String.1)  -- returns String
-string_slice(@String.0, @Nat.0, @Nat.1)  -- returns String
+string_length(@String.0)                -- returns Nat
+string_concat(@String.0, @String.1)     -- returns String
+string_slice(@String.0, @Nat.0, @Nat.1) -- returns String
+char_code(@String.0, @Int.0)            -- returns Nat (ASCII code at index)
+parse_nat(@String.0)                    -- returns Nat (see note below)
+parse_float64(@String.0)                -- returns Float64
+to_string(@Int.0)                       -- returns String
+strip(@String.0)                        -- returns String (trim whitespace)
 ```
 
-String concatenation will use a function, not an operator. There is no `+` on strings. Currently, only string constants (literals) are supported — see Chapter 9, Section 9.4.1 for the current state of collections and Chapter 11, Section 11.5 for the string pool implementation.
+String concatenation uses a function, not an operator. There is no `+` on strings.
+
+> **Note:** `parse_nat` currently returns bare `Nat`. Per Section 9, it should return `Result<Nat, String>` to handle invalid input. This is tracked in [#174](https://github.com/aallan/vera/issues/174).
+
+String memory is allocated via the bump allocator and is not freed. Garbage collection for WASM linear memory is tracked in [#51](https://github.com/aallan/vera/issues/51). See Chapter 11, Section 11.5 for the string pool implementation.
 
 ## 4.14 Expression Precedence (Complete)
 

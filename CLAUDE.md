@@ -40,7 +40,7 @@ vera fmt --check file.vera        # Check if already canonical
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
 mypy vera/                        # Type-check the compiler itself
 
-python scripts/check_examples.py      # Verify all 14 examples parse + check + verify
+python scripts/check_examples.py      # Verify all 15 examples parse + check + verify
 python scripts/check_spec_examples.py # Verify spec code blocks parse
 python scripts/check_readme_examples.py # Verify README code blocks parse
 python scripts/check_version_sync.py  # Verify version consistency
@@ -50,7 +50,7 @@ python scripts/check_version_sync.py  # Verify version consistency
 
 - `spec/` — Language specification (Chapters 0-7, 9-12)
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
-- `examples/` — 14 example Vera programs (all must pass `vera check` and `vera verify`)
+- `examples/` — 15 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite
 - `scripts/` — CI and validation scripts
 
@@ -69,7 +69,7 @@ Each stage is a module with a public API function and is independently testable.
 ## What not to break
 
 - Pre-commit hooks run mypy + pytest + example validation on every commit
-- All 14 examples in `examples/` must pass `vera check` and `vera verify`
+- All 15 examples in `examples/` must pass `vera check` and `vera verify`
 - Version must stay in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 - All tests must pass: `pytest tests/ -v`
 - Type checking must be clean: `mypy vera/`
