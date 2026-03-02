@@ -104,7 +104,12 @@ class CrossModuleMixin:
         for layouts in self._adt_layouts.values():
             known.update(layouts.keys())
         # Built-in names handled specially in _translate_call
-        known.update({"length", "apply_fn", "get", "put", "resume"})
+        known.update({
+            "length", "apply_fn", "get", "put", "resume",
+            "string_length", "string_concat", "string_slice",
+            "char_code", "parse_nat", "parse_float64",
+            "to_string", "strip",
+        })
 
         seen: set[str] = set()  # deduplicate by function name
 

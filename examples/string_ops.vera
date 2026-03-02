@@ -1,0 +1,40 @@
+-- String operations: length, concat, slice, char_code, parse, convert, strip
+
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  -- string_length
+  let @Int = string_length("hello");
+
+  -- string_concat
+  IO.print(string_concat("hello", " world"));
+
+  -- string_slice
+  IO.print(string_slice("MPCORB", 0, 3));
+
+  -- char_code: 'A' = 65
+  let @Nat = char_code("A", 0);
+
+  -- parse_nat
+  let @Nat = parse_nat("42");
+
+  -- parse_float64
+  let @Float64 = parse_float64("3.14");
+
+  -- to_string
+  IO.print(to_string(2025));
+
+  -- strip
+  IO.print(strip("  hello  "));
+
+  -- compose: parse then convert back
+  IO.print(to_string(parse_nat("99")));
+
+  ()
+}

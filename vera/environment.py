@@ -205,6 +205,66 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # Built-in string operations
+        self.functions["string_length"] = FunctionInfo(
+            name="string_length",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=NAT,
+            effect=PureEffectRow(),
+        )
+        self.functions["string_concat"] = FunctionInfo(
+            name="string_concat",
+            forall_vars=None,
+            param_types=(STRING, STRING),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["string_slice"] = FunctionInfo(
+            name="string_slice",
+            forall_vars=None,
+            param_types=(STRING, NAT, NAT),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+
+        # String/number conversion and inspection
+        self.functions["char_code"] = FunctionInfo(
+            name="char_code",
+            forall_vars=None,
+            param_types=(STRING, INT),
+            return_type=NAT,
+            effect=PureEffectRow(),
+        )
+        self.functions["parse_nat"] = FunctionInfo(
+            name="parse_nat",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=NAT,
+            effect=PureEffectRow(),
+        )
+        self.functions["parse_float64"] = FunctionInfo(
+            name="parse_float64",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+        self.functions["to_string"] = FunctionInfo(
+            name="to_string",
+            forall_vars=None,
+            param_types=(INT,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["strip"] = FunctionInfo(
+            name="strip",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+
     # -----------------------------------------------------------------
     # Scope management
     # -----------------------------------------------------------------
