@@ -312,6 +312,8 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 
 - [#130](https://github.com/aallan/vera/issues/130) package system and registry
 - [#143](https://github.com/aallan/vera/issues/143) comprehensive example programs
+- [#181](https://github.com/aallan/vera/issues/181) signature refactoring (mechanical slot index rewriting)
+- [#183](https://github.com/aallan/vera/issues/183) human-readable slot annotations (display layer for `@T.n` references)
 
 ### Where this is going
 
