@@ -210,8 +210,8 @@ class TestCmdVerify:
     def test_tier3_example(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """mutual_recursion.vera has contracts that fall to Tier 3."""
-        rc = cmd_verify(MUTUAL_RECURSION)
+        """increment.vera has contracts that fall to Tier 3."""
+        rc = cmd_verify(INCREMENT)
         assert rc == 0
         captured = capsys.readouterr()
         assert "OK:" in captured.out
@@ -261,7 +261,7 @@ class TestCmdVerify:
 
     def test_json_tier3(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Tier 3 file produces JSON with runtime check counts."""
-        rc = cmd_verify(MUTUAL_RECURSION, as_json=True)
+        rc = cmd_verify(INCREMENT, as_json=True)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is True

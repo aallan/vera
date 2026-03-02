@@ -385,7 +385,11 @@ class ContractVerifier:
             if isinstance(tld.decl, ast.FnDecl):
                 self._verify_fn(tld.decl)
 
-    def _verify_fn(self, decl: ast.FnDecl) -> None:
+    def _verify_fn(
+        self,
+        decl: ast.FnDecl,
+        parent_where_group: ast.FnDecl | None = None,
+    ) -> None:
         """Verify all contracts on a single function."""
         # Skip generic functions (type variables can't be translated to Z3)
         if decl.forall_vars:
@@ -559,10 +563,23 @@ class ContractVerifier:
                     )
 
         # 8. Handle decreases clauses — attempt verification
+        # Build mutual recursion group for decreases checking
+        group_decls: dict[str, ast.FnDecl] = {decl.name: decl}
+        if decl.where_fns:
+            for wfn in decl.where_fns:
+                group_decls[wfn.name] = wfn
+        elif parent_where_group is not None:
+            group_decls[parent_where_group.name] = parent_where_group
+            if parent_where_group.where_fns:
+                for wfn in parent_where_group.where_fns:
+                    group_decls[wfn.name] = wfn
+
         for contract in decl.contracts:
             if isinstance(contract, ast.Decreases):
                 self.summary.total += 1
-                if self._verify_decreases(decl, contract, smt, slot_env):
+                if self._verify_decreases(
+                    decl, contract, smt, slot_env, group_decls,
+                ):
                     self.summary.tier1_verified += 1
                 else:
                     self.summary.tier3_runtime += 1
@@ -574,11 +591,16 @@ class ContractVerifier:
                         rationale="Self-recursive functions with Nat or "
                                   "structural ADT measures are verified "
                                   "automatically. This function may use "
-                                  "mutual recursion or a measure that "
-                                  "cannot be translated to Z3.",
+                                  "a measure that cannot be translated "
+                                  "to Z3.",
                         spec_ref='Chapter 6, Section 6.6 "Termination"',
                         error_code="E525",
                     )
+
+        # 9. Verify where-block functions
+        if decl.where_fns:
+            for wfn in decl.where_fns:
+                self._verify_fn(wfn, parent_where_group=decl)
 
     # -----------------------------------------------------------------
     # Decreases verification (termination)
@@ -590,12 +612,14 @@ class ContractVerifier:
         contract: ast.Decreases,
         smt: SmtContext,
         slot_env: SlotEnv,
+        group_decls: dict[str, ast.FnDecl],
     ) -> bool:
         """Attempt to verify a decreases clause.
 
         Returns True if the measure strictly decreases at every recursive
-        call site while remaining non-negative.  Returns False if
-        verification fails or the measure cannot be translated.
+        call site (including mutual recursion via where-block siblings)
+        while remaining non-negative.  Returns False if verification fails
+        or the measure cannot be translated.
         """
         if not contract.exprs:
             return False
@@ -606,23 +630,24 @@ class ContractVerifier:
         if z3_initial is None:
             return False
 
-        # Collect all recursive call sites with their path conditions
+        # Collect all recursive call sites (self + mutual) with path conds
+        group_names = set(group_decls.keys())
         calls = self._collect_recursive_calls(
-            decl.name, decl.body, smt, slot_env,
+            decl.name, decl.body, smt, slot_env, group_names,
         )
         if not calls:
-            # No self-recursive calls found → can't verify
-            # (might be mutual recursion or base case only)
+            # No recursive calls found → can't verify
             return False
 
         import z3 as z3mod
 
         # For each call site, verify the measure decreases
-        for call_args, z3_path_conds, call_site_env in calls:
-            # Build callee's slot env from actual arguments,
-            # translating in the call site's env (includes match bindings)
+        for callee_name, call_args, z3_path_conds, call_site_env in calls:
+            callee_decl = group_decls.get(callee_name, decl)
+
+            # Build callee's slot env from actual arguments
             callee_env = SlotEnv()
-            param_type_exprs = list(decl.params)
+            param_type_exprs = list(callee_decl.params)
             if len(call_args) != len(param_type_exprs):
                 return False
             for param_te, arg_expr in zip(param_type_exprs, call_args):
@@ -632,14 +657,25 @@ class ContractVerifier:
                 type_name = self._type_expr_to_slot_name(param_te)
                 callee_env = callee_env.push(type_name, z3_arg)
 
-            # Translate the decreases expression in callee's env
-            z3_callee_measure = smt.translate_expr(measure_expr, callee_env)
+            # For cross-calls, use the callee's decreases expression
+            callee_measure_expr: ast.Expr
+            if callee_name == decl.name:
+                callee_measure_expr = measure_expr
+            else:
+                found = self._find_decreases_expr(callee_decl)
+                if found is None:
+                    return False  # sibling has no decreases clause
+                callee_measure_expr = found
+
+            # Translate the callee's measure in callee's env
+            z3_callee_measure = smt.translate_expr(
+                callee_measure_expr, callee_env,
+            )
             if z3_callee_measure is None:
                 return False
 
             # Verify: path_conds ⟹ measure strictly decreases
             if isinstance(z3_initial.sort(), z3mod.DatatypeSortRef):
-                # ADT measures: use structural rank function
                 rank_fn = smt.get_rank_fn(z3_initial.sort())
                 if rank_fn is None:
                     return False
@@ -666,8 +702,13 @@ class ContractVerifier:
 
         return True
 
-    # Z3 path condition type alias (not imported at module level)
-    _Z3PathCond = object  # Actually z3.ExprRef
+    @staticmethod
+    def _find_decreases_expr(decl: ast.FnDecl) -> ast.Expr | None:
+        """Extract the first decreases expression from a function's contracts."""
+        for c in decl.contracts:
+            if isinstance(c, ast.Decreases) and c.exprs:
+                return c.exprs[0]
+        return None
 
     def _collect_recursive_calls(
         self,
@@ -675,34 +716,38 @@ class ContractVerifier:
         expr: ast.Expr,
         smt: SmtContext,
         slot_env: SlotEnv,
-    ) -> list[tuple[tuple[ast.Expr, ...], list[object], SlotEnv]]:
-        """Walk the AST to find self-recursive call sites.
+        group_names: set[str] | None = None,
+    ) -> list[tuple[str, tuple[ast.Expr, ...], list[object], SlotEnv]]:
+        """Walk the AST to find recursive call sites.
 
-        Returns a list of (call_args, z3_path_conditions, call_site_env)
-        tuples.  Path conditions are Z3 BoolRef expressions that must hold
-        for the call to be reached.  The slot_env is tracked through the
-        walk so that let bindings and match pattern bindings are available.
+        Finds calls to *fn_name* and, when *group_names* is supplied, any
+        call to a function in the mutual recursion group.  Returns a list
+        of ``(callee_name, call_args, z3_path_conditions, slot_env)``
+        tuples.
         """
-        results: list[tuple[tuple[ast.Expr, ...], list[object], SlotEnv]] = []
-        self._walk_for_calls(fn_name, expr, [], results, smt, slot_env)
+        effective = group_names or {fn_name}
+        results: list[tuple[str, tuple[ast.Expr, ...], list[object], SlotEnv]] = []
+        self._walk_for_calls(effective, expr, [], results, smt, slot_env)
         return results
 
     def _walk_for_calls(
         self,
-        fn_name: str,
+        group_names: set[str],
         expr: ast.Expr,
         z3_path_conds: list[object],
-        results: list[tuple[tuple[ast.Expr, ...], list[object], SlotEnv]],
+        results: list[tuple[str, tuple[ast.Expr, ...], list[object], SlotEnv]],
         smt: SmtContext,
         slot_env: SlotEnv,
     ) -> None:
         """Recursively walk AST, tracking Z3 path conditions and slot env."""
         if isinstance(expr, ast.FnCall):
-            if expr.name == fn_name:
-                results.append((expr.args, list(z3_path_conds), slot_env))
+            if expr.name in group_names:
+                results.append(
+                    (expr.name, expr.args, list(z3_path_conds), slot_env),
+                )
             # Also walk into arguments (they might contain recursive calls)
             for arg in expr.args:
-                self._walk_for_calls(fn_name, arg, z3_path_conds, results,
+                self._walk_for_calls(group_names, arg, z3_path_conds, results,
                                      smt, slot_env)
             return
 
@@ -710,59 +755,54 @@ class ContractVerifier:
             z3_cond = smt.translate_expr(expr.condition, slot_env)
             if z3_cond is not None:
                 import z3 as z3mod
-                # Then branch: path_conds + [condition]
                 then_conds = z3_path_conds + [z3_cond]
-                self._walk_for_calls(fn_name, expr.then_branch, then_conds,
-                                     results, smt, slot_env)
-                # Else branch: path_conds + [NOT condition]
+                self._walk_for_calls(group_names, expr.then_branch,
+                                     then_conds, results, smt, slot_env)
                 else_conds = z3_path_conds + [z3mod.Not(z3_cond)]
-                self._walk_for_calls(fn_name, expr.else_branch, else_conds,
-                                     results, smt, slot_env)
+                self._walk_for_calls(group_names, expr.else_branch,
+                                     else_conds, results, smt, slot_env)
             else:
-                # Can't translate condition — walk both branches without extra conds
-                self._walk_for_calls(fn_name, expr.then_branch, z3_path_conds,
-                                     results, smt, slot_env)
-                self._walk_for_calls(fn_name, expr.else_branch, z3_path_conds,
-                                     results, smt, slot_env)
+                self._walk_for_calls(group_names, expr.then_branch,
+                                     z3_path_conds, results, smt, slot_env)
+                self._walk_for_calls(group_names, expr.else_branch,
+                                     z3_path_conds, results, smt, slot_env)
             return
 
         if isinstance(expr, ast.Block):
             cur_env = slot_env
             for stmt in expr.statements:
                 if isinstance(stmt, ast.LetStmt):
-                    self._walk_for_calls(fn_name, stmt.value, z3_path_conds,
-                                         results, smt, cur_env)
-                    # Extend env with let binding
+                    self._walk_for_calls(group_names, stmt.value,
+                                         z3_path_conds, results, smt, cur_env)
                     val = smt.translate_expr(stmt.value, cur_env)
                     if val is not None:
                         type_name = smt._type_expr_to_slot_name(stmt.type_expr)
                         if type_name is not None:
                             cur_env = cur_env.push(type_name, val)
                 elif isinstance(stmt, ast.ExprStmt):
-                    self._walk_for_calls(fn_name, stmt.expr, z3_path_conds,
-                                         results, smt, cur_env)
-            self._walk_for_calls(fn_name, expr.expr, z3_path_conds,
+                    self._walk_for_calls(group_names, stmt.expr,
+                                         z3_path_conds, results, smt, cur_env)
+            self._walk_for_calls(group_names, expr.expr, z3_path_conds,
                                  results, smt, cur_env)
             return
 
         if isinstance(expr, ast.BinaryExpr):
-            self._walk_for_calls(fn_name, expr.left, z3_path_conds, results,
-                                 smt, slot_env)
-            self._walk_for_calls(fn_name, expr.right, z3_path_conds, results,
-                                 smt, slot_env)
+            self._walk_for_calls(group_names, expr.left, z3_path_conds,
+                                 results, smt, slot_env)
+            self._walk_for_calls(group_names, expr.right, z3_path_conds,
+                                 results, smt, slot_env)
             return
 
         if isinstance(expr, ast.UnaryExpr):
-            self._walk_for_calls(fn_name, expr.operand, z3_path_conds,
+            self._walk_for_calls(group_names, expr.operand, z3_path_conds,
                                  results, smt, slot_env)
             return
 
         if isinstance(expr, ast.MatchExpr):
-            self._walk_for_calls(fn_name, expr.scrutinee, z3_path_conds,
+            self._walk_for_calls(group_names, expr.scrutinee, z3_path_conds,
                                  results, smt, slot_env)
             scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
             for arm in expr.arms:
-                # Extend env with pattern bindings and add recognizer condition
                 arm_env = slot_env
                 arm_conds = z3_path_conds
                 if scrutinee_z3 is not None:
@@ -770,12 +810,11 @@ class ContractVerifier:
                                               slot_env)
                     if bound is not None:
                         arm_env = bound
-                    # Add pattern recognizer condition
                     pat_cond = smt._pattern_condition(scrutinee_z3,
                                                       arm.pattern)
                     if pat_cond is not None:
                         arm_conds = z3_path_conds + [pat_cond]
-                self._walk_for_calls(fn_name, arm.body, arm_conds,
+                self._walk_for_calls(group_names, arm.body, arm_conds,
                                      results, smt, arm_env)
             return
 

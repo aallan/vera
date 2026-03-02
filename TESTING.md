@@ -6,12 +6,12 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,283 across 19 files (~16,600 lines of test code) |
+| **Tests** | 1,287 across 19 files (~16,700 lines of test code) |
 | **Compiler code coverage** | 88% of 6,861 statements (CI minimum: 80%) |
 | **Example programs** | 15, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
 | **README code blocks** | 6 Vera blocks (5 validated, 1 allowlisted future syntax) |
-| **Contract verification** | 92 of 96 contracts (95.8%) verified statically (Tier 1) |
+| **Contract verification** | 96 of 99 contracts (97.0%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) |
 
 ## Running Tests
@@ -42,7 +42,7 @@ python scripts/check_version_sync.py                 # version consistency
 | `test_parser.py` | 103 | 888 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 87 | 935 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 173 | 2,263 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins |
-| `test_verifier.py` | 93 | 1,480 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification |
+| `test_verifier.py` | 97 | 1,580 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
 | `test_codegen.py` | 317 | 3,725 | WASM compilation, arithmetic, Float64, Byte, arrays, ADTs, match, generics, State\<T\>, control flow, strings, IO, bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 17 | 360 | Generic instantiation, type inference, monomorphization edge cases |
@@ -93,20 +93,19 @@ Across all 15 example programs:
 
 | Metric | Value |
 |--------|-------|
-| **Tier 1 (static)** | 92 contracts — proved automatically by Z3 |
-| **Tier 3 (runtime)** | 4 contracts — verified at runtime via assertion checks |
-| **Total** | 96 contracts (95.8% static) |
+| **Tier 1 (static)** | 96 contracts — proved automatically by Z3 |
+| **Tier 3 (runtime)** | 3 contracts — verified at runtime via assertion checks |
+| **Total** | 99 contracts (97.0% static) |
 
-The 4 remaining Tier 3 contracts and why they cannot be promoted:
+The 3 remaining Tier 3 contracts and why they cannot be promoted:
 
 | Example | Contract | Reason |
 |---------|----------|--------|
 | generics.vera | `ensures(@T.result == @T.0)` | Generic type parameters have no Z3 sort |
 | generics.vera | `ensures(@A.result == @A.0)` | Generic type parameters have no Z3 sort |
 | increment.vera | `ensures(new(State<Int>) == old(State<Int>) + 1)` | `old`/`new` state modeling not yet implemented |
-| mutual_recursion.vera | `decreases(@Nat.0)` | Mutual recursion termination requires cross-function measure reasoning |
 
-The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `length`, and `decreases` clauses (self-recursive with Nat or structural ADT measures).
+The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `length`, and `decreases` clauses (self-recursive, mutual recursion via where-blocks, Nat and structural ADT measures).
 
 ## Language Feature Coverage
 
