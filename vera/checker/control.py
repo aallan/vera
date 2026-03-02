@@ -15,6 +15,7 @@ from vera.types import (
     Type,
     UnknownType,
     base_type,
+    contains_typevar,
     is_subtype,
     pretty_type,
     substitute,
@@ -63,6 +64,11 @@ class ControlFlowMixin:
         if is_subtype(else_ty, then_ty):
             return then_ty
 
+        # Unresolved TypeVars from nullary constructors — pick the
+        # branch with concrete types when possible.
+        if contains_typevar(then_ty) or contains_typevar(else_ty):
+            return else_ty if contains_typevar(then_ty) else then_ty
+
         self._error(
             expr,
             f"If branches have incompatible types: then-branch is "
@@ -103,8 +109,12 @@ class ControlFlowMixin:
             elif types_equal(result_type, NEVER):
                 result_type = arm_ty
             elif not types_equal(arm_ty, NEVER):
-                if not (is_subtype(arm_ty, result_type)
-                        or is_subtype(result_type, arm_ty)):
+                if contains_typevar(arm_ty) or contains_typevar(result_type):
+                    # Prefer the concrete type over the TypeVar-bearing one
+                    if contains_typevar(result_type) and not contains_typevar(arm_ty):
+                        result_type = arm_ty
+                elif not (is_subtype(arm_ty, result_type)
+                          or is_subtype(result_type, arm_ty)):
                     self._error(
                         arm.body if hasattr(arm, 'body') else expr,
                         f"Match arm type {pretty_type(arm_ty)} is "
