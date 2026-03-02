@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.53] - 2026-03-02
+
+### Changed
+- **TypeVar subtyping is no longer permissive** (C8d, [#20](https://github.com/aallan/vera/issues/20)):
+  Removes the blanket `TypeVar <: anything` rule from `is_subtype`.
+  TypeVars now only match themselves via reflexive equality.
+  - Generic function bodies are properly checked: returning a `T` where a
+    concrete `Int` is expected is now an error (E121)
+  - Call sites unaffected: existing inference + substitution resolves TypeVars
+    before subtype checks; unresolved TypeVars are skipped
+  - Nullary constructors of parameterised ADTs (e.g. `None` for `Option<T>`)
+    produce types with unresolved TypeVars — these are tolerated at call sites
+    and in non-generic function bodies
+  - `contains_typevar` utility added to `types.py`
+  - 13 new tests (5 subtyping unit tests, 3 rejection tests, 5 regression tests)
+  - 1,300 tests total
+
 ## [0.0.52] - 2026-03-02
 
 ### Added
@@ -774,7 +791,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.52...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.53...HEAD
+[0.0.53]: https://github.com/aallan/vera/compare/v0.0.52...v0.0.53
 [0.0.52]: https://github.com/aallan/vera/compare/v0.0.51...v0.0.52
 [0.0.51]: https://github.com/aallan/vera/compare/v0.0.50...v0.0.51
 [0.0.50]: https://github.com/aallan/vera/compare/v0.0.49...v0.0.50

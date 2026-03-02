@@ -50,11 +50,33 @@ class TestIsSubtype:
     def test_int_permitted_as_nat(self) -> None:
         assert is_subtype(INT, NAT)
 
-    def test_typevar_compat_left(self) -> None:
-        assert is_subtype(TypeVar("T"), INT)
+    def test_typevar_not_subtype_of_concrete(self) -> None:
+        assert not is_subtype(TypeVar("T"), INT)
 
-    def test_typevar_compat_right(self) -> None:
-        assert is_subtype(INT, TypeVar("T"))
+    def test_concrete_not_subtype_of_typevar(self) -> None:
+        assert not is_subtype(INT, TypeVar("T"))
+
+    def test_typevar_reflexive(self) -> None:
+        assert is_subtype(TypeVar("T"), TypeVar("T"))
+
+    def test_typevar_different_names(self) -> None:
+        assert not is_subtype(TypeVar("T"), TypeVar("U"))
+
+    def test_adt_with_same_typevar(self) -> None:
+        a = AdtType("Option", (TypeVar("T"),))
+        assert is_subtype(a, a)
+
+    def test_adt_typevar_not_subtype_concrete(self) -> None:
+        assert not is_subtype(
+            AdtType("Option", (TypeVar("T"),)),
+            AdtType("Option", (INT,)),
+        )
+
+    def test_adt_concrete_not_subtype_typevar(self) -> None:
+        assert not is_subtype(
+            AdtType("Option", (INT,)),
+            AdtType("Option", (TypeVar("T"),)),
+        )
 
     def test_adt_matching_args(self) -> None:
         assert is_subtype(AdtType("Option", (INT,)), AdtType("Option", (INT,)))

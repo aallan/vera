@@ -37,6 +37,7 @@ from vera.types import (
     TypeVar,
     UnknownType,
     canonical_type_name,
+    contains_typevar,
     is_subtype,
     pretty_type,
 )
@@ -255,7 +256,9 @@ class TypeChecker(
         # 6. Check body
         body_type = self._synth_expr(decl.body)
         if body_type and not isinstance(body_type, UnknownType):
-            if not is_subtype(body_type, return_type):
+            if contains_typevar(body_type) and not decl.forall_vars:
+                pass  # Unresolved TypeVars from constructors — skip
+            elif not is_subtype(body_type, return_type):
                 self._error(
                     decl.body,
                     f"Function '{decl.name}' body has type "

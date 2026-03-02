@@ -20,6 +20,7 @@ from vera.types import (
     Type,
     TypeVar,
     UnknownType,
+    contains_typevar,
     is_subtype,
     pretty_type,
     substitute,
@@ -101,6 +102,8 @@ class CallsMixin:
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
             if isinstance(param_ty, (TypeVar, UnknownType)):
+                continue
+            if contains_typevar(arg_ty):
                 continue
             if not is_subtype(arg_ty, param_ty):
                 self._error(
@@ -222,6 +225,8 @@ class CallsMixin:
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
             if isinstance(field_ty, (TypeVar, UnknownType)):
+                continue
+            if contains_typevar(arg_ty):
                 continue
             if not is_subtype(arg_ty, field_ty):
                 self._error(
