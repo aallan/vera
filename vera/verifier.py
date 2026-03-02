@@ -209,17 +209,32 @@ class ContractVerifier:
         )
 
     def _register_data(self, decl: ast.DataDecl) -> None:
-        """Register an ADT (minimal — just enough for type resolution)."""
-        # The verifier doesn't need full ADT info, but registering
-        # the type name allows _resolve_type to recognise it.
+        """Register an ADT with constructor info for SMT translation."""
         from vera.environment import AdtInfo, ConstructorInfo
-        type_params = decl.type_params if decl.type_params else None
+        from vera.types import TypeVar
+        # Set up type params for resolving constructor field types
+        saved_params = dict(self.env.type_params)
+        if decl.type_params:
+            for tv in decl.type_params:
+                self.env.type_params[tv] = TypeVar(tv)
         ctors: dict[str, ConstructorInfo] = {}
+        for ctor in decl.constructors:
+            field_types = None
+            if ctor.fields is not None:
+                field_types = tuple(
+                    self._resolve_type(f) for f in ctor.fields)
+            ctors[ctor.name] = ConstructorInfo(
+                name=ctor.name,
+                parent_type=decl.name,
+                parent_type_params=decl.type_params,
+                field_types=field_types,
+            )
         self.env.data_types[decl.name] = AdtInfo(
             name=decl.name,
-            type_params=type_params,
+            type_params=decl.type_params,
             constructors=ctors,
         )
+        self.env.type_params = saved_params
 
     def _register_effect(self, decl: ast.EffectDecl) -> None:
         """Register an effect declaration."""
@@ -325,8 +340,10 @@ class ContractVerifier:
             from vera.types import PRIMITIVES
             if te.name in PRIMITIVES:
                 return PRIMITIVES[te.name]
-            # Unknown — treat as opaque
-            return AdtType(te.name, ())
+            # Unknown — treat as opaque but preserve type args
+            return AdtType(te.name, tuple(
+                self._resolve_type(a) for a in te.type_args
+            ) if te.type_args else ())
 
         if isinstance(te, ast.RefinementType):
             base = self._resolve_type(te.base_type)
@@ -395,6 +412,9 @@ class ContractVerifier:
             fn_lookup=self.env.lookup_function,
             module_fn_lookup=self._lookup_module_function,
         )
+        # Register all known ADTs with the SMT context
+        for adt_info in self.env.data_types.values():
+            smt.register_adt(adt_info)
         slot_env = SlotEnv()
 
         # 1. Declare Z3 constants for parameters
@@ -407,6 +427,9 @@ class ContractVerifier:
                 var = smt.declare_nat(z3_name)
             elif self._is_bool_type(param_ty):
                 var = smt.declare_bool(z3_name)
+            elif self._is_adt_type(param_ty):
+                adt_var = smt.declare_adt(z3_name, param_ty)
+                var = adt_var if adt_var is not None else smt.declare_int(z3_name)
             else:
                 var = smt.declare_int(z3_name)
 
@@ -419,6 +442,9 @@ class ContractVerifier:
             result_var = smt.declare_nat("@result")
         elif self._is_bool_type(ret_type):
             result_var = smt.declare_bool("@result")
+        elif self._is_adt_type(ret_type):
+            adt_var = smt.declare_adt("@result", ret_type)
+            result_var = adt_var if adt_var is not None else smt.declare_int("@result")
         else:
             result_var = smt.declare_int("@result")
         smt.set_result_var(result_var)
@@ -483,7 +509,7 @@ class ContractVerifier:
                         f"Contract will be checked at runtime.",
                         rationale="The function body contains constructs that "
                                   "cannot be translated to SMT (e.g., "
-                                  "pattern matching, effect operations, "
+                                  "effect operations, lambdas, "
                                   "generic calls).",
                         spec_ref='Chapter 6, Section 6.5 "Verification Tiers"',
                         error_code="E522",
@@ -532,22 +558,229 @@ class ContractVerifier:
                         error_code="E524",
                     )
 
-        # 6. Handle decreases clauses (Tier 3 for now)
+        # 8. Handle decreases clauses — attempt verification
         for contract in decl.contracts:
             if isinstance(contract, ast.Decreases):
                 self.summary.total += 1
-                self.summary.tier3_runtime += 1
-                self._warning(
-                    contract,
-                    f"Termination metric in '{decl.name}' cannot be "
-                    f"statically verified yet. "
-                    f"Contract will be checked at runtime.",
-                    rationale="Termination verification for recursive "
-                              "functions requires reasoning about recursive "
-                              "call sites, which is not yet implemented.",
-                    spec_ref='Chapter 6, Section 6.6 "Termination"',
-                    error_code="E525",
+                if self._verify_decreases(decl, contract, smt, slot_env):
+                    self.summary.tier1_verified += 1
+                else:
+                    self.summary.tier3_runtime += 1
+                    self._warning(
+                        contract,
+                        f"Termination metric in '{decl.name}' cannot be "
+                        f"statically verified yet. "
+                        f"Contract will be checked at runtime.",
+                        rationale="Self-recursive functions with Nat or "
+                                  "structural ADT measures are verified "
+                                  "automatically. This function may use "
+                                  "mutual recursion or a measure that "
+                                  "cannot be translated to Z3.",
+                        spec_ref='Chapter 6, Section 6.6 "Termination"',
+                        error_code="E525",
+                    )
+
+    # -----------------------------------------------------------------
+    # Decreases verification (termination)
+    # -----------------------------------------------------------------
+
+    def _verify_decreases(
+        self,
+        decl: ast.FnDecl,
+        contract: ast.Decreases,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+    ) -> bool:
+        """Attempt to verify a decreases clause.
+
+        Returns True if the measure strictly decreases at every recursive
+        call site while remaining non-negative.  Returns False if
+        verification fails or the measure cannot be translated.
+        """
+        if not contract.exprs:
+            return False
+
+        # Only support single-expression decreases for now
+        measure_expr = contract.exprs[0]
+        z3_initial = smt.translate_expr(measure_expr, slot_env)
+        if z3_initial is None:
+            return False
+
+        # Collect all recursive call sites with their path conditions
+        calls = self._collect_recursive_calls(
+            decl.name, decl.body, smt, slot_env,
+        )
+        if not calls:
+            # No self-recursive calls found → can't verify
+            # (might be mutual recursion or base case only)
+            return False
+
+        import z3 as z3mod
+
+        # For each call site, verify the measure decreases
+        for call_args, z3_path_conds, call_site_env in calls:
+            # Build callee's slot env from actual arguments,
+            # translating in the call site's env (includes match bindings)
+            callee_env = SlotEnv()
+            param_type_exprs = list(decl.params)
+            if len(call_args) != len(param_type_exprs):
+                return False
+            for param_te, arg_expr in zip(param_type_exprs, call_args):
+                z3_arg = smt.translate_expr(arg_expr, call_site_env)
+                if z3_arg is None:
+                    return False
+                type_name = self._type_expr_to_slot_name(param_te)
+                callee_env = callee_env.push(type_name, z3_arg)
+
+            # Translate the decreases expression in callee's env
+            z3_callee_measure = smt.translate_expr(measure_expr, callee_env)
+            if z3_callee_measure is None:
+                return False
+
+            # Verify: path_conds ⟹ measure strictly decreases
+            if isinstance(z3_initial.sort(), z3mod.DatatypeSortRef):
+                # ADT measures: use structural rank function
+                rank_fn = smt.get_rank_fn(z3_initial.sort())
+                if rank_fn is None:
+                    return False
+                decrease_cond = z3mod.And(
+                    rank_fn(z3_callee_measure) < rank_fn(z3_initial),
+                    rank_fn(z3_callee_measure) >= 0,
                 )
+            else:
+                decrease_cond = z3mod.And(
+                    z3_callee_measure < z3_initial,
+                    z3_callee_measure >= 0,
+                )
+            if z3_path_conds:
+                premise = (z3mod.And(*z3_path_conds)
+                           if len(z3_path_conds) > 1
+                           else z3_path_conds[0])
+                goal = z3mod.Implies(premise, decrease_cond)
+            else:
+                goal = decrease_cond
+
+            result = smt.check_valid(goal, [])
+            if result.status != "verified":
+                return False
+
+        return True
+
+    # Z3 path condition type alias (not imported at module level)
+    _Z3PathCond = object  # Actually z3.ExprRef
+
+    def _collect_recursive_calls(
+        self,
+        fn_name: str,
+        expr: ast.Expr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+    ) -> list[tuple[tuple[ast.Expr, ...], list[object], SlotEnv]]:
+        """Walk the AST to find self-recursive call sites.
+
+        Returns a list of (call_args, z3_path_conditions, call_site_env)
+        tuples.  Path conditions are Z3 BoolRef expressions that must hold
+        for the call to be reached.  The slot_env is tracked through the
+        walk so that let bindings and match pattern bindings are available.
+        """
+        results: list[tuple[tuple[ast.Expr, ...], list[object], SlotEnv]] = []
+        self._walk_for_calls(fn_name, expr, [], results, smt, slot_env)
+        return results
+
+    def _walk_for_calls(
+        self,
+        fn_name: str,
+        expr: ast.Expr,
+        z3_path_conds: list[object],
+        results: list[tuple[tuple[ast.Expr, ...], list[object], SlotEnv]],
+        smt: SmtContext,
+        slot_env: SlotEnv,
+    ) -> None:
+        """Recursively walk AST, tracking Z3 path conditions and slot env."""
+        if isinstance(expr, ast.FnCall):
+            if expr.name == fn_name:
+                results.append((expr.args, list(z3_path_conds), slot_env))
+            # Also walk into arguments (they might contain recursive calls)
+            for arg in expr.args:
+                self._walk_for_calls(fn_name, arg, z3_path_conds, results,
+                                     smt, slot_env)
+            return
+
+        if isinstance(expr, ast.IfExpr):
+            z3_cond = smt.translate_expr(expr.condition, slot_env)
+            if z3_cond is not None:
+                import z3 as z3mod
+                # Then branch: path_conds + [condition]
+                then_conds = z3_path_conds + [z3_cond]
+                self._walk_for_calls(fn_name, expr.then_branch, then_conds,
+                                     results, smt, slot_env)
+                # Else branch: path_conds + [NOT condition]
+                else_conds = z3_path_conds + [z3mod.Not(z3_cond)]
+                self._walk_for_calls(fn_name, expr.else_branch, else_conds,
+                                     results, smt, slot_env)
+            else:
+                # Can't translate condition — walk both branches without extra conds
+                self._walk_for_calls(fn_name, expr.then_branch, z3_path_conds,
+                                     results, smt, slot_env)
+                self._walk_for_calls(fn_name, expr.else_branch, z3_path_conds,
+                                     results, smt, slot_env)
+            return
+
+        if isinstance(expr, ast.Block):
+            cur_env = slot_env
+            for stmt in expr.statements:
+                if isinstance(stmt, ast.LetStmt):
+                    self._walk_for_calls(fn_name, stmt.value, z3_path_conds,
+                                         results, smt, cur_env)
+                    # Extend env with let binding
+                    val = smt.translate_expr(stmt.value, cur_env)
+                    if val is not None:
+                        type_name = smt._type_expr_to_slot_name(stmt.type_expr)
+                        if type_name is not None:
+                            cur_env = cur_env.push(type_name, val)
+                elif isinstance(stmt, ast.ExprStmt):
+                    self._walk_for_calls(fn_name, stmt.expr, z3_path_conds,
+                                         results, smt, cur_env)
+            self._walk_for_calls(fn_name, expr.expr, z3_path_conds,
+                                 results, smt, cur_env)
+            return
+
+        if isinstance(expr, ast.BinaryExpr):
+            self._walk_for_calls(fn_name, expr.left, z3_path_conds, results,
+                                 smt, slot_env)
+            self._walk_for_calls(fn_name, expr.right, z3_path_conds, results,
+                                 smt, slot_env)
+            return
+
+        if isinstance(expr, ast.UnaryExpr):
+            self._walk_for_calls(fn_name, expr.operand, z3_path_conds,
+                                 results, smt, slot_env)
+            return
+
+        if isinstance(expr, ast.MatchExpr):
+            self._walk_for_calls(fn_name, expr.scrutinee, z3_path_conds,
+                                 results, smt, slot_env)
+            scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
+            for arm in expr.arms:
+                # Extend env with pattern bindings and add recognizer condition
+                arm_env = slot_env
+                arm_conds = z3_path_conds
+                if scrutinee_z3 is not None:
+                    bound = smt._bind_pattern(scrutinee_z3, arm.pattern,
+                                              slot_env)
+                    if bound is not None:
+                        arm_env = bound
+                    # Add pattern recognizer condition
+                    pat_cond = smt._pattern_condition(scrutinee_z3,
+                                                      arm.pattern)
+                    if pat_cond is not None:
+                        arm_conds = z3_path_conds + [pat_cond]
+                self._walk_for_calls(fn_name, arm.body, arm_conds,
+                                     results, smt, arm_env)
+            return
+
+        # Other expression types (literals, slot refs, etc.) — no calls
+        return
 
     # -----------------------------------------------------------------
     # Counterexample reporting
@@ -677,6 +910,12 @@ class ContractVerifier:
     def _is_bool_type(ty: Type) -> bool:
         """Check if a type is Bool."""
         return ty == BOOL
+
+    @staticmethod
+    def _is_adt_type(ty: Type) -> bool:
+        """Check if a type is an algebraic data type."""
+        from vera.types import AdtType
+        return isinstance(ty, AdtType)
 
     @staticmethod
     def _count_slots(env: SlotEnv, type_name: str) -> int:

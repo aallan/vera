@@ -6,11 +6,12 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,267 across 19 files (~16,200 lines of test code) |
+| **Tests** | 1,283 across 19 files (~16,600 lines of test code) |
 | **Compiler code coverage** | 88% of 6,861 statements (CI minimum: 80%) |
 | **Example programs** | 15, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
 | **README code blocks** | 6 Vera blocks (5 validated, 1 allowlisted future syntax) |
+| **Contract verification** | 92 of 96 contracts (95.8%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) |
 
 ## Running Tests
@@ -41,7 +42,7 @@ python scripts/check_version_sync.py                 # version consistency
 | `test_parser.py` | 103 | 888 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 87 | 935 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 173 | 2,263 | Type synthesis, slot resolution, effects, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins |
-| `test_verifier.py` | 77 | 1,118 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts |
+| `test_verifier.py` | 93 | 1,480 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification |
 | `test_codegen.py` | 317 | 3,725 | WASM compilation, arithmetic, Float64, Byte, arrays, ADTs, match, generics, State\<T\>, control flow, strings, IO, bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 17 | 360 | Generic instantiation, type inference, monomorphization edge cases |
@@ -84,6 +85,29 @@ Coverage by module, measured by `pytest --cov=vera`:
 
 The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 70%) reflect auto-generated parser internals and CLI help/flag paths. The `wasm/` subsystem was improved from 79% to 86% by [#156](https://github.com/aallan/vera/issues/156); the remaining gaps are mostly in `wasm/inference.py` (74%) deep utility branches.
 
+## Contract Verification Coverage
+
+Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved correct statically by Z3 — no runtime overhead. **Tier 3** contracts cannot be fully decided by the SMT solver and fall back to runtime assertion checks. The verifier never rejects a valid program; it simply warns when a contract drops to Tier 3.
+
+Across all 15 example programs:
+
+| Metric | Value |
+|--------|-------|
+| **Tier 1 (static)** | 92 contracts — proved automatically by Z3 |
+| **Tier 3 (runtime)** | 4 contracts — verified at runtime via assertion checks |
+| **Total** | 96 contracts (95.8% static) |
+
+The 4 remaining Tier 3 contracts and why they cannot be promoted:
+
+| Example | Contract | Reason |
+|---------|----------|--------|
+| generics.vera | `ensures(@T.result == @T.0)` | Generic type parameters have no Z3 sort |
+| generics.vera | `ensures(@A.result == @A.0)` | Generic type parameters have no Z3 sort |
+| increment.vera | `ensures(new(State<Int>) == old(State<Int>) + 1)` | `old`/`new` state modeling not yet implemented |
+| mutual_recursion.vera | `decreases(@Nat.0)` | Mutual recursion termination requires cross-function measure reasoning |
+
+The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `length`, and `decreases` clauses (self-recursive with Nat or structural ADT measures).
+
 ## Language Feature Coverage
 
 How Vera language features (by spec chapter) map to test files and example programs:
@@ -94,7 +118,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen, test_verifier | refinement_types, safe_divide |
 | Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | all 14 examples |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | all 15 examples |
 | Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker | factorial, absolute_value |
 | Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker | pattern_matching |
 | Ch 5: Functions | Declarations, recursion, mutual recursion | test_codegen, test_checker | factorial, mutual_recursion |
@@ -132,7 +156,7 @@ _run_trap(source, fn, args)    # compile + execute, assert WASM trap
 
 ## Round-Trip Testing
 
-Every one of the 14 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
+Every one of the 15 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
 
 The formatter has **idempotency tests**: `format(format(x)) == format(x)` for all tested programs.
 
@@ -155,7 +179,7 @@ Four scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_examples.py` | All 14 `.vera` examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 15 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 96 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |

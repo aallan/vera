@@ -135,14 +135,14 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 ```bash
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 mypy vera/                             # Type-check the compiler
-python scripts/check_examples.py       # All 14 examples must pass
+python scripts/check_examples.py       # All 15 examples must pass
 ```
 
 Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)` / `_verify_ok(source)` / `_verify_err(source, match)`. See existing tests for examples.
 
 ### Invariants
 
-- All 14 examples in `examples/` must pass `vera check` and `vera verify`
+- All 15 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
 - Version must be in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`

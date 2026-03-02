@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.51] - 2026-03-02
+
+### Added
+- **Expand SMT decidable fragment** (C4/C6, [#13](https://github.com/aallan/vera/issues/13)):
+  Promotes 4 Tier 3 (runtime) contracts to Tier 1 (statically verified), bringing
+  the verification rate from 91.7% to 95.8% across all 15 examples (92 T1, 4 T3, 96 total).
+  - **Match expression + ADT constructor Z3 translation**: `MatchExpr`, `NullaryConstructor`,
+    and `ConstructorCall` are now translated to Z3 using `z3.Datatype` sorts, with pattern
+    conditions mapped to recognizers and field bindings mapped to accessors.
+  - **Termination verification for `decreases` clauses**: Simple `Nat` decreases (factorial)
+    and structural ADT decreases (`List<T>` length/sum) are now verified via Z3. Uses a
+    rank function with universal axioms for structural subterm ordering.
+  - ADT sort creation with type parameter substitution and self-reference handling
+  - Per-sort `length()` uninterpreted functions (supports both Int and ADT domains)
+  - Recursive call collector with Z3 path conditions and slot env tracking
+  - Verifier now populates constructor info for SMT translation
+  - 16 new verifier tests across 3 test classes
+  - 1,283 tests total
+
+### Remaining Tier 3 contracts (4)
+- 2 x E520: Generic type parameters in `generics.vera` (unfixable — fundamental SMT limitation)
+- 1 x E522: `old`/`new` state modeling in `increment.vera` (deferred — requires symbolic effect execution)
+- 1 x E525: Mutual recursion in `mutual_recursion.vera` (deferred — requires cross-function measure reasoning)
+
 ## [0.0.50] - 2026-03-02
 
 ### Added

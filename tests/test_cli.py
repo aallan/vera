@@ -14,6 +14,7 @@ from vera.cli import cmd_ast, cmd_check, cmd_compile, cmd_fmt, cmd_parse, cmd_ru
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 INCREMENT = str(EXAMPLES_DIR / "increment.vera")
 FACTORIAL = str(EXAMPLES_DIR / "factorial.vera")
+MUTUAL_RECURSION = str(EXAMPLES_DIR / "mutual_recursion.vera")
 CLOSURES = str(EXAMPLES_DIR / "closures.vera")
 HELLO_WORLD = str(EXAMPLES_DIR / "hello_world.vera")
 SAFE_DIVIDE = str(EXAMPLES_DIR / "safe_divide.vera")
@@ -209,8 +210,8 @@ class TestCmdVerify:
     def test_tier3_example(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        """factorial.vera has recursive contracts that fall to Tier 3."""
-        rc = cmd_verify(FACTORIAL)
+        """mutual_recursion.vera has contracts that fall to Tier 3."""
+        rc = cmd_verify(MUTUAL_RECURSION)
         assert rc == 0
         captured = capsys.readouterr()
         assert "OK:" in captured.out
@@ -260,7 +261,7 @@ class TestCmdVerify:
 
     def test_json_tier3(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Tier 3 file produces JSON with runtime check counts."""
-        rc = cmd_verify(FACTORIAL, as_json=True)
+        rc = cmd_verify(MUTUAL_RECURSION, as_json=True)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is True

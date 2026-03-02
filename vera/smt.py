@@ -16,9 +16,18 @@ from typing import TYPE_CHECKING, Any, Callable
 import z3
 
 from vera import ast
+from vera.types import (
+    AdtType,
+    PrimitiveType,
+    Type,
+    TypeVar,
+    BOOL,
+    INT,
+    NAT,
+)
 
 if TYPE_CHECKING:
-    pass
+    from vera.environment import AdtInfo
 
 
 # =====================================================================
@@ -97,6 +106,35 @@ _CMP_OPS: dict[ast.BinOp, str] = {
 _BOOL_OPS: set[ast.BinOp] = {ast.BinOp.AND, ast.BinOp.OR, ast.BinOp.IMPLIES}
 
 
+# =====================================================================
+# ADT type helpers
+# =====================================================================
+
+def _adt_sort_key(adt_name: str, type_args: tuple[Type, ...]) -> str:
+    """Build a canonical key for an ADT sort, e.g. ``List<Int>``."""
+    if not type_args:
+        return adt_name
+    arg_strs = []
+    for a in type_args:
+        if isinstance(a, PrimitiveType):
+            arg_strs.append(a.name)
+        elif isinstance(a, AdtType):
+            arg_strs.append(_adt_sort_key(a.name, a.type_args))
+        else:
+            arg_strs.append("?")
+    return f"{adt_name}<{', '.join(arg_strs)}>"
+
+
+def _substitute_type(ty: Type, subst: dict[str, Type]) -> Type:
+    """Substitute ``TypeVar`` names in *ty* using *subst*."""
+    if isinstance(ty, TypeVar):
+        return subst.get(ty.name, ty)
+    if isinstance(ty, AdtType):
+        new_args = tuple(_substitute_type(a, subst) for a in ty.type_args)
+        return AdtType(ty.name, new_args)
+    return ty
+
+
 class SmtContext:
     """Z3 solver context with AST-to-Z3 expression translation."""
 
@@ -112,13 +150,20 @@ class SmtContext:
         self.solver.set("timeout", timeout_ms)
         self._vars: dict[str, z3.ExprRef] = {}
         self._result_var: z3.ExprRef | None = None
-        # Uninterpreted function for length (constrained >= 0)
-        self._length_fn = z3.Function("length", z3.IntSort(), z3.IntSort())
+        # Uninterpreted functions for length (constrained >= 0)
+        # Keyed by domain sort — supports both Int and ADT domains
+        self._length_fns: dict[str, z3.FuncDeclRef] = {
+            "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
+        }
         # Callee contract verification
         self._fn_lookup = fn_lookup
         self._module_fn_lookup = module_fn_lookup
         self._call_violations: list[CallViolation] = []
         self._fresh_counter: int = 0
+        # ADT support
+        self._adt_registry: dict[str, AdtInfo] = {}
+        self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
+        self._z3_sorts: dict[str, z3.SortRef] = {}  # "List<Int>" → Z3 sort
 
     # -----------------------------------------------------------------
     # Variable management
@@ -163,6 +208,145 @@ class SmtContext:
         return violations
 
     # -----------------------------------------------------------------
+    # ADT support
+    # -----------------------------------------------------------------
+
+    def register_adt(self, adt_info: AdtInfo) -> None:
+        """Register an ADT definition for Z3 sort creation."""
+        self._adt_registry[adt_info.name] = adt_info
+        for ctor_name in adt_info.constructors:
+            self._ctor_to_adt[ctor_name] = adt_info.name
+
+    def declare_adt(
+        self, name: str, ty: Type,
+    ) -> z3.ExprRef | None:
+        """Declare a Z3 constant of an ADT sort."""
+        z3_sort = self._vera_type_to_z3_sort(ty)
+        if z3_sort is None:
+            return None
+        v = z3.Const(name, z3_sort)
+        self._vars[name] = v
+        return v
+
+    def _vera_type_to_z3_sort(
+        self,
+        ty: Type,
+        *,
+        self_ref_key: str | None = None,
+        self_ref_dt: Any | None = None,
+    ) -> z3.SortRef | None:
+        """Map a Vera Type to a Z3 sort.
+
+        Returns None for unsupported types (String, Float64, Unit,
+        TypeVar, function types).
+        """
+        if isinstance(ty, PrimitiveType):
+            if ty.name in ("Int", "Nat"):
+                return z3.IntSort()
+            if ty.name == "Bool":
+                return z3.BoolSort()
+            return None
+        if isinstance(ty, AdtType):
+            key = _adt_sort_key(ty.name, ty.type_args)
+            # Self-reference during datatype creation
+            if key == self_ref_key and self_ref_dt is not None:
+                return self_ref_dt
+            return self._get_or_create_adt_sort(ty.name, ty.type_args)
+        return None
+
+    def _get_or_create_adt_sort(
+        self,
+        adt_name: str,
+        type_args: tuple[Type, ...],
+    ) -> z3.SortRef | None:
+        """Lazily create a Z3 ADT sort for a concrete type instantiation."""
+        key = _adt_sort_key(adt_name, type_args)
+        if key in self._z3_sorts:
+            return self._z3_sorts[key]
+
+        adt_info = self._adt_registry.get(adt_name)
+        if adt_info is None:
+            return None
+
+        # Build type parameter substitution
+        subst: dict[str, Type] = {}
+        if adt_info.type_params:
+            if len(type_args) != len(adt_info.type_params):
+                return None
+            subst = dict(zip(adt_info.type_params, type_args))
+
+        # Create Z3 Datatype
+        z3_name = key.replace("<", "_").replace(">", "").replace(", ", "_")
+        dt = z3.Datatype(z3_name)
+
+        for ctor_name, ctor_info in adt_info.constructors.items():
+            if ctor_info.field_types is None:
+                dt.declare(ctor_name)
+            else:
+                fields: list[tuple[str, Any]] = []
+                for i, ft in enumerate(ctor_info.field_types):
+                    concrete = _substitute_type(ft, subst)
+                    field_name = f"{ctor_name}_{i}"
+                    z3_sort = self._vera_type_to_z3_sort(
+                        concrete,
+                        self_ref_key=key,
+                        self_ref_dt=dt,
+                    )
+                    if z3_sort is None:
+                        return None
+                    fields.append((field_name, z3_sort))
+                dt.declare(ctor_name, *fields)
+
+        sort = dt.create()
+        self._z3_sorts[key] = sort
+        return sort
+
+    def _get_length_fn(self, sort: z3.SortRef) -> z3.FuncDeclRef:
+        """Get or create a length function for the given domain sort."""
+        key = str(sort)
+        if key not in self._length_fns:
+            fn_name = f"length_{key}"
+            self._length_fns[key] = z3.Function(
+                fn_name, sort, z3.IntSort(),
+            )
+        return self._length_fns[key]
+
+    def get_rank_fn(self, sort: z3.SortRef) -> z3.FuncDeclRef | None:
+        """Get or create a rank function for structural ordering on an ADT.
+
+        Adds axioms: ``rank(x) >= 0`` and for each constructor with
+        recursive fields, ``is_Ctor(x) ==> rank(field_i(x)) < rank(x)``.
+
+        Returns None if the sort is not a Z3 DatatypeSortRef.
+        """
+        if not isinstance(sort, z3.DatatypeSortRef):
+            return None
+        key = f"_rank_{sort}"
+        if key in self._length_fns:
+            return self._length_fns[key]
+        rank = z3.Function(key, sort, z3.IntSort())
+        self._length_fns[key] = rank
+        # Add axioms via a universally-quantified variable
+        x = z3.Const("_rank_x", sort)
+        self.solver.add(z3.ForAll([x], rank(x) >= 0))
+        # For each constructor, add structural decrease axioms
+        for i in range(sort.num_constructors()):
+            ctor = sort.constructor(i)
+            recognizer = sort.recognizer(i)
+            for j in range(ctor.arity()):
+                accessor = sort.accessor(i, j)
+                if accessor.range() == sort:
+                    # Recursive field: rank(field) < rank(parent)
+                    self.solver.add(z3.ForAll(
+                        [x],
+                        z3.Implies(
+                            recognizer(x),
+                            rank(accessor(x)) < rank(x),
+                        ),
+                    ))
+        return rank
+
+    # -----------------------------------------------------------------
     # Expression translation
     # -----------------------------------------------------------------
 
@@ -204,8 +388,17 @@ class SmtContext:
         if isinstance(expr, ast.Block):
             return self._translate_block(expr, env)
 
-        # Unsupported: match, handle, lambdas, constructors,
-        # quantifiers, old/new, assert/assume, etc.
+        if isinstance(expr, ast.MatchExpr):
+            return self._translate_match(expr, env)
+
+        if isinstance(expr, ast.NullaryConstructor):
+            return self._translate_nullary_ctor(expr)
+
+        if isinstance(expr, ast.ConstructorCall):
+            return self._translate_ctor_call(expr, env)
+
+        # Unsupported: handle, lambdas, quantifiers,
+        # old/new, assert/assume, etc.
         return None
 
     def _translate_slot_ref(
@@ -328,7 +521,8 @@ class SmtContext:
         if call.name == "length" and len(call.args) == 1:
             arg = self.translate_expr(call.args[0], env)
             if arg is not None:
-                result = self._length_fn(arg)
+                length_fn = self._get_length_fn(arg.sort())
+                result = length_fn(arg)
                 self.solver.add(result >= 0)
                 return result
             return None
@@ -430,7 +624,7 @@ class SmtContext:
                 return None
 
         # Create fresh return variable
-        from vera.types import NAT, BOOL, RefinedType
+        from vera.types import RefinedType
         ret_type = callee_info.return_type
         base_ret = ret_type.base if isinstance(ret_type, RefinedType) else ret_type
         fresh = self._fresh_name(callee_name)
@@ -438,6 +632,9 @@ class SmtContext:
             ret_var = self.declare_nat(fresh)
         elif base_ret == BOOL:
             ret_var = self.declare_bool(fresh)
+        elif isinstance(base_ret, AdtType):
+            adt_var = self.declare_adt(fresh, base_ret)
+            ret_var = adt_var if adt_var is not None else self.declare_int(fresh)
         else:
             ret_var = self.declare_int(fresh)
 
@@ -478,6 +675,168 @@ class SmtContext:
                 # LetDestruct or unknown statement type
                 return None
         return self.translate_expr(block.expr, current_env)
+
+    # -----------------------------------------------------------------
+    # Match and constructor translation
+    # -----------------------------------------------------------------
+
+    def _translate_match(
+        self, expr: ast.MatchExpr, env: SlotEnv
+    ) -> z3.ExprRef | None:
+        """Translate a match expression to a Z3 If-chain."""
+        scrutinee = self.translate_expr(expr.scrutinee, env)
+        if scrutinee is None:
+            return None
+
+        # Build reverse If-chain: last arm is the default
+        arms = list(expr.arms)
+        if not arms:
+            return None
+
+        # Translate last arm body (default case)
+        last_env = self._bind_pattern(scrutinee, arms[-1].pattern, env)
+        if last_env is None:
+            return None
+        result = self.translate_expr(arms[-1].body, last_env)
+        if result is None:
+            return None
+
+        # Wrap preceding arms in z3.If(condition, body, previous)
+        for arm in reversed(arms[:-1]):
+            cond = self._pattern_condition(scrutinee, arm.pattern)
+            if cond is None:
+                return None
+            arm_env = self._bind_pattern(scrutinee, arm.pattern, env)
+            if arm_env is None:
+                return None
+            arm_body = self.translate_expr(arm.body, arm_env)
+            if arm_body is None:
+                return None
+            result = z3.If(cond, arm_body, result)
+
+        return result
+
+    def _find_ctor_index(
+        self, sort: z3.SortRef, ctor_name: str,
+    ) -> int | None:
+        """Find the index of a constructor by name in a Z3 ADT sort."""
+        if not isinstance(sort, z3.DatatypeSortRef):
+            return None
+        for i in range(sort.num_constructors()):
+            if sort.constructor(i).name() == ctor_name:
+                return i
+        return None
+
+    def _pattern_condition(
+        self, scrutinee: z3.ExprRef, pattern: ast.Pattern
+    ) -> z3.ExprRef | None:
+        """Return a Z3 Boolean for when *pattern* matches *scrutinee*."""
+        if isinstance(pattern, ast.NullaryPattern):
+            sort = scrutinee.sort()
+            idx = self._find_ctor_index(sort, pattern.name)
+            if idx is None:
+                return None
+            return sort.recognizer(idx)(scrutinee)
+
+        if isinstance(pattern, ast.ConstructorPattern):
+            sort = scrutinee.sort()
+            idx = self._find_ctor_index(sort, pattern.name)
+            if idx is None:
+                return None
+            return sort.recognizer(idx)(scrutinee)
+
+        if isinstance(pattern, ast.WildcardPattern):
+            return z3.BoolVal(True)
+
+        if isinstance(pattern, ast.BindingPattern):
+            return z3.BoolVal(True)
+
+        if isinstance(pattern, ast.IntPattern):
+            return scrutinee == z3.IntVal(pattern.value)
+
+        if isinstance(pattern, ast.BoolPattern):
+            return scrutinee == z3.BoolVal(pattern.value)
+
+        return None
+
+    def _bind_pattern(
+        self,
+        scrutinee: z3.ExprRef,
+        pattern: ast.Pattern,
+        env: SlotEnv,
+    ) -> SlotEnv | None:
+        """Extend *env* with bindings introduced by *pattern*."""
+        if isinstance(pattern, (
+            ast.NullaryPattern, ast.WildcardPattern,
+            ast.IntPattern, ast.BoolPattern, ast.StringPattern,
+        )):
+            return env
+
+        if isinstance(pattern, ast.BindingPattern):
+            slot_name = self._type_expr_to_slot_name(pattern.type_expr)
+            if slot_name is None:
+                return None
+            return env.push(slot_name, scrutinee)
+
+        if isinstance(pattern, ast.ConstructorPattern):
+            sort = scrutinee.sort()
+            idx = self._find_ctor_index(sort, pattern.name)
+            if idx is None:
+                return None
+            cur = env
+            for i, sub_pat in enumerate(pattern.sub_patterns):
+                accessor = sort.accessor(idx, i)
+                field_val = accessor(scrutinee)
+                bound = self._bind_pattern(field_val, sub_pat, cur)
+                if bound is None:
+                    return None
+                cur = bound
+            return cur
+
+        return None
+
+    def _find_sort_for_ctor(self, ctor_name: str) -> z3.SortRef | None:
+        """Find a cached Z3 sort that has a constructor named *ctor_name*."""
+        adt_name = self._ctor_to_adt.get(ctor_name)
+        if adt_name is None:
+            return None
+        for key, sort in self._z3_sorts.items():
+            base = key.split("<")[0] if "<" in key else key
+            if base == adt_name:
+                if self._find_ctor_index(sort, ctor_name) is not None:
+                    return sort
+        return None
+
+    def _translate_nullary_ctor(
+        self, expr: ast.NullaryConstructor
+    ) -> z3.ExprRef | None:
+        """Translate a nullary constructor (e.g. ``Nil``) to Z3."""
+        sort = self._find_sort_for_ctor(expr.name)
+        if sort is None:
+            return None
+        idx = self._find_ctor_index(sort, expr.name)
+        if idx is None:
+            return None
+        return sort.constructor(idx)()
+
+    def _translate_ctor_call(
+        self, expr: ast.ConstructorCall, env: SlotEnv
+    ) -> z3.ExprRef | None:
+        """Translate a constructor call (e.g. ``Cons(1, Nil)``) to Z3."""
+        sort = self._find_sort_for_ctor(expr.name)
+        if sort is None:
+            return None
+        idx = self._find_ctor_index(sort, expr.name)
+        if idx is None:
+            return None
+        # Translate arguments
+        z3_args: list[z3.ExprRef] = []
+        for arg in expr.args:
+            z3_arg = self.translate_expr(arg, env)
+            if z3_arg is None:
+                return None
+            z3_args.append(z3_arg)
+        return sort.constructor(idx)(*z3_args)
 
     def _type_expr_to_slot_name(self, te: ast.TypeExpr) -> str | None:
         """Extract the slot name from a type expression."""
@@ -545,3 +904,6 @@ class SmtContext:
         self._result_var = None
         self._call_violations.clear()
         self._fresh_counter = 0
+        # Keep _adt_registry and _ctor_to_adt (they persist across functions)
+        # but clear cached Z3 sorts (tied to solver state)
+        self._z3_sorts.clear()
