@@ -163,7 +163,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-The compiler has 1,300 tests with 88% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 15 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
+The compiler has 1,320 tests with 88% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 15 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
 
 ## Roadmap
 
@@ -268,7 +268,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 **C8d — Type system** — close type-checking gaps
 
 - <del>[#20](https://github.com/aallan/vera/issues/20) TypeVar subtyping</del> ([v0.0.53](https://github.com/aallan/vera/releases/tag/v0.0.53))
-- [#21](https://github.com/aallan/vera/issues/21) effect row unification and subeffecting
+- <del>[#21](https://github.com/aallan/vera/issues/21) effect row unification and subeffecting</del> ([v0.0.54](https://github.com/aallan/vera/releases/tag/v0.0.54))
 - [#55](https://github.com/aallan/vera/issues/55) minimal type inference
 
 **C8e — Codegen gaps** — extend WASM compilation

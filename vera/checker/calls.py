@@ -21,7 +21,9 @@ from vera.types import (
     TypeVar,
     UnknownType,
     contains_typevar,
+    is_effect_subtype,
     is_subtype,
+    pretty_effect,
     pretty_type,
     substitute,
 )
@@ -120,6 +122,26 @@ class CallsMixin:
             if isinstance(fn_info.effect, ConcreteEffectRow):
                 for ei in fn_info.effect.effects:
                     self._effect_ops_used.add(ei.name)
+
+        # Call-site effect check: callee's effects must be permitted
+        # by the caller's context (Spec §7.8 subeffecting).
+        if self.env.current_effect_row is not None:
+            if not is_effect_subtype(fn_info.effect,
+                                     self.env.current_effect_row):
+                self._error(
+                    node,
+                    f"Function '{fn_info.name}' requires "
+                    f"{pretty_effect(fn_info.effect)} but call site only "
+                    f"allows {pretty_effect(self.env.current_effect_row)}.",
+                    rationale="A function can only be called from a context "
+                              "that permits all of its declared effects "
+                              "(subeffecting).",
+                    fix=f"Either add the missing effects to the calling "
+                        f"function's effects clause, or handle the effects "
+                        f"with a handler.",
+                    spec_ref='Chapter 7, Section 7.8 "Effect Subtyping"',
+                    error_code="E125",
+                )
 
         return return_type
 

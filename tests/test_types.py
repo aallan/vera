@@ -8,7 +8,7 @@ from vera.types import (
     INT, NAT, BOOL, FLOAT64, STRING, UNIT, NEVER, BYTE,
     PrimitiveType, AdtType, FunctionType, RefinedType, TypeVar, UnknownType,
     PureEffectRow, ConcreteEffectRow, EffectInstance,
-    is_subtype, types_equal, substitute, substitute_effect,
+    is_subtype, is_effect_subtype, types_equal, substitute, substitute_effect,
     pretty_type, pretty_effect, canonical_type_name, base_type,
 )
 from vera import ast
@@ -221,6 +221,95 @@ class TestSubstituteEffect:
         )
         result = substitute_effect(eff, {})
         assert result.row_var == "E"
+
+
+# =====================================================================
+# is_effect_subtype
+# =====================================================================
+
+class TestIsEffectSubtype:
+    """Tests for effect row subtyping (Spec §7.8)."""
+
+    def test_pure_reflexive(self) -> None:
+        assert is_effect_subtype(PureEffectRow(), PureEffectRow())
+
+    def test_pure_subtype_of_concrete(self) -> None:
+        io = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}))
+        assert is_effect_subtype(PureEffectRow(), io)
+
+    def test_concrete_not_subtype_of_pure(self) -> None:
+        io = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}))
+        assert not is_effect_subtype(io, PureEffectRow())
+
+    def test_concrete_subset(self) -> None:
+        io = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}))
+        io_state = ConcreteEffectRow(frozenset({
+            EffectInstance("IO", ()),
+            EffectInstance("State", (INT,)),
+        }))
+        assert is_effect_subtype(io, io_state)
+
+    def test_concrete_not_superset(self) -> None:
+        io = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}))
+        io_state = ConcreteEffectRow(frozenset({
+            EffectInstance("IO", ()),
+            EffectInstance("State", (INT,)),
+        }))
+        assert not is_effect_subtype(io_state, io)
+
+    def test_concrete_reflexive(self) -> None:
+        io = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}))
+        assert is_effect_subtype(io, io)
+
+    def test_concrete_disjoint(self) -> None:
+        io = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}))
+        state = ConcreteEffectRow(frozenset({
+            EffectInstance("State", (INT,)),
+        }))
+        assert not is_effect_subtype(io, state)
+
+    def test_row_var_permissive(self) -> None:
+        """Open row variable on sub side is permissive (deferred to #55)."""
+        open_row = ConcreteEffectRow(
+            frozenset({EffectInstance("IO", ())}), row_var="E")
+        io = ConcreteEffectRow(frozenset({EffectInstance("IO", ())}))
+        assert is_effect_subtype(open_row, io)
+
+    def test_empty_concrete_subtype_of_pure(self) -> None:
+        empty = ConcreteEffectRow(frozenset())
+        assert is_effect_subtype(empty, PureEffectRow())
+
+
+class TestFunctionTypeSubtyping:
+    """Tests for FunctionType subtyping including effects."""
+
+    def test_pure_fn_subtype_of_effectful(self) -> None:
+        pure_fn = FunctionType((INT,), BOOL, PureEffectRow())
+        io_fn = FunctionType((INT,), BOOL,
+                             ConcreteEffectRow(frozenset({
+                                 EffectInstance("IO", ())})))
+        assert is_subtype(pure_fn, io_fn)
+
+    def test_effectful_fn_not_subtype_of_pure(self) -> None:
+        pure_fn = FunctionType((INT,), BOOL, PureEffectRow())
+        io_fn = FunctionType((INT,), BOOL,
+                             ConcreteEffectRow(frozenset({
+                                 EffectInstance("IO", ())})))
+        assert not is_subtype(io_fn, pure_fn)
+
+    def test_fn_same_effects_subtype(self) -> None:
+        io_fn1 = FunctionType((INT,), BOOL,
+                              ConcreteEffectRow(frozenset({
+                                  EffectInstance("IO", ())})))
+        io_fn2 = FunctionType((INT,), BOOL,
+                              ConcreteEffectRow(frozenset({
+                                  EffectInstance("IO", ())})))
+        assert is_subtype(io_fn1, io_fn2)
+
+    def test_fn_different_params_not_subtype(self) -> None:
+        fn1 = FunctionType((INT,), BOOL, PureEffectRow())
+        fn2 = FunctionType((BOOL,), BOOL, PureEffectRow())
+        assert not is_subtype(fn1, fn2)
 
 
 # =====================================================================

@@ -494,7 +494,7 @@ Methods in `transform.py` are named after grammar rules and receive already-tran
 
 ### 6. Effect row infrastructure
 
-The type system includes open effect rows (`row_var` field in `ConcreteEffectRow`) for future row polymorphism (`forall<E> fn(...) effects(<E>)`). Currently, effect checking is basic — pure functions can't call effectful operations, and handlers discharge their declared effect. The infrastructure is in place for richer effect tracking in later phases.
+The type system includes open effect rows (`row_var` field in `ConcreteEffectRow`) for row polymorphism (`forall<E> fn(...) effects(<E>)`). Effect checking enforces subeffecting (Spec Section 7.8): `effects(pure) <: effects(<IO>) <: effects(<IO, State<Int>>)`. A function can only be called from a context whose effect row contains all of the callee's effects (`is_effect_subtype` in `types.py`, call-site check in `checker/calls.py`, error code E125). Handlers discharge their declared effect by temporarily adding it to the context. Row variable unification for `forall<E>` polymorphism is permissive pending bidirectional type checking (#55).
 
 ### 7. LLM-oriented diagnostics
 
@@ -527,7 +527,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | Limitation | Why | Planned |
 |-----------|-----|---------|
 | **Module system limitations** | Module system complete (C7a-C7f); remaining issue: flat-compilation name collisions | [#110](https://github.com/aallan/vera/issues/110) |
-| **Limited effect checking** | Pure vs effectful only; no subeffecting or row unification | [#21](https://github.com/aallan/vera/issues/21) |
+| **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive pending bidirectional checking | [#55](https://github.com/aallan/vera/issues/55) |
 | **No quantifier termination** | `decreases` verified for self-recursive and mutual recursion (where-blocks); no support for lexicographic ordering or non-structural measures | [#45](https://github.com/aallan/vera/issues/45) |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
 | **Minimal type inference** | Call-site generic instantiation only, no Hindley-Milner | [#55](https://github.com/aallan/vera/issues/55) |

@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.54] - 2026-03-02
+
+### Added
+- **Effect row subtyping and call-site effect checking** (C8d, [#21](https://github.com/aallan/vera/issues/21)):
+  Implements the subeffecting rules from Spec Section 7.8: a function with fewer
+  effects can be used where more effects are expected.
+  - `is_effect_subtype()` function in `types.py` encodes subset semantics
+    for effect rows (`effects(pure) <: effects(<IO>) <: effects(<IO, State<Int>>)`)
+  - `FunctionType` subtyping now includes effect covariance: a pure function
+    can be passed where `fn(A -> B) effects(<IO>)` is expected
+  - Call-site check in `checker/calls.py`: calling a function whose effects
+    exceed the caller's context is now an error (E125)
+  - Handler bodies unaffected: handlers temporarily add their effect to the
+    context before checking the body, then discharge it
+  - Effect row variables (`forall<E>`) are permissive pending #55
+  - `effects_equal()` function added for structural effect row comparison
+  - `types_equal()` updated to compare effects in `FunctionType`
+  - 20 new tests (13 unit tests, 7 integration tests)
+  - 1,320 tests total
+
 ## [0.0.53] - 2026-03-02
 
 ### Changed
@@ -791,7 +811,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.53...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.54...HEAD
+[0.0.54]: https://github.com/aallan/vera/compare/v0.0.53...v0.0.54
 [0.0.53]: https://github.com/aallan/vera/compare/v0.0.52...v0.0.53
 [0.0.52]: https://github.com/aallan/vera/compare/v0.0.51...v0.0.52
 [0.0.51]: https://github.com/aallan/vera/compare/v0.0.50...v0.0.51
