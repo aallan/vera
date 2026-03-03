@@ -85,9 +85,9 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  resolution.py` | 190 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 153 | | Cross-module registration (C7b/C7c) | |
 | `  registration.py` | 138 | | Pass 1 forward declarations | |
-| `  expressions.py` | 548 | | Expression synthesis, operators, statements | |
-| `  calls.py` | 405 | | Function/constructor/module calls | |
-| `  control.py` | 453 | | If/match, patterns, effect handlers | |
+| `  expressions.py` | 555 | | Expression synthesis (bidirectional), operators, statements | |
+| `  calls.py` | 486 | | Function/constructor/module calls | |
+| `  control.py` | 482 | | If/match, patterns, effect handlers | |
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `smt.py` | 547 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
 | `verifier.py` | 703 | Verify | Contract verification | `verify()` |
@@ -527,10 +527,10 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | Limitation | Why | Planned |
 |-----------|-----|---------|
 | **Module system limitations** | Module system complete (C7a-C7f); remaining issue: flat-compilation name collisions | [#110](https://github.com/aallan/vera/issues/110) |
-| **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive pending bidirectional checking | [#55](https://github.com/aallan/vera/issues/55) |
+| **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | — |
 | **No quantifier termination** | `decreases` verified for self-recursive and mutual recursion (where-blocks); no support for lexicographic ordering or non-structural measures | [#45](https://github.com/aallan/vera/issues/45) |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
-| **Minimal type inference** | Call-site generic instantiation only, no Hindley-Milner | [#55](https://github.com/aallan/vera/issues/55) |
+| **Local type inference only** | Bidirectional checking resolves nullary constructors from context; no Hindley-Milner | Done ([#55](https://github.com/aallan/vera/issues/55)) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No garbage collection** | Bump allocator only; linear memory is not reclaimed | [#51](https://github.com/aallan/vera/issues/51) |
 | **String constants only** | No dynamic string construction | [#52](https://github.com/aallan/vera/issues/52) |

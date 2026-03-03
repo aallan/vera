@@ -37,7 +37,6 @@ from vera.types import (
     TypeVar,
     UnknownType,
     canonical_type_name,
-    contains_typevar,
     is_subtype,
     pretty_type,
 )
@@ -253,12 +252,10 @@ class TypeChecker(
         for contract in decl.contracts:
             self._check_contract(contract, decl)
 
-        # 6. Check body
-        body_type = self._synth_expr(decl.body)
+        # 6. Check body (pass return type as expected for bidirectional)
+        body_type = self._synth_expr(decl.body, expected=return_type)
         if body_type and not isinstance(body_type, UnknownType):
-            if contains_typevar(body_type) and not decl.forall_vars:
-                pass  # Unresolved TypeVars from constructors — skip
-            elif not is_subtype(body_type, return_type):
+            if not is_subtype(body_type, return_type):
                 self._error(
                     decl.body,
                     f"Function '{decl.name}' body has type "

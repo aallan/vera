@@ -37,8 +37,14 @@ class ExpressionsMixin:
     # Expression type synthesis
     # -----------------------------------------------------------------
 
-    def _synth_expr(self, expr: ast.Expr) -> Type | None:
-        """Synthesise the type of an expression.  Returns None on error."""
+    def _synth_expr(self, expr: ast.Expr, *,
+                    expected: Type | None = None) -> Type | None:
+        """Synthesise the type of an expression.  Returns None on error.
+
+        When *expected* is provided, it is threaded to constructors,
+        if/match, and blocks so that nullary constructors of parameterised
+        ADTs can resolve their TypeVars from context (bidirectional checking).
+        """
         if isinstance(expr, ast.IntLit):
             # Non-negative integer literals are Nat (which is a subtype of
             # Int).  This lets literals like 0, 1, 42 satisfy Nat parameters
@@ -65,19 +71,19 @@ class ExpressionsMixin:
         if isinstance(expr, ast.FnCall):
             return self._check_fn_call(expr)
         if isinstance(expr, ast.ConstructorCall):
-            return self._check_constructor_call(expr)
+            return self._check_constructor_call(expr, expected=expected)
         if isinstance(expr, ast.NullaryConstructor):
-            return self._check_nullary_constructor(expr)
+            return self._check_nullary_constructor(expr, expected=expected)
         if isinstance(expr, ast.QualifiedCall):
             return self._check_qualified_call(expr)
         if isinstance(expr, ast.ModuleCall):
             return self._check_module_call(expr)
         if isinstance(expr, ast.IfExpr):
-            return self._check_if(expr)
+            return self._check_if(expr, expected=expected)
         if isinstance(expr, ast.MatchExpr):
-            return self._check_match(expr)
+            return self._check_match(expr, expected=expected)
         if isinstance(expr, ast.Block):
-            return self._check_block(expr)
+            return self._check_block(expr, expected=expected)
         if isinstance(expr, ast.AnonFn):
             return self._check_anon_fn(expr)
         if isinstance(expr, ast.HandleExpr):
@@ -359,12 +365,13 @@ class ExpressionsMixin:
     # Blocks and statements
     # -----------------------------------------------------------------
 
-    def _check_block(self, block: ast.Block) -> Type | None:
+    def _check_block(self, block: ast.Block, *,
+                     expected: Type | None = None) -> Type | None:
         """Type-check a block expression."""
         self.env.push_scope()
         for stmt in block.statements:
             self._check_stmt(stmt)
-        result = self._synth_expr(block.expr)
+        result = self._synth_expr(block.expr, expected=expected)
         self.env.pop_scope()
         return result
 
@@ -380,7 +387,7 @@ class ExpressionsMixin:
     def _check_let(self, stmt: ast.LetStmt) -> None:
         """Type-check a let binding."""
         declared_type = self._resolve_type(stmt.type_expr)
-        val_type = self._synth_expr(stmt.value)
+        val_type = self._synth_expr(stmt.value, expected=declared_type)
 
         if val_type and not isinstance(val_type, UnknownType):
             if not isinstance(declared_type, UnknownType):
@@ -420,7 +427,7 @@ class ExpressionsMixin:
             tname = self._type_expr_to_slot_name(param_te)
             self.env.bind(tname, param_ty, "param")
 
-        body_type = self._synth_expr(expr.body)
+        body_type = self._synth_expr(expr.body, expected=ret_type)
         self.env.pop_scope()
 
         if body_type and not isinstance(body_type, UnknownType):
