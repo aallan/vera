@@ -598,7 +598,7 @@ To add a new WASM type mapping, update `wasm_type()` in `wasm/helpers.py` and th
 
 ### Development
 
-`pytest`, `pytest-cov` (testing), `mypy` (strict type checking), `hypothesis` (property testing, declared but not yet used), `pre-commit` (commit hooks).
+`pytest`, `pytest-cov` (testing), `mypy` (strict type checking), `pre-commit` (commit hooks).
 
 ---
 

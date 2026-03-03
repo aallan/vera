@@ -577,3 +577,4 @@ The current compilation model has the following limitations, each tracked as a G
 | No garbage collection | [#51](https://github.com/aallan/vera/issues/51) | Bump allocator only; linear memory is not reclaimed |
 | String constants only | [#52](https://github.com/aallan/vera/issues/52) | No dynamic string construction |
 | Only State\<T\> handlers | [#53](https://github.com/aallan/vera/issues/53) | Exn\<E\> and custom effect handlers not yet compilable |
+| Arrays of compound types | [#132](https://github.com/aallan/vera/issues/132) | Only primitive element types (`Int`, `Nat`, `Bool`, `Byte`, `Float64`); compound types like `Array<Array<Int>>` or `Array<Option<Int>>` not yet supported |
