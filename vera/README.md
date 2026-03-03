@@ -498,7 +498,7 @@ The type system includes open effect rows (`row_var` field in `ConcreteEffectRow
 
 ### 7. LLM-oriented diagnostics
 
-Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable error code (`E001`–`E607`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
+Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable error code (`E001`–`E610`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
 
 ### 8. Stable error code taxonomy
 
@@ -526,7 +526,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Module system limitations** | Module system complete (C7a-C7f); remaining issue: flat-compilation name collisions | [#110](https://github.com/aallan/vera/issues/110) |
+| **Module system limitations** | Module system complete (C7a-C7f); name collisions detected (E608-E610); qualified-call disambiguation pending | Done ([#110](https://github.com/aallan/vera/issues/110)) |
 | **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | — |
 | **No quantifier termination** | `decreases` verified for self-recursive and mutual recursion (where-blocks); no support for lexicographic ordering or non-structural measures | [#45](https://github.com/aallan/vera/issues/45) |
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |

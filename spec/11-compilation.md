@@ -565,7 +565,7 @@ The compilation process:
 
 Imported functions are **not** exported from the WASM module — only the importing program's `public` functions are exports.
 
-**Known limitation**: If two imported modules define functions with the same name, the flat namespace may produce collisions ([#110](https://github.com/aallan/vera/issues/110)).
+**Name collision detection**: If two imported modules define a function (E608), data type (E609), or constructor (E610) with the same name, the compiler reports an error listing both modules. Rename the conflicting declaration in one of the source modules to resolve the collision. Qualified-call disambiguation via name mangling is planned for a future version.
 
 ## 11.17 Limitations
 
@@ -573,7 +573,7 @@ The current compilation model has the following limitations, each tracked as a G
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions between modules are not yet detected |
+| Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |
 | No garbage collection | [#51](https://github.com/aallan/vera/issues/51) | Bump allocator only; linear memory is not reclaimed |
 | String constants only | [#52](https://github.com/aallan/vera/issues/52) | No dynamic string construction |
 | Only State\<T\> handlers | [#53](https://github.com/aallan/vera/issues/53) | Exn\<E\> and custom effect handlers not yet compilable |

@@ -20,9 +20,10 @@ class CrossModuleMixin:
         1. Build import-name filter from ImportDecl nodes.
         2. For each resolved module, register in isolation and harvest
            function signatures, ADT layouts, and type aliases.
-        3. Inject into ``self._fn_sigs`` via ``setdefault`` so local
+        3. Detect name collisions across modules (E608/E609/E610).
+        4. Inject into ``self._fn_sigs`` via ``setdefault`` so local
            definitions shadow imported names.
-        4. Collect all imported FnDecls for compilation in Pass 2.5.
+        5. Collect all imported FnDecls for compilation in Pass 2.5.
         """
         if not self._resolved_modules:
             return
@@ -35,6 +36,11 @@ class CrossModuleMixin:
             import_names[imp.path] = (
                 set(imp.names) if imp.names is not None else None
             )
+
+        # Provenance tracking for collision detection
+        fn_provenance: dict[str, tuple[str, ...]] = {}
+        adt_provenance: dict[str, tuple[str, ...]] = {}
+        ctor_provenance: dict[str, tuple[tuple[str, ...], str]] = {}
 
         # 2. Register each module in isolation
         for mod in self._resolved_modules:
@@ -53,6 +59,18 @@ class CrossModuleMixin:
             # private helpers called by imported public fns are available.
             name_filter = import_names.get(mod.path)
             for fn_name, sig in temp._fn_sigs.items():
+                # Collision detection: same name from different module
+                if fn_name in fn_provenance:
+                    prev_path = fn_provenance[fn_name]
+                    if prev_path != mod.path:
+                        self._emit_collision_error(
+                            program, fn_name, "Function",
+                            prev_path, mod.path, "E608",
+                        )
+                        continue
+                else:
+                    fn_provenance[fn_name] = mod.path
+
                 # For bare-call injection: only public + in import filter
                 is_public = vis_map.get(fn_name) == "public"
                 in_filter = (
@@ -70,7 +88,35 @@ class CrossModuleMixin:
                 in_filter = (
                     name_filter is None or adt_name in name_filter
                 )
-                if is_public and in_filter:
+
+                # ADT type name collision detection
+                if adt_name in adt_provenance:
+                    prev_path = adt_provenance[adt_name]
+                    if prev_path != mod.path:
+                        self._emit_collision_error(
+                            program, adt_name, "Data type",
+                            prev_path, mod.path, "E609",
+                        )
+                        continue
+                else:
+                    adt_provenance[adt_name] = mod.path
+
+                # Constructor name collision detection
+                ctor_collision = False
+                for ctor_name in layouts:
+                    if ctor_name in ctor_provenance:
+                        prev_path, prev_adt = ctor_provenance[ctor_name]
+                        if prev_path != mod.path:
+                            self._emit_ctor_collision_error(
+                                program, ctor_name,
+                                prev_path, prev_adt,
+                                mod.path, adt_name,
+                            )
+                            ctor_collision = True
+                    else:
+                        ctor_provenance[ctor_name] = (mod.path, adt_name)
+
+                if not ctor_collision and is_public and in_filter:
                     self._adt_layouts.setdefault(adt_name, layouts)
                     self._needs_alloc = True
                     self._needs_memory = True
@@ -87,6 +133,91 @@ class CrossModuleMixin:
                     if tld.decl.where_fns:
                         for wfn in tld.decl.where_fns:
                             self._imported_fn_decls.append(wfn)
+
+    # -----------------------------------------------------------------
+    # Name collision diagnostics
+    # -----------------------------------------------------------------
+
+    def _emit_collision_error(
+        self,
+        program: ast.Program,
+        name: str,
+        kind: str,
+        path_a: tuple[str, ...],
+        path_b: tuple[str, ...],
+        error_code: str,
+    ) -> None:
+        """Emit a diagnostic for a name collision between imported modules."""
+        mod_a = ".".join(path_a)
+        mod_b = ".".join(path_b)
+        imp_node = self._find_import_node(program, path_b)
+        loc = SourceLocation(file=self.file)
+        if imp_node and imp_node.span:
+            loc.line = imp_node.span.line
+            loc.column = imp_node.span.column
+        self.diagnostics.append(Diagnostic(
+            description=(
+                f"{kind} '{name}' is defined in both imported module "
+                f"'{mod_a}' and '{mod_b}'."
+            ),
+            location=loc,
+            source_line=self._get_source_line(loc.line),
+            rationale=(
+                "The flat compilation strategy (C7e) compiles all imported "
+                "functions into a single WASM namespace. Names must be "
+                "unique across imported modules to avoid silent overwrites."
+            ),
+            fix=f"Rename '{name}' in one of the source modules.",
+            spec_ref="Chapter 11, Section 11.16",
+            severity="error",
+            error_code=error_code,
+        ))
+
+    def _emit_ctor_collision_error(
+        self,
+        program: ast.Program,
+        ctor_name: str,
+        path_a: tuple[str, ...],
+        adt_a: str,
+        path_b: tuple[str, ...],
+        adt_b: str,
+    ) -> None:
+        """Emit a diagnostic for a constructor name collision."""
+        mod_a = ".".join(path_a)
+        mod_b = ".".join(path_b)
+        imp_node = self._find_import_node(program, path_b)
+        loc = SourceLocation(file=self.file)
+        if imp_node and imp_node.span:
+            loc.line = imp_node.span.line
+            loc.column = imp_node.span.column
+        self.diagnostics.append(Diagnostic(
+            description=(
+                f"Constructor '{ctor_name}' is defined in both imported "
+                f"module '{mod_a}' (data {adt_a}) and "
+                f"'{mod_b}' (data {adt_b})."
+            ),
+            location=loc,
+            source_line=self._get_source_line(loc.line),
+            rationale=(
+                "The flat compilation strategy (C7e) compiles all ADT "
+                "constructors into a single namespace. Duplicate constructor "
+                "names cause incorrect pattern matching and memory layouts."
+            ),
+            fix=f"Rename constructor '{ctor_name}' in one of the data types.",
+            spec_ref="Chapter 11, Section 11.16",
+            severity="error",
+            error_code="E610",
+        ))
+
+    @staticmethod
+    def _find_import_node(
+        program: ast.Program, path: tuple[str, ...],
+    ) -> ast.ImportDecl | None:
+        """Find the ImportDecl for a given module path."""
+        for imp in program.imports:
+            if imp.path == path:
+                return imp
+        return None
 
     # -----------------------------------------------------------------
     # Cross-module call detection
