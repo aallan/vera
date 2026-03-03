@@ -496,6 +496,9 @@ ERROR_CODES: dict[str, str] = {
     "E605": "Unsupported state type parameter",
     "E606": "State without proper effect declaration",
     "E607": "State with unsupported operations",
+    "E608": "Name collision: function",
+    "E609": "Name collision: ADT type",
+    "E610": "Name collision: constructor",
     # E7xx — Testing
     "E700": "Contract violation during testing",
     "E701": "Cannot generate test inputs",

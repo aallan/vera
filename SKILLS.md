@@ -627,11 +627,13 @@ Imported function contracts are verified at call sites by the SMT solver. Precon
 
 Cross-module compilation uses a flattening strategy: imported function bodies are compiled into the same WASM module as the importing program. The result is a single self-contained `.wasm` binary. Imported functions are internal (not exported); only the importing program's `public` functions are WASM exports.
 
+If two imported modules define a function, data type, or constructor with the same name, the compiler reports an error (E608/E609/E610) listing both conflicting modules. Rename one of the conflicting declarations in the source module to resolve the collision. Local definitions shadow imported names without error.
+
 Type aliases and effect declarations are module-local and cannot be imported. If another module needs the same alias or effect, it must declare its own copy.
 
-Module-qualified calls use `::` between the module path and the function name: `vera.math::abs(42)`. The dot-separated path identifies the module and `::` separates it from the function name. This syntax can be used anywhere a function call is valid, and always resolves against the specific module's public declarations — it is not affected by local shadowing.
+Module-qualified calls use `::` between the module path and the function name: `vera.math::abs(42)`. The dot-separated path identifies the module and `::` separates it from the function name. This syntax can be used anywhere a function call is valid, and always resolves against the specific module's public declarations — it is not affected by local shadowing. Note: module-qualified calls (`math::abs(42)`) are available for readability but do not yet resolve name collisions in flat compilation — the compiler will still report a collision error. A future version will support qualified-call disambiguation via name mangling.
 
-There is no import aliasing (`import m(abs as math_abs)`) and no wildcard exclusion (`import m hiding(x)`). These are intentional design decisions, not limitations. When names clash, use selective imports to pick the names you need, and use `::` syntax to disambiguate: `vera.math::abs(x)`. This preserves the one-canonical-form principle — every function has exactly one name.
+There is no import aliasing (`import m(abs as math_abs)`) and no wildcard exclusion (`import m hiding(x)`). These are intentional design decisions, not limitations. When names clash across modules, rename the conflicting declaration in one of the source modules. This preserves the one-canonical-form principle — every function has exactly one name.
 
 There are no raw strings (`r"..."`) or multi-line string literals. Use escape sequences (`\\`, `\n`, `\t`, `\"`) for special characters. This is by design — alternative string syntaxes would create two representations for the same value.
 
@@ -866,11 +868,13 @@ WRONG — Vera does not support renaming imports:
 import vera.math(abs as math_abs);
 ```
 
-CORRECT — use selective import and `::` syntax to disambiguate:
+CORRECT — use selective import and qualified calls for readability:
 ```vera
 import vera.math(abs);
 vera.math::abs(-5)
 ```
+
+Note: if two imported modules define the same name, the compiler reports a collision error (E608/E609/E610). Rename the conflicting declaration in one of the source modules.
 
 ### Trying to use wildcard exclusion
 

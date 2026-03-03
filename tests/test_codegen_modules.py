@@ -347,3 +347,183 @@ public fn main(-> @Int)
 { pick() }
 """, [mod], fn="main")
         assert val == 42
+
+
+# =====================================================================
+# Name collision detection (#110)
+# =====================================================================
+
+
+class TestNameCollisionDetection:
+    """Name collisions across imported modules produce diagnostics."""
+
+    @staticmethod
+    def _resolved(
+        path: tuple[str, ...], source: str,
+    ) -> "ResolvedModule":
+        """Build a ResolvedModule from source text."""
+        return TestCrossModuleCodegen._resolved(path, source)
+
+    @classmethod
+    def _compile_mod(
+        cls, source: str, modules: list,
+    ) -> CompileResult:
+        """Compile with resolved modules."""
+        return TestCrossModuleCodegen._compile_mod(source, modules)
+
+    def test_fn_collision_two_modules(self) -> None:
+        """Same function name in two imported modules produces E608."""
+        mod_a = self._resolved(("mod_a",), """\
+public fn process(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+""")
+        mod_b = self._resolved(("mod_b",), """\
+public fn process(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 2 }
+""")
+        result = self._compile_mod("""\
+import mod_a(process);
+import mod_b(process);
+public fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ process(@Int.0) }
+""", [mod_a, mod_b])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert len(errors) >= 1
+        assert "process" in errors[0].description
+        assert "mod_a" in errors[0].description
+        assert "mod_b" in errors[0].description
+        assert errors[0].error_code == "E608"
+        assert result.ok is False
+
+    def test_private_helper_collision(self) -> None:
+        """Private helpers with same name across modules produce E608."""
+        mod_a = self._resolved(("mod_a",), """\
+public fn double(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ helper(@Int.0) + helper(@Int.0) }
+private fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+        mod_b = self._resolved(("mod_b",), """\
+public fn triple(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ helper(@Int.0) + helper(@Int.0) + helper(@Int.0) }
+private fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+        result = self._compile_mod("""\
+import mod_a(double);
+import mod_b(triple);
+public fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ double(@Int.0) + triple(@Int.0) }
+""", [mod_a, mod_b])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert any(
+            e.error_code == "E608" and "helper" in e.description
+            for e in errors
+        )
+
+    def test_adt_type_collision(self) -> None:
+        """Same ADT name in two modules produces E609."""
+        mod_a = self._resolved(("mod_a",), """\
+public data Color { Red, Green, Blue }
+""")
+        mod_b = self._resolved(("mod_b",), """\
+public data Color { Cyan, Magenta, Yellow }
+""")
+        result = self._compile_mod("""\
+import mod_a(Color);
+import mod_b(Color);
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""", [mod_a, mod_b])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert any(
+            e.error_code == "E609" and "Color" in e.description
+            for e in errors
+        )
+
+    def test_ctor_collision_across_adts(self) -> None:
+        """Same constructor name in different ADTs produces E610."""
+        mod_a = self._resolved(("colors",), """\
+public data Color { Red, Green, Blue }
+""")
+        mod_b = self._resolved(("shapes",), """\
+public data Shape { Red, Green, Triangle }
+""")
+        result = self._compile_mod("""\
+import colors(Color);
+import shapes(Shape);
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""", [mod_a, mod_b])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert any(
+            e.error_code == "E610" and "Red" in e.description
+            for e in errors
+        )
+        assert any(
+            e.error_code == "E610" and "Green" in e.description
+            for e in errors
+        )
+
+    def test_local_shadows_import_no_collision(self) -> None:
+        """Local definition shadowing an import is NOT a collision."""
+        mod = self._resolved(("math",), TestCrossModuleCodegen.MATH_MODULE)
+        result = self._compile_mod("""\
+import math(abs);
+public fn abs(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 999 }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ abs(42) }
+""", [mod])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert not errors, (
+            f"Local shadow should not produce collision: {errors}"
+        )
+
+    def test_same_module_no_collision(self) -> None:
+        """Same module path in resolved list twice is not a collision."""
+        mod = self._resolved(("math",), TestCrossModuleCodegen.MATH_MODULE)
+        result = self._compile_mod("""\
+import math(abs);
+public fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ abs(@Int.0) }
+""", [mod, mod])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert not errors
+
+    def test_collision_message_includes_both_modules(self) -> None:
+        """Collision diagnostic mentions both conflicting module paths."""
+        mod_a = self._resolved(("alpha",), """\
+public fn compute(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+        mod_b = self._resolved(("beta",), """\
+public fn compute(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+        result = self._compile_mod("""\
+import alpha(compute);
+import beta(compute);
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""", [mod_a, mod_b])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert len(errors) >= 1
+        desc = errors[0].description
+        assert "alpha" in desc and "beta" in desc

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.57] - 2026-03-03
+
+### Added
+- **Name collision detection for flat module compilation** (C8e, [#110](https://github.com/aallan/vera/issues/110)):
+  When two imported modules define a function, data type, or constructor with
+  the same name, the compiler now reports a clear error (E608/E609/E610) listing
+  both conflicting modules. Previously, the first module registered silently won
+  and the second was ignored, producing silently wrong code.
+  - Provenance tracking in `_register_modules` detects collisions across functions,
+    ADT types, and constructors
+  - New error codes: E608 (function collision), E609 (ADT type collision),
+    E610 (constructor collision)
+  - Local definitions continue to shadow imported names without error
+  - Same-module duplicates (module imported twice) are not treated as collisions
+  - 7 new tests, 1,344 tests total
+
 ## [0.0.56] - 2026-03-03
 
 ### Added

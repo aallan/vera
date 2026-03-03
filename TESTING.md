@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,337 across 19 files (~17,000 lines of test code) |
+| **Tests** | 1,344 across 19 files (~17,000 lines of test code) |
 | **Compiler code coverage** | 88% of 6,861 statements (CI minimum: 80%) |
 | **Example programs** | 15, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
@@ -47,7 +47,7 @@ python scripts/check_version_sync.py                 # version consistency
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 17 | 360 | Generic instantiation, type inference, monomorphization edge cases |
 | `test_codegen_closures.py` | 17 | 416 | Closure lifting, captured variables, higher-order functions |
-| `test_codegen_modules.py` | 11 | 349 | Cross-module guard rail, cross-module codegen |
+| `test_codegen_modules.py` | 18 | 530 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 249 | Defensive error paths: E600, E601, E605, E606, unknown module calls |
 | `test_errors.py` | 34 | 287 | Error code registry, diagnostic formatting, serialisation, SourceLocation |
 | `test_formatter.py` | 62 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
@@ -133,6 +133,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — |
 | Ch 4: Expressions | Nested constructor patterns in match | test_codegen | pattern_matching |
 | Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | modules |
+| Ch 11: Compilation | Cross-module name collision detection (E608/E609/E610) | test_codegen_modules | — |
 | Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_cli | safe_divide, factorial |
 
 ## Test Helpers

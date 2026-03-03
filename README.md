@@ -163,7 +163,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-The compiler has 1,337 tests with 88% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 15 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
+The compiler has 1,344 tests with 88% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 15 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
 
 ## Roadmap
 
@@ -274,7 +274,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 **C8e — Codegen gaps** — extend WASM compilation
 
 - [#154](https://github.com/aallan/vera/issues/154) `list_ops.vera` runtime failure — recursive generic ADT codegen
-- [#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation
+- ~~[#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation~~ — [v0.0.57](https://github.com/aallan/vera/releases/tag/v0.0.57)
 - ~~[#131](https://github.com/aallan/vera/issues/131) nested constructor pattern codegen~~ — [v0.0.56](https://github.com/aallan/vera/releases/tag/v0.0.56)
 - [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation
 - [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory
@@ -290,6 +290,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 Module refinements, lexical extensions, and IO runtime — completing the existing language before adding new features.
 
 - [#127](https://github.com/aallan/vera/issues/127) module re-exports
+- [#187](https://github.com/aallan/vera/issues/187) module-qualified call disambiguation via name mangling
 - [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file)
 - [#139](https://github.com/aallan/vera/issues/139) scientific notation for float literals
 - [#169](https://github.com/aallan/vera/issues/169) `vera test` Float64 and compound type input generation
