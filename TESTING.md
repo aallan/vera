@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,320 across 19 files (~17,000 lines of test code) |
+| **Tests** | 1,332 across 19 files (~17,000 lines of test code) |
 | **Compiler code coverage** | 88% of 6,861 statements (CI minimum: 80%) |
 | **Example programs** | 15, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
@@ -130,6 +130,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker | hello_world, increment |
 | Ch 7: Effects | Effect handlers (handle/resume) | test_codegen, test_checker | effect_handler |
 | Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker | — |
+| Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — |
 | Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | modules |
 | Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_cli | safe_divide, factorial |
 

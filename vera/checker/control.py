@@ -29,7 +29,8 @@ class ControlFlowMixin:
     # Control flow
     # -----------------------------------------------------------------
 
-    def _check_if(self, expr: ast.IfExpr) -> Type | None:
+    def _check_if(self, expr: ast.IfExpr, *,
+                  expected: Type | None = None) -> Type | None:
         """Type-check if-then-else."""
         cond_ty = self._synth_expr(expr.condition)
         if cond_ty and not isinstance(cond_ty, UnknownType):
@@ -42,8 +43,8 @@ class ControlFlowMixin:
                     error_code="E300",
                 )
 
-        then_ty = self._synth_expr(expr.then_branch)
-        else_ty = self._synth_expr(expr.else_branch)
+        then_ty = self._synth_expr(expr.then_branch, expected=expected)
+        else_ty = self._synth_expr(expr.else_branch, expected=expected)
 
         if then_ty is None or else_ty is None:
             return then_ty or else_ty
@@ -64,10 +65,21 @@ class ControlFlowMixin:
         if is_subtype(else_ty, then_ty):
             return then_ty
 
-        # Unresolved TypeVars from nullary constructors — pick the
-        # branch with concrete types when possible.
-        if contains_typevar(then_ty) or contains_typevar(else_ty):
-            return else_ty if contains_typevar(then_ty) else then_ty
+        # Re-synthesis fallback: if one branch has unresolved TypeVars,
+        # re-synth it with the concrete branch as expected.
+        if contains_typevar(then_ty) and not contains_typevar(else_ty):
+            then_ty = self._synth_expr(
+                expr.then_branch, expected=else_ty)
+            if then_ty and is_subtype(then_ty, else_ty):
+                return else_ty
+        elif contains_typevar(else_ty) and not contains_typevar(then_ty):
+            else_ty = self._synth_expr(
+                expr.else_branch, expected=then_ty)
+            if else_ty and is_subtype(else_ty, then_ty):
+                return then_ty
+        elif contains_typevar(then_ty) and contains_typevar(else_ty):
+            # Both have TypeVars — pick either (both unresolved)
+            return then_ty
 
         self._error(
             expr,
@@ -81,7 +93,8 @@ class ControlFlowMixin:
         )
         return then_ty  # use then-branch type as best guess
 
-    def _check_match(self, expr: ast.MatchExpr) -> Type | None:
+    def _check_match(self, expr: ast.MatchExpr, *,
+                     expected: Type | None = None) -> Type | None:
         """Type-check a match expression."""
         scrutinee_ty = self._synth_expr(expr.scrutinee)
         if scrutinee_ty is None:
@@ -97,8 +110,8 @@ class ControlFlowMixin:
             for b in bindings:
                 self.env.bind(b.type_name, b.resolved_type, "match")
 
-            # Synth arm body type
-            arm_ty = self._synth_expr(arm.body)
+            # Synth arm body type (pass expected for bidirectional)
+            arm_ty = self._synth_expr(arm.body, expected=expected)
             self.env.pop_scope()
 
             if arm_ty is None or isinstance(arm_ty, UnknownType):
@@ -109,12 +122,18 @@ class ControlFlowMixin:
             elif types_equal(result_type, NEVER):
                 result_type = arm_ty
             elif not types_equal(arm_ty, NEVER):
-                if contains_typevar(arm_ty) or contains_typevar(result_type):
-                    # Prefer the concrete type over the TypeVar-bearing one
-                    if contains_typevar(result_type) and not contains_typevar(arm_ty):
-                        result_type = arm_ty
-                elif not (is_subtype(arm_ty, result_type)
-                          or is_subtype(result_type, arm_ty)):
+                # Re-synthesis fallback for unresolved TypeVars
+                if contains_typevar(arm_ty) and not contains_typevar(result_type):
+                    arm_ty = self._synth_expr(
+                        arm.body, expected=result_type)
+                    if arm_ty is None or isinstance(arm_ty, UnknownType):
+                        continue
+                elif contains_typevar(result_type) and not contains_typevar(arm_ty):
+                    result_type = arm_ty
+                    continue
+
+                if not (is_subtype(arm_ty, result_type)
+                        or is_subtype(result_type, arm_ty)):
                     self._error(
                         arm.body if hasattr(arm, 'body') else expr,
                         f"Match arm type {pretty_type(arm_ty)} is "

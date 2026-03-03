@@ -105,8 +105,12 @@ class CallsMixin:
                 continue
             if isinstance(param_ty, (TypeVar, UnknownType)):
                 continue
-            if contains_typevar(arg_ty):
-                continue
+            # Re-synth if arg still has unresolved TypeVars (bidirectional)
+            if contains_typevar(arg_ty) and not contains_typevar(param_ty):
+                arg_ty = self._synth_expr(args[i], expected=param_ty)
+                if arg_ty is None or isinstance(arg_ty, UnknownType):
+                    continue
+                arg_types[i] = arg_ty
             if not is_subtype(arg_ty, param_ty):
                 self._error(
                     args[i],
@@ -199,7 +203,8 @@ class CallsMixin:
     # Constructors
     # -----------------------------------------------------------------
 
-    def _check_constructor_call(self, expr: ast.ConstructorCall) -> Type | None:
+    def _check_constructor_call(self, expr: ast.ConstructorCall, *,
+                                expected: Type | None = None) -> Type | None:
         """Type-check a constructor call: Ctor(args)."""
         ci = self.env.lookup_constructor(expr.name)
         if ci is None:
@@ -213,10 +218,33 @@ class CallsMixin:
                 self._synth_expr(arg)
             return UnknownType()
 
-        # Synth arg types
+        # Build expected-type mapping for bidirectional inference
+        expected_mapping: dict[str, Type] = {}
+        if (isinstance(expected, AdtType)
+                and ci.parent_type_params
+                and expected.name == ci.parent_type
+                and len(expected.type_args) == len(ci.parent_type_params)):
+            for tv, exp_arg in zip(ci.parent_type_params,
+                                   expected.type_args):
+                if not isinstance(exp_arg, TypeVar):
+                    expected_mapping[tv] = exp_arg
+
+        # Compute field types with expected-type substitution so we can
+        # pass them as expected to nested constructor args (e.g. Some(None))
+        field_types_for_expected: tuple[Type, ...] | None = None
+        if ci.field_types is not None and expected_mapping:
+            field_types_for_expected = tuple(
+                substitute(ft, expected_mapping) for ft in ci.field_types)
+
+        # Synth arg types, passing resolved field type as expected
         arg_types: list[Type | None] = []
-        for arg in expr.args:
-            arg_types.append(self._synth_expr(arg))
+        for i, arg in enumerate(expr.args):
+            field_expected: Type | None = None
+            if field_types_for_expected and i < len(field_types_for_expected):
+                ft = field_types_for_expected[i]
+                if not contains_typevar(ft):
+                    field_expected = ft
+            arg_types.append(self._synth_expr(arg, expected=field_expected))
 
         if ci.field_types is None:
             if expr.args:
@@ -226,7 +254,7 @@ class CallsMixin:
                     f"{len(expr.args)} argument(s).",
                     error_code="E211",
                 )
-            return self._ctor_result_type(ci, arg_types)
+            return self._ctor_result_type(ci, arg_types, expected=expected)
 
         if len(expr.args) != len(ci.field_types):
             self._error(
@@ -235,10 +263,16 @@ class CallsMixin:
                 f"{len(ci.field_types)} field(s), got {len(expr.args)}.",
                 error_code="E212",
             )
-            return self._ctor_result_type(ci, arg_types)
+            return self._ctor_result_type(ci, arg_types, expected=expected)
 
-        # Infer type args for parameterised ADTs
+        # Infer type args for parameterised ADTs from arg types
         mapping = self._infer_ctor_type_args(ci, arg_types)
+
+        # Merge expected-type mapping for unresolved vars
+        for tv, exp_ty in expected_mapping.items():
+            if tv not in mapping:
+                mapping[tv] = exp_ty
+
         field_types = ci.field_types
         if mapping:
             field_types = tuple(substitute(ft, mapping) for ft in field_types)
@@ -248,8 +282,12 @@ class CallsMixin:
                 continue
             if isinstance(field_ty, (TypeVar, UnknownType)):
                 continue
-            if contains_typevar(arg_ty):
-                continue
+            # Re-synth if arg still has unresolved TypeVars
+            if contains_typevar(arg_ty) and not contains_typevar(field_ty):
+                arg_ty = self._synth_expr(expr.args[i], expected=field_ty)
+                if arg_ty is None or isinstance(arg_ty, UnknownType):
+                    continue
+                arg_types[i] = arg_ty
             if not is_subtype(arg_ty, field_ty):
                 self._error(
                     expr.args[i],
@@ -259,9 +297,10 @@ class CallsMixin:
                     error_code="E213",
                 )
 
-        return self._ctor_result_type(ci, arg_types)
+        return self._ctor_result_type(ci, arg_types, expected=expected)
 
-    def _check_nullary_constructor(self, expr: ast.NullaryConstructor) -> Type | None:
+    def _check_nullary_constructor(self, expr: ast.NullaryConstructor, *,
+                                    expected: Type | None = None) -> Type | None:
         """Type-check a nullary constructor: None, Nil, etc."""
         ci = self.env.lookup_constructor(expr.name)
         if ci is None:
@@ -277,14 +316,29 @@ class CallsMixin:
                 error_code="E215",
             )
 
-        return self._ctor_result_type(ci, [])
+        return self._ctor_result_type(ci, [], expected=expected)
 
     def _ctor_result_type(self, ci: ConstructorInfo,
-                          arg_types: list[Type | None]) -> Type:
-        """Compute the result type of a constructor call."""
+                          arg_types: list[Type | None], *,
+                          expected: Type | None = None) -> Type:
+        """Compute the result type of a constructor call.
+
+        When *expected* is an AdtType with the same parent name, unresolved
+        TypeVars are filled from the expected type args (bidirectional).
+        """
         if ci.parent_type_params:
             # Try to infer type args from argument types
             mapping = self._infer_ctor_type_args(ci, arg_types)
+
+            # Fill unresolved TypeVars from expected type (bidirectional)
+            if (isinstance(expected, AdtType)
+                    and expected.name == ci.parent_type
+                    and len(expected.type_args) == len(ci.parent_type_params)):
+                for tv, exp_arg in zip(ci.parent_type_params,
+                                       expected.type_args):
+                    if tv not in mapping and not isinstance(exp_arg, TypeVar):
+                        mapping[tv] = exp_arg
+
             if mapping:
                 args = tuple(
                     mapping.get(tv, TypeVar(tv))

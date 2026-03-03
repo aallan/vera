@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.55] - 2026-03-03
+
+### Added
+- **Bidirectional type checking** (C8d, [#55](https://github.com/aallan/vera/issues/55)):
+  Adds local type inference via an `expected` parameter threaded through
+  expression synthesis. Nullary constructors of parameterised ADTs (`None`
+  for `Option<T>`, `Nil` for `List<T>`) now resolve their TypeVars from
+  context — return types, let bindings, if/match branches, and function
+  arguments.
+  - `_synth_expr` gains optional `expected: Type | None` parameter
+  - Constructors resolve unresolved TypeVars from expected type in
+    `_ctor_result_type` and `_check_constructor_call`
+  - Nested constructors (`Some(None)` for `Option<Option<Int>>`) resolve
+    via field-type propagation
+  - Function call arguments with TypeVars are re-synthesised with the
+    substituted parameter type as expected
+  - If/match branches with TypeVars are re-synthesised using the concrete
+    branch as expected, replacing the previous `contains_typevar` guards
+  - `_check_fn` passes `expected=return_type` to body synthesis, removing
+    the `contains_typevar` workaround guard from v0.0.53
+  - No changes to function signatures, parser, AST, or spec
+  - 12 new tests (TestBidirectionalInference)
+  - 1,332 tests total
+
 ## [0.0.54] - 2026-03-02
 
 ### Added
@@ -811,7 +835,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.54...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.55...HEAD
+[0.0.55]: https://github.com/aallan/vera/compare/v0.0.54...v0.0.55
 [0.0.54]: https://github.com/aallan/vera/compare/v0.0.53...v0.0.54
 [0.0.53]: https://github.com/aallan/vera/compare/v0.0.52...v0.0.53
 [0.0.52]: https://github.com/aallan/vera/compare/v0.0.51...v0.0.52

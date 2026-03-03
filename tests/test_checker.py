@@ -2480,3 +2480,151 @@ private fn f(@String -> @String)
   requires(true) ensures(true) effects(pure)
 { strip(@String.0) }
 """)
+
+
+# =====================================================================
+# Bidirectional type inference (issue #55)
+# =====================================================================
+
+class TestBidirectionalInference:
+    """Bidirectional type checking: expected types resolve TypeVars in
+    nullary constructors of parameterised ADTs."""
+
+    def test_none_return_resolves_option(self) -> None:
+        """None as function return resolves to Option<Int>."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+
+private fn nothing(-> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ None }
+""")
+
+    def test_if_none_some_resolves(self) -> None:
+        """If-else with None/Some(42): None resolves from Some branch."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+
+private fn maybe(@Bool -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { Some(42) } else { None }
+}
+""")
+
+    def test_if_some_none_resolves(self) -> None:
+        """If-else with Some(42)/None: None resolves from Some branch."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+
+private fn maybe(@Bool -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { None } else { Some(42) }
+}
+""")
+
+    def test_match_none_arm_resolves(self) -> None:
+        """Match arm returning None resolves from expected return type."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+
+private fn flip(@Option<Int> -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> None,
+    None -> Some(0)
+  }
+}
+""")
+
+    def test_let_binding_resolves(self) -> None:
+        """let @Option<Int> = None resolves TypeVar from declared type."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+
+private fn f(-> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Int> = None;
+  @Option<Int>.0
+}
+""")
+
+    def test_nil_resolves_list(self) -> None:
+        """Nil resolves to List<Int> from return type context."""
+        _check_ok("""
+private data List<T> { Nil, Cons(T, List<T>) }
+
+private fn empty(-> @List<Int>)
+  requires(true) ensures(true) effects(pure)
+{ Nil }
+""")
+
+    def test_err_resolves_result(self) -> None:
+        """Err(msg) resolves T in Result<Int, String> from return type."""
+        _check_ok("""
+private data Result<T, E> { Ok(T), Err(E) }
+
+private fn fail(@String -> @Result<Int, String>)
+  requires(true) ensures(true) effects(pure)
+{ Err(@String.0) }
+""")
+
+    def test_nested_some_none_resolves(self) -> None:
+        """Nested Some(None) resolves from Option<Option<Int>>."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+
+private fn nested(-> @Option<Option<Int>>)
+  requires(true) ensures(true) effects(pure)
+{ Some(None) }
+""")
+
+    def test_none_as_fn_arg_resolves(self) -> None:
+        """None passed as function argument resolves from param type."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+
+private fn id(@Option<Int> -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ @Option<Int>.0 }
+
+private fn test(-> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ id(None) }
+""")
+
+    def test_none_with_wrong_expected_errors(self) -> None:
+        """None resolved to Option<Int> should not match Int return."""
+        _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn bad(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ None }
+""", "body has type")
+
+    def test_block_threads_expected(self) -> None:
+        """Expected type threads through block to tail expression."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+
+private fn f(@Int -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = @Int.0;
+  None
+}
+""")
+
+    def test_ok_resolves_result(self) -> None:
+        """Ok(42) resolves E in Result<Int, String> from return type."""
+        _check_ok("""
+private data Result<T, E> { Ok(T), Err(E) }
+
+private fn succeed(-> @Result<Int, String>)
+  requires(true) ensures(true) effects(pure)
+{ Ok(42) }
+""")
