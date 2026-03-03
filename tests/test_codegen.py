@@ -2298,6 +2298,98 @@ public fn unwrap_or(@Option<Int> -> @Int)
         result = _compile_ok(source)
         assert "unwrap_or" in result.exports
 
+    def test_match_nested_some(self) -> None:
+        """Nested constructor: Cons(Some(@Int), _) extracts the inner Int."""
+        source = """\
+private data Option<T> { None, Some(T) }
+private data List<T> { Nil, Cons(T, List<T>) }
+
+public fn first_val(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @List<Option<Int>> = Cons(Some(42), Nil);
+  match @List<Option<Int>>.0 {
+    Cons(Some(@Int), _) -> @Int.0,
+    _ -> 0
+  }
+}
+"""
+        assert _run(source, fn="first_val") == 42
+
+    def test_match_nested_none(self) -> None:
+        """Nested nullary: Cons(None, _) arm is selected."""
+        source = """\
+private data Option<T> { None, Some(T) }
+private data List<T> { Nil, Cons(T, List<T>) }
+
+public fn test_none(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @List<Option<Int>> = Cons(None, Nil);
+  match @List<Option<Int>>.0 {
+    Cons(Some(@Int), _) -> @Int.0,
+    Cons(None, _) -> 99,
+    _ -> 0
+  }
+}
+"""
+        assert _run(source, fn="test_none") == 99
+
+    def test_match_nested_multi_field(self) -> None:
+        """Nested constructor with both fields used."""
+        source = """\
+private data Option<T> { None, Some(T) }
+private data Pair<A, B> { MkPair(A, B) }
+
+public fn test(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Pair<Option<Int>, Int> = MkPair(Some(10), 5);
+  match @Pair<Option<Int>, Int>.0 {
+    MkPair(Some(@Int), _) -> @Int.0,
+    _ -> 0
+  }
+}
+"""
+        assert _run(source, fn="test") == 10
+
+    def test_match_nested_different_arms(self) -> None:
+        """Different nesting per arm selects correct arm."""
+        source = """\
+private data Option<T> { None, Some(T) }
+private data List<T> { Nil, Cons(T, List<T>) }
+
+public fn test(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @List<Option<Int>> = Cons(Some(77), Nil);
+  match @List<Option<Int>>.0 {
+    Cons(None, _) -> 0,
+    Cons(Some(@Int), _) -> @Int.0,
+    _ -> 99
+  }
+}
+"""
+        assert _run(source, fn="test") == 77
+
+    def test_match_nested_fallthrough(self) -> None:
+        """Nested Some doesn't match None, falls through to wildcard."""
+        source = """\
+private data Option<T> { None, Some(T) }
+private data List<T> { Nil, Cons(T, List<T>) }
+
+public fn test(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @List<Option<Int>> = Cons(None, Nil);
+  match @List<Option<Int>>.0 {
+    Cons(Some(@Int), _) -> @Int.0,
+    _ -> 55
+  }
+}
+"""
+        assert _run(source, fn="test") == 55
+
 
 # =====================================================================
 # C6j: Effect Handlers

@@ -98,7 +98,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ operators.py` | 430 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
 | ` ├ calls.py` | 223 | | Function calls, generic resolution, effect handlers | |
 | ` ├ closures.py` | 248 | | Closures, anonymous functions, free variable analysis | |
-| ` └ data.py` | 460 | | Constructors, match expressions, arrays, indexing | |
+| ` └ data.py` | 590 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
 | `codegen/` | 2,140 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
 | `  api.py` | 265 | | Public API, dataclasses, host bindings, `execute()` | |
 | `  core.py` | 285 | | CodeGenerator class, orchestration, type helpers | |
