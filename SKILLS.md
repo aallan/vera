@@ -384,6 +384,8 @@ strip(@String.0)                        -- returns String (trim whitespace)
 
 String functions use the bump allocator (`$alloc`). `strip` is zero-copy (returns a view into the original string). `parse_nat` skips leading spaces.
 
+**Shadowing**: If you define a function with the same name as a built-in (e.g. `length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
+
 Example:
 
 ```vera
