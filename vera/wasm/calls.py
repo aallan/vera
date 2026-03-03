@@ -17,33 +17,35 @@ class CallsMixin:
         If the call name matches an effect operation (e.g. get/put for
         State<T>), redirects to the corresponding host import.
         """
-        # Built-in: length(array) → Int
-        if call.name == "length" and len(call.args) == 1:
-            return self._translate_length(call.args[0], env)
-
-        # Built-in string operations
-        if call.name == "string_length" and len(call.args) == 1:
-            return self._translate_string_length(call.args[0], env)
-        if call.name == "string_concat" and len(call.args) == 2:
-            return self._translate_string_concat(
-                call.args[0], call.args[1], env,
-            )
-        if call.name == "string_slice" and len(call.args) == 3:
-            return self._translate_string_slice(
-                call.args[0], call.args[1], call.args[2], env,
-            )
-        if call.name == "char_code" and len(call.args) == 2:
-            return self._translate_char_code(
-                call.args[0], call.args[1], env,
-            )
-        if call.name == "parse_nat" and len(call.args) == 1:
-            return self._translate_parse_nat(call.args[0], env)
-        if call.name == "parse_float64" and len(call.args) == 1:
-            return self._translate_parse_float64(call.args[0], env)
-        if call.name == "to_string" and len(call.args) == 1:
-            return self._translate_to_string(call.args[0], env)
-        if call.name == "strip" and len(call.args) == 1:
-            return self._translate_strip(call.args[0], env)
+        # Built-in intrinsics — only when no user-defined function
+        # with the same name exists.  User definitions take priority
+        # so that e.g. a user-defined length(@List<Int> -> @Nat) is
+        # not mistakenly compiled as the array-length built-in.
+        if call.name not in self._known_fns:
+            if call.name == "length" and len(call.args) == 1:
+                return self._translate_length(call.args[0], env)
+            if call.name == "string_length" and len(call.args) == 1:
+                return self._translate_string_length(call.args[0], env)
+            if call.name == "string_concat" and len(call.args) == 2:
+                return self._translate_string_concat(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "string_slice" and len(call.args) == 3:
+                return self._translate_string_slice(
+                    call.args[0], call.args[1], call.args[2], env,
+                )
+            if call.name == "char_code" and len(call.args) == 2:
+                return self._translate_char_code(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "parse_nat" and len(call.args) == 1:
+                return self._translate_parse_nat(call.args[0], env)
+            if call.name == "parse_float64" and len(call.args) == 1:
+                return self._translate_parse_float64(call.args[0], env)
+            if call.name == "to_string" and len(call.args) == 1:
+                return self._translate_to_string(call.args[0], env)
+            if call.name == "strip" and len(call.args) == 1:
+                return self._translate_strip(call.args[0], env)
 
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:

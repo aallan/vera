@@ -2908,6 +2908,68 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
 
 
 # =====================================================================
+# User-defined functions shadow built-in intrinsics (#154)
+# =====================================================================
+
+
+class TestBuiltinShadowing:
+    """User-defined functions take priority over built-in intrinsics."""
+
+    def test_user_length_over_adt(self) -> None:
+        """User-defined length() over a recursive ADT compiles and runs."""
+        src = """
+private data List<T> { Nil, Cons(T, List<T>) }
+
+private fn length(@List<Int> -> @Nat)
+  requires(true) ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0) effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + length(@List<Int>.0)
+  }
+}
+
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @List<Int> = Cons(1, Cons(2, Cons(3, Nil)));
+  length(@List<Int>.0)
+}
+"""
+        assert _run(src) == 3
+
+    def test_user_length_single_element(self) -> None:
+        """User-defined length returns 1 for a single-element list."""
+        src = """
+private data List<T> { Nil, Cons(T, List<T>) }
+
+private fn length(@List<Int> -> @Nat)
+  requires(true) ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0) effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + length(@List<Int>.0)
+  }
+}
+
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  length(Cons(42, Nil))
+}
+"""
+        assert _run(src) == 1
+
+    def test_builtin_length_still_works(self) -> None:
+        """Array length built-in works when no user-defined length exists."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20, 30];
+  length(@Array<Int>.0)
+}
+"""
+        assert _run(src) == 3
+
+
+# =====================================================================
 # C6l: Assert and assume
 # =====================================================================
 

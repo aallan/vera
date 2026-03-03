@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.58] - 2026-03-03
+
+### Fixed
+- **`list_ops.vera` runtime failure — built-in name shadowing** (C8e, [#154](https://github.com/aallan/vera/issues/154)):
+  User-defined functions now take priority over built-in intrinsics in WASM
+  codegen. Previously, a user-defined `length(@List<Int> -> @Nat)` was
+  incorrectly intercepted by the array-length built-in handler, producing
+  invalid WASM. The fix guards all 9 built-in handlers (`length`,
+  `string_length`, `string_concat`, `string_slice`, `char_code`, `parse_nat`,
+  `parse_float64`, `to_string`, `strip`) so they only activate when no
+  user-defined function with the same name exists.
+  - `examples/list_ops.vera` now compiles and runs correctly
+  - 3 new tests, 1,347 tests total
+
 ## [0.0.57] - 2026-03-03
 
 ### Added

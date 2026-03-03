@@ -352,9 +352,10 @@ public fn main(-> @Int)
         assert result.ok
 
     def test_list_ops_example_file(self) -> None:
-        """examples/list_ops.vera still compiles (concrete, not generic)."""
+        """examples/list_ops.vera compiles and runs correctly (#154)."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "list_ops.vera"
         source = path.read_text()
-        result = _compile(source)
-        assert result.ok
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="test_list")
+        assert exec_result.value == 60
