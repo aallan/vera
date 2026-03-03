@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.56] - 2026-03-03
+
+### Added
+- **Nested constructor pattern codegen** (C8e, [#131](https://github.com/aallan/vera/issues/131)):
+  Match expressions with nested constructor patterns (e.g. `Cons(Some(@Int), _)`)
+  now compile to WASM correctly. Previously, any sub-pattern that was a
+  `ConstructorPattern` or `NullaryPattern` caused the entire function to be
+  silently skipped.
+  - `_collect_nested_tag_checks` recursively emits tag comparisons for nested
+    constructors, AND-chained into the arm condition
+  - `_extract_constructor_fields` recursively loads nested field pointers and
+    binds their sub-patterns
+  - `_sub_pattern_wasm_type` helper resolves WASM types for offset computation
+  - `examples/pattern_matching.vera` `first_some` now compiles and runs
+  - 5 new tests (nested Some, nested None, multi-field, different arms, fallthrough)
+  - 1,337 tests total
+
 ## [0.0.55] - 2026-03-03
 
 ### Added

@@ -236,12 +236,23 @@ class DataMixin:
             layout = self._ctor_layouts.get(name)
             if layout is None:
                 return None
-            return [
+            instrs = [
                 f"local.get {scr_local}",
                 "i32.load",
                 f"i32.const {layout.tag}",
                 "i32.eq",
             ]
+            # AND-chain nested tag checks for constructor sub-patterns
+            if isinstance(pattern, ast.ConstructorPattern):
+                nested = self._collect_nested_tag_checks(
+                    pattern, scr_local, layout,
+                )
+                if nested is None:
+                    return None
+                for check in nested:
+                    instrs.extend(check)
+                    instrs.append("i32.and")
+            return instrs
 
         if isinstance(pattern, ast.BoolPattern):
             if pattern.value:
@@ -343,11 +354,130 @@ class DataMixin:
                     offset = (offset + align - 1) & ~(align - 1)
                     offset += _sizes.get(generic_wt, 8)
 
+            elif isinstance(sub_pat, ast.ConstructorPattern):
+                # Nested constructor: load the field pointer (i32),
+                # look up its layout, and recurse to extract its fields.
+                align = _aligns.get("i32", 4)
+                offset = (offset + align - 1) & ~(align - 1)
+                sub_layout = self._ctor_layouts.get(sub_pat.name)
+                if sub_layout is None:
+                    return None
+                sub_local = self.alloc_local("i32")
+                instrs.append(f"local.get {scr_local}")
+                instrs.append(f"i32.load offset={offset}")
+                instrs.append(f"local.set {sub_local}")
+                # Recurse into the nested constructor's sub-patterns
+                nested = self._extract_constructor_fields(
+                    sub_pat, sub_local, sub_layout, new_env,
+                )
+                if nested is None:
+                    return None
+                nested_instrs, new_env = nested
+                instrs.extend(nested_instrs)
+                offset += _sizes.get("i32", 4)
+
+            elif isinstance(sub_pat, ast.NullaryPattern):
+                # Nullary: tag was already checked in the condition phase.
+                # Just advance offset by i32 size (ADT pointer).
+                align = _aligns.get("i32", 4)
+                offset = (offset + align - 1) & ~(align - 1)
+                offset += _sizes.get("i32", 4)
+
             else:
-                # Nested constructor patterns — deferred
+                # Unknown sub-pattern type
                 return None
 
         return (instrs, new_env)
+
+    # -----------------------------------------------------------------
+    # Nested pattern helpers
+    # -----------------------------------------------------------------
+
+    def _sub_pattern_wasm_type(
+        self,
+        sub_pat: ast.Pattern,
+        field_index: int,
+        layout: ConstructorLayout,
+    ) -> str | None:
+        """Return the WASM type for a sub-pattern's field.
+
+        Used for offset computation when walking nested patterns.
+        """
+        if isinstance(sub_pat, ast.BindingPattern):
+            type_name = self._type_expr_to_slot_name(sub_pat.type_expr)
+            if type_name is None:
+                return None
+            return self._slot_name_to_wasm_type(type_name)
+        if isinstance(sub_pat, ast.WildcardPattern):
+            if field_index < len(layout.field_offsets):
+                _, generic_wt = layout.field_offsets[field_index]
+                return generic_wt
+            return None
+        if isinstance(sub_pat, (ast.ConstructorPattern, ast.NullaryPattern)):
+            return "i32"  # ADT = heap pointer
+        return None
+
+    def _collect_nested_tag_checks(
+        self,
+        pattern: ast.ConstructorPattern,
+        scr_local: int,
+        layout: ConstructorLayout,
+    ) -> list[list[str]] | None:
+        """Collect tag checks for nested constructor/nullary sub-patterns.
+
+        Walks *pattern.sub_patterns* and for each that is a
+        ``ConstructorPattern`` or ``NullaryPattern``, emits a sequence of
+        WASM instructions that (a) loads the field pointer from the parent,
+        (b) loads the tag from that pointer, (c) compares to the expected
+        tag.  For ``ConstructorPattern`` it recurses to collect deeper
+        checks.
+
+        Returns a list of instruction-lists, each producing an ``i32``
+        boolean on the stack.  Returns ``None`` on layout lookup failure.
+        """
+        _sizes = {"i32": 4, "i64": 8, "f64": 8}
+        _aligns = {"i32": 4, "i64": 8, "f64": 8}
+        offset = 4  # after tag
+
+        checks: list[list[str]] = []
+
+        for i, sub_pat in enumerate(pattern.sub_patterns):
+            wt = self._sub_pattern_wasm_type(sub_pat, i, layout)
+            if wt is None:
+                return None
+            align = _aligns.get(wt, 8)
+            offset = (offset + align - 1) & ~(align - 1)
+
+            if isinstance(sub_pat, (ast.ConstructorPattern, ast.NullaryPattern)):
+                name = sub_pat.name
+                sub_layout = self._ctor_layouts.get(name)
+                if sub_layout is None:
+                    return None
+                # Load the nested ADT pointer, stash in a temp,
+                # then load the tag and compare.
+                tmp = self.alloc_local("i32")
+                check: list[str] = [
+                    f"local.get {scr_local}",
+                    f"i32.load offset={offset}",
+                    f"local.tee {tmp}",
+                    "i32.load",
+                    f"i32.const {sub_layout.tag}",
+                    "i32.eq",
+                ]
+                checks.append(check)
+
+                # Recurse for deeper nesting
+                if isinstance(sub_pat, ast.ConstructorPattern):
+                    deeper = self._collect_nested_tag_checks(
+                        sub_pat, tmp, sub_layout,
+                    )
+                    if deeper is None:
+                        return None
+                    checks.extend(deeper)
+
+            offset += _sizes.get(wt, 8)
+
+        return checks
 
     # -----------------------------------------------------------------
     # Array literals

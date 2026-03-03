@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,332 across 19 files (~17,000 lines of test code) |
+| **Tests** | 1,337 across 19 files (~17,000 lines of test code) |
 | **Compiler code coverage** | 88% of 6,861 statements (CI minimum: 80%) |
 | **Example programs** | 15, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
@@ -43,7 +43,7 @@ python scripts/check_version_sync.py                 # version consistency
 | `test_ast.py` | 87 | 935 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 188 | 2,482 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection |
 | `test_verifier.py` | 97 | 1,580 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
-| `test_codegen.py` | 317 | 3,725 | WASM compilation, arithmetic, Float64, Byte, arrays, ADTs, match, generics, State\<T\>, control flow, strings, IO, bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, example round-trips |
+| `test_codegen.py` | 322 | 3,825 | WASM compilation, arithmetic, Float64, Byte, arrays, ADTs, match (incl. nested patterns), generics, State\<T\>, control flow, strings, IO, bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 17 | 360 | Generic instantiation, type inference, monomorphization edge cases |
 | `test_codegen_closures.py` | 17 | 416 | Closure lifting, captured variables, higher-order functions |
@@ -131,6 +131,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 7: Effects | Effect handlers (handle/resume) | test_codegen, test_checker | effect_handler |
 | Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker | — |
 | Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — |
+| Ch 4: Expressions | Nested constructor patterns in match | test_codegen | pattern_matching |
 | Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | modules |
 | Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_cli | safe_divide, factorial |
 
