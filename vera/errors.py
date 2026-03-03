@@ -424,6 +424,7 @@ ERROR_CODES: dict[str, str] = {
     "E122": "Pure function performs effects",
     "E123": "Precondition predicate not Bool",
     "E124": "Postcondition predicate not Bool",
+    "E125": "Call-site effect mismatch",
     "E130": "Unresolved slot reference",
     "E131": "Result ref outside ensures",
     "E140": "Arithmetic requires numeric operands",

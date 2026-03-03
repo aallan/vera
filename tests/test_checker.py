@@ -932,6 +932,148 @@ private fn bad(@Unit -> @Unit)
 
 
 # =====================================================================
+# Effect Subtyping (Spec §7.8)
+# =====================================================================
+
+class TestEffectSubtyping:
+    """Call-site effect checking — functions can only call functions
+    whose effects are a subset of the caller's effect row."""
+
+    def test_pure_calling_effectful_fn_error(self) -> None:
+        """Pure function calling an effectful *function* (not an op) → E125."""
+        _check_err("""
+effect Logger {
+  op log(String -> Unit);
+}
+
+private fn effectful(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Logger>)
+{
+  Logger.log("hi")
+}
+
+private fn bad(@Unit -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{
+  effectful(())
+}
+""", "requires effects(<Logger>) but call site only allows effects(pure)")
+
+    def test_effectful_calling_same_effect_ok(self) -> None:
+        """Calling a function with the same effect row is fine."""
+        _check_ok("""
+effect Logger {
+  op log(String -> Unit);
+}
+
+private fn effectful(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Logger>)
+{
+  Logger.log("hi")
+}
+
+private fn caller(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Logger>)
+{
+  effectful(())
+}
+""")
+
+    def test_effectful_calling_subset_ok(self) -> None:
+        """Calling a function whose effects are a subset of the caller's."""
+        _check_ok("""
+effect Logger {
+  op log(String -> Unit);
+}
+
+effect Tracer {
+  op trace(String -> Unit);
+}
+
+private fn log_only(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Logger>)
+{
+  Logger.log("hi")
+}
+
+private fn caller(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Logger, Tracer>)
+{
+  log_only(())
+}
+""")
+
+    def test_effectful_calling_superset_error(self) -> None:
+        """Calling a function that needs more effects than the caller has."""
+        _check_err("""
+effect Logger {
+  op log(String -> Unit);
+}
+
+effect Tracer {
+  op trace(String -> Unit);
+}
+
+private fn needs_both(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Logger, Tracer>)
+{
+  Logger.log("hi");
+  Tracer.trace("t")
+}
+
+private fn caller(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<Logger>)
+{
+  needs_both(())
+}
+""", "requires effects(<Logger, Tracer>) but call site only allows effects(<Logger>)")
+
+    def test_handler_discharges_effect_ok(self) -> None:
+        """Handler body can use effects — handler discharges them."""
+        _check_ok("""
+private fn run(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(42);
+    get(())
+  }
+}
+""")
+
+    def test_pure_calling_pure_fn_ok(self) -> None:
+        """Pure calling pure is always fine."""
+        _check_ok("""
+private fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+
+private fn caller(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  helper(@Int.0)
+}
+""")
+
+    def test_io_calling_pure_fn_ok(self) -> None:
+        """An IO context can call a pure function (pure <: IO)."""
+        _check_ok("""
+private fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+
+private fn caller(@Int -> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  helper(@Int.0)
+}
+""")
+
+
+# =====================================================================
 # Contracts
 # =====================================================================
 

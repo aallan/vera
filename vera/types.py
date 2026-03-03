@@ -208,6 +208,7 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     6. RefinedType(base, _) <: T if base <: T
     7. T <: RefinedType(base, _) if T <: base (predicate enforced by verifier)
     8. UnknownType is compatible with everything (error recovery)
+    9. FunctionType: params contravariant, return covariant, effects covariant
 
     TypeVar is NOT compatible with concrete types.  TypeVar equality is
     handled by reflexivity (rule 1).  At call sites, type inference
@@ -251,6 +252,65 @@ def is_subtype(sub: Type, sup: Type) -> bool:
     if isinstance(sup, RefinedType):
         return is_subtype(sub, sup.base)
 
+    # FunctionType subtyping: params contravariant, return covariant,
+    # effects covariant (Spec §7.8).
+    if isinstance(sub, FunctionType) and isinstance(sup, FunctionType):
+        if len(sub.params) != len(sup.params):
+            return False
+        # Params: contravariant (sup params <: sub params)
+        if not all(is_subtype(sp, sbp)
+                   for sp, sbp in zip(sup.params, sub.params)):
+            return False
+        # Return: covariant (sub return <: sup return)
+        if not is_subtype(sub.return_type, sup.return_type):
+            return False
+        # Effects: covariant (sub effects <: sup effects)
+        return is_effect_subtype(sub.effect, sup.effect)
+
+    return False
+
+
+def is_effect_subtype(sub: EffectRowType, sup: EffectRowType) -> bool:
+    """Check if effect row *sub* <: *sup* (subeffecting).
+
+    Rules (Spec Chapter 7, Section 7.8):
+    1. Reflexivity: E <: E
+    2. Pure is bottom: effects(pure) <: effects(<...>)
+    3. Subset: effects(<A, B>) <: effects(<A, B, C>)
+    4. Open rows: if *sub* has an unresolved row variable, be permissive
+       (full row-variable unification is deferred to #55).
+    """
+    # Both pure
+    if isinstance(sub, PureEffectRow) and isinstance(sup, PureEffectRow):
+        return True
+
+    # Pure is subtype of everything
+    if isinstance(sub, PureEffectRow):
+        return True
+
+    # Concrete <: Pure only if the concrete row is empty
+    if isinstance(sup, PureEffectRow):
+        if isinstance(sub, ConcreteEffectRow):
+            return len(sub.effects) == 0
+        return False
+
+    # Both concrete: sub.effects must be a subset of sup.effects
+    if isinstance(sub, ConcreteEffectRow) and isinstance(sup, ConcreteEffectRow):
+        # Unresolved row variable — be permissive until #55
+        if sub.row_var is not None:
+            return True
+        # If sup has a row variable, the concrete effects must still subset
+        return sub.effects.issubset(sup.effects)
+
+    return False
+
+
+def effects_equal(a: EffectRowType, b: EffectRowType) -> bool:
+    """Structural equality for effect rows."""
+    if isinstance(a, PureEffectRow) and isinstance(b, PureEffectRow):
+        return True
+    if isinstance(a, ConcreteEffectRow) and isinstance(b, ConcreteEffectRow):
+        return a.effects == b.effects and a.row_var == b.row_var
     return False
 
 
@@ -271,7 +331,8 @@ def types_equal(a: Type, b: Type) -> bool:
         return (len(a.params) == len(b.params)
                 and all(types_equal(x, y)
                         for x, y in zip(a.params, b.params))
-                and types_equal(a.return_type, b.return_type))
+                and types_equal(a.return_type, b.return_type)
+                and effects_equal(a.effect, b.effect))
     if isinstance(a, RefinedType) and isinstance(b, RefinedType):
         return types_equal(a.base, b.base)
     if isinstance(a, TypeVar) and isinstance(b, TypeVar):
