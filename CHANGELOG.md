@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.59] - 2026-03-03
+
+### Fixed
+- **Stale spec cross-reference** ([#141](https://github.com/aallan/vera/issues/141)):
+  Updated `spec/09-standard-library.md` reference from "Section 11.16" to
+  "Section 11.17" (section numbering shifted after chapter edits). Added the
+  compound-type array limitation ([#132](https://github.com/aallan/vera/issues/132))
+  to the limitations table in `spec/11-compilation.md`.
+
+### Removed
+- **Unused `hypothesis` dependency** ([#138](https://github.com/aallan/vera/issues/138)):
+  Removed `hypothesis>=6.0` from `pyproject.toml` dev dependencies — it was
+  declared but never imported in the test suite.
+
 ## [0.0.58] - 2026-03-03
 
 ### Fixed

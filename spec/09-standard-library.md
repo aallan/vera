@@ -102,7 +102,7 @@ let @Array<Int> = [1, 2, 3];
 - Zero-indexed: the first element is at index 0.
 - Bounds-checked: indexing with an out-of-range index causes a runtime trap (see Chapter 12).
 
-**Element types:** Arrays can contain any type for which a WASM representation exists: `Int`, `Nat`, `Bool`, `Byte`, `Float64`. Arrays of compound types (`Array<Array<Int>>`, `Array<Option<Int>>`) are not yet supported (see Section 11.16).
+**Element types:** Arrays can contain any type for which a WASM representation exists: `Int`, `Nat`, `Bool`, `Byte`, `Float64`. Arrays of compound types (`Array<Array<Int>>`, `Array<Option<Int>>`) are not yet supported (see Section 11.17).
 
 **Length:** The `length` built-in function returns the number of elements (see Section 9.6.1).
 
