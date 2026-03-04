@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.64] - 2026-03-04
+
+### Added
+- **Close #106: universal to-string conversion** (C8e, [#106](https://github.com/aallan/vera/issues/106)):
+  Added 5 new string conversion builtins for all primitive types:
+  `bool_to_string(Bool -> String)`, `nat_to_string(Nat -> String)`,
+  `byte_to_string(Byte -> String)`, `float_to_string(Float64 -> String)`,
+  and `int_to_string(Int -> String)` (alias for existing `to_string`).
+  ADT/compound type Show deferred to abilities (#60).
+
+### Changed
+- Moved #56 (incremental compilation) from C8e to C8.5 in the roadmap
+
 ## [0.0.63] - 2026-03-04
 
 ### Changed

@@ -300,6 +300,11 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `parse_nat` | Function | `String → Result<Nat, String>`, pure |
 | `parse_float64` | Function | `String → Float64`, pure |
 | `to_string` | Function | `Int → String`, pure |
+| `int_to_string` | Function | `Int → String`, pure (alias for `to_string`) |
+| `bool_to_string` | Function | `Bool → String`, pure |
+| `nat_to_string` | Function | `Nat → String`, pure |
+| `byte_to_string` | Function | `Byte → String`, pure |
+| `float_to_string` | Function | `Float64 → String`, pure |
 | `strip` | Function | `String → String`, pure (zero-copy) |
 
 Additionally, `resume` is bound as a temporary function inside handler clause bodies (in `_check_handle()`). Its type is derived from the operation: for `op(params) → ReturnType`, `resume` has type `fn(ReturnType) → Unit effects(pure)`. The binding is added to `env.functions` before checking the clause body and removed afterward.

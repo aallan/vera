@@ -2488,6 +2488,76 @@ private fn f(@String -> @String)
 { strip(@String.0) }
 """)
 
+    def test_bool_to_string_ok(self) -> None:
+        _check_ok("""
+private fn f(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{ bool_to_string(@Bool.0) }
+""")
+
+    def test_bool_to_string_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ bool_to_string(@Int.0) }
+""", "type")
+
+    def test_nat_to_string_ok(self) -> None:
+        _check_ok("""
+private fn f(@Nat -> @String)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_string(@Nat.0) }
+""")
+
+    def test_nat_to_string_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_string(@Bool.0) }
+""", "type")
+
+    def test_byte_to_string_ok(self) -> None:
+        _check_ok("""
+private fn f(@Byte -> @String)
+  requires(true) ensures(true) effects(pure)
+{ byte_to_string(@Byte.0) }
+""")
+
+    def test_byte_to_string_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ byte_to_string(@Int.0) }
+""", "type")
+
+    def test_int_to_string_ok(self) -> None:
+        _check_ok("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ int_to_string(@Int.0) }
+""")
+
+    def test_int_to_string_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{ int_to_string(@Bool.0) }
+""", "type")
+
+    def test_float_to_string_ok(self) -> None:
+        _check_ok("""
+private fn f(@Float64 -> @String)
+  requires(true) ensures(true) effects(pure)
+{ float_to_string(@Float64.0) }
+""")
+
+    def test_float_to_string_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ float_to_string(@Int.0) }
+""", "type")
+
 
 # =====================================================================
 # Bidirectional type inference (issue #55)

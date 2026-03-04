@@ -1,4 +1,4 @@
--- String operations: length, concat, slice, char_code, parse, convert, strip
+-- String operations and type-to-string conversions
 
 effect IO {
   op print(String -> Unit);
@@ -43,6 +43,18 @@ public fn main(@Unit -> @Unit)
     Ok(@Nat) -> to_string(@Nat.0),
     Err(_) -> "error"
   });
+
+  -- bool_to_string
+  IO.print(bool_to_string(true));
+
+  -- nat_to_string
+  IO.print(nat_to_string(42));
+
+  -- int_to_string (alias for to_string)
+  IO.print(int_to_string(-7));
+
+  -- float_to_string
+  IO.print(float_to_string(3.14));
 
   ()
 }

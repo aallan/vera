@@ -173,7 +173,9 @@ class InferenceMixin:
             return "i64"
         # string_concat / string_slice / strip → String (i32_pair)
         if expr.name in ("string_concat", "string_slice", "strip",
-                          "to_string"):
+                          "to_string", "int_to_string",
+                          "bool_to_string", "nat_to_string",
+                          "byte_to_string", "float_to_string"):
             return "i32_pair"
         # char_code → Nat (i64)
         if expr.name == "char_code":
@@ -312,7 +314,9 @@ class InferenceMixin:
         if call.name == "string_length":
             return "Int"
         if call.name in ("string_concat", "string_slice", "strip",
-                          "to_string"):
+                          "to_string", "int_to_string",
+                          "bool_to_string", "nat_to_string",
+                          "byte_to_string", "float_to_string"):
             return "String"
         if call.name == "char_code":
             return "Nat"
