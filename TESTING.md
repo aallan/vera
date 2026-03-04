@@ -6,12 +6,12 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,380 across 19 files (~17,000 lines of test code) |
-| **Compiler code coverage** | 88% of 6,861 statements (CI minimum: 80%) |
-| **Example programs** | 15, all validated through `vera check` + `vera verify` |
+| **Tests** | 1,418 across 19 files (~18,300 lines of test code) |
+| **Compiler code coverage** | 90% of 8,788 statements (CI minimum: 80%) |
+| **Example programs** | 16, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
 | **README code blocks** | 6 Vera blocks (5 validated, 1 allowlisted future syntax) |
-| **Contract verification** | 100 of 105 contracts (95.2%) verified statically (Tier 1) |
+| **Contract verification** | 112 of 118 contracts (94.9%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) |
 
 ## Running Tests
@@ -29,7 +29,7 @@ pytest tests/ --cov=vera --cov-report=term-missing   # with coverage
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_examples.py                     # 15 example programs
+python scripts/check_examples.py                     # 16 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
 python scripts/check_version_sync.py                 # version consistency
@@ -39,25 +39,25 @@ python scripts/check_version_sync.py                 # version consistency
 
 | File | Tests | Lines | What it covers |
 |------|------:|------:|----------------|
-| `test_parser.py` | 103 | 888 | Grammar rules, operator precedence, parse errors |
-| `test_ast.py` | 87 | 935 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 189 | 2,482 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection |
-| `test_verifier.py` | 97 | 1,580 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
-| `test_codegen.py` | 353 | 4,276 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, IO, bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, example round-trips |
+| `test_parser.py` | 105 | 888 | Grammar rules, operator precedence, parse errors |
+| `test_ast.py` | 89 | 935 | AST transformation, node structure, serialisation |
+| `test_checker.py` | 211 | 2,707 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection |
+| `test_verifier.py` | 101 | 1,580 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
+| `test_codegen.py` | 376 | 4,610 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, IO, bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
-| `test_codegen_monomorphize.py` | 17 | 360 | Generic instantiation, type inference, monomorphization edge cases |
+| `test_codegen_monomorphize.py` | 17 | 361 | Generic instantiation, type inference, monomorphization edge cases |
 | `test_codegen_closures.py` | 17 | 416 | Closure lifting, captured variables, higher-order functions |
-| `test_codegen_modules.py` | 18 | 530 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
+| `test_codegen_modules.py` | 18 | 529 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 249 | Defensive error paths: E600, E601, E605, E606, unknown module calls |
 | `test_errors.py` | 34 | 287 | Error code registry, diagnostic formatting, serialisation, SourceLocation |
-| `test_formatter.py` | 62 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
-| `test_cli.py` | 109 | 1,550 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
+| `test_formatter.py` | 66 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
+| `test_cli.py` | 109 | 1,401 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_wasm_coverage.py` | 113 | 1,738 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
-| `test_tester.py` | 13 | 320 | Contract-driven testing: tier classification, input generation, test execution |
-| `test_readme.py` | 2 | 68 | README code sample parsing |
+| `test_tester.py` | 13 | 345 | Contract-driven testing: tier classification, input generation, test execution |
+| `test_readme.py` | 2 | 78 | README code sample parsing |
 
 ## Compiler Code Coverage
 
@@ -65,42 +65,43 @@ Coverage by module, measured by `pytest --cov=vera`:
 
 | Module | Stmts | Miss | Coverage |
 |--------|------:|-----:|---------:|
-| `codegen/` | 1,154 | 81 | 93% |
-| `checker/` | 986 | 137 | 86% |
-| `wasm/` | 1,311 | 187 | 86% |
-| `verifier.py` | 290 | 21 | 93% |
+| `codegen/` | 1,349 | 103 | 92% |
+| `checker/` | 1,036 | 144 | 86% |
+| `wasm/` | 2,575 | 220 | 91% |
+| `verifier.py` | 439 | 41 | 91% |
 | `transform.py` | 451 | 15 | 97% |
-| `formatter.py` | 605 | 82 | 86% |
+| `formatter.py` | 605 | 70 | 88% |
 | `ast.py` | 439 | 25 | 94% |
-| `smt.py` | 283 | 47 | 83% |
-| `types.py` | 146 | 3 | 98% |
+| `smt.py` | 502 | 54 | 89% |
+| `types.py` | 182 | 8 | 96% |
 | `errors.py` | 126 | 1 | 99% |
-| `environment.py` | 125 | 9 | 93% |
+| `environment.py` | 139 | 8 | 94% |
 | `cli.py` | 478 | 142 | 70% |
 | `parser.py` | 45 | 16 | 64% |
 | `resolver.py` | 68 | 2 | 97% |
-| `tester.py` | 335 | 51 | 85% |
+| `tester.py` | 335 | 50 | 85% |
 | `registration.py` | 18 | 0 | 100% |
-| **Total** | **6,861** | **819** | **88%** |
+| **Total** | **8,788** | **899** | **90%** |
 
-The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 70%) reflect auto-generated parser internals and CLI help/flag paths. The `wasm/` subsystem was improved from 79% to 86% by [#156](https://github.com/aallan/vera/issues/156); the remaining gaps are mostly in `wasm/inference.py` (74%) deep utility branches.
+The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 70%) reflect auto-generated parser internals and CLI help/flag paths. The `wasm/` subsystem was improved from 79% to 91% by [#156](https://github.com/aallan/vera/issues/156) and subsequent work; the remaining gaps are mostly in `wasm/inference.py` (75%) deep utility branches.
 
 ## Contract Verification Coverage
 
 Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved correct statically by Z3 — no runtime overhead. **Tier 3** contracts cannot be fully decided by the SMT solver and fall back to runtime assertion checks. The verifier never rejects a valid program; it simply warns when a contract drops to Tier 3.
 
-Across all 15 example programs:
+Across all 16 example programs:
 
 | Metric | Value |
 |--------|-------|
-| **Tier 1 (static)** | 100 contracts — proved automatically by Z3 |
-| **Tier 3 (runtime)** | 5 contracts — verified at runtime via assertion checks |
-| **Total** | 105 contracts (95.2% static) |
+| **Tier 1 (static)** | 112 contracts — proved automatically by Z3 |
+| **Tier 3 (runtime)** | 6 contracts — verified at runtime via assertion checks |
+| **Total** | 118 contracts (94.9% static) |
 
-The 5 remaining Tier 3 contracts and why they cannot be promoted:
+The 6 remaining Tier 3 contracts and why they cannot be promoted:
 
 | Example | Contract | Reason |
 |---------|----------|--------|
+| gc\_pressure.vera | `decreases` in `repeat` | Termination metric not in decidable fragment |
 | generics.vera | `ensures(@T.result == @T.0)` | Generic type parameters have no Z3 sort |
 | generics.vera | `ensures(@A.result == @A.0)` | Generic type parameters have no Z3 sort |
 | increment.vera | `ensures(new(State<Int>) == old(State<Int>) + 1)` | `old`/`new` state modeling not yet implemented |
@@ -119,7 +120,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen, test_verifier | refinement_types, safe_divide |
 | Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | all 15 examples |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | all 16 examples |
 | Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker | factorial, absolute_value |
 | Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker | pattern_matching |
 | Ch 5: Functions | Declarations, recursion, mutual recursion | test_codegen, test_checker | factorial, mutual_recursion |
@@ -161,7 +162,7 @@ _run_trap(source, fn, args)    # compile + execute, assert WASM trap
 
 ## Round-Trip Testing
 
-Every one of the 15 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
+Every one of the 16 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
 
 The formatter has **idempotency tests**: `format(format(x)) == format(x)` for all tested programs.
 
@@ -184,7 +185,7 @@ Four scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_examples.py` | All 15 `.vera` examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 16 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 96 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
@@ -217,7 +218,7 @@ After running `pre-commit install`, every commit is checked by 11 hooks:
 | `debug-statements` | Detect `pdb`/`ipdb` imports |
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
-| `check_examples.py` | All 15 examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 16 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 
 The example and README hooks are smart about triggers -- they only run when `.vera` files, `vera/**/*.py`, or `grammar.lark` change.
@@ -233,7 +234,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs thr
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
 | **lint** | Python 3.12 x Ubuntu | `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py` |
 
-The coverage threshold of **80%** is enforced in CI. Current coverage is 88%.
+The coverage threshold of **80%** is enforced in CI. Current coverage is 90%.
 
 ## Opportunities
 
@@ -241,5 +242,5 @@ Testing infrastructure that could be added in the future:
 
 - **Property-based testing** -- `hypothesis` is installed as a dev dependency but not yet used. Could generate random programs to test parser robustness and formatter idempotency at scale.
 - **Formatter round-trip invariant** -- verify `parse(format(parse(src))) == parse(src)` for all valid programs, not just the examples.
-- **WASM inference.py coverage** -- `wasm/inference.py` at 74% has the most remaining gaps, mostly in deep utility branches (`_fn_type_param_wasm_types`, `_type_expr_name` with generics, `_infer_fncall_vera_type`). These branches require very specific expression nesting patterns to reach.
+- **WASM inference.py coverage** -- `wasm/inference.py` at 75% has the most remaining gaps, mostly in deep utility branches (`_fn_type_param_wasm_types`, `_type_expr_name` with generics, `_infer_fncall_vera_type`). These branches require very specific expression nesting patterns to reach.
 - **Performance benchmarks** -- no benchmark infrastructure exists. Could track compilation time and Z3 verification time across releases.

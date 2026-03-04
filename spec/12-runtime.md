@@ -10,7 +10,7 @@ Vera programs compile to WebAssembly (WASM) modules and execute in a host runtim
 - Capturing output and state for the caller
 - Handling traps and runtime errors
 
-The runtime is deliberately minimal. It provides only what is needed to execute the compiled WASM — there is no garbage collector, no scheduler, and no standard I/O beyond `print`. Future runtime features (networking, async, inference) will extend this model without changing its fundamentals.
+The runtime is deliberately minimal. It provides only what is needed to execute the compiled WASM — there is no scheduler and no standard I/O beyond `print`. Memory is managed automatically by a conservative mark-sweep garbage collector compiled into each WASM module (see Section 12.5.4). Future runtime features (networking, async, inference) will extend this model without changing its fundamentals.
 
 ## 12.2 WASM Module Structure
 
