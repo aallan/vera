@@ -474,6 +474,6 @@ The current module system has the following limitations, each tracked as a GitHu
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| Name collision in flat compilation | [#110](https://github.com/aallan/vera/issues/110) | If two imported modules define functions with the same name, the flat namespace may collide |
+| Name collision in flat compilation | — | Name collisions between imported modules are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |
 | No re-exports | — | A module cannot re-export declarations imported from other modules |
 | No package system | — | Module resolution is file-system-only; no package manager or registry |

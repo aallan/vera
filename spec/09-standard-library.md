@@ -348,7 +348,7 @@ This approach keeps the core language small while providing ergonomic JSON suppo
 
 ### 9.7.3 Markdown (Future)
 
-> **Status: Not yet implemented.** Tracked in [#147](https://github.com/aallan/vera/issues/147). Depends on dynamic string construction ([#52](https://github.com/aallan/vera/issues/52)) and string built-in operations ([#134](https://github.com/aallan/vera/issues/134)). Does **not** depend on `Map<K, V>`.
+> **Status: Not yet implemented.** Tracked in [#147](https://github.com/aallan/vera/issues/147). Dependencies resolved: dynamic string construction ([#52](https://github.com/aallan/vera/issues/52), done) and string built-in operations ([#134](https://github.com/aallan/vera/issues/134), done). Does **not** depend on `Map<K, V>`.
 
 Markdown is the lingua franca of large language models — they understand it natively and generate it naturally. A typed Markdown ADT makes document structure visible to the type system, enabling contracts that verify the structural properties of agent output.
 

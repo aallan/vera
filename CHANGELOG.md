@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.63] - 2026-03-04
+
+### Changed
+- **Close #52: dynamic string construction** (C8e, [#52](https://github.com/aallan/vera/issues/52)):
+  All 8 string built-in operations (`string_concat`, `to_string`, `string_slice`,
+  `strip`, `parse_nat`, `parse_float64`, `char_code`, `string_length`) were
+  implemented in WASM codegen across v0.0.50 (PR #173) and v0.0.60 (#174),
+  providing full dynamic string construction via the bump allocator. This
+  documentation-only release updates limitation tables across the spec, README,
+  and compiler README to reflect the resolved status.
+  - `spec/11-compilation.md` limitation table: struck through #52 row
+  - `spec/12-runtime.md` limitation table: struck through #52 row; also fixed
+    stale #53 and #110 rows to match `spec/11-compilation.md`
+  - `README.md` roadmap: struck through #52 with version tag
+  - `vera/README.md` limitations table: marked #52 as done
+  - `spec/09-standard-library.md`: updated Markdown section dependency note
+  - GC for string memory remains tracked separately in [#51](https://github.com/aallan/vera/issues/51)
+  - Unblocks [#106](https://github.com/aallan/vera/issues/106) (Show/Display)
+
 ## [0.0.62] - 2026-03-04
 
 ### Added

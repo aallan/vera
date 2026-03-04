@@ -255,6 +255,4 @@ The current runtime has the following limitations, each tracked as a GitHub issu
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
 | No garbage collection | [#51](https://github.com/aallan/vera/issues/51) | Bump allocator only; linear memory is not reclaimed |
-| String constants only | [#52](https://github.com/aallan/vera/issues/52) | No dynamic string construction or concatenation at runtime |
-| Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are flattened into the importing module (see Chapter 8, Section 8.9); name collisions between modules not detected |
-| State\<T\> only | [#53](https://github.com/aallan/vera/issues/53) | Only `State<T>` effect handlers are compiled; `Exn<E>` and custom effects use in-WASM handlers |
+| Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |
