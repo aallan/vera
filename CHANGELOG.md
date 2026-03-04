@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.61] - 2026-03-04
+
+### Added
+- **Arrays of compound types** (C8e, [#132](https://github.com/aallan/vera/issues/132)):
+  Arrays now support all element types, not just the five primitives (`Int`,
+  `Nat`, `Float64`, `Bool`, `Byte`).  This includes ADT types
+  (`Array<Option<Int>>`, `Array<Result<Int, String>>`), `String`
+  (`Array<String>`), and nested arrays (`Array<Array<Int>>`).
+  - ADT elements are stored as i32 heap pointers (4 bytes each)
+  - String and nested-array elements are stored as (ptr, len) pairs (8 bytes each)
+  - Chained indexing works for nested arrays (`@Array<Array<Int>>.0[0][1]`)
+  - Constructor pair-type field storage fixed (e.g. `Err("msg")` with String field)
+  - 17 new tests, 1,370 tests total
+
 ## [0.0.60] - 2026-03-03
 
 ### Changed
