@@ -279,7 +279,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 - ~~[#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation~~ ([v0.0.62](https://github.com/aallan/vera/releases/tag/v0.0.62))
 - [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory
 - ~~[#132](https://github.com/aallan/vera/issues/132) arrays of compound types in codegen~~ ([v0.0.61](https://github.com/aallan/vera/releases/tag/v0.0.61))
-- [#52](https://github.com/aallan/vera/issues/52) dynamic string construction
+- ~~[#52](https://github.com/aallan/vera/issues/52) dynamic string construction~~ ([v0.0.63](https://github.com/aallan/vera/releases/tag/v0.0.63))
 - ~~[#134](https://github.com/aallan/vera/issues/134) string built-in operations (length, concat, slice)~~ ([v0.0.50](https://github.com/aallan/vera/releases/tag/v0.0.50))
 - ~~[#174](https://github.com/aallan/vera/issues/174) `parse_nat` should return `Result<Nat, String>` per spec~~ ([v0.0.60](https://github.com/aallan/vera/releases/tag/v0.0.60))
 - [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display)

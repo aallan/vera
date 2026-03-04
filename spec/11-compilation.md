@@ -583,6 +583,3 @@ The current compilation model has the following limitations, each tracked as a G
 |-----------|-------|-------|
 | Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |
 | No garbage collection | [#51](https://github.com/aallan/vera/issues/51) | Bump allocator only; linear memory is not reclaimed |
-| String constants only | [#52](https://github.com/aallan/vera/issues/52) | No dynamic string construction |
-| ~~Only State\<T\> handlers~~ | ~~[#53](https://github.com/aallan/vera/issues/53)~~ | ~~Resolved in v0.0.62 — Exn\<E\> handlers now compile via WASM exception handling; custom effect handlers still unsupported~~ |
-| ~~Arrays of compound types~~ | ~~[#132](https://github.com/aallan/vera/issues/132)~~ | ~~Resolved in v0.0.61 — arrays now support all element types including ADTs, Strings, and nested arrays~~ |

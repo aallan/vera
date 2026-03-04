@@ -533,7 +533,6 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **Local type inference only** | Bidirectional checking resolves nullary constructors from context; no Hindley-Milner | Done ([#55](https://github.com/aallan/vera/issues/55)) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No garbage collection** | Bump allocator only; linear memory is not reclaimed | [#51](https://github.com/aallan/vera/issues/51) |
-| **String constants only** | No dynamic string construction | [#52](https://github.com/aallan/vera/issues/52) |
 
 ## Extending the Compiler
 
