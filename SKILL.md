@@ -1061,19 +1061,19 @@ public fn length(@List<Int> -> @Nat)
 
 ## Specification Reference
 
-The full language specification is in `spec/`:
+The full language specification is in the [`spec/`](https://github.com/aallan/vera/tree/main/spec) directory of the repository:
 
-| Chapter | File | Topic |
+| Chapter | Spec | Topic |
 |---------|------|-------|
-| 0 | `spec/00-introduction.md` | Design goals, diagnostics philosophy |
-| 1 | `spec/01-lexical-structure.md` | Tokens, operators, formatting |
-| 2 | `spec/02-types.md` | Type system, refinement types |
-| 3 | `spec/03-slot-references.md` | The @T.n reference system |
-| 4 | `spec/04-expressions.md` | Expressions and statements |
-| 5 | `spec/05-functions.md` | Functions and contracts |
-| 6 | `spec/06-contracts.md` | Verification system |
-| 7 | `spec/07-effects.md` | Algebraic effect system |
-| 9 | `spec/09-standard-library.md` | Built-in types, effects, functions |
-| 10 | `spec/10-grammar.md` | Formal EBNF grammar |
-| 11 | `spec/11-compilation.md` | Compilation model and WASM target |
-| 12 | `spec/12-runtime.md` | Runtime execution, host bindings, memory model |
+| 0 | [Introduction](https://github.com/aallan/vera/blob/main/spec/00-introduction.md) | Design goals, diagnostics philosophy |
+| 1 | [Lexical Structure](https://github.com/aallan/vera/blob/main/spec/01-lexical-structure.md) | Tokens, operators, formatting |
+| 2 | [Types](https://github.com/aallan/vera/blob/main/spec/02-types.md) | Type system, refinement types |
+| 3 | [Slot References](https://github.com/aallan/vera/blob/main/spec/03-slot-references.md) | The @T.n reference system |
+| 4 | [Expressions](https://github.com/aallan/vera/blob/main/spec/04-expressions.md) | Expressions and statements |
+| 5 | [Functions](https://github.com/aallan/vera/blob/main/spec/05-functions.md) | Functions and contracts |
+| 6 | [Contracts](https://github.com/aallan/vera/blob/main/spec/06-contracts.md) | Verification system |
+| 7 | [Effects](https://github.com/aallan/vera/blob/main/spec/07-effects.md) | Algebraic effect system |
+| 9 | [Standard Library](https://github.com/aallan/vera/blob/main/spec/09-standard-library.md) | Built-in types, effects, functions |
+| 10 | [Grammar](https://github.com/aallan/vera/blob/main/spec/10-grammar.md) | Formal EBNF grammar |
+| 11 | [Compilation](https://github.com/aallan/vera/blob/main/spec/11-compilation.md) | Compilation model and WASM target |
+| 12 | [Runtime](https://github.com/aallan/vera/blob/main/spec/12-runtime.md) | Runtime execution, host bindings, memory model |
