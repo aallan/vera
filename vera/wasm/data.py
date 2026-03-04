@@ -332,6 +332,21 @@ class DataMixin:
                 type_name = self._type_expr_to_slot_name(sub_pat.type_expr)
                 if type_name is None:
                     return None
+                # Pair types (String, Array<T>): two consecutive i32 locals
+                if self._is_pair_type_name(type_name):
+                    align = _aligns.get("i32", 4)
+                    offset = (offset + align - 1) & ~(align - 1)
+                    ptr_local = self.alloc_local("i32")
+                    len_local = self.alloc_local("i32")
+                    instrs.append(f"local.get {scr_local}")
+                    instrs.append(f"i32.load offset={offset}")
+                    instrs.append(f"local.set {ptr_local}")
+                    instrs.append(f"local.get {scr_local}")
+                    instrs.append(f"i32.load offset={offset + 4}")
+                    instrs.append(f"local.set {len_local}")
+                    new_env = new_env.push(type_name, ptr_local)
+                    offset += 8  # two i32s
+                    continue
                 wt = self._slot_name_to_wasm_type(type_name)
                 if wt is None:
                     return None

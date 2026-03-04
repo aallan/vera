@@ -15,6 +15,7 @@ class RegistrationMixin:
 
     def _register_all(self, program: ast.Program) -> None:
         """Register all function signatures, ADT layouts, and type aliases."""
+        self._register_builtin_adts()
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl):
@@ -38,6 +39,30 @@ class RegistrationMixin:
         if decl.where_fns:
             for wfn in decl.where_fns:
                 self._register_fn(wfn)
+
+    def _register_builtin_adts(self) -> None:
+        """Register minimal ADT layouts for built-in types (Option, Result).
+
+        Tags and generic i32 field offsets enable match dispatch and
+        wildcard offset advancement.  Concrete sizes are recomputed at
+        construction / extraction time from actual types.  If the user
+        writes an explicit ``data Result`` or ``data Option`` declaration,
+        ``_register_data`` will overwrite these entries.
+        """
+        self._adt_layouts["Option"] = {
+            "None": ConstructorLayout(tag=0, field_offsets=(), total_size=8),
+            "Some": ConstructorLayout(
+                tag=1, field_offsets=((4, "i32"),), total_size=8,
+            ),
+        }
+        self._adt_layouts["Result"] = {
+            "Ok": ConstructorLayout(
+                tag=0, field_offsets=((4, "i32"),), total_size=8,
+            ),
+            "Err": ConstructorLayout(
+                tag=1, field_offsets=((4, "i32"),), total_size=8,
+            ),
+        }
 
     def _register_data(self, decl: ast.DataDecl) -> None:
         """Register an ADT and precompute constructor layouts."""

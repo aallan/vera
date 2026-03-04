@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.60] - 2026-03-03
+
+### Changed
+- **`parse_nat` returns `Result<Nat, String>`** (C8e, [#174](https://github.com/aallan/vera/issues/174)):
+  `parse_nat` now returns `Ok(n)` on valid decimal input and `Err(msg)` on
+  empty or invalid input, matching the spec (Section 9).  Previously it
+  returned bare `Nat` and silently produced garbage for non-numeric strings.
+  - Digit validation: bytes must be in ASCII 48–57; leading/trailing spaces
+    are tolerated; empty/whitespace-only strings return `Err("empty string")`
+  - Built-in Result and Option ADT layouts are now registered in codegen so
+    match on `Ok`/`Err` works without a user `data Result` declaration
+  - Match extraction supports String pair bindings inside ADT constructors
+    (e.g. `Err(@String)`)
+  - 6 new tests, 1,353 tests total
+
 ## [0.0.59] - 2026-03-03
 
 ### Fixed

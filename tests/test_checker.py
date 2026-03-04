@@ -2455,10 +2455,17 @@ private fn f(@String, @Int -> @Nat)
 
     def test_parse_nat_ok(self) -> None:
         _check_ok("""
-private fn f(@String -> @Nat)
+private fn f(@String -> @Result<Nat, String>)
   requires(true) ensures(true) effects(pure)
 { parse_nat(@String.0) }
 """)
+
+    def test_parse_nat_bare_nat_mismatch(self) -> None:
+        _check_err("""
+private fn f(@String -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ parse_nat(@String.0) }
+""", "expected Nat")
 
     def test_parse_float64_ok(self) -> None:
         _check_ok("""

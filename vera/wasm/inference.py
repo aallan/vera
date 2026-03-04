@@ -175,9 +175,12 @@ class InferenceMixin:
         if expr.name in ("string_concat", "string_slice", "strip",
                           "to_string"):
             return "i32_pair"
-        # char_code / parse_nat → Nat (i64)
-        if expr.name in ("char_code", "parse_nat"):
+        # char_code → Nat (i64)
+        if expr.name == "char_code":
             return "i64"
+        # parse_nat → Result<Nat, String> (i32 heap pointer)
+        if expr.name == "parse_nat":
+            return "i32"
         # parse_float64 → Float64 (f64)
         if expr.name == "parse_float64":
             return "f64"
@@ -307,8 +310,10 @@ class InferenceMixin:
         if call.name in ("string_concat", "string_slice", "strip",
                           "to_string"):
             return "String"
-        if call.name in ("char_code", "parse_nat"):
+        if call.name == "char_code":
             return "Nat"
+        if call.name == "parse_nat":
+            return "Result"
         if call.name == "parse_float64":
             return "Float64"
         if call.name in self._generic_fn_info:

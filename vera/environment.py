@@ -240,7 +240,7 @@ class TypeEnv:
             name="parse_nat",
             forall_vars=None,
             param_types=(STRING,),
-            return_type=NAT,
+            return_type=AdtType("Result", (NAT, STRING)),
             effect=PureEffectRow(),
         )
         self.functions["parse_float64"] = FunctionInfo(

@@ -437,81 +437,165 @@ class CallsMixin:
     def _translate_parse_nat(
         self, arg: ast.Expr, env: WasmSlotEnv,
     ) -> list[str] | None:
-        """Translate parse_nat(s) → Nat (i64).
+        """Translate parse_nat(s) → Result<Nat, String> (i32 pointer).
 
-        Parses a decimal string to a non-negative integer.
-        Iterates through bytes: result = result * 10 + (byte - 48).
-        Skips leading spaces.
+        Returns an ADT heap object:
+          Ok(Nat):     [tag=0 : i32] [pad 4] [value : i64]   (16 bytes)
+          Err(String): [tag=1 : i32] [ptr : i32] [len : i32]  (16 bytes)
+
+        Validates that the input contains at least one digit (0-9) and
+        only digits/spaces.  Skips leading and trailing spaces.
         """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
+
+        self.needs_alloc = True
 
         ptr = self.alloc_local("i32")
         slen = self.alloc_local("i32")
         idx = self.alloc_local("i32")
         result = self.alloc_local("i64")
         byte = self.alloc_local("i32")
+        out = self.alloc_local("i32")
+        has_digit = self.alloc_local("i32")
 
-        instructions: list[str] = []
+        # Intern error strings
+        empty_off, empty_len = self.string_pool.intern("empty string")
+        invalid_off, invalid_len = self.string_pool.intern("invalid digit")
 
-        # Evaluate string -> (ptr, len)
-        instructions.extend(arg_instrs)
-        instructions.append(f"local.set {slen}")
-        instructions.append(f"local.set {ptr}")
+        ins: list[str] = []
 
-        # result = 0, idx = 0
-        instructions.append("i64.const 0")
-        instructions.append(f"local.set {result}")
-        instructions.append("i32.const 0")
-        instructions.append(f"local.set {idx}")
+        # Evaluate string → (ptr, len)
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
 
-        # Loop through bytes
-        instructions.append("block $brk_pn")
-        instructions.append("  loop $lp_pn")
-        # Check idx < len
-        instructions.append(f"    local.get {idx}")
-        instructions.append(f"    local.get {slen}")
-        instructions.append("    i32.ge_u")
-        instructions.append("    br_if $brk_pn")
+        # Initialise: result = 0, idx = 0, has_digit = 0
+        ins.append("i64.const 0")
+        ins.append(f"local.set {result}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {has_digit}")
+
+        # -- block structure: block $done { block $err { parse } Err }
+        ins.append("block $done_pn")
+        ins.append("block $err_pn")
+
+        # -- Parse loop ------------------------------------------------
+        ins.append("block $brk_pn")
+        ins.append("  loop $lp_pn")
+        # idx >= len → break
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_pn")
         # Load byte
-        instructions.append(f"    local.get {ptr}")
-        instructions.append(f"    local.get {idx}")
-        instructions.append("    i32.add")
-        instructions.append("    i32.load8_u offset=0")
-        instructions.append(f"    local.set {byte}")
-        # Skip spaces (byte 32)
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 32")
-        instructions.append("    i32.eq")
-        instructions.append("    if")
-        instructions.append(f"      local.get {idx}")
-        instructions.append("      i32.const 1")
-        instructions.append("      i32.add")
-        instructions.append(f"      local.set {idx}")
-        instructions.append("      br $lp_pn")
-        instructions.append("    end")
-        # result = result * 10 + (byte - 48)
-        instructions.append(f"    local.get {result}")
-        instructions.append("    i64.const 10")
-        instructions.append("    i64.mul")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 48")
-        instructions.append("    i32.sub")
-        instructions.append("    i64.extend_i32_u")
-        instructions.append("    i64.add")
-        instructions.append(f"    local.set {result}")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append(f"    local.set {byte}")
+        # Skip space (byte 32)
+        ins.append(f"    local.get {byte}")
+        ins.append("    i32.const 32")
+        ins.append("    i32.eq")
+        ins.append("    if")
+        ins.append(f"      local.get {idx}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {idx}")
+        ins.append("      br $lp_pn")
+        ins.append("    end")
+        # Check byte < '0' (48) → error
+        ins.append(f"    local.get {byte}")
+        ins.append("    i32.const 48")
+        ins.append("    i32.lt_u")
+        ins.append("    br_if $err_pn")
+        # Check byte > '9' (57) → error
+        ins.append(f"    local.get {byte}")
+        ins.append("    i32.const 57")
+        ins.append("    i32.gt_u")
+        ins.append("    br_if $err_pn")
+        # Digit: result = result * 10 + (byte - 48)
+        ins.append(f"    local.get {result}")
+        ins.append("    i64.const 10")
+        ins.append("    i64.mul")
+        ins.append(f"    local.get {byte}")
+        ins.append("    i32.const 48")
+        ins.append("    i32.sub")
+        ins.append("    i64.extend_i32_u")
+        ins.append("    i64.add")
+        ins.append(f"    local.set {result}")
+        # Mark that we saw a digit
+        ins.append("    i32.const 1")
+        ins.append(f"    local.set {has_digit}")
         # idx++
-        instructions.append(f"    local.get {idx}")
-        instructions.append("    i32.const 1")
-        instructions.append("    i32.add")
-        instructions.append(f"    local.set {idx}")
-        instructions.append("    br $lp_pn")
-        instructions.append("  end")
-        instructions.append("end")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_pn")
+        ins.append("  end")   # loop
+        ins.append("end")     # block $brk_pn
 
-        instructions.append(f"local.get {result}")
-        return instructions
+        # -- After loop: no digits seen → error
+        ins.append(f"local.get {has_digit}")
+        ins.append("i32.eqz")
+        ins.append("br_if $err_pn")
+
+        # -- Ok path: allocate 16 bytes, tag=0, Nat at offset 8 ----------
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 0")
+        ins.append("i32.store")           # tag = 0 (Ok)
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {result}")
+        ins.append("i64.store offset=8")  # Nat value
+        ins.append("br $done_pn")
+
+        ins.append("end")  # block $err_pn
+
+        # -- Err path: allocate 16 bytes, tag=1, String at offsets 4,8 ---
+        # Choose error message: if idx < slen the loop exited early on an
+        # invalid character → "invalid digit"; otherwise the string was
+        # empty or all spaces → "empty string".
+        ins.append(f"local.get {idx}")
+        ins.append(f"local.get {slen}")
+        ins.append("i32.lt_u")
+        ins.append("if (result i32)")
+        ins.append(f"  i32.const {invalid_off}")
+        ins.append("else")
+        ins.append(f"  i32.const {empty_off}")
+        ins.append("end")
+        ins.append(f"local.set {idx}")   # reuse idx for err string ptr
+        ins.append(f"local.get {idx}")   # idx now holds the err string ptr
+        ins.append(f"i32.const {invalid_off}")
+        ins.append("i32.eq")
+        ins.append("if (result i32)")
+        ins.append(f"  i32.const {invalid_len}")
+        ins.append("else")
+        ins.append(f"  i32.const {empty_len}")
+        ins.append("end")
+        ins.append(f"local.set {byte}")  # reuse byte for err string len
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 1")
+        ins.append("i32.store")           # tag = 1 (Err)
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {idx}")
+        ins.append("i32.store offset=4")  # string ptr
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {byte}")
+        ins.append("i32.store offset=8")  # string len
+
+        ins.append("end")  # block $done_pn
+
+        ins.append(f"local.get {out}")
+        return ins
 
     def _translate_parse_float64(
         self, arg: ast.Expr, env: WasmSlotEnv,
