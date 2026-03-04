@@ -291,7 +291,10 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - [#56](https://github.com/aallan/vera/issues/56) incremental compilation
 - [#127](https://github.com/aallan/vera/issues/127) module re-exports
 - [#187](https://github.com/aallan/vera/issues/187) module-qualified call disambiguation via name mangling
-- [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file)
+- [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, CLI args, exit codes)
+- [#198](https://github.com/aallan/vera/issues/198) string search and transformation builtins
+- [#199](https://github.com/aallan/vera/issues/199) numeric math builtins
+- [#200](https://github.com/aallan/vera/issues/200) parsing completeness (parse_int, parse_bool, safe parse_float64)
 - [#139](https://github.com/aallan/vera/issues/139) scientific notation for float literals
 - [#169](https://github.com/aallan/vera/issues/169) `vera test` Float64 and compound type input generation
 - [#170](https://github.com/aallan/vera/issues/170) `vera test` hypothesis integration and advanced testing
