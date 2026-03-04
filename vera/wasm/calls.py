@@ -44,6 +44,16 @@ class CallsMixin:
                 return self._translate_parse_float64(call.args[0], env)
             if call.name == "to_string" and len(call.args) == 1:
                 return self._translate_to_string(call.args[0], env)
+            if call.name == "int_to_string" and len(call.args) == 1:
+                return self._translate_to_string(call.args[0], env)
+            if call.name == "nat_to_string" and len(call.args) == 1:
+                return self._translate_to_string(call.args[0], env)
+            if call.name == "bool_to_string" and len(call.args) == 1:
+                return self._translate_bool_to_string(call.args[0], env)
+            if call.name == "byte_to_string" and len(call.args) == 1:
+                return self._translate_byte_to_string(call.args[0], env)
+            if call.name == "float_to_string" and len(call.args) == 1:
+                return self._translate_float_to_string(call.args[0], env)
             if call.name == "strip" and len(call.args) == 1:
                 return self._translate_strip(call.args[0], env)
 
@@ -943,6 +953,365 @@ class CallsMixin:
         instructions.append(f"local.get {pos}")
         instructions.append("i32.add")
         instructions.append(f"local.get {slen}")
+        return instructions
+
+    def _translate_bool_to_string(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate bool_to_string(b) → String (i32_pair).
+
+        Returns the interned string "true" or "false" depending on
+        the boolean value.  No heap allocation needed.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        true_off, true_len = self.string_pool.intern("true")
+        false_off, false_len = self.string_pool.intern("false")
+
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        # Bool is i32: 1 = true, 0 = false
+        instructions.append(f"if (result i32 i32)")
+        instructions.append(f"  i32.const {true_off}")
+        instructions.append(f"  i32.const {true_len}")
+        instructions.append("else")
+        instructions.append(f"  i32.const {false_off}")
+        instructions.append(f"  i32.const {false_len}")
+        instructions.append("end")
+        return instructions
+
+    def _translate_byte_to_string(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate byte_to_string(b) → String (i32_pair).
+
+        Allocates a 1-byte buffer and stores the byte value as a
+        single character.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        bval = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        # Byte is i32 in WASM (unlike Nat which is i64)
+        instructions.append(f"local.set {bval}")
+
+        # Allocate 1 byte
+        instructions.append("i32.const 1")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {dst}")
+
+        # Store the byte value
+        instructions.append(f"local.get {dst}")
+        instructions.append(f"local.get {bval}")
+        instructions.append("i32.store8 offset=0")
+
+        # Return (ptr, 1)
+        instructions.append(f"local.get {dst}")
+        instructions.append("i32.const 1")
+        return instructions
+
+    def _translate_float_to_string(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate float_to_string(f) → String (i32_pair).
+
+        Converts a Float64 to its decimal string representation.
+        Uses a 32-byte buffer.  Writes sign, integer digits, decimal
+        point, then up to 6 fractional digits (trailing zeros trimmed,
+        but at least one decimal digit kept so 42.0 stays "42.0").
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        fval = self.alloc_local("f64")
+        ival = self.alloc_local("i64")
+        buf = self.alloc_local("i32")
+        pos = self.alloc_local("i32")   # write position (forward)
+        is_neg = self.alloc_local("i32")
+        digit = self.alloc_local("i64")
+        # For integer-part digit reversal
+        tbuf = self.alloc_local("i32")  # temp buffer for int digits
+        tpos = self.alloc_local("i32")  # position in temp buffer
+        tlen = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        frac_val = self.alloc_local("i64")
+
+        instructions: list[str] = []
+
+        # Evaluate argument
+        instructions.extend(arg_instrs)
+        instructions.append(f"local.set {fval}")
+
+        # Allocate 32-byte output buffer
+        instructions.append("i32.const 32")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {buf}")
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {pos}")
+
+        # Check for negative
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {is_neg}")
+        instructions.append(f"local.get {fval}")
+        instructions.append("f64.const 0")
+        instructions.append("f64.lt")
+        instructions.append("if")
+        instructions.append("  i32.const 1")
+        instructions.append(f"  local.set {is_neg}")
+        instructions.append(f"  local.get {fval}")
+        instructions.append("  f64.neg")
+        instructions.append(f"  local.set {fval}")
+        instructions.append("end")
+
+        # Write '-' if negative
+        instructions.append(f"local.get {is_neg}")
+        instructions.append("if")
+        instructions.append(f"  local.get {buf}")
+        instructions.append(f"  local.get {pos}")
+        instructions.append("  i32.add")
+        instructions.append("  i32.const 45")  # '-'
+        instructions.append("  i32.store8 offset=0")
+        instructions.append(f"  local.get {pos}")
+        instructions.append("  i32.const 1")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.set {pos}")
+        instructions.append("end")
+
+        # Extract integer part: ival = i64.trunc_f64_s(fval)
+        instructions.append(f"local.get {fval}")
+        instructions.append("i64.trunc_f64_s")
+        instructions.append(f"local.set {ival}")
+
+        # Write integer digits using a temp buffer (reverse then copy)
+        # Allocate 20-byte temp buffer for int digits
+        instructions.append("i32.const 20")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {tbuf}")
+        instructions.append("i32.const 20")
+        instructions.append(f"local.set {tpos}")
+
+        # Handle zero integer part
+        instructions.append(f"local.get {ival}")
+        instructions.append("i64.const 0")
+        instructions.append("i64.eq")
+        instructions.append("if")
+        instructions.append(f"  local.get {tpos}")
+        instructions.append("  i32.const 1")
+        instructions.append("  i32.sub")
+        instructions.append(f"  local.set {tpos}")
+        instructions.append(f"  local.get {tbuf}")
+        instructions.append(f"  local.get {tpos}")
+        instructions.append("  i32.add")
+        instructions.append("  i32.const 48")
+        instructions.append("  i32.store8 offset=0")
+        instructions.append("else")
+        # Extract digits in reverse
+        instructions.append("  block $brk_fi")
+        instructions.append("  loop $lp_fi")
+        instructions.append(f"    local.get {ival}")
+        instructions.append("    i64.const 0")
+        instructions.append("    i64.le_s")
+        instructions.append("    br_if $brk_fi")
+        instructions.append(f"    local.get {ival}")
+        instructions.append("    i64.const 10")
+        instructions.append("    i64.rem_u")
+        instructions.append(f"    local.set {digit}")
+        instructions.append(f"    local.get {ival}")
+        instructions.append("    i64.const 10")
+        instructions.append("    i64.div_u")
+        instructions.append(f"    local.set {ival}")
+        instructions.append(f"    local.get {tpos}")
+        instructions.append("    i32.const 1")
+        instructions.append("    i32.sub")
+        instructions.append(f"    local.set {tpos}")
+        instructions.append(f"    local.get {tbuf}")
+        instructions.append(f"    local.get {tpos}")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.get {digit}")
+        instructions.append("    i32.wrap_i64")
+        instructions.append("    i32.const 48")
+        instructions.append("    i32.add")
+        instructions.append("    i32.store8 offset=0")
+        instructions.append("    br $lp_fi")
+        instructions.append("  end")
+        instructions.append("  end")
+        instructions.append("end")
+
+        # Copy integer digits from tbuf[tpos..20] to buf[pos..]
+        # tlen = 20 - tpos
+        instructions.append("i32.const 20")
+        instructions.append(f"local.get {tpos}")
+        instructions.append("i32.sub")
+        instructions.append(f"local.set {tlen}")
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+        instructions.append("block $brk_cp")
+        instructions.append("loop $lp_cp")
+        instructions.append(f"  local.get {idx}")
+        instructions.append(f"  local.get {tlen}")
+        instructions.append("  i32.ge_u")
+        instructions.append("  br_if $brk_cp")
+        # buf[pos + idx] = tbuf[tpos + idx]
+        instructions.append(f"  local.get {buf}")
+        instructions.append(f"  local.get {pos}")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.get {idx}")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.get {tbuf}")
+        instructions.append(f"  local.get {tpos}")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.get {idx}")
+        instructions.append("  i32.add")
+        instructions.append("  i32.load8_u offset=0")
+        instructions.append("  i32.store8 offset=0")
+        instructions.append(f"  local.get {idx}")
+        instructions.append("  i32.const 1")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.set {idx}")
+        instructions.append("  br $lp_cp")
+        instructions.append("end")
+        instructions.append("end")
+        # pos += tlen
+        instructions.append(f"local.get {pos}")
+        instructions.append(f"local.get {tlen}")
+        instructions.append("i32.add")
+        instructions.append(f"local.set {pos}")
+
+        # Write decimal point
+        instructions.append(f"local.get {buf}")
+        instructions.append(f"local.get {pos}")
+        instructions.append("i32.add")
+        instructions.append("i32.const 46")  # '.'
+        instructions.append("i32.store8 offset=0")
+        instructions.append(f"local.get {pos}")
+        instructions.append("i32.const 1")
+        instructions.append("i32.add")
+        instructions.append(f"local.set {pos}")
+
+        # Fractional part: frac = (fval - floor(fval)) * 1_000_000
+        # Re-extract integer part as f64 for subtraction
+        instructions.append(f"local.get {fval}")
+        instructions.append(f"local.get {fval}")
+        instructions.append("f64.floor")
+        instructions.append("f64.sub")
+        instructions.append("f64.const 1000000")
+        instructions.append("f64.mul")
+        # Round to nearest integer
+        instructions.append("f64.const 0.5")
+        instructions.append("f64.add")
+        instructions.append("i64.trunc_f64_s")
+        instructions.append(f"local.set {frac_val}")
+
+        # Write exactly 6 fractional digits (will trim trailing zeros after)
+        # We write them in reverse into tbuf, then copy forward
+        instructions.append("i32.const 6")
+        instructions.append(f"local.set {tlen}")
+        instructions.append("i32.const 6")
+        instructions.append(f"local.set {tpos}")
+
+        instructions.append("block $brk_fd")
+        instructions.append("loop $lp_fd")
+        instructions.append(f"  local.get {tpos}")
+        instructions.append("  i32.const 0")
+        instructions.append("  i32.le_s")
+        instructions.append("  br_if $brk_fd")
+        instructions.append(f"  local.get {tpos}")
+        instructions.append("  i32.const 1")
+        instructions.append("  i32.sub")
+        instructions.append(f"  local.set {tpos}")
+        instructions.append(f"  local.get {tbuf}")
+        instructions.append(f"  local.get {tpos}")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.get {frac_val}")
+        instructions.append("  i64.const 10")
+        instructions.append("  i64.rem_u")
+        instructions.append("  i32.wrap_i64")
+        instructions.append("  i32.const 48")
+        instructions.append("  i32.add")
+        instructions.append("  i32.store8 offset=0")
+        instructions.append(f"  local.get {frac_val}")
+        instructions.append("  i64.const 10")
+        instructions.append("  i64.div_u")
+        instructions.append(f"  local.set {frac_val}")
+        instructions.append("  br $lp_fd")
+        instructions.append("end")
+        instructions.append("end")
+
+        # Trim trailing zeros: tlen = 6, but keep at least 1 digit
+        # Scan from position 5 down to 1
+        instructions.append("block $brk_tz")
+        instructions.append("loop $lp_tz")
+        # If tlen <= 1, stop (keep at least 1 fractional digit)
+        instructions.append(f"  local.get {tlen}")
+        instructions.append("  i32.const 1")
+        instructions.append("  i32.le_s")
+        instructions.append("  br_if $brk_tz")
+        # Check if tbuf[tlen - 1] == '0' (48)
+        instructions.append(f"  local.get {tbuf}")
+        instructions.append(f"  local.get {tlen}")
+        instructions.append("  i32.const 1")
+        instructions.append("  i32.sub")
+        instructions.append("  i32.add")
+        instructions.append("  i32.load8_u offset=0")
+        instructions.append("  i32.const 48")
+        instructions.append("  i32.ne")
+        instructions.append("  br_if $brk_tz")
+        instructions.append(f"  local.get {tlen}")
+        instructions.append("  i32.const 1")
+        instructions.append("  i32.sub")
+        instructions.append(f"  local.set {tlen}")
+        instructions.append("  br $lp_tz")
+        instructions.append("end")
+        instructions.append("end")
+
+        # Copy tlen fractional digits from tbuf[0..tlen] to buf[pos..]
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+        instructions.append("block $brk_cf")
+        instructions.append("loop $lp_cf")
+        instructions.append(f"  local.get {idx}")
+        instructions.append(f"  local.get {tlen}")
+        instructions.append("  i32.ge_u")
+        instructions.append("  br_if $brk_cf")
+        instructions.append(f"  local.get {buf}")
+        instructions.append(f"  local.get {pos}")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.get {idx}")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.get {tbuf}")
+        instructions.append(f"  local.get {idx}")
+        instructions.append("  i32.add")
+        instructions.append("  i32.load8_u offset=0")
+        instructions.append("  i32.store8 offset=0")
+        instructions.append(f"  local.get {idx}")
+        instructions.append("  i32.const 1")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.set {idx}")
+        instructions.append("  br $lp_cf")
+        instructions.append("end")
+        instructions.append("end")
+
+        # Final length = pos + tlen
+        instructions.append(f"local.get {pos}")
+        instructions.append(f"local.get {tlen}")
+        instructions.append("i32.add")
+        instructions.append(f"local.set {pos}")
+
+        # Return (buf, pos) where pos is now the total length
+        instructions.append(f"local.get {buf}")
+        instructions.append(f"local.get {pos}")
         return instructions
 
     def _translate_strip(

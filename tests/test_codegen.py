@@ -4102,6 +4102,153 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
 
 # =====================================================================
+# C8e: Universal to-string conversion (#106)
+# =====================================================================
+
+
+class TestBoolToString:
+    def test_true(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(bool_to_string(true))
+}
+"""
+        assert _run_io(src) == "true"
+
+    def test_false(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(bool_to_string(false))
+}
+"""
+        assert _run_io(src) == "false"
+
+
+class TestNatToString:
+    def test_basic(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(nat_to_string(42))
+}
+"""
+        assert _run_io(src) == "42"
+
+    def test_zero(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(nat_to_string(0))
+}
+"""
+        assert _run_io(src) == "0"
+
+
+class TestByteToString:
+    def test_letter_a(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn f(@Byte -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(byte_to_string(@Byte.0))
+}
+"""
+        assert _run_io(src, fn="f", args=[65]) == "A"
+
+    def test_digit(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn f(@Byte -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(byte_to_string(@Byte.0))
+}
+"""
+        assert _run_io(src, fn="f", args=[48]) == "0"
+
+
+class TestIntToStringAlias:
+    def test_same_as_to_string(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(int_to_string(42))
+}
+"""
+        assert _run_io(src) == "42"
+
+    def test_negative(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(int_to_string(-7))
+}
+"""
+        assert _run_io(src) == "-7"
+
+
+class TestFloatToString:
+    def test_pi(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(3.14))
+}
+"""
+        assert _run_io(src) == "3.14"
+
+    def test_zero(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(0.0))
+}
+"""
+        assert _run_io(src) == "0.0"
+
+    def test_negative(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(-2.5))
+}
+"""
+        assert _run_io(src) == "-2.5"
+
+    def test_integer_float(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(42.0))
+}
+"""
+        assert _run_io(src) == "42.0"
+
+
+# =====================================================================
 # C8e: Arrays of compound types (#132)
 # =====================================================================
 

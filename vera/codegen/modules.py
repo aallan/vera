@@ -239,7 +239,9 @@ class CrossModuleMixin:
             "length", "apply_fn", "get", "put", "throw", "resume",
             "string_length", "string_concat", "string_slice",
             "char_code", "parse_nat", "parse_float64",
-            "to_string", "strip",
+            "to_string", "int_to_string", "bool_to_string",
+            "nat_to_string", "byte_to_string", "float_to_string",
+            "strip",
         })
 
         seen: set[str] = set()  # deduplicate by function name

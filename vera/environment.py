@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from vera.types import (
     BOOL,
+    BYTE,
     FLOAT64,
     INT,
     NAT,
@@ -254,6 +255,41 @@ class TypeEnv:
             name="to_string",
             forall_vars=None,
             param_types=(INT,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["int_to_string"] = FunctionInfo(
+            name="int_to_string",
+            forall_vars=None,
+            param_types=(INT,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["bool_to_string"] = FunctionInfo(
+            name="bool_to_string",
+            forall_vars=None,
+            param_types=(BOOL,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["nat_to_string"] = FunctionInfo(
+            name="nat_to_string",
+            forall_vars=None,
+            param_types=(NAT,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["byte_to_string"] = FunctionInfo(
+            name="byte_to_string",
+            forall_vars=None,
+            param_types=(BYTE,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["float_to_string"] = FunctionInfo(
+            name="float_to_string",
+            forall_vars=None,
+            param_types=(FLOAT64,),
             return_type=STRING,
             effect=PureEffectRow(),
         )

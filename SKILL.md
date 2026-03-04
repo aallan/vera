@@ -402,6 +402,11 @@ char_code(@String.0, @Int.0)            -- returns Nat (ASCII code at index)
 parse_nat(@String.0)                    -- returns Result<Nat, String>
 parse_float64(@String.0)                -- returns Float64
 to_string(@Int.0)                       -- returns String (integer to decimal)
+int_to_string(@Int.0)                   -- returns String (alias for to_string)
+bool_to_string(@Bool.0)                 -- returns String ("true" or "false")
+nat_to_string(@Nat.0)                   -- returns String (natural to decimal)
+byte_to_string(@Byte.0)                 -- returns String (single character)
+float_to_string(@Float64.0)             -- returns String (decimal representation)
 strip(@String.0)                        -- returns String (trim whitespace)
 ```
 

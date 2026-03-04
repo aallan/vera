@@ -282,13 +282,13 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 - ~~[#52](https://github.com/aallan/vera/issues/52) dynamic string construction~~ ([v0.0.63](https://github.com/aallan/vera/releases/tag/v0.0.63))
 - ~~[#134](https://github.com/aallan/vera/issues/134) string built-in operations (length, concat, slice)~~ ([v0.0.50](https://github.com/aallan/vera/releases/tag/v0.0.50))
 - ~~[#174](https://github.com/aallan/vera/issues/174) `parse_nat` should return `Result<Nat, String>` per spec~~ ([v0.0.60](https://github.com/aallan/vera/releases/tag/v0.0.60))
-- [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display)
-- [#56](https://github.com/aallan/vera/issues/56) incremental compilation
+- ~~[#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display)~~ ([v0.0.64](https://github.com/aallan/vera/releases/tag/v0.0.64))
 
 ### C8.5 — Completeness
 
 Module refinements, lexical extensions, and IO runtime — completing the existing language before adding new features.
 
+- [#56](https://github.com/aallan/vera/issues/56) incremental compilation
 - [#127](https://github.com/aallan/vera/issues/127) module re-exports
 - [#187](https://github.com/aallan/vera/issues/187) module-qualified call disambiguation via name mangling
 - [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file)
