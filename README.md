@@ -330,6 +330,7 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 - [#56](https://github.com/aallan/vera/issues/56) incremental compilation
 - [#130](https://github.com/aallan/vera/issues/130) package system and registry
 - [#143](https://github.com/aallan/vera/issues/143) comprehensive example programs
+- [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package
 - [#181](https://github.com/aallan/vera/issues/181) signature refactoring (mechanical slot index rewriting)
 - [#183](https://github.com/aallan/vera/issues/183) human-readable slot annotations (display layer for `@T.n` references)
 
