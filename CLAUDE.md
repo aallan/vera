@@ -43,6 +43,7 @@ mypy vera/                        # Type-check the compiler itself
 python scripts/check_examples.py      # Verify all 15 examples parse + check + verify
 python scripts/check_spec_examples.py # Verify spec code blocks parse
 python scripts/check_readme_examples.py # Verify README code blocks parse
+python scripts/check_skill_examples.py # Verify SKILL.md code blocks parse
 python scripts/check_version_sync.py  # Verify version consistency
 ```
 
