@@ -3688,37 +3688,68 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
 
 class TestParseNat:
-    def test_basic(self) -> None:
-        src = """
-public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  parse_nat("42")
-}
+    """parse_nat returns Result<Nat, String>."""
+
+    _PREAMBLE = """
+private data Result<T, E> { Ok(T), Err(E) }
 """
-        assert _run(src) == 42
+
+    def _ok_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match parse_nat("{literal}") {{
+    Ok(@Nat) -> @Nat.0,
+    Err(_) -> 0 - 1
+  }}
+}}
+"""
+
+    def _err_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match parse_nat("{literal}") {{
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }}
+}}
+"""
+
+    def test_basic(self) -> None:
+        assert _run(self._ok_prog("42")) == 42
 
     def test_zero(self) -> None:
-        src = """
-public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  parse_nat("0")
-}
-"""
-        assert _run(src) == 0
+        assert _run(self._ok_prog("0")) == 0
 
     def test_large(self) -> None:
-        src = """
-public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  parse_nat("12345")
-}
-"""
-        assert _run(src) == 12345
+        assert _run(self._ok_prog("12345")) == 12345
 
     def test_leading_spaces(self) -> None:
-        src = """
+        assert _run(self._ok_prog("  99")) == 99
+
+    def test_trailing_spaces(self) -> None:
+        assert _run(self._ok_prog("77  ")) == 77
+
+    def test_empty_string_err(self) -> None:
+        assert _run(self._err_prog("")) == 1
+
+    def test_invalid_digit_err(self) -> None:
+        assert _run(self._err_prog("abc")) == 1
+
+    def test_mixed_invalid_err(self) -> None:
+        assert _run(self._err_prog("12x3")) == 1
+
+    def test_err_string_extraction(self) -> None:
+        """Err arm can bind and use the error string."""
+        src = self._PREAMBLE + """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  parse_nat("  99")
+  match parse_nat("abc") {
+    Ok(_) -> 0,
+    Err(@String) -> string_length(@String.0)
+  }
 }
 """
-        assert _run(src) == 99
+        # "invalid digit" has length 13
+        assert _run(src) == 13
 
 
 class TestParseFloat64:
@@ -3810,8 +3841,13 @@ public fn main(@Unit -> @Unit)
 
     def test_roundtrip(self) -> None:
         src = """
+private data Result<T, E> { Ok(T), Err(E) }
+
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  parse_nat(to_string(123))
+  match parse_nat(to_string(123)) {
+    Ok(@Nat) -> @Nat.0,
+    Err(_) -> 0 - 1
+  }
 }
 """
         assert _run(src) == 123
@@ -3872,8 +3908,13 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
     def test_strip_then_parse(self) -> None:
         src = """
+private data Result<T, E> { Ok(T), Err(E) }
+
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  parse_nat(strip("  42  "))
+  match parse_nat(strip("  42  ")) {
+    Ok(@Nat) -> @Nat.0,
+    Err(_) -> 0 - 1
+  }
 }
 """
         assert _run(src) == 42

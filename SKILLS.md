@@ -376,13 +376,13 @@ string_length(@String.0)                -- returns Nat
 string_concat(@String.0, @String.1)     -- returns String
 string_slice(@String.0, @Nat.0, @Nat.1) -- returns String (start, end)
 char_code(@String.0, @Int.0)            -- returns Nat (ASCII code at index)
-parse_nat(@String.0)                    -- returns Nat (decimal string to number)
+parse_nat(@String.0)                    -- returns Result<Nat, String>
 parse_float64(@String.0)                -- returns Float64
 to_string(@Int.0)                       -- returns String (integer to decimal)
 strip(@String.0)                        -- returns String (trim whitespace)
 ```
 
-String functions use the bump allocator (`$alloc`). `strip` is zero-copy (returns a view into the original string). `parse_nat` skips leading spaces.
+String functions use the bump allocator (`$alloc`). `strip` is zero-copy (returns a view into the original string). `parse_nat` returns `Ok(n)` on valid decimal input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated.
 
 **Shadowing**: If you define a function with the same name as a built-in (e.g. `length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
 

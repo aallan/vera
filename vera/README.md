@@ -297,7 +297,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `string_concat` | Function | `String, String → String`, pure |
 | `string_slice` | Function | `String, Nat, Nat → String`, pure |
 | `char_code` | Function | `String, Int → Nat`, pure |
-| `parse_nat` | Function | `String → Nat`, pure (see [#174](https://github.com/aallan/vera/issues/174)) |
+| `parse_nat` | Function | `String → Result<Nat, String>`, pure |
 | `parse_float64` | Function | `String → Float64`, pure |
 | `to_string` | Function | `Int → String`, pure |
 | `strip` | Function | `String → String`, pure (zero-copy) |

@@ -4,6 +4,8 @@ effect IO {
   op print(String -> Unit);
 }
 
+private data Result<T, E> { Ok(T), Err(E) }
+
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)
@@ -21,8 +23,11 @@ public fn main(@Unit -> @Unit)
   -- char_code: 'A' = 65
   let @Nat = char_code("A", 0);
 
-  -- parse_nat
-  let @Nat = parse_nat("42");
+  -- parse_nat (returns Result<Nat, String>)
+  let @Nat = match parse_nat("42") {
+    Ok(@Nat) -> @Nat.0,
+    Err(_) -> 0
+  };
 
   -- parse_float64
   let @Float64 = parse_float64("3.14");
@@ -34,7 +39,10 @@ public fn main(@Unit -> @Unit)
   IO.print(strip("  hello  "));
 
   -- compose: parse then convert back
-  IO.print(to_string(parse_nat("99")));
+  IO.print(match parse_nat("99") {
+    Ok(@Nat) -> to_string(@Nat.0),
+    Err(_) -> "error"
+  });
 
   ()
 }
