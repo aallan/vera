@@ -99,16 +99,16 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls.py` | 223 | | Function calls, generic resolution, effect handlers | |
 | ` ├ closures.py` | 248 | | Closures, anonymous functions, free variable analysis | |
 | ` └ data.py` | 590 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
-| `codegen/` | 2,140 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
+| `codegen/` | 3,137 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
 | `  api.py` | 265 | | Public API, dataclasses, host bindings, `execute()` | |
 | `  core.py` | 285 | | CodeGenerator class, orchestration, type helpers | |
 | `  modules.py` | 200 | | Cross-module registration + call detection (C7e) | |
 | `  registration.py` | 105 | | Pass 1 forward declarations, ADT layout | |
 | `  monomorphize.py` | 410 | | Generic instantiation, type inference (Pass 1.5) | |
-| `  functions.py` | 185 | | Function body compilation (Pass 2) | |
-| `  closures.py` | 175 | | Closure lifting | |
+| `  functions.py` | 262 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
+| `  closures.py` | 245 | | Closure lifting, GC instrumentation | |
 | `  contracts.py` | 250 | | Runtime pre/postconditions, old state snapshots | |
-| `  assembly.py` | 100 | | WAT module assembly | |
+| `  assembly.py` | 596 | | WAT module assembly, `$alloc`, `$gc_collect` | |
 | `  compilability.py` | 155 | | Compilability checks, state handler scanning | |
 | `tester.py` | ~530 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
 | `formatter.py` | 1,018 | Format | Canonical code formatter | `format_source()` |
@@ -398,7 +398,7 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen/` (2,140 lines across 11 modules), `wasm/` (2,474 lines across 7 modules)
+**Files:** `codegen/` (3,137 lines across 11 modules), `wasm/` (4,273 lines across 7 modules)
 
 ### Compilation pipeline
 
@@ -437,6 +437,30 @@ The code generator classifies contracts using the verifier's tier results:
 Preconditions are checked at function entry. Postconditions store the return value in a temporary local, check the condition, and trap or return.
 
 **Informative violation messages:** Before each `unreachable`, the codegen emits a call to the `vera.contract_fail` host import with a pre-interned message string describing which contract failed (function name, contract kind, expression text). The host callback stores the message; when the trap is caught, `execute()` raises a `RuntimeError` with the stored message instead of a raw WASM trap. `format_expr()` and `format_fn_signature()` in `ast.py` reconstruct source text from AST nodes for the message.
+
+### Memory management
+
+Memory is managed automatically. The allocator and garbage collector are implemented entirely in WASM — no host-side GC logic.
+
+**Memory layout** (when the program allocates):
+
+```
+[0, data_end)            String constants (data section)
+[data_end, +4096)        GC shadow stack (1024 root slots)
+[data_end+4096, +8192)   GC mark worklist (1024 entries)
+[data_end+8192, ...)     Heap (objects with 4-byte headers)
+```
+
+**Allocator** (`$alloc` in `assembly.py`): Bump allocator with free-list overlay. Each allocation prepends a 4-byte header (`mark_bit | size << 1`). Allocation tries free-list first-fit, then bump, triggers GC on OOM, falls back to `memory.grow`.
+
+**Garbage collector** (`$gc_collect` in `assembly.py`): Conservative mark-sweep in three phases:
+1. **Clear** — walk heap linearly, clear all mark bits
+2. **Mark** — seed worklist from shadow stack roots, drain iteratively; any i32 word that looks like a valid heap pointer is treated as one (no type descriptors needed)
+3. **Sweep** — walk heap, link unmarked objects into free list
+
+**Shadow stack** (`gc_shadow_push` in `helpers.py`): WASM has no stack scanning, so the compiler pushes live heap pointers explicitly. `_compile_fn` in `functions.py` emits a prologue (save `$gc_sp`, push pointer params) and epilogue (save return, restore `$gc_sp`, push return back). Allocation sites in `data.py`, `closures.py`, and `calls.py` push newly allocated pointers after each `call $alloc`.
+
+**Zero overhead:** The GC infrastructure (globals, shadow stack, worklist, `$gc_collect`) is only emitted when `needs_alloc` is True. Programs that perform no heap allocation have no GC overhead.
 
 ## Error System
 
