@@ -274,13 +274,17 @@ private fn abs(@Int -> @Nat)
 - `Int` — signed integers (arbitrary precision)
 - `Nat` — natural numbers (non-negative)
 - `Float64` — 64-bit IEEE 754 floating-point
+- `Byte` — unsigned 8-bit integer (0–255)
 - `String` — text
 - `Unit` — singleton type, value is `()`
+- `Never` — bottom type (used for non-terminating expressions like `throw`)
 
 ### Composite types
 
 ```vera
 @Array<Int>                              -- array of ints
+@Array<Option<Int>>                      -- array of ADT (compound element type)
+@Array<String>                           -- array of strings
 @Tuple<Int, String>                      -- tuple
 @Option<Int>                             -- Option type (Some/None)
 Fn(Int -> Int) effects(pure)              -- function type
@@ -501,18 +505,25 @@ effect row signals that the function may not terminate. Functions without
 
 ### Effect declarations
 
+Effects must be declared in each file that uses them. The IO effect for printing is declared as:
+
 ```vera
-effect Console {
+effect IO {
   op print(String -> Unit);
-  op read_line(Unit -> String);
 }
 ```
+
+The runtime provides a `vera.print` host import that IO.print maps to. There is currently no `read_line` or other IO operations — only `print` is supported.
 
 ### Performing effects
 
 Call the effect operations directly:
 
 ```vera
+effect IO {
+  op print(String -> Unit);
+}
+
 private fn greet(@String -> @Unit)
   requires(true)
   ensures(true)
@@ -538,6 +549,50 @@ private fn increment(@Unit -> @Unit)
 ```
 
 In `ensures` clauses, `old(State<T>)` is the state before the call and `new(State<T>)` is the state after.
+
+### Exception effects
+
+The `Exn<E>` effect models exceptions with error type `E`:
+
+```vera
+effect Exn<E> {
+  op throw(E -> Never);
+}
+```
+
+Throw exceptions using the qualified call syntax:
+
+```vera
+private fn safe_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{
+  if @Int.1 == 0 then {
+    Exn.throw("division by zero")
+  } else {
+    @Int.0 / @Int.1
+  }
+}
+```
+
+Handle exceptions with `handle[Exn<E>]`:
+
+```vera
+private fn try_div(@Int, @Int -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> None
+  } in {
+    Some(safe_div(@Int.0, @Int.1))
+  }
+}
+```
+
+The handler catches the exception and returns a fallback value. The `throw` handler clause receives the error value and must return the same type as the overall `handle` expression. Exception handlers do not use `resume` — throwing is non-resumable.
 
 ### Effect handlers
 
