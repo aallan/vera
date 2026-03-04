@@ -185,38 +185,6 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C10 | — | **Ecosystem** — package management and registry | Planned |
 
 <details>
-<summary>C7 — Module System (<a href="https://github.com/aallan/vera/releases/tag/v0.0.31">v0.0.31</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.39">v0.0.39</a>) ✓</summary>
-
-C7 implemented the full module system: file-based resolution, cross-module type checking with visibility enforcement, cross-module contract verification, and multi-module WASM compilation using a flattening strategy. Spec Chapter 8 (Modules) documents the formal semantics.
-
-| Sub-phase | Scope | Version |
-|-----------|-------|---------|
-| C7a | Module resolution — map `import` paths to source files and parse them | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31) |
-| C7b | Cross-module type environment — merge public declarations across files | [v0.0.32](https://github.com/aallan/vera/releases/tag/v0.0.32) |
-| C7c | Visibility enforcement — `public`/`private` access control in the checker | [v0.0.34](https://github.com/aallan/vera/releases/tag/v0.0.34)–[v0.0.35](https://github.com/aallan/vera/releases/tag/v0.0.35) |
-| C7d | Cross-module verification — verify contracts that reference imported symbols | [v0.0.37](https://github.com/aallan/vera/releases/tag/v0.0.37) |
-| C7e | Multi-module codegen — flatten imported functions into the WASM module | [v0.0.38](https://github.com/aallan/vera/releases/tag/v0.0.38) |
-| C7f | Spec Chapter 8 — formal module semantics, resolution algorithm, examples | [v0.0.39](https://github.com/aallan/vera/releases/tag/v0.0.39) |
-
-</details>
-
-<details>
-<summary>C6.5 — Codegen & Checker Cleanup (<a href="https://github.com/aallan/vera/releases/tag/v0.0.25">v0.0.25</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.30">v0.0.30</a>) ✓</summary>
-
-Before starting the module system, C6.5 addressed residual gaps in single-file compilation — handler bugs, missing operators, and type support limits. Each sub-phase closed a tracked issue.
-
-| Sub-phase | Scope | Version |
-|-----------|-------|---------|
-| C6.5a | `resume` not recognized as built-in in handler scope | [v0.0.25](https://github.com/aallan/vera/releases/tag/v0.0.25) |
-| C6.5b | Handler `with` clause for state updates not in grammar | [v0.0.26](https://github.com/aallan/vera/releases/tag/v0.0.26) |
-| C6.5c | Pipe operator (`\|>`) compilation | [v0.0.27](https://github.com/aallan/vera/releases/tag/v0.0.27) |
-| C6.5d | Float64 modulo (`%`) — WASM has no `f64.rem` | [v0.0.28](https://github.com/aallan/vera/releases/tag/v0.0.28) |
-| C6.5e | String and Array types in function signatures | [v0.0.29](https://github.com/aallan/vera/releases/tag/v0.0.29) |
-| C6.5f | `old()`/`new()` state expressions in contracts | [v0.0.30](https://github.com/aallan/vera/releases/tag/v0.0.30) |
-
-</details>
-
-<details>
 <summary>C6 — Codegen Completeness (<a href="https://github.com/aallan/vera/releases/tag/v0.0.10">v0.0.10</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.24">v0.0.24</a>) ✓</summary>
 
 C6 extended WASM compilation to all language constructs, working through the dependency graph from simplest to most complex. All 15 examples now compile.
@@ -237,6 +205,38 @@ C6 extended WASM compilation to all language constructs, working through the dep
 | C6l | Quantifiers — forall/exists as runtime loops | [v0.0.22](https://github.com/aallan/vera/releases/tag/v0.0.22) |
 | C6m | Refinement type alias compilation | [v0.0.23](https://github.com/aallan/vera/releases/tag/v0.0.23) |
 | C6n | Spec chapters 9 (Standard library) and 12 (Runtime) | [v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) |
+
+</details>
+
+<details>
+<summary>C6.5 — Codegen & Checker Cleanup (<a href="https://github.com/aallan/vera/releases/tag/v0.0.25">v0.0.25</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.30">v0.0.30</a>) ✓</summary>
+
+Before starting the module system, C6.5 addressed residual gaps in single-file compilation — handler bugs, missing operators, and type support limits. Each sub-phase closed a tracked issue.
+
+| Sub-phase | Scope | Version |
+|-----------|-------|---------|
+| C6.5a | `resume` not recognized as built-in in handler scope | [v0.0.25](https://github.com/aallan/vera/releases/tag/v0.0.25) |
+| C6.5b | Handler `with` clause for state updates not in grammar | [v0.0.26](https://github.com/aallan/vera/releases/tag/v0.0.26) |
+| C6.5c | Pipe operator (`\|>`) compilation | [v0.0.27](https://github.com/aallan/vera/releases/tag/v0.0.27) |
+| C6.5d | Float64 modulo (`%`) — WASM has no `f64.rem` | [v0.0.28](https://github.com/aallan/vera/releases/tag/v0.0.28) |
+| C6.5e | String and Array types in function signatures | [v0.0.29](https://github.com/aallan/vera/releases/tag/v0.0.29) |
+| C6.5f | `old()`/`new()` state expressions in contracts | [v0.0.30](https://github.com/aallan/vera/releases/tag/v0.0.30) |
+
+</details>
+
+<details>
+<summary>C7 — Module System (<a href="https://github.com/aallan/vera/releases/tag/v0.0.31">v0.0.31</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.39">v0.0.39</a>) ✓</summary>
+
+C7 implemented the full module system: file-based resolution, cross-module type checking with visibility enforcement, cross-module contract verification, and multi-module WASM compilation using a flattening strategy. Spec Chapter 8 (Modules) documents the formal semantics.
+
+| Sub-phase | Scope | Version |
+|-----------|-------|---------|
+| C7a | Module resolution — map `import` paths to source files and parse them | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31) |
+| C7b | Cross-module type environment — merge public declarations across files | [v0.0.32](https://github.com/aallan/vera/releases/tag/v0.0.32) |
+| C7c | Visibility enforcement — `public`/`private` access control in the checker | [v0.0.34](https://github.com/aallan/vera/releases/tag/v0.0.34)–[v0.0.35](https://github.com/aallan/vera/releases/tag/v0.0.35) |
+| C7d | Cross-module verification — verify contracts that reference imported symbols | [v0.0.37](https://github.com/aallan/vera/releases/tag/v0.0.37) |
+| C7e | Multi-module codegen — flatten imported functions into the WASM module | [v0.0.38](https://github.com/aallan/vera/releases/tag/v0.0.38) |
+| C7f | Spec Chapter 8 — formal module semantics, resolution algorithm, examples | [v0.0.39](https://github.com/aallan/vera/releases/tag/v0.0.39) |
 
 </details>
 
@@ -291,14 +291,24 @@ C8 addressed accumulated technical debt and UX gaps before v0.1.0. Issues were g
 
 Module refinements, lexical extensions, and IO runtime — completing the existing language before adding new features.
 
-- [#56](https://github.com/aallan/vera/issues/56) incremental compilation
-- [#127](https://github.com/aallan/vera/issues/127) module re-exports
-- [#187](https://github.com/aallan/vera/issues/187) module-qualified call disambiguation via name mangling
-- [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, CLI args, exit codes)
-- [#198](https://github.com/aallan/vera/issues/198) string search and transformation builtins
+**Builtin extensions** — independent of each other, no module deps
+
+- [#139](https://github.com/aallan/vera/issues/139) scientific notation for float literals
 - [#199](https://github.com/aallan/vera/issues/199) numeric math builtins
 - [#200](https://github.com/aallan/vera/issues/200) parsing completeness (parse_int, parse_bool, safe parse_float64)
-- [#139](https://github.com/aallan/vera/issues/139) scientific notation for float literals
+- [#198](https://github.com/aallan/vera/issues/198) string search and transformation builtins
+
+**Module system** — sequential dependency (#187 before #127)
+
+- [#187](https://github.com/aallan/vera/issues/187) module-qualified call disambiguation via name mangling
+- [#127](https://github.com/aallan/vera/issues/127) module re-exports
+
+**IO runtime** — host bindings for file and stdin access
+
+- [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, CLI args, exit codes)
+
+**Testing improvements** — sequential dependency (#169 before #170)
+
 - [#169](https://github.com/aallan/vera/issues/169) `vera test` Float64 and compound type input generation
 - [#170](https://github.com/aallan/vera/issues/170) `vera test` hypothesis integration and advanced testing
 
@@ -317,6 +327,7 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 
 ### C10 — Ecosystem
 
+- [#56](https://github.com/aallan/vera/issues/56) incremental compilation
 - [#130](https://github.com/aallan/vera/issues/130) package system and registry
 - [#143](https://github.com/aallan/vera/issues/143) comprehensive example programs
 - [#181](https://github.com/aallan/vera/issues/181) signature refactoring (mechanical slot index rewriting)
