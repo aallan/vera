@@ -179,8 +179,8 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C6 | [v0.0.10](https://github.com/aallan/vera/releases/tag/v0.0.10)–[v0.0.24](https://github.com/aallan/vera/releases/tag/v0.0.24) | **Codegen completeness** — ADTs, match, closures, effects, generics in WASM | Done |
 | C6.5 | [v0.0.25](https://github.com/aallan/vera/releases/tag/v0.0.25)–[v0.0.30](https://github.com/aallan/vera/releases/tag/v0.0.30) | **Codegen cleanup** — handler fixes, missing operators, String/Array support | Done |
 | C7 | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31)–[v0.0.39](https://github.com/aallan/vera/releases/tag/v0.0.39) | **Module system** — cross-file imports, visibility, multi-module compilation | Done |
-| C8 | v0.1.0 | **Polish** — refactoring, tooling, diagnostics, verification depth | In progress |
-| C8.5 | — | **Completeness** — module refinements, lexical extensions, IO runtime | Planned |
+| C8 | [v0.0.40](https://github.com/aallan/vera/releases/tag/v0.0.40)–[v0.0.65](https://github.com/aallan/vera/releases/tag/v0.0.65) | **Polish** — refactoring, tooling, diagnostics, verification depth, codegen gaps | Done |
+| C8.5 | — | **Completeness** — module refinements, lexical extensions, IO runtime | In progress |
 | C9 | — | **Language design** — abilities, new effects, stdlib extensions | Planned |
 | C10 | — | **Ecosystem** — package management and registry | Planned |
 
@@ -240,9 +240,10 @@ C6 extended WASM compilation to all language constructs, working through the dep
 
 </details>
 
-### Working on C8 — Polish
+<details>
+<summary>C8 — Polish (<a href="https://github.com/aallan/vera/releases/tag/v0.0.40">v0.0.40</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.65">v0.0.65</a>) ✓</summary>
 
-C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issues are grouped into sub-phases ordered by impact and dependency.
+C8 addressed accumulated technical debt and UX gaps before v0.1.0. Issues were grouped into sub-phases ordered by impact and dependency.
 
 **C8a — Refactoring** — reduce file sizes to improve maintainability
 
@@ -273,18 +274,20 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 
 **C8e — Codegen gaps** — extend WASM compilation
 
-- ~~[#154](https://github.com/aallan/vera/issues/154) `list_ops.vera` runtime failure — recursive generic ADT codegen~~ ([v0.0.58](https://github.com/aallan/vera/releases/tag/v0.0.58))
-- ~~[#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation~~ ([v0.0.57](https://github.com/aallan/vera/releases/tag/v0.0.57))
-- ~~[#131](https://github.com/aallan/vera/issues/131) nested constructor pattern codegen~~ ([v0.0.56](https://github.com/aallan/vera/releases/tag/v0.0.56))
-- ~~[#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation~~ ([v0.0.62](https://github.com/aallan/vera/releases/tag/v0.0.62))
-- ~~[#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory~~ ([v0.0.65](https://github.com/aallan/vera/releases/tag/v0.0.65))
-- ~~[#132](https://github.com/aallan/vera/issues/132) arrays of compound types in codegen~~ ([v0.0.61](https://github.com/aallan/vera/releases/tag/v0.0.61))
-- ~~[#52](https://github.com/aallan/vera/issues/52) dynamic string construction~~ ([v0.0.63](https://github.com/aallan/vera/releases/tag/v0.0.63))
-- ~~[#134](https://github.com/aallan/vera/issues/134) string built-in operations (length, concat, slice)~~ ([v0.0.50](https://github.com/aallan/vera/releases/tag/v0.0.50))
-- ~~[#174](https://github.com/aallan/vera/issues/174) `parse_nat` should return `Result<Nat, String>` per spec~~ ([v0.0.60](https://github.com/aallan/vera/releases/tag/v0.0.60))
-- ~~[#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display)~~ ([v0.0.64](https://github.com/aallan/vera/releases/tag/v0.0.64))
+- <del>[#154](https://github.com/aallan/vera/issues/154) `list_ops.vera` runtime failure — recursive generic ADT codegen</del> ([v0.0.58](https://github.com/aallan/vera/releases/tag/v0.0.58))
+- <del>[#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation</del> ([v0.0.57](https://github.com/aallan/vera/releases/tag/v0.0.57))
+- <del>[#131](https://github.com/aallan/vera/issues/131) nested constructor pattern codegen</del> ([v0.0.56](https://github.com/aallan/vera/releases/tag/v0.0.56))
+- <del>[#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation</del> ([v0.0.62](https://github.com/aallan/vera/releases/tag/v0.0.62))
+- <del>[#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory</del> ([v0.0.65](https://github.com/aallan/vera/releases/tag/v0.0.65))
+- <del>[#132](https://github.com/aallan/vera/issues/132) arrays of compound types in codegen</del> ([v0.0.61](https://github.com/aallan/vera/releases/tag/v0.0.61))
+- <del>[#52](https://github.com/aallan/vera/issues/52) dynamic string construction</del> ([v0.0.63](https://github.com/aallan/vera/releases/tag/v0.0.63))
+- <del>[#134](https://github.com/aallan/vera/issues/134) string built-in operations (length, concat, slice)</del> ([v0.0.50](https://github.com/aallan/vera/releases/tag/v0.0.50))
+- <del>[#174](https://github.com/aallan/vera/issues/174) `parse_nat` should return `Result<Nat, String>` per spec</del> ([v0.0.60](https://github.com/aallan/vera/releases/tag/v0.0.60))
+- <del>[#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display)</del> ([v0.0.64](https://github.com/aallan/vera/releases/tag/v0.0.64))
 
-### C8.5 — Completeness
+</details>
+
+### Working on C8.5 — Completeness
 
 Module refinements, lexical extensions, and IO runtime — completing the existing language before adding new features.
 
