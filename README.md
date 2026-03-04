@@ -108,7 +108,7 @@ public fn increment(@Unit -> @Unit)
 }
 ```
 
-> [`examples/increment.vera`](examples/increment.vera) — this example uses `State<Int>` effects, which require effect handler compilation ([#53](https://github.com/aallan/vera/issues/53)) before `vera run` can execute them
+> [`examples/increment.vera`](examples/increment.vera) — this example uses `State<Int>` effects with handler compilation. Compile it with `vera compile examples/increment.vera` or run the function with `vera run examples/increment.vera --fn increment`
 
 ## What Errors Look Like
 
@@ -163,7 +163,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-The compiler has 1,370 tests with 88% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 15 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
+The compiler has 1,380 tests with 88% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 15 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
 
 ## Roadmap
 
@@ -273,15 +273,15 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 
 **C8e — Codegen gaps** — extend WASM compilation
 
-- ~~[#154](https://github.com/aallan/vera/issues/154) `list_ops.vera` runtime failure — recursive generic ADT codegen~~ — [v0.0.58](https://github.com/aallan/vera/releases/tag/v0.0.58)
-- ~~[#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation~~ — [v0.0.57](https://github.com/aallan/vera/releases/tag/v0.0.57)
-- ~~[#131](https://github.com/aallan/vera/issues/131) nested constructor pattern codegen~~ — [v0.0.56](https://github.com/aallan/vera/releases/tag/v0.0.56)
-- [#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation
+- ~~[#154](https://github.com/aallan/vera/issues/154) `list_ops.vera` runtime failure — recursive generic ADT codegen~~ ([v0.0.58](https://github.com/aallan/vera/releases/tag/v0.0.58))
+- ~~[#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation~~ ([v0.0.57](https://github.com/aallan/vera/releases/tag/v0.0.57))
+- ~~[#131](https://github.com/aallan/vera/issues/131) nested constructor pattern codegen~~ ([v0.0.56](https://github.com/aallan/vera/releases/tag/v0.0.56))
+- ~~[#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation~~ ([v0.0.62](https://github.com/aallan/vera/releases/tag/v0.0.62))
 - [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory
-- ~~[#132](https://github.com/aallan/vera/issues/132) arrays of compound types in codegen~~ — [v0.0.61](https://github.com/aallan/vera/releases/tag/v0.0.61)
+- ~~[#132](https://github.com/aallan/vera/issues/132) arrays of compound types in codegen~~ ([v0.0.61](https://github.com/aallan/vera/releases/tag/v0.0.61))
 - [#52](https://github.com/aallan/vera/issues/52) dynamic string construction
-- ~~[#134](https://github.com/aallan/vera/issues/134) string built-in operations (length, concat, slice)~~ — [v0.0.50](https://github.com/aallan/vera/releases/tag/v0.0.50)
-- ~~[#174](https://github.com/aallan/vera/issues/174) `parse_nat` should return `Result<Nat, String>` per spec~~ — [v0.0.60](https://github.com/aallan/vera/releases/tag/v0.0.60)
+- ~~[#134](https://github.com/aallan/vera/issues/134) string built-in operations (length, concat, slice)~~ ([v0.0.50](https://github.com/aallan/vera/releases/tag/v0.0.50))
+- ~~[#174](https://github.com/aallan/vera/issues/174) `parse_nat` should return `Result<Nat, String>` per spec~~ ([v0.0.60](https://github.com/aallan/vera/releases/tag/v0.0.60))
 - [#106](https://github.com/aallan/vera/issues/106) universal to-string conversion (Show/Display)
 - [#56](https://github.com/aallan/vera/issues/56) incremental compilation
 
@@ -372,10 +372,10 @@ OK: examples/absolute_value.vera
 ```
 $ vera verify examples/safe_divide.vera
 OK: examples/safe_divide.vera
-Verification: 2 verified (Tier 1)
+Verification: 4 verified (Tier 1)
 ```
 
-`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 15 examples, 96 of 99 contracts (97.0%) are verified statically.
+`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 15 examples, 100 of 105 contracts (95.2%) are verified statically.
 
 ### Format a program
 
@@ -479,7 +479,7 @@ See `examples/` for more programs, and the [language specification](spec/) for t
 
 Vera ships with three files for LLM agents:
 
-- [`SKILLS.md`](SKILLS.md) — Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.
+- [`SKILL.md`](SKILL.md) — Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.
 - [`AGENTS.md`](AGENTS.md) — Instructions for any agent system (Copilot, Cursor, Windsurf, custom). Covers both writing Vera code and working on the compiler.
 - [`CLAUDE.md`](CLAUDE.md) — Project orientation for Claude Code. Key commands, layout, workflows, and invariants.
 
@@ -487,18 +487,18 @@ Vera ships with three files for LLM agents:
 
 #### Claude Code
 
-If you're working in this repo, Claude Code discovers `SKILLS.md` and `CLAUDE.md` automatically. For other projects, install the skill manually:
+If you're working in this repo, Claude Code discovers `SKILL.md` and `CLAUDE.md` automatically. For other projects, install the skill manually:
 
 ```bash
 mkdir -p ~/.claude/skills/vera-language
-cp /path/to/vera/SKILLS.md ~/.claude/skills/vera-language/SKILL.md
+cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 ```
 
 The skill is now available across all your Claude Code projects. Claude will read it automatically when you ask it to write Vera code.
 
 #### Claude.ai
 
-1. Create a folder called `vera-language` containing a single file named `Skill.md` (copy `SKILLS.md` into this folder and rename it to `Skill.md`)
+1. Create a folder called `vera-language` containing a single file named `Skill.md` (copy `SKILL.md` into this folder)
 2. Compress the folder into a ZIP file — the structure should be `vera-language.zip → vera-language/ → Skill.md`
 3. In Claude.ai, go to **Settings > Capabilities > Skills** and upload the ZIP file
 4. The skill is now available in your conversations — Claude will use it automatically when you ask it to write Vera code
@@ -512,7 +512,7 @@ client = anthropic.Anthropic()
 
 skill = client.beta.skills.create(
     display_title="Vera Language",
-    files=[("SKILL.md", open("SKILLS.md", "rb"))],
+    files=[("SKILL.md", open("SKILL.md", "rb"))],
     betas=["skills-2025-10-02"],
 )
 
@@ -529,11 +529,11 @@ response = client.beta.messages.create(
 
 #### Other Models
 
-Point the model at `SKILLS.md` by including it in the system prompt, as a file attachment, or as a retrieval document. The file is self-contained and works with any model that can read markdown.
+Point the model at `SKILL.md` by including it in the system prompt, as a file attachment, or as a retrieval document. The file is self-contained and works with any model that can read markdown.
 
 ### Agent Quickstart
 
-If you are an LLM agent, read [`SKILLS.md`](SKILLS.md) for the full language reference. Here is the minimal workflow:
+If you are an LLM agent, read [`SKILL.md`](SKILL.md) for the full language reference. Here is the minimal workflow:
 
 Install (if not already available):
 
@@ -568,7 +568,7 @@ If the check or verification fails, the error message tells you exactly what wen
 
 ```
 vera/
-├── SKILLS.md                      # Language reference for LLM agents
+├── SKILL.md                       # Language reference for LLM agents
 ├── AGENTS.md                      # Instructions for any AI agent system
 ├── CLAUDE.md                      # Project orientation for Claude Code
 ├── TESTING.md                     # Testing reference (single source of truth)

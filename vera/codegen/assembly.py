@@ -39,6 +39,12 @@ class AssemblyMixin:
                 f"(func $vera.state_put_{type_name} (param {wasm_t})))"
             )
 
+        # Exception tags for Exn<E>
+        for type_name, wasm_t in self._exn_types:
+            parts.append(
+                f"  (tag $exn_{type_name} (param {wasm_t}))"
+            )
+
         # Memory (for string data and heap)
         if self._needs_memory or self.string_pool.has_strings():
             parts.append('  (memory (export "memory") 1)')

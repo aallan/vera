@@ -51,16 +51,20 @@ class CallsMixin:
         if call.name == "apply_fn" and len(call.args) >= 2:
             return self._translate_apply_fn(call, env)
 
-        # Check if this is an effect operation (e.g. get/put)
+        # Check if this is an effect operation (e.g. get/put/throw)
         if call.name in self._effect_ops:
-            import_name, _is_void = self._effect_ops[call.name]
+            target_name, _is_void = self._effect_ops[call.name]
             instructions: list[str] = []
             for arg in call.args:
                 arg_instrs = self.translate_expr(arg, env)
                 if arg_instrs is None:
                     return None
                 instructions.extend(arg_instrs)
-            instructions.append(f"call {import_name}")
+            # throw uses WASM throw instruction, not call
+            if call.name == "throw":
+                instructions.append(f"throw {target_name}")
+            else:
+                instructions.append(f"call {target_name}")
             return instructions
 
         # Resolve call target — rewrite generic calls to mangled names
@@ -1066,7 +1070,8 @@ class CallsMixin:
     ) -> list[str] | None:
         """Translate a handle expression to WASM.
 
-        Currently supports State<T> handlers via host imports.
+        Supports State<T> handlers via host imports and Exn<E>
+        handlers via WASM exception handling (try_table/catch/throw).
         Other handler types cause the function to be skipped.
         """
         effect = expr.effect
@@ -1075,6 +1080,9 @@ class CallsMixin:
 
         if effect.name == "State" and effect.type_args and len(effect.type_args) == 1:
             return self._translate_handle_state(expr, env)
+
+        if effect.name == "Exn" and effect.type_args and len(effect.type_args) == 1:
+            return self._translate_handle_exn(expr, env)
 
         # Unsupported handler type
         return None
@@ -1127,4 +1135,95 @@ class CallsMixin:
             return None
 
         instructions.extend(body_instrs)
+        return instructions
+
+    def _translate_handle_exn(
+        self, expr: ast.HandleExpr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate handle[Exn<E>] { throw(@E) -> handler } in { body }.
+
+        Uses WASM exception handling (try_table/catch/throw):
+          block $done (result T)
+            block $catch (result E)
+              try_table (result T) (catch $exn_E $catch)
+                <body>
+              end
+              br $done
+            end
+            ;; caught value on stack
+            local.set $thrown
+            <handler clause body>
+          end
+        """
+        assert isinstance(expr.effect, ast.EffectRef)
+        type_arg = expr.effect.type_args[0]  # type: ignore[index]
+        if not isinstance(type_arg, ast.NamedType):
+            return None
+        type_name = type_arg.name
+        tag_name = f"$exn_{type_name}"
+        thrown_wt = self._type_name_to_wasm(type_name)
+
+        # Unique label ids for nested handlers
+        hid = self._next_handle_id
+        self._next_handle_id += 1
+        done_label = f"$hd_{hid}"
+        catch_label = f"$hc_{hid}"
+
+        # Infer result type: try handler clause first (body may always
+        # throw, making its inferred type None), then fall back to body.
+        result_wt = None
+        if expr.clauses:
+            clause_body = expr.clauses[0].body
+            if isinstance(clause_body, ast.Block):
+                result_wt = self._infer_block_result_type(clause_body)
+        if result_wt is None:
+            result_wt = self._infer_block_result_type(expr.body)
+
+        # Save/inject throw as an effect op for the body
+        saved_ops = dict(self._effect_ops)
+        self._effect_ops["throw"] = (tag_name, False)
+
+        # Compile body
+        body_instrs = self.translate_block(expr.body, env)
+
+        # Restore effect_ops
+        self._effect_ops = saved_ops
+
+        if body_instrs is None:
+            return None
+
+        # Compile handler clause body
+        if not expr.clauses:
+            return None
+        clause = expr.clauses[0]  # Exn<E> has exactly one op: throw
+
+        # Allocate a local for the caught exception value
+        thrown_local = self.alloc_local(thrown_wt)
+
+        # Push caught value into slot env for handler body
+        handler_env = env.push(type_name, thrown_local)
+        handler_instrs = self.translate_expr(clause.body, handler_env)
+        if handler_instrs is None:
+            return None
+
+        # Assemble the try_table structure
+        result_spec = f" (result {result_wt})" if result_wt else ""
+        thrown_spec = f" (result {thrown_wt})" if thrown_wt else ""
+
+        instructions: list[str] = []
+        instructions.append(f"block {done_label}{result_spec}")
+        instructions.append(f"  block {catch_label}{thrown_spec}")
+        instructions.append(
+            f"    try_table{result_spec}"
+            f" (catch {tag_name} {catch_label})"
+        )
+        instructions.extend(f"      {i}" for i in body_instrs)
+        instructions.append("    end")
+        instructions.append(f"    br {done_label}")
+        instructions.append("  end")
+        # Caught value is on the stack — store it in the local
+        instructions.append(f"  local.set {thrown_local}")
+        instructions.extend(f"  {i}" for i in handler_instrs)
+        instructions.append("end")
+
         return instructions

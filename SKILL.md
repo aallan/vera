@@ -7,6 +7,29 @@ description: Write programs in the Vera programming language. Use when asked to 
 
 Vera is a programming language designed for LLMs to write. It uses typed slot references instead of variable names, requires contracts on every function, and makes all effects explicit.
 
+## Installation
+
+Vera requires Python 3.11 or later. Install it from the repository:
+
+```bash
+git clone https://github.com/aallan/vera.git && cd vera
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+This installs the `vera` command and all runtime dependencies (Lark parser, Z3 solver, wasmtime). After installation, verify it works:
+
+```bash
+vera check examples/hello_world.vera    # should print "OK: examples/hello_world.vera"
+vera run examples/hello_world.vera      # should print "Hello, World!"
+```
+
+If you are working on the compiler itself, install development dependencies too:
+
+```bash
+pip install -e ".[dev]"
+```
+
 ## Toolchain
 
 ```bash

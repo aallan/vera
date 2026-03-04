@@ -33,6 +33,10 @@ class CompilabilityMixin:
                         # State<T> — T must be a compilable primitive
                         if not self._check_state_type(decl, eff):
                             return False
+                    elif eff.name == "Exn":
+                        # Exn<E> — E must be a compilable type
+                        if not self._check_exn_type(decl, eff):
+                            return False
                     else:
                         self._warning(
                             decl,
@@ -106,21 +110,63 @@ class CompilabilityMixin:
             self._state_types.append((type_name, wt))
         return True
 
-    def _scan_body_for_state_handlers(self, node: ast.Node) -> None:
-        """Walk a function body looking for handle[State<T>] expressions.
+    def _check_exn_type(
+        self, decl: ast.FnDecl, eff: ast.EffectRef
+    ) -> bool:
+        """Validate an Exn<E> effect and register its type.
 
-        When found, registers the State<T> type for host import generation.
+        Returns True if compilable, False otherwise.
+        """
+        if not eff.type_args or len(eff.type_args) != 1:
+            self._warning(
+                decl,
+                f"Function '{decl.name}' uses Exn without "
+                f"a type argument — skipped.",
+                rationale="Exn<E> requires exactly one type argument.",
+                error_code="E611",
+            )
+            return False
+        type_arg = eff.type_args[0]
+        wt = self._type_expr_to_wasm_type(type_arg)
+        if wt is None or wt == "unsupported":
+            self._warning(
+                decl,
+                f"Function '{decl.name}' uses Exn with "
+                f"unsupported type — skipped.",
+                rationale="Exn<E> requires a compilable type "
+                "(Int, Nat, Bool, Float64, String).",
+                error_code="E612",
+            )
+            return False
+        type_name = self._type_expr_to_slot_name(type_arg)
+        if type_name and (type_name, wt) not in self._exn_types:
+            self._exn_types.append((type_name, wt))
+        return True
+
+    def _scan_body_for_state_handlers(self, node: ast.Node) -> None:
+        """Walk a function body looking for handle expressions.
+
+        Registers State<T> types for host import generation and
+        Exn<E> types for exception tag generation.
         """
         if isinstance(node, ast.HandleExpr):
-            if (isinstance(node.effect, ast.EffectRef)
-                    and node.effect.name == "State"):
-                if node.effect.type_args and len(node.effect.type_args) == 1:
-                    type_arg = node.effect.type_args[0]
-                    wt = self._type_expr_to_wasm_type(type_arg)
-                    if wt and wt not in ("unsupported", "i32_pair"):
-                        type_name = self._type_expr_to_slot_name(type_arg)
-                        if type_name and (type_name, wt) not in self._state_types:
-                            self._state_types.append((type_name, wt))
+            if isinstance(node.effect, ast.EffectRef):
+                if node.effect.name == "State":
+                    if node.effect.type_args and len(node.effect.type_args) == 1:
+                        type_arg = node.effect.type_args[0]
+                        wt = self._type_expr_to_wasm_type(type_arg)
+                        if wt and wt not in ("unsupported", "i32_pair"):
+                            type_name = self._type_expr_to_slot_name(type_arg)
+                            if type_name and (type_name, wt) not in self._state_types:
+                                self._state_types.append((type_name, wt))
+                elif node.effect.name == "Exn":
+                    if node.effect.type_args and len(node.effect.type_args) == 1:
+                        type_arg = node.effect.type_args[0]
+                        wt = self._type_expr_to_wasm_type(type_arg)
+                        if wt and wt != "unsupported":
+                            type_name = self._type_expr_to_slot_name(type_arg)
+                            if type_name and (type_name, wt) not in self._exn_types:
+                                self._exn_types.append((type_name, wt))
             self._scan_expr_for_handlers(node.body)
             return
         self._scan_expr_for_handlers(node)

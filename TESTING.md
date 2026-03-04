@@ -6,12 +6,12 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,370 across 19 files (~17,000 lines of test code) |
+| **Tests** | 1,380 across 19 files (~17,000 lines of test code) |
 | **Compiler code coverage** | 88% of 6,861 statements (CI minimum: 80%) |
 | **Example programs** | 15, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
 | **README code blocks** | 6 Vera blocks (5 validated, 1 allowlisted future syntax) |
-| **Contract verification** | 96 of 99 contracts (97.0%) verified statically (Tier 1) |
+| **Contract verification** | 100 of 105 contracts (95.2%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) |
 
 ## Running Tests
@@ -43,7 +43,7 @@ python scripts/check_version_sync.py                 # version consistency
 | `test_ast.py` | 87 | 935 | AST transformation, node structure, serialisation |
 | `test_checker.py` | 189 | 2,482 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection |
 | `test_verifier.py` | 97 | 1,580 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
-| `test_codegen.py` | 343 | 4,095 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, control flow, strings, IO, bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, example round-trips |
+| `test_codegen.py` | 353 | 4,276 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, IO, bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 17 | 360 | Generic instantiation, type inference, monomorphization edge cases |
 | `test_codegen_closures.py` | 17 | 416 | Closure lifting, captured variables, higher-order functions |
@@ -93,17 +93,19 @@ Across all 15 example programs:
 
 | Metric | Value |
 |--------|-------|
-| **Tier 1 (static)** | 96 contracts — proved automatically by Z3 |
-| **Tier 3 (runtime)** | 3 contracts — verified at runtime via assertion checks |
-| **Total** | 99 contracts (97.0% static) |
+| **Tier 1 (static)** | 100 contracts — proved automatically by Z3 |
+| **Tier 3 (runtime)** | 5 contracts — verified at runtime via assertion checks |
+| **Total** | 105 contracts (95.2% static) |
 
-The 3 remaining Tier 3 contracts and why they cannot be promoted:
+The 5 remaining Tier 3 contracts and why they cannot be promoted:
 
 | Example | Contract | Reason |
 |---------|----------|--------|
 | generics.vera | `ensures(@T.result == @T.0)` | Generic type parameters have no Z3 sort |
 | generics.vera | `ensures(@A.result == @A.0)` | Generic type parameters have no Z3 sort |
 | increment.vera | `ensures(new(State<Int>) == old(State<Int>) + 1)` | `old`/`new` state modeling not yet implemented |
+| modules.vera | postcondition in `abs_max` | Cross-module call outside decidable fragment |
+| modules.vera | postcondition in `qualified_abs` | Cross-module call outside decidable fragment |
 
 The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `length`, and `decreases` clauses (self-recursive, mutual recursion via where-blocks, Nat and structural ADT measures).
 
@@ -128,7 +130,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 6: Contracts | Decreases clauses, assert/assume | test_verifier, test_codegen | factorial |
 | Ch 6: Contracts | Quantifiers (forall, exists) | test_codegen, test_verifier | quantifiers |
 | Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker | hello_world, increment |
-| Ch 7: Effects | Effect handlers (handle/resume) | test_codegen, test_checker | effect_handler |
+| Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen, test_checker | effect_handler |
 | Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker | — |
 | Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — |
 | Ch 4: Expressions | Nested constructor patterns in match | test_codegen | pattern_matching |
@@ -196,10 +198,10 @@ These run in both pre-commit hooks and CI, so issues are caught locally before t
 | Stage | Pass | Allowlisted | Categories |
 |-------|-----:|------------:|------------|
 | **Parse** | 72 | 24 | FUTURE (9), FRAGMENT (15) |
-| **Type-check** | 57 | 15 | INCOMPLETE (13), FUTURE (2) |
+| **Type-check** | 57 | 15 | INCOMPLETE (14), FUTURE (1) |
 | **Verify** | 56 | 1 | ILLUSTRATIVE (1) |
 
-Allowlisted entries have stale-detection: when a feature lands or a spec edit shifts line numbers, CI flags the entry for removal. The 13 INCOMPLETE check entries reference functions, types, or imports not defined in the block (e.g. `abs`, `Tuple`, `IO.print`, `array_map`). The 2 FUTURE check entries use `Exn` exception handling and `async/await`. The 1 ILLUSTRATIVE verify entry is a spec example demonstrating multiple postconditions syntax where the contract is intentionally imprecise.
+Allowlisted entries have stale-detection: when a feature lands or a spec edit shifts line numbers, CI flags the entry for removal. The 14 INCOMPLETE check entries reference functions, types, or imports not defined in the block (e.g. `abs`, `Tuple`, `IO.print`, `array_map`, `parse_int`). The 1 FUTURE check entry uses `async/await`. The 1 ILLUSTRATIVE verify entry is a spec example demonstrating multiple postconditions syntax where the contract is intentionally imprecise.
 
 ## Pre-commit Hooks
 

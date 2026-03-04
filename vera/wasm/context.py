@@ -112,6 +112,8 @@ class WasmContext(
         self._next_closure_id: int = 0
         # Next quantifier label id (for unique block/loop labels)
         self._next_quant_id: int = 0
+        # Next handle expression label id (for unique try_table labels)
+        self._next_handle_id: int = 0
         # Old state snapshots: type_name -> local_idx (for old() in postconditions)
         self._old_state_locals: dict[str, int] = {}
 

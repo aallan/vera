@@ -4,7 +4,7 @@ This document is for AI agents working with the Vera codebase. There are two aud
 
 ## For agents writing Vera code
 
-Read `SKILLS.md` for the full language reference. It covers syntax, slot references, contracts, effects, common mistakes, and working examples that all parse correctly.
+Read `SKILL.md` for the full language reference. It covers syntax, slot references, contracts, effects, common mistakes, and working examples that all parse correctly.
 
 ### Workflow
 

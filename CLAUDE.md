@@ -56,7 +56,7 @@ python scripts/check_version_sync.py  # Verify version consistency
 
 ## Writing Vera code
 
-Read `SKILLS.md` for the full language reference. It covers syntax, slot references, contracts, effects, common mistakes, and working examples.
+Read `SKILL.md` for the full language reference. It covers syntax, slot references, contracts, effects, common mistakes, and working examples.
 
 ## Working on the compiler
 

@@ -4,7 +4,7 @@ Architecture documentation for the Vera compiler (`vera/` package). This is for 
 
 For other documentation:
 - [Root README](../README.md) — project overview, getting started, language examples
-- [SKILLS.md](../SKILLS.md) — language reference for LLM agents writing Vera code
+- [SKILL.md](../SKILL.md) — language reference for LLM agents writing Vera code
 - [spec/](../spec/) — formal language specification (13 chapters, 0-12)
 - [CONTRIBUTING.md](../CONTRIBUTING.md) — contributor workflow and conventions
 
@@ -602,4 +602,4 @@ To add a new WASM type mapping, update `wasm_type()` in `wasm/helpers.py` and th
 
 ---
 
-**See also:** [Project README](../README.md) · [Language spec](../spec/) · [SKILLS.md](../SKILLS.md) · [CONTRIBUTING.md](../CONTRIBUTING.md)
+**See also:** [Project README](../README.md) · [Language spec](../spec/) · [SKILL.md](../SKILL.md) · [CONTRIBUTING.md](../CONTRIBUTING.md)

@@ -72,6 +72,7 @@ class CodeGenerator(
         self._needs_contract_fail: bool = False
         self._needs_memory: bool = False
         self._state_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
+        self._exn_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
