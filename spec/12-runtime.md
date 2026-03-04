@@ -135,27 +135,41 @@ Multiple independent state types can coexist — each has its own cell and its o
 ```
 ┌──────────────────────────────────┐  offset 0
 │  String constants (data section) │
-├──────────────────────────────────┤  $heap_ptr (initial)
+├──────────────────────────────────┤  data_end
+│  GC shadow stack (4096 bytes)    │
+├──────────────────────────────────┤  data_end + 4096
+│  GC mark worklist (4096 bytes)   │
+├──────────────────────────────────┤  data_end + 8192 = $heap_ptr (initial)
 │  Heap-allocated data             │
 │  (ADTs, closures, arrays)        │
 │          ↓ grows downward        │
 ├──────────────────────────────────┤
 │  (unused)                        │
-└──────────────────────────────────┘  65536 (64 KiB)
+└──────────────────────────────────┘  65536+ (64 KiB, growable)
 ```
 
-String constants occupy the lowest addresses. The heap grows upward from the first byte after the string data section.
+String constants occupy the lowest addresses. The GC shadow stack and mark worklist each occupy 4096 bytes after the string data. The heap grows upward from `data_end + 8192`. The GC infrastructure (shadow stack, worklist, and heap offset) is only emitted when the program allocates heap data.
 
-### 12.5.2 Bump Allocator
+### 12.5.2 Allocator
 
-The heap uses a bump allocator. A mutable WASM global `$heap_ptr` tracks the next free byte. The internal `$alloc` function:
+The heap uses a bump allocator with a free-list overlay. A mutable WASM global `$heap_ptr` tracks the next free byte. Every allocation prepends a 4-byte header before the payload:
 
-1. Reads `$heap_ptr`.
-2. Aligns the pointer up to the required alignment.
-3. Advances `$heap_ptr` by the requested size.
-4. Returns the original (aligned) pointer.
+```
+Header (i32 at ptr - 4):
+  bit 0:     GC mark flag (0=white, 1=black)
+  bits 1-16: payload size in bytes (max 65535)
+  bits 17-31: reserved
+```
 
-The allocator and `$heap_ptr` global are only emitted when the program actually allocates heap data (ADTs, closures, or arrays).
+The internal `$alloc(payload_size)` function:
+
+1. Computes `total = align_up(payload_size + 4, 8)` (header + payload, 8-byte aligned).
+2. Searches the free list for a first-fit block with `header.size >= payload_size`. If found, unlinks it and returns the payload pointer.
+3. If `heap_ptr + total` exceeds available memory, triggers `$gc_collect` and retries the free list.
+4. If still insufficient, calls `memory.grow` to extend linear memory.
+5. Stores the header at `heap_ptr`, advances `heap_ptr` by `total`, and returns `heap_ptr_old + 4`.
+
+The allocator, GC infrastructure, and `$heap_ptr` global are only emitted when the program actually allocates heap data (ADTs, closures, or arrays). Programs that perform no allocation incur zero GC overhead.
 
 ### 12.5.3 Alignment
 
@@ -169,13 +183,28 @@ All heap allocations are 8-byte aligned. This ensures correct access for all WAS
 
 8-byte alignment satisfies all requirements.
 
-### 12.5.4 No Garbage Collection
+### 12.5.4 Garbage Collection
 
-> **Limitation.** Tracked in [#51](https://github.com/aallan/vera/issues/51).
+The runtime implements a conservative mark-sweep garbage collector entirely in WASM (no host-side GC logic). The GC is triggered automatically when the bump allocator runs out of space.
 
-The bump allocator does not reclaim memory. Once allocated, heap memory is never freed. This is acceptable for short-lived computations but will not scale to long-running programs.
+**Shadow stack.** WASM does not support stack scanning, so the compiler maintains an explicit shadow stack in linear memory. The compiler pushes live heap pointers onto it at function entry (pointer-type parameters), after each `call $alloc` (newly allocated objects), and manages save/restore at function exit. Four globals track the shadow stack and GC state:
 
-Future work: a tracing garbage collector or region-based memory management.
+| Global | Type | Purpose |
+|--------|------|---------|
+| `$gc_sp` | `mut i32` | Shadow stack pointer (current top) |
+| `$gc_stack_base` | `i32` | Shadow stack base address (`data_end`) |
+| `$gc_heap_start` | `i32` | Heap start address (`data_end + 8192`) |
+| `$gc_free_head` | `mut i32` | Free list head pointer |
+
+**Collection phases.** The `$gc_collect` function performs three phases:
+
+1. **Clear marks:** Walk the heap linearly from `$gc_heap_start` to `$heap_ptr`, clearing the mark bit in each object header.
+2. **Mark:** Seed a worklist from shadow stack entries that point into the heap. Drain the worklist iteratively: for each object, set its mark bit, then conservatively scan every i32-aligned word in the payload. Any word that looks like a valid heap pointer (correct range and alignment) is pushed onto the worklist.
+3. **Sweep:** Walk the heap again, linking unmarked objects into the free list for reuse by `$alloc`.
+
+**Conservative scanning.** The collector treats any i32 word whose value falls within the heap range and has correct payload alignment as a potential pointer. This eliminates the need for type descriptors or GC maps. False positives merely retain dead objects (harmless for mark-sweep).
+
+**Memory growth.** If collection does not free enough space, `$alloc` calls `memory.grow` to extend linear memory beyond the initial 64 KiB page. If memory growth fails, the program traps.
 
 ## 12.6 Execution Flow
 
@@ -254,5 +283,4 @@ The current runtime has the following limitations, each tracked as a GitHub issu
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| No garbage collection | [#51](https://github.com/aallan/vera/issues/51) | Bump allocator only; linear memory is not reclaimed |
 | Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |

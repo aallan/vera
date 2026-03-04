@@ -277,7 +277,7 @@ C8 addresses the accumulated technical debt and UX gaps before v0.1.0. Open issu
 - ~~[#110](https://github.com/aallan/vera/issues/110) name collision detection for flat module compilation~~ ([v0.0.57](https://github.com/aallan/vera/releases/tag/v0.0.57))
 - ~~[#131](https://github.com/aallan/vera/issues/131) nested constructor pattern codegen~~ ([v0.0.56](https://github.com/aallan/vera/releases/tag/v0.0.56))
 - ~~[#53](https://github.com/aallan/vera/issues/53) `Exn<E>` and custom effect handler compilation~~ ([v0.0.62](https://github.com/aallan/vera/releases/tag/v0.0.62))
-- [#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory
+- ~~[#51](https://github.com/aallan/vera/issues/51) garbage collection for WASM linear memory~~ ([v0.0.65](https://github.com/aallan/vera/releases/tag/v0.0.65))
 - ~~[#132](https://github.com/aallan/vera/issues/132) arrays of compound types in codegen~~ ([v0.0.61](https://github.com/aallan/vera/releases/tag/v0.0.61))
 - ~~[#52](https://github.com/aallan/vera/issues/52) dynamic string construction~~ ([v0.0.63](https://github.com/aallan/vera/releases/tag/v0.0.63))
 - ~~[#134](https://github.com/aallan/vera/issues/134) string built-in operations (length, concat, slice)~~ ([v0.0.50](https://github.com/aallan/vera/releases/tag/v0.0.50))
@@ -663,7 +663,7 @@ For compiler architecture, pipeline internals, design patterns, and how to exten
 | Contracts | Mandatory on all functions | Programs must be checkable |
 | Effects | Algebraic, row-polymorphic | All state and side effects explicit |
 | Verification | Z3 via SMT-LIB | Industry standard, decidable fragment |
-| Memory | Managed (bump allocator; GC planned — [#51](https://github.com/aallan/vera/issues/51)) | Models focus on logic, not memory |
+| Memory | Managed (conservative mark-sweep GC) | Models focus on logic, not memory |
 | Target | WebAssembly | Portable, sandboxed, no ambient capabilities |
 | Compiler | Python reference impl | Correctness over performance — see [architecture docs](vera/README.md) |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about |

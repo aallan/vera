@@ -1,0 +1,72 @@
+-- GC pressure test: demonstrates garbage collection for WASM linear memory.
+--
+-- Builds a linked list of N integers, computes its sum, then discards it.
+-- Repeats this multiple times. Without GC or memory growth, the allocations
+-- would exhaust the 64 KiB initial WASM page. The mark-sweep collector
+-- reclaims dead list nodes, keeping total memory usage bounded.
+
+private data List {
+  Nil,
+  Cons(Int, List)
+}
+
+-- Build a list [1, 2, ..., n] by counting down.
+private fn build(@Int, @List -> @List)
+  requires(true)
+  ensures(true)
+  decreases(@Int.0)
+  effects(pure)
+{
+  match @Int.0 <= 0 {
+    true -> @List.0,
+    false -> build(@Int.0 - 1, Cons(@Int.0, @List.0))
+  }
+}
+
+-- Sum all elements in a list.
+private fn sum(@List -> @Int)
+  requires(true)
+  ensures(true)
+  decreases(@List.0)
+  effects(pure)
+{
+  match @List.0 {
+    Nil -> 0,
+    Cons(@Int, @List) -> @Int.0 + sum(@List.0)
+  }
+}
+
+-- Build a list of size n and return its sum.
+-- The list is dead after this function returns, so GC can reclaim it.
+private fn build_and_sum(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  sum(build(@Int.0, Nil))
+}
+
+-- Repeat build_and_sum k times, accumulating the total.
+-- Each iteration allocates ~24 bytes per node * 100 nodes = ~2400 bytes.
+-- After 30 iterations that is ~72 KB of total allocation, exceeding 64 KB.
+private fn repeat(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  decreases(@Int.0)
+  effects(pure)
+{
+  match @Int.1 <= 0 {
+    true -> @Int.0,
+    false -> repeat(@Int.1 - 1, @Int.0 + build_and_sum(100))
+  }
+}
+
+-- Entry point: 30 iterations of building 100-element lists.
+-- sum(1..100) = 5050, so 30 * 5050 = 151500.
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  repeat(30, 0)
+}

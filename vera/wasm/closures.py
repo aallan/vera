@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
-from vera.wasm.helpers import WasmSlotEnv, _align_up
+from vera.wasm.helpers import WasmSlotEnv, _align_up, gc_shadow_push
 
 
 class ClosuresMixin:
@@ -45,6 +45,7 @@ class ClosuresMixin:
         total_size = max(_align_up(offset, 8), 8)  # at least 8 bytes
 
         # Emit allocation + stores
+        self.needs_alloc = True
         instructions: list[str] = []
         tmp = self.alloc_local("i32")
 
@@ -52,6 +53,7 @@ class ClosuresMixin:
         instructions.append(f"i32.const {total_size}")
         instructions.append("call $alloc")
         instructions.append(f"local.set {tmp}")
+        instructions.extend(gc_shadow_push(tmp))
 
         # Store func_table_idx at offset 0
         instructions.append(f"local.get {tmp}")

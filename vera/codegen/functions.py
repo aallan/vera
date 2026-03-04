@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from vera import ast
 from vera.wasm import WasmContext, WasmSlotEnv
+from vera.wasm.helpers import gc_shadow_push
 
 
 class FunctionCompilationMixin:
@@ -79,8 +80,9 @@ class FunctionCompilationMixin:
         ctx.set_closure_id_start(self._next_closure_id)
         env = WasmSlotEnv()
 
-        # Allocate parameters
+        # Allocate parameters and track pointer params for GC prologue
         param_parts: list[str] = []
+        gc_pointer_params: list[int] = []
         for i, param_te in enumerate(decl.params):
             wt = self._type_expr_to_wasm_type(param_te)
             if wt is None:
@@ -104,6 +106,7 @@ class FunctionCompilationMixin:
                 type_name = self._type_expr_to_slot_name(param_te)
                 if type_name:
                     env = env.push(type_name, ptr_idx)
+                gc_pointer_params.append(ptr_idx)
                 continue
             local_idx = ctx.alloc_param()
             param_parts.append(f"(param $p{i} {wt})")
@@ -111,6 +114,9 @@ class FunctionCompilationMixin:
             type_name = self._type_expr_to_slot_name(param_te)
             if type_name:
                 env = env.push(type_name, local_idx)
+            # Track i32 pointer params (ADT/closure, not Bool/Byte)
+            if wt == "i32" and type_name not in ("Bool", "Byte", None):
+                gc_pointer_params.append(local_idx)
 
         # Return type
         ret_wt = self._type_expr_to_wasm_type(decl.return_type)
@@ -171,6 +177,50 @@ class FunctionCompilationMixin:
         # Compile postcondition checks (wrap around body result)
         post_instrs = self._compile_postconditions(ctx, decl, env, ret_wt)
 
+        # Build GC prologue/epilogue (only when function allocates)
+        gc_prologue: list[str] = []
+        gc_epilogue: list[str] = []
+        if ctx.needs_alloc:
+            gc_sp_save = ctx.alloc_local("i32")
+            gc_prologue.append("global.get $gc_sp")
+            gc_prologue.append(f"local.set {gc_sp_save}")
+            for pidx in gc_pointer_params:
+                gc_prologue.extend(gc_shadow_push(pidx))
+
+            # Determine if return type is a heap pointer
+            ret_type_name = self._type_expr_to_slot_name(decl.return_type)
+            ret_is_pointer = False
+            if ret_wt == "i32" and ret_type_name not in (
+                "Bool", "Byte", None,
+            ):
+                ret_is_pointer = True
+            elif ret_wt == "i32_pair":
+                ret_is_pointer = True
+
+            if ret_wt == "i32_pair":
+                gc_ret_ptr = ctx.alloc_local("i32")
+                gc_ret_len = ctx.alloc_local("i32")
+                gc_epilogue.append(f"local.set {gc_ret_len}")
+                gc_epilogue.append(f"local.set {gc_ret_ptr}")
+                gc_epilogue.append(f"local.get {gc_sp_save}")
+                gc_epilogue.append("global.set $gc_sp")
+                if ret_is_pointer:
+                    gc_epilogue.extend(gc_shadow_push(gc_ret_ptr))
+                gc_epilogue.append(f"local.get {gc_ret_ptr}")
+                gc_epilogue.append(f"local.get {gc_ret_len}")
+            elif ret_wt is not None:
+                gc_ret = ctx.alloc_local(ret_wt)
+                gc_epilogue.append(f"local.set {gc_ret}")
+                gc_epilogue.append(f"local.get {gc_sp_save}")
+                gc_epilogue.append("global.set $gc_sp")
+                if ret_is_pointer:
+                    gc_epilogue.extend(gc_shadow_push(gc_ret))
+                gc_epilogue.append(f"local.get {gc_ret}")
+            else:
+                # Void/Unit — no return value to save
+                gc_epilogue.append(f"local.get {gc_sp_save}")
+                gc_epilogue.append("global.set $gc_sp")
+
         # Assemble function WAT
         export_part = f' (export "{decl.name}")' if export else ""
         header = f"  (func ${decl.name}{export_part}"
@@ -180,9 +230,13 @@ class FunctionCompilationMixin:
 
         lines = [header]
 
-        # Extra locals (from let bindings + contract temps)
+        # Extra locals (from let bindings + contract temps + GC saves)
         for local_decl in ctx.extra_locals_wat():
             lines.append(f"    {local_decl}")
+
+        # GC prologue: save gc_sp, push pointer params
+        for instr in gc_prologue:
+            lines.append(f"    {instr}")
 
         # Precondition checks (at function entry)
         for instr in pre_instrs:
@@ -198,6 +252,10 @@ class FunctionCompilationMixin:
 
         # Postcondition checks (after body, wraps result)
         for instr in post_instrs:
+            lines.append(f"    {instr}")
+
+        # GC epilogue: save result, restore gc_sp, push result, return
+        for instr in gc_epilogue:
             lines.append(f"    {instr}")
 
         lines.append("  )")

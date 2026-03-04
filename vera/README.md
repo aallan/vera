@@ -537,7 +537,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
 | **Local type inference only** | Bidirectional checking resolves nullary constructors from context; no Hindley-Milner | Done ([#55](https://github.com/aallan/vera/issues/55)) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
-| **No garbage collection** | Bump allocator only; linear memory is not reclaimed | [#51](https://github.com/aallan/vera/issues/51) |
+| **No garbage collection** | Conservative mark-sweep GC with shadow stack root tracking; memory reclaimed automatically | Done ([#51](https://github.com/aallan/vera/issues/51)) |
 
 ## Extending the Compiler
 
