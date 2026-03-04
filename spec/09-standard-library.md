@@ -102,7 +102,7 @@ let @Array<Int> = [1, 2, 3];
 - Zero-indexed: the first element is at index 0.
 - Bounds-checked: indexing with an out-of-range index causes a runtime trap (see Chapter 12).
 
-**Element types:** Arrays can contain any type for which a WASM representation exists: `Int`, `Nat`, `Bool`, `Byte`, `Float64`. Arrays of compound types (`Array<Array<Int>>`, `Array<Option<Int>>`) are not yet supported (see Section 11.17).
+**Element types:** Arrays can contain any type for which a WASM representation exists, including primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`), ADT types (`Option<Int>`, `Result<Nat, String>`), `String`, and nested arrays (`Array<Array<Int>>`).
 
 **Length:** The `length` built-in function returns the number of elements (see Section 9.6.1).
 
@@ -348,7 +348,7 @@ This approach keeps the core language small while providing ergonomic JSON suppo
 
 ### 9.7.3 Markdown (Future)
 
-> **Status: Not yet implemented.** Tracked in [#147](https://github.com/aallan/vera/issues/147). Depends on dynamic string construction ([#52](https://github.com/aallan/vera/issues/52)), string built-in operations ([#134](https://github.com/aallan/vera/issues/134)), and arrays of compound types ([#132](https://github.com/aallan/vera/issues/132)). Does **not** depend on `Map<K, V>`.
+> **Status: Not yet implemented.** Tracked in [#147](https://github.com/aallan/vera/issues/147). Depends on dynamic string construction ([#52](https://github.com/aallan/vera/issues/52)) and string built-in operations ([#134](https://github.com/aallan/vera/issues/134)). Does **not** depend on `Map<K, V>`.
 
 Markdown is the lingua franca of large language models — they understand it natively and generate it naturally. A typed Markdown ADT makes document structure visible to the type system, enabling contracts that verify the structural properties of agent output.
 

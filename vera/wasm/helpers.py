@@ -163,8 +163,24 @@ def is_compilable_type(t: Type) -> bool:
 # Array element helpers
 # =====================================================================
 
+def _is_pair_element_type(elem_type: str) -> bool:
+    """Check if an array element type is a pair type (ptr, len).
+
+    String and Array<T> elements are represented as two consecutive
+    i32 values (pointer + length), requiring 8 bytes of storage.
+    Bare "Array" (without type args) also matches, since the element
+    type name from _infer_vera_type may not include type parameters.
+    """
+    return elem_type == "String" or elem_type == "Array" or elem_type.startswith("Array<")
+
+
 def _element_mem_size(elem_type: str) -> int | None:
-    """Get memory size in bytes for an array element type."""
+    """Get memory size in bytes for an array element type.
+
+    Primitive types have fixed sizes.  Pair types (String, Array<T>)
+    use 8 bytes (ptr + len).  All other compound types (ADTs) use
+    4 bytes (i32 heap pointer).
+    """
     sizes = {
         "Int": 8,
         "Nat": 8,
@@ -172,11 +188,22 @@ def _element_mem_size(elem_type: str) -> int | None:
         "Bool": 1,
         "Byte": 1,
     }
-    return sizes.get(elem_type)
+    size = sizes.get(elem_type)
+    if size is not None:
+        return size
+    # Pair types: (ptr, len) = 8 bytes
+    if _is_pair_element_type(elem_type):
+        return 8
+    # ADT / other compound types: i32 heap pointer = 4 bytes
+    return 4
 
 
-def _element_load_op(elem_type: str) -> str:
-    """Get the WASM load instruction for an array element type."""
+def _element_load_op(elem_type: str) -> str | None:
+    """Get the WASM load instruction for an array element type.
+
+    Returns None for pair types (String, Array<T>) which require
+    special two-load handling in the caller.
+    """
     ops = {
         "Int": "i64.load",
         "Nat": "i64.load",
@@ -184,11 +211,22 @@ def _element_load_op(elem_type: str) -> str:
         "Bool": "i32.load8_u",
         "Byte": "i32.load8_u",
     }
-    return ops.get(elem_type, "i64.load")
+    op = ops.get(elem_type)
+    if op is not None:
+        return op
+    # Pair types need two loads — caller must handle specially
+    if _is_pair_element_type(elem_type):
+        return None
+    # ADT / other compound types: single i32 load
+    return "i32.load"
 
 
-def _element_store_op(elem_type: str) -> str:
-    """Get the WASM store instruction for an array element type."""
+def _element_store_op(elem_type: str) -> str | None:
+    """Get the WASM store instruction for an array element type.
+
+    Returns None for pair types (String, Array<T>) which require
+    special two-store handling in the caller.
+    """
     ops = {
         "Int": "i64.store",
         "Nat": "i64.store",
@@ -196,11 +234,22 @@ def _element_store_op(elem_type: str) -> str:
         "Bool": "i32.store8",
         "Byte": "i32.store8",
     }
-    return ops.get(elem_type, "i64.store")
+    op = ops.get(elem_type)
+    if op is not None:
+        return op
+    # Pair types need two stores — caller must handle specially
+    if _is_pair_element_type(elem_type):
+        return None
+    # ADT / other compound types: single i32 store
+    return "i32.store"
 
 
 def _element_wasm_type(elem_type: str) -> str | None:
-    """Get the WASM value type for an array element type."""
+    """Get the WASM value type for an array element type.
+
+    Returns "i32_pair" for pair types (String, Array<T>),
+    "i32" for ADT/compound types, or the native type for primitives.
+    """
     types = {
         "Int": "i64",
         "Nat": "i64",
@@ -208,4 +257,11 @@ def _element_wasm_type(elem_type: str) -> str | None:
         "Bool": "i32",
         "Byte": "i32",
     }
-    return types.get(elem_type)
+    wt = types.get(elem_type)
+    if wt is not None:
+        return wt
+    # Pair types: (ptr, len) represented as i32_pair
+    if _is_pair_element_type(elem_type):
+        return "i32_pair"
+    # ADT / other compound types: i32 heap pointer
+    return "i32"

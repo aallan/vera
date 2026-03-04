@@ -199,19 +199,37 @@ class TestHelperFunctions:
 
     # -- _element_* edge cases --
 
-    def test_element_mem_size_unknown(self) -> None:
-        assert _element_mem_size("String") is None
+    def test_element_mem_size_string(self) -> None:
+        """String element: pair type → 8 bytes."""
+        assert _element_mem_size("String") == 8
 
-    def test_element_load_op_unknown(self) -> None:
-        """Unknown element type falls back to i64.load."""
-        assert _element_load_op("Unknown") == "i64.load"
+    def test_element_mem_size_adt(self) -> None:
+        """ADT element: i32 heap pointer → 4 bytes."""
+        assert _element_mem_size("Option") == 4
 
-    def test_element_store_op_unknown(self) -> None:
-        """Unknown element type falls back to i64.store."""
-        assert _element_store_op("Unknown") == "i64.store"
+    def test_element_load_op_adt(self) -> None:
+        """ADT element type → i32.load."""
+        assert _element_load_op("Unknown") == "i32.load"
 
-    def test_element_wasm_type_unknown(self) -> None:
-        assert _element_wasm_type("String") is None
+    def test_element_load_op_string(self) -> None:
+        """String element: pair type → None (special handling)."""
+        assert _element_load_op("String") is None
+
+    def test_element_store_op_adt(self) -> None:
+        """ADT element type → i32.store."""
+        assert _element_store_op("Unknown") == "i32.store"
+
+    def test_element_store_op_string(self) -> None:
+        """String element: pair type → None (special handling)."""
+        assert _element_store_op("String") is None
+
+    def test_element_wasm_type_string(self) -> None:
+        """String element → i32_pair."""
+        assert _element_wasm_type("String") == "i32_pair"
+
+    def test_element_wasm_type_adt(self) -> None:
+        """ADT element → i32."""
+        assert _element_wasm_type("Option") == "i32"
 
     def test_element_wasm_type_float64(self) -> None:
         assert _element_wasm_type("Float64") == "f64"

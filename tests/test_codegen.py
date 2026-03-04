@@ -3918,3 +3918,178 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 }
 """
         assert _run(src) == 42
+
+
+# =====================================================================
+# C8e: Arrays of compound types (#132)
+# =====================================================================
+
+
+class TestCompoundArrays:
+    """Test arrays with compound element types (ADTs, Strings, nested arrays)."""
+
+    def test_option_array_some(self) -> None:
+        """Array<Option<Int>> — construct and index Some element."""
+        src = """
+private data Option<T> { None, Some(T) }
+
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Option<Int>> = [Some(10), None, Some(30)];
+  match @Array<Option<Int>>.0[0] {
+    Some(@Int) -> @Int.0,
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 10
+
+    def test_option_array_none(self) -> None:
+        """Array<Option<Int>> — index None element."""
+        src = """
+private data Option<T> { None, Some(T) }
+
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Option<Int>> = [Some(10), None, Some(30)];
+  match @Array<Option<Int>>.0[1] {
+    Some(@Int) -> @Int.0,
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == -1
+
+    def test_option_array_index_2(self) -> None:
+        """Array<Option<Int>> — index third element."""
+        src = """
+private data Option<T> { None, Some(T) }
+
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Option<Int>> = [Some(10), None, Some(30)];
+  match @Array<Option<Int>>.0[2] {
+    Some(@Int) -> @Int.0,
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 30
+
+    def test_option_array_length(self) -> None:
+        """length() on Array<Option<Int>>."""
+        src = """
+private data Option<T> { None, Some(T) }
+
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Option<Int>> = [Some(1), None, Some(3), None];
+  length(@Array<Option<Int>>.0)
+}
+"""
+        assert _run(src) == 4
+
+    def test_string_array(self) -> None:
+        """Array<String> — construct and index, check string_length."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<String> = ["hello", "world", "!"];
+  string_length(@Array<String>.0[0])
+}
+"""
+        assert _run(src) == 5
+
+    def test_string_array_index_1(self) -> None:
+        """Array<String> — index second element."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<String> = ["hello", "world", "!"];
+  string_length(@Array<String>.0[1])
+}
+"""
+        assert _run(src) == 5
+
+    def test_string_array_index_2(self) -> None:
+        """Array<String> — index third element."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<String> = ["hello", "world", "!"];
+  string_length(@Array<String>.0[2])
+}
+"""
+        assert _run(src) == 1
+
+    def test_string_array_length(self) -> None:
+        """length() on Array<String>."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<String> = ["a", "bb", "ccc"];
+  length(@Array<String>.0)
+}
+"""
+        assert _run(src) == 3
+
+    def test_string_array_io(self) -> None:
+        """Array<String> — print indexed element."""
+        src = """
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<String> = ["hello", "world"];
+  IO.print(@Array<String>.0[1]);
+  ()
+}
+"""
+        assert _run_io(src) == "world"
+
+    def test_nested_array(self) -> None:
+        """Array<Array<Int>> — construct nested, index outer, then inner."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [10, 20];
+  let @Array<Array<Int>> = [@Array<Int>.0, @Array<Int>.0];
+  @Array<Array<Int>>.0[0][1]
+}
+"""
+        assert _run(src) == 20
+
+    def test_nested_array_length(self) -> None:
+        """length() on Array<Array<Int>>."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = [1, 2, 3];
+  let @Array<Array<Int>> = [@Array<Int>.0, @Array<Int>.0, @Array<Int>.0];
+  length(@Array<Array<Int>>.0)
+}
+"""
+        assert _run(src) == 3
+
+    def test_result_array(self) -> None:
+        """Array<Result<Int, String>> — construct and match on indexed element."""
+        src = """
+private data Result<T, E> { Ok(T), Err(E) }
+
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Result<Int, String>> = [Ok(42), Err("bad")];
+  match @Array<Result<Int, String>>.0[0] {
+    Ok(@Int) -> @Int.0,
+    Err(_) -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 42
+
+    def test_result_array_err(self) -> None:
+        """Array<Result<Int, String>> — index Err element."""
+        src = """
+private data Result<T, E> { Ok(T), Err(E) }
+
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Result<Int, String>> = [Ok(42), Err("bad")];
+  match @Array<Result<Int, String>>.0[1] {
+    Ok(@Int) -> @Int.0,
+    Err(_) -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == -1

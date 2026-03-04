@@ -294,6 +294,10 @@ class InferenceMixin:
             return self._infer_vera_type(expr.operand)
         if isinstance(expr, ast.FnCall):
             return self._infer_fncall_vera_type(expr)
+        if isinstance(expr, ast.StringLit):
+            return "String"
+        if isinstance(expr, ast.ArrayLit):
+            return "Array"
         return None
 
     def _infer_fncall_vera_type(self, call: ast.FnCall) -> str | None:
@@ -378,13 +382,34 @@ class InferenceMixin:
 
         The collection should be a slot ref like @Array<Int>.0, whose
         type_name is "Array" with type_args (NamedType("Int"),).
+        Also handles chained indexing (e.g. @Array<Array<Int>>.0[0][1])
+        by recursively resolving the inner collection's element type.
+        """
+        te = self._infer_index_element_type_expr(expr)
+        return te.name if te is not None else None
+
+    def _infer_index_element_type_expr(
+        self, expr: ast.IndexExpr,
+    ) -> ast.NamedType | None:
+        """Get the full NamedType of the element from an IndexExpr.
+
+        Returns the NamedType so that chained indexing can inspect
+        nested type_args (e.g. Array<Array<Int>> → Array<Int> → Int).
         """
         coll = expr.collection
         if isinstance(coll, ast.SlotRef):
             if coll.type_name == "Array" and coll.type_args:
                 ta = coll.type_args[0]
                 if isinstance(ta, ast.NamedType):
-                    return ta.name
+                    return ta
+        # Chained indexing: collection is itself an IndexExpr
+        if isinstance(coll, ast.IndexExpr):
+            inner_te = self._infer_index_element_type_expr(coll)
+            if (inner_te is not None
+                    and inner_te.name == "Array" and inner_te.type_args):
+                ta = inner_te.type_args[0]
+                if isinstance(ta, ast.NamedType):
+                    return ta
         return None
 
     def _get_arg_type_info_wasm(

@@ -10,6 +10,7 @@ from vera.wasm.helpers import (
     _element_mem_size,
     _element_load_op,
     _element_store_op,
+    _is_pair_element_type,
 )
 
 if TYPE_CHECKING:
@@ -72,8 +73,8 @@ class DataMixin:
             arg_wasm_types.append(arg_wt)
 
         # Compute field offsets from concrete argument types
-        _sizes = {"i32": 4, "i64": 8, "f64": 8}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8}
+        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
+        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
         offset = 4  # after tag (i32, 4 bytes)
         field_offsets: list[tuple[int, str]] = []
         for wt in arg_wasm_types:
@@ -94,9 +95,23 @@ class DataMixin:
 
         # Store each field at its computed offset
         for i, (fo, wt) in enumerate(field_offsets):
-            instructions.append(f"local.get {tmp}")
-            instructions.extend(arg_instrs_list[i])
-            instructions.append(f"{wt}.store offset={fo}")
+            if wt == "i32_pair":
+                # Pair type (String, Array<T>): store (ptr, len) as two i32s
+                tmp_val_ptr = self.alloc_local("i32")
+                tmp_val_len = self.alloc_local("i32")
+                instructions.extend(arg_instrs_list[i])
+                instructions.append(f"local.set {tmp_val_len}")
+                instructions.append(f"local.set {tmp_val_ptr}")
+                instructions.append(f"local.get {tmp}")
+                instructions.append(f"local.get {tmp_val_ptr}")
+                instructions.append(f"i32.store offset={fo}")
+                instructions.append(f"local.get {tmp}")
+                instructions.append(f"local.get {tmp_val_len}")
+                instructions.append(f"i32.store offset={fo + 4}")
+            else:
+                instructions.append(f"local.get {tmp}")
+                instructions.extend(arg_instrs_list[i])
+                instructions.append(f"{wt}.store offset={fo}")
 
         # Leave pointer as result
         instructions.append(f"local.get {tmp}")
@@ -514,8 +529,12 @@ class DataMixin:
         if elem_type is None:
             return None
         elem_size = _element_mem_size(elem_type)
+        if elem_size is None:
+            return None
+        is_pair = _is_pair_element_type(elem_type)
         store_op = _element_store_op(elem_type)
-        if elem_size is None or store_op is None:
+        # store_op is None only for pair types — handled below
+        if store_op is None and not is_pair:
             return None
 
         self.needs_alloc = True
@@ -534,9 +553,26 @@ class DataMixin:
             if elem_instrs is None:
                 return None
             offset = i * elem_size
-            instructions.append(f"local.get {tmp_ptr}")
-            instructions.extend(elem_instrs)
-            instructions.append(f"{store_op} offset={offset}")
+            if is_pair:
+                # Pair type (String, Array<T>): element pushes (ptr, len)
+                # Store into two consecutive i32 slots
+                tmp_val_ptr = self.alloc_local("i32")
+                tmp_val_len = self.alloc_local("i32")
+                instructions.extend(elem_instrs)
+                instructions.append(f"local.set {tmp_val_len}")
+                instructions.append(f"local.set {tmp_val_ptr}")
+                # Store ptr at offset
+                instructions.append(f"local.get {tmp_ptr}")
+                instructions.append(f"local.get {tmp_val_ptr}")
+                instructions.append(f"i32.store offset={offset}")
+                # Store len at offset+4
+                instructions.append(f"local.get {tmp_ptr}")
+                instructions.append(f"local.get {tmp_val_len}")
+                instructions.append(f"i32.store offset={offset + 4}")
+            else:
+                instructions.append(f"local.get {tmp_ptr}")
+                instructions.extend(elem_instrs)
+                instructions.append(f"{store_op} offset={offset}")
 
         # Push (ptr, len)
         instructions.append(f"local.get {tmp_ptr}")
@@ -555,8 +591,12 @@ class DataMixin:
         if elem_type is None:
             return None
         elem_size = _element_mem_size(elem_type)
+        if elem_size is None:
+            return None
+        is_pair = _is_pair_element_type(elem_type)
         load_op = _element_load_op(elem_type)
-        if elem_size is None or load_op is None:
+        # load_op is None only for pair types — handled below
+        if load_op is None and not is_pair:
             return None
 
         # Evaluate collection → (ptr, len) on stack
@@ -601,5 +641,15 @@ class DataMixin:
             instructions.append("i32.mul")
             instructions.append("i32.add")
         # Load element
-        instructions.append(load_op)
+        if is_pair:
+            # Pair type (String, Array<T>): load (ptr, len) from two
+            # consecutive i32 slots.  Save computed address first.
+            tmp_addr = self.alloc_local("i32")
+            instructions.append(f"local.set {tmp_addr}")
+            instructions.append(f"local.get {tmp_addr}")
+            instructions.append("i32.load offset=0")
+            instructions.append(f"local.get {tmp_addr}")
+            instructions.append("i32.load offset=4")
+        else:
+            instructions.append(load_op)  # type: ignore[arg-type]
         return instructions
