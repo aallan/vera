@@ -232,7 +232,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs thr
 | **test** | Python 3.11, 3.12, 3.13 x Ubuntu, macOS (6 combos) | `pytest -v` passes on all combinations |
 | **test** (coverage) | Python 3.12 x Ubuntu only | `pytest --cov=vera --cov-fail-under=80` |
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
-| **lint** | Python 3.12 x Ubuntu | `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py` |
+| **lint** | Python 3.12 x Ubuntu | `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py` |
 
 The coverage threshold of **80%** is enforced in CI. Current coverage is 90%.
 
