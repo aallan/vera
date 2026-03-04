@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
-from vera.wasm.helpers import WasmSlotEnv
+from vera.wasm.helpers import WasmSlotEnv, gc_shadow_push
 
 
 class CallsMixin:
@@ -255,6 +255,7 @@ class CallsMixin:
         instructions.append("i32.add")
         instructions.append("call $alloc")
         instructions.append(f"local.set {dst}")
+        instructions.extend(gc_shadow_push(dst))
 
         # Copy string a: byte-by-byte loop
         instructions.append("i32.const 0")
@@ -375,6 +376,7 @@ class CallsMixin:
         instructions.append(f"local.get {new_len}")
         instructions.append("call $alloc")
         instructions.append(f"local.set {dst}")
+        instructions.extend(gc_shadow_push(dst))
 
         # Copy bytes: byte-by-byte loop
         instructions.append("i32.const 0")
@@ -565,6 +567,7 @@ class CallsMixin:
         ins.append(f"local.tee {out}")
         ins.append("i32.const 0")
         ins.append("i32.store")           # tag = 0 (Ok)
+        ins.extend(gc_shadow_push(out))
         ins.append(f"local.get {out}")
         ins.append(f"local.get {result}")
         ins.append("i64.store offset=8")  # Nat value
@@ -599,6 +602,7 @@ class CallsMixin:
         ins.append(f"local.tee {out}")
         ins.append("i32.const 1")
         ins.append("i32.store")           # tag = 1 (Err)
+        ins.extend(gc_shadow_push(out))
         ins.append(f"local.get {out}")
         ins.append(f"local.get {idx}")
         ins.append("i32.store offset=4")  # string ptr
@@ -856,6 +860,7 @@ class CallsMixin:
         instructions.append("i32.const 20")
         instructions.append("call $alloc")
         instructions.append(f"local.set {buf}")
+        instructions.extend(gc_shadow_push(buf))
 
         # Start position at end of buffer
         instructions.append("i32.const 20")
@@ -947,11 +952,45 @@ class CallsMixin:
         instructions.append("i32.sub")
         instructions.append(f"local.set {slen}")
 
-        # Result is (buf + pos, slen) — point into the temp buffer
-        # We can return a view since the buffer is heap-allocated
-        instructions.append(f"local.get {buf}")
-        instructions.append(f"local.get {pos}")
-        instructions.append("i32.add")
+        # Allocate exact-size result buffer and copy digits forward.
+        # (Avoids returning an interior pointer into the temp buffer,
+        # which conservative GC would not recognise as a valid root.)
+        instructions.append(f"local.get {slen}")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {dst}")
+        instructions.extend(gc_shadow_push(dst))
+        # Copy loop: dst[i] = buf[pos + i] for i in 0..slen
+        ci = self.alloc_local("i32")
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {ci}")
+        instructions.append("block $brk_cp")
+        instructions.append("loop $lp_cp")
+        instructions.append(f"  local.get {ci}")
+        instructions.append(f"  local.get {slen}")
+        instructions.append("  i32.ge_u")
+        instructions.append("  br_if $brk_cp")
+        # dst[ci] = buf[pos + ci]
+        instructions.append(f"  local.get {dst}")
+        instructions.append(f"  local.get {ci}")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.get {buf}")
+        instructions.append(f"  local.get {pos}")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.get {ci}")
+        instructions.append("  i32.add")
+        instructions.append("  i32.load8_u offset=0")
+        instructions.append("  i32.store8 offset=0")
+        # ci++
+        instructions.append(f"  local.get {ci}")
+        instructions.append("  i32.const 1")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.set {ci}")
+        instructions.append("  br $lp_cp")
+        instructions.append("end")
+        instructions.append("end")
+
+        # Result: (dst, slen)
+        instructions.append(f"local.get {dst}")
         instructions.append(f"local.get {slen}")
         return instructions
 
@@ -1008,6 +1047,7 @@ class CallsMixin:
         instructions.append("i32.const 1")
         instructions.append("call $alloc")
         instructions.append(f"local.set {dst}")
+        instructions.extend(gc_shadow_push(dst))
 
         # Store the byte value
         instructions.append(f"local.get {dst}")
@@ -1058,6 +1098,7 @@ class CallsMixin:
         instructions.append("i32.const 32")
         instructions.append("call $alloc")
         instructions.append(f"local.set {buf}")
+        instructions.extend(gc_shadow_push(buf))
         instructions.append("i32.const 0")
         instructions.append(f"local.set {pos}")
 
@@ -1099,6 +1140,7 @@ class CallsMixin:
         instructions.append("i32.const 20")
         instructions.append("call $alloc")
         instructions.append(f"local.set {tbuf}")
+        instructions.extend(gc_shadow_push(tbuf))
         instructions.append("i32.const 20")
         instructions.append(f"local.set {tpos}")
 
@@ -1320,17 +1362,23 @@ class CallsMixin:
         """Translate strip(s) → String (i32_pair).
 
         Trims leading and trailing ASCII whitespace (space, tab, CR, LF).
-        Returns a slice into the original string (no allocation needed).
+        Allocates a new buffer and copies the trimmed content to avoid
+        returning an interior pointer (which conservative GC cannot track).
         """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
+
+        self.needs_alloc = True
 
         ptr = self.alloc_local("i32")
         slen = self.alloc_local("i32")
         start = self.alloc_local("i32")
         end = self.alloc_local("i32")
         byte = self.alloc_local("i32")
+        new_len = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
 
         instructions: list[str] = []
 
@@ -1425,13 +1473,48 @@ class CallsMixin:
         instructions.append("  end")
         instructions.append("end")
 
-        # Result: (ptr + start, end - start)
-        instructions.append(f"local.get {ptr}")
-        instructions.append(f"local.get {start}")
-        instructions.append("i32.add")
+        # new_len = end - start
         instructions.append(f"local.get {end}")
         instructions.append(f"local.get {start}")
         instructions.append("i32.sub")
+        instructions.append(f"local.set {new_len}")
+
+        # Allocate new buffer and copy trimmed content
+        instructions.append(f"local.get {new_len}")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {dst}")
+        instructions.extend(gc_shadow_push(dst))
+
+        # Copy loop: dst[i] = ptr[start + i] for i in 0..new_len
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+        instructions.append("block $brk_st")
+        instructions.append("loop $lp_st")
+        instructions.append(f"  local.get {idx}")
+        instructions.append(f"  local.get {new_len}")
+        instructions.append("  i32.ge_u")
+        instructions.append("  br_if $brk_st")
+        instructions.append(f"  local.get {dst}")
+        instructions.append(f"  local.get {idx}")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.get {ptr}")
+        instructions.append(f"  local.get {start}")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.get {idx}")
+        instructions.append("  i32.add")
+        instructions.append("  i32.load8_u offset=0")
+        instructions.append("  i32.store8 offset=0")
+        instructions.append(f"  local.get {idx}")
+        instructions.append("  i32.const 1")
+        instructions.append("  i32.add")
+        instructions.append(f"  local.set {idx}")
+        instructions.append("  br $lp_st")
+        instructions.append("end")
+        instructions.append("end")
+
+        # Result: (dst, new_len)
+        instructions.append(f"local.get {dst}")
+        instructions.append(f"local.get {new_len}")
         return instructions
 
     def _translate_handle_expr(

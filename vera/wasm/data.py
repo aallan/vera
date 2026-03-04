@@ -11,6 +11,7 @@ from vera.wasm.helpers import (
     _element_load_op,
     _element_store_op,
     _is_pair_element_type,
+    gc_shadow_push,
 )
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ class DataMixin:
         if layout is None:
             return None
 
+        self.needs_alloc = True
         tmp = self.alloc_local("i32")
         return [
             f"i32.const {layout.total_size}",
@@ -42,6 +44,7 @@ class DataMixin:
             f"local.tee {tmp}",
             f"i32.const {layout.tag}",
             "i32.store",
+            *gc_shadow_push(tmp),
             f"local.get {tmp}",
         ]
 
@@ -84,6 +87,7 @@ class DataMixin:
             offset += _sizes.get(wt, 8)
         total_size = ((offset + 7) & ~7) if offset > 0 else 8  # 8-byte aligned
 
+        self.needs_alloc = True
         tmp = self.alloc_local("i32")
         instructions: list[str] = [
             f"i32.const {total_size}",
@@ -91,6 +95,7 @@ class DataMixin:
             f"local.tee {tmp}",
             f"i32.const {layout.tag}",
             "i32.store",
+            *gc_shadow_push(tmp),
         ]
 
         # Store each field at its computed offset
@@ -546,6 +551,7 @@ class DataMixin:
         instructions.append(f"i32.const {total_bytes}")
         instructions.append("call $alloc")
         instructions.append(f"local.set {tmp_ptr}")
+        instructions.extend(gc_shadow_push(tmp_ptr))
 
         # Store each element
         for i, elem in enumerate(expr.elements):

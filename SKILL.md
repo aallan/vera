@@ -414,7 +414,7 @@ float_to_string(@Float64.0)             -- returns String (decimal representatio
 strip(@String.0)                        -- returns String (trim whitespace)
 ```
 
-String functions use the bump allocator (`$alloc`). `strip` is zero-copy (returns a view into the original string). `parse_nat` returns `Ok(n)` on valid decimal input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated.
+String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. `parse_nat` returns `Ok(n)` on valid decimal input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated.
 
 **Shadowing**: If you define a function with the same name as a built-in (e.g. `length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
 

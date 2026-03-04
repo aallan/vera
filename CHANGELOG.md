@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.65] - 2026-03-04
+
+### Added
+- **Close #51: garbage collection for WASM linear memory** (C8e, [#51](https://github.com/aallan/vera/issues/51)):
+  Conservative mark-sweep garbage collector implemented entirely in WASM.
+  Shadow stack root tracking, free-list reuse, and automatic `memory.grow`
+  ensure allocation-heavy programs survive beyond the initial 64 KiB page.
+  New `gc_pressure.vera` example demonstrates GC under repeated allocation.
+
+### Changed
+- Memory layout now reserves 8192 bytes after string constants for GC
+  shadow stack (4096 bytes) and mark worklist (4096 bytes)
+- `$alloc` prepends a 4-byte header to every allocation (mark bit + size)
+  and checks the free list before bump-allocating
+- Functions that allocate heap data receive GC prologue/epilogue
+  (save/restore `$gc_sp`, push pointer parameters and return values)
+- `to_string` and `strip` now allocate exact-size result buffers instead
+  of returning interior pointers into temporary buffers
+- Removed "No garbage collection" from limitation tables in spec, README,
+  and compiler architecture docs
+
 ## [0.0.64] - 2026-03-04
 
 ### Added

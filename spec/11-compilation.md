@@ -582,4 +582,3 @@ The current compilation model has the following limitations, each tracked as a G
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
 | Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |
-| No garbage collection | [#51](https://github.com/aallan/vera/issues/51) | Bump allocator only; linear memory is not reclaimed |

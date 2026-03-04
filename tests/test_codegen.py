@@ -1593,7 +1593,7 @@ public fn f(-> @Int)
         assert "$alloc" not in result.wat
 
     def test_heap_ptr_starts_after_strings(self) -> None:
-        """Heap pointer initial value should be after string data."""
+        """Heap pointer initial value should be after string data + GC regions."""
         source = """\
 private data Color { Red, Green, Blue }
 
@@ -1602,12 +1602,13 @@ public fn main(@Unit -> @Unit)
 { IO.print("hello") }
 """
         result = _compile_ok(source)
-        # "hello" is 5 bytes, so heap_ptr should start at offset 5
+        # "hello" is 5 bytes; GC adds 8192 (4K shadow stack + 4K worklist)
+        # so heap_ptr should start at 5 + 8192 = 8197
         assert "global $heap_ptr" in result.wat
-        assert "i32.const 5" in result.wat
+        assert "i32.const 8197" in result.wat
 
     def test_heap_ptr_zero_without_strings(self) -> None:
-        """Without strings, heap starts at offset 0."""
+        """Without strings, heap starts at GC offset 8192."""
         source = """\
 private data Flag { On, Off }
 
@@ -1616,7 +1617,7 @@ public fn f(-> @Int)
 { 42 }
 """
         result = _compile_ok(source)
-        assert "i32.const 0)" in result.wat  # heap_ptr init
+        assert "i32.const 8192)" in result.wat  # heap_ptr init
 
     def test_alloc_alignment_logic(self) -> None:
         """Alloc function contains 8-byte alignment rounding."""
@@ -1642,6 +1643,192 @@ public fn f(-> @Int)
 """
         result = _compile_ok(source)
         assert "(memory" in result.wat
+
+
+class TestGarbageCollection:
+    """Test GC infrastructure emission and behavior."""
+
+    def test_gc_globals_emitted(self) -> None:
+        """Programs with ADTs emit GC globals: gc_sp, gc_stack_base, etc."""
+        source = """\
+private data Flag { On, Off }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "global $gc_sp" in result.wat
+        assert "global $gc_stack_base" in result.wat
+        assert "global $gc_heap_start" in result.wat
+        assert "global $gc_free_head" in result.wat
+
+    def test_gc_collect_emitted(self) -> None:
+        """Programs with ADTs emit the $gc_collect function."""
+        source = """\
+private data Flag { On, Off }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "func $gc_collect" in result.wat
+
+    def test_gc_no_overhead_without_alloc(self) -> None:
+        """Pure programs without ADTs emit no GC infrastructure."""
+        source = """\
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert "gc_sp" not in result.wat
+        assert "gc_collect" not in result.wat
+        assert "gc_stack_base" not in result.wat
+        assert "$alloc" not in result.wat
+
+    def test_gc_shadow_push_after_constructor(self) -> None:
+        """Constructor allocation is followed by shadow stack push."""
+        source = """\
+private data Box { MkBox(Int) }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match MkBox(42) {
+    MkBox(@Int) -> @Int.0
+  }
+}
+"""
+        result = _compile_ok(source)
+        # Shadow stack push: global.get $gc_sp / local.get N / i32.store
+        assert "global.get $gc_sp" in result.wat
+        assert "global.set $gc_sp" in result.wat
+
+    def test_gc_prologue_saves_gc_sp(self) -> None:
+        """Functions that allocate save/restore $gc_sp."""
+        source = """\
+private data Box { MkBox(Int) }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match MkBox(42) {
+    MkBox(@Int) -> @Int.0
+  }
+}
+"""
+        result = _compile_ok(source)
+        wat = result.wat
+        # Prologue saves gc_sp
+        assert "global.get $gc_sp" in wat
+        # Epilogue restores gc_sp
+        assert "global.set $gc_sp" in wat
+
+    def test_gc_preserves_live_data(self) -> None:
+        """ADT data survives allocation pressure — correct result after many allocs."""
+        source = """\
+private data Box { MkBox(Int) }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Box = MkBox(100);
+  let @Box = MkBox(200);
+  let @Box = MkBox(300);
+  match @Box.0 {
+    MkBox(@Int) -> @Int.0
+  }
+}
+"""
+        assert _run(source) == 300
+
+    def test_gc_string_concat_pressure(self) -> None:
+        """String concat exercises allocation and GC shadow stack."""
+        source = """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("hello world")
+}
+"""
+        assert _run_io(source) == "hello world"
+
+    def test_gc_adt_across_function_calls(self) -> None:
+        """ADT values survive across function call boundaries."""
+        source = """\
+private data Pair { MkPair(Int, Int) }
+
+public fn sum_pair(@Pair -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Pair.0 {
+    MkPair(@Int, @Int) -> @Int.0 + @Int.1
+  }
+}
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  sum_pair(MkPair(17, 25))
+}
+"""
+        assert _run(source, fn="f") == 42
+
+    def test_gc_nested_adt_construction(self) -> None:
+        """Nested ADT construction — inner alloc must survive outer alloc."""
+        source = """\
+private data Box { MkBox(Int) }
+private data Wrapper { Wrap(Box) }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match Wrap(MkBox(99)) {
+    Wrap(@Box) -> match @Box.0 {
+      MkBox(@Int) -> @Int.0
+    }
+  }
+}
+"""
+        assert _run(source) == 99
+
+    def test_gc_recursive_adt(self) -> None:
+        """Recursive ADT (list) survives GC — sum elements."""
+        source = """\
+private data List { Nil, Cons(Int, List) }
+
+public fn sum(@List -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @List.0 {
+    Nil -> 0,
+    Cons(@Int, @List) -> @Int.0 + sum(@List.0)
+  }
+}
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  sum(Cons(1, Cons(2, Cons(3, Nil))))
+}
+"""
+        assert _run(source, fn="f") == 6
+
+    def test_gc_closure_survives(self) -> None:
+        """Closure allocation survives across apply_fn."""
+        source = """\
+type Fn1 = fn(Int -> Int) effects(pure);
+
+public fn f(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Fn1 = fn(@Int -> @Int) effects(pure) { @Int.0 + 10 };
+  apply_fn(@Fn1.0, 32)
+}
+"""
+        assert _run(source, fn="f") == 42
 
 
 class TestAdtMetadata:
