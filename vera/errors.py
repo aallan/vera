@@ -499,6 +499,8 @@ ERROR_CODES: dict[str, str] = {
     "E608": "Name collision: function",
     "E609": "Name collision: ADT type",
     "E610": "Name collision: constructor",
+    "E611": "Exn without type argument",
+    "E612": "Exn with unsupported type",
     # E7xx — Testing
     "E700": "Contract violation during testing",
     "E701": "Cannot generate test inputs",

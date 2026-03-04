@@ -65,12 +65,44 @@ public fn test_put_get(@Unit -> @Int)
   }
 }
 
--- Exception effect (demonstrates non-State handler, not compilable)
+-- Exception effect — Exn<E> has one operation: throw(E -> Never)
+-- The handler catches thrown values using WASM exception handling
 effect Exn<E> {
-  op throw(E -> Unit);
+  op throw(E -> Never);
 }
 
 private data Option<T> {
   None,
   Some(T)
+}
+
+-- A function that may throw an Int exception
+private fn checked_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Exn<Int>>)
+{
+  if @Int.1 == 0 then { throw(0 - 1) } else { @Int.0 / @Int.1 }
+}
+
+-- Handle the exception: return -1 on division by zero
+public fn safe_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { @Int.0 }
+  } in {
+    checked_div(@Int.0, @Int.1)
+  }
+}
+
+-- Entry point: demonstrate Exn<E> handlers
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  safe_div(10, 2) + safe_div(7, 0)
 }

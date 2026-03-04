@@ -177,10 +177,11 @@ class OperatorsMixin:
         if cond is None or then is None or else_ is None:
             return None
 
-        # Determine result type from then branch
-        # For now, assume the type is the same for both branches
-        # We use the then_branch's last expression type
+        # Determine result type from branches — try then first, fall back
+        # to else (handles cases where one branch ends with throw/unreachable)
         result_type = self._infer_block_result_type(expr.then_branch)
+        if result_type is None and expr.else_branch is not None:
+            result_type = self._infer_block_result_type(expr.else_branch)
         if result_type is None:
             # Unit result — no (result) annotation
             return (

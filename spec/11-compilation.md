@@ -452,9 +452,17 @@ Handler clauses (e.g. `get(@Unit) -> { resume(@Int.0) }`) describe the handler's
 
 A `handle[State<T>]` expression discharges the `State<T>` effect. This means a function can be declared `effects(pure)` and still use `get`/`put` operations within a handler body. The compiler registers the State<T> host imports by scanning the function body for handle expressions, not just the function's declared effects.
 
-### 11.11.4 Unsupported Handlers
+### 11.11.4 Exn\<E\> Exception Handlers
 
-Handler types other than `State<T>` (e.g. `Exn<E>`, custom effects) are not yet compilable. Functions containing unsupported handler types are skipped with a warning.
+`Exn<E>` handlers compile to WASM using the exception handling proposal (`try_table`/`catch`/`throw`). The compiler generates:
+
+1. A `tag` declaration for each unique `Exn<E>` type parameter (e.g. `(tag $exn_Int (param i64))`)
+2. `throw` instructions where `throw(value)` is called
+3. `try_table`/`catch` blocks wrapping the handler body, with the caught value bound to a local for the handler clause
+
+Cross-function throws work via WASM stack unwinding — no additional codegen is needed for functions that declare `effects(<Exn<E>>)` and call `throw`.
+
+Custom effect handlers (general continuations) are not yet compilable. Functions containing unsupported handler types are skipped with a warning.
 
 ## 11.12 Array Compilation
 
@@ -576,5 +584,5 @@ The current compilation model has the following limitations, each tracked as a G
 | Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |
 | No garbage collection | [#51](https://github.com/aallan/vera/issues/51) | Bump allocator only; linear memory is not reclaimed |
 | String constants only | [#52](https://github.com/aallan/vera/issues/52) | No dynamic string construction |
-| Only State\<T\> handlers | [#53](https://github.com/aallan/vera/issues/53) | Exn\<E\> and custom effect handlers not yet compilable |
+| ~~Only State\<T\> handlers~~ | ~~[#53](https://github.com/aallan/vera/issues/53)~~ | ~~Resolved in v0.0.62 — Exn\<E\> handlers now compile via WASM exception handling; custom effect handlers still unsupported~~ |
 | ~~Arrays of compound types~~ | ~~[#132](https://github.com/aallan/vera/issues/132)~~ | ~~Resolved in v0.0.61 — arrays now support all element types including ADTs, Strings, and nested arrays~~ |

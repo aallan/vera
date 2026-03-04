@@ -170,8 +170,8 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
     # FUTURE — uses features not yet implemented in the checker
     # =================================================================
 
-    # Chapter 7 — Exn effect handler (exception handling not implemented)
-    ("07-effects.md", 202): "FUTURE",        # handle[Exn<String>] + parse_int
+    # Chapter 7 — Exn handler references parse_int (not defined in block)
+    ("07-effects.md", 202): "INCOMPLETE",    # handle[Exn<String>] + parse_int
 
     # Chapter 9 — async/await (future feature, tracked in spec as not implemented)
     ("09-standard-library.md", 227): "FUTURE",  # async, await, Http, Future

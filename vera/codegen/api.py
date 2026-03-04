@@ -127,7 +127,9 @@ def execute(
     if not result.ok:
         raise RuntimeError("Cannot execute: compilation had errors")
 
-    engine = wasmtime.Engine()
+    config = wasmtime.Config()
+    config.wasm_exceptions = True
+    engine = wasmtime.Engine(config)
     module = wasmtime.Module(engine, result.wat)
     linker = wasmtime.Linker(engine)
     store = wasmtime.Store(engine)

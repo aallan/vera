@@ -2565,11 +2565,11 @@ public fn test(@Unit -> @Int)
         assert "state_put_Int" in result.wat
         assert "(import" in result.wat
 
-    def test_unsupported_handler_skipped(self) -> None:
-        """Non-State handler causes function to be skipped."""
+    def test_exn_handler_compiles(self) -> None:
+        """Exn<E> handler compiles to WASM using exception handling."""
         src = """\
 effect Exn<E> {
-  op throw(E -> Unit);
+  op throw(E -> Never);
 }
 private data Option<T> { None, Some(T) }
 public fn test(@Int -> @Option<Int>)
@@ -2583,8 +2583,9 @@ public fn test(@Int -> @Option<Int>)
 }
 """
         result = _compile(src)
-        # Function should be skipped (Exn handler not supported)
-        assert "test" not in result.exports
+        assert "test" in result.exports
+        assert "try_table" in result.wat
+        assert "tag $exn_Int" in result.wat
 
     def test_effect_handler_example_compiles(self) -> None:
         """examples/effect_handler.vera compiles without errors."""
@@ -2620,6 +2621,186 @@ public fn test(@Int -> @Option<Int>)
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="test_put_get")
         assert exec_result.value == 99
+
+    def test_effect_handler_example_safe_div(self) -> None:
+        """examples/effect_handler.vera safe_div(10, 2) returns 5."""
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
+        source = path.read_text()
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="safe_div", args=[10, 2])
+        assert exec_result.value == 5
+
+    def test_effect_handler_example_safe_div_zero(self) -> None:
+        """examples/effect_handler.vera safe_div(7, 0) returns -1."""
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
+        source = path.read_text()
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="safe_div", args=[7, 0])
+        assert exec_result.value == -1
+
+    def test_effect_handler_example_main(self) -> None:
+        """examples/effect_handler.vera main returns 4."""
+        from pathlib import Path
+        path = Path(__file__).parent.parent / "examples" / "effect_handler.vera"
+        source = path.read_text()
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.value == 4
+
+
+# =====================================================================
+# Exn<E> exception handler compilation
+# =====================================================================
+
+
+class TestExnHandlers:
+    """Tests for Exn<E> effect handler compilation using WASM exceptions."""
+
+    def test_exn_throw_caught(self) -> None:
+        """Body throws, handler catches and transforms the value."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { @Int.0 + 100 }
+  } in {
+    throw(42)
+  }
+}
+"""
+        assert _run(src, fn="test") == 142
+
+    def test_exn_no_throw(self) -> None:
+        """Body completes normally, handler clause is not invoked."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { @Int.0 + 100 }
+  } in {
+    99
+  }
+}
+"""
+        assert _run(src, fn="test") == 99
+
+    def test_exn_cross_function(self) -> None:
+        """Function with Exn effect throws, caller catches via handle."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+private fn risky(@Int -> @Int)
+  requires(true) ensures(true) effects(<Exn<Int>>)
+{
+  if @Int.0 > 0 then { throw(@Int.0) } else { 0 }
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { @Int.0 * 2 }
+  } in {
+    risky(21)
+  }
+}
+"""
+        assert _run(src, fn="test") == 42
+
+    def test_exn_no_throw_cross_function(self) -> None:
+        """Cross-function call that doesn't throw."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+private fn safe(@Int -> @Int)
+  requires(true) ensures(true) effects(<Exn<Int>>)
+{
+  if @Int.0 > 100 then { throw(@Int.0) } else { @Int.0 + 1 }
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { 0 - 1 }
+  } in {
+    safe(10)
+  }
+}
+"""
+        assert _run(src, fn="test") == 11
+
+    def test_exn_with_io(self) -> None:
+        """Exn handler inside a function with IO effects."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { @Int.0 }
+  } in {
+    IO.print("before throw");
+    throw(77)
+  }
+}
+"""
+        result = _compile_ok(src)
+        exec_result = execute(result, fn_name="test")
+        assert exec_result.value == 77
+        assert exec_result.stdout == "before throw"
+
+    def test_exn_nested_inner_catches(self) -> None:
+        """Nested handlers — inner catches, outer not triggered."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { 0 - 1 }
+  } in {
+    handle[Exn<Int>] {
+      throw(@Int) -> { @Int.0 + 500 }
+    } in {
+      throw(10)
+    }
+  }
+}
+"""
+        assert _run(src, fn="test") == 510
+
+    def test_exn_nat_type(self) -> None:
+        """Exn<Nat> with Nat exception value."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+public fn test(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<Nat>] {
+    throw(@Nat) -> { @Nat.0 + 1000 }
+  } in {
+    throw(42)
+  }
+}
+"""
+        assert _run(src, fn="test") == 1042
 
 
 # =====================================================================

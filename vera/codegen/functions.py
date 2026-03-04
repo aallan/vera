@@ -25,7 +25,7 @@ class FunctionCompilationMixin:
         if not self._is_compilable(decl):
             return None
 
-        # Build effect_ops mapping for State<T> operations
+        # Build effect_ops mapping for State<T> and Exn<E> operations
         effect_ops: dict[str, tuple[str, bool]] = {}
         if isinstance(decl.effect, ast.EffectSet):
             for eff in decl.effect.effects:
@@ -42,6 +42,13 @@ class FunctionCompilationMixin:
                             effect_ops["put"] = (
                                 f"$vera.state_put_{type_name}", True
                             )
+                elif (isinstance(eff, ast.EffectRef) and eff.name == "Exn"
+                        and eff.type_args and len(eff.type_args) == 1):
+                    type_name = self._type_expr_to_slot_name(eff.type_args[0])
+                    if type_name and "throw" not in self._fn_sigs:
+                        effect_ops["throw"] = (
+                            f"$exn_{type_name}", False
+                        )
 
         # Flatten ADT layouts into ctor_name -> layout for WasmContext
         ctor_layouts = {}

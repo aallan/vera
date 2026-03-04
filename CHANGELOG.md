@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.62] - 2026-03-04
+
+### Added
+- **Exn\<E\> exception handler compilation** (C8e, [#53](https://github.com/aallan/vera/issues/53)):
+  `handle[Exn<E>]` expressions now compile to WASM using the exception handling
+  proposal (`try_table`/`catch`/`throw`). Enables compile-and-run for programs
+  using exception-style error handling.
+  - Exception tags declared per `Exn<E>` type parameter
+  - `throw(value)` compiles to WASM `throw` instruction
+  - Cross-function throws work via WASM stack unwinding
+  - Nested `handle[Exn<E>]` expressions with unique labels
+  - `examples/effect_handler.vera` extended with safe division via `Exn<Int>`
+  - 10 new tests, 1,380 tests total
+- **Renamed `SKILLS.md` to `SKILL.md`**: matches the Claude Code skill file naming
+  convention. All references updated across README, AGENTS.md, CLAUDE.md,
+  docs site, and vera/README.md. CHANGELOG historic references preserved.
+- **Added installation instructions to `SKILL.md`**: agents consuming the skill
+  file now get setup instructions (clone, venv, pip install, verify)
+
 ## [0.0.61] - 2026-03-04
 
 ### Added
