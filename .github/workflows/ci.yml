@@ -73,3 +73,6 @@ jobs:
 
       - name: Check README code blocks parse correctly
         run: python scripts/check_readme_examples.py
+
+      - name: Check SKILL.md code blocks parse correctly
+        run: python scripts/check_skill_examples.py
