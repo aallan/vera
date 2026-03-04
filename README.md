@@ -291,13 +291,24 @@ C8 addressed accumulated technical debt and UX gaps before v0.1.0. Issues were g
 
 Module refinements, lexical extensions, and IO runtime — completing the existing language before adding new features.
 
+**Builtin extensions** — independent of each other, no module deps
+
 - [#139](https://github.com/aallan/vera/issues/139) scientific notation for float literals
 - [#199](https://github.com/aallan/vera/issues/199) numeric math builtins
 - [#200](https://github.com/aallan/vera/issues/200) parsing completeness (parse_int, parse_bool, safe parse_float64)
 - [#198](https://github.com/aallan/vera/issues/198) string search and transformation builtins
+
+**Module system** — sequential dependency (#187 before #127)
+
 - [#187](https://github.com/aallan/vera/issues/187) module-qualified call disambiguation via name mangling
 - [#127](https://github.com/aallan/vera/issues/127) module re-exports
+
+**IO runtime** — host bindings for file and stdin access
+
 - [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, CLI args, exit codes)
+
+**Testing improvements** — sequential dependency (#169 before #170)
+
 - [#169](https://github.com/aallan/vera/issues/169) `vera test` Float64 and compound type input generation
 - [#170](https://github.com/aallan/vera/issues/170) `vera test` hypothesis integration and advanced testing
 
