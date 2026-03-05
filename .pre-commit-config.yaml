@@ -35,6 +35,13 @@ repos:
         types: [python]
         pass_filenames: false
 
+      - id: fix-allowlists
+        name: fix allowlists
+        entry: .venv/bin/python scripts/fix_allowlists.py --fix
+        language: system
+        pass_filenames: false
+        files: '(README\.md$|SKILL\.md$|spec/.*\.md$)'
+
       - id: vera-examples
         name: vera examples
         entry: .venv/bin/python scripts/check_examples.py
