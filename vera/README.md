@@ -290,7 +290,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `Option<T>` | ADT | `None`, `Some(T)` constructors |
 | `Result<T, E>` | ADT | `Ok(T)`, `Err(E)` constructors |
 | `State<T>` | Effect | `get(Unit) → T`, `put(T) → Unit` operations |
-| `IO` | Effect | No operations exposed at type level |
+| `IO` | Effect | `print`, `read_line`, `read_file`, `write_file`, `args`, `exit`, `get_env` |
 | `Diverge` | Effect | No operations — marker for non-termination |
 | `length` | Function | `forall<T> Array<T> → Int`, pure |
 | `string_length` | Function | `String → Nat`, pure |

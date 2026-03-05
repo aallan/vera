@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.66] - 2026-03-05
+
+### Added
+- **Close #135: IO operations** (C8.5, [#135](https://github.com/aallan/vera/issues/135)):
+  Six new IO operations: `read_line`, `read_file`, `write_file`, `args`,
+  `exit`, and `get_env`. All seven IO operations (including `print`) are
+  now registered as built-in effect operations with full type checking.
+  Programs no longer need `effect IO { op print(String -> Unit); }` preambles.
+- Host function implementations for all IO operations via wasmtime, with
+  WASM-to-host string passing through exported `$alloc`
+- `ExecuteResult.exit_code` field for `IO.exit` support
+- `execute()` accepts `stdin`, `cli_args`, and `env_vars` parameters
+- Two new example programs: `io_operations.vera` and `file_io.vera`
+- 26 new tests across type checker, codegen, and CLI
+
+### Changed
+- IO effect is now a built-in with all 7 operations registered in the
+  type environment (no user `effect IO` declaration required)
+- Replaced `_needs_io_print: bool` with `_io_ops_used: set[str]` for
+  per-operation WASM import tracking
+- WASM modules export `$alloc` when IO operations need host-to-WASM
+  string allocation
+- `_is_void_expr` now recursively handles compound expressions
+  (MatchExpr, IfExpr, Block) to prevent invalid `drop` instructions
+- Fixed match dispatch for ADT constructors with String fields
+  (`i32_pair` type in `_sub_pattern_wasm_type` and size/align dicts)
+
 ## [0.0.65] - 2026-03-04
 
 ### Added

@@ -128,18 +128,23 @@ Operations will include union, intersection, difference, membership testing, and
 
 ### 9.5.1 IO
 
-```
-effect IO {
-  op print(String -> Unit);
-}
-```
+The `IO` effect provides input/output operations. Functions that perform IO must declare `effects(<IO>)`.
 
-The `IO` effect provides output operations. Functions that print to stdout must declare `effects(<IO>)`.
+The `IO` effect has no type parameters. All IO operations are invoked as qualified calls (`IO.print(...)`, `IO.read_line(())`, etc.).
 
-Currently, `IO` exposes a single operation:
-- `print(@String)` — writes a UTF-8 string to standard output.
+**Operations:**
 
-The `IO` effect has no type parameters. At the type level, `IO.print` is invoked as a qualified call:
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `print` | `String -> Unit` | Write a UTF-8 string to stdout |
+| `read_line` | `Unit -> String` | Read one line from stdin (trailing newline stripped) |
+| `read_file` | `String -> Result<String, String>` | Read file contents; returns `Ok(contents)` or `Err(message)` |
+| `write_file` | `String, String -> Result<Unit, String>` | Write string to file; returns `Ok(())` or `Err(message)` |
+| `args` | `Unit -> Array<String>` | Command-line arguments |
+| `exit` | `Int -> Never` | Terminate with exit code (never returns) |
+| `get_env` | `String -> Option<String>` | Look up environment variable; returns `Some(value)` or `None` |
+
+The IO effect is registered as a built-in — programs do not need to declare `effect IO { ... }` to use these operations. If a program does declare its own `effect IO` block, the user declaration overrides the built-in (for backward compatibility, but only the explicitly declared operations are available).
 
 ```
 private fn hello(-> @Unit)
@@ -151,7 +156,23 @@ private fn hello(-> @Unit)
 }
 ```
 
-For the runtime implementation of `IO.print`, see Chapter 12, Section 12.4.1.
+File operations return `Result` types for error handling:
+
+```
+public fn main(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match IO.read_file("data.txt") {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  };
+  ()
+}
+```
+
+For the runtime implementation of IO operations, see Chapter 12, Section 12.4.1.
 
 ### 9.5.2 State\<T\>
 

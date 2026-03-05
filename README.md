@@ -92,6 +92,26 @@ public fn safe_divide(@Int, @Int -> @Int)
 
 > [`examples/safe_divide.vera`](examples/safe_divide.vera) — run with `vera run examples/safe_divide.vera --fn safe_divide -- 3 10`
 
+### File IO — results and pattern matching
+
+IO operations return `Result` types for error handling. `IO.read_file` returns `Result<String, String>` — the program must handle both success and failure via pattern matching. The `effects(<IO>)` annotation makes the side effect explicit.
+
+```vera
+public fn main(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match IO.read_file("example.txt") {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  };
+  ()
+}
+```
+
+> [`examples/file_io.vera`](examples/file_io.vera) — run with `vera run examples/file_io.vera`
+
 ### Algebraic effects — explicit state, no hidden mutation
 
 Vera is pure by default. State changes must be declared as effects. `effects(<State<Int>>)` says this function reads and writes an integer. The `ensures` clause specifies exactly how the state changes: the new value equals the old value plus one. Handlers (not shown) provide the actual state implementation — an in-memory cell in production, a mock in tests.
@@ -163,7 +183,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-The compiler has 1,418 tests with 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 16 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
+The compiler has 1,418 tests with 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 18 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
 
 ## Roadmap
 
@@ -310,7 +330,8 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 
 **IO runtime** — host bindings for file and stdin access
 
-- [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, args, exit, get_env)
+- <del>[#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, args, exit, get_env)</del> ([v0.0.66](https://github.com/aallan/vera/releases/tag/v0.0.66))
+- [#216](https://github.com/aallan/vera/issues/216) string escape sequences (\n, \t, etc.) not parsed in string literals
 
 **Testing improvements** — sequential dependency (#169 before #170)
 
@@ -400,7 +421,7 @@ OK: examples/safe_divide.vera
 Verification: 4 verified (Tier 1)
 ```
 
-`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 16 examples, 112 of 118 contracts (94.9%) are verified statically.
+`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 18 examples, 116 of 122 contracts (95.1%) are verified statically.
 
 ### Format a program
 
@@ -665,7 +686,7 @@ vera/
 │   ├── formatter.py               # Canonical code formatter
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
-├── examples/                      # 16 example Vera programs
+├── examples/                      # 18 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
     ├── check_examples.py          # Verify all .vera examples

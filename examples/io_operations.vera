@@ -1,0 +1,21 @@
+-- IO operations: reading input, environment variables, and exit codes.
+--
+-- Run:  echo "Alice" | vera run examples/io_operations.vera
+-- Or:   vera run examples/io_operations.vera   (type input interactively)
+
+public fn main(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("What is your name? ");
+  let @String = IO.read_line(());
+  IO.print(@String.0);
+
+  match IO.get_env("HOME") {
+    Some(@String) -> IO.print(@String.0),
+    None -> IO.print("(HOME not set)")
+  };
+
+  ()
+}

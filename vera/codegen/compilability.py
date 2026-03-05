@@ -27,7 +27,6 @@ class CompilabilityMixin:
             for eff in effect.effects:
                 if isinstance(eff, ast.EffectRef):
                     if eff.name == "IO":
-                        self._needs_io_print = True
                         self._needs_memory = True
                     elif eff.name == "State":
                         # State<T> — T must be a compilable primitive
@@ -142,6 +141,48 @@ class CompilabilityMixin:
         if type_name and (type_name, wt) not in self._exn_types:
             self._exn_types.append((type_name, wt))
         return True
+
+    def _scan_io_ops(self, node: ast.Node) -> None:
+        """Walk a function body looking for IO qualified calls.
+
+        Registers each distinct IO operation name (print, read_line, etc.)
+        into ``_io_ops_used`` for per-operation import emission.
+        """
+        if isinstance(node, ast.QualifiedCall):
+            if node.qualifier == "IO":
+                self._io_ops_used.add(node.name)
+            for arg in node.args:
+                self._scan_io_ops(arg)
+            return
+        if isinstance(node, ast.Block):
+            for stmt in node.statements:
+                if isinstance(stmt, ast.LetStmt):
+                    self._scan_io_ops(stmt.value)
+                elif isinstance(stmt, ast.ExprStmt):
+                    self._scan_io_ops(stmt.expr)
+            self._scan_io_ops(node.expr)
+        elif isinstance(node, ast.FnCall):
+            for arg in node.args:
+                self._scan_io_ops(arg)
+        elif isinstance(node, ast.ConstructorCall):
+            for arg in node.args:
+                self._scan_io_ops(arg)
+        elif isinstance(node, ast.BinaryExpr):
+            self._scan_io_ops(node.left)
+            self._scan_io_ops(node.right)
+        elif isinstance(node, ast.UnaryExpr):
+            self._scan_io_ops(node.operand)
+        elif isinstance(node, ast.IfExpr):
+            self._scan_io_ops(node.condition)
+            self._scan_io_ops(node.then_branch)
+            if node.else_branch:
+                self._scan_io_ops(node.else_branch)
+        elif isinstance(node, ast.MatchExpr):
+            self._scan_io_ops(node.scrutinee)
+            for arm in node.arms:
+                self._scan_io_ops(arm.body)
+        elif isinstance(node, ast.HandleExpr):
+            self._scan_io_ops(node.body)
 
     def _scan_body_for_state_handlers(self, node: ast.Node) -> None:
         """Walk a function body looking for handle expressions.

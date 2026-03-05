@@ -19,7 +19,7 @@ README = Path(__file__).parent.parent / "README.md"
 # Each key is the 1-based line number of the opening ```vera fence.
 ALLOWLIST: dict[int, str] = {
     # "Where this is going" — depends on #57 (Http), #61 (Inference), #147 (Markdown)
-    350: "Vision example uses MdBlock, Http, Inference (issues #57, #61, #147)",
+    371: "Vision example uses MdBlock, Http, Inference (issues #57, #61, #147)",
 }
 
 
@@ -71,8 +71,8 @@ class TestReadmeCodeSamples:
     def test_vera_block_count(self) -> None:
         """README should have the expected number of Vera code blocks."""
         blocks = _extract_vera_blocks(README)
-        # Currently: hello_world, absolute_value, safe_divide,
+        # Currently: hello_world, file_io, absolute_value, safe_divide,
         # increment (State), double, research_topic (vision, allowlisted)
-        assert len(blocks) == 6, (
-            f"Expected 6 Vera blocks in README.md, found {len(blocks)}"
+        assert len(blocks) == 7, (
+            f"Expected 7 Vera blocks in README.md, found {len(blocks)}"
         )

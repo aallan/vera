@@ -4608,3 +4608,235 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 }
 """
         assert _run(src) == -1
+
+
+# =====================================================================
+# IO operations (C8.5 — #135)
+# =====================================================================
+
+class TestIOOperations:
+    """Codegen and execution tests for all IO operations."""
+
+    def test_io_read_line_echo(self) -> None:
+        """IO.read_line reads from stdin; echo back via IO.print."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = IO.read_line(());
+  IO.print(@String.0)
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(
+            result, fn_name="main", stdin="hello world\n",
+        )
+        assert exec_result.stdout == "hello world"
+
+    def test_io_read_file_success(self) -> None:
+        """IO.read_file reads a file and returns Ok(contents)."""
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False,
+        ) as f:
+            f.write("file contents")
+            f.flush()
+            tmp_path = f.name
+        # Hardcode the path in the Vera source (can't pass String args
+        # to WASM functions from the host)
+        source = f"""\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  match IO.read_file("{tmp_path}") {{
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  }}
+}}
+"""
+        try:
+            result = _compile_ok(source)
+            exec_result = execute(result, fn_name="main")
+            assert exec_result.stdout == "file contents"
+        finally:
+            os.unlink(tmp_path)
+
+    def test_io_read_file_roundtrip(self) -> None:
+        """Write a file, then read it back, verify contents."""
+        import tempfile, os
+        tmp_dir = tempfile.mkdtemp()
+        tmp_file = os.path.join(tmp_dir, "vera_test.txt")
+        # Write a file from Vera, then read it back
+        source = f"""\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  match IO.write_file("{tmp_file}", "hello from vera") {{
+    Ok(_) -> {{
+      match IO.read_file("{tmp_file}") {{
+        Ok(@String) -> IO.print(@String.0),
+        Err(@String) -> IO.print(@String.0)
+      }}
+    }},
+    Err(@String) -> IO.print(@String.0)
+  }}
+}}
+"""
+        try:
+            result = _compile_ok(source)
+            exec_result = execute(result, fn_name="main")
+            assert exec_result.stdout == "hello from vera"
+        finally:
+            if os.path.exists(tmp_file):
+                os.unlink(tmp_file)
+            os.rmdir(tmp_dir)
+
+    def test_io_read_file_not_found(self) -> None:
+        """IO.read_file on nonexistent file returns Err."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_file("/nonexistent/path/xyz.txt") {
+    Ok(@String) -> IO.print("unexpected ok"),
+    Err(@String) -> IO.print("got error")
+  }
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.stdout == "got error"
+
+    def test_io_write_file_bad_path(self) -> None:
+        """IO.write_file on invalid path returns Err."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.write_file("/nonexistent/dir/file.txt", "data") {
+    Ok(_) -> IO.print("unexpected ok"),
+    Err(@String) -> IO.print("got error")
+  }
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.stdout == "got error"
+
+    def test_io_args_empty(self) -> None:
+        """IO.args(()) with no CLI args returns empty array."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<String> = IO.args(());
+  length(@Array<String>.0)
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main", cli_args=[])
+        assert exec_result.value == 0
+
+    def test_io_args_with_values(self) -> None:
+        """IO.args(()) with CLI args returns correct values."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<String> = IO.args(());
+  IO.print(@Array<String>.0[0])
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(
+            result, fn_name="main", cli_args=["hello"],
+        )
+        assert exec_result.stdout == "hello"
+
+    def test_io_exit_zero(self) -> None:
+        """IO.exit(0) returns exit code 0."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("before exit");
+  IO.exit(0)
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.exit_code == 0
+        assert exec_result.stdout == "before exit"
+
+    def test_io_exit_nonzero(self) -> None:
+        """IO.exit(1) returns exit code 1."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.exit(1)
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.exit_code == 1
+
+    def test_io_get_env_found(self) -> None:
+        """IO.get_env with existing variable returns Some."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.get_env("TEST_VAR") {
+    Some(@String) -> IO.print(@String.0),
+    None -> IO.print("not found")
+  }
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(
+            result, fn_name="main",
+            env_vars={"TEST_VAR": "hello"},
+        )
+        assert exec_result.stdout == "hello"
+
+    def test_io_get_env_not_found(self) -> None:
+        """IO.get_env with missing variable returns None."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.get_env("NONEXISTENT_VAR") {
+    Some(@String) -> IO.print(@String.0),
+    None -> IO.print("not found")
+  }
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(
+            result, fn_name="main", env_vars={},
+        )
+        assert exec_result.stdout == "not found"
+
+    def test_alloc_exported(self) -> None:
+        """WAT exports $alloc when IO ops that allocate are used."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = IO.read_line(());
+  IO.print(@String.0)
+}
+"""
+        result = _compile_ok(source)
+        assert '(export "alloc"' in result.wat
+
+    def test_alloc_not_exported_for_print_only(self) -> None:
+        """WAT does not export $alloc when only IO.print is used."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print("hello") }
+"""
+        result = _compile_ok(source)
+        assert '(export "alloc"' not in result.wat

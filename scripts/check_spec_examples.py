@@ -57,9 +57,9 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("02-types.md", 250): "FUTURE",          # forall<T where Ord<T>> fn sort
 
     # Chapter 9 — future stdlib features and signature-only blocks
-    ("09-standard-library.md", 269): "FUTURE",   # fn classify — uses ++ (string concat)
-    ("09-standard-library.md", 283): "FRAGMENT",  # length signature (no body)
-    ("09-standard-library.md", 305): "FRAGMENT",  # similarity signature (no body)
+    ("09-standard-library.md", 290): "FUTURE",   # fn classify — uses ++ (string concat)
+    ("09-standard-library.md", 304): "FRAGMENT",  # length signature (no body)
+    ("09-standard-library.md", 326): "FRAGMENT",  # similarity signature (no body)
 
     # =================================================================
     # FRAGMENT — heuristic false positives (look like declarations but
@@ -106,15 +106,15 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("07-effects.md", 268): "FRAGMENT",     # fn(Unit -> A) in param position
 
     # Chapter 7 — empty effect bodies (parser requires op_decl+)
-    ("07-effects.md", 311): "FRAGMENT",     # effect Diverge {} — no operations
+    ("07-effects.md", 315): "FRAGMENT",     # effect Diverge {} — no operations
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 409): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
-    ("09-standard-library.md", 418): "FUTURE",   # md_render(@MdBlock -> @String)
-    ("09-standard-library.md", 429): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
-    ("09-standard-library.md", 438): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
-    ("09-standard-library.md", 447): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
-    ("09-standard-library.md", 471): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 430): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 439): "FUTURE",   # md_render(@MdBlock -> @String)
+    ("09-standard-library.md", 450): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
+    ("09-standard-library.md", 459): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
+    ("09-standard-library.md", 468): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
+    ("09-standard-library.md", 492): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
 }
 
 
@@ -146,25 +146,16 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
     # Chapter 5 — Tuple constructor (not a built-in ADT)
     ("05-functions.md", 308): "INCOMPLETE",  # forall<A,B> fn pair uses Tuple
 
-    # Chapter 5 — IO.print qualified call (IO effect not defined in block)
-    ("05-functions.md", 357): "INCOMPLETE",  # main function uses IO.print
-
     # Chapter 6 — undefined predicate in data invariant
     ("06-contracts.md", 52): "INCOMPLETE",   # is_sorted_impl in SortedArray
 
-    # Chapter 7 — IO.print qualified call (IO effect not defined in block)
-    ("07-effects.md", 100): "INCOMPLETE",    # fn hello uses IO.print
-
     # Chapter 7 — effect composition referencing undefined functions
-    ("07-effects.md", 363): "INCOMPLETE",    # fn foo calls undefined bar/baz
+    ("07-effects.md", 367): "INCOMPLETE",    # fn foo calls undefined bar/baz
 
     # Chapter 8 — cross-module imports (imported modules don't exist)
     ("08-modules.md", 151): "INCOMPLETE",    # import vera.math(abs, max)
     ("08-modules.md", 322): "INCOMPLETE",    # import vera.math(abs)
     ("08-modules.md", 415): "INCOMPLETE",    # import vera.math + vera.collections
-
-    # Chapter 9 — IO.print qualified call
-    ("09-standard-library.md", 144): "INCOMPLETE",  # fn hello uses IO.print
 
     # =================================================================
     # FUTURE — uses features not yet implemented in the checker
@@ -174,7 +165,7 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
     ("07-effects.md", 202): "INCOMPLETE",    # handle[Exn<String>] + parse_int
 
     # Chapter 9 — async/await (future feature, tracked in spec as not implemented)
-    ("09-standard-library.md", 227): "FUTURE",  # async, await, Http, Future
+    ("09-standard-library.md", 248): "FUTURE",  # async, await, Http, Future
 }
 
 

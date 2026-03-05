@@ -480,8 +480,11 @@ def cmd_run(
             print(f"Error: {msg}", file=sys.stderr)
             return 1
 
-        # Execute
-        exec_result = execute(result, fn_name=fn_name, args=fn_args)
+        # Execute — pass CLI args as strings for IO.args
+        str_args = [str(a) for a in fn_args] if fn_args else []
+        exec_result = execute(
+            result, fn_name=fn_name, args=fn_args, cli_args=str_args,
+        )
 
         if as_json:
             result_dict = {
@@ -494,8 +497,10 @@ def cmd_run(
                 "value": exec_result.value,
                 "stdout": exec_result.stdout,
             }
+            if exec_result.exit_code is not None:
+                result_dict["exit_code"] = exec_result.exit_code
             print(json.dumps(result_dict, indent=2))
-            return 0
+            return exec_result.exit_code if exec_result.exit_code else 0
 
         # Print stdout from IO.print calls
         if exec_result.stdout:
@@ -507,6 +512,10 @@ def cmd_run(
         # Print return value if it's not None (non-Unit function)
         elif exec_result.value is not None:
             print(exec_result.value)
+
+        # Use IO.exit code as process exit code
+        if exec_result.exit_code is not None:
+            return exec_result.exit_code
 
         return 0
 

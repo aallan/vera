@@ -505,31 +505,43 @@ effect row signals that the function may not terminate. Functions without
 
 ### Effect declarations
 
-Effects must be declared in each file that uses them. The IO effect for printing is declared as:
+The IO effect is built-in — no declaration is needed. It provides seven operations:
 
-```vera
-effect IO {
-  op print(String -> Unit);
-}
-```
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `IO.print` | `String -> Unit` | Print a string to stdout |
+| `IO.read_line` | `Unit -> String` | Read a line from stdin |
+| `IO.read_file` | `String -> Result<String, String>` | Read file contents |
+| `IO.write_file` | `String, String -> Result<Unit, String>` | Write string to file |
+| `IO.args` | `Unit -> Array<String>` | Get command-line arguments |
+| `IO.exit` | `Int -> Never` | Exit with status code |
+| `IO.get_env` | `String -> Option<String>` | Read environment variable |
 
-The runtime provides a `vera.print` host import that IO.print maps to. There is currently no `read_line` or other IO operations — only `print` is supported.
+If you declare `effect IO { op print(String -> Unit); }` explicitly, that overrides the built-in and only the declared operations are available.
 
 ### Performing effects
 
 Call the effect operations directly:
 
 ```vera
-effect IO {
-  op print(String -> Unit);
-}
-
 private fn greet(@String -> @Unit)
   requires(true)
   ensures(true)
   effects(<IO>)
 {
   IO.print(@String.0);
+  ()
+}
+
+public fn main(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match IO.read_file("data.txt") {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  };
   ()
 }
 ```

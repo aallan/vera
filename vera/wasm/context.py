@@ -340,9 +340,15 @@ class WasmContext(
         QualifiedCalls (effect operations like IO.print) return Unit
         and produce no stack value.  UnitLit also produces nothing.
         Effect op calls like put() are also void.
+        Compound expressions (match, if, block) are void when all
+        branches/the final expression are void.
         """
         if isinstance(expr, ast.QualifiedCall):
-            return True  # effect ops return Unit (void)
+            # IO.print returns void; IO.exit never returns (unreachable).
+            # Other IO ops (read_line, read_file, etc.) produce values.
+            if expr.qualifier == "IO":
+                return expr.name in ("print", "exit")
+            return True  # non-IO effect ops return void
         if isinstance(expr, ast.UnitLit):
             return True
         if isinstance(expr, ast.FnCall) and expr.name in self._effect_ops:
@@ -350,6 +356,14 @@ class WasmContext(
             return is_void
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
             return True  # assert/assume return Unit (void)
+        # Compound expressions: void if all branches are void
+        if isinstance(expr, ast.MatchExpr):
+            return all(self._is_void_expr(arm.body) for arm in expr.arms)
+        if isinstance(expr, ast.IfExpr):
+            return (self._is_void_expr(expr.then_expr)
+                    and self._is_void_expr(expr.else_expr))
+        if isinstance(expr, ast.Block):
+            return self._is_void_expr(expr.expr)
         return False
 
     def _is_pair_result_expr(self, expr: ast.Expr) -> bool:
@@ -367,5 +381,8 @@ class WasmContext(
             return self._is_pair_type_name(name)
         if isinstance(expr, ast.FnCall):
             ret = self._infer_fncall_wasm_type(expr)
+            return ret == "i32_pair"
+        if isinstance(expr, ast.QualifiedCall):
+            ret = self._infer_qualified_call_wasm_type(expr)
             return ret == "i32_pair"
         return False

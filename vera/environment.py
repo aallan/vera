@@ -14,6 +14,7 @@ from vera.types import (
     FLOAT64,
     INT,
     NAT,
+    NEVER,
     PRIMITIVES,
     STRING,
     UNIT,
@@ -181,11 +182,32 @@ class TypeEnv:
             },
         )
 
-        # IO effect (no operations exposed at type level in C3)
+        # IO effect — built-in operations for console, file, and process I/O.
+        # User-declared `effect IO { ... }` overrides this (backward compat).
         self.effects["IO"] = EffectInfo(
             name="IO",
             type_params=None,
-            operations={},
+            operations={
+                "print": OpInfo("print", (STRING,), UNIT, "IO"),
+                "read_line": OpInfo("read_line", (UNIT,), STRING, "IO"),
+                "read_file": OpInfo(
+                    "read_file", (STRING,),
+                    AdtType("Result", (STRING, STRING)), "IO",
+                ),
+                "write_file": OpInfo(
+                    "write_file", (STRING, STRING),
+                    AdtType("Result", (UNIT, STRING)), "IO",
+                ),
+                "args": OpInfo(
+                    "args", (UNIT,),
+                    AdtType("Array", (STRING,)), "IO",
+                ),
+                "exit": OpInfo("exit", (INT,), NEVER, "IO"),
+                "get_env": OpInfo(
+                    "get_env", (STRING,),
+                    AdtType("Option", (STRING,)), "IO",
+                ),
+            },
         )
 
         # Diverge effect — marker for potentially non-terminating functions.

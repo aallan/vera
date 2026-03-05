@@ -68,7 +68,7 @@ class CodeGenerator(
         # Registered function signatures: name -> (param_types, return_type)
         self._fn_sigs: dict[str, tuple[list[str | None], str | None]] = {}
         # Track which effect operations are needed
-        self._needs_io_print: bool = False
+        self._io_ops_used: set[str] = set()
         self._needs_contract_fail: bool = False
         self._needs_memory: bool = False
         self._state_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
