@@ -350,7 +350,6 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 - [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises
 - [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
 - [#211](https://github.com/aallan/vera/issues/211) Option and Result combinators
-- [#214](https://github.com/aallan/vera/issues/214) bitwise operations
 
 ### C10 — Ecosystem
 
