@@ -297,6 +297,11 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - [#199](https://github.com/aallan/vera/issues/199) numeric math builtins
 - [#200](https://github.com/aallan/vera/issues/200) parsing completeness (parse_int, parse_bool, safe parse_float64)
 - [#198](https://github.com/aallan/vera/issues/198) string search and transformation builtins
+- [#208](https://github.com/aallan/vera/issues/208) numeric type conversions
+- [#209](https://github.com/aallan/vera/issues/209) array construction builtins (range, append, concat)
+- [#210](https://github.com/aallan/vera/issues/210) from_char_code builtin
+- [#212](https://github.com/aallan/vera/issues/212) Float64 special value operations (is_nan, is_infinite)
+- [#213](https://github.com/aallan/vera/issues/213) string_repeat builtin
 
 **Module system** — sequential dependency (#187 before #127)
 
@@ -305,7 +310,7 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 
 **IO runtime** — host bindings for file and stdin access
 
-- [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, CLI args, exit codes)
+- [#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, args, exit, get_env)
 
 **Testing improvements** — sequential dependency (#169 before #170)
 
@@ -324,6 +329,8 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 - [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect
 - [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises
 - [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
+- [#211](https://github.com/aallan/vera/issues/211) Option and Result combinators
+- [#214](https://github.com/aallan/vera/issues/214) bitwise operations
 
 ### C10 — Ecosystem
 
