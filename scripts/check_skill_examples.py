@@ -197,7 +197,7 @@ def main() -> int:
                 file=sys.stderr,
             )
         print(
-            "\nUpdate the ALLOWLIST in scripts/check_skill_examples.py.",
+            "\nRun: python scripts/fix_allowlists.py --fix",
             file=sys.stderr,
         )
         exit_code = 1

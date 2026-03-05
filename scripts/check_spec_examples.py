@@ -446,7 +446,7 @@ def main() -> int:
                 file=sys.stderr,
             )
         print(
-            "\nUpdate the allowlists in scripts/check_spec_examples.py.",
+            "\nRun: python scripts/fix_allowlists.py --fix",
             file=sys.stderr,
         )
         exit_code = 1
