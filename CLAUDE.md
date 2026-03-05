@@ -103,7 +103,7 @@ Every diagnostic has a stable error code (`E001`–`E702`). Codes are grouped by
 
 | Range | Phase |
 |-------|-------|
-| E001–E008 | Parse errors |
+| E001–E009 | Parse & transform errors |
 | E010 | Transform errors |
 | E1xx | Type check: core + expressions |
 | E2xx | Type check: calls |

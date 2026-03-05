@@ -105,13 +105,88 @@ def _span_from_meta(meta: Any) -> Span | None:
     return None
 
 
-def _transform_error(msg: str, meta: Any = None) -> TransformError:
+def _transform_error(
+    msg: str, meta: Any = None, *, error_code: str = "E010",
+) -> TransformError:
     """Create a TransformError with optional location info."""
     loc = SourceLocation()
     if meta and hasattr(meta, "line") and meta.line is not None:
         loc = SourceLocation(line=meta.line, column=meta.column)
     return TransformError(Diagnostic(description=msg, location=loc,
-                                      error_code="E010"))
+                                      error_code=error_code))
+
+
+# ---------------------------------------------------------------------------
+# String escape sequence decoding (spec §1)
+# ---------------------------------------------------------------------------
+
+_SIMPLE_ESCAPES: dict[str, str] = {
+    "\\": "\\",
+    '"': '"',
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "0": "\0",
+}
+
+
+def _decode_string_escapes(s: str, meta: Any = None) -> str:
+    """Decode Vera escape sequences in a string literal body.
+
+    Supports: ``\\\\``, ``\\"``, ``\\n``, ``\\t``, ``\\r``, ``\\0``,
+    ``\\u{XXXX}`` (1-6 hex digits).  Any other escape raises E009.
+    """
+    if "\\" not in s:
+        return s  # fast path — no escapes
+
+    result: list[str] = []
+    i = 0
+    while i < len(s):
+        if s[i] != "\\":
+            result.append(s[i])
+            i += 1
+            continue
+
+        # Backslash at end of string (shouldn't happen with valid grammar)
+        if i + 1 >= len(s):
+            raise _transform_error(
+                "Invalid escape sequence: trailing backslash",
+                meta, error_code="E009")
+
+        nxt = s[i + 1]
+        if nxt in _SIMPLE_ESCAPES:
+            result.append(_SIMPLE_ESCAPES[nxt])
+            i += 2
+        elif nxt == "u":
+            # \u{XXXX} — 1-6 hex digits
+            if i + 2 >= len(s) or s[i + 2] != "{":
+                raise _transform_error(
+                    "Invalid unicode escape: expected '{' after \\u",
+                    meta, error_code="E009")
+            close = s.find("}", i + 3)
+            if close == -1:
+                raise _transform_error(
+                    "Invalid unicode escape: missing '}'",
+                    meta, error_code="E009")
+            hex_str = s[i + 3:close]
+            if not (1 <= len(hex_str) <= 6) or not all(
+                c in "0123456789abcdefABCDEF" for c in hex_str
+            ):
+                raise _transform_error(
+                    f"Invalid unicode escape: \\u{{{hex_str}}}",
+                    meta, error_code="E009")
+            code_point = int(hex_str, 16)
+            if code_point > 0x10FFFF:
+                raise _transform_error(
+                    f"Unicode code point out of range: \\u{{{hex_str}}}",
+                    meta, error_code="E009")
+            result.append(chr(code_point))
+            i = close + 1
+        else:
+            raise _transform_error(
+                f"Invalid escape sequence: \\{nxt}",
+                meta, error_code="E009")
+    return "".join(result)
 
 
 class VeraTransformer(Transformer):
@@ -145,8 +220,8 @@ class VeraTransformer(Transformer):
         return float(token)
 
     def STRING_LIT(self, token: Token) -> str:
-        # Strip surrounding quotes
-        return str(token)[1:-1]
+        raw = str(token)[1:-1]  # Strip surrounding quotes
+        return _decode_string_escapes(raw, token)
 
     # =================================================================
     # Program Structure

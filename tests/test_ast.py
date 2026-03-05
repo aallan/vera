@@ -418,6 +418,96 @@ class TestExpressions:
         assert isinstance(expr, StringLit)
         assert expr.value == "hello"
 
+    def test_string_escape_newline(self):
+        expr = _body_expr(r'''
+        private fn f(@Unit -> @String)
+          requires(true) ensures(true) effects(pure)
+        { "hello\nworld" }
+        ''')
+        assert isinstance(expr, StringLit)
+        assert expr.value == "hello\nworld"
+
+    def test_string_escape_tab(self):
+        expr = _body_expr(r'''
+        private fn f(@Unit -> @String)
+          requires(true) ensures(true) effects(pure)
+        { "col1\tcol2" }
+        ''')
+        assert isinstance(expr, StringLit)
+        assert expr.value == "col1\tcol2"
+
+    def test_string_escape_backslash(self):
+        expr = _body_expr(r'''
+        private fn f(@Unit -> @String)
+          requires(true) ensures(true) effects(pure)
+        { "a\\b" }
+        ''')
+        assert isinstance(expr, StringLit)
+        assert expr.value == "a\\b"
+
+    def test_string_escape_quote(self):
+        expr = _body_expr(r'''
+        private fn f(@Unit -> @String)
+          requires(true) ensures(true) effects(pure)
+        { "say \"hi\"" }
+        ''')
+        assert isinstance(expr, StringLit)
+        assert expr.value == 'say "hi"'
+
+    def test_string_escape_carriage_return(self):
+        expr = _body_expr(r'''
+        private fn f(@Unit -> @String)
+          requires(true) ensures(true) effects(pure)
+        { "\r" }
+        ''')
+        assert isinstance(expr, StringLit)
+        assert expr.value == "\r"
+
+    def test_string_escape_null(self):
+        expr = _body_expr(r'''
+        private fn f(@Unit -> @String)
+          requires(true) ensures(true) effects(pure)
+        { "\0" }
+        ''')
+        assert isinstance(expr, StringLit)
+        assert expr.value == "\0"
+
+    def test_string_escape_unicode(self):
+        expr = _body_expr(r'''
+        private fn f(@Unit -> @String)
+          requires(true) ensures(true) effects(pure)
+        { "\u{41}" }
+        ''')
+        assert isinstance(expr, StringLit)
+        assert expr.value == "A"
+
+    def test_string_escape_unicode_emoji(self):
+        expr = _body_expr(r'''
+        private fn f(@Unit -> @String)
+          requires(true) ensures(true) effects(pure)
+        { "\u{1F600}" }
+        ''')
+        assert isinstance(expr, StringLit)
+        assert expr.value == "\U0001F600"
+
+    def test_string_escape_multiple(self):
+        expr = _body_expr(r'''
+        private fn f(@Unit -> @String)
+          requires(true) ensures(true) effects(pure)
+        { "a\tb\nc" }
+        ''')
+        assert isinstance(expr, StringLit)
+        assert expr.value == "a\tb\nc"
+
+    def test_string_no_escapes(self):
+        expr = _body_expr("""
+        private fn f(@Unit -> @String)
+          requires(true) ensures(true) effects(pure)
+        { "plain text" }
+        """)
+        assert isinstance(expr, StringLit)
+        assert expr.value == "plain text"
+
     def test_bool_lit(self):
         expr = _body_expr("""
         private fn f(@Unit -> @Bool) requires(true) ensures(true) effects(pure) { true }
@@ -933,3 +1023,24 @@ class TestErrors:
         fake_tree = Tree("start", [Tree("totally_fake_rule", [])])
         with pytest.raises(TransformError, match="Unhandled grammar rule"):
             transform(fake_tree)
+
+    def test_invalid_escape_sequence(self):
+        """An unrecognised escape like \\x should raise E009."""
+        from vera.transform import _decode_string_escapes
+        with pytest.raises(TransformError, match="Invalid escape sequence"):
+            _decode_string_escapes("hello\\xworld")
+
+    def test_invalid_unicode_escape_missing_brace(self):
+        from vera.transform import _decode_string_escapes
+        with pytest.raises(TransformError, match="expected '{'"):
+            _decode_string_escapes("\\u0041")
+
+    def test_invalid_unicode_escape_bad_hex(self):
+        from vera.transform import _decode_string_escapes
+        with pytest.raises(TransformError, match="Invalid unicode escape"):
+            _decode_string_escapes("\\u{ZZZZ}")
+
+    def test_unicode_escape_out_of_range(self):
+        from vera.transform import _decode_string_escapes
+        with pytest.raises(TransformError, match="out of range"):
+            _decode_string_escapes("\\u{FFFFFF}")

@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.67] - 2026-03-05
+
+### Added
+- **Close #216: String escape sequences** ([#216](https://github.com/aallan/vera/issues/216)):
+  Fix grammar regex and add escape sequence decoder in `transform.py`.
+  All 7 escape sequences from spec section 1 are now supported: `\\`, `\"`, `\n`, `\t`,
+  `\r`, `\0`, `\u{XXXX}`. Invalid escapes produce error code E009.
+- 19 new tests (14 AST + 5 codegen end-to-end) for escape sequence handling
+
+### Fixed
+- `STRING_LIT` grammar regex had too many backslashes, causing the lexer to
+  reject single-backslash escape sequences like `\n` and `\t`
+
 ## [0.0.66] - 2026-03-05
 
 ### Added

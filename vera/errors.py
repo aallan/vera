@@ -417,6 +417,7 @@ ERROR_CODES: dict[str, str] = {
     "E006": "Unexpected character",
     "E007": "Internal parser error",
     "E008": "Module-qualified call uses dot instead of ::",
+    "E009": "Invalid string escape sequence",
     "E010": "Unhandled grammar rule",
     # E1xx — Type Checker: Core & Expressions
     "E120": "Data invariant not Bool",

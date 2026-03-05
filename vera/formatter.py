@@ -16,6 +16,21 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+_STRING_ENCODE_MAP = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\n": "\\n",
+    "\t": "\\t",
+    "\r": "\\r",
+    "\0": "\\0",
+}
+
+
+def _encode_string_escapes(s: str) -> str:
+    """Re-encode special characters as Vera escape sequences."""
+    return "".join(_STRING_ENCODE_MAP.get(c, c) for c in s)
+
+
 from vera.ast import (
     AnonFn,
     ArrayLit,
@@ -791,7 +806,7 @@ class Formatter:
         if isinstance(expr, BoolLit):
             return "true" if expr.value else "false"
         if isinstance(expr, StringLit):
-            return f'"{expr.value}"'
+            return f'"{_encode_string_escapes(expr.value)}"'
         if isinstance(expr, UnitLit):
             return "()"
         if isinstance(expr, ArrayLit):
@@ -988,7 +1003,7 @@ class Formatter:
         if isinstance(pat, IntPattern):
             return str(pat.value)
         if isinstance(pat, StringPattern):
-            return f'"{pat.value}"'
+            return f'"{_encode_string_escapes(pat.value)}"'
         if isinstance(pat, BoolPattern):
             return "true" if pat.value else "false"
         return "_"  # pragma: no cover

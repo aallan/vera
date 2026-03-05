@@ -535,8 +535,9 @@ Every diagnostic has a unique code grouped by compiler phase:
 
 | Range | Phase | Source |
 |-------|-------|--------|
-| E001–E007 | Parse | `errors.py` factory functions |
-| E010 | Transform | `transform.py` |
+| E001–E008 | Parse | `errors.py` factory functions |
+| E009 | Transform: string escapes | `transform.py` |
+| E010 | Transform: unhandled rule | `transform.py` |
 | E1xx | Type check: core + expressions | `checker/core.py`, `checker/expressions.py` |
 | E2xx | Type check: calls | `checker/calls.py` |
 | E3xx | Type check: control flow | `checker/control.py` |
