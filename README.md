@@ -313,7 +313,6 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 
 **Builtin extensions** — independent of each other, no module deps
 
-- [#139](https://github.com/aallan/vera/issues/139) scientific notation for float literals
 - [#199](https://github.com/aallan/vera/issues/199) numeric math builtins
 - [#200](https://github.com/aallan/vera/issues/200) parsing completeness (parse_int, parse_bool, safe parse_float64)
 - [#198](https://github.com/aallan/vera/issues/198) string search and transformation builtins
@@ -351,7 +350,6 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 - [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises
 - [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
 - [#211](https://github.com/aallan/vera/issues/211) Option and Result combinators
-- [#214](https://github.com/aallan/vera/issues/214) bitwise operations
 
 ### C10 — Ecosystem
 

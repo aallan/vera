@@ -36,7 +36,7 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # =================================================================
 
     # Section "Where this is going" — depends on #57 (Http), #61 (Inference), #147 (Markdown)
-    371: ("FUTURE", "Vision example uses MdBlock, Http, Inference (issues #57, #61, #147)"),
+    369: ("FUTURE", "Vision example uses MdBlock, Http, Inference (issues #57, #61, #147)"),
 }
 
 
