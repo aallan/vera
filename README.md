@@ -183,7 +183,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-The compiler has 1,418 tests with 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 18 example programs and 96 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
+The compiler has 1,454 tests with 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 18 example programs and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
 
 ## Roadmap
 
@@ -421,7 +421,7 @@ OK: examples/safe_divide.vera
 Verification: 4 verified (Tier 1)
 ```
 
-`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 18 examples, 116 of 122 contracts (95.1%) are verified statically.
+`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 18 examples, 118 of 122 contracts (96.7%) are verified statically.
 
 ### Format a program
 
@@ -692,7 +692,9 @@ vera/
     ├── check_examples.py          # Verify all .vera examples
     ├── check_spec_examples.py     # Verify spec code blocks parse
     ├── check_readme_examples.py   # Verify README code blocks parse
-    └── check_version_sync.py      # Verify version consistency
+    ├── check_skill_examples.py    # Verify SKILL.md code blocks parse
+    ├── check_version_sync.py      # Verify version consistency
+    └── fix_allowlists.py          # Auto-fix stale allowlist line numbers
 ```
 
 For compiler architecture, pipeline internals, design patterns, and how to extend the compiler, see [`vera/README.md`](vera/README.md).
