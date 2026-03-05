@@ -151,10 +151,30 @@ class InferenceMixin:
             return "i32_pair"
         if isinstance(expr, ast.StringLit):
             return "i32_pair"
+        if isinstance(expr, ast.QualifiedCall):
+            return self._infer_qualified_call_wasm_type(expr)
         if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
             return "i32"  # quantifiers return Bool
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
             return None  # assert/assume return Unit
+        return None
+
+    _IO_WASM_TYPES: dict[str, str | None] = {
+        "print": None,
+        "read_line": "i32_pair",
+        "read_file": "i32",
+        "write_file": "i32",
+        "args": "i32_pair",
+        "exit": None,
+        "get_env": "i32",
+    }
+
+    def _infer_qualified_call_wasm_type(
+        self, expr: ast.QualifiedCall,
+    ) -> str | None:
+        """Infer the WASM return type of a qualified call (IO ops)."""
+        if expr.qualifier == "IO":
+            return self._IO_WASM_TYPES.get(expr.name)
         return None
 
     def _infer_fncall_wasm_type(self, expr: ast.FnCall) -> str | None:
@@ -244,7 +264,7 @@ class InferenceMixin:
         if isinstance(expr, ast.FnCall):
             return self._infer_fncall_wasm_type(expr)
         if isinstance(expr, ast.QualifiedCall):
-            return None  # effect ops return Unit (void)
+            return self._infer_qualified_call_wasm_type(expr)
         if isinstance(expr, ast.StringLit):
             return "i32_pair"
         if isinstance(expr, ast.Block):

@@ -1399,3 +1399,42 @@ class TestCmdTestMain:
             capture_output=True, text=True,
         )
         assert result.returncode == 0
+
+
+class TestIOOperations:
+    """Tests for IO operations via the CLI."""
+
+    def test_run_io_exit_code(self, tmp_path: Path) -> None:
+        """vera run returns the exit code from IO.exit."""
+        prog = tmp_path / "exit_test.vera"
+        prog.write_text("""\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.exit(42)
+}
+""")
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", str(prog)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 42
+
+    def test_run_io_read_line(self, tmp_path: Path) -> None:
+        """vera run with stdin passes input to IO.read_line."""
+        prog = tmp_path / "read_line_test.vera"
+        prog.write_text("""\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = IO.read_line(());
+  IO.print(@String.0)
+}
+""")
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", str(prog)],
+            capture_output=True, text=True,
+            input="hello from stdin\n",
+        )
+        assert result.returncode == 0
+        assert "hello from stdin" in result.stdout

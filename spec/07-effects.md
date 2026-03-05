@@ -286,15 +286,19 @@ This function always performs `IO` (for the logging), plus whatever effects `E` 
 
 ### 7.7.1 `IO`
 
-```
-effect IO {
-  op print(String -> Unit);
-}
-```
+The `IO` effect is built-in and provides seven operations for interacting with the outside world:
 
-The `IO` effect currently exposes a single operation: `print`, which writes a UTF-8 string to standard output. IO operations interact with the outside world and are handled by the runtime (see Chapter 12, Section 12.4.1).
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `print` | `String -> Unit` | Write a UTF-8 string to stdout |
+| `read_line` | `Unit -> String` | Read a line from stdin |
+| `read_file` | `String -> Result<String, String>` | Read entire file as UTF-8 |
+| `write_file` | `String, String -> Result<Unit, String>` | Write string to file |
+| `args` | `Unit -> Array<String>` | Get command-line arguments |
+| `exit` | `Int -> Never` | Exit process with status code |
+| `get_env` | `String -> Option<String>` | Look up environment variable |
 
-Future operations (`read_line`, `read_file`, `write_file`) will extend the `IO` effect as the runtime grows. See Chapter 9, Section 9.5.1 for the full standard library documentation.
+IO operations are handled by the runtime (see Chapter 12, Section 12.4.1). Programs do not need to declare `effect IO { ... }` — the operations are available automatically when `effects(<IO>)` is specified. See Chapter 9, Section 9.5.1 for detailed documentation and examples.
 
 ### 7.7.2 `Exn<E>`
 

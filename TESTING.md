@@ -8,7 +8,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 |--------|-------|
 | **Tests** | 1,418 across 19 files (~18,300 lines of test code) |
 | **Compiler code coverage** | 90% of 8,788 statements (CI minimum: 80%) |
-| **Example programs** | 16, all validated through `vera check` + `vera verify` |
+| **Example programs** | 18, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
 | **README code blocks** | 6 Vera blocks (5 validated, 1 allowlisted future syntax) |
 | **Contract verification** | 112 of 118 contracts (94.9%) verified statically (Tier 1) |
@@ -29,7 +29,7 @@ pytest tests/ --cov=vera --cov-report=term-missing   # with coverage
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_examples.py                     # 16 example programs
+python scripts/check_examples.py                     # 18 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
 python scripts/check_version_sync.py                 # version consistency
@@ -89,7 +89,7 @@ The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 70%) reflect auto-g
 
 Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved correct statically by Z3 — no runtime overhead. **Tier 3** contracts cannot be fully decided by the SMT solver and fall back to runtime assertion checks. The verifier never rejects a valid program; it simply warns when a contract drops to Tier 3.
 
-Across all 16 example programs:
+Across all 18 example programs:
 
 | Metric | Value |
 |--------|-------|
@@ -120,7 +120,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen, test_verifier | refinement_types, safe_divide |
 | Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | all 16 examples |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | all 18 examples |
 | Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker | factorial, absolute_value |
 | Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker | pattern_matching |
 | Ch 5: Functions | Declarations, recursion, mutual recursion | test_codegen, test_checker | factorial, mutual_recursion |
@@ -130,7 +130,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 6: Contracts | Postconditions (`ensures`) | test_codegen_contracts, test_verifier | absolute_value |
 | Ch 6: Contracts | Decreases clauses, assert/assume | test_verifier, test_codegen | factorial |
 | Ch 6: Contracts | Quantifiers (forall, exists) | test_codegen, test_verifier | quantifiers |
-| Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker | hello_world, increment |
+| Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker | hello_world, increment, io_operations, file_io |
 | Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen, test_checker | effect_handler |
 | Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker | — |
 | Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — |
@@ -162,7 +162,7 @@ _run_trap(source, fn, args)    # compile + execute, assert WASM trap
 
 ## Round-Trip Testing
 
-Every one of the 16 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
+Every one of the 18 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
 
 The formatter has **idempotency tests**: `format(format(x)) == format(x)` for all tested programs.
 
@@ -185,7 +185,7 @@ Four scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_examples.py` | All 16 `.vera` examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 18 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 96 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
@@ -218,7 +218,7 @@ After running `pre-commit install`, every commit is checked by 11 hooks:
 | `debug-statements` | Detect `pdb`/`ipdb` imports |
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
-| `check_examples.py` | All 16 examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 18 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 
 The example and README hooks are smart about triggers -- they only run when `.vera` files, `vera/**/*.py`, or `grammar.lark` change.

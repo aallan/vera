@@ -2705,3 +2705,134 @@ private fn succeed(-> @Result<Int, String>)
   requires(true) ensures(true) effects(pure)
 { Ok(42) }
 """)
+
+
+# =====================================================================
+# IO built-in operations (C8.5 — #135)
+# =====================================================================
+
+class TestIOOperations:
+    """Type checking for built-in IO operations."""
+
+    def test_io_print_type_checks_clean(self) -> None:
+        """IO.print should type-check cleanly (no E220 warning)."""
+        _check_clean("""
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print("hello") }
+""")
+
+    def test_io_print_wrong_arg_type(self) -> None:
+        """IO.print(42) should fail: expected String, got Int."""
+        _check_err("""
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(42) }
+""", "expected String")
+
+    def test_io_print_wrong_arity(self) -> None:
+        """IO.print("a", "b") should fail: wrong arity."""
+        _check_err("""
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print("a", "b") }
+""", "expects 1 argument")
+
+    def test_io_read_line_type_checks(self) -> None:
+        """IO.read_line(()) should type-check cleanly."""
+        _check_clean("""
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = IO.read_line(());
+  IO.print(@String.0)
+}
+""")
+
+    def test_io_read_file_returns_result(self) -> None:
+        """IO.read_file returns Result<String, String>."""
+        _check_clean("""
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_file("test.txt") {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  };
+  ()
+}
+""")
+
+    def test_io_write_file_returns_result(self) -> None:
+        """IO.write_file returns Result<Unit, String>."""
+        _check_clean("""
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.write_file("out.txt", "data") {
+    Ok(@Unit) -> IO.print("ok"),
+    Err(@String) -> IO.print(@String.0)
+  };
+  ()
+}
+""")
+
+    def test_io_args_returns_array(self) -> None:
+        """IO.args(()) returns Array<String>."""
+        _check_clean("""
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<String> = IO.args(());
+  ()
+}
+""")
+
+    def test_io_exit_returns_never(self) -> None:
+        """IO.exit(0) has type Never — match arms propagate."""
+        _check_clean("""
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.exit(0)
+}
+""")
+
+    def test_io_get_env_returns_option(self) -> None:
+        """IO.get_env("HOME") returns Option<String>."""
+        _check_clean("""
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.get_env("HOME") {
+    Some(@String) -> IO.print(@String.0),
+    None -> IO.print("not set")
+  };
+  ()
+}
+""")
+
+    def test_io_in_pure_function_error(self) -> None:
+        """IO operations in effects(pure) should fail."""
+        _check_err("""
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(pure)
+{ IO.print("hello") }
+""", "Pure function")
+
+    def test_io_user_declared_override(self) -> None:
+        """User-declared effect IO should override built-in."""
+        # This declares only print — read_line should be unresolved (E220)
+        diags = _check("""
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.read_line(()) }
+""")
+        warnings = [d for d in diags if d.severity == "warning"]
+        assert any("read_line" in w.description for w in warnings), \
+            f"Expected warning about read_line, got: " \
+            f"{[w.description for w in warnings]}"

@@ -219,19 +219,21 @@ The memory is exported so the host runtime can read string data for IO operation
 
 ### 11.7.1 IO
 
-The `IO` effect is implemented via host imports. The WASM module imports:
+The `IO` effect is implemented via host imports. Each IO operation the program uses generates a corresponding import. The WASM import signatures:
 
-```wat
-(import "vera" "print" (func $vera.print (param i32 i32)))
-```
+| Operation | Import signature |
+|-----------|-----------------|
+| `print` | `(import "vera" "print" (func $vera.print (param i32 i32)))` |
+| `read_line` | `(import "vera" "read_line" (func $vera.read_line (result i32 i32)))` |
+| `read_file` | `(import "vera" "read_file" (func $vera.read_file (param i32 i32) (result i32)))` |
+| `write_file` | `(import "vera" "write_file" (func $vera.write_file (param i32 i32 i32 i32) (result i32)))` |
+| `args` | `(import "vera" "args" (func $vera.args (result i32 i32)))` |
+| `exit` | `(import "vera" "exit" (func $vera.exit (param i64)))` |
+| `get_env` | `(import "vera" "get_env" (func $vera.get_env (param i32 i32) (result i32)))` |
 
-The host runtime (wasmtime) provides the implementation:
+Only the operations actually used in the program are imported. Operations that return host-allocated data (`read_line`, `read_file`, `write_file`, `args`, `get_env`) cause the module to export its `$alloc` function so the host can allocate WASM memory.
 
-1. Read `length` bytes from linear memory starting at `offset`
-2. Decode as UTF-8
-3. Print to stdout
-
-This means `IO.print("Hello")` compiles to pushing the string's offset and length, then calling the imported host function. The effect system ensures only functions declaring `effects(<IO>)` can call `IO.print`.
+`IO.exit` emits `unreachable` after the call since the process terminates. Operations returning `Result` or `Option` return an `i32` heap pointer to the ADT; operations returning `String` or `Array<String>` return an `(i32, i32)` pair.
 
 ### 11.7.2 State\<T\>
 

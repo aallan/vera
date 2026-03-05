@@ -352,6 +352,9 @@ class DataMixin:
                 type_name = self._type_expr_to_slot_name(sub_pat.type_expr)
                 if type_name is None:
                     return None
+                # Unit bindings: no WASM representation, skip extraction
+                if type_name == "Unit":
+                    continue
                 # Pair types (String, Array<T>): two consecutive i32 locals
                 if self._is_pair_type_name(type_name):
                     align = _aligns.get("i32", 4)
@@ -442,6 +445,15 @@ class DataMixin:
             type_name = self._type_expr_to_slot_name(sub_pat.type_expr)
             if type_name is None:
                 return None
+            # Unit bindings: no WASM representation — use generic layout type
+            if type_name == "Unit":
+                if field_index < len(layout.field_offsets):
+                    _, generic_wt = layout.field_offsets[field_index]
+                    return generic_wt
+                return "i32"  # safe default
+            # Pair types (String, Array<T>) use i32_pair representation
+            if self._is_pair_type_name(type_name):
+                return "i32_pair"
             return self._slot_name_to_wasm_type(type_name)
         if isinstance(sub_pat, ast.WildcardPattern):
             if field_index < len(layout.field_offsets):
@@ -470,8 +482,8 @@ class DataMixin:
         Returns a list of instruction-lists, each producing an ``i32``
         boolean on the stack.  Returns ``None`` on layout lookup failure.
         """
-        _sizes = {"i32": 4, "i64": 8, "f64": 8}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8}
+        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
+        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
         offset = 4  # after tag
 
         checks: list[list[str]] = []

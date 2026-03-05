@@ -10,7 +10,7 @@ Vera programs compile to WebAssembly (WASM) modules and execute in a host runtim
 - Capturing output and state for the caller
 - Handling traps and runtime errors
 
-The runtime is deliberately minimal. It provides only what is needed to execute the compiled WASM — there is no scheduler and no standard I/O beyond `print`. Memory is managed automatically by a conservative mark-sweep garbage collector compiled into each WASM module (see Section 12.5.4). Future runtime features (networking, async, inference) will extend this model without changing its fundamentals.
+The runtime is deliberately minimal. It provides only what is needed to execute the compiled WASM — there is no scheduler. IO operations cover standard output (`print`), standard input (`read_line`), file access (`read_file`, `write_file`), command-line arguments (`args`), environment variables (`get_env`), and process exit (`exit`). Memory is managed automatically by a conservative mark-sweep garbage collector compiled into each WASM module (see Section 12.5.4). Future runtime features (networking, async, inference) will extend this model without changing its fundamentals.
 
 ## 12.2 WASM Module Structure
 
@@ -33,6 +33,12 @@ The module imports host functions for effects that the program uses:
 | Import | Signature | Condition |
 |--------|-----------|-----------|
 | `vera.print` | `(i32, i32) -> ()` | Program uses `IO.print` |
+| `vera.read_line` | `() -> (i32, i32)` | Program uses `IO.read_line` |
+| `vera.read_file` | `(i32, i32) -> (i32)` | Program uses `IO.read_file` |
+| `vera.write_file` | `(i32, i32, i32, i32) -> (i32)` | Program uses `IO.write_file` |
+| `vera.args` | `() -> (i32, i32)` | Program uses `IO.args` |
+| `vera.exit` | `(i64) -> ()` | Program uses `IO.exit` |
+| `vera.get_env` | `(i32, i32) -> (i32)` | Program uses `IO.get_env` |
 | `vera.state_get_{T}` | `() -> {wasm_t}` | Program uses `State<T>.get` |
 | `vera.state_put_{T}` | `({wasm_t}) -> ()` | Program uses `State<T>.put` |
 
@@ -40,7 +46,9 @@ Imports are only emitted when the program actually uses the corresponding effect
 
 ### 12.2.3 Linear Memory
 
-The module exports one page (64 KiB) of linear memory as `"memory"`. The host runtime uses this export to read string data for `IO.print` operations.
+The module exports one page (64 KiB) of linear memory as `"memory"`. The host runtime uses this export to read string data for `IO.print` and to write data returned by host functions (e.g., `IO.read_line`, `IO.read_file`).
+
+When the program uses IO operations that return strings or ADTs (any operation other than `print` and `exit`), the module also exports the `$alloc` function so the host can allocate memory in the WASM linear memory for return values.
 
 For the memory layout, see Section 12.5.
 
@@ -71,7 +79,7 @@ Each execution creates a fresh engine, module, linker, and store. There is no pe
 The linker resolves all imports before instantiation. If the module imports a host function that the linker has not defined, instantiation fails with an error.
 
 The linker registers host functions before instantiation:
-1. `vera.print` — always registered (even if unused, for simplicity).
+1. IO host functions — registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_file`, `vera.write_file`, `vera.args`, `vera.exit`, `vera.get_env`).
 2. `vera.state_get_{T}` / `vera.state_put_{T}` — registered for each concrete `State<T>` type used by the program.
 
 ### 12.3.3 Entry Point Resolution
@@ -87,7 +95,11 @@ Arguments are passed as WASM values. The CLI parses string arguments to integers
 
 ## 12.4 Host Function Bindings
 
-### 12.4.1 IO.print
+### 12.4.1 IO Operations
+
+The IO effect provides seven host function bindings. Each is imported only when the program uses the corresponding `IO.*` qualified call.
+
+#### 12.4.1.1 IO.print
 
 **Import:** `(import "vera" "print" (func $vera.print (param i32 i32)))`
 
@@ -101,6 +113,98 @@ Arguments are passed as WASM values. The CLI parses string arguments to integers
 3. Write the decoded string to standard output.
 
 The output is captured in a buffer so the caller can inspect it programmatically (e.g., in tests). The `ExecuteResult` returned by `execute()` includes a `stdout` field containing all captured output.
+
+#### 12.4.1.2 IO.read\_line
+
+**Import:** `(import "vera" "read_line" (func $vera.read_line (result i32 i32)))`
+
+**Returns:** `(ptr, len)` — a String pair (byte offset and length).
+
+**Behaviour:**
+1. Read one line from standard input (up to and including the newline character).
+2. Strip the trailing newline.
+3. Call the exported `$alloc` function to allocate memory in the WASM module.
+4. Copy the UTF-8 bytes into linear memory.
+5. Return the `(ptr, len)` pair.
+
+The `execute()` function accepts an optional `stdin` parameter. If provided, `read_line` reads from that string (via a `StringIO` buffer). If not provided, it reads from the process's standard input.
+
+#### 12.4.1.3 IO.read\_file
+
+**Import:** `(import "vera" "read_file" (func $vera.read_file (param i32 i32) (result i32)))`
+
+**Parameters:**
+- `path_ptr` (i32): byte offset of the file path string.
+- `path_len` (i32): length of the file path in bytes.
+
+**Returns:** `i32` — a heap pointer to a `Result<String, String>` ADT value.
+
+**Behaviour:**
+1. Decode the file path from linear memory.
+2. Attempt to read the file contents as UTF-8.
+3. On success: construct a `Result.Ok` ADT on the WASM heap containing the file contents as a String (tag=0, str\_ptr, str\_len). Return the heap pointer.
+4. On failure: construct a `Result.Err` ADT containing the error message (tag=1, str\_ptr, str\_len). Return the heap pointer.
+
+The host allocates memory via the exported `$alloc` function.
+
+#### 12.4.1.4 IO.write\_file
+
+**Import:** `(import "vera" "write_file" (func $vera.write_file (param i32 i32 i32 i32) (result i32)))`
+
+**Parameters:**
+- `path_ptr` (i32): byte offset of the file path string.
+- `path_len` (i32): length of the file path in bytes.
+- `data_ptr` (i32): byte offset of the content string.
+- `data_len` (i32): length of the content in bytes.
+
+**Returns:** `i32` — a heap pointer to a `Result<Unit, String>` ADT value.
+
+**Behaviour:**
+1. Decode the file path and content from linear memory.
+2. Attempt to write the content to the file.
+3. On success: construct a `Result.Ok` ADT with tag=0 (no payload for Unit). Return the heap pointer.
+4. On failure: construct a `Result.Err` ADT containing the error message (tag=1, str\_ptr, str\_len). Return the heap pointer.
+
+#### 12.4.1.5 IO.args
+
+**Import:** `(import "vera" "args" (func $vera.args (result i32 i32)))`
+
+**Returns:** `(ptr, count)` — an Array\<String\> pair (pointer to element data and element count).
+
+**Behaviour:**
+1. Retrieve the command-line arguments (passed via `execute(cli_args=...)` or from the CLI `--` separator).
+2. For each argument string, allocate memory in the WASM module and copy the UTF-8 bytes.
+3. Allocate backing storage for the array: `count * 8` bytes (each element is a `(ptr, len)` pair of two i32 values).
+4. Return `(backing_ptr, count)`.
+
+#### 12.4.1.6 IO.exit
+
+**Import:** `(import "vera" "exit" (func $vera.exit (param i64)))`
+
+**Parameters:**
+- `code` (i64): the exit code.
+
+**Behaviour:**
+1. Record the exit code.
+2. Raise an exception to halt WASM execution.
+
+The `execute()` function catches this exception and returns an `ExecuteResult` with `exit_code` set to the provided value. The CLI uses this as the process exit code. The WASM instruction sequence for `IO.exit` includes `unreachable` after the call, since the function never returns.
+
+#### 12.4.1.7 IO.get\_env
+
+**Import:** `(import "vera" "get_env" (func $vera.get_env (param i32 i32) (result i32)))`
+
+**Parameters:**
+- `name_ptr` (i32): byte offset of the environment variable name.
+- `name_len` (i32): length of the name in bytes.
+
+**Returns:** `i32` — a heap pointer to an `Option<String>` ADT value.
+
+**Behaviour:**
+1. Decode the variable name from linear memory.
+2. Look up the variable in the environment (from `execute(env_vars=...)` or `os.environ`).
+3. If found: construct an `Option.Some` ADT containing the value as a String (tag=1, str\_ptr, str\_len). Return the heap pointer.
+4. If not found: construct an `Option.None` ADT (tag=0). Return the heap pointer.
 
 ### 12.4.2 State\<T\>
 

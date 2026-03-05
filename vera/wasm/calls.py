@@ -104,7 +104,6 @@ class CallsMixin:
         self, call: ast.QualifiedCall, env: WasmSlotEnv
     ) -> list[str] | None:
         """Translate a qualified call (e.g. IO.print) to host import call."""
-        # Only IO effect operations are supported in C5
         instructions: list[str] = []
         for arg in call.args:
             arg_instrs = self.translate_expr(arg, env)
@@ -112,6 +111,9 @@ class CallsMixin:
                 return None
             instructions.extend(arg_instrs)
         instructions.append(f"call $vera.{call.name}")
+        # IO.exit never returns — add unreachable to satisfy WASM validation
+        if call.qualifier == "IO" and call.name == "exit":
+            instructions.append("unreachable")
         return instructions
 
     def _resolve_generic_call(self, call: ast.FnCall) -> str | None:

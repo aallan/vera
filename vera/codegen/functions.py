@@ -139,6 +139,9 @@ class FunctionCompilationMixin:
         # Scan body for handle[State<T>] expressions to register imports
         self._scan_body_for_state_handlers(decl.body)
 
+        # Scan body for IO qualified calls to register per-op imports
+        self._scan_io_ops(decl.body)
+
         # Compile precondition checks
         pre_instrs = self._compile_preconditions(ctx, decl, env)
 

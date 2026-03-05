@@ -14,12 +14,29 @@ class AssemblyMixin:
         """Assemble a complete WAT module from compiled functions."""
         parts: list[str] = ["(module"]
 
-        # Import IO.print if needed
-        if self._needs_io_print:
-            parts.append(
-                '  (import "vera" "print" '
-                "(func $vera.print (param i32 i32)))"
-            )
+        # Import IO operations as needed
+        _IO_IMPORTS: dict[str, str] = {
+            "print": "(func $vera.print (param i32 i32))",
+            "read_line": "(func $vera.read_line (result i32 i32))",
+            "read_file":
+                "(func $vera.read_file (param i32 i32) (result i32))",
+            "write_file":
+                "(func $vera.write_file"
+                " (param i32 i32 i32 i32) (result i32))",
+            "args": "(func $vera.args (result i32 i32))",
+            "exit": "(func $vera.exit (param i64))",
+            "get_env":
+                "(func $vera.get_env (param i32 i32) (result i32))",
+        }
+        _IO_OPS_NEEDING_ALLOC = {
+            "read_line", "read_file", "write_file", "args", "get_env",
+        }
+        for op_name in sorted(self._io_ops_used):
+            sig = _IO_IMPORTS.get(op_name)
+            if sig:
+                parts.append(f'  (import "vera" "{op_name}" {sig})')
+        if self._io_ops_used & _IO_OPS_NEEDING_ALLOC:
+            self._needs_alloc = True
 
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:
@@ -81,6 +98,10 @@ class AssemblyMixin:
             )
             parts.append(self._emit_alloc())
             parts.append(self._emit_gc_collect())
+
+        # Export $alloc when host functions need to allocate WASM memory
+        if self._io_ops_used & _IO_OPS_NEEDING_ALLOC:
+            parts.append('  (export "alloc" (func $alloc))')
 
         # Closure type declarations (for call_indirect)
         for sig_content, sig_name in self._closure_sigs.items():

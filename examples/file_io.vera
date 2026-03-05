@@ -1,0 +1,21 @@
+-- File IO: reading and writing files with error handling.
+--
+-- Run:  vera run examples/file_io.vera
+
+public fn main(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match IO.write_file("hello.txt", "Hello from Vera!") {
+    Ok(_) -> {
+      match IO.read_file("hello.txt") {
+        Ok(@String) -> IO.print(@String.0),
+        Err(@String) -> IO.print(@String.0)
+      }
+    },
+    Err(@String) -> IO.print(@String.0)
+  };
+
+  ()
+}
