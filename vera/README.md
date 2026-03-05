@@ -562,6 +562,14 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
 | **Local type inference only** | Bidirectional checking resolves nullary constructors from context; no Hindley-Milner | Done ([#55](https://github.com/aallan/vera/issues/55)) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
+| **No LSP server** | No IDE integration or structured code intelligence for agents | [#222](https://github.com/aallan/vera/issues/222) |
+| **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |
+| **No string interpolation** | Strings built via `string_concat` or chained `IO.print` calls | [#230](https://github.com/aallan/vera/issues/230) |
+| **No regex** | String processing limited to builtin functions (contains, substring, etc.) | [#231](https://github.com/aallan/vera/issues/231) |
+| **No date/time, crypto, CSV** | Standard library limited to core types, strings, and arrays | [#233](https://github.com/aallan/vera/issues/233), [#235](https://github.com/aallan/vera/issues/235), [#236](https://github.com/aallan/vera/issues/236) |
+| **No WASI compliance** | IO uses ad-hoc host imports, not standardised WASI interfaces | [#237](https://github.com/aallan/vera/issues/237) |
+| **No typed holes** | Partial programs cannot type-check; no placeholder expressions | [#226](https://github.com/aallan/vera/issues/226) |
+| **No resource limits** | No built-in fuel, memory, or timeout controls for untrusted code | [#239](https://github.com/aallan/vera/issues/239) |
 | **No garbage collection** | Conservative mark-sweep GC with shadow stack root tracking; memory reclaimed automatically | Done ([#51](https://github.com/aallan/vera/issues/51)) |
 
 ## Extending the Compiler

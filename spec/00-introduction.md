@@ -120,6 +120,20 @@ Traditional compilers optimise diagnostics for human developers who understand t
 
 A diagnostic that says `expected token '{'` is a puzzle. A diagnostic that says "Function X is missing its contract block. Add requires(), ensures(), and effects() between the signature and the body, like this: [example]" is an instruction. Vera always produces instructions.
 
+All diagnostic commands support a `--json` flag that produces machine-readable structured output. Each JSON diagnostic includes: the error code, severity, source location (file, line, column), the source line, a rationale explaining the cause, a fix suggestion with example code, and a spec reference. This output is designed for automated feedback loops where an agent reads the diagnostics, corrects the code, and re-checks — without parsing human-oriented prose.
+
+### 0.5.5 Canonical Formatting
+
+The `vera fmt` command enforces Design Goal 3 (one canonical form) by normalising source code to a single textual representation. If two programs are semantically identical, `vera fmt` produces identical output. This eliminates style variation as a source of ambiguity in LLM training and generation.
+
+### 0.5.6 Contract-Driven Testing
+
+The `vera test` command uses contracts as test specifications. For each function, the Z3 solver generates inputs satisfying the `requires` clause. The function is compiled to WASM and executed against these inputs, and the outputs are checked against the `ensures` clause. This validates that contracts and implementations agree without writing any test cases manually.
+
+### 0.5.7 Formal Grammar
+
+The grammar is defined in EBNF notation in Chapter 10 and implemented as a machine-readable Lark LALR(1) grammar (`grammar.lark`) that is shared between the specification and the reference compiler. This grammar can be used for constrained decoding, syntax highlighting, and third-party tool integration.
+
 ## 0.6 Document Conventions
 
 Throughout this specification:
@@ -162,3 +176,7 @@ The following features are planned for future versions. Each is specified in its
 | LLM inference effect | [#61](https://github.com/aallan/vera/issues/61) | Chapter 9, Section 9.5.5 |
 | Collections (`Set`, `Map`, `Decimal`) | [#62](https://github.com/aallan/vera/issues/62) | Chapter 9, Sections 9.4.2-3, 9.7.2 |
 | Markdown standard library type | [#147](https://github.com/aallan/vera/issues/147) | Chapter 9, Section 9.7.3 |
+| Typed holes | [#226](https://github.com/aallan/vera/issues/226) | Chapter 4 |
+| Timeout and cancellation effects | [#227](https://github.com/aallan/vera/issues/227) | Chapter 7, Chapter 9 |
+| String interpolation | [#230](https://github.com/aallan/vera/issues/230) | Chapter 1 |
+| Date and time handling | [#233](https://github.com/aallan/vera/issues/233) | Chapter 9 |

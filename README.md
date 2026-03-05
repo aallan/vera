@@ -321,6 +321,10 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - [#210](https://github.com/aallan/vera/issues/210) from_char_code builtin
 - [#212](https://github.com/aallan/vera/issues/212) Float64 special value operations (is_nan, is_infinite)
 - [#213](https://github.com/aallan/vera/issues/213) string_repeat builtin
+- [#230](https://github.com/aallan/vera/issues/230) string interpolation
+- [#231](https://github.com/aallan/vera/issues/231) regex support
+- [#232](https://github.com/aallan/vera/issues/232) URL parsing and construction builtins
+- [#234](https://github.com/aallan/vera/issues/234) base64 encoding and decoding
 
 **Module system** — sequential dependency (#187 before #127)
 
@@ -341,22 +345,52 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 
 New effects, types, abilities, and standard library extensions (spec §0.8).
 
+**Language features** — new syntax and type system extensions
+
 - [#60](https://github.com/aallan/vera/issues/60) abilities and type constraints
+- [#226](https://github.com/aallan/vera/issues/226) typed holes for partial program generation
+
+**Effects** — new effect types for agent workloads
+
+- [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect
+- [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises
+- [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
+- [#227](https://github.com/aallan/vera/issues/227) `<Timeout>` timeout and cancellation effects
+- [#228](https://github.com/aallan/vera/issues/228) `<WebSocket>` / `<SSE>` streaming client effects
+- [#229](https://github.com/aallan/vera/issues/229) `<DB>` database access effect
+
+**Standard library** — types, data formats, and host-provided functions
+
 - [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal)
 - [#133](https://github.com/aallan/vera/issues/133) array operations (map, fold, slice)
 - [#58](https://github.com/aallan/vera/issues/58) JSON standard library type
 - [#147](https://github.com/aallan/vera/issues/147) Markdown standard library type
-- [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect
-- [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises
-- [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
 - [#211](https://github.com/aallan/vera/issues/211) Option and Result combinators
+- [#233](https://github.com/aallan/vera/issues/233) date and time handling (ISO 8601)
+- [#235](https://github.com/aallan/vera/issues/235) cryptographic hashing (SHA-256, HMAC)
+- [#236](https://github.com/aallan/vera/issues/236) CSV parsing and generation
 
-### C10 — Ecosystem
+### C10 — Tooling and ecosystem
+
+**Agent tooling** — feedback loops that determine whether agents can use Vera at all
+
+- [#222](https://github.com/aallan/vera/issues/222) LSP server
+- [#223](https://github.com/aallan/vera/issues/223) conformance test suite
+- [#224](https://github.com/aallan/vera/issues/224) REPL (interactive read-eval-print loop)
+- [#225](https://github.com/aallan/vera/issues/225) benchmark suite for LLM code generation
+
+**Compilation and runtime**
 
 - [#56](https://github.com/aallan/vera/issues/56) incremental compilation
+- [#237](https://github.com/aallan/vera/issues/237) WASI 0.2 compliance
+- [#238](https://github.com/aallan/vera/issues/238) Component Model (WIT) interop
+- [#239](https://github.com/aallan/vera/issues/239) resource limit configuration (fuel, memory, timeout)
+- [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package
+
+**Ecosystem**
+
 - [#130](https://github.com/aallan/vera/issues/130) package system and registry
 - [#143](https://github.com/aallan/vera/issues/143) comprehensive example programs
-- [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package
 - [#181](https://github.com/aallan/vera/issues/181) signature refactoring (mechanical slot index rewriting)
 - [#183](https://github.com/aallan/vera/issues/183) human-readable slot annotations (display layer for `@T.n` references)
 
@@ -480,6 +514,28 @@ This prints the typed abstract syntax tree. Add `--json` for JSON output:
 ```bash
 vera ast --json examples/factorial.vera
 ```
+
+### Test contracts
+
+```
+$ vera test examples/safe_divide.vera
+Testing safe_divide: 100 trials, all passed (Tier 1)
+Testing main: 1 trial, all passed (Tier 1)
+```
+
+`vera test` generates test inputs from contracts using Z3, compiles the function to WASM, and executes it against the generated inputs. This validates that contracts and implementations agree without writing any test cases manually. Add `--json` for machine-readable results, or `--trials N` to control the number of test inputs per function.
+
+### Machine-readable diagnostics
+
+All diagnostic commands support `--json` output for agent and tool consumption:
+
+```bash
+vera check --json file.vera     # type errors as structured JSON
+vera verify --json file.vera    # verification results as structured JSON
+vera test --json file.vera      # test results as structured JSON
+```
+
+The JSON output includes exact source locations, error codes, rationale, fix suggestions, and spec references — designed for LLM feedback loops where the agent reads the error, corrects the code, and re-checks.
 
 ### Run the tests
 
@@ -710,7 +766,10 @@ For compiler architecture, pipeline internals, design patterns, and how to exten
 | Target | WebAssembly | Portable, sandboxed, no ambient capabilities |
 | Compiler | Python reference impl | Correctness over performance — see [architecture docs](vera/README.md) |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about |
-| Diagnostics | Natural language with fix examples | Compiler output is the model's feedback loop |
+| Grammar | Machine-readable Lark EBNF (`grammar.lark`) | Formal grammar shared between spec and implementation |
+| Diagnostics | Structured JSON with `--json` flag | Machine-readable errors with locations, fix suggestions, and spec references |
+| Testing | Contract-driven via Z3 + WASM (`vera test`) | Generate test inputs from contracts, no manual test cases |
+| Formatting | Canonical formatter (`vera fmt`) | One canonical form, enforced by tooling |
 
 ## Prior Art
 
