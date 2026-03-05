@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,454 across 19 files (~18,700 lines of test code) |
+| **Tests** | 1,473 across 19 files (~18,900 lines of test code) |
 | **Compiler code coverage** | 90% of 8,999 statements (CI minimum: 80%) |
 | **Example programs** | 18, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 95 parseable blocks from 13 spec chapters: 71 parse, 59 type-check, 58 verify |
@@ -42,10 +42,10 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | File | Tests | Lines | What it covers |
 |------|------:|------:|----------------|
 | `test_parser.py` | 107 | 888 | Grammar rules, operator precedence, parse errors |
-| `test_ast.py` | 91 | 935 | AST transformation, node structure, serialisation |
+| `test_ast.py` | 105 | 1,046 | AST transformation, node structure, serialisation, string escape sequences |
 | `test_checker.py` | 222 | 2,838 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types |
 | `test_verifier.py` | 103 | 1,580 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
-| `test_codegen.py` | 389 | 4,842 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, example round-trips |
+| `test_codegen.py` | 394 | 4,892 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 17 | 361 | Generic instantiation, type inference, monomorphization edge cases |
 | `test_codegen_closures.py` | 17 | 416 | Closure lifting, captured variables, higher-order functions |
@@ -116,6 +116,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 
 | Spec chapter | Feature | Test files | Examples |
 |-------------|---------|-----------|----------|
+| Ch 1: Lexical | String escape sequences (`\n`, `\t`, `\\`, `\"`, `\r`, `\0`, `\u{XXXX}`) | test_ast, test_codegen | io_operations, file_io |
 | Ch 2: Types | Int, Nat, Bool, String, Float64, Byte, Unit | test_codegen, test_checker | most examples |
 | Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen, test_verifier | refinement_types, safe_divide |

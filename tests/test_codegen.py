@@ -1140,6 +1140,56 @@ class TestWatStringEscaping:
 
 
 # =====================================================================
+# String escape sequences — end-to-end (Vera source → WASM execution)
+# =====================================================================
+
+
+class TestStringEscapeE2E:
+    """End-to-end tests: Vera escape sequences through compile + execute."""
+
+    def test_newline_in_print(self) -> None:
+        source = _IO_PRELUDE + r'''
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print("line1\nline2") }
+'''
+        assert _run_io(source, fn="main") == "line1\nline2"
+
+    def test_tab_in_print(self) -> None:
+        source = _IO_PRELUDE + r'''
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print("col1\tcol2") }
+'''
+        assert _run_io(source, fn="main") == "col1\tcol2"
+
+    def test_backslash_roundtrip(self) -> None:
+        source = _IO_PRELUDE + r'''
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print("a\\b") }
+'''
+        assert _run_io(source, fn="main") == "a\\b"
+
+    def test_unicode_basic(self) -> None:
+        source = _IO_PRELUDE + r'''
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print("\u{41}\u{42}\u{43}") }
+'''
+        assert _run_io(source, fn="main") == "ABC"
+
+    def test_string_length_with_escapes(self) -> None:
+        """Escaped \\n is one character, so length should be 3."""
+        source = r'''
+public fn len(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ string_length("a\nb") }
+'''
+        assert _run(source, fn="len") == 3
+
+
+# =====================================================================
 # Bool comparison codegen (i32 path)
 # =====================================================================
 

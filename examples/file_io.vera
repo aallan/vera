@@ -7,7 +7,7 @@ public fn main(-> @Unit)
   ensures(true)
   effects(<IO>)
 {
-  match IO.write_file("hello.txt", "Hello from Vera!") {
+  match IO.write_file("hello.txt", "Hello from Vera!\n") {
     Ok(_) -> {
       match IO.read_file("hello.txt") {
         Ok(@String) -> IO.print(@String.0),

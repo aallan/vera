@@ -11,10 +11,11 @@ public fn main(-> @Unit)
   IO.print("What is your name? ");
   let @String = IO.read_line(());
   IO.print(@String.0);
+  IO.print("\n");
 
   match IO.get_env("HOME") {
     Some(@String) -> IO.print(@String.0),
-    None -> IO.print("(HOME not set)")
+    None -> IO.print("(HOME not set)\n")
   };
 
   ()
