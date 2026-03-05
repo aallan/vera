@@ -6,12 +6,12 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,418 across 19 files (~18,300 lines of test code) |
-| **Compiler code coverage** | 90% of 8,788 statements (CI minimum: 80%) |
+| **Tests** | 1,454 across 19 files (~18,700 lines of test code) |
+| **Compiler code coverage** | 90% of 8,999 statements (CI minimum: 80%) |
 | **Example programs** | 18, all validated through `vera check` + `vera verify` |
-| **Spec code blocks** | 96 parseable blocks from 13 spec chapters: 72 parse, 57 type-check, 56 verify |
-| **README code blocks** | 6 Vera blocks (5 validated, 1 allowlisted future syntax) |
-| **Contract verification** | 112 of 118 contracts (94.9%) verified statically (Tier 1) |
+| **Spec code blocks** | 95 parseable blocks from 13 spec chapters: 71 parse, 59 type-check, 58 verify |
+| **README code blocks** | 7 Vera blocks (6 validated, 1 allowlisted future syntax) |
+| **Contract verification** | 118 of 122 contracts (96.7%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) |
 
 ## Running Tests
@@ -32,26 +32,28 @@ mypy vera/                                           # strict mode
 python scripts/check_examples.py                     # 18 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
+python scripts/check_skill_examples.py               # SKILL.md code blocks
 python scripts/check_version_sync.py                 # version consistency
+python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 ```
 
 ## Test Files
 
 | File | Tests | Lines | What it covers |
 |------|------:|------:|----------------|
-| `test_parser.py` | 105 | 888 | Grammar rules, operator precedence, parse errors |
-| `test_ast.py` | 89 | 935 | AST transformation, node structure, serialisation |
-| `test_checker.py` | 211 | 2,707 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection |
-| `test_verifier.py` | 101 | 1,580 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
-| `test_codegen.py` | 376 | 4,610 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, IO, bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, example round-trips |
+| `test_parser.py` | 107 | 888 | Grammar rules, operator precedence, parse errors |
+| `test_ast.py` | 91 | 935 | AST transformation, node structure, serialisation |
+| `test_checker.py` | 222 | 2,838 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types |
+| `test_verifier.py` | 103 | 1,580 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
+| `test_codegen.py` | 389 | 4,842 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 17 | 361 | Generic instantiation, type inference, monomorphization edge cases |
 | `test_codegen_closures.py` | 17 | 416 | Closure lifting, captured variables, higher-order functions |
 | `test_codegen_modules.py` | 18 | 529 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 249 | Defensive error paths: E600, E601, E605, E606, unknown module calls |
 | `test_errors.py` | 34 | 287 | Error code registry, diagnostic formatting, serialisation, SourceLocation |
-| `test_formatter.py` | 66 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
-| `test_cli.py` | 109 | 1,401 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution |
+| `test_formatter.py` | 70 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
+| `test_cli.py` | 111 | 1,440 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
@@ -65,9 +67,9 @@ Coverage by module, measured by `pytest --cov=vera`:
 
 | Module | Stmts | Miss | Coverage |
 |--------|------:|-----:|---------:|
-| `codegen/` | 1,349 | 103 | 92% |
-| `checker/` | 1,036 | 144 | 86% |
-| `wasm/` | 2,575 | 220 | 91% |
+| `codegen/` | 1,523 | 111 | 93% |
+| `checker/` | 1,034 | 141 | 86% |
+| `wasm/` | 2,601 | 231 | 91% |
 | `verifier.py` | 439 | 41 | 91% |
 | `transform.py` | 451 | 15 | 97% |
 | `formatter.py` | 605 | 70 | 88% |
@@ -76,12 +78,12 @@ Coverage by module, measured by `pytest --cov=vera`:
 | `types.py` | 182 | 8 | 96% |
 | `errors.py` | 126 | 1 | 99% |
 | `environment.py` | 139 | 8 | 94% |
-| `cli.py` | 478 | 142 | 70% |
+| `cli.py` | 483 | 144 | 70% |
 | `parser.py` | 45 | 16 | 64% |
 | `resolver.py` | 68 | 2 | 97% |
 | `tester.py` | 335 | 50 | 85% |
 | `registration.py` | 18 | 0 | 100% |
-| **Total** | **8,788** | **899** | **90%** |
+| **Total** | **8,999** | **917** | **90%** |
 
 The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 70%) reflect auto-generated parser internals and CLI help/flag paths. The `wasm/` subsystem was improved from 79% to 91% by [#156](https://github.com/aallan/vera/issues/156) and subsequent work; the remaining gaps are mostly in `wasm/inference.py` (75%) deep utility branches.
 
@@ -93,11 +95,11 @@ Across all 18 example programs:
 
 | Metric | Value |
 |--------|-------|
-| **Tier 1 (static)** | 112 contracts — proved automatically by Z3 |
-| **Tier 3 (runtime)** | 6 contracts — verified at runtime via assertion checks |
-| **Total** | 118 contracts (94.9% static) |
+| **Tier 1 (static)** | 118 contracts — proved automatically by Z3 |
+| **Tier 3 (runtime)** | 4 contracts — verified at runtime via assertion checks |
+| **Total** | 122 contracts (96.7% static) |
 
-The 6 remaining Tier 3 contracts and why they cannot be promoted:
+The 4 remaining Tier 3 contracts and why they cannot be promoted:
 
 | Example | Contract | Reason |
 |---------|----------|--------|
@@ -105,8 +107,6 @@ The 6 remaining Tier 3 contracts and why they cannot be promoted:
 | generics.vera | `ensures(@T.result == @T.0)` | Generic type parameters have no Z3 sort |
 | generics.vera | `ensures(@A.result == @A.0)` | Generic type parameters have no Z3 sort |
 | increment.vera | `ensures(new(State<Int>) == old(State<Int>) + 1)` | `old`/`new` state modeling not yet implemented |
-| modules.vera | postcondition in `abs_max` | Cross-module call outside decidable fragment |
-| modules.vera | postcondition in `qualified_abs` | Cross-module call outside decidable fragment |
 
 The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `length`, and `decreases` clauses (self-recursive, mutual recursion via where-blocks, Nat and structural ADT measures).
 
@@ -181,14 +181,16 @@ When extending the compiler, add tests following the existing patterns:
 
 ## Validation Scripts
 
-Four scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
+Six scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
 | `check_examples.py` | All 18 `.vera` examples pass `vera check` + `vera verify` |
-| `check_spec_examples.py` | 96 parseable code blocks from spec chapters: parse, type-check, and verify |
+| `check_spec_examples.py` | 95 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
+| `check_skill_examples.py` | All Vera code blocks in SKILL.md parse correctly |
 | `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
+| `fix_allowlists.py` | Auto-fix stale allowlist line numbers after Markdown edits |
 
 These run in both pre-commit hooks and CI, so issues are caught locally before they reach the remote.
 
@@ -198,15 +200,15 @@ These run in both pre-commit hooks and CI, so issues are caught locally before t
 
 | Stage | Pass | Allowlisted | Categories |
 |-------|-----:|------------:|------------|
-| **Parse** | 72 | 24 | FUTURE (9), FRAGMENT (15) |
-| **Type-check** | 57 | 15 | INCOMPLETE (14), FUTURE (1) |
-| **Verify** | 56 | 1 | ILLUSTRATIVE (1) |
+| **Parse** | 71 | 24 | FUTURE (9), FRAGMENT (15) |
+| **Type-check** | 59 | 12 | INCOMPLETE (11), FUTURE (1) |
+| **Verify** | 58 | 1 | ILLUSTRATIVE (1) |
 
-Allowlisted entries have stale-detection: when a feature lands or a spec edit shifts line numbers, CI flags the entry for removal. The 14 INCOMPLETE check entries reference functions, types, or imports not defined in the block (e.g. `abs`, `Tuple`, `IO.print`, `array_map`, `parse_int`). The 1 FUTURE check entry uses `async/await`. The 1 ILLUSTRATIVE verify entry is a spec example demonstrating multiple postconditions syntax where the contract is intentionally imprecise.
+Allowlisted entries have stale-detection: when a feature lands or a spec edit shifts line numbers, CI flags the entry for removal or the `fix_allowlists.py` script auto-fixes the line numbers. The 11 INCOMPLETE check entries reference functions, types, or imports not defined in the block (e.g. `abs`, `Tuple`, `array_map`, `parse_int`). The 1 FUTURE check entry uses `async/await`. The 1 ILLUSTRATIVE verify entry is a spec example demonstrating multiple postconditions syntax where the contract is intentionally imprecise.
 
 ## Pre-commit Hooks
 
-After running `pre-commit install`, every commit is checked by 11 hooks:
+After running `pre-commit install`, every commit is checked by 13 hooks:
 
 | Hook | What it does |
 |------|-------------|
@@ -218,10 +220,12 @@ After running `pre-commit install`, every commit is checked by 11 hooks:
 | `debug-statements` | Detect `pdb`/`ipdb` imports |
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
+| `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
 | `check_examples.py` | All 18 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
+| `check_skill_examples.py` | SKILL.md code blocks parse correctly |
 
-The example and README hooks are smart about triggers -- they only run when `.vera` files, `vera/**/*.py`, or `grammar.lark` change.
+The validation hooks are smart about triggers -- they only run when relevant files change (`.vera`, `vera/**/*.py`, `grammar.lark`, or the corresponding Markdown file).
 
 ## CI Pipeline
 

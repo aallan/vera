@@ -51,7 +51,7 @@ python scripts/fix_allowlists.py --fix # Auto-fix stale allowlist line numbers
 
 ## Project layout
 
-- `spec/` — Language specification (Chapters 0-7, 9-12)
+- `spec/` — Language specification (Chapters 0-12)
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
 - `examples/` — 18 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite
@@ -103,7 +103,7 @@ Every diagnostic has a stable error code (`E001`–`E702`). Codes are grouped by
 
 | Range | Phase |
 |-------|-------|
-| E001–E007 | Parse errors |
+| E001–E008 | Parse errors |
 | E010 | Transform errors |
 | E1xx | Type check: core + expressions |
 | E2xx | Type check: calls |
