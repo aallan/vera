@@ -236,7 +236,8 @@ class CrossModuleMixin:
             known.update(layouts.keys())
         # Built-in names handled specially in _translate_call
         known.update({
-            "length", "apply_fn", "get", "put", "throw", "resume",
+            "length", "array_push",
+            "apply_fn", "get", "put", "throw", "resume",
             "string_length", "string_concat", "string_slice",
             "char_code", "parse_nat", "parse_float64",
             "to_string", "int_to_string", "bool_to_string",

@@ -167,6 +167,48 @@ private fn foo(@Unit -> @Float)
 { 3.14 }
 """, "'Float' is not a type. Did you mean 'Float64'?")
 
+    # --- Byte literal coercion (#241) ---
+
+    def test_byte_lit_coercion(self) -> None:
+        """Integer literal 0–255 accepted as Byte when expected type is Byte."""
+        _check_ok("""
+private fn foo(@Unit -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ 65 }
+""")
+
+    def test_byte_lit_zero(self) -> None:
+        """Boundary: 0 accepted as Byte."""
+        _check_ok("""
+private fn foo(@Unit -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+""")
+
+    def test_byte_lit_max(self) -> None:
+        """Boundary: 255 accepted as Byte."""
+        _check_ok("""
+private fn foo(@Unit -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ 255 }
+""")
+
+    def test_byte_lit_overflow_rejected(self) -> None:
+        """256 is out of Byte range — should be rejected."""
+        _check_err("""
+private fn foo(@Unit -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ 256 }
+""", "body has type")
+
+    def test_byte_lit_negative_rejected(self) -> None:
+        """Negative integer is not a valid Byte."""
+        _check_err("""
+private fn foo(@Unit -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ 0 - 1 }
+""", "body has type")
+
 
 # =====================================================================
 # Slot references
@@ -1307,6 +1349,24 @@ private fn bad(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0[0] }
 """, "Cannot index")
+
+    # --- array_push (#242) ---
+
+    def test_array_push_type_checks(self) -> None:
+        """array_push(Array<T>, T) -> Array<T> type-checks cleanly."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ length(array_push([1, 2, 3], 4)) }
+""")
+
+    def test_array_push_string(self) -> None:
+        """array_push works with String element type."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ length(array_push(["a", "b"], "c")) }
+""")
 
 
 # =====================================================================

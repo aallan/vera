@@ -111,6 +111,15 @@ class CallsMixin:
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
                 arg_types[i] = arg_ty
+            # Re-synth with expected type when subtype check would fail —
+            # enables bidirectional coercion (e.g. IntLit → Byte).
+            if (not is_subtype(arg_ty, param_ty)
+                    and not contains_typevar(param_ty)):
+                re = self._synth_expr(args[i], expected=param_ty)
+                if re is not None and not isinstance(re, UnknownType):
+                    if is_subtype(re, param_ty):
+                        arg_ty = re
+                        arg_types[i] = re
             if not is_subtype(arg_ty, param_ty):
                 self._error(
                     args[i],

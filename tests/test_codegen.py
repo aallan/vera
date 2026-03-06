@@ -3306,6 +3306,47 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 """
         assert _run(src) == 5
 
+    # --- array_push (#242) ---
+
+    def test_array_push_length(self) -> None:
+        """array_push returns an array with length + 1."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  length(array_push([1, 2, 3], 4))
+}
+"""
+        assert _run(src) == 4
+
+    def test_array_push_element_value(self) -> None:
+        """The pushed element is accessible at the last index."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = array_push([10, 20, 30], 99);
+  @Array<Int>.0[3]
+}
+"""
+        assert _run(src) == 99
+
+    def test_array_push_preserves_existing(self) -> None:
+        """array_push preserves all existing elements."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = array_push([10, 20, 30], 99);
+  @Array<Int>.0[1]
+}
+"""
+        assert _run(src) == 20
+
+    def test_array_push_empty(self) -> None:
+        """array_push onto empty array produces [elem]."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = array_push([], 42);
+  @Array<Int>.0[0]
+}
+"""
+        assert _run(src) == 42
+
     def test_array_fn_param_compiles(self) -> None:
         """Functions with Array params should compile with pair params."""
         src = """

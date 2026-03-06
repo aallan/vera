@@ -37,51 +37,51 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     395: ("FRAGMENT", "Array built-in examples, bare calls"),
 
     # String operations — bare function calls
-    401: ("FRAGMENT", "String built-in examples, bare calls"),
+    402: ("FRAGMENT", "String built-in examples, bare calls"),
 
     # Contracts section — requires/ensures fragments
-    439: ("FRAGMENT", "Requires clause example, not full function"),
-    448: ("FRAGMENT", "Ensures clause example, not full function"),
-    475: ("FRAGMENT", "Quantified requires clause, not full function"),
+    440: ("FRAGMENT", "Requires clause example, not full function"),
+    449: ("FRAGMENT", "Ensures clause example, not full function"),
+    476: ("FRAGMENT", "Quantified requires clause, not full function"),
 
     # Effects section — bare effect rows
-    493: ("FRAGMENT", "Effect row examples, bare annotations"),
+    494: ("FRAGMENT", "Effect row examples, bare annotations"),
 
     # Effect handler syntax template
-    630: ("FRAGMENT", "Handler syntax template, not real code"),
+    631: ("FRAGMENT", "Handler syntax template, not real code"),
 
     # Qualified calls and handler fragments — bare expressions
-    642: ("FRAGMENT", "Handler with clause, bare expression"),
-    652: ("FRAGMENT", "Qualified call examples, bare expressions"),
+    643: ("FRAGMENT", "Handler with clause, bare expression"),
+    653: ("FRAGMENT", "Qualified call examples, bare expressions"),
 
     # Module declaration and import syntax
-    702: ("FRAGMENT", "Module declaration and import example"),
+    703: ("FRAGMENT", "Module declaration and import example"),
 
     # Line comments — bare comments
-    741: ("FRAGMENT", "Comment syntax example"),
+    742: ("FRAGMENT", "Comment syntax example"),
 
     # Common mistakes section — intentionally wrong code
-    769: ("FRAGMENT", "Wrong: missing contracts"),
-    776: ("FRAGMENT", "Wrong: incorrect contract syntax"),
-    789: ("FRAGMENT", "Wrong: missing requires"),
-    799: ("FRAGMENT", "Wrong: missing effects clause"),
-    812: ("FRAGMENT", "Wrong: wrong effect declared"),
-    823: ("FRAGMENT", "Wrong: bare expression without indices"),
-    836: ("FRAGMENT", "Wrong: bare expression no indices"),
-    841: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
-    931: ("FRAGMENT", "Wrong: match arm with incorrect return"),
-    938: ("FRAGMENT", "Correct: match arm example"),
-    948: ("FRAGMENT", "Wrong: if/else without braces (bare expression)"),
-    953: ("FRAGMENT", "Correct: if/else with braces"),
+    770: ("FRAGMENT", "Wrong: missing contracts"),
+    777: ("FRAGMENT", "Wrong: incorrect contract syntax"),
+    790: ("FRAGMENT", "Wrong: missing requires"),
+    800: ("FRAGMENT", "Wrong: missing effects clause"),
+    813: ("FRAGMENT", "Wrong: wrong effect declared"),
+    824: ("FRAGMENT", "Wrong: bare expression without indices"),
+    837: ("FRAGMENT", "Wrong: bare expression no indices"),
+    842: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
+    932: ("FRAGMENT", "Wrong: match arm with incorrect return"),
+    939: ("FRAGMENT", "Correct: match arm example"),
+    949: ("FRAGMENT", "Wrong: if/else without braces (bare expression)"),
+    954: ("FRAGMENT", "Correct: if/else with braces"),
 
     # Import syntax — intentionally unsupported
-    964: ("FRAGMENT", "Wrong: import aliasing not supported"),
-    969: ("FRAGMENT", "Correct: import syntax example"),
-    979: ("FRAGMENT", "Wrong: import hiding not supported"),
-    984: ("FRAGMENT", "Correct: multi-import syntax"),
+    965: ("FRAGMENT", "Wrong: import aliasing not supported"),
+    970: ("FRAGMENT", "Correct: import syntax example"),
+    980: ("FRAGMENT", "Wrong: import hiding not supported"),
+    985: ("FRAGMENT", "Correct: multi-import syntax"),
 
     # String escapes — bare expression
-    998: ("FRAGMENT", "String escape example"),
+    999: ("FRAGMENT", "String escape example"),
 
     # =================================================================
     # MISMATCH — uses syntax the parser doesn't handle in isolation.

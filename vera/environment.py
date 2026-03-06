@@ -228,6 +228,18 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # Built-in function: array_push
+        self.functions["array_push"] = FunctionInfo(
+            name="array_push",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Array", (TypeVar("T"),)),
+                TypeVar("T"),
+            ),
+            return_type=AdtType("Array", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+        )
+
         # Built-in string operations
         self.functions["string_length"] = FunctionInfo(
             name="string_length",

@@ -11,6 +11,7 @@ from __future__ import annotations
 from vera import ast
 from vera.types import (
     BOOL,
+    BYTE,
     FLOAT64,
     INT,
     NAT,
@@ -19,6 +20,7 @@ from vera.types import (
     STRING,
     UNIT,
     AdtType,
+    PrimitiveType,
     EffectInstance,
     FunctionType,
     Type,
@@ -46,6 +48,13 @@ class ExpressionsMixin:
         ADTs can resolve their TypeVars from context (bidirectional checking).
         """
         if isinstance(expr, ast.IntLit):
+            # Byte coercion: integer literals 0–255 accepted as Byte when
+            # the expected type is Byte (bidirectional checking).
+            if (expected is not None
+                    and isinstance(expected, PrimitiveType)
+                    and expected.name == "Byte"
+                    and 0 <= expr.value <= 255):
+                return BYTE
             # Non-negative integer literals are Nat (which is a subtype of
             # Int).  This lets literals like 0, 1, 42 satisfy Nat parameters
             # without refinement verification.

@@ -1,5 +1,29 @@
 -- Conformance: Byte type (Chapter 1)
--- Tests: Byte as parameter and return type, Byte equality
+-- Tests: Byte literal coercion, identity, equality
+public fn byte_from_literal(-> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  65
+}
+
+public fn byte_zero(-> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0
+}
+
+public fn byte_max(-> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  255
+}
+
 public fn byte_identity(@Byte -> @Byte)
   requires(true)
   ensures(true)
@@ -16,10 +40,11 @@ public fn byte_eq(@Byte, @Byte -> @Bool)
   @Byte.0 == @Byte.1
 }
 
-public fn main(@Byte -> @Byte)
+public fn main(@Unit -> @Bool)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  @Byte.0
+  let @Byte = byte_from_literal();
+  byte_eq(@Byte.0, byte_identity(@Byte.0))
 }
