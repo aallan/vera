@@ -183,7 +183,15 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-The compiler has 1,454 tests with 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all 18 example programs and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, test helpers, CI pipeline, and infrastructure details.
+Testing is organized in three layers: **unit tests** (1,473 tests across 19 files, testing compiler internals), a **conformance suite** (39 programs across 7 spec chapters, systematically validating every language feature against the spec), and **example programs** (18 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
+
+### Known Bugs
+
+These are known compiler issues discovered during conformance suite development:
+
+- [#241](https://github.com/aallan/vera/issues/241) — **Byte literal coercion**: integer literals (e.g. `65`) are typed as `Nat`, and there is no implicit `Nat` to `Byte` coercion, so functions returning `Byte` cannot return integer literals directly
+- [#242](https://github.com/aallan/vera/issues/242) — **`array_push` codegen**: `array_push` type-checks correctly but is not implemented in the WASM code generator
+- [#243](https://github.com/aallan/vera/issues/243) — **Nested generic constructor inference**: constructing nested generic values like `Cons(None, Nil)` fails type inference, though pattern matching on the same shape works
 
 ## Roadmap
 
@@ -375,7 +383,7 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 **Agent tooling** — feedback loops that determine whether agents can use Vera at all
 
 - [#222](https://github.com/aallan/vera/issues/222) LSP server
-- [#223](https://github.com/aallan/vera/issues/223) conformance test suite
+- <del>[#223](https://github.com/aallan/vera/issues/223) conformance test suite</del>
 - [#224](https://github.com/aallan/vera/issues/224) REPL (interactive read-eval-print loop)
 - [#225](https://github.com/aallan/vera/issues/225) benchmark suite for LLM code generation
 

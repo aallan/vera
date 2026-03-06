@@ -1,0 +1,31 @@
+-- Conformance: nested match patterns (Chapter 4)
+-- Tests: nested constructor patterns, multi-level destructuring
+private data Option<T> {
+  None,
+  Some(T)
+}
+
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+private fn first_some(@List<Option<Int>> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @List<Option<Int>>.0 {
+    Cons(Some(@Int), @List<Option<Int>>) -> @Int.0,
+    Cons(None, @List<Option<Int>>) -> first_some(@List<Option<Int>>.0),
+    Nil -> 0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  first_some(Cons(Some(42), Nil))
+}

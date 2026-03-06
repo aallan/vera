@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.68] - 2026-03-05
+
+### Added
+- **Close #223: Conformance test suite** ([#223](https://github.com/aallan/vera/issues/223)):
+  39 small, self-contained programs in `tests/conformance/` that systematically
+  validate every language feature against the spec (Chapters 1-7). Each program
+  tests one feature or a small group of related features.
+- `tests/conformance/manifest.json` — machine-readable metadata mapping each
+  program to its spec chapter, test level (parse/check/verify/run), and feature tags
+- `tests/test_conformance.py` — parametrized pytest runner generating ~195 test
+  cases across all 39 conformance programs
+- `scripts/check_conformance.py` — standalone validation script for CI and
+  pre-commit (same pattern as `check_examples.py`)
+- Pre-commit hook `conformance-suite` and CI step in lint job
+- Conformance suite documentation across TESTING.md, README.md, CLAUDE.md,
+  AGENTS.md, SKILL.md, and vera/README.md
+- Known Bugs section in README.md listing compiler issues discovered during
+  conformance suite development
+
+### Fixed
+- Opened [#241](https://github.com/aallan/vera/issues/241) (Byte literal coercion),
+  [#242](https://github.com/aallan/vera/issues/242) (array_push codegen), and
+  [#243](https://github.com/aallan/vera/issues/243) (nested generic constructor
+  type inference) — bugs discovered while building the conformance suite
+
 ## [0.0.67] - 2026-03-05
 
 ### Added

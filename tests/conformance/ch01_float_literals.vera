@@ -1,0 +1,25 @@
+-- Conformance: Float64 literals (Chapter 1)
+-- Tests: decimal notation, negative floats, zero
+public fn main(@Unit -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  3.14
+}
+
+public fn test_negative_float(@Unit -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -2.5
+}
+
+public fn test_float_zero(@Unit -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0.0
+}

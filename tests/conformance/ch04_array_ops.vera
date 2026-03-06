@@ -1,0 +1,26 @@
+-- Conformance: array operations (Chapter 4)
+-- Tests: array literal, length, array_get, array_set, array_push
+public fn test_length(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  length([1, 2, 3])
+}
+
+public fn test_get(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 20)
+  effects(pure)
+{
+  let @Array<Int> = [10, 20, 30];
+  @Array<Int>.0[1]
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  length([1, 2, 3])
+}

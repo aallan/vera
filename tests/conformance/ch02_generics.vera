@@ -1,0 +1,41 @@
+-- Conformance: generics (Chapter 2)
+-- Tests: forall<T> polymorphism, monomorphization
+private forall<T> fn identity(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+
+private data Option<T> {
+  None,
+  Some(T)
+}
+
+private forall<T> fn is_some(@Option<T> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<T>.0 {
+    None -> false,
+    Some(@T) -> true
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  identity(42)
+}
+
+public fn test_generic_bool(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  is_some(Some(1))
+}

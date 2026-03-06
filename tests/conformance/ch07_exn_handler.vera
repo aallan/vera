@@ -1,0 +1,37 @@
+-- Conformance: Exn<E> effect handler (Chapter 7)
+-- Tests: handle[Exn<E>], throw, exception catching
+effect Exn<E> {
+  op throw(E -> Never);
+}
+
+private fn checked_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Exn<Int>>)
+{
+  if @Int.1 == 0 then {
+    throw(0 - 1)
+  } else {
+    @Int.0 / @Int.1
+  }
+}
+
+public fn safe_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { @Int.0 }
+  } in {
+    checked_div(@Int.0, @Int.1)
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  safe_div(10, 2) + safe_div(7, 0)
+}

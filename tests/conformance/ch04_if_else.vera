@@ -1,0 +1,53 @@
+-- Conformance: if/else expressions (Chapter 4)
+-- Tests: if/else as expression, nested conditionals
+public fn test_if_true(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if true then {
+    1
+  } else {
+    0
+  }
+}
+
+public fn test_if_false(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  if false then {
+    1
+  } else {
+    0
+  }
+}
+
+public fn test_nested(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  if false then {
+    1
+  } else {
+    if true then {
+      2
+    } else {
+      3
+    }
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if true then {
+    1
+  } else {
+    0
+  }
+}

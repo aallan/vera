@@ -6,8 +6,9 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,473 across 19 files (~18,900 lines of test code) |
+| **Tests** | 1,660+ across 20 files (~19,800 lines of test code) |
 | **Compiler code coverage** | 90% of 8,999 statements (CI minimum: 80%) |
+| **Conformance programs** | 39 programs across 7 spec chapters, validating every language feature |
 | **Example programs** | 18, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 95 parseable blocks from 13 spec chapters: 71 parse, 59 type-check, 58 verify |
 | **README code blocks** | 7 Vera blocks (6 validated, 1 allowlisted future syntax) |
@@ -23,12 +24,14 @@ All commands assume the virtual environment is active (`source .venv/bin/activat
 pytest tests/ -v                                     # full suite, verbose
 pytest tests/test_codegen.py                         # single file
 pytest tests/test_codegen.py::TestArithmetic          # single class
+pytest tests/test_conformance.py -v                  # conformance suite only
 pytest tests/ --cov=vera --cov-report=term-missing   # with coverage
 
 # Type checking
 mypy vera/                                           # strict mode
 
 # Validation scripts
+python scripts/check_conformance.py                  # conformance suite (39 programs)
 python scripts/check_examples.py                     # 18 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
@@ -59,7 +62,104 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_wasm_coverage.py` | 113 | 1,738 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
 | `test_tester.py` | 13 | 345 | Contract-driven testing: tier classification, input generation, test execution |
+| `test_conformance.py` | 195 | ~250 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 39 programs |
 | `test_readme.py` | 2 | 78 | README code sample parsing |
+
+## Conformance Suite
+
+The conformance suite is a collection of 39 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Each program is self-contained, imports nothing, and tests one feature or a small group of related features.
+
+Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
+
+### Three-layer testing model
+
+Vera has three distinct test layers, each serving a different purpose:
+
+| Layer | Location | Purpose | What it tests |
+|-------|----------|---------|---------------|
+| **Unit tests** | `tests/test_*.py` | Test compiler internals | Error paths, edge cases, internal APIs |
+| **Conformance suite** | `tests/conformance/` | Spec-anchored feature validation | Every language feature, one program per feature |
+| **Example programs** | `examples/` | Showcase programs and demos | End-to-end usage, documentation |
+
+Unit tests verify that the compiler works correctly. Conformance programs verify that the *language* works correctly. Examples demonstrate how to use the language. All three run in CI and pre-commit hooks.
+
+### Test levels
+
+Each conformance program declares the deepest pipeline stage it must pass:
+
+| Level | What it validates | Count |
+|-------|-------------------|------:|
+| `parse` | Source text is syntactically valid | 0 |
+| `check` | Parses and type-checks cleanly | 1 |
+| `verify` | Type-checks and all contracts verified by Z3 | 6 |
+| `run` | Compiles to WASM and executes correctly | 32 |
+
+Most programs are at the `run` level — they compile and execute, producing correct results. Programs at the `verify` level test contract verification features (preconditions, postconditions, decreases) that don't need runtime execution. The `check` level is used for `ch01_byte_literals` which exercises a type that currently has a coercion limitation ([#241](https://github.com/aallan/vera/issues/241)).
+
+### Directory structure
+
+```
+tests/conformance/
+├── manifest.json              # Machine-readable test metadata
+├── ch01_int_literals.vera     # Chapter 1: Integer literals
+├── ch01_float_literals.vera   # Chapter 1: Float64 literals
+├── ch01_string_escapes.vera   # Chapter 1: String escape sequences
+├── ...                        # 39 programs total, organized by spec chapter
+├── ch07_state_handler.vera    # Chapter 7: State<T> effect handler
+└── ch07_exn_handler.vera      # Chapter 7: Exn<E> effect handler
+```
+
+### Manifest
+
+`manifest.json` maps each program to its spec chapter, test level, and feature tags:
+
+```json
+{
+  "id": "ch04_arithmetic",
+  "file": "ch04_arithmetic.vera",
+  "chapter": 4,
+  "title": "Arithmetic operators",
+  "level": "run",
+  "spec_ref": "Section 4.1",
+  "features": ["add", "sub", "mul", "div", "mod", "unary_neg"]
+}
+```
+
+The manifest is the machine-readable feature inventory — agents can query it to find which features exist and where they are tested.
+
+### Running the conformance suite
+
+```bash
+# Via pytest (parametrized — 187 tests, 8 skipped)
+pytest tests/test_conformance.py -v
+
+# Via standalone script (used in CI and pre-commit)
+python scripts/check_conformance.py
+```
+
+The pytest runner (`test_conformance.py`) parametrizes over every manifest entry and runs five checks per program: parse, check, verify, run, and format idempotency (skipping stages above the declared level).
+
+### Adding a conformance test
+
+1. Write a `.vera` program in `tests/conformance/` following the naming convention `chNN_feature_name.vera`
+2. Include a header comment indicating the spec chapter and what the program tests
+3. Ensure the program has a `main` function (for `run`-level tests)
+4. Format it: `vera fmt --write tests/conformance/your_file.vera`
+5. Add an entry to `manifest.json` with the appropriate level and feature tags
+6. Run `python scripts/check_conformance.py` to validate
+
+When implementing a new language feature, the conformance program should be written *first* — this is test-driven development against the spec.
+
+### Known limitations
+
+Two conformance programs have reduced test levels due to known compiler limitations:
+
+| Program | Level | Expected | Issue |
+|---------|-------|----------|-------|
+| `ch01_byte_literals` | check | run | [#241](https://github.com/aallan/vera/issues/241) — Byte literal coercion |
+| `ch04_array_ops` | run | run | [#242](https://github.com/aallan/vera/issues/242) — `array_push` not in codegen (test omits `array_push`) |
+
+Additionally, [#243](https://github.com/aallan/vera/issues/243) tracks a type inference limitation where nested generic constructors (e.g. `Cons(None, Nil)`) fail to infer inner types from context.
 
 ## Compiler Code Coverage
 
@@ -114,31 +214,34 @@ The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, le
 
 How Vera language features (by spec chapter) map to test files and example programs:
 
-| Spec chapter | Feature | Test files | Examples |
-|-------------|---------|-----------|----------|
-| Ch 1: Lexical | String escape sequences (`\n`, `\t`, `\\`, `\"`, `\r`, `\0`, `\u{XXXX}`) | test_ast, test_codegen | io_operations, file_io |
-| Ch 2: Types | Int, Nat, Bool, String, Float64, Byte, Unit | test_codegen, test_checker | most examples |
-| Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | pattern_matching, list_ops |
-| Ch 2: Types | Refinement types | test_codegen, test_verifier | refinement_types, safe_divide |
-| Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | all 18 examples |
-| Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker | factorial, absolute_value |
-| Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker | pattern_matching |
-| Ch 5: Functions | Declarations, recursion, mutual recursion | test_codegen, test_checker | factorial, mutual_recursion |
-| Ch 5: Functions | Closures, higher-order functions | test_codegen_closures | closures |
-| Ch 5: Functions | Visibility (`public`/`private`) | test_checker | modules |
-| Ch 6: Contracts | Preconditions (`requires`) | test_codegen_contracts, test_verifier | safe_divide |
-| Ch 6: Contracts | Postconditions (`ensures`) | test_codegen_contracts, test_verifier | absolute_value |
-| Ch 6: Contracts | Decreases clauses, assert/assume | test_verifier, test_codegen | factorial |
-| Ch 6: Contracts | Quantifiers (forall, exists) | test_codegen, test_verifier | quantifiers |
-| Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker | hello_world, increment, io_operations, file_io |
-| Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen, test_checker | effect_handler |
-| Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker | — |
-| Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — |
-| Ch 4: Expressions | Nested constructor patterns in match | test_codegen | pattern_matching |
-| Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | modules |
-| Ch 11: Compilation | Cross-module name collision detection (E608/E609/E610) | test_codegen_modules | — |
-| Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_cli | safe_divide, factorial |
+| Spec chapter | Feature | Test files | Conformance | Examples |
+|-------------|---------|-----------|-------------|----------|
+| Ch 1: Lexical | Literals (Int, Float64, Bool, Byte, String) | test_ast, test_codegen | ch01_int_literals, ch01_float_literals, ch01_bool_literals, ch01_byte_literals | most examples |
+| Ch 1: Lexical | String escape sequences (`\n`, `\t`, `\\`, `\"`, `\r`, `\0`, `\u{XXXX}`) | test_ast, test_codegen | ch01_string_escapes | io_operations, file_io |
+| Ch 1: Lexical | Comments | test_parser | ch01_comments | — |
+| Ch 2: Types | Int, Nat, Bool, String, Float64, Byte, Unit | test_codegen, test_checker | ch02_builtin_types | most examples |
+| Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | ch02_adt_basic, ch02_adt_recursive, ch02_option_result | pattern_matching, list_ops |
+| Ch 2: Types | Refinement types | test_codegen, test_verifier | ch02_refinement_types | refinement_types, safe_divide |
+| Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker | ch02_generics | generics |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 18 examples |
+| Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker | ch04_arithmetic, ch04_comparison, ch04_boolean_ops | factorial, absolute_value |
+| Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker | ch04_if_else, ch04_let_binding, ch04_match_basic, ch04_match_nested, ch04_pipe_operator | pattern_matching |
+| Ch 4: Expressions | String and array builtins | test_codegen | ch04_string_builtins, ch04_array_ops | string_ops |
+| Ch 5: Functions | Declarations, recursion, mutual recursion | test_codegen, test_checker | ch05_basic_function, ch05_recursion, ch05_mutual_recursion | factorial, mutual_recursion |
+| Ch 5: Functions | Closures, higher-order functions | test_codegen_closures | ch05_closures | closures |
+| Ch 5: Functions | Visibility (`public`/`private`) | test_checker | ch05_visibility | modules |
+| Ch 6: Contracts | Preconditions (`requires`) | test_codegen_contracts, test_verifier | ch06_requires | safe_divide |
+| Ch 6: Contracts | Postconditions (`ensures`) | test_codegen_contracts, test_verifier | ch06_ensures | absolute_value |
+| Ch 6: Contracts | Decreases clauses, assert/assume | test_verifier, test_codegen | ch06_decreases, ch06_assert_assume | factorial |
+| Ch 6: Contracts | Quantifiers (forall, exists) | test_codegen, test_verifier | ch06_quantifiers | quantifiers |
+| Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker | ch07_pure, ch07_io, ch07_state_handler | hello_world, increment, io_operations, file_io |
+| Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen, test_checker | ch07_state_handler, ch07_exn_handler | effect_handler |
+| Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker | — | — |
+| Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — | — |
+| Ch 4: Expressions | Nested constructor patterns in match | test_codegen | ch04_match_nested | pattern_matching |
+| Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | — | modules |
+| Ch 11: Compilation | Cross-module name collision detection (E608/E609/E610) | test_codegen_modules | — | — |
+| Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_cli | — | safe_divide, factorial |
 
 ## Test Helpers
 
@@ -182,10 +285,11 @@ When extending the compiler, add tests following the existing patterns:
 
 ## Validation Scripts
 
-Six scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
+Seven scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
+| `check_conformance.py` | All 39 conformance programs pass their declared level (parse/check/verify/run) |
 | `check_examples.py` | All 18 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 95 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
@@ -209,7 +313,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-After running `pre-commit install`, every commit is checked by 13 hooks:
+After running `pre-commit install`, every commit is checked by 14 hooks:
 
 | Hook | What it does |
 |------|-------------|
@@ -222,6 +326,7 @@ After running `pre-commit install`, every commit is checked by 13 hooks:
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
 | `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
+| `check_conformance.py` | All 39 conformance programs pass their declared level |
 | `check_examples.py` | All 18 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 | `check_skill_examples.py` | SKILL.md code blocks parse correctly |
@@ -237,7 +342,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs thr
 | **test** | Python 3.11, 3.12, 3.13 x Ubuntu, macOS (6 combos) | `pytest -v` passes on all combinations |
 | **test** (coverage) | Python 3.12 x Ubuntu only | `pytest --cov=vera --cov-fail-under=80` |
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
-| **lint** | Python 3.12 x Ubuntu | `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py` |
+| **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py` |
 
 The coverage threshold of **80%** is enforced in CI. Current coverage is 90%.
 

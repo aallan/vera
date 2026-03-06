@@ -1,0 +1,39 @@
+-- Conformance: postconditions with ensures (Chapter 6)
+-- Tests: ensures clause, @T.result, multiple ensures
+public fn absolute(@Int -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)
+  effects(pure)
+{
+  if @Int.0 >= 0 then {
+    @Int.0
+  } else {
+    -@Int.0
+  }
+}
+
+public fn clamp(@Int, @Int, @Int -> @Int)
+  requires(@Int.1 <= @Int.2)
+  ensures(@Int.result >= @Int.1)
+  ensures(@Int.result <= @Int.2)
+  effects(pure)
+{
+  if @Int.0 < @Int.1 then {
+    @Int.1
+  } else {
+    if @Int.0 > @Int.2 then {
+      @Int.2
+    } else {
+      @Int.0
+    }
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 42)
+  effects(pure)
+{
+  absolute(-42)
+}

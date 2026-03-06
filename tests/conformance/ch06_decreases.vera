@@ -1,0 +1,39 @@
+-- Conformance: decreases clauses (Chapter 6)
+-- Tests: termination metrics, structural and numeric decreasing
+private fn countdown(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    countdown(@Nat.0 - 1)
+  }
+}
+
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+private fn len(@List<Int> -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + len(@List<Int>.0)
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  countdown(10)
+}

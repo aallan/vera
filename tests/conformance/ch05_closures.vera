@@ -1,0 +1,28 @@
+-- Conformance: closures and higher-order functions (Chapter 5)
+-- Tests: closure capture, function type alias, apply_fn
+type IntToInt = fn(Int -> Int) effects(pure);
+
+private fn make_adder(@Int -> @IntToInt)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+}
+
+private fn apply(@IntToInt, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  apply_fn(@IntToInt.0, @Int.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @IntToInt = make_adder(10);
+  apply(@IntToInt.0, 5)
+}

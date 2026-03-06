@@ -1,0 +1,17 @@
+-- Conformance: function visibility (Chapter 5)
+-- Tests: public and private function declarations
+private fn helper(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  helper(10)
+}

@@ -1,0 +1,20 @@
+-- Conformance: assert and assume expressions (Chapter 6)
+-- Tests: assert for runtime checks, assume for proof hints
+public fn process(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  assert(@Int.0 > 0);
+  let @Int = @Int.0 * 2;
+  assume(@Int.0 > 0);
+  @Int.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  process(5)
+}

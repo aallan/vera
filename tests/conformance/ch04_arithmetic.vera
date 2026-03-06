@@ -1,0 +1,57 @@
+-- Conformance: arithmetic operators (Chapter 4)
+-- Tests: +, -, *, /, %, unary -
+public fn test_add(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 15)
+  effects(pure)
+{
+  10 + 5
+}
+
+public fn test_sub(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  10 - 5
+}
+
+public fn test_mul(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 50)
+  effects(pure)
+{
+  10 * 5
+}
+
+public fn test_div(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  10 / 5
+}
+
+public fn test_mod(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  10 % 3
+}
+
+public fn test_unary_neg(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == -42)
+  effects(pure)
+{
+  -42
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 15)
+  effects(pure)
+{
+  10 + 5
+}

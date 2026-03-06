@@ -1,0 +1,44 @@
+-- Conformance: De Bruijn slot indexing (Chapter 3)
+-- Tests: @Int.0 vs @Int.1 with multiple bindings of same type
+public fn first_of_three(@Int, @Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.2
+}
+
+-- @Int.0 = third arg, @Int.1 = second arg, @Int.2 = first arg
+public fn last_of_three(@Int, @Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  first_of_three(1, 2, 3)
+}
+
+public fn test_last(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  last_of_three(1, 2, 3)
+}
+
+public fn test_let_shadowing(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 20)
+  effects(pure)
+{
+  let @Int = 10;
+  let @Int = 20;
+  @Int.0
+}

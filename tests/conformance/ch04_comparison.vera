@@ -1,0 +1,57 @@
+-- Conformance: comparison operators (Chapter 4)
+-- Tests: ==, !=, <, >, <=, >=
+public fn test_eq(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  5 == 5
+}
+
+public fn test_neq(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  5 != 3
+}
+
+public fn test_lt(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  3 < 5
+}
+
+public fn test_gt(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  5 > 3
+}
+
+public fn test_le(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  5 <= 5
+}
+
+public fn test_ge(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  5 >= 5
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  5 == 5
+}

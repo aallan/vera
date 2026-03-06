@@ -1,0 +1,44 @@
+-- Conformance: mutual recursion via where blocks (Chapter 5)
+-- Tests: where block, mutually recursive functions, decreases
+public fn is_even(@Nat -> @Bool)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    true
+  } else {
+    is_odd(@Nat.0 - 1)
+  }
+}
+where {
+  fn is_odd(@Nat -> @Bool)
+    requires(true)
+    ensures(true)
+    decreases(@Nat.0)
+    effects(pure)
+  {
+    if @Nat.0 == 0 then {
+      false
+    } else {
+      is_even(@Nat.0 - 1)
+    }
+  }
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  is_even(4)
+}
+
+public fn test_odd(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  is_even(3) == false
+}

@@ -1,0 +1,25 @@
+-- Conformance: preconditions with requires (Chapter 6)
+-- Tests: requires clause, non-trivial preconditions
+public fn safe_divide(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(@Int.result == @Int.0 / @Int.1)
+  effects(pure)
+{
+  @Int.0 / @Int.1
+}
+
+public fn positive_only(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  safe_divide(2, 10)
+}

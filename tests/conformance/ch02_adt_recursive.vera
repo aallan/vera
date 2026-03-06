@@ -1,0 +1,46 @@
+-- Conformance: recursive ADTs (Chapter 2)
+-- Tests: recursive data type, structural recursion with decreases
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+private fn length(@List<Int> -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + length(@List<Int>.0)
+  }
+}
+
+private fn sum(@List<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> @Int.0 + sum(@List<Int>.0)
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  length(Cons(1, Cons(2, Cons(3, Nil))))
+}
+
+public fn test_sum(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 60)
+  effects(pure)
+{
+  sum(Cons(10, Cons(20, Cons(30, Nil))))
+}

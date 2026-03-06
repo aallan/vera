@@ -1,0 +1,37 @@
+-- Conformance: refinement types (Chapter 2)
+-- Tests: refinement type aliases, predicate enforcement
+type PosInt = { @Int | @Int.0 > 0 };
+
+type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
+
+public fn safe_divide(@Int, @PosInt -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 / @PosInt.0
+}
+
+public fn clamp_percent(@Int -> @Percentage)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 < 0 then {
+    0
+  } else {
+    if @Int.0 > 100 then {
+      100
+    } else {
+      @Int.0
+    }
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  safe_divide(10, 3)
+}

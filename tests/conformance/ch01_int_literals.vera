@@ -1,0 +1,33 @@
+-- Conformance: integer literals (Chapter 1)
+-- Tests: positive integers, zero, negative integers via unary minus
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  42
+}
+
+public fn test_zero(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  0
+}
+
+public fn test_negative(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == -7)
+  effects(pure)
+{
+  -7
+}
+
+public fn test_large(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1000000)
+  effects(pure)
+{
+  1000000
+}

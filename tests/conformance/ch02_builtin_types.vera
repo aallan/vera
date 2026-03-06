@@ -1,0 +1,62 @@
+-- Conformance: built-in types (Chapter 2)
+-- Tests: Int, Nat, Bool, String, Float64, Byte, Unit
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn test_int(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  42
+}
+
+public fn test_nat(@Unit -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 10)
+  effects(pure)
+{
+  10
+}
+
+public fn test_bool(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  true
+}
+
+public fn test_string(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  "hello"
+}
+
+public fn test_float(@Unit -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  3.14
+}
+
+public fn test_byte(@Byte -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Byte.0
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("types ok");
+  ()
+}
