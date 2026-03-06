@@ -383,7 +383,7 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 **Agent tooling** — feedback loops that determine whether agents can use Vera at all
 
 - [#222](https://github.com/aallan/vera/issues/222) LSP server
-- <del>[#223](https://github.com/aallan/vera/issues/223) conformance test suite</del>
+- <del>[#223](https://github.com/aallan/vera/issues/223) conformance test suite</del> ([v0.0.68](https://github.com/aallan/vera/releases/tag/v0.0.68))
 - [#224](https://github.com/aallan/vera/issues/224) REPL (interactive read-eval-print loop)
 - [#225](https://github.com/aallan/vera/issues/225) benchmark suite for LLM code generation
 
