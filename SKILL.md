@@ -393,7 +393,8 @@ Statements end with `;`. The final expression (no `;`) is the block's value.
 ### Array operations
 
 ```vera
-length(@Array<Int>.0)  -- returns Int (always >= 0)
+length(@Array<Int>.0)                   -- returns Int (always >= 0)
+array_push(@Array<Int>.0, @Int.0)       -- returns Array<Int> (new array with element appended)
 ```
 
 ### String operations

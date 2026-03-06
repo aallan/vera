@@ -90,11 +90,11 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | Level | What it validates | Count |
 |-------|-------------------|------:|
 | `parse` | Source text is syntactically valid | 0 |
-| `check` | Parses and type-checks cleanly | 1 |
+| `check` | Parses and type-checks cleanly | 0 |
 | `verify` | Type-checks and all contracts verified by Z3 | 6 |
-| `run` | Compiles to WASM and executes correctly | 32 |
+| `run` | Compiles to WASM and executes correctly | 33 |
 
-Most programs are at the `run` level — they compile and execute, producing correct results. Programs at the `verify` level test contract verification features (preconditions, postconditions, decreases) that don't need runtime execution. The `check` level is used for `ch01_byte_literals` which exercises a type that currently has a coercion limitation ([#241](https://github.com/aallan/vera/issues/241)).
+Most programs are at the `run` level — they compile and execute, producing correct results. Programs at the `verify` level test contract verification features (preconditions, postconditions, decreases) that don't need runtime execution.
 
 ### Directory structure
 
@@ -152,14 +152,7 @@ When implementing a new language feature, the conformance program should be writ
 
 ### Known limitations
 
-Two conformance programs have reduced test levels due to known compiler limitations:
-
-| Program | Level | Expected | Issue |
-|---------|-------|----------|-------|
-| `ch01_byte_literals` | check | run | [#241](https://github.com/aallan/vera/issues/241) — Byte literal coercion |
-| `ch04_array_ops` | run | run | [#242](https://github.com/aallan/vera/issues/242) — `array_push` not in codegen (test omits `array_push`) |
-
-Additionally, [#243](https://github.com/aallan/vera/issues/243) tracks a type inference limitation where nested generic constructors (e.g. `Cons(None, Nil)`) fail to infer inner types from context.
+[#243](https://github.com/aallan/vera/issues/243) tracks a type inference limitation where nested generic constructors (e.g. `Cons(None, Nil)`) fail to infer inner types from context. All 39 conformance programs currently pass at their declared level.
 
 ## Compiler Code Coverage
 

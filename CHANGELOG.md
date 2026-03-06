@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.69] - 2026-03-06
+
+### Fixed
+- **Close #241: Byte literal coercion** ([#241](https://github.com/aallan/vera/issues/241)):
+  Integer literals 0–255 are now accepted as `Byte` when the expected type is
+  `Byte` (bidirectional type checking). The `ch01_byte_literals` conformance test
+  is promoted from `check` to `run` level.
+- **Close #242: `array_push` codegen** ([#242](https://github.com/aallan/vera/issues/242)):
+  `array_push(array, elem)` is now a fully implemented builtin — registered in the
+  type environment with a generic `(Array<T>, T) -> Array<T>` signature and compiled
+  to WASM with proper allocation, element copying, and GC shadow stack integration.
+  The `ch04_array_ops` conformance test now exercises `array_push`.
+
+### Changed
+- Conformance suite: `ch01_byte_literals` promoted from `check` to `run` level;
+  `ch04_array_ops` now includes `array_push` in its feature coverage
+- Documentation updated across TESTING.md, SKILL.md, and README.md to reflect
+  resolved bugs and new builtin
+
 ## [0.0.68] - 2026-03-05
 
 ### Added
@@ -1062,7 +1081,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.68...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.69...HEAD
+[0.0.69]: https://github.com/aallan/vera/compare/v0.0.68...v0.0.69
 [0.0.68]: https://github.com/aallan/vera/compare/v0.0.67...v0.0.68
 [0.0.67]: https://github.com/aallan/vera/compare/v0.0.66...v0.0.67
 [0.0.66]: https://github.com/aallan/vera/compare/v0.0.65...v0.0.66

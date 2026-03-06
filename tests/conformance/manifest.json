@@ -40,9 +40,9 @@
     "file": "ch01_byte_literals.vera",
     "chapter": 1,
     "title": "Byte type",
-    "level": "check",
+    "level": "run",
     "spec_ref": "Section 1.1",
-    "features": ["byte_type"]
+    "features": ["byte_type", "byte_coercion"]
   },
   {
     "id": "ch01_comments",
@@ -222,7 +222,7 @@
     "title": "Array operations",
     "level": "run",
     "spec_ref": "Section 4.7",
-    "features": ["array_literal", "array_length", "array_get"]
+    "features": ["array_literal", "array_length", "array_get", "array_push"]
   },
   {
     "id": "ch05_basic_function",

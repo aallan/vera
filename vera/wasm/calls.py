@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from vera import ast
-from vera.wasm.helpers import WasmSlotEnv, gc_shadow_push
+from vera.wasm.helpers import (
+    WasmSlotEnv,
+    _element_mem_size,
+    _element_store_op,
+    _is_pair_element_type,
+    gc_shadow_push,
+)
 
 
 class CallsMixin:
@@ -56,6 +62,10 @@ class CallsMixin:
                 return self._translate_float_to_string(call.args[0], env)
             if call.name == "strip" and len(call.args) == 1:
                 return self._translate_strip(call.args[0], env)
+            if call.name == "array_push" and len(call.args) == 2:
+                return self._translate_array_push(
+                    call.args[0], call.args[1], env,
+                )
 
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:
@@ -194,6 +204,136 @@ class CallsMixin:
         instructions.append("drop")
         instructions.append(f"local.get {tmp_len}")
         instructions.append("i64.extend_i32_u")
+        return instructions
+
+    def _translate_array_push(
+        self,
+        arr_arg: ast.Expr,
+        elem_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate array_push(array, element) → Array<T>.
+
+        Allocates a new array of size (len + 1), copies the old elements
+        byte-by-byte, appends the new element, and returns (new_ptr, new_len).
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        elem_instrs = self.translate_expr(elem_arg, env)
+        if arr_instrs is None or elem_instrs is None:
+            return None
+
+        # Infer element type from the pushed element
+        elem_type = self._infer_vera_type(elem_arg)
+        if elem_type is None:
+            return None
+        elem_size = _element_mem_size(elem_type)
+        if elem_size is None:
+            return None
+
+        is_pair = _is_pair_element_type(elem_type)
+        store_op = _element_store_op(elem_type)
+        if store_op is None and not is_pair:
+            return None
+
+        self.needs_alloc = True
+
+        # Locals for old array
+        ptr_arr = self.alloc_local("i32")
+        len_arr = self.alloc_local("i32")
+        # Locals for new element
+        if is_pair:
+            elem_ptr = self.alloc_local("i32")
+            elem_len = self.alloc_local("i32")
+        else:
+            elem_val = self.alloc_local(
+                "i64" if elem_type in ("Int", "Nat") else
+                "f64" if elem_type == "Float64" else "i32"
+            )
+        # Locals for copy loop and destination
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        old_bytes = self.alloc_local("i32")
+
+        instructions: list[str] = []
+
+        # Evaluate array arg → (ptr, len), save to locals
+        instructions.extend(arr_instrs)
+        instructions.append(f"local.set {len_arr}")
+        instructions.append(f"local.set {ptr_arr}")
+
+        # Evaluate element arg, save to locals
+        instructions.extend(elem_instrs)
+        if is_pair:
+            instructions.append(f"local.set {elem_len}")
+            instructions.append(f"local.set {elem_ptr}")
+        else:
+            instructions.append(f"local.set {elem_val}")
+
+        # Compute old_bytes = len_arr * elem_size
+        instructions.append(f"local.get {len_arr}")
+        instructions.append(f"i32.const {elem_size}")
+        instructions.append("i32.mul")
+        instructions.append(f"local.set {old_bytes}")
+
+        # Allocate: (len_arr + 1) * elem_size = old_bytes + elem_size
+        instructions.append(f"local.get {old_bytes}")
+        instructions.append(f"i32.const {elem_size}")
+        instructions.append("i32.add")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {dst}")
+        instructions.extend(gc_shadow_push(dst))
+
+        # Copy old elements: byte-by-byte loop
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+        instructions.append("block $brk_copy")
+        instructions.append("  loop $lp_copy")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    local.get {old_bytes}")
+        instructions.append("    i32.ge_u")
+        instructions.append("    br_if $brk_copy")
+        instructions.append(f"    local.get {dst}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.get {ptr_arr}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.add")
+        instructions.append("    i32.load8_u offset=0")
+        instructions.append("    i32.store8 offset=0")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.const 1")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {idx}")
+        instructions.append("    br $lp_copy")
+        instructions.append("  end")
+        instructions.append("end")
+
+        # Store new element at dst + old_bytes
+        if is_pair:
+            # Store ptr at old_bytes offset
+            instructions.append(f"local.get {dst}")
+            instructions.append(f"local.get {old_bytes}")
+            instructions.append("i32.add")
+            instructions.append(f"local.get {elem_ptr}")
+            instructions.append("i32.store offset=0")
+            # Store len at old_bytes + 4
+            instructions.append(f"local.get {dst}")
+            instructions.append(f"local.get {old_bytes}")
+            instructions.append("i32.add")
+            instructions.append(f"local.get {elem_len}")
+            instructions.append("i32.store offset=4")
+        else:
+            instructions.append(f"local.get {dst}")
+            instructions.append(f"local.get {old_bytes}")
+            instructions.append("i32.add")
+            instructions.append(f"local.get {elem_val}")
+            instructions.append(f"{store_op} offset=0")
+
+        # Push result: (new_ptr, new_len)
+        instructions.append(f"local.get {dst}")
+        instructions.append(f"local.get {len_arr}")
+        instructions.append("i32.const 1")
+        instructions.append("i32.add")
         return instructions
 
     def _translate_string_length(

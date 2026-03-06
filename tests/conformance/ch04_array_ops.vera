@@ -1,5 +1,5 @@
 -- Conformance: array operations (Chapter 4)
--- Tests: array literal, length, array_get, array_set, array_push
+-- Tests: array literal, length, array_get, array_push
 public fn test_length(@Unit -> @Int)
   requires(true)
   ensures(@Int.result == 3)
@@ -17,10 +17,19 @@ public fn test_get(@Unit -> @Int)
   @Array<Int>.0[1]
 }
 
-public fn main(@Unit -> @Int)
+public fn test_push(@Unit -> @Int)
   requires(true)
-  ensures(@Int.result == 3)
+  ensures(@Int.result == 4)
   effects(pure)
 {
-  length([1, 2, 3])
+  length(array_push([1, 2, 3], 4))
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  let @Int = test_push(());
+  @Int.0 == 4
 }

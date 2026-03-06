@@ -187,10 +187,6 @@ Testing is organized in three layers: **unit tests** (1,473 tests across 19 file
 
 ### Known Bugs
 
-These are known compiler issues discovered during conformance suite development:
-
-- [#241](https://github.com/aallan/vera/issues/241) — **Byte literal coercion**: integer literals (e.g. `65`) are typed as `Nat`, and there is no implicit `Nat` to `Byte` coercion, so functions returning `Byte` cannot return integer literals directly
-- [#242](https://github.com/aallan/vera/issues/242) — **`array_push` codegen**: `array_push` type-checks correctly but is not implemented in the WASM code generator
 - [#243](https://github.com/aallan/vera/issues/243) — **Nested generic constructor inference**: constructing nested generic values like `Cons(None, Nil)` fails type inference, though pattern matching on the same shape works
 
 ## Roadmap
