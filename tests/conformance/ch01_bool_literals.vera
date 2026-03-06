@@ -1,0 +1,17 @@
+-- Conformance: boolean literals (Chapter 1)
+-- Tests: true, false
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  true
+}
+
+public fn test_false(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == false)
+  effects(pure)
+{
+  false
+}

@@ -1,0 +1,25 @@
+-- Conformance: Byte type (Chapter 1)
+-- Tests: Byte as parameter and return type, Byte equality
+public fn byte_identity(@Byte -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Byte.0
+}
+
+public fn byte_eq(@Byte, @Byte -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Byte.0 == @Byte.1
+}
+
+public fn main(@Byte -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Byte.0
+}

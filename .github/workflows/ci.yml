@@ -62,6 +62,9 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
+      - name: Check conformance suite
+        run: python scripts/check_conformance.py
+
       - name: Check all examples type-check and verify cleanly
         run: python scripts/check_examples.py
 

@@ -1,0 +1,54 @@
+-- Conformance: string built-in functions (Chapter 4)
+-- Tests: string_length, string_concat, string_slice, char_code, to_string
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn test_length(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  string_length("hello")
+}
+
+public fn test_concat(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_concat("hello", " world")
+}
+
+public fn test_slice(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_slice("hello world", 0, 5)
+}
+
+public fn test_char_code(@Unit -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 65)
+  effects(pure)
+{
+  char_code("A", 0)
+}
+
+public fn test_to_string(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  to_string(42)
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(string_concat("hello", " world"));
+  ()
+}

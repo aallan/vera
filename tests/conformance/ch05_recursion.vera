@@ -1,0 +1,47 @@
+-- Conformance: self-recursion with decreases (Chapter 5)
+-- Tests: recursive function, decreases clause, base case
+private fn factorial(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 1)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    1
+  } else {
+    @Nat.0 * factorial(@Nat.0 - 1)
+  }
+}
+
+private fn fib(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    if @Nat.0 == 1 then {
+      1
+    } else {
+      fib(@Nat.0 - 1) + fib(@Nat.0 - 2)
+    }
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  factorial(5)
+}
+
+public fn test_fib(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fib(6)
+}

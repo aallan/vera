@@ -1,0 +1,49 @@
+-- Conformance: boolean operators (Chapter 4)
+-- Tests: &&, ||, !
+public fn test_and(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  true && true
+}
+
+public fn test_and_false(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == false)
+  effects(pure)
+{
+  true && false
+}
+
+public fn test_or(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  false || true
+}
+
+public fn test_or_false(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == false)
+  effects(pure)
+{
+  false || false
+}
+
+public fn test_not(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == false)
+  effects(pure)
+{
+  !true
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  true && true
+}

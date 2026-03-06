@@ -40,6 +40,7 @@ vera fmt --check file.vera        # Check if already canonical
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
 mypy vera/                        # Type-check the compiler itself
 
+python scripts/check_conformance.py    # Verify all 39 conformance programs pass their declared level
 python scripts/check_examples.py      # Verify all 18 examples parse + check + verify
 python scripts/check_spec_examples.py # Verify spec code blocks parse
 python scripts/check_readme_examples.py # Verify README code blocks parse
@@ -54,7 +55,8 @@ python scripts/fix_allowlists.py --fix # Auto-fix stale allowlist line numbers
 - `spec/` — Language specification (Chapters 0-12)
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
 - `examples/` — 18 example Vera programs (all must pass `vera check` and `vera verify`)
-- `tests/` — Test suite
+- `tests/` — Test suite (unit tests + conformance suite)
+- `tests/conformance/` — 39 conformance programs validating every language feature against the spec
 - `scripts/` — CI and validation scripts
 
 ## Writing Vera code
@@ -71,7 +73,8 @@ Each stage is a module with a public API function and is independently testable.
 
 ## What not to break
 
-- Pre-commit hooks run mypy + pytest + example validation on every commit
+- Pre-commit hooks run mypy + pytest + conformance suite + example validation on every commit
+- All 39 conformance programs in `tests/conformance/` must pass their declared level
 - All 18 examples in `examples/` must pass `vera check` and `vera verify`
 - Version must stay in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 - All tests must pass: `pytest tests/ -v`
@@ -86,6 +89,8 @@ Each stage is a module with a public API function and is independently testable.
 **Extend the grammar:** Edit `vera/grammar.lark`, update `vera/transform.py` to handle new tree nodes, add AST nodes in `vera/ast.py`, add type-checking in `vera/checker.py`.
 
 **Add an example:** Create a `.vera` file in `examples/`. It must pass both `vera check` and `vera verify`. The validation script `scripts/check_examples.py` tests all examples automatically.
+
+**Add a conformance test:** Create a `.vera` file in `tests/conformance/` named `chNN_feature.vera`. Add a header comment with the spec chapter and features tested. Format it with `vera fmt --write`. Add a manifest entry in `manifest.json` with the appropriate level and feature tags. Run `python scripts/check_conformance.py` to validate. When implementing a new language feature, write the conformance test first.
 
 ## JSON diagnostics
 

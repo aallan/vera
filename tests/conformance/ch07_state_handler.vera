@@ -1,0 +1,39 @@
+-- Conformance: State<T> effect handler (Chapter 7)
+-- Tests: handle[State<T>], get, put, with clause
+public fn test_counter(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    put(0);
+    put(get(()) + 1);
+    put(get(()) + 1);
+    put(get(()) + 1);
+    get(())
+  }
+}
+
+public fn test_init(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 42) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  test_counter(())
+}

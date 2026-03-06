@@ -1,0 +1,33 @@
+-- Conformance: pipe operator (Chapter 4)
+-- Tests: |> operator chaining — pipe requires () after function name
+private fn double(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 * 2)
+  effects(pure)
+{
+  @Int.0 * 2
+}
+
+private fn add_one(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + 1)
+  effects(pure)
+{
+  @Int.0 + 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 11)
+  effects(pure)
+{
+  5 |> double() |> add_one()
+}
+
+public fn test_single_pipe(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 10)
+  effects(pure)
+{
+  5 |> double()
+}

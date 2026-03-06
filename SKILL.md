@@ -1071,6 +1071,24 @@ public fn length(@List<Int> -> @Nat)
 }
 ```
 
+## Conformance Suite
+
+The `tests/conformance/` directory contains 39 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+
+Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
+
+Key conformance programs by feature:
+
+| Feature | Program |
+|---------|---------|
+| Slot references (`@T.n`) | `ch03_slot_basic.vera`, `ch03_slot_indexing.vera` |
+| Match expressions | `ch04_match_basic.vera`, `ch04_match_nested.vera` |
+| Contracts (requires/ensures) | `ch06_requires.vera`, `ch06_ensures.vera` |
+| Effect handlers | `ch07_state_handler.vera`, `ch07_exn_handler.vera` |
+| Closures | `ch05_closures.vera` |
+| Generics | `ch02_generics.vera` |
+| Recursive ADTs | `ch02_adt_recursive.vera` |
+
 ## Specification Reference
 
 The full language specification is in the [`spec/`](https://github.com/aallan/vera/tree/main/spec) directory of the repository:

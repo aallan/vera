@@ -6,6 +6,10 @@ This document is for AI agents working with the Vera codebase. There are two aud
 
 Read `SKILL.md` for the full language reference. It covers syntax, slot references, contracts, effects, common mistakes, and working examples that all parse correctly.
 
+### Conformance programs as reference
+
+The conformance suite in `tests/conformance/` contains 39 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
+
 ### Workflow
 
 ```
@@ -134,14 +138,19 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 
 ```bash
 pytest tests/ -v                       # Run all tests (see TESTING.md)
+pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
+python scripts/check_conformance.py    # All 39 conformance programs must pass
 python scripts/check_examples.py       # All 18 examples must pass
 ```
 
 Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)` / `_verify_ok(source)` / `_verify_err(source, match)`. See existing tests for examples.
 
+When implementing a new language feature, write the conformance program *first* — add a `.vera` file and manifest entry in `tests/conformance/`, then implement the feature until the conformance test passes.
+
 ### Invariants
 
+- All 39 conformance programs in `tests/conformance/` must pass their declared level
 - All 18 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass

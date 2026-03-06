@@ -1,0 +1,12 @@
+-- Conformance: comments (Chapter 1)
+-- Tests: single-line comments with --
+-- This file tests that comments are ignored by the parser.
+-- A simple function with comments
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  42
+}
+-- body comment

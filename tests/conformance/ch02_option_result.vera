@@ -1,0 +1,65 @@
+-- Conformance: Option and Result types (Chapter 2)
+-- Tests: Option<T> construction, matching; Result<T,E> construction, matching
+private data Option<T> {
+  None,
+  Some(T)
+}
+
+private data Result<T, E> {
+  Ok(T),
+  Err(E)
+}
+
+private fn unwrap_or(@Option<Int>, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    None -> @Int.0
+  }
+}
+
+private fn result_or(@Result<Int, String>, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Result<Int, String>.0 {
+    Ok(@Int) -> @Int.0,
+    Err(@String) -> @Int.0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  unwrap_or(Some(42), 0)
+}
+
+public fn test_none(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 99)
+  effects(pure)
+{
+  unwrap_or(None, 99)
+}
+
+public fn test_ok(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 7)
+  effects(pure)
+{
+  result_or(Ok(7), 0)
+}
+
+public fn test_err(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == -1)
+  effects(pure)
+{
+  result_or(Err("oops"), -1)
+}

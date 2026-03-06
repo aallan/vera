@@ -1,0 +1,49 @@
+-- Conformance: let bindings (Chapter 4)
+-- Tests: let bindings, shadowing, sequencing
+public fn test_let(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 10)
+  effects(pure)
+{
+  let @Int = 10;
+  @Int.0
+}
+
+public fn test_let_chain(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 30)
+  effects(pure)
+{
+  let @Int = 10;
+  let @Int = @Int.0 + 20;
+  @Int.0
+}
+
+public fn test_let_shadow(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  let @Int = 10;
+  let @Int = 5;
+  @Int.0
+}
+
+public fn test_let_multi_type(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 7)
+  effects(pure)
+{
+  let @Bool = true;
+  let @Int = 7;
+  @Int.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 10)
+  effects(pure)
+{
+  let @Int = 10;
+  @Int.0
+}

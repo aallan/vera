@@ -1,0 +1,49 @@
+-- Conformance: basic algebraic data types (Chapter 2)
+-- Tests: ADT definition, construction, pattern matching
+private data Color {
+  Red,
+  Green,
+  Blue
+}
+
+private fn color_code(@Color -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Color.0 {
+    Red -> 1,
+    Green -> 2,
+    Blue -> 3
+  }
+}
+
+private data Pair {
+  MkPair(Int, Int)
+}
+
+private fn pair_sum(@Pair -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Pair.0 {
+    MkPair(@Int, @Int) -> @Int.0 + @Int.1
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  color_code(Green)
+}
+
+public fn test_pair(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 30)
+  effects(pure)
+{
+  pair_sum(MkPair(10, 20))
+}

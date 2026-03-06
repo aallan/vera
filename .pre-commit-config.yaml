@@ -42,6 +42,13 @@ repos:
         pass_filenames: false
         files: '(README\.md$|SKILL\.md$|spec/.*\.md$)'
 
+      - id: conformance-suite
+        name: conformance suite
+        entry: .venv/bin/python scripts/check_conformance.py
+        language: system
+        pass_filenames: false
+        files: '(tests/conformance/.*|vera/.*\.py$|vera/grammar\.lark$)'
+
       - id: vera-examples
         name: vera examples
         entry: .venv/bin/python scripts/check_examples.py

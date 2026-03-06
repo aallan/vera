@@ -1,0 +1,26 @@
+-- Conformance: string escape sequences (Chapter 1)
+-- Tests: \n, \t, \\, \", \r, \0, \u{XXXX}
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("hello\nworld");
+  IO.print("col1\tcol2");
+  IO.print("back\\slash");
+  IO.print("say \"hi\"");
+  IO.print("A");
+  ()
+}
+
+public fn test_escape_length(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  string_length("a\nb")
+}

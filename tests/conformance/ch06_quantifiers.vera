@@ -1,0 +1,33 @@
+-- Conformance: quantifiers in contracts (Chapter 6)
+-- Tests: forall and exists over arrays
+private fn all_positive(@Array<Int> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.0[@Int.0] > 0 })
+}
+
+private fn has_zero(@Array<Int> -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.0[@Int.0] == 0 })
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  all_positive([1, 2, 3])
+}
+
+public fn test_has_zero(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  has_zero([1, 0, 3])
+}

@@ -1,0 +1,50 @@
+-- Conformance: basic match expressions (Chapter 4)
+-- Tests: match on ADT, wildcard _, literal patterns, exhaustiveness
+private data Color {
+  Red,
+  Green,
+  Blue
+}
+
+private fn color_to_int(@Color -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Color.0 {
+    Red -> 1,
+    Green -> 2,
+    Blue -> 3
+  }
+}
+
+private fn classify(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    0 -> "zero",
+    1 -> "one",
+    _ -> "other"
+  }
+}
+
+private fn bool_match(@Bool -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Bool.0 {
+    true -> "yes",
+    false -> "no"
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  color_to_int(Green)
+}
