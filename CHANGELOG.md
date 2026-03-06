@@ -1062,7 +1062,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.55...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.68...HEAD
+[0.0.68]: https://github.com/aallan/vera/compare/v0.0.67...v0.0.68
+[0.0.67]: https://github.com/aallan/vera/compare/v0.0.66...v0.0.67
+[0.0.66]: https://github.com/aallan/vera/compare/v0.0.65...v0.0.66
+[0.0.65]: https://github.com/aallan/vera/compare/v0.0.64...v0.0.65
+[0.0.64]: https://github.com/aallan/vera/compare/v0.0.63...v0.0.64
+[0.0.63]: https://github.com/aallan/vera/compare/v0.0.62...v0.0.63
+[0.0.62]: https://github.com/aallan/vera/compare/v0.0.61...v0.0.62
+[0.0.61]: https://github.com/aallan/vera/compare/v0.0.60...v0.0.61
+[0.0.60]: https://github.com/aallan/vera/compare/v0.0.59...v0.0.60
+[0.0.59]: https://github.com/aallan/vera/compare/v0.0.58...v0.0.59
+[0.0.58]: https://github.com/aallan/vera/compare/v0.0.57...v0.0.58
+[0.0.57]: https://github.com/aallan/vera/compare/v0.0.56...v0.0.57
+[0.0.56]: https://github.com/aallan/vera/compare/v0.0.55...v0.0.56
 [0.0.55]: https://github.com/aallan/vera/compare/v0.0.54...v0.0.55
 [0.0.54]: https://github.com/aallan/vera/compare/v0.0.53...v0.0.54
 [0.0.53]: https://github.com/aallan/vera/compare/v0.0.52...v0.0.53
