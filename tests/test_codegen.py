@@ -5056,6 +5056,177 @@ public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
 
 
 # =====================================================================
+# Float64 predicates and constants (#212)
+# =====================================================================
+
+
+class TestIsNan:
+    """End-to-end tests for is_nan builtin."""
+
+    def test_regular_float_not_nan(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_nan(1.5) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+    def test_nan_is_nan(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_nan(nan()) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_infinity_not_nan(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_nan(infinity()) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+    def test_zero_not_nan(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_nan(0.0) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+
+class TestIsInfinite:
+    """End-to-end tests for is_infinite builtin."""
+
+    def test_regular_float_not_infinite(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_infinite(1.5) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+    def test_positive_infinity(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_infinite(infinity()) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_negative_infinity(self) -> None:
+        """Negate infinity to get -inf, still infinite."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_infinite(0.0 - infinity()) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_nan_not_infinite(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_infinite(nan()) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+    def test_zero_not_infinite(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_infinite(0.0) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+
+class TestNanConstant:
+    """End-to-end tests for nan() builtin."""
+
+    def test_nan_returns_float(self) -> None:
+        import math
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  nan()
+}
+"""
+        result = _run_float(src)
+        assert math.isnan(result)
+
+    def test_nan_not_equal_to_itself(self) -> None:
+        """NaN != NaN is the defining property of NaN."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if nan() == nan() then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+
+class TestInfinityConstant:
+    """End-to-end tests for infinity() builtin."""
+
+    def test_infinity_returns_float(self) -> None:
+        import math
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  infinity()
+}
+"""
+        result = _run_float(src)
+        assert math.isinf(result) and result > 0
+
+    def test_negative_infinity(self) -> None:
+        import math
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  0.0 - infinity()
+}
+"""
+        result = _run_float(src)
+        assert math.isinf(result) and result < 0
+
+
+class TestFloatPredicateRoundTrips:
+    """Composition and round-trip tests for float predicates."""
+
+    def test_is_nan_of_nan(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_nan(nan()) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_is_infinite_of_infinity(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_infinite(infinity()) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_is_nan_after_arithmetic(self) -> None:
+        """nan + anything = nan."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_nan(nan() + 1.0) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_is_infinite_after_arithmetic(self) -> None:
+        """infinity + 1 = infinity."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if is_infinite(infinity() + 1.0) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+
+# =====================================================================
 # C8e: Arrays of compound types (#132)
 # =====================================================================
 

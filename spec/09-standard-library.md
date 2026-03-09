@@ -9,7 +9,7 @@ The standard library comprises:
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, plus future collections (`Set<T>`, `Map<K, V>`).
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
-- **Built-in functions**: `length` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), plus future functions for vector similarity.
+- **Built-in functions**: `length` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), plus future functions for vector similarity.
 - **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
 - **Future abilities**: Type constraints for generic programming (post-v0.1).
 
@@ -579,7 +579,79 @@ match int_to_byte(65) {
 
 This expression evaluates to `65`.
 
-### 9.6.5 similarity (Future)
+### 9.6.5 Float64 Predicates
+
+Vera provides built-in functions for testing and constructing IEEE 754 special float values (NaN and infinity).
+
+#### Predicates
+
+```
+public fn is_nan(@Float64 -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Tests whether a Float64 value is NaN (not a number). NaN is the only value that is not equal to itself. Compiled to `f64.ne(x, x)`.
+
+```vera
+public fn test_is_nan(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if is_nan(nan()) then { 1 } else { 0 } }
+```
+
+This expression evaluates to `1`.
+
+```
+public fn is_infinite(@Float64 -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Tests whether a Float64 value is positive or negative infinity. Compiled to `f64.eq(f64.abs(x), inf)`. Returns `false` for NaN.
+
+```vera
+public fn test_is_infinite(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if is_infinite(infinity()) then { 1 } else { 0 } }
+```
+
+This expression evaluates to `1`.
+
+#### Constants
+
+```
+public fn nan(-> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns a quiet NaN value. Compiled to `f64.const nan`.
+
+```vera
+public fn test_nan(@Unit -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ nan() }
+```
+
+```
+public fn infinity(-> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns positive infinity. Negative infinity can be obtained via `0.0 - infinity()`. Compiled to `f64.const inf`.
+
+```vera
+public fn test_infinity(@Unit -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ infinity() }
+```
+
+### 9.6.6 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 

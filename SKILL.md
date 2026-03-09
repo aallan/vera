@@ -445,6 +445,17 @@ int_to_byte(@Int.0)               -- returns Option<Byte> (None if out of 0..255
 
 Vera has no implicit numeric conversions — use these functions to convert between numeric types. `to_float`, `nat_to_int`, and `byte_to_int` are widening conversions that always succeed. `float_to_int` truncates toward zero and traps on NaN/Infinity. `int_to_nat` and `int_to_byte` are checked narrowing conversions that return `Option` — pattern match on the result to handle the failure case. `nat_to_int` and `byte_to_int` are SMT-verifiable (Tier 1); the rest are Tier 3 (runtime).
 
+### Float64 predicates
+
+```vera
+is_nan(@Float64.0)                 -- returns Bool (true if NaN)
+is_infinite(@Float64.0)            -- returns Bool (true if ±infinity)
+nan()                              -- returns Float64 (quiet NaN)
+infinity()                         -- returns Float64 (positive infinity)
+```
+
+`is_nan` and `is_infinite` test for IEEE 754 special values. `nan()` and `infinity()` construct them — use `0.0 - infinity()` for negative infinity. All four are Tier 3 (runtime-tested, not SMT-verifiable).
+
 **Shadowing**: If you define a function with the same name as a built-in (e.g. `length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
 
 Example:

@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.72] - 2026-03-09
+
+### Added
+- **Close #212: Float64 special value operations** ([#212](https://github.com/aallan/vera/issues/212)):
+  Four new built-in functions for detecting and constructing IEEE 754 special
+  Float64 values: `is_nan` (Float64→Bool), `is_infinite` (Float64→Bool),
+  `nan` (→Float64), and `infinity` (→Float64). All are Tier 3 (runtime-tested).
+- New conformance test `ch10_float_predicates` (conformance suite: 41→42 programs)
+- 25 new tests (8 type checker + 17 codegen end-to-end)
+- Spec Section 9.6.5 "Float64 Predicates" with full signatures and contracts
+
 ## [0.0.71] - 2026-03-09
 
 ### Added
@@ -1109,7 +1120,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.71...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.72...HEAD
+[0.0.72]: https://github.com/aallan/vera/compare/v0.0.71...v0.0.72
 [0.0.71]: https://github.com/aallan/vera/compare/v0.0.70...v0.0.71
 [0.0.70]: https://github.com/aallan/vera/compare/v0.0.69...v0.0.70
 [0.0.69]: https://github.com/aallan/vera/compare/v0.0.68...v0.0.69

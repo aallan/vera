@@ -43,52 +43,55 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     422: ("FRAGMENT", "Numeric built-in examples, bare calls"),
 
     # Contracts section — requires/ensures fragments
-    468: ("FRAGMENT", "Requires clause example, not full function"),
-    477: ("FRAGMENT", "Ensures clause example, not full function"),
-    504: ("FRAGMENT", "Quantified requires clause, not full function"),
+    479: ("FRAGMENT", "Requires clause example, not full function"),
+    488: ("FRAGMENT", "Ensures clause example, not full function"),
+    515: ("FRAGMENT", "Quantified requires clause, not full function"),
 
     # Effects section — bare effect rows
-    522: ("FRAGMENT", "Effect row examples, bare annotations"),
+    533: ("FRAGMENT", "Effect row examples, bare annotations"),
 
     # Effect handler syntax template
-    659: ("FRAGMENT", "Handler syntax template, not real code"),
+    670: ("FRAGMENT", "Handler syntax template, not real code"),
 
     # Qualified calls and handler fragments — bare expressions
-    671: ("FRAGMENT", "Handler with clause, bare expression"),
-    681: ("FRAGMENT", "Qualified call examples, bare expressions"),
+    682: ("FRAGMENT", "Handler with clause, bare expression"),
+    692: ("FRAGMENT", "Qualified call examples, bare expressions"),
 
     # Module declaration and import syntax
-    731: ("FRAGMENT", "Module declaration and import example"),
+    742: ("FRAGMENT", "Module declaration and import example"),
 
     # Line comments — bare comments
-    770: ("FRAGMENT", "Comment syntax example"),
+    781: ("FRAGMENT", "Comment syntax example"),
 
     # Type conversions — bare function calls
     437: ("FRAGMENT", "Type conversion examples, bare calls"),
 
+    # Float64 predicates — bare function calls
+    450: ("FRAGMENT", "Float64 predicate examples, bare calls"),
+
     # Common mistakes section — intentionally wrong code
-    798: ("FRAGMENT", "Wrong: missing contracts"),
-    805: ("FRAGMENT", "Wrong: incorrect contract syntax"),
-    818: ("FRAGMENT", "Wrong: missing requires"),
-    828: ("FRAGMENT", "Wrong: missing effects clause"),
-    841: ("FRAGMENT", "Wrong: wrong effect declared"),
-    852: ("FRAGMENT", "Wrong: bare expression without indices"),
-    865: ("FRAGMENT", "Wrong: bare expression no indices"),
-    870: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
+    809: ("FRAGMENT", "Wrong: missing contracts"),
+    816: ("FRAGMENT", "Wrong: incorrect contract syntax"),
+    829: ("FRAGMENT", "Wrong: missing requires"),
+    839: ("FRAGMENT", "Wrong: missing effects clause"),
+    852: ("FRAGMENT", "Wrong: wrong effect declared"),
+    863: ("FRAGMENT", "Wrong: bare expression without indices"),
+    876: ("FRAGMENT", "Wrong: bare expression no indices"),
+    881: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
     947: ("FRAGMENT", "Wrong: match arm with incorrect return"),
-    960: ("FRAGMENT", "Wrong: non-exhaustive match"),
-    967: ("FRAGMENT", "Correct: match arm example"),
-    977: ("FRAGMENT", "Wrong: if/else without braces (bare expression)"),
-    982: ("FRAGMENT", "Correct: if/else with braces"),
+    971: ("FRAGMENT", "Wrong: non-exhaustive match"),
+    978: ("FRAGMENT", "Correct: match arm example"),
+    988: ("FRAGMENT", "Wrong: if/else without braces (bare expression)"),
+    993: ("FRAGMENT", "Correct: if/else with braces"),
 
     # Import syntax — intentionally unsupported
-    993: ("FRAGMENT", "Wrong: import aliasing not supported"),
-    998: ("FRAGMENT", "Correct: import syntax example"),
-    1008: ("FRAGMENT", "Wrong: import hiding not supported"),
-    1013: ("FRAGMENT", "Correct: multi-import syntax"),
+    1004: ("FRAGMENT", "Wrong: import aliasing not supported"),
+    1009: ("FRAGMENT", "Correct: import syntax example"),
+    1019: ("FRAGMENT", "Wrong: import hiding not supported"),
+    1024: ("FRAGMENT", "Correct: multi-import syntax"),
 
     # String escapes — bare expression
-    1027: ("FRAGMENT", "String escape example"),
+    1038: ("FRAGMENT", "String escape example"),
 
     # =================================================================
     # MISMATCH — uses syntax the parser doesn't handle in isolation.

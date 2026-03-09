@@ -437,6 +437,36 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # Float64 special value operations
+        self.functions["is_nan"] = FunctionInfo(
+            name="is_nan",
+            forall_vars=None,
+            param_types=(FLOAT64,),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+        self.functions["is_infinite"] = FunctionInfo(
+            name="is_infinite",
+            forall_vars=None,
+            param_types=(FLOAT64,),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+        self.functions["nan"] = FunctionInfo(
+            name="nan",
+            forall_vars=None,
+            param_types=(),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+        self.functions["infinity"] = FunctionInfo(
+            name="infinity",
+            forall_vars=None,
+            param_types=(),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+
     # -----------------------------------------------------------------
     # Scope management
     # -----------------------------------------------------------------

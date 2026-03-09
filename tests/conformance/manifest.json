@@ -367,5 +367,14 @@
     "level": "run",
     "spec_ref": "Section 9.6.4",
     "features": ["to_float", "float_to_int", "nat_to_int", "int_to_nat", "byte_to_int", "int_to_byte"]
+  },
+  {
+    "id": "ch10_float_predicates",
+    "file": "ch10_float_predicates.vera",
+    "chapter": 9,
+    "title": "Float64 predicate and constant functions",
+    "level": "run",
+    "spec_ref": "Section 9.6.5",
+    "features": ["is_nan", "is_infinite", "nan", "infinity"]
   }
 ]

@@ -102,6 +102,15 @@ class CallsMixin:
                 return self._translate_byte_to_int(call.args[0], env)
             if call.name == "int_to_byte" and len(call.args) == 1:
                 return self._translate_int_to_byte(call.args[0], env)
+            # Float64 predicates and constants
+            if call.name == "is_nan" and len(call.args) == 1:
+                return self._translate_is_nan(call.args[0], env)
+            if call.name == "is_infinite" and len(call.args) == 1:
+                return self._translate_is_infinite(call.args[0], env)
+            if call.name == "nan" and len(call.args) == 0:
+                return self._translate_nan()
+            if call.name == "infinity" and len(call.args) == 0:
+                return self._translate_infinity()
 
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:
@@ -2083,6 +2092,59 @@ class CallsMixin:
 
         ins.append(f"local.get {out}")
         return ins
+
+    # -- Float64 predicates and constants ----------------------------
+
+    def _translate_is_nan(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate is_nan(@Float64) → @Bool.
+
+        WASM: NaN is the only float value not equal to itself.
+        ``f64.ne(x, x)`` returns i32(1) for NaN, i32(0) otherwise.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        tmp = self.alloc_local("f64")
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        instructions.append(f"local.tee {tmp}")
+        instructions.append(f"local.get {tmp}")
+        instructions.append("f64.ne")
+        return instructions
+
+    def _translate_is_infinite(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate is_infinite(@Float64) → @Bool.
+
+        WASM: ``f64.abs(x) == inf`` returns i32(1) for ±∞, i32(0) otherwise.
+        This correctly returns false for NaN since NaN comparisons are false.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        instructions.append("f64.abs")
+        instructions.append("f64.const inf")
+        instructions.append("f64.eq")
+        return instructions
+
+    def _translate_nan(self) -> list[str]:
+        """Translate nan() → @Float64.
+
+        WASM: ``f64.const nan`` pushes a quiet NaN onto the stack.
+        """
+        return ["f64.const nan"]
+
+    def _translate_infinity(self) -> list[str]:
+        """Translate infinity() → @Float64.
+
+        WASM: ``f64.const inf`` pushes positive infinity onto the stack.
+        """
+        return ["f64.const inf"]
 
     def _translate_handle_expr(
         self, expr: ast.HandleExpr, env: WasmSlotEnv,

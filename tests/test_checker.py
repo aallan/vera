@@ -2821,6 +2821,70 @@ private fn f(@Float64 -> @Option<Byte>)
 
 
 # =====================================================================
+# Float64 predicate builtins (issue #212)
+# =====================================================================
+
+class TestFloatPredicateBuiltins:
+    """Type-checking for Float64 predicate and constant builtins."""
+
+    def test_is_nan_ok(self) -> None:
+        _check_ok("""
+private fn f(@Float64 -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ is_nan(@Float64.0) }
+""")
+
+    def test_is_nan_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ is_nan(@Int.0) }
+""", "type")
+
+    def test_is_infinite_ok(self) -> None:
+        _check_ok("""
+private fn f(@Float64 -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ is_infinite(@Float64.0) }
+""")
+
+    def test_is_infinite_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ is_infinite(@String.0) }
+""", "type")
+
+    def test_nan_ok(self) -> None:
+        _check_ok("""
+private fn f(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ nan() }
+""")
+
+    def test_nan_wrong_arity(self) -> None:
+        _check_err("""
+private fn f(@Float64 -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ nan(@Float64.0) }
+""", "argument")
+
+    def test_infinity_ok(self) -> None:
+        _check_ok("""
+private fn f(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ infinity() }
+""")
+
+    def test_infinity_wrong_arity(self) -> None:
+        _check_err("""
+private fn f(@Float64 -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ infinity(@Float64.0) }
+""", "argument")
+
+
+# =====================================================================
 # Bidirectional type inference (issue #55)
 # =====================================================================
 
