@@ -112,7 +112,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
     ("09-standard-library.md", 448): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
     ("09-standard-library.md", 457): "FUTURE",   # md_render(@MdBlock -> @String)
-    ("09-standard-library.md", 486): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
+    ("09-standard-library.md", 468): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
     ("09-standard-library.md", 477): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
     ("09-standard-library.md", 486): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
     ("09-standard-library.md", 510): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
