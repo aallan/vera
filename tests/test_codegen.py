@@ -4146,6 +4146,55 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         assert _run(src) == 32
 
 
+class TestFromCharCode:
+    """from_char_code creates a single-character string from a code point."""
+
+    def test_uppercase_a(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = char_code(from_char_code(65), 0);
+  @Nat.0
+}
+"""
+        assert _run(src) == 65
+
+    def test_digit(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = char_code(from_char_code(48), 0);
+  @Nat.0
+}
+"""
+        assert _run(src) == 48
+
+    def test_space(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = char_code(from_char_code(32), 0);
+  @Nat.0
+}
+"""
+        assert _run(src) == 32
+
+    def test_length_is_one(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = string_length(from_char_code(65));
+  @Nat.0
+}
+"""
+        assert _run(src) == 1
+
+    def test_concat_builds_string(self) -> None:
+        src = """
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  let @String = string_concat(from_char_code(65), from_char_code(66));
+  starts_with(@String.0, "AB")
+}
+"""
+        assert _run(src) == 1
+
+
 class TestParseNat:
     """parse_nat returns Result<Nat, String>."""
 

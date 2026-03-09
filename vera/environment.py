@@ -271,6 +271,13 @@ class TypeEnv:
             return_type=NAT,
             effect=PureEffectRow(),
         )
+        self.functions["from_char_code"] = FunctionInfo(
+            name="from_char_code",
+            forall_vars=None,
+            param_types=(NAT,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
         self.functions["parse_nat"] = FunctionInfo(
             name="parse_nat",
             forall_vars=None,

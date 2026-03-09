@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.74] - 2026-03-09
+
+### Added
+- **Close #210: from_char_code builtin** ([#210](https://github.com/aallan/vera/issues/210)):
+  New `from_char_code` function (`Nat → String`) that creates a single-character
+  string from an ASCII code point. Inverse of the existing `char_code`. Pure,
+  Tier 3 (runtime-tested).
+- 7 new tests (2 type checker + 5 codegen end-to-end)
+
 ## [0.0.73] - 2026-03-09
 
 ### Added
@@ -1134,7 +1143,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.73...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.74...HEAD
+[0.0.74]: https://github.com/aallan/vera/compare/v0.0.73...v0.0.74
 [0.0.73]: https://github.com/aallan/vera/compare/v0.0.72...v0.0.73
 [0.0.72]: https://github.com/aallan/vera/compare/v0.0.71...v0.0.72
 [0.0.71]: https://github.com/aallan/vera/compare/v0.0.70...v0.0.71

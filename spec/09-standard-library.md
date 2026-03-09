@@ -9,7 +9,7 @@ The standard library comprises:
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, plus future collections (`Set<T>`, `Map<K, V>`).
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
-- **Built-in functions**: `length` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), string search (`string_contains`, `starts_with`, `ends_with`, `index_of`), string transformation (`to_upper`, `to_lower`, `replace`, `split`, `join`), plus future functions for vector similarity.
+- **Built-in functions**: `length` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), string search (`string_contains`, `starts_with`, `ends_with`, `index_of`), string transformation (`to_upper`, `to_lower`, `replace`, `split`, `join`, `from_char_code`), plus future functions for vector similarity.
 - **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
 - **Future abilities**: Type constraints for generic programming (post-v0.1).
 
@@ -794,6 +794,21 @@ Joins an array of strings with the given separator between each pair of elements
 ```vera
 join(split("a,b,c", ","), "-")  -- "a-b-c"
 join(split("hello", ","), "-")  -- "hello"
+```
+
+#### from_char_code
+
+```vera
+public fn from_char_code(@Nat -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+Creates a single-character (1-byte) string from an ASCII code point. Inverse of `char_code`. Allocates 1 byte of heap memory for the result.
+
+```vera
+from_char_code(65)                        -- "A"
+char_code(from_char_code(65), 0)          -- 65 (roundtrip)
+string_concat(from_char_code(72), from_char_code(105))  -- "Hi"
 ```
 
 ### 9.6.8 similarity (Future)

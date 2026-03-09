@@ -200,6 +200,9 @@ class InferenceMixin:
         # char_code → Nat (i64)
         if expr.name == "char_code":
             return "i64"
+        # from_char_code → String (i32_pair)
+        if expr.name == "from_char_code":
+            return "i32_pair"
         # String search builtins
         if expr.name in ("string_contains", "starts_with", "ends_with"):
             return "i32"
@@ -367,6 +370,8 @@ class InferenceMixin:
             return "String"
         if call.name == "char_code":
             return "Nat"
+        if call.name == "from_char_code":
+            return "String"
         # String search builtins
         if call.name in ("string_contains", "starts_with", "ends_with"):
             return "Bool"

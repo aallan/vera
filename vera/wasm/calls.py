@@ -44,6 +44,8 @@ class CallsMixin:
                 return self._translate_char_code(
                     call.args[0], call.args[1], env,
                 )
+            if call.name == "from_char_code" and len(call.args) == 1:
+                return self._translate_from_char_code(call.args[0], env)
             if call.name == "parse_nat" and len(call.args) == 1:
                 return self._translate_parse_nat(call.args[0], env)
             if call.name == "parse_float64" and len(call.args) == 1:
@@ -670,6 +672,46 @@ class CallsMixin:
         instructions.append("i32.load8_u offset=0")
         instructions.append("i64.extend_i32_u")
         return instructions
+
+    def _translate_from_char_code(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate from_char_code(n) → String (i32_pair).
+
+        Allocates a 1-byte string and stores the byte value.
+        Inverse of char_code.
+        """
+        n_instrs = self.translate_expr(arg, env)
+        if n_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        byte_val = self.alloc_local("i32")
+        ptr = self.alloc_local("i32")
+
+        ins: list[str] = []
+
+        # Evaluate arg (Nat = i64) → i32
+        ins.extend(n_instrs)
+        ins.append("i32.wrap_i64")
+        ins.append(f"local.set {byte_val}")
+
+        # Allocate 1-byte buffer
+        ins.append("i32.const 1")
+        ins.append("call $alloc")
+        ins.append(f"local.set {ptr}")
+        ins.extend(gc_shadow_push(ptr))
+
+        # Store the byte
+        ins.append(f"local.get {ptr}")
+        ins.append(f"local.get {byte_val}")
+        ins.append("i32.store8 offset=0")
+
+        # Result: (ptr, 1)
+        ins.append(f"local.get {ptr}")
+        ins.append("i32.const 1")
+        return ins
 
     def _translate_parse_nat(
         self, arg: ast.Expr, env: WasmSlotEnv,
