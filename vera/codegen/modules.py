@@ -243,6 +243,7 @@ class CrossModuleMixin:
             "to_string", "int_to_string", "bool_to_string",
             "nat_to_string", "byte_to_string", "float_to_string",
             "strip",
+            "abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow",
         })
 
         seen: set[str] = set()  # deduplicate by function name

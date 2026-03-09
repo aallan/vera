@@ -349,5 +349,14 @@
     "level": "run",
     "spec_ref": "Section 7.4",
     "features": ["exn_effect", "handler", "throw"]
+  },
+  {
+    "id": "ch09_numeric_builtins",
+    "file": "ch09_numeric_builtins.vera",
+    "chapter": 9,
+    "title": "Numeric built-in functions",
+    "level": "run",
+    "spec_ref": "Section 9.6.3",
+    "features": ["abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow"]
   }
 ]

@@ -527,6 +527,32 @@ class SmtContext:
                 return result
             return None
 
+        # Built-in: abs()
+        if call.name == "abs" and len(call.args) == 1:
+            arg = self.translate_expr(call.args[0], env)
+            if arg is not None:
+                import z3 as z3mod
+                return z3mod.If(arg >= 0, arg, -arg)
+            return None
+
+        # Built-in: min()
+        if call.name == "min" and len(call.args) == 2:
+            a = self.translate_expr(call.args[0], env)
+            b = self.translate_expr(call.args[1], env)
+            if a is not None and b is not None:
+                import z3 as z3mod
+                return z3mod.If(a <= b, a, b)
+            return None
+
+        # Built-in: max()
+        if call.name == "max" and len(call.args) == 2:
+            a = self.translate_expr(call.args[0], env)
+            b = self.translate_expr(call.args[1], env)
+            if a is not None and b is not None:
+                import z3 as z3mod
+                return z3mod.If(a >= b, a, b)
+            return None
+
         # No function lookup → can't do modular verification
         if self._fn_lookup is None:
             return None

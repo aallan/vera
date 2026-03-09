@@ -335,6 +335,64 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # Numeric math builtins
+        self.functions["abs"] = FunctionInfo(
+            name="abs",
+            forall_vars=None,
+            param_types=(INT,),
+            return_type=NAT,
+            effect=PureEffectRow(),
+        )
+        self.functions["min"] = FunctionInfo(
+            name="min",
+            forall_vars=None,
+            param_types=(INT, INT),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["max"] = FunctionInfo(
+            name="max",
+            forall_vars=None,
+            param_types=(INT, INT),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["floor"] = FunctionInfo(
+            name="floor",
+            forall_vars=None,
+            param_types=(FLOAT64,),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["ceil"] = FunctionInfo(
+            name="ceil",
+            forall_vars=None,
+            param_types=(FLOAT64,),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["round"] = FunctionInfo(
+            name="round",
+            forall_vars=None,
+            param_types=(FLOAT64,),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["sqrt"] = FunctionInfo(
+            name="sqrt",
+            forall_vars=None,
+            param_types=(FLOAT64,),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+        self.functions["pow"] = FunctionInfo(
+            name="pow",
+            forall_vars=None,
+            param_types=(FLOAT64, INT),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+
     # -----------------------------------------------------------------
     # Scope management
     # -----------------------------------------------------------------

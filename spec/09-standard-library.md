@@ -9,7 +9,7 @@ The standard library comprises:
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, plus future collections (`Set<T>`, `Map<K, V>`).
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
-- **Built-in functions**: `length` for arrays, plus future functions for vector similarity.
+- **Built-in functions**: `length` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), plus future functions for vector similarity.
 - **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
 - **Future abilities**: Type constraints for generic programming (post-v0.1).
 
@@ -337,7 +337,147 @@ length(@Array<Int>.0)
 
 This expression evaluates to `4`.
 
-### 9.6.3 similarity (Future)
+### 9.6.3 Numeric Operations
+
+Vera provides eight built-in numeric functions for common mathematical operations. The integer functions (`abs`, `min`, `max`) operate on `Int` values and are pure — they perform no effects and are fully verifiable by the SMT solver (Tier 1). The floating-point functions (`floor`, `ceil`, `round`, `sqrt`, `pow`) use IEEE 754 semantics via WebAssembly's native instructions.
+
+#### abs
+
+```
+public fn abs(@Int -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+```
+
+Returns the absolute value of an integer. The result type is `Nat` because absolute values are always non-negative. Both `Nat` and `Int` are `i64` at the WASM level, so this involves no runtime conversion.
+
+```
+abs(-42)
+```
+
+This expression evaluates to `42`.
+
+#### min
+
+```
+public fn min(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result <= @Int.0 && @Int.result <= @Int.1)
+  effects(pure)
+```
+
+Returns the smaller of two integers.
+
+```
+min(3, 7)
+```
+
+This expression evaluates to `3`.
+
+#### max
+
+```
+public fn max(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= @Int.0 && @Int.result >= @Int.1)
+  effects(pure)
+```
+
+Returns the larger of two integers.
+
+```
+max(3, 7)
+```
+
+This expression evaluates to `7`.
+
+#### floor
+
+```
+public fn floor(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns the largest integer less than or equal to the input. Compiles to `f64.floor` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+
+```
+floor(3.7)
+```
+
+This expression evaluates to `3`.
+
+#### ceil
+
+```
+public fn ceil(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns the smallest integer greater than or equal to the input. Compiles to `f64.ceil` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+
+```
+ceil(3.2)
+```
+
+This expression evaluates to `4`.
+
+#### round
+
+```
+public fn round(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Rounds to the nearest integer using banker's rounding (IEEE 754 roundTiesToEven). This means `round(2.5)` evaluates to `2`, not `3` — ties round to the nearest even integer. Compiles to `f64.nearest` followed by `i64.trunc_f64_s`. Traps on NaN or out-of-range values (WASM semantics).
+
+```
+round(3.7)
+```
+
+This expression evaluates to `4`.
+
+#### sqrt
+
+```
+public fn sqrt(@Float64 -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns the square root of a floating-point number. Compiles directly to the WASM `f64.sqrt` instruction.
+
+```
+sqrt(4.0)
+```
+
+This expression evaluates to `2.0`.
+
+#### pow
+
+```
+public fn pow(@Float64, @Int -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Raises a floating-point base to an integer exponent. The exponent is `Int`, not `Float64` — this avoids silent truncation of fractional exponents. Negative exponents produce reciprocals (`pow(2.0, -1)` evaluates to `0.5`). Implemented via exponentiation by squaring for efficiency.
+
+```
+pow(2.0, 10)
+```
+
+This expression evaluates to `1024.0`.
+
+### 9.6.4 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 

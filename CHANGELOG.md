@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Close #199: Numeric math builtins** ([#199](https://github.com/aallan/vera/issues/199)):
+  Eight new built-in functions for common mathematical operations: `abs` (Int→Nat),
+  `min`/`max` (Int,Int→Int), `floor`/`ceil`/`round` (Float64→Int), `sqrt`
+  (Float64→Float64), and `pow` (Float64,Int→Float64). All are pure and available
+  without imports. Integer builtins (`abs`, `min`, `max`) are fully verifiable by
+  Z3 (Tier 1). Float builtins use native WASM instructions. `round` uses IEEE 754
+  banker's rounding. `pow` takes an integer exponent with negative exponent support.
+- New conformance test `ch09_numeric_builtins` (conformance suite: 39→40 programs)
+- 41 new tests (13 type checker + 28 codegen end-to-end)
+- Spec Section 9.6.3 "Numeric Operations" with full signatures and contracts
+
 ## [0.0.69] - 2026-03-06
 
 ### Fixed

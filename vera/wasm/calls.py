@@ -66,6 +66,29 @@ class CallsMixin:
                 return self._translate_array_push(
                     call.args[0], call.args[1], env,
                 )
+            # Numeric math builtins
+            if call.name == "abs" and len(call.args) == 1:
+                return self._translate_abs(call.args[0], env)
+            if call.name == "min" and len(call.args) == 2:
+                return self._translate_min(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "max" and len(call.args) == 2:
+                return self._translate_max(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "floor" and len(call.args) == 1:
+                return self._translate_floor(call.args[0], env)
+            if call.name == "ceil" and len(call.args) == 1:
+                return self._translate_ceil(call.args[0], env)
+            if call.name == "round" and len(call.args) == 1:
+                return self._translate_round(call.args[0], env)
+            if call.name == "sqrt" and len(call.args) == 1:
+                return self._translate_sqrt(call.args[0], env)
+            if call.name == "pow" and len(call.args) == 2:
+                return self._translate_pow(
+                    call.args[0], call.args[1], env,
+                )
 
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:
@@ -1657,6 +1680,240 @@ class CallsMixin:
         # Result: (dst, new_len)
         instructions.append(f"local.get {dst}")
         instructions.append(f"local.get {new_len}")
+        return instructions
+
+    # -----------------------------------------------------------------
+    # Numeric math builtins
+    # -----------------------------------------------------------------
+
+    def _translate_abs(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate abs(@Int) → @Nat (i64).
+
+        WASM has no i64.abs; uses ``select`` on (value, -value, value>=0).
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        tmp = self.alloc_local("i64")
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        instructions.append(f"local.set {tmp}")
+        # select(val_if_true, val_if_false, cond)
+        instructions.append(f"local.get {tmp}")          # value (cond true)
+        instructions.append("i64.const 0")
+        instructions.append(f"local.get {tmp}")
+        instructions.append("i64.sub")                    # -value (cond false)
+        instructions.append(f"local.get {tmp}")
+        instructions.append("i64.const 0")
+        instructions.append("i64.ge_s")                   # value >= 0
+        instructions.append("select")
+        return instructions
+
+    def _translate_min(
+        self, arg_a: ast.Expr, arg_b: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate min(@Int, @Int) → @Int.
+
+        Uses ``i64.lt_s`` + ``select``.
+        """
+        a_instrs = self.translate_expr(arg_a, env)
+        b_instrs = self.translate_expr(arg_b, env)
+        if a_instrs is None or b_instrs is None:
+            return None
+        tmp_a = self.alloc_local("i64")
+        tmp_b = self.alloc_local("i64")
+        instructions: list[str] = []
+        instructions.extend(a_instrs)
+        instructions.append(f"local.set {tmp_a}")
+        instructions.extend(b_instrs)
+        instructions.append(f"local.set {tmp_b}")
+        # select(a, b, a < b) → a if a < b else b
+        instructions.append(f"local.get {tmp_a}")
+        instructions.append(f"local.get {tmp_b}")
+        instructions.append(f"local.get {tmp_a}")
+        instructions.append(f"local.get {tmp_b}")
+        instructions.append("i64.lt_s")
+        instructions.append("select")
+        return instructions
+
+    def _translate_max(
+        self, arg_a: ast.Expr, arg_b: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate max(@Int, @Int) → @Int.
+
+        Uses ``i64.gt_s`` + ``select``.
+        """
+        a_instrs = self.translate_expr(arg_a, env)
+        b_instrs = self.translate_expr(arg_b, env)
+        if a_instrs is None or b_instrs is None:
+            return None
+        tmp_a = self.alloc_local("i64")
+        tmp_b = self.alloc_local("i64")
+        instructions: list[str] = []
+        instructions.extend(a_instrs)
+        instructions.append(f"local.set {tmp_a}")
+        instructions.extend(b_instrs)
+        instructions.append(f"local.set {tmp_b}")
+        # select(a, b, a > b) → a if a > b else b
+        instructions.append(f"local.get {tmp_a}")
+        instructions.append(f"local.get {tmp_b}")
+        instructions.append(f"local.get {tmp_a}")
+        instructions.append(f"local.get {tmp_b}")
+        instructions.append("i64.gt_s")
+        instructions.append("select")
+        return instructions
+
+    def _translate_floor(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate floor(@Float64) → @Int.
+
+        WASM: ``f64.floor`` then ``i64.trunc_f64_s``.
+        Traps on NaN or values outside the i64 range.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        instructions.append("f64.floor")
+        instructions.append("i64.trunc_f64_s")
+        return instructions
+
+    def _translate_ceil(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ceil(@Float64) → @Int.
+
+        WASM: ``f64.ceil`` then ``i64.trunc_f64_s``.
+        Traps on NaN or values outside the i64 range.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        instructions.append("f64.ceil")
+        instructions.append("i64.trunc_f64_s")
+        return instructions
+
+    def _translate_round(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate round(@Float64) → @Int.
+
+        WASM: ``f64.nearest`` (IEEE 754 roundTiesToEven, aka banker's
+        rounding) then ``i64.trunc_f64_s``.
+        Traps on NaN or values outside the i64 range.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        instructions.append("f64.nearest")
+        instructions.append("i64.trunc_f64_s")
+        return instructions
+
+    def _translate_sqrt(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate sqrt(@Float64) → @Float64.
+
+        Single WASM instruction: ``f64.sqrt``.
+        Returns NaN for negative inputs (IEEE 754).
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        instructions.append("f64.sqrt")
+        return instructions
+
+    def _translate_pow(
+        self, base_arg: ast.Expr, exp_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate pow(@Float64, @Int) → @Float64.
+
+        Exponentiation by squaring.  Handles negative exponents by
+        computing the reciprocal: ``pow(x, -n) = 1.0 / pow(x, n)``.
+        """
+        base_instrs = self.translate_expr(base_arg, env)
+        exp_instrs = self.translate_expr(exp_arg, env)
+        if base_instrs is None or exp_instrs is None:
+            return None
+        base_tmp = self.alloc_local("f64")
+        exp_tmp = self.alloc_local("i64")
+        result_tmp = self.alloc_local("f64")
+        b_tmp = self.alloc_local("f64")
+        neg_flag = self.alloc_local("i32")
+        instructions: list[str] = []
+        # Evaluate and store base
+        instructions.extend(base_instrs)
+        instructions.append(f"local.set {base_tmp}")
+        # Evaluate exponent (already i64 from Int)
+        instructions.extend(exp_instrs)
+        instructions.append(f"local.set {exp_tmp}")
+        # Handle negative exponent: save flag, negate if needed
+        instructions.append(f"local.get {exp_tmp}")
+        instructions.append("i64.const 0")
+        instructions.append("i64.lt_s")
+        instructions.append(f"local.set {neg_flag}")
+        instructions.append(f"local.get {neg_flag}")
+        instructions.append("if")
+        instructions.append(f"  i64.const 0")
+        instructions.append(f"  local.get {exp_tmp}")
+        instructions.append(f"  i64.sub")
+        instructions.append(f"  local.set {exp_tmp}")
+        instructions.append("end")
+        # result = 1.0, b = base
+        instructions.append("f64.const 1.0")
+        instructions.append(f"local.set {result_tmp}")
+        instructions.append(f"local.get {base_tmp}")
+        instructions.append(f"local.set {b_tmp}")
+        # Loop: exponentiation by squaring
+        instructions.append("block $pow_break")
+        instructions.append("  loop $pow_loop")
+        instructions.append(f"    local.get {exp_tmp}")
+        instructions.append("    i64.eqz")
+        instructions.append("    br_if $pow_break")
+        # if exp & 1: result *= b
+        instructions.append(f"    local.get {exp_tmp}")
+        instructions.append("    i64.const 1")
+        instructions.append("    i64.and")
+        instructions.append("    i64.const 1")
+        instructions.append("    i64.eq")
+        instructions.append("    if")
+        instructions.append(f"      local.get {result_tmp}")
+        instructions.append(f"      local.get {b_tmp}")
+        instructions.append("      f64.mul")
+        instructions.append(f"      local.set {result_tmp}")
+        instructions.append("    end")
+        # b *= b
+        instructions.append(f"    local.get {b_tmp}")
+        instructions.append(f"    local.get {b_tmp}")
+        instructions.append("    f64.mul")
+        instructions.append(f"    local.set {b_tmp}")
+        # exp >>= 1
+        instructions.append(f"    local.get {exp_tmp}")
+        instructions.append("    i64.const 1")
+        instructions.append("    i64.shr_u")
+        instructions.append(f"    local.set {exp_tmp}")
+        instructions.append("    br $pow_loop")
+        instructions.append("  end")
+        instructions.append("end")
+        # If negative exponent: result = 1.0 / result
+        instructions.append(f"local.get {neg_flag}")
+        instructions.append("if")
+        instructions.append("  f64.const 1.0")
+        instructions.append(f"  local.get {result_tmp}")
+        instructions.append("  f64.div")
+        instructions.append(f"  local.set {result_tmp}")
+        instructions.append("end")
+        instructions.append(f"local.get {result_tmp}")
         return instructions
 
     def _translate_handle_expr(
