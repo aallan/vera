@@ -195,7 +195,7 @@
     "title": "Nested match patterns",
     "level": "run",
     "spec_ref": "Section 4.4",
-    "features": ["nested_pattern", "constructor_pattern"]
+    "features": ["nested_pattern", "constructor_pattern", "nested_constructor"]
   },
   {
     "id": "ch04_pipe_operator",

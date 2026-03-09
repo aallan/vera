@@ -137,6 +137,10 @@ class TypeChecker(
         ] = {}
         # De-dup removed-alias errors (emitted once per alias name).
         self._reported_alias_errors: set[str] = set()
+        # Monotonic counter for fresh TypeVar names (prevents
+        # self-referential mappings when different ADTs share a type
+        # parameter name — see #243).
+        self._fresh_id: int = 0
 
     @staticmethod
     def _is_public(visibility: str | None) -> bool:

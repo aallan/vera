@@ -22,6 +22,32 @@ private fn first_some(@List<Option<Int>> -> @Int)
   }
 }
 
+-- Nested generic constructor expressions (#243)
+-- These test bidirectional inference for constructor-as-argument paths.
+private fn id_list(@List<Option<Int>> -> @List<Option<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @List<Option<Int>>.0
+}
+
+private fn wrap_list(-> @List<Option<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Cons(None, Nil)
+}
+
+private fn wrap_list_arg(-> @List<Option<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  id_list(Cons(None, Nil))
+}
+
 public fn main(@Unit -> @Int)
   requires(true)
   ensures(@Int.result == 42)

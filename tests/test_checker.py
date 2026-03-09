@@ -2766,6 +2766,59 @@ private fn succeed(-> @Result<Int, String>)
 { Ok(42) }
 """)
 
+    # ---- Nested generic constructors (#243) ----------------------------
+
+    def test_nested_generic_ctor_let_binding(self) -> None:
+        """Cons(None, Nil) resolves via annotated let binding (#243)."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+private data List<T> { Nil, Cons(T, List<T>) }
+
+private fn f(-> @List<Option<Int>>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @List<Option<Int>> = Cons(None, Nil);
+  @List<Option<Int>>.0
+}
+""")
+
+    def test_nested_generic_ctor_fn_arg(self) -> None:
+        """Cons(None, Nil) resolves as non-generic function argument (#243)."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+private data List<T> { Nil, Cons(T, List<T>) }
+
+private fn id(@List<Option<Int>> -> @List<Option<Int>>)
+  requires(true) ensures(true) effects(pure)
+{ @List<Option<Int>>.0 }
+
+private fn test(-> @List<Option<Int>>)
+  requires(true) ensures(true) effects(pure)
+{ id(Cons(None, Nil)) }
+""")
+
+    def test_nested_generic_ctor_return_context(self) -> None:
+        """Cons(None, Nil) resolves from return type context (#243)."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+private data List<T> { Nil, Cons(T, List<T>) }
+
+private fn f(-> @List<Option<Int>>)
+  requires(true) ensures(true) effects(pure)
+{ Cons(None, Nil) }
+""")
+
+    def test_deeper_nested_generic_ctor(self) -> None:
+        """Cons(Some(None), Nil) resolves deeper nesting (#243)."""
+        _check_ok("""
+private data Option<T> { None, Some(T) }
+private data List<T> { Nil, Cons(T, List<T>) }
+
+private fn f(-> @List<Option<Option<Int>>>)
+  requires(true) ensures(true) effects(pure)
+{ Cons(Some(None), Nil) }
+""")
+
 
 # =====================================================================
 # IO built-in operations (C8.5 — #135)
