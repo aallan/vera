@@ -2719,6 +2719,108 @@ private fn f(@Float64, @Float64 -> @Float64)
 
 
 # =====================================================================
+# Numeric type conversions (issue #208)
+# =====================================================================
+
+class TestTypeConversionBuiltins:
+    """Type-checking for numeric type conversion builtins."""
+
+    def test_to_float_ok(self) -> None:
+        _check_ok("""
+private fn f(@Int -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ to_float(@Int.0) }
+""")
+
+    def test_to_float_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@String -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ to_float(@String.0) }
+""", "type")
+
+    def test_float_to_int_ok(self) -> None:
+        _check_ok("""
+private fn f(@Float64 -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ float_to_int(@Float64.0) }
+""")
+
+    def test_float_to_int_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ float_to_int(@Int.0) }
+""", "type")
+
+    def test_nat_to_int_ok(self) -> None:
+        _check_ok("""
+private fn f(@Nat -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(@Nat.0) }
+""")
+
+    def test_nat_to_int_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@String -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(@String.0) }
+""", "type")
+
+    def test_int_to_nat_ok(self) -> None:
+        _check_ok("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match int_to_nat(@Int.0) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0
+  }
+}
+""")
+
+    def test_int_to_nat_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Float64 -> @Option<Nat>)
+  requires(true) ensures(true) effects(pure)
+{ int_to_nat(@Float64.0) }
+""", "type")
+
+    def test_byte_to_int_ok(self) -> None:
+        _check_ok("""
+private fn f(@Byte -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ byte_to_int(@Byte.0) }
+""")
+
+    def test_byte_to_int_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@String -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ byte_to_int(@String.0) }
+""", "type")
+
+    def test_int_to_byte_ok(self) -> None:
+        _check_ok("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match int_to_byte(@Int.0) {
+    Some(@Byte) -> byte_to_int(@Byte.0),
+    None -> 0
+  }
+}
+""")
+
+    def test_int_to_byte_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Float64 -> @Option<Byte>)
+  requires(true) ensures(true) effects(pure)
+{ int_to_byte(@Float64.0) }
+""", "type")
+
+
+# =====================================================================
 # Bidirectional type inference (issue #55)
 # =====================================================================
 

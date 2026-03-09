@@ -1,0 +1,101 @@
+-- Conformance: numeric type conversion functions (Chapter 9)
+-- Tests: to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte
+public fn test_to_float(@Unit -> @Float64)
+  requires(true)
+  ensures(@Float64.result == 42.0)
+  effects(pure)
+{
+  to_float(42)
+}
+
+public fn test_to_float_negative(@Unit -> @Float64)
+  requires(true)
+  ensures(@Float64.result == -7.0)
+  effects(pure)
+{
+  to_float(0 - 7)
+}
+
+public fn test_float_to_int(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  float_to_int(3.9)
+}
+
+public fn test_float_to_int_negative(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == -3)
+  effects(pure)
+{
+  float_to_int(0.0 - 3.9)
+}
+
+public fn test_nat_to_int(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  nat_to_int(abs(42))
+}
+
+public fn test_int_to_nat_some(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 10)
+  effects(pure)
+{
+  match int_to_nat(10) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+
+public fn test_int_to_nat_none(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == -1)
+  effects(pure)
+{
+  match int_to_nat(0 - 5) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+
+public fn test_byte_to_int(@Byte -> @Int)
+  requires(true)
+  ensures(@Int.result == byte_to_int(@Byte.0))
+  effects(pure)
+{
+  byte_to_int(@Byte.0)
+}
+
+public fn test_int_to_byte_some(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 65)
+  effects(pure)
+{
+  match int_to_byte(65) {
+    Some(@Byte) -> byte_to_int(@Byte.0),
+    None -> 0 - 1
+  }
+}
+
+public fn test_int_to_byte_none(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == -1)
+  effects(pure)
+{
+  match int_to_byte(256) {
+    Some(@Byte) -> byte_to_int(@Byte.0),
+    None -> 0 - 1
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  float_to_int(to_float(42))
+}

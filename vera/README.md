@@ -314,6 +314,12 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `round` | Function | `Float64 → Int`, pure |
 | `sqrt` | Function | `Float64 → Float64`, pure |
 | `pow` | Function | `Float64, Int → Float64`, pure |
+| `to_float` | Function | `Int → Float64`, pure |
+| `float_to_int` | Function | `Float64 → Int`, pure |
+| `nat_to_int` | Function | `Nat → Int`, pure |
+| `int_to_nat` | Function | `Int → Option<Nat>`, pure |
+| `byte_to_int` | Function | `Byte → Int`, pure |
+| `int_to_byte` | Function | `Int → Option<Byte>`, pure |
 
 Additionally, `resume` is bound as a temporary function inside handler clause bodies (in `_check_handle()`). Its type is derived from the operation: for `op(params) → ReturnType`, `resume` has type `fn(ReturnType) → Unit effects(pure)`. The binding is added to `env.functions` before checking the clause body and removed afterward.
 
@@ -386,6 +392,8 @@ When a contract or function body contains constructs that can't be translated to
 | `abs(x)` | `z3.If(x >= 0, x, -x)` |
 | `min(a, b)` | `z3.If(a <= b, a, b)` |
 | `max(a, b)` | `z3.If(a >= b, a, b)` |
+| `nat_to_int(x)` | Identity (both IntSort) |
+| `byte_to_int(x)` | Identity (both IntSort) |
 | `let @T = v; body` | Push `v` onto `SlotEnv`, translate body |
 | `match ... { arms }` | Nested `z3.If` chain with recognizer conditions |
 | `Nil`, `Cons(a, b)` | Z3 ADT sort constructor applications |
@@ -559,7 +567,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (80
 
 ## Test Suite
 
-Testing is organized in three layers: **unit tests** (1,673 tests testing compiler internals), a **conformance suite** (40 programs in `tests/conformance/` validating every language feature against the spec), and **example programs** (18 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
+Testing is organized in three layers: **unit tests** (1,673 tests testing compiler internals), a **conformance suite** (41 programs in `tests/conformance/` validating every language feature against the spec), and **example programs** (18 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

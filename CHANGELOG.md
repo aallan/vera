@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.71] - 2026-03-09
+
+### Added
+- **Close #208: Numeric type conversions** ([#208](https://github.com/aallan/vera/issues/208)):
+  Six new built-in functions for explicit conversion between numeric types:
+  `to_float` (Int→Float64), `float_to_int` (Float64→Int, truncation toward zero),
+  `nat_to_int` (Nat→Int, identity), `int_to_nat` (Int→Option\<Nat\>, checked),
+  `byte_to_int` (Byte→Int, zero-extension), and `int_to_byte` (Int→Option\<Byte\>,
+  checked). Widening conversions always succeed; narrowing conversions return
+  `Option` for safety. `nat_to_int` and `byte_to_int` are SMT-verifiable (Tier 1).
+- New conformance test `ch09_type_conversions` (conformance suite: 40→41 programs)
+- 38 new tests (12 type checker + 26 codegen end-to-end)
+- Spec Section 9.6.4 "Type Conversions" with full signatures and contracts
+
 ## [0.0.70] - 2026-03-09
 
 ### Added
@@ -1095,7 +1109,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.70...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.71...HEAD
+[0.0.71]: https://github.com/aallan/vera/compare/v0.0.70...v0.0.71
 [0.0.70]: https://github.com/aallan/vera/compare/v0.0.69...v0.0.70
 [0.0.69]: https://github.com/aallan/vera/compare/v0.0.68...v0.0.69
 [0.0.68]: https://github.com/aallan/vera/compare/v0.0.67...v0.0.68

@@ -553,6 +553,14 @@ class SmtContext:
                 return z3mod.If(a >= b, a, b)
             return None
 
+        # Built-in: nat_to_int() — identity (both IntSort in Z3)
+        if call.name == "nat_to_int" and len(call.args) == 1:
+            return self.translate_expr(call.args[0], env)
+
+        # Built-in: byte_to_int() — identity (both IntSort in Z3)
+        if call.name == "byte_to_int" and len(call.args) == 1:
+            return self.translate_expr(call.args[0], env)
+
         # No function lookup → can't do modular verification
         if self._fn_lookup is None:
             return None
