@@ -72,10 +72,18 @@ class CallsMixin:
                                  args: tuple[ast.Expr, ...],
                                  node: ast.Node) -> Type | None:
         """Check a call against a known function signature."""
-        # Synth arg types
+        # Synth arg types.  For non-generic functions pass the declared
+        # param type as *expected* so that nested constructors can resolve
+        # TypeVars from context (fixes #243).
         arg_types: list[Type | None] = []
-        for arg in args:
-            arg_types.append(self._synth_expr(arg))
+        for i, arg in enumerate(args):
+            exp: Type | None = None
+            if (not fn_info.forall_vars
+                    and i < len(fn_info.param_types)):
+                pt = fn_info.param_types[i]
+                if not contains_typevar(pt):
+                    exp = pt
+            arg_types.append(self._synth_expr(arg, expected=exp))
 
         # Arity check
         if len(args) != len(fn_info.param_types):
@@ -291,8 +299,9 @@ class CallsMixin:
                 continue
             if isinstance(field_ty, (TypeVar, UnknownType)):
                 continue
-            # Re-synth if arg still has unresolved TypeVars
-            if contains_typevar(arg_ty) and not contains_typevar(field_ty):
+            # Re-synth if arg still has unresolved TypeVars and the
+            # subtype check would fail (e.g. List<T$2> vs List<Option<Int>>).
+            if contains_typevar(arg_ty) and not is_subtype(arg_ty, field_ty):
                 arg_ty = self._synth_expr(expr.args[i], expected=field_ty)
                 if arg_ty is None or isinstance(arg_ty, UnknownType):
                     continue
@@ -327,6 +336,16 @@ class CallsMixin:
 
         return self._ctor_result_type(ci, [], expected=expected)
 
+    def _fresh_typevar(self, name: str) -> TypeVar:
+        """Return a TypeVar with a unique name derived from *name*.
+
+        Fresh names prevent self-referential mappings when constructors
+        from different ADTs share a type parameter name (e.g. both
+        Option<T> and List<T> use ``T``).
+        """
+        self._fresh_id += 1
+        return TypeVar(f"{name}${self._fresh_id}")
+
     def _ctor_result_type(self, ci: ConstructorInfo,
                           arg_types: list[Type | None], *,
                           expected: Type | None = None) -> Type:
@@ -334,6 +353,7 @@ class CallsMixin:
 
         When *expected* is an AdtType with the same parent name, unresolved
         TypeVars are filled from the expected type args (bidirectional).
+        Remaining unresolved TypeVars are freshened to avoid collisions.
         """
         if ci.parent_type_params:
             # Try to infer type args from argument types
@@ -348,15 +368,14 @@ class CallsMixin:
                     if tv not in mapping and not isinstance(exp_arg, TypeVar):
                         mapping[tv] = exp_arg
 
-            if mapping:
-                args = tuple(
-                    mapping.get(tv, TypeVar(tv))
-                    for tv in ci.parent_type_params
-                )
-                return AdtType(ci.parent_type, args)
-            # Leave as type vars
-            return AdtType(ci.parent_type, tuple(
-                TypeVar(tv) for tv in ci.parent_type_params))
+            # Use fresh TypeVars for any that remain unresolved — prevents
+            # self-referential mappings when different ADTs share a param
+            # name (e.g. both Option<T> and List<T> use "T").
+            args = tuple(
+                mapping.get(tv, self._fresh_typevar(tv))
+                for tv in ci.parent_type_params
+            )
+            return AdtType(ci.parent_type, args)
         return AdtType(ci.parent_type, ())
 
     def _infer_ctor_type_args(self, ci: ConstructorInfo,

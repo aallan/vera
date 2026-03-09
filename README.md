@@ -183,11 +183,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (1,673 tests across 20 files, testing compiler internals), a **conformance suite** (39 programs across 7 spec chapters, systematically validating every language feature against the spec), and **example programs** (18 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
-
-### Known Bugs
-
-- [#243](https://github.com/aallan/vera/issues/243) — **Nested generic constructor inference**: constructing nested generic values like `Cons(None, Nil)` fails type inference, though pattern matching on the same shape works
+Testing is organized in three layers: **unit tests** (1,677 tests across 20 files, testing compiler internals), a **conformance suite** (39 programs across 7 spec chapters, systematically validating every language feature against the spec), and **example programs** (18 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
 
 ## Roadmap
 

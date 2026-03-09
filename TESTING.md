@@ -150,10 +150,6 @@ The pytest runner (`test_conformance.py`) parametrizes over every manifest entry
 
 When implementing a new language feature, the conformance program should be written *first* — this is test-driven development against the spec.
 
-### Known limitations
-
-[#243](https://github.com/aallan/vera/issues/243) tracks a type inference limitation where nested generic constructors (e.g. `Cons(None, Nil)`) fail to infer inner types from context. All 39 conformance programs currently pass at their declared level.
-
 ## Compiler Code Coverage
 
 Coverage by module, measured by `pytest --cov=vera`:
