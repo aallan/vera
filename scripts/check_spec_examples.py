@@ -60,7 +60,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 290): "FUTURE",   # fn classify — uses ++ (string concat)
     ("09-standard-library.md", 304): "FRAGMENT",  # length signature (no body)
     ("09-standard-library.md", 324): "FRAGMENT",  # array_push signature (no body)
-    ("09-standard-library.md", 803): "FRAGMENT",  # similarity signature (no body)
+    ("09-standard-library.md", 818): "FRAGMENT",  # similarity signature (no body)
 
     # =================================================================
     # FRAGMENT — heuristic false positives (look like declarations but
@@ -145,14 +145,15 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 756): "FRAGMENT",  # replace signature (no body)
     ("09-standard-library.md", 772): "FRAGMENT",  # split signature (no body)
     ("09-standard-library.md", 787): "FRAGMENT",  # join signature (no body)
+    ("09-standard-library.md", 801): "FRAGMENT",  # from_char_code signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 907): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
-    ("09-standard-library.md", 916): "FUTURE",   # md_render(@MdBlock -> @String)
-    ("09-standard-library.md", 927): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
-    ("09-standard-library.md", 936): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
-    ("09-standard-library.md", 945): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
-    ("09-standard-library.md", 969): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 922): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 931): "FUTURE",   # md_render(@MdBlock -> @String)
+    ("09-standard-library.md", 942): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
+    ("09-standard-library.md", 951): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
+    ("09-standard-library.md", 960): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
+    ("09-standard-library.md", 984): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
 }
 
 

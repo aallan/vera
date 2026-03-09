@@ -3036,6 +3036,22 @@ private fn f(@Array<Int>, @String -> @String)
 { join(@Array<Int>.0, @String.0) }
 """, "type")
 
+    # -- from_char_code --
+
+    def test_from_char_code_ok(self) -> None:
+        _check_ok("""
+private fn f(@Nat -> @String)
+  requires(true) ensures(true) effects(pure)
+{ from_char_code(@Nat.0) }
+""")
+
+    def test_from_char_code_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ from_char_code(@String.0) }
+""", "type")
+
 
 # =====================================================================
 # Bidirectional type inference (issue #55)
