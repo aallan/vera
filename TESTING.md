@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 1,660+ across 20 files (~19,800 lines of test code) |
+| **Tests** | 1,673 across 20 files (~19,800 lines of test code) |
 | **Compiler code coverage** | 90% of 8,999 statements (CI minimum: 80%) |
 | **Conformance programs** | 39 programs across 7 spec chapters, validating every language feature |
 | **Example programs** | 18, all validated through `vera check` + `vera verify` |
@@ -130,7 +130,7 @@ The manifest is the machine-readable feature inventory — agents can query it t
 ### Running the conformance suite
 
 ```bash
-# Via pytest (parametrized — 187 tests, 8 skipped)
+# Via pytest (parametrized — 195 tests, 6 skipped)
 pytest tests/test_conformance.py -v
 
 # Via standalone script (used in CI and pre-commit)
