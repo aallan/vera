@@ -1,0 +1,82 @@
+-- Conformance: numeric built-in functions (Chapter 9)
+-- Tests: abs, min, max, floor, ceil, round, sqrt, pow
+public fn test_abs(@Unit -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 42)
+  effects(pure)
+{
+  abs(-42)
+}
+
+public fn test_abs_zero(@Unit -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 0)
+  effects(pure)
+{
+  abs(0)
+}
+
+public fn test_min(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  min(3, 7)
+}
+
+public fn test_max(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 7)
+  effects(pure)
+{
+  max(3, 7)
+}
+
+public fn test_floor(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  floor(3.7)
+}
+
+public fn test_ceil(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  ceil(3.2)
+}
+
+public fn test_round(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  round(3.7)
+}
+
+public fn test_sqrt(@Unit -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  sqrt(4.0)
+}
+
+public fn test_pow(@Unit -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  pow(2.0, 10)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = abs(-1);
+  @Nat.0
+}

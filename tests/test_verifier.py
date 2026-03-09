@@ -1461,13 +1461,15 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 94 T1 / 5 T3 without module resolution.
+        """All examples together: 117 T1 / 5 T3 without module resolution.
 
         With module resolution (via CLI), it's 96 T1 / 3 T3.
         The 2-contract difference comes from modules.vera which needs
         cross-module imports to verify call-site preconditions.
         The 118 total (vs 105 in v0.0.56) reflects gc_pressure.vera
-        adding 12 T1 + 1 T3 verified contracts.
+        adding 12 T1 + 1 T3 verified contracts. The 116→117 T1 bump
+        comes from abs/min/max SMT translations graduating one more
+        contract to Tier 1.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -1478,8 +1480,8 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 116, f"Expected 116 T1, got {t1}"
-        assert t3 == 6, f"Expected 6 T3, got {t3}"
+        assert t1 == 117, f"Expected 117 T1, got {t1}"
+        assert t3 == 5, f"Expected 5 T3, got {t3}"
         assert total == 122, f"Expected 122 total, got {total}"
 
 

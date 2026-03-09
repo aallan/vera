@@ -2620,6 +2620,105 @@ private fn f(@Int -> @String)
 
 
 # =====================================================================
+# Numeric math builtins (issue #199)
+# =====================================================================
+
+class TestNumericBuiltins:
+    """Type checking for numeric math built-in functions."""
+
+    def test_abs_ok(self) -> None:
+        _check_ok("""
+private fn f(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ abs(@Int.0) }
+""")
+
+    def test_abs_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@String -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ abs(@String.0) }
+""", "type")
+
+    def test_min_ok(self) -> None:
+        _check_ok("""
+private fn f(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ min(@Int.0, @Int.1) }
+""")
+
+    def test_min_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int, @String -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ min(@Int.0, @String.0) }
+""", "type")
+
+    def test_max_ok(self) -> None:
+        _check_ok("""
+private fn f(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ max(@Int.0, @Int.1) }
+""")
+
+    def test_floor_ok(self) -> None:
+        _check_ok("""
+private fn f(@Float64 -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ floor(@Float64.0) }
+""")
+
+    def test_floor_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ floor(@Int.0) }
+""", "type")
+
+    def test_ceil_ok(self) -> None:
+        _check_ok("""
+private fn f(@Float64 -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ ceil(@Float64.0) }
+""")
+
+    def test_round_ok(self) -> None:
+        _check_ok("""
+private fn f(@Float64 -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ round(@Float64.0) }
+""")
+
+    def test_sqrt_ok(self) -> None:
+        _check_ok("""
+private fn f(@Float64 -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ sqrt(@Float64.0) }
+""")
+
+    def test_sqrt_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ sqrt(@Int.0) }
+""", "type")
+
+    def test_pow_ok(self) -> None:
+        _check_ok("""
+private fn f(@Float64, @Int -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ pow(@Float64.0, @Int.0) }
+""")
+
+    def test_pow_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Float64, @Float64 -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ pow(@Float64.0, @Float64.1) }
+""", "type")
+
+
+# =====================================================================
 # Bidirectional type inference (issue #55)
 # =====================================================================
 

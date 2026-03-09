@@ -306,6 +306,14 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `byte_to_string` | Function | `Byte → String`, pure |
 | `float_to_string` | Function | `Float64 → String`, pure |
 | `strip` | Function | `String → String`, pure (zero-copy) |
+| `abs` | Function | `Int → Nat`, pure |
+| `min` | Function | `Int, Int → Int`, pure |
+| `max` | Function | `Int, Int → Int`, pure |
+| `floor` | Function | `Float64 → Int`, pure |
+| `ceil` | Function | `Float64 → Int`, pure |
+| `round` | Function | `Float64 → Int`, pure |
+| `sqrt` | Function | `Float64 → Float64`, pure |
+| `pow` | Function | `Float64, Int → Float64`, pure |
 
 Additionally, `resume` is bound as a temporary function inside handler clause bodies (in `_check_handle()`). Its type is derived from the operation: for `op(params) → ReturnType`, `resume` has type `fn(ReturnType) → Unit effects(pure)`. The binding is added to `env.functions` before checking the clause body and removed afterward.
 
@@ -375,6 +383,9 @@ When a contract or function body contains constructs that can't be translated to
 | `!`, `-` (unary) | `z3.Not`, negation |
 | `if c then t else e` | `z3.If(c, t, e)` |
 | `length(arr)` | Uninterpreted function, constrained `>= 0` |
+| `abs(x)` | `z3.If(x >= 0, x, -x)` |
+| `min(a, b)` | `z3.If(a <= b, a, b)` |
+| `max(a, b)` | `z3.If(a >= b, a, b)` |
 | `let @T = v; body` | Push `v` onto `SlotEnv`, translate body |
 | `match ... { arms }` | Nested `z3.If` chain with recognizer conditions |
 | `Nil`, `Cons(a, b)` | Z3 ADT sort constructor applications |
@@ -548,7 +559,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (80
 
 ## Test Suite
 
-Testing is organized in three layers: **unit tests** (1,673 tests testing compiler internals), a **conformance suite** (39 programs in `tests/conformance/` validating every language feature against the spec), and **example programs** (18 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
+Testing is organized in three layers: **unit tests** (1,673 tests testing compiler internals), a **conformance suite** (40 programs in `tests/conformance/` validating every language feature against the spec), and **example programs** (18 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

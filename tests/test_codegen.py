@@ -4527,6 +4527,260 @@ public fn main(@Unit -> @Unit)
 
 
 # =====================================================================
+# Numeric math builtins (#199)
+# =====================================================================
+
+
+class TestAbs:
+    """abs(@Int -> @Nat) — absolute value."""
+
+    def test_positive(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = abs(42);
+  @Nat.0
+}
+"""
+        assert _run(src) == 42
+
+    def test_negative(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = abs(-42);
+  @Nat.0
+}
+"""
+        assert _run(src) == 42
+
+    def test_zero(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = abs(0);
+  @Nat.0
+}
+"""
+        assert _run(src) == 0
+
+
+class TestMinMax:
+    """min/max(@Int, @Int -> @Int) — minimum/maximum."""
+
+    def test_min_basic(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  min(3, 7)
+}
+"""
+        assert _run(src) == 3
+
+    def test_min_negative(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  min(-5, 3)
+}
+"""
+        assert _run(src) == -5
+
+    def test_min_equal(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  min(4, 4)
+}
+"""
+        assert _run(src) == 4
+
+    def test_max_basic(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  max(3, 7)
+}
+"""
+        assert _run(src) == 7
+
+    def test_max_negative(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  max(-5, 3)
+}
+"""
+        assert _run(src) == 3
+
+    def test_max_equal(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  max(4, 4)
+}
+"""
+        assert _run(src) == 4
+
+
+class TestFloorCeilRound:
+    """floor/ceil/round(@Float64 -> @Int)."""
+
+    def test_floor_positive(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  floor(3.7)
+}
+"""
+        assert _run(src) == 3
+
+    def test_floor_negative(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  floor(-1.5)
+}
+"""
+        assert _run(src) == -2
+
+    def test_floor_exact(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  floor(5.0)
+}
+"""
+        assert _run(src) == 5
+
+    def test_ceil_positive(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  ceil(3.2)
+}
+"""
+        assert _run(src) == 4
+
+    def test_ceil_negative(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  ceil(-1.5)
+}
+"""
+        assert _run(src) == -1
+
+    def test_ceil_exact(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  ceil(5.0)
+}
+"""
+        assert _run(src) == 5
+
+    def test_round_up(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  round(3.7)
+}
+"""
+        assert _run(src) == 4
+
+    def test_round_down(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  round(3.2)
+}
+"""
+        assert _run(src) == 3
+
+    def test_round_half_even(self) -> None:
+        # WASM f64.nearest uses banker's rounding (IEEE 754 roundTiesToEven)
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  round(2.5)
+}
+"""
+        assert _run(src) == 2
+
+    def test_round_negative(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  round(-1.5)
+}
+"""
+        assert _run(src) == -2
+
+
+class TestSqrt:
+    """sqrt(@Float64 -> @Float64)."""
+
+    def test_basic(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  sqrt(4.0)
+}
+"""
+        assert _run_float(src) == 2.0
+
+    def test_zero(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  sqrt(0.0)
+}
+"""
+        assert _run_float(src) == 0.0
+
+    def test_one(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  sqrt(1.0)
+}
+"""
+        assert _run_float(src) == 1.0
+
+    def test_non_perfect(self) -> None:
+        import math
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  sqrt(2.0)
+}
+"""
+        assert abs(_run_float(src) - math.sqrt(2.0)) < 1e-10
+
+
+class TestPow:
+    """pow(@Float64, @Int -> @Float64)."""
+
+    def test_basic(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  pow(2.0, 10)
+}
+"""
+        assert _run_float(src) == 1024.0
+
+    def test_zero_exponent(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  pow(5.0, 0)
+}
+"""
+        assert _run_float(src) == 1.0
+
+    def test_one_exponent(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  pow(3.0, 1)
+}
+"""
+        assert _run_float(src) == 3.0
+
+    def test_square(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  pow(7.0, 2)
+}
+"""
+        assert _run_float(src) == 49.0
+
+    def test_negative_exponent(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  pow(2.0, -1)
+}
+"""
+        assert _run_float(src) == 0.5
+
+
+# =====================================================================
 # C8e: Arrays of compound types (#132)
 # =====================================================================
 

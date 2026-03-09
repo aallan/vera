@@ -417,6 +417,21 @@ strip(@String.0)                        -- returns String (trim whitespace)
 
 String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. `parse_nat` returns `Ok(n)` on valid decimal input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated.
 
+### Numeric operations
+
+```vera
+abs(@Int.0)                         -- returns Nat (absolute value)
+min(@Int.0, @Int.1)                 -- returns Int (smaller of two)
+max(@Int.0, @Int.1)                 -- returns Int (larger of two)
+floor(@Float64.0)                   -- returns Int (round down)
+ceil(@Float64.0)                    -- returns Int (round up)
+round(@Float64.0)                   -- returns Int (banker's rounding)
+sqrt(@Float64.0)                    -- returns Float64 (square root)
+pow(@Float64.0, @Int.0)             -- returns Float64 (exponentiation)
+```
+
+`abs` returns `Nat` because absolute values are non-negative. `floor`, `ceil`, and `round` convert `Float64` to `Int`; they trap on NaN or out-of-range values (WASM semantics). `round` uses IEEE 754 roundTiesToEven (banker's rounding): `round(2.5)` is `2`, not `3`. `pow` takes an `Int` exponent — negative exponents produce reciprocals (`pow(2.0, -1)` is `0.5`). The integer builtins (`abs`, `min`, `max`) are fully verifiable by the SMT solver (Tier 1). The float builtins fall to Tier 3 (runtime).
+
 **Shadowing**: If you define a function with the same name as a built-in (e.g. `length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
 
 Example:

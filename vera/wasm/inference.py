@@ -206,6 +206,11 @@ class InferenceMixin:
         # parse_float64 → Float64 (f64)
         if expr.name == "parse_float64":
             return "f64"
+        # Numeric math builtins
+        if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
+            return "i64"
+        if expr.name in ("sqrt", "pow"):
+            return "f64"
         # apply_fn(closure, args...) — infer from closure type
         if expr.name == "apply_fn" and len(expr.args) >= 1:
             return self._infer_apply_fn_return_type(expr.args[0])
@@ -343,6 +348,13 @@ class InferenceMixin:
         if call.name == "parse_nat":
             return "Result"
         if call.name == "parse_float64":
+            return "Float64"
+        # Numeric math builtins
+        if call.name == "abs":
+            return "Nat"
+        if call.name in ("min", "max", "floor", "ceil", "round"):
+            return "Int"
+        if call.name in ("sqrt", "pow"):
             return "Float64"
         if call.name in self._generic_fn_info:
             forall_vars, param_types = self._generic_fn_info[call.name]
