@@ -8,7 +8,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 41 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
+The conformance suite in `tests/conformance/` contains 42 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
 
 ### Workflow
 
@@ -140,7 +140,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 41 conformance programs must pass
+python scripts/check_conformance.py    # All 42 conformance programs must pass
 python scripts/check_examples.py       # All 18 examples must pass
 ```
 
@@ -150,7 +150,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 41 conformance programs in `tests/conformance/` must pass their declared level
+- All 42 conformance programs in `tests/conformance/` must pass their declared level
 - All 18 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass

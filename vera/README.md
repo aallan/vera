@@ -320,6 +320,10 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `int_to_nat` | Function | `Int → Option<Nat>`, pure |
 | `byte_to_int` | Function | `Byte → Int`, pure |
 | `int_to_byte` | Function | `Int → Option<Byte>`, pure |
+| `is_nan` | Function | `Float64 → Bool`, pure |
+| `is_infinite` | Function | `Float64 → Bool`, pure |
+| `nan` | Function | `→ Float64`, pure |
+| `infinity` | Function | `→ Float64`, pure |
 
 Additionally, `resume` is bound as a temporary function inside handler clause bodies (in `_check_handle()`). Its type is derived from the operation: for `op(params) → ReturnType`, `resume` has type `fn(ReturnType) → Unit effects(pure)`. The binding is added to `env.functions` before checking the clause body and removed afterward.
 
@@ -567,7 +571,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (80
 
 ## Test Suite
 
-Testing is organized in three layers: **unit tests** (1,673 tests testing compiler internals), a **conformance suite** (41 programs in `tests/conformance/` validating every language feature against the spec), and **example programs** (18 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
+Testing is organized in three layers: **unit tests** (1,673 tests testing compiler internals), a **conformance suite** (42 programs in `tests/conformance/` validating every language feature against the spec), and **example programs** (18 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

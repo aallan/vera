@@ -8,7 +8,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 |--------|-------|
 | **Tests** | 1,673 across 20 files (~19,800 lines of test code) |
 | **Compiler code coverage** | 90% of 8,999 statements (CI minimum: 80%) |
-| **Conformance programs** | 41 programs across 8 spec chapters, validating every language feature |
+| **Conformance programs** | 42 programs across 8 spec chapters, validating every language feature |
 | **Example programs** | 18, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 95 parseable blocks from 13 spec chapters: 71 parse, 59 type-check, 58 verify |
 | **README code blocks** | 7 Vera blocks (6 validated, 1 allowlisted future syntax) |
@@ -31,7 +31,7 @@ pytest tests/ --cov=vera --cov-report=term-missing   # with coverage
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_conformance.py                  # conformance suite (41 programs)
+python scripts/check_conformance.py                  # conformance suite (42 programs)
 python scripts/check_examples.py                     # 18 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
@@ -62,7 +62,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_wasm_coverage.py` | 113 | 1,738 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
 | `test_tester.py` | 13 | 345 | Contract-driven testing: tier classification, input generation, test execution |
-| `test_conformance.py` | 195 | ~250 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 41 programs |
+| `test_conformance.py` | 195 | ~250 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 42 programs |
 | `test_readme.py` | 2 | 78 | README code sample parsing |
 
 ## Conformance Suite
@@ -104,11 +104,12 @@ tests/conformance/
 ├── ch01_int_literals.vera     # Chapter 1: Integer literals
 ├── ch01_float_literals.vera   # Chapter 1: Float64 literals
 ├── ch01_string_escapes.vera   # Chapter 1: String escape sequences
-├── ...                        # 41 programs total, organized by spec chapter
+├── ...                        # 42 programs total, organized by spec chapter
 ├── ch07_state_handler.vera    # Chapter 7: State<T> effect handler
 ├── ch07_exn_handler.vera      # Chapter 7: Exn<E> effect handler
 ├── ch09_numeric_builtins.vera # Chapter 9: Numeric built-in functions
-└── ch09_type_conversions.vera # Chapter 9: Numeric type conversions
+├── ch09_type_conversions.vera # Chapter 9: Numeric type conversions
+└── ch10_float_predicates.vera # Chapter 9: Float64 predicates and constants
 ```
 
 ### Manifest
@@ -229,6 +230,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen, test_checker | ch07_state_handler, ch07_exn_handler | effect_handler |
 | Ch 9: Stdlib | Numeric builtins (abs, min, max, floor, ceil, round, sqrt, pow) | test_codegen, test_checker | ch09_numeric_builtins | — |
 | Ch 9: Stdlib | Type conversions (to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen, test_checker | ch09_type_conversions | — |
+| Ch 9: Stdlib | Float64 predicates (is_nan, is_infinite, nan, infinity) | test_codegen, test_checker | ch10_float_predicates | — |
 | Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker | — | — |
 | Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — | — |
 | Ch 4: Expressions | Nested constructor patterns in match | test_codegen | ch04_match_nested | pattern_matching |

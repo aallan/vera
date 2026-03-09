@@ -218,6 +218,11 @@ class InferenceMixin:
             return "i64"
         if expr.name in ("int_to_nat", "int_to_byte"):
             return "i32"
+        # Float64 predicates and constants
+        if expr.name in ("is_nan", "is_infinite"):
+            return "i32"
+        if expr.name in ("nan", "infinity"):
+            return "f64"
         # apply_fn(closure, args...) — infer from closure type
         if expr.name == "apply_fn" and len(expr.args) >= 1:
             return self._infer_apply_fn_return_type(expr.args[0])
@@ -370,6 +375,11 @@ class InferenceMixin:
             return "Int"
         if call.name in ("int_to_nat", "int_to_byte"):
             return "Option"
+        # Float64 predicates and constants
+        if call.name in ("is_nan", "is_infinite"):
+            return "Bool"
+        if call.name in ("nan", "infinity"):
+            return "Float64"
         if call.name in self._generic_fn_info:
             forall_vars, param_types = self._generic_fn_info[call.name]
             mapping: dict[str, str] = {}
