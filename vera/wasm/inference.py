@@ -200,6 +200,16 @@ class InferenceMixin:
         # char_code → Nat (i64)
         if expr.name == "char_code":
             return "i64"
+        # String search builtins
+        if expr.name in ("string_contains", "starts_with", "ends_with"):
+            return "i32"
+        if expr.name == "index_of":
+            return "i32"
+        # String transformation builtins
+        if expr.name in ("to_upper", "to_lower", "replace", "join"):
+            return "i32_pair"
+        if expr.name == "split":
+            return "i32_pair"
         # parse_nat → Result<Nat, String> (i32 heap pointer)
         if expr.name == "parse_nat":
             return "i32"
@@ -357,6 +367,16 @@ class InferenceMixin:
             return "String"
         if call.name == "char_code":
             return "Nat"
+        # String search builtins
+        if call.name in ("string_contains", "starts_with", "ends_with"):
+            return "Bool"
+        if call.name == "index_of":
+            return "Option"
+        # String transformation builtins
+        if call.name in ("to_upper", "to_lower", "replace", "join"):
+            return "String"
+        if call.name == "split":
+            return "Array"
         if call.name == "parse_nat":
             return "Result"
         if call.name == "parse_float64":

@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.73] - 2026-03-09
+
+### Added
+- **Close #198: String search and transformation builtins** ([#198](https://github.com/aallan/vera/issues/198)):
+  Nine new built-in functions for string search and transformation:
+  `string_contains` (String,String→Bool), `starts_with` (String,String→Bool),
+  `ends_with` (String,String→Bool), `index_of` (String,String→Option\<Nat\>),
+  `to_upper` (String→String), `to_lower` (String→String),
+  `replace` (String,String,String→String), `split` (String,String→Array\<String\>),
+  `join` (Array\<String\>,String→String). All are pure and Tier 3 (runtime-tested).
+- New conformance test `ch09_string_search` (conformance suite: 42→43 programs)
+- 55 new tests (18 type checker + 37 codegen end-to-end)
+- Spec Sections 9.6.6 "String Search" and 9.6.7 "String Transformation"
+
 ## [0.0.72] - 2026-03-09
 
 ### Added
@@ -1120,7 +1134,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.72...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.73...HEAD
+[0.0.73]: https://github.com/aallan/vera/compare/v0.0.72...v0.0.73
 [0.0.72]: https://github.com/aallan/vera/compare/v0.0.71...v0.0.72
 [0.0.71]: https://github.com/aallan/vera/compare/v0.0.70...v0.0.71
 [0.0.70]: https://github.com/aallan/vera/compare/v0.0.69...v0.0.70

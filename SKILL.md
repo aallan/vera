@@ -415,6 +415,29 @@ float_to_string(@Float64.0)             -- returns String (decimal representatio
 strip(@String.0)                        -- returns String (trim whitespace)
 ```
 
+#### String search
+
+```vera
+string_contains(@String.0, @String.1)  -- returns Bool (substring test)
+starts_with(@String.0, @String.1)      -- returns Bool (prefix test)
+ends_with(@String.0, @String.1)        -- returns Bool (suffix test)
+index_of(@String.0, @String.1)         -- returns Option<Nat> (first occurrence)
+```
+
+`string_contains` checks whether the needle appears anywhere in the haystack. `starts_with` and `ends_with` test prefix and suffix matches. `index_of` returns `Some(i)` with the byte offset of the first match, or `None` if not found. An empty needle always matches (returns `true` or `Some(0)`).
+
+#### String transformation
+
+```vera
+to_upper(@String.0)                             -- returns String (ASCII uppercase)
+to_lower(@String.0)                             -- returns String (ASCII lowercase)
+replace(@String.0, @String.1, @String.2)        -- returns String (replace all)
+split(@String.0, @String.1)                     -- returns Array<String> (split by delimiter)
+join(@Array<String>.0, @String.0)               -- returns String (join with separator)
+```
+
+`to_upper` and `to_lower` convert ASCII letters only (a-z ↔ A-Z). `replace` substitutes all non-overlapping occurrences; an empty needle returns the original string unchanged. `split` returns an array of segments; an empty delimiter returns a single-element array. `join` concatenates array elements with the separator between each pair.
+
 String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. `parse_nat` returns `Ok(n)` on valid decimal input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated.
 
 ### Numeric operations

@@ -2885,6 +2885,159 @@ private fn f(@Float64 -> @Float64)
 
 
 # =====================================================================
+# String search and transformation builtins
+# =====================================================================
+
+class TestStringSearchBuiltins:
+    """Type-checking for string search and transformation builtins."""
+
+    # -- string_contains --
+
+    def test_string_contains_ok(self) -> None:
+        _check_ok("""
+private fn f(@String, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ string_contains(@String.0, @String.1) }
+""")
+
+    def test_string_contains_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ string_contains(@Int.0, @String.0) }
+""", "type")
+
+    # -- starts_with --
+
+    def test_starts_with_ok(self) -> None:
+        _check_ok("""
+private fn f(@String, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ starts_with(@String.0, @String.1) }
+""")
+
+    def test_starts_with_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ starts_with(@Int.0, @String.0) }
+""", "type")
+
+    # -- ends_with --
+
+    def test_ends_with_ok(self) -> None:
+        _check_ok("""
+private fn f(@String, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ ends_with(@String.0, @String.1) }
+""")
+
+    def test_ends_with_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ ends_with(@Int.0, @String.0) }
+""", "type")
+
+    # -- index_of --
+
+    def test_index_of_ok(self) -> None:
+        _check_ok("""
+private data Option<T> { Some(T), None }
+private fn f(@String, @String -> @Option<Nat>)
+  requires(true) ensures(true) effects(pure)
+{ index_of(@String.0, @String.1) }
+""")
+
+    def test_index_of_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ index_of(@Int.0, @String.0) }
+""", "type")
+
+    # -- to_upper --
+
+    def test_to_upper_ok(self) -> None:
+        _check_ok("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ to_upper(@String.0) }
+""")
+
+    def test_to_upper_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ to_upper(@Int.0) }
+""", "type")
+
+    # -- to_lower --
+
+    def test_to_lower_ok(self) -> None:
+        _check_ok("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ to_lower(@String.0) }
+""")
+
+    def test_to_lower_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ to_lower(@Int.0) }
+""", "type")
+
+    # -- replace --
+
+    def test_replace_ok(self) -> None:
+        _check_ok("""
+private fn f(@String, @String, @String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ replace(@String.0, @String.1, @String.2) }
+""")
+
+    def test_replace_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int, @String, @String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ replace(@Int.0, @String.0, @String.1) }
+""", "type")
+
+    # -- split --
+
+    def test_split_ok(self) -> None:
+        _check_ok("""
+private fn f(@String, @String -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+{ split(@String.0, @String.1) }
+""")
+
+    def test_split_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int, @String -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+{ split(@Int.0, @String.0) }
+""", "type")
+
+    # -- join --
+
+    def test_join_ok(self) -> None:
+        _check_ok("""
+private fn f(@Array<String>, @String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ join(@Array<String>.0, @String.0) }
+""")
+
+    def test_join_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Array<Int>, @String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ join(@Array<Int>.0, @String.0) }
+""", "type")
+
+
+# =====================================================================
 # Bidirectional type inference (issue #55)
 # =====================================================================
 
