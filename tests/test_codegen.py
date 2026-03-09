@@ -4781,6 +4781,281 @@ public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
 
 
 # =====================================================================
+# Numeric type conversions (issue #208)
+# =====================================================================
+
+
+class TestToFloat:
+    """to_float(@Int -> @Float64)."""
+
+    def test_positive(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  to_float(42)
+}
+"""
+        assert _run_float(src) == 42.0
+
+    def test_negative(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  to_float(0 - 7)
+}
+"""
+        assert _run_float(src) == -7.0
+
+    def test_zero(self) -> None:
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  to_float(0)
+}
+"""
+        assert _run_float(src) == 0.0
+
+
+class TestFloatToInt:
+    """float_to_int(@Float64 -> @Int) — truncation toward zero."""
+
+    def test_positive_truncate(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  float_to_int(3.7)
+}
+"""
+        assert _run(src) == 3
+
+    def test_negative_truncate(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  float_to_int(0.0 - 3.7)
+}
+"""
+        assert _run(src) == -3
+
+    def test_exact(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  float_to_int(5.0)
+}
+"""
+        assert _run(src) == 5
+
+    def test_zero(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  float_to_int(0.0)
+}
+"""
+        assert _run(src) == 0
+
+
+class TestNatToInt:
+    """nat_to_int(@Nat -> @Int) — identity (both i64)."""
+
+    def test_basic(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  nat_to_int(abs(42))
+}
+"""
+        assert _run(src) == 42
+
+    def test_zero(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  nat_to_int(abs(0))
+}
+"""
+        assert _run(src) == 0
+
+    def test_large(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  nat_to_int(abs(999999))
+}
+"""
+        assert _run(src) == 999999
+
+
+class TestIntToNat:
+    """int_to_nat(@Int -> @Option<Nat>) — checked narrowing."""
+
+    def test_positive(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_nat(42) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 42
+
+    def test_zero(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_nat(0) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 0
+
+    def test_negative_returns_none(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_nat(0 - 5) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == -1
+
+    def test_large_positive(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_nat(1000000) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 1000000
+
+
+class TestByteToInt:
+    """byte_to_int(@Byte -> @Int) — zero extension."""
+
+    def test_basic(self) -> None:
+        src = """
+public fn f(@Byte -> @Int) requires(true) ensures(true) effects(pure) {
+  byte_to_int(@Byte.0)
+}
+"""
+        assert _run(src, fn="f", args=[65]) == 65
+
+    def test_zero(self) -> None:
+        src = """
+public fn f(@Byte -> @Int) requires(true) ensures(true) effects(pure) {
+  byte_to_int(@Byte.0)
+}
+"""
+        assert _run(src, fn="f", args=[0]) == 0
+
+    def test_max(self) -> None:
+        src = """
+public fn f(@Byte -> @Int) requires(true) ensures(true) effects(pure) {
+  byte_to_int(@Byte.0)
+}
+"""
+        assert _run(src, fn="f", args=[255]) == 255
+
+
+class TestIntToByte:
+    """int_to_byte(@Int -> @Option<Byte>) — checked narrowing."""
+
+    def test_valid(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_byte(65) {
+    Some(@Byte) -> byte_to_int(@Byte.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 65
+
+    def test_zero(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_byte(0) {
+    Some(@Byte) -> byte_to_int(@Byte.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 0
+
+    def test_max_byte(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_byte(255) {
+    Some(@Byte) -> byte_to_int(@Byte.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 255
+
+    def test_negative_returns_none(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_byte(0 - 1) {
+    Some(@Byte) -> byte_to_int(@Byte.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == -1
+
+    def test_overflow_returns_none(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_byte(256) {
+    Some(@Byte) -> byte_to_int(@Byte.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == -1
+
+
+class TestTypeConversionRoundTrip:
+    """Round-trip and composition tests for type conversions."""
+
+    def test_int_float_roundtrip(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  float_to_int(to_float(42))
+}
+"""
+        assert _run(src) == 42
+
+    def test_nat_int_roundtrip(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_nat(nat_to_int(abs(7))) {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 7
+
+    def test_byte_int_roundtrip(self) -> None:
+        src = """
+public fn f(@Byte -> @Int) requires(true) ensures(true) effects(pure) {
+  match int_to_byte(byte_to_int(@Byte.0)) {
+    Some(@Byte) -> byte_to_int(@Byte.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src, fn="f", args=[100]) == 100
+
+    def test_nat_to_float(self) -> None:
+        """Chain nat_to_int then to_float."""
+        src = """
+public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
+  to_float(nat_to_int(abs(10)))
+}
+"""
+        assert _run_float(src) == 10.0
+
+
+# =====================================================================
 # C8e: Arrays of compound types (#132)
 # =====================================================================
 

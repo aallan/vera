@@ -358,5 +358,14 @@
     "level": "run",
     "spec_ref": "Section 9.6.3",
     "features": ["abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow"]
+  },
+  {
+    "id": "ch09_type_conversions",
+    "file": "ch09_type_conversions.vera",
+    "chapter": 9,
+    "title": "Numeric type conversion functions",
+    "level": "run",
+    "spec_ref": "Section 9.6.4",
+    "features": ["to_float", "float_to_int", "nat_to_int", "int_to_nat", "byte_to_int", "int_to_byte"]
   }
 ]

@@ -9,7 +9,7 @@ The standard library comprises:
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, plus future collections (`Set<T>`, `Map<K, V>`).
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
-- **Built-in functions**: `length` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), plus future functions for vector similarity.
+- **Built-in functions**: `length` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), plus future functions for vector similarity.
 - **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
 - **Future abilities**: Type constraints for generic programming (post-v0.1).
 
@@ -477,7 +477,109 @@ pow(2.0, 10)
 
 This expression evaluates to `1024.0`.
 
-### 9.6.4 similarity (Future)
+### 9.6.4 Type Conversions
+
+Vera has no implicit numeric conversions. The following built-in functions provide explicit conversions between numeric types.
+
+#### Widening conversions (always succeed)
+
+```
+public fn to_float(@Int -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Converts an integer to a floating-point number. Compiled to `f64.convert_i64_s`.
+
+```
+to_float(42)
+```
+
+This expression evaluates to `42.0`.
+
+```
+public fn nat_to_int(@Nat -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+```
+
+Converts a natural number to a signed integer. This is a no-op at runtime — both types share the same representation (i64). The postcondition captures the invariant that the result is non-negative.
+
+```
+nat_to_int(abs(42))
+```
+
+This expression evaluates to `42`.
+
+```
+public fn byte_to_int(@Byte -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+```
+
+Converts a byte (0–255) to a signed integer. Compiled to `i64.extend_i32_u` (unsigned zero-extension from i32 to i64).
+
+```
+byte_to_int(@Byte.0)
+```
+
+#### Narrowing conversions (may fail)
+
+```
+public fn float_to_int(@Float64 -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Truncates a floating-point number toward zero. Traps on NaN or Infinity (consistent with `floor`, `ceil`, and `round`). Compiled to `i64.trunc_f64_s`.
+
+```
+float_to_int(3.9)
+```
+
+This expression evaluates to `3` (truncation toward zero, not rounding).
+
+```
+public fn int_to_nat(@Int -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Checked narrowing from signed integer to natural number. Returns `Some(n)` if the input is non-negative, `None` otherwise.
+
+```
+match int_to_nat(42) {
+  Some(@Nat) -> nat_to_int(@Nat.0),
+  None -> 0 - 1
+}
+```
+
+This expression evaluates to `42`.
+
+```
+public fn int_to_byte(@Int -> @Option<Byte>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Checked narrowing from signed integer to byte. Returns `Some(b)` if the input is in the range 0–255, `None` otherwise.
+
+```
+match int_to_byte(65) {
+  Some(@Byte) -> byte_to_int(@Byte.0),
+  None -> 0 - 1
+}
+```
+
+This expression evaluates to `65`.
+
+### 9.6.5 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 

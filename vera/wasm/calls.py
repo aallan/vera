@@ -89,6 +89,19 @@ class CallsMixin:
                 return self._translate_pow(
                     call.args[0], call.args[1], env,
                 )
+            # Numeric type conversions
+            if call.name == "to_float" and len(call.args) == 1:
+                return self._translate_to_float(call.args[0], env)
+            if call.name == "float_to_int" and len(call.args) == 1:
+                return self._translate_float_to_int(call.args[0], env)
+            if call.name == "nat_to_int" and len(call.args) == 1:
+                return self._translate_nat_to_int(call.args[0], env)
+            if call.name == "int_to_nat" and len(call.args) == 1:
+                return self._translate_int_to_nat(call.args[0], env)
+            if call.name == "byte_to_int" and len(call.args) == 1:
+                return self._translate_byte_to_int(call.args[0], env)
+            if call.name == "int_to_byte" and len(call.args) == 1:
+                return self._translate_int_to_byte(call.args[0], env)
 
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:
@@ -1915,6 +1928,161 @@ class CallsMixin:
         instructions.append("end")
         instructions.append(f"local.get {result_tmp}")
         return instructions
+
+    # ------------------------------------------------------------------
+    # Numeric type conversions
+    # ------------------------------------------------------------------
+
+    def _translate_to_float(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate to_float(@Int) → @Float64.  WASM: f64.convert_i64_s."""
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        instructions.append("f64.convert_i64_s")
+        return instructions
+
+    def _translate_float_to_int(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate float_to_int(@Float64) → @Int.
+
+        WASM: i64.trunc_f64_s (truncation toward zero).
+        Traps on NaN/Infinity, consistent with floor/ceil/round.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        instructions.append("i64.trunc_f64_s")
+        return instructions
+
+    def _translate_nat_to_int(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate nat_to_int(@Nat) → @Int.  Identity (both i64)."""
+        return self.translate_expr(arg, env)
+
+    def _translate_int_to_nat(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate int_to_nat(@Int) → @Option<Nat> (i32 heap pointer).
+
+        Option<Nat> layout (16 bytes, uniform for both variants):
+          None:      [tag=0 : i32] [pad 12]
+          Some(Nat): [tag=1 : i32] [pad 4] [value : i64]
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+        val = self.alloc_local("i64")
+        out = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {val}")
+
+        # Allocate 16 bytes (largest variant: Some(i64))
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.set {out}")
+
+        # Check: val >= 0?
+        ins.append(f"local.get {val}")
+        ins.append("i64.const 0")
+        ins.append("i64.ge_s")
+        ins.append("if")
+        # -- Some path: tag=1, value at offset 8
+        ins.append(f"  local.get {out}")
+        ins.append("  i32.const 1")
+        ins.append("  i32.store")           # tag = 1 (Some)
+        ins.extend(f"  {x}" for x in gc_shadow_push(out))
+        ins.append(f"  local.get {out}")
+        ins.append(f"  local.get {val}")
+        ins.append("  i64.store offset=8")  # Nat value
+        ins.append("else")
+        # -- None path: tag=0
+        ins.append(f"  local.get {out}")
+        ins.append("  i32.const 0")
+        ins.append("  i32.store")           # tag = 0 (None)
+        ins.extend(f"  {x}" for x in gc_shadow_push(out))
+        ins.append("end")
+
+        ins.append(f"local.get {out}")
+        return ins
+
+    def _translate_byte_to_int(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate byte_to_int(@Byte) → @Int.  WASM: i64.extend_i32_u."""
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        instructions: list[str] = []
+        instructions.extend(arg_instrs)
+        instructions.append("i64.extend_i32_u")
+        return instructions
+
+    def _translate_int_to_byte(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate int_to_byte(@Int) → @Option<Byte> (i32 heap pointer).
+
+        Option<Byte> layout (8 bytes, uniform for both variants):
+          None:       [tag=0 : i32] [pad 4]
+          Some(Byte): [tag=1 : i32] [value : i32]
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+        val = self.alloc_local("i64")
+        out = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {val}")
+
+        # Allocate 8 bytes (both variants fit in 8)
+        ins.append("i32.const 8")
+        ins.append("call $alloc")
+        ins.append(f"local.set {out}")
+
+        # Check: 0 <= val <= 255
+        ins.append(f"local.get {val}")
+        ins.append("i64.const 0")
+        ins.append("i64.ge_s")
+        ins.append(f"local.get {val}")
+        ins.append("i64.const 255")
+        ins.append("i64.le_s")
+        ins.append("i32.and")
+        ins.append("if")
+        # -- Some path: tag=1, i32.wrap_i64(val) at offset 4
+        ins.append(f"  local.get {out}")
+        ins.append("  i32.const 1")
+        ins.append("  i32.store")            # tag = 1 (Some)
+        ins.extend(f"  {x}" for x in gc_shadow_push(out))
+        ins.append(f"  local.get {out}")
+        ins.append(f"  local.get {val}")
+        ins.append("  i32.wrap_i64")
+        ins.append("  i32.store offset=4")   # Byte value
+        ins.append("else")
+        # -- None path: tag=0
+        ins.append(f"  local.get {out}")
+        ins.append("  i32.const 0")
+        ins.append("  i32.store")            # tag = 0 (None)
+        ins.extend(f"  {x}" for x in gc_shadow_push(out))
+        ins.append("end")
+
+        ins.append(f"local.get {out}")
+        return ins
 
     def _translate_handle_expr(
         self, expr: ast.HandleExpr, env: WasmSlotEnv,

@@ -432,6 +432,19 @@ pow(@Float64.0, @Int.0)             -- returns Float64 (exponentiation)
 
 `abs` returns `Nat` because absolute values are non-negative. `floor`, `ceil`, and `round` convert `Float64` to `Int`; they trap on NaN or out-of-range values (WASM semantics). `round` uses IEEE 754 roundTiesToEven (banker's rounding): `round(2.5)` is `2`, not `3`. `pow` takes an `Int` exponent — negative exponents produce reciprocals (`pow(2.0, -1)` is `0.5`). The integer builtins (`abs`, `min`, `max`) are fully verifiable by the SMT solver (Tier 1). The float builtins fall to Tier 3 (runtime).
 
+### Type conversions
+
+```vera
+to_float(@Int.0)                    -- returns Float64 (int to float)
+float_to_int(@Float64.0)           -- returns Int (truncation toward zero)
+nat_to_int(@Nat.0)                 -- returns Int (identity, both i64)
+int_to_nat(@Int.0)                 -- returns Option<Nat> (None if negative)
+byte_to_int(@Byte.0)              -- returns Int (zero-extension)
+int_to_byte(@Int.0)               -- returns Option<Byte> (None if out of 0..255)
+```
+
+Vera has no implicit numeric conversions — use these functions to convert between numeric types. `to_float`, `nat_to_int`, and `byte_to_int` are widening conversions that always succeed. `float_to_int` truncates toward zero and traps on NaN/Infinity. `int_to_nat` and `int_to_byte` are checked narrowing conversions that return `Option` — pattern match on the result to handle the failure case. `nat_to_int` and `byte_to_int` are SMT-verifiable (Tier 1); the rest are Tier 3 (runtime).
+
 **Shadowing**: If you define a function with the same name as a built-in (e.g. `length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
 
 Example:

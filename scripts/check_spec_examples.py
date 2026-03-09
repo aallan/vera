@@ -60,7 +60,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 290): "FUTURE",   # fn classify — uses ++ (string concat)
     ("09-standard-library.md", 304): "FRAGMENT",  # length signature (no body)
     ("09-standard-library.md", 324): "FRAGMENT",  # array_push signature (no body)
-    ("09-standard-library.md", 484): "FRAGMENT",  # similarity signature (no body)
+    ("09-standard-library.md", 586): "FRAGMENT",  # similarity signature (no body)
 
     # =================================================================
     # FRAGMENT — heuristic false positives (look like declarations but
@@ -119,13 +119,21 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 448): "FRAGMENT",  # sqrt signature (no body)
     ("09-standard-library.md", 465): "FRAGMENT",  # pow signature (no body)
 
+    # Chapter 9 — Numeric type conversion signatures (no body)
+    ("09-standard-library.md", 486): "FRAGMENT",  # to_float signature (no body)
+    ("09-standard-library.md", 501): "FRAGMENT",  # nat_to_int signature (no body)
+    ("09-standard-library.md", 516): "FRAGMENT",  # byte_to_int signature (no body)
+    ("09-standard-library.md", 531): "FRAGMENT",  # float_to_int signature (no body)
+    ("09-standard-library.md", 546): "FRAGMENT",  # int_to_nat signature (no body)
+    ("09-standard-library.md", 564): "FRAGMENT",  # int_to_byte signature (no body)
+
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 588): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
-    ("09-standard-library.md", 597): "FUTURE",   # md_render(@MdBlock -> @String)
-    ("09-standard-library.md", 608): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
-    ("09-standard-library.md", 617): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
-    ("09-standard-library.md", 626): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
-    ("09-standard-library.md", 650): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 690): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 699): "FUTURE",   # md_render(@MdBlock -> @String)
+    ("09-standard-library.md", 710): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
+    ("09-standard-library.md", 719): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
+    ("09-standard-library.md", 728): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
+    ("09-standard-library.md", 752): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
 }
 
 

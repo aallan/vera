@@ -183,7 +183,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (1,723 tests across 20 files, testing compiler internals), a **conformance suite** (40 programs across 8 spec chapters, systematically validating every language feature against the spec), and **example programs** (18 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
+Testing is organized in three layers: **unit tests** (1,766 tests across 20 files, testing compiler internals), a **conformance suite** (41 programs across 8 spec chapters, systematically validating every language feature against the spec), and **example programs** (18 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
 
 ## Roadmap
 
@@ -316,7 +316,7 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - <del>[#199](https://github.com/aallan/vera/issues/199) numeric math builtins</del> ([v0.0.70](https://github.com/aallan/vera/releases/tag/v0.0.70))
 - [#200](https://github.com/aallan/vera/issues/200) parsing completeness (parse_int, parse_bool, safe parse_float64)
 - [#198](https://github.com/aallan/vera/issues/198) string search and transformation builtins
-- [#208](https://github.com/aallan/vera/issues/208) numeric type conversions
+- <del>[#208](https://github.com/aallan/vera/issues/208) numeric type conversions</del> ([v0.0.71](https://github.com/aallan/vera/releases/tag/v0.0.71))
 - [#209](https://github.com/aallan/vera/issues/209) array construction builtins (range, append, concat)
 - [#210](https://github.com/aallan/vera/issues/210) from_char_code builtin
 - [#212](https://github.com/aallan/vera/issues/212) Float64 special value operations (is_nan, is_infinite)

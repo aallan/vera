@@ -393,6 +393,50 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # Numeric type conversions
+        self.functions["to_float"] = FunctionInfo(
+            name="to_float",
+            forall_vars=None,
+            param_types=(INT,),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+        self.functions["float_to_int"] = FunctionInfo(
+            name="float_to_int",
+            forall_vars=None,
+            param_types=(FLOAT64,),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["nat_to_int"] = FunctionInfo(
+            name="nat_to_int",
+            forall_vars=None,
+            param_types=(NAT,),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["int_to_nat"] = FunctionInfo(
+            name="int_to_nat",
+            forall_vars=None,
+            param_types=(INT,),
+            return_type=AdtType("Option", (NAT,)),
+            effect=PureEffectRow(),
+        )
+        self.functions["byte_to_int"] = FunctionInfo(
+            name="byte_to_int",
+            forall_vars=None,
+            param_types=(BYTE,),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["int_to_byte"] = FunctionInfo(
+            name="int_to_byte",
+            forall_vars=None,
+            param_types=(INT,),
+            return_type=AdtType("Option", (BYTE,)),
+            effect=PureEffectRow(),
+        )
+
     # -----------------------------------------------------------------
     # Scope management
     # -----------------------------------------------------------------
