@@ -31,7 +31,7 @@ pytest tests/ --cov=vera --cov-report=term-missing   # with coverage
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_conformance.py                  # conformance suite (42 programs)
+python scripts/check_conformance.py                  # conformance suite (43 programs)
 python scripts/check_examples.py                     # 18 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
@@ -62,7 +62,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_wasm_coverage.py` | 113 | 1,738 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
 | `test_tester.py` | 13 | 345 | Contract-driven testing: tier classification, input generation, test execution |
-| `test_conformance.py` | 195 | ~250 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 42 programs |
+| `test_conformance.py` | 195 | ~250 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 43 programs |
 | `test_readme.py` | 2 | 78 | README code sample parsing |
 
 ## Conformance Suite

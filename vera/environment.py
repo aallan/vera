@@ -335,6 +335,71 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # String search and transformation builtins
+        self.functions["string_contains"] = FunctionInfo(
+            name="string_contains",
+            forall_vars=None,
+            param_types=(STRING, STRING),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+        self.functions["starts_with"] = FunctionInfo(
+            name="starts_with",
+            forall_vars=None,
+            param_types=(STRING, STRING),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+        self.functions["ends_with"] = FunctionInfo(
+            name="ends_with",
+            forall_vars=None,
+            param_types=(STRING, STRING),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+        self.functions["index_of"] = FunctionInfo(
+            name="index_of",
+            forall_vars=None,
+            param_types=(STRING, STRING),
+            return_type=AdtType("Option", (NAT,)),
+            effect=PureEffectRow(),
+        )
+        self.functions["to_upper"] = FunctionInfo(
+            name="to_upper",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["to_lower"] = FunctionInfo(
+            name="to_lower",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["replace"] = FunctionInfo(
+            name="replace",
+            forall_vars=None,
+            param_types=(STRING, STRING, STRING),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["split"] = FunctionInfo(
+            name="split",
+            forall_vars=None,
+            param_types=(STRING, STRING),
+            return_type=AdtType("Array", (STRING,)),
+            effect=PureEffectRow(),
+        )
+        self.functions["join"] = FunctionInfo(
+            name="join",
+            forall_vars=None,
+            param_types=(AdtType("Array", (STRING,)), STRING),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+
         # Numeric math builtins
         self.functions["abs"] = FunctionInfo(
             name="abs",

@@ -4380,6 +4380,385 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
 
 # =====================================================================
+# C8f: String search and transformation builtins (#198)
+# =====================================================================
+
+
+class TestStringContains:
+    def test_basic_true(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if string_contains("hello world", "world") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_basic_false(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if string_contains("hello", "xyz") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+    def test_empty_needle(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if string_contains("hello", "") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_empty_haystack(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if string_contains("", "a") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+    def test_same_string(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if string_contains("abc", "abc") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+
+class TestStartsWith:
+    def test_basic_true(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if starts_with("hello", "hel") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_basic_false(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if starts_with("hello", "xyz") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+    def test_empty_prefix(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if starts_with("hello", "") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_longer_needle(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if starts_with("hi", "hello") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+
+class TestEndsWith:
+    def test_basic_true(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if ends_with("hello", "llo") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_basic_false(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if ends_with("hello", "xyz") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+    def test_empty_suffix(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if ends_with("hello", "") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_longer_needle(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  if ends_with("hi", "hello") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 0
+
+
+class TestIndexOf:
+    def test_found(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match index_of("hello world", "world") {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 6
+
+    def test_not_found(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match index_of("hello", "xyz") {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == -1
+
+    def test_at_start(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match index_of("hello", "hel") {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 0
+
+    def test_empty_needle(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match index_of("hello", "") {
+    Some(@Nat) -> nat_to_int(@Nat.0),
+    None -> 0 - 1
+  }
+}
+"""
+        assert _run(src) == 0
+
+
+class TestToUpper:
+    def test_basic(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(to_upper("hello"))
+}
+"""
+        assert _run_io(src) == "HELLO"
+
+    def test_mixed(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(to_upper("Hello World"))
+}
+"""
+        assert _run_io(src) == "HELLO WORLD"
+
+    def test_no_letters(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(to_upper("123"))
+}
+"""
+        assert _run_io(src) == "123"
+
+    def test_empty(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  string_length(to_upper(""))
+}
+"""
+        assert _run(src) == 0
+
+
+class TestToLower:
+    def test_basic(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(to_lower("HELLO"))
+}
+"""
+        assert _run_io(src) == "hello"
+
+    def test_mixed(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(to_lower("Hello World"))
+}
+"""
+        assert _run_io(src) == "hello world"
+
+    def test_no_letters(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(to_lower("123"))
+}
+"""
+        assert _run_io(src) == "123"
+
+    def test_empty(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  string_length(to_lower(""))
+}
+"""
+        assert _run(src) == 0
+
+
+class TestReplace:
+    def test_basic(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(replace("hello world", "world", "vera"))
+}
+"""
+        assert _run_io(src) == "hello vera"
+
+    def test_not_found(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(replace("hello", "xyz", "abc"))
+}
+"""
+        assert _run_io(src) == "hello"
+
+    def test_empty_needle(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(replace("hello", "", "x"))
+}
+"""
+        assert _run_io(src) == "hello"
+
+    def test_multiple(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(replace("aabaa", "a", "x"))
+}
+"""
+        assert _run_io(src) == "xxbxx"
+
+
+class TestSplit:
+    def test_basic(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(join(split("a,b,c", ","), "-"))
+}
+"""
+        assert _run_io(src) == "a-b-c"
+
+    def test_no_delimiter(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(join(split("hello", ","), "-"))
+}
+"""
+        assert _run_io(src) == "hello"
+
+    def test_count(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  length(split("a,b,c", ","))
+}
+"""
+        assert _run(src) == 3
+
+    def test_consecutive_delimiters(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  length(split("a,,b", ","))
+}
+"""
+        assert _run(src) == 3
+
+
+class TestJoin:
+    def test_basic(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(join(split("a,b,c", ","), "-"))
+}
+"""
+        assert _run_io(src) == "a-b-c"
+
+    def test_single_element(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(join(split("hello", ","), "-"))
+}
+"""
+        assert _run_io(src) == "hello"
+
+    def test_empty_separator(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(join(split("a,b", ","), ""))
+}
+"""
+        assert _run_io(src) == "ab"
+
+    def test_roundtrip(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(join(split("hello world", " "), " "))
+}
+"""
+        assert _run_io(src) == "hello world"
+
+
+# =====================================================================
 # C8e: Universal to-string conversion (#106)
 # =====================================================================
 

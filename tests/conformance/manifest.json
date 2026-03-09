@@ -369,6 +369,15 @@
     "features": ["to_float", "float_to_int", "nat_to_int", "int_to_nat", "byte_to_int", "int_to_byte"]
   },
   {
+    "id": "ch09_string_search",
+    "file": "ch09_string_search.vera",
+    "chapter": 9,
+    "title": "String search and transformation functions",
+    "level": "run",
+    "spec_ref": "Section 9.6.6-9.6.7",
+    "features": ["string_contains", "starts_with", "ends_with", "index_of", "to_upper", "to_lower", "replace", "split", "join"]
+  },
+  {
     "id": "ch10_float_predicates",
     "file": "ch10_float_predicates.vera",
     "chapter": 9,

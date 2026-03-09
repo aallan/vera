@@ -324,6 +324,15 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `is_infinite` | Function | `Float64 → Bool`, pure |
 | `nan` | Function | `→ Float64`, pure |
 | `infinity` | Function | `→ Float64`, pure |
+| `string_contains` | Function | `String, String → Bool`, pure |
+| `starts_with` | Function | `String, String → Bool`, pure |
+| `ends_with` | Function | `String, String → Bool`, pure |
+| `index_of` | Function | `String, String → Option<Nat>`, pure |
+| `to_upper` | Function | `String → String`, pure |
+| `to_lower` | Function | `String → String`, pure |
+| `replace` | Function | `String, String, String → String`, pure |
+| `split` | Function | `String, String → Array<String>`, pure |
+| `join` | Function | `Array<String>, String → String`, pure |
 
 Additionally, `resume` is bound as a temporary function inside handler clause bodies (in `_check_handle()`). Its type is derived from the operation: for `op(params) → ReturnType`, `resume` has type `fn(ReturnType) → Unit effects(pure)`. The binding is added to `env.functions` before checking the clause body and removed afterward.
 
@@ -571,7 +580,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (80
 
 ## Test Suite
 
-Testing is organized in three layers: **unit tests** (1,673 tests testing compiler internals), a **conformance suite** (42 programs in `tests/conformance/` validating every language feature against the spec), and **example programs** (18 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
+Testing is organized in three layers: **unit tests** (1,673 tests testing compiler internals), a **conformance suite** (43 programs in `tests/conformance/` validating every language feature against the spec), and **example programs** (18 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

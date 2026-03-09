@@ -9,7 +9,7 @@ The standard library comprises:
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, plus future collections (`Set<T>`, `Map<K, V>`).
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
-- **Built-in functions**: `length` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), plus future functions for vector similarity.
+- **Built-in functions**: `length` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), string search (`string_contains`, `starts_with`, `ends_with`, `index_of`), string transformation (`to_upper`, `to_lower`, `replace`, `split`, `join`), plus future functions for vector similarity.
 - **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
 - **Future abilities**: Type constraints for generic programming (post-v0.1).
 
@@ -651,7 +651,152 @@ public fn test_infinity(@Unit -> @Float64)
 { infinity() }
 ```
 
-### 9.6.6 similarity (Future)
+### 9.6.6 String Search
+
+String search functions test for the presence or position of substrings. All are pure, take `String` arguments, and operate on raw bytes (ASCII). All are Tier 3 for verification (String is not modeled in Z3).
+
+#### string_contains
+
+```vera
+public fn string_contains(@String, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+```
+
+Returns `true` if the second argument (needle) appears as a contiguous substring of the first (haystack). An empty needle always matches. Uses a naive O(n×m) byte comparison.
+
+```vera
+string_contains("hello world", "world")  -- true
+string_contains("hello", "xyz")          -- false
+string_contains("hello", "")             -- true
+```
+
+#### starts_with
+
+```vera
+public fn starts_with(@String, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+```
+
+Returns `true` if the haystack begins with the given prefix. An empty prefix always matches. If the prefix is longer than the haystack, returns `false`.
+
+```vera
+starts_with("hello world", "hello")  -- true
+starts_with("hello", "world")        -- false
+starts_with("hello", "")             -- true
+```
+
+#### ends_with
+
+```vera
+public fn ends_with(@String, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+```
+
+Returns `true` if the haystack ends with the given suffix. An empty suffix always matches. If the suffix is longer than the haystack, returns `false`.
+
+```vera
+ends_with("hello world", "world")  -- true
+ends_with("hello", "world")        -- false
+ends_with("hello", "")             -- true
+```
+
+#### index_of
+
+```vera
+public fn index_of(@String, @String -> @Option<Nat>)
+  requires(true) ensures(true) effects(pure)
+```
+
+Returns `Some(i)` where `i` is the byte offset of the first occurrence of the needle in the haystack, or `None` if not found. An empty needle matches at position 0. The returned index is a `Nat` (natural number).
+
+```vera
+match index_of("hello world", "world") {
+  Some(@Nat) -> nat_to_int(@Nat.0),
+  None -> 0 - 1
+}
+-- evaluates to 6
+```
+
+### 9.6.7 String Transformation
+
+String transformation functions produce new strings by modifying characters or structure. All allocate heap memory for the result and register it with the GC shadow stack. All are pure and Tier 3.
+
+#### to_upper
+
+```vera
+public fn to_upper(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+Returns a new string with all ASCII lowercase letters (a–z, bytes 97–122) converted to uppercase (A–Z, bytes 65–90). Non-ASCII bytes and non-letter bytes are unchanged.
+
+```vera
+to_upper("hello")   -- "HELLO"
+to_upper("Hello!")   -- "HELLO!"
+to_upper("123")      -- "123"
+```
+
+#### to_lower
+
+```vera
+public fn to_lower(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+Returns a new string with all ASCII uppercase letters (A–Z, bytes 65–90) converted to lowercase (a–z, bytes 97–122). Non-ASCII bytes and non-letter bytes are unchanged.
+
+```vera
+to_lower("HELLO")   -- "hello"
+to_lower("Hello!")   -- "hello!"
+to_lower("123")      -- "123"
+```
+
+#### replace
+
+```vera
+public fn replace(@String, @String, @String -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+Replaces all non-overlapping occurrences of the needle (second argument) in the haystack (first argument) with the replacement (third argument). If the needle is empty, returns a copy of the haystack. Uses a two-pass algorithm: pass 1 counts occurrences, then allocates the output buffer; pass 2 copies bytes with substitutions.
+
+```vera
+replace("hello world", "world", "vera")  -- "hello vera"
+replace("aaa", "a", "bb")                -- "bbbbbb"
+replace("hello", "xyz", "abc")           -- "hello"
+replace("hello", "", "x")                -- "hello"
+```
+
+#### split
+
+```vera
+public fn split(@String, @String -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+```
+
+Splits the string at each non-overlapping occurrence of the delimiter, returning an `Array<String>`. If the delimiter is empty, returns a single-element array containing the original string. Consecutive delimiters produce empty string segments. Uses a two-pass algorithm: pass 1 counts delimiters, then allocates the array and segment buffers in pass 2.
+
+```vera
+split("a,b,c", ",")     -- Array with 3 elements: "a", "b", "c"
+split("hello", ",")     -- Array with 1 element: "hello"
+split("a,,b", ",")      -- Array with 3 elements: "a", "", "b"
+```
+
+#### join
+
+```vera
+public fn join(@Array<String>, @String -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+Joins an array of strings with the given separator between each pair of elements. An empty array produces an empty string. Uses a two-pass algorithm: pass 1 sums the total length, pass 2 copies bytes.
+
+```vera
+join(split("a,b,c", ","), "-")  -- "a-b-c"
+join(split("hello", ","), "-")  -- "hello"
+```
+
+### 9.6.8 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 
