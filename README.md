@@ -313,7 +313,7 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 
 **Builtin extensions** — independent of each other, no module deps
 
-- [#199](https://github.com/aallan/vera/issues/199) numeric math builtins
+- <del>[#199](https://github.com/aallan/vera/issues/199) numeric math builtins</del> ([v0.0.70](https://github.com/aallan/vera/releases/tag/v0.0.70))
 - [#200](https://github.com/aallan/vera/issues/200) parsing completeness (parse_int, parse_bool, safe parse_float64)
 - [#198](https://github.com/aallan/vera/issues/198) string search and transformation builtins
 - [#208](https://github.com/aallan/vera/issues/208) numeric type conversions
