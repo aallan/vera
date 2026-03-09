@@ -319,7 +319,25 @@ This expression evaluates to `3`.
 
 For the compilation of `length`, see Chapter 11, Section 11.12.
 
-### 9.6.2 similarity (Future)
+### 9.6.2 array_push
+
+```
+public forall<T> fn array_push(@Array<T>, @T -> @Array<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns a new array with the element appended at the end. The returned array has length `length(input) + 1`, with the new element at the last index. The original array is unchanged (arrays are immutable values). `array_push` is generic over the element type.
+
+```
+let @Array<Int> = array_push([10, 20, 30], 40);
+length(@Array<Int>.0)
+```
+
+This expression evaluates to `4`.
+
+### 9.6.3 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 

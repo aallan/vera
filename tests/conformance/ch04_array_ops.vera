@@ -1,5 +1,5 @@
 -- Conformance: array operations (Chapter 4)
--- Tests: array literal, length, array_get, array_push
+-- Tests: array literal, length, array indexing, array_push
 public fn test_length(@Unit -> @Int)
   requires(true)
   ensures(@Int.result == 3)

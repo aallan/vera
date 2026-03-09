@@ -296,6 +296,12 @@ The built-in `length` function returns the number of elements in an array (see C
 length(@Array<Int>.0)                -- returns Int (>= 0)
 ```
 
+The built-in `array_push` function returns a new array with an element appended (see Chapter 9, Section 9.6.2):
+
+```
+array_push(@Array<Int>.0, @Int.0)    -- returns Array<Int>
+```
+
 Future array operations (`map`, `fold`, `slice`) will be added alongside the module system and abilities (see Chapter 9, Section 9.4.1).
 
 ## 4.13 String Operations

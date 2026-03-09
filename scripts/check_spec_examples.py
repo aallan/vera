@@ -59,7 +59,8 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     # Chapter 9 — future stdlib features and signature-only blocks
     ("09-standard-library.md", 290): "FUTURE",   # fn classify — uses ++ (string concat)
     ("09-standard-library.md", 304): "FRAGMENT",  # length signature (no body)
-    ("09-standard-library.md", 326): "FRAGMENT",  # similarity signature (no body)
+    ("09-standard-library.md", 324): "FRAGMENT",  # array_push signature (no body)
+    ("09-standard-library.md", 344): "FRAGMENT",  # similarity signature (no body)
 
     # =================================================================
     # FRAGMENT — heuristic false positives (look like declarations but
@@ -109,12 +110,12 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("07-effects.md", 315): "FRAGMENT",     # effect Diverge {} — no operations
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 430): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
-    ("09-standard-library.md", 439): "FUTURE",   # md_render(@MdBlock -> @String)
-    ("09-standard-library.md", 450): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
-    ("09-standard-library.md", 459): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
-    ("09-standard-library.md", 468): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
-    ("09-standard-library.md", 492): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 448): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 457): "FUTURE",   # md_render(@MdBlock -> @String)
+    ("09-standard-library.md", 468): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
+    ("09-standard-library.md", 477): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
+    ("09-standard-library.md", 486): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
+    ("09-standard-library.md", 510): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
 }
 
 
