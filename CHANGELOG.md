@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.70] - 2026-03-09
+
 ### Added
 - **Close #199: Numeric math builtins** ([#199](https://github.com/aallan/vera/issues/199)):
   Eight new built-in functions for common mathematical operations: `abs` (Int→Nat),
@@ -1093,7 +1095,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.69...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.70...HEAD
+[0.0.70]: https://github.com/aallan/vera/compare/v0.0.69...v0.0.70
 [0.0.69]: https://github.com/aallan/vera/compare/v0.0.68...v0.0.69
 [0.0.68]: https://github.com/aallan/vera/compare/v0.0.67...v0.0.68
 [0.0.67]: https://github.com/aallan/vera/compare/v0.0.66...v0.0.67
