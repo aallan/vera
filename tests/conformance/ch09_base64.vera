@@ -1,0 +1,72 @@
+-- Conformance: base64_encode, base64_decode (Chapter 9)
+-- Tests: base64_encode, base64_decode returning Result<String, String>
+effect IO {
+  op print(String -> Unit);
+}
+
+private data Result<T, E> {
+  Ok(T),
+  Err(E)
+}
+
+public fn test_encode_empty(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  string_length(base64_encode(""))
+}
+
+public fn test_encode_hello(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 8)
+  effects(pure)
+{
+  string_length(base64_encode("Hello"))
+}
+
+public fn test_decode_ok(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  match base64_decode("QUJD") {
+    Ok(@String) -> string_length(@String.0),
+    Err(_) -> 0 - 1
+  }
+}
+
+public fn test_decode_err(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match base64_decode("ABC") {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
+public fn test_roundtrip(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 13)
+  effects(pure)
+{
+  match base64_decode(base64_encode("Hello, World!")) {
+    Ok(@String) -> string_length(@String.0),
+    Err(_) -> 0 - 1
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(to_string(test_encode_empty(())));
+  IO.print(to_string(test_encode_hello(())));
+  IO.print(to_string(test_decode_ok(())));
+  IO.print(to_string(test_decode_err(())));
+  IO.print(to_string(test_roundtrip(())));
+  ()
+}

@@ -241,6 +241,7 @@ class CrossModuleMixin:
             "string_length", "string_concat", "string_slice",
             "char_code", "from_char_code", "string_repeat",
             "parse_nat", "parse_int", "parse_float64", "parse_bool",
+            "base64_encode", "base64_decode",
             "to_string", "int_to_string", "bool_to_string",
             "nat_to_string", "byte_to_string", "float_to_string",
             "strip",

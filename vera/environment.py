@@ -328,6 +328,20 @@ class TypeEnv:
             return_type=AdtType("Result", (BOOL, STRING)),
             effect=PureEffectRow(),
         )
+        self.functions["base64_encode"] = FunctionInfo(
+            name="base64_encode",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["base64_decode"] = FunctionInfo(
+            name="base64_decode",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType("Result", (STRING, STRING)),
+            effect=PureEffectRow(),
+        )
         self.functions["to_string"] = FunctionInfo(
             name="to_string",
             forall_vars=None,

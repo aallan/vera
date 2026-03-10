@@ -58,6 +58,10 @@ class CallsMixin:
                 return self._translate_parse_float64(call.args[0], env)
             if call.name == "parse_bool" and len(call.args) == 1:
                 return self._translate_parse_bool(call.args[0], env)
+            if call.name == "base64_encode" and len(call.args) == 1:
+                return self._translate_base64_encode(call.args[0], env)
+            if call.name == "base64_decode" and len(call.args) == 1:
+                return self._translate_base64_decode(call.args[0], env)
             if call.name == "to_string" and len(call.args) == 1:
                 return self._translate_to_string(call.args[0], env)
             if call.name == "int_to_string" and len(call.args) == 1:
@@ -2025,6 +2029,696 @@ class CallsMixin:
         ins.append("i32.store offset=8")    # string len
 
         ins.append("end")  # block $done_pf
+
+        ins.append(f"local.get {out}")
+        return ins
+
+    # -----------------------------------------------------------------
+    # Base64 encoding / decoding (RFC 4648)
+    # -----------------------------------------------------------------
+
+    def _translate_base64_encode(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate base64_encode(s) → String (i32_pair).
+
+        Every 3 input bytes produce 4 output chars from the standard
+        Base64 alphabet.  Remaining 1 or 2 bytes are padded with '='.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        # Intern the Base64 alphabet in the string pool so we can
+        # look up output characters by 6-bit index.
+        alpha_off, _ = self.string_pool.intern(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+        )
+        empty_off, empty_len = self.string_pool.intern("")
+
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        out_len = self.alloc_local("i32")
+        i = self.alloc_local("i32")   # input index
+        j = self.alloc_local("i32")   # output index
+        b0 = self.alloc_local("i32")
+        b1 = self.alloc_local("i32")
+        b2 = self.alloc_local("i32")
+        rem = self.alloc_local("i32")
+        full = self.alloc_local("i32")  # slen - remainder
+
+        ins: list[str] = []
+
+        # Evaluate string arg → (ptr, len)
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+
+        # Empty input → empty output
+        ins.append(f"local.get {slen}")
+        ins.append("i32.eqz")
+        ins.append("if (result i32 i32)")
+        ins.append(f"  i32.const {empty_off}")
+        ins.append(f"  i32.const {empty_len}")
+        ins.append("else")
+
+        # out_len = ((slen + 2) / 3) * 4
+        ins.append(f"local.get {slen}")
+        ins.append("i32.const 2")
+        ins.append("i32.add")
+        ins.append("i32.const 3")
+        ins.append("i32.div_u")
+        ins.append("i32.const 4")
+        ins.append("i32.mul")
+        ins.append(f"local.set {out_len}")
+
+        # Allocate output buffer
+        ins.append(f"local.get {out_len}")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        # rem = slen % 3; full = slen - rem
+        ins.append(f"local.get {slen}")
+        ins.append("i32.const 3")
+        ins.append("i32.rem_u")
+        ins.append(f"local.set {rem}")
+        ins.append(f"local.get {slen}")
+        ins.append(f"local.get {rem}")
+        ins.append("i32.sub")
+        ins.append(f"local.set {full}")
+
+        # --- Main loop: process complete 3-byte groups ----------------
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {j}")
+        ins.append("block $brk_e3")
+        ins.append("  loop $lp_e3")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.get {full}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_e3")
+
+        # Load b0, b1, b2
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append(f"    local.set {b0}")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=1")
+        ins.append(f"    local.set {b1}")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=2")
+        ins.append(f"    local.set {b2}")
+
+        # Output char 0: alphabet[b0 >> 2]
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.add")
+        ins.append(f"    i32.const {alpha_off}")
+        ins.append(f"    local.get {b0}")
+        ins.append("    i32.const 2")
+        ins.append("    i32.shr_u")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=0")
+
+        # Output char 1: alphabet[((b0 & 3) << 4) | (b1 >> 4)]
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.add")
+        ins.append(f"    i32.const {alpha_off}")
+        ins.append(f"    local.get {b0}")
+        ins.append("    i32.const 3")
+        ins.append("    i32.and")
+        ins.append("    i32.const 4")
+        ins.append("    i32.shl")
+        ins.append(f"    local.get {b1}")
+        ins.append("    i32.const 4")
+        ins.append("    i32.shr_u")
+        ins.append("    i32.or")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=1")
+
+        # Output char 2: alphabet[((b1 & 0xF) << 2) | (b2 >> 6)]
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.add")
+        ins.append(f"    i32.const {alpha_off}")
+        ins.append(f"    local.get {b1}")
+        ins.append("    i32.const 15")
+        ins.append("    i32.and")
+        ins.append("    i32.const 2")
+        ins.append("    i32.shl")
+        ins.append(f"    local.get {b2}")
+        ins.append("    i32.const 6")
+        ins.append("    i32.shr_u")
+        ins.append("    i32.or")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=2")
+
+        # Output char 3: alphabet[b2 & 0x3F]
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.add")
+        ins.append(f"    i32.const {alpha_off}")
+        ins.append(f"    local.get {b2}")
+        ins.append("    i32.const 63")
+        ins.append("    i32.and")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=3")
+
+        # i += 3; j += 4
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 3")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.const 4")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {j}")
+        ins.append("    br $lp_e3")
+        ins.append("  end")
+        ins.append("end")
+
+        # --- Handle remainder (1 or 2 bytes) --------------------------
+        # rem == 1: 2 base64 chars + "=="
+        ins.append(f"local.get {rem}")
+        ins.append("i32.const 1")
+        ins.append("i32.eq")
+        ins.append("if")
+        ins.append(f"  local.get {ptr}")
+        ins.append(f"  local.get {i}")
+        ins.append("  i32.add")
+        ins.append("  i32.load8_u offset=0")
+        ins.append(f"  local.set {b0}")
+        # char 0: alphabet[b0 >> 2]
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {j}")
+        ins.append("  i32.add")
+        ins.append(f"  i32.const {alpha_off}")
+        ins.append(f"  local.get {b0}")
+        ins.append("  i32.const 2")
+        ins.append("  i32.shr_u")
+        ins.append("  i32.add")
+        ins.append("  i32.load8_u offset=0")
+        ins.append("  i32.store8 offset=0")
+        # char 1: alphabet[(b0 & 3) << 4]
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {j}")
+        ins.append("  i32.add")
+        ins.append(f"  i32.const {alpha_off}")
+        ins.append(f"  local.get {b0}")
+        ins.append("  i32.const 3")
+        ins.append("  i32.and")
+        ins.append("  i32.const 4")
+        ins.append("  i32.shl")
+        ins.append("  i32.add")
+        ins.append("  i32.load8_u offset=0")
+        ins.append("  i32.store8 offset=1")
+        # char 2-3: '=' (61)
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {j}")
+        ins.append("  i32.add")
+        ins.append("  i32.const 61")
+        ins.append("  i32.store8 offset=2")
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {j}")
+        ins.append("  i32.add")
+        ins.append("  i32.const 61")
+        ins.append("  i32.store8 offset=3")
+        ins.append("end")
+
+        # rem == 2: 3 base64 chars + "="
+        ins.append(f"local.get {rem}")
+        ins.append("i32.const 2")
+        ins.append("i32.eq")
+        ins.append("if")
+        ins.append(f"  local.get {ptr}")
+        ins.append(f"  local.get {i}")
+        ins.append("  i32.add")
+        ins.append("  i32.load8_u offset=0")
+        ins.append(f"  local.set {b0}")
+        ins.append(f"  local.get {ptr}")
+        ins.append(f"  local.get {i}")
+        ins.append("  i32.add")
+        ins.append("  i32.load8_u offset=1")
+        ins.append(f"  local.set {b1}")
+        # char 0: alphabet[b0 >> 2]
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {j}")
+        ins.append("  i32.add")
+        ins.append(f"  i32.const {alpha_off}")
+        ins.append(f"  local.get {b0}")
+        ins.append("  i32.const 2")
+        ins.append("  i32.shr_u")
+        ins.append("  i32.add")
+        ins.append("  i32.load8_u offset=0")
+        ins.append("  i32.store8 offset=0")
+        # char 1: alphabet[((b0 & 3) << 4) | (b1 >> 4)]
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {j}")
+        ins.append("  i32.add")
+        ins.append(f"  i32.const {alpha_off}")
+        ins.append(f"  local.get {b0}")
+        ins.append("  i32.const 3")
+        ins.append("  i32.and")
+        ins.append("  i32.const 4")
+        ins.append("  i32.shl")
+        ins.append(f"  local.get {b1}")
+        ins.append("  i32.const 4")
+        ins.append("  i32.shr_u")
+        ins.append("  i32.or")
+        ins.append("  i32.add")
+        ins.append("  i32.load8_u offset=0")
+        ins.append("  i32.store8 offset=1")
+        # char 2: alphabet[(b1 & 0xF) << 2]
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {j}")
+        ins.append("  i32.add")
+        ins.append(f"  i32.const {alpha_off}")
+        ins.append(f"  local.get {b1}")
+        ins.append("  i32.const 15")
+        ins.append("  i32.and")
+        ins.append("  i32.const 2")
+        ins.append("  i32.shl")
+        ins.append("  i32.add")
+        ins.append("  i32.load8_u offset=0")
+        ins.append("  i32.store8 offset=2")
+        # char 3: '='
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {j}")
+        ins.append("  i32.add")
+        ins.append("  i32.const 61")
+        ins.append("  i32.store8 offset=3")
+        ins.append("end")
+
+        # Leave (dst, out_len) on the stack
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {out_len}")
+
+        ins.append("end")  # else branch of empty check
+
+        return ins
+
+    def _translate_base64_decode(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate base64_decode(s) → Result<String, String> (i32 ptr).
+
+        Decodes a standard Base64 string (RFC 4648).  Returns Err on
+        invalid length (not a multiple of 4) or invalid characters.
+
+        ADT layout (16 bytes):
+          Ok(String):  [tag=0 : i32] [ptr : i32] [len : i32] [pad 4]
+          Err(String): [tag=1 : i32] [ptr : i32] [len : i32] [pad 4]
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        err_len_off, err_len_ln = self.string_pool.intern(
+            "invalid base64 length"
+        )
+        err_chr_off, err_chr_ln = self.string_pool.intern("invalid base64")
+        empty_off, empty_len = self.string_pool.intern("")
+
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        out = self.alloc_local("i32")    # Result ADT pointer
+        dst = self.alloc_local("i32")    # decoded bytes pointer
+        out_len = self.alloc_local("i32")
+        pad = self.alloc_local("i32")    # padding count (0-2)
+        i = self.alloc_local("i32")      # input index
+        k = self.alloc_local("i32")      # output index
+        ch = self.alloc_local("i32")     # current input byte
+        val = self.alloc_local("i32")    # decoded 6-bit value
+        acc = self.alloc_local("i32")    # accumulated 24-bit value
+        gi = self.alloc_local("i32")     # group-internal index (0-3)
+
+        ins: list[str] = []
+
+        # Evaluate string arg → (ptr, len)
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+
+        ins.append("block $done_bd")
+        ins.append("block $err_chr_bd")
+        ins.append("block $err_len_bd")
+
+        # Validate: slen % 4 must be 0
+        ins.append(f"local.get {slen}")
+        ins.append("i32.const 3")
+        ins.append("i32.and")        # slen & 3 (faster than rem_u)
+        ins.append("i32.const 0")
+        ins.append("i32.ne")
+        ins.append("br_if $err_len_bd")
+
+        # Empty input → Ok("")
+        ins.append(f"local.get {slen}")
+        ins.append("i32.eqz")
+        ins.append("if")
+        ins.append("  i32.const 16")
+        ins.append("  call $alloc")
+        ins.append(f"  local.tee {out}")
+        ins.append("  i32.const 0")
+        ins.append("  i32.store")          # tag = 0 (Ok)
+        ins.extend(["  " + x for x in gc_shadow_push(out)])
+        ins.append(f"  local.get {out}")
+        ins.append(f"  i32.const {empty_off}")
+        ins.append("  i32.store offset=4") # ptr
+        ins.append(f"  local.get {out}")
+        ins.append(f"  i32.const {empty_len}")
+        ins.append("  i32.store offset=8") # len
+        ins.append("  br $done_bd")
+        ins.append("end")
+
+        # Count trailing '=' padding
+        ins.append("i32.const 0")
+        ins.append(f"local.set {pad}")
+        # Check last byte: ptr + slen - 1
+        ins.append(f"local.get {ptr}")
+        ins.append(f"local.get {slen}")
+        ins.append("i32.add")
+        ins.append("i32.const 1")
+        ins.append("i32.sub")
+        ins.append("i32.load8_u offset=0")
+        ins.append("i32.const 61")         # '='
+        ins.append("i32.eq")
+        ins.append("if")
+        ins.append(f"  local.get {pad}")
+        ins.append("  i32.const 1")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {pad}")
+        # Check second-to-last byte: ptr + slen - 2
+        ins.append(f"  local.get {ptr}")
+        ins.append(f"  local.get {slen}")
+        ins.append("  i32.add")
+        ins.append("  i32.const 2")
+        ins.append("  i32.sub")
+        ins.append("  i32.load8_u offset=0")
+        ins.append("  i32.const 61")
+        ins.append("  i32.eq")
+        ins.append("  if")
+        ins.append(f"    local.get {pad}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {pad}")
+        ins.append("  end")
+        ins.append("end")
+
+        # out_len = (slen / 4) * 3 - pad
+        ins.append(f"local.get {slen}")
+        ins.append("i32.const 2")
+        ins.append("i32.shr_u")           # slen / 4
+        ins.append("i32.const 3")
+        ins.append("i32.mul")
+        ins.append(f"local.get {pad}")
+        ins.append("i32.sub")
+        ins.append(f"local.set {out_len}")
+
+        # Allocate decoded buffer
+        ins.append(f"local.get {out_len}")
+        ins.append("i32.const 1")
+        ins.append("i32.or")              # at least 1 byte for alloc
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        # --- Decode loop: 4 input chars → 3 output bytes -------------
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {k}")
+
+        ins.append("block $brk_dl")
+        ins.append("  loop $lp_dl")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_dl")
+
+        # Decode 4 chars into acc (24 bits)
+        ins.append("    i32.const 0")
+        ins.append(f"    local.set {acc}")
+        ins.append("    i32.const 0")
+        ins.append(f"    local.set {gi}")
+        ins.append("    block $brk_g")
+        ins.append("      loop $lp_g")
+        ins.append(f"        local.get {gi}")
+        ins.append("        i32.const 4")
+        ins.append("        i32.ge_u")
+        ins.append("        br_if $brk_g")
+
+        # Load input char
+        ins.append(f"        local.get {ptr}")
+        ins.append(f"        local.get {i}")
+        ins.append(f"        local.get {gi}")
+        ins.append("        i32.add")
+        ins.append("        i32.add")
+        ins.append("        i32.load8_u offset=0")
+        ins.append(f"        local.set {ch}")
+
+        # Decode char → 6-bit value via branching
+        ins.append("        block $valid_d")
+        ins.append("        block $invalid_d")
+
+        # A-Z (65-90) → 0-25
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 65")
+        ins.append("        i32.ge_u")
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 90")
+        ins.append("        i32.le_u")
+        ins.append("        i32.and")
+        ins.append("        if")
+        ins.append(f"          local.get {ch}")
+        ins.append("          i32.const 65")
+        ins.append("          i32.sub")
+        ins.append(f"          local.set {val}")
+        ins.append("          br $valid_d")
+        ins.append("        end")
+
+        # a-z (97-122) → 26-51
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 97")
+        ins.append("        i32.ge_u")
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 122")
+        ins.append("        i32.le_u")
+        ins.append("        i32.and")
+        ins.append("        if")
+        ins.append(f"          local.get {ch}")
+        ins.append("          i32.const 97")
+        ins.append("          i32.sub")
+        ins.append("          i32.const 26")
+        ins.append("          i32.add")
+        ins.append(f"          local.set {val}")
+        ins.append("          br $valid_d")
+        ins.append("        end")
+
+        # 0-9 (48-57) → 52-61
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 48")
+        ins.append("        i32.ge_u")
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 57")
+        ins.append("        i32.le_u")
+        ins.append("        i32.and")
+        ins.append("        if")
+        ins.append(f"          local.get {ch}")
+        ins.append("          i32.const 48")
+        ins.append("          i32.sub")
+        ins.append("          i32.const 52")
+        ins.append("          i32.add")
+        ins.append(f"          local.set {val}")
+        ins.append("          br $valid_d")
+        ins.append("        end")
+
+        # '+' (43) → 62
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 43")
+        ins.append("        i32.eq")
+        ins.append("        if")
+        ins.append("          i32.const 62")
+        ins.append(f"          local.set {val}")
+        ins.append("          br $valid_d")
+        ins.append("        end")
+
+        # '/' (47) → 63
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 47")
+        ins.append("        i32.eq")
+        ins.append("        if")
+        ins.append("          i32.const 63")
+        ins.append(f"          local.set {val}")
+        ins.append("          br $valid_d")
+        ins.append("        end")
+
+        # '=' (61) → 0 (padding)
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 61")
+        ins.append("        i32.eq")
+        ins.append("        if")
+        ins.append("          i32.const 0")
+        ins.append(f"          local.set {val}")
+        ins.append("          br $valid_d")
+        ins.append("        end")
+
+        # Invalid character
+        ins.append("        br $invalid_d")
+        ins.append("        end")  # block $invalid_d
+        ins.append("        br $err_chr_bd")
+
+        ins.append("        end")  # block $valid_d
+
+        # acc = (acc << 6) | val
+        ins.append(f"        local.get {acc}")
+        ins.append("        i32.const 6")
+        ins.append("        i32.shl")
+        ins.append(f"        local.get {val}")
+        ins.append("        i32.or")
+        ins.append(f"        local.set {acc}")
+
+        # gi++
+        ins.append(f"        local.get {gi}")
+        ins.append("        i32.const 1")
+        ins.append("        i32.add")
+        ins.append(f"        local.set {gi}")
+        ins.append("        br $lp_g")
+        ins.append("      end")  # loop $lp_g
+        ins.append("    end")    # block $brk_g
+
+        # Extract up to 3 bytes from acc and store if within out_len
+        # Byte 0: (acc >> 16) & 0xFF
+        ins.append(f"    local.get {k}")
+        ins.append(f"    local.get {out_len}")
+        ins.append("    i32.lt_u")
+        ins.append("    if")
+        ins.append(f"      local.get {dst}")
+        ins.append(f"      local.get {k}")
+        ins.append("      i32.add")
+        ins.append(f"      local.get {acc}")
+        ins.append("      i32.const 16")
+        ins.append("      i32.shr_u")
+        ins.append("      i32.const 255")
+        ins.append("      i32.and")
+        ins.append("      i32.store8 offset=0")
+        ins.append(f"      local.get {k}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {k}")
+        ins.append("    end")
+
+        # Byte 1: (acc >> 8) & 0xFF
+        ins.append(f"    local.get {k}")
+        ins.append(f"    local.get {out_len}")
+        ins.append("    i32.lt_u")
+        ins.append("    if")
+        ins.append(f"      local.get {dst}")
+        ins.append(f"      local.get {k}")
+        ins.append("      i32.add")
+        ins.append(f"      local.get {acc}")
+        ins.append("      i32.const 8")
+        ins.append("      i32.shr_u")
+        ins.append("      i32.const 255")
+        ins.append("      i32.and")
+        ins.append("      i32.store8 offset=0")
+        ins.append(f"      local.get {k}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {k}")
+        ins.append("    end")
+
+        # Byte 2: acc & 0xFF
+        ins.append(f"    local.get {k}")
+        ins.append(f"    local.get {out_len}")
+        ins.append("    i32.lt_u")
+        ins.append("    if")
+        ins.append(f"      local.get {dst}")
+        ins.append(f"      local.get {k}")
+        ins.append("      i32.add")
+        ins.append(f"      local.get {acc}")
+        ins.append("      i32.const 255")
+        ins.append("      i32.and")
+        ins.append("      i32.store8 offset=0")
+        ins.append(f"      local.get {k}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {k}")
+        ins.append("    end")
+
+        # i += 4
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 4")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append("    br $lp_dl")
+        ins.append("  end")  # loop $lp_dl
+        ins.append("end")    # block $brk_dl
+
+        # --- Ok path: wrap (dst, out_len) in Result -------------------
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 0")
+        ins.append("i32.store")            # tag = 0 (Ok)
+        ins.extend(gc_shadow_push(out))
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {dst}")
+        ins.append("i32.store offset=4")   # string ptr
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {out_len}")
+        ins.append("i32.store offset=8")   # string len
+        ins.append("br $done_bd")
+
+        # --- Err path: invalid length ---------------------------------
+        ins.append("end")  # block $err_len_bd
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 1")
+        ins.append("i32.store")            # tag = 1 (Err)
+        ins.extend(gc_shadow_push(out))
+        ins.append(f"local.get {out}")
+        ins.append(f"i32.const {err_len_off}")
+        ins.append("i32.store offset=4")
+        ins.append(f"local.get {out}")
+        ins.append(f"i32.const {err_len_ln}")
+        ins.append("i32.store offset=8")
+        ins.append("br $done_bd")
+
+        # --- Err path: invalid character ------------------------------
+        ins.append("end")  # block $err_chr_bd
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 1")
+        ins.append("i32.store")            # tag = 1 (Err)
+        ins.extend(gc_shadow_push(out))
+        ins.append(f"local.get {out}")
+        ins.append(f"i32.const {err_chr_off}")
+        ins.append("i32.store offset=4")
+        ins.append(f"local.get {out}")
+        ins.append(f"i32.const {err_chr_ln}")
+        ins.append("i32.store offset=8")
+
+        ins.append("end")  # block $done_bd
 
         ins.append(f"local.get {out}")
         return ins

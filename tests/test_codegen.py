@@ -4631,6 +4631,133 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         assert _run(src) == 22
 
 
+class TestBase64Encode:
+    """base64_encode returns String."""
+
+    def _prog(self, literal: str) -> str:
+        return f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  string_length(base64_encode("{literal}"))
+}}
+"""
+
+    def _io_prog(self, literal: str) -> str:
+        return f"""
+effect IO {{ op print(String -> Unit); }}
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
+  IO.print(base64_encode("{literal}"));
+  ()
+}}
+"""
+
+    def test_empty(self) -> None:
+        assert _run(self._prog("")) == 0
+
+    def test_one_byte(self) -> None:
+        # "A" -> "QQ==" (length 4)
+        assert _run_io(self._io_prog("A")) == "QQ=="
+
+    def test_two_bytes(self) -> None:
+        # "AB" -> "QUI=" (length 4)
+        assert _run_io(self._io_prog("AB")) == "QUI="
+
+    def test_three_bytes(self) -> None:
+        # "ABC" -> "QUJD" (length 4)
+        assert _run_io(self._io_prog("ABC")) == "QUJD"
+
+    def test_hello(self) -> None:
+        assert _run_io(self._io_prog("Hello")) == "SGVsbG8="
+
+    def test_hello_world(self) -> None:
+        assert _run_io(self._io_prog("Hello, World!")) == "SGVsbG8sIFdvcmxkIQ=="
+
+    def test_length_multiple_of_three(self) -> None:
+        # "abcdef" (6 bytes) -> "YWJjZGVm" (8 chars, no padding)
+        assert _run_io(self._io_prog("abcdef")) == "YWJjZGVm"
+
+
+class TestBase64Decode:
+    """base64_decode returns Result<String, String>."""
+
+    _PREAMBLE = """
+private data Result<T, E> { Ok(T), Err(E) }
+"""
+
+    def _ok_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+effect IO {{ op print(String -> Unit); }}
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
+  match base64_decode("{literal}") {{
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  }}
+}}
+"""
+
+    def _ok_len_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match base64_decode("{literal}") {{
+    Ok(@String) -> string_length(@String.0),
+    Err(_) -> 0 - 1
+  }}
+}}
+"""
+
+    def _err_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match base64_decode("{literal}") {{
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }}
+}}
+"""
+
+    def test_empty(self) -> None:
+        assert _run(self._ok_len_prog("")) == 0
+
+    def test_no_padding(self) -> None:
+        # "QUJD" -> "ABC"
+        assert _run_io(self._ok_prog("QUJD")) == "ABC"
+
+    def test_one_pad(self) -> None:
+        # "QUI=" -> "AB"
+        assert _run_io(self._ok_prog("QUI=")) == "AB"
+
+    def test_two_pad(self) -> None:
+        # "QQ==" -> "A"
+        assert _run_io(self._ok_prog("QQ==")) == "A"
+
+    def test_hello(self) -> None:
+        assert _run_io(self._ok_prog("SGVsbG8=")) == "Hello"
+
+    def test_hello_world(self) -> None:
+        assert _run_io(self._ok_prog("SGVsbG8sIFdvcmxkIQ==")) == "Hello, World!"
+
+    def test_invalid_length(self) -> None:
+        # "ABC" is not a multiple of 4
+        assert _run(self._err_prog("ABC")) == 1
+
+    def test_invalid_char(self) -> None:
+        # "QQ!!" contains invalid char '!'
+        assert _run(self._err_prog("QQ!!")) == 1
+
+    def test_roundtrip(self) -> None:
+        """Encode then decode round-trips correctly."""
+        src = self._PREAMBLE + """
+effect IO { op print(String -> Unit); }
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
+  let @String = base64_encode("Hello, World!");
+  match base64_decode(@String.0) {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  }
+}
+"""
+        assert _run_io(src) == "Hello, World!"
+
+
 class TestToString:
     def test_positive(self) -> None:
         src = """

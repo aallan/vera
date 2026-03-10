@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.79] - 2026-03-10
+
+### Added
+- **Close #234: Base64 encoding and decoding** ([#234](https://github.com/aallan/vera/issues/234)):
+  New `base64_encode(@String -> @String)` — standard Base64 (RFC 4648) encoding.
+  New `base64_decode(@String -> @Result<String, String>)` — Base64 decoding with
+  error handling for invalid length or characters.
+- New conformance test `ch09_base64` (conformance suite: 46→47 programs)
+- New example `examples/base64.vera` — encode, decode, and round-trip demo
+- 20 new tests (4 type checker + 16 codegen)
+
 ## [0.0.78] - 2026-03-10
 
 ### Added
@@ -1200,7 +1211,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.78...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.79...HEAD
+[0.0.79]: https://github.com/aallan/vera/compare/v0.0.78...v0.0.79
 [0.0.78]: https://github.com/aallan/vera/compare/v0.0.77...v0.0.78
 [0.0.77]: https://github.com/aallan/vera/compare/v0.0.76...v0.0.77
 [0.0.76]: https://github.com/aallan/vera/compare/v0.0.75...v0.0.76

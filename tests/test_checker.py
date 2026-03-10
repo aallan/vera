@@ -2614,6 +2614,35 @@ private fn f(@String -> @Bool)
 { parse_bool(@String.0) }
 """, "expected Bool")
 
+    def test_base64_encode_ok(self) -> None:
+        _check_ok("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ base64_encode(@String.0) }
+""")
+
+    def test_base64_encode_wrong_type(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ base64_encode(@Int.0) }
+""", "expected String")
+
+    def test_base64_decode_ok(self) -> None:
+        _check_ok("""
+private data Result<T, E> { Ok(T), Err(E) }
+private fn f(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(pure)
+{ base64_decode(@String.0) }
+""")
+
+    def test_base64_decode_wrong_type(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ base64_decode(@Int.0) }
+""", "expected String")
+
     def test_to_string_ok(self) -> None:
         _check_ok("""
 private fn f(@Int -> @String)
