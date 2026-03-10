@@ -4758,6 +4758,97 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
         assert _run_io(src) == "Hello, World!"
 
 
+class TestAdtStringFields:
+    """ADT constructors with String/Array fields (bug #266)."""
+
+    def test_wrap_one_string(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+private data Wrap { Wrap(String) }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match Wrap("hello") {
+    Wrap(@String) -> IO.print(@String.0)
+  }
+}
+"""
+        assert _run_io(src) == "hello"
+
+    def test_pair_two_strings(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+private data Pair { Pair(String, String) }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match Pair("hello", "world") {
+    Pair(@String, @String) -> {
+      IO.print(@String.1);
+      IO.print(@String.0)
+    }
+  }
+}
+"""
+        assert _run_io(src) == "helloworld"
+
+    def test_mixed_int_string(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+private data Mixed { Mixed(Int, String) }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match Mixed(42, "hi") {
+    Mixed(@Int, @String) -> {
+      IO.print(to_string(@Int.0));
+      IO.print(@String.0)
+    }
+  }
+}
+"""
+        assert _run_io(src) == "42hi"
+
+    def test_multi_constructor_string(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+private data Either { Left(String), Right(String) }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match Left("left") {
+    Left(@String) -> IO.print(@String.0),
+    Right(@String) -> IO.print(@String.0)
+  };
+  match Right("right") {
+    Left(@String) -> IO.print(@String.0),
+    Right(@String) -> IO.print(@String.0)
+  }
+}
+"""
+        assert _run_io(src) == "leftright"
+
+    def test_five_string_fields(self) -> None:
+        src = """
+effect IO { op print(String -> Unit); }
+private data Parts { Parts(String, String, String, String, String) }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match Parts("a", "b", "c", "d", "e") {
+    Parts(@String, @String, @String, @String, @String) -> {
+      IO.print(@String.4);
+      IO.print(@String.3);
+      IO.print(@String.2);
+      IO.print(@String.1);
+      IO.print(@String.0)
+    }
+  }
+}
+"""
+        assert _run_io(src) == "abcde"
+
+
 class TestUrlEncode:
     """url_encode returns String."""
 

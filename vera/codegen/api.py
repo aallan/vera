@@ -45,6 +45,8 @@ def _wasm_type_size(wt: str) -> int:
         return 4
     if wt in ("i64", "f64"):
         return 8
+    if wt == "i32_pair":
+        return 8
     raise ValueError(f"Unknown WASM type: {wt}")
 
 
@@ -54,6 +56,8 @@ def _wasm_type_align(wt: str) -> int:
         return 4
     if wt in ("i64", "f64"):
         return 8
+    if wt == "i32_pair":
+        return 4
     raise ValueError(f"Unknown WASM type: {wt}")
 
 

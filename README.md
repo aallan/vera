@@ -331,6 +331,11 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - [#187](https://github.com/aallan/vera/issues/187) module-qualified call disambiguation via name mangling
 - [#127](https://github.com/aallan/vera/issues/127) module re-exports
 
+**Codegen** — WASM compilation gaps
+
+- [#266](https://github.com/aallan/vera/issues/266) ADT constructors with String/Array fields crash codegen layout
+- [#267](https://github.com/aallan/vera/issues/267) Tuple type WASM codegen
+
 **IO runtime** — host bindings for file and stdin access
 
 - <del>[#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, args, exit, get_env)</del> ([v0.0.66](https://github.com/aallan/vera/releases/tag/v0.0.66))
