@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.75] - 2026-03-10
+
+### Added
+- **Close #213: string_repeat builtin** ([#213](https://github.com/aallan/vera/issues/213)):
+  New `string_repeat` function (`String, Nat → String`) that repeats a string N
+  times. Uses a single-allocation loop with modulo indexing. Pure, Tier 3
+  (runtime-tested).
+- 7 new tests (2 type checker + 5 codegen end-to-end)
+
 ## [0.0.74] - 2026-03-09
 
 ### Added
@@ -1143,7 +1152,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.74...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.75...HEAD
+[0.0.75]: https://github.com/aallan/vera/compare/v0.0.74...v0.0.75
 [0.0.74]: https://github.com/aallan/vera/compare/v0.0.73...v0.0.74
 [0.0.73]: https://github.com/aallan/vera/compare/v0.0.72...v0.0.73
 [0.0.72]: https://github.com/aallan/vera/compare/v0.0.71...v0.0.72

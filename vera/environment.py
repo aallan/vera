@@ -278,6 +278,13 @@ class TypeEnv:
             return_type=STRING,
             effect=PureEffectRow(),
         )
+        self.functions["string_repeat"] = FunctionInfo(
+            name="string_repeat",
+            forall_vars=None,
+            param_types=(STRING, NAT),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
         self.functions["parse_nat"] = FunctionInfo(
             name="parse_nat",
             forall_vars=None,

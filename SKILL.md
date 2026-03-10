@@ -405,6 +405,7 @@ string_concat(@String.0, @String.1)     -- returns String
 string_slice(@String.0, @Nat.0, @Nat.1) -- returns String (start, end)
 char_code(@String.0, @Int.0)            -- returns Nat (ASCII code at index)
 from_char_code(@Nat.0)                  -- returns String (single char from code point)
+string_repeat(@String.0, @Nat.0)        -- returns String (repeated N times)
 parse_nat(@String.0)                    -- returns Result<Nat, String>
 parse_float64(@String.0)                -- returns Float64
 to_string(@Int.0)                       -- returns String (integer to decimal)

@@ -811,6 +811,22 @@ char_code(from_char_code(65), 0)          -- 65 (roundtrip)
 string_concat(from_char_code(72), from_char_code(105))  -- "Hi"
 ```
 
+#### string_repeat
+
+```vera
+public fn string_repeat(@String, @Nat -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+Repeats a string a given number of times. Allocates `length(s) × n` bytes of heap memory and fills the result by cycling through the source bytes.
+
+```vera
+string_repeat("ab", 3)                   -- "ababab"
+string_repeat("x", 5)                    -- "xxxxx"
+string_repeat("hello", 0)                -- "" (empty)
+string_repeat("", 100)                   -- "" (empty)
+```
+
 ### 9.6.8 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
