@@ -218,6 +218,75 @@ class OperatorsMixin:
         return [f"i32.const {offset}", f"i32.const {length}"]
 
     # -----------------------------------------------------------------
+    # String interpolation
+    # -----------------------------------------------------------------
+
+    # Type -> to_string builtin dispatch (must match checker's map)
+    _INTERP_TO_STRING: dict[str, str] = {
+        "Int": "to_string",
+        "Nat": "nat_to_string",
+        "Bool": "bool_to_string",
+        "Byte": "byte_to_string",
+        "Float64": "float_to_string",
+    }
+
+    def _translate_interpolated_string(
+        self, expr: ast.InterpolatedString, env: "WasmSlotEnv",
+    ) -> list[str] | None:
+        """Translate an interpolated string to a chain of string_concat calls.
+
+        Desugars at the WASM level: ``"a\\(x)b"`` becomes
+        ``string_concat(string_concat("a", to_string(x)), "b")``.
+        Each part is translated to ``(ptr, len)`` on the stack, then
+        folded left with ``string_concat``.
+        """
+        # Collect non-empty parts as AST nodes ready for translation
+        parts: list[ast.Expr] = []
+        for p in expr.parts:
+            if isinstance(p, str):
+                if p:  # skip empty string fragments
+                    parts.append(ast.StringLit(value=p, span=expr.span))
+            else:
+                # Determine Vera type for auto-conversion
+                vera_type = self._infer_vera_type(p)
+                if vera_type == "String":
+                    parts.append(p)
+                elif vera_type in self._INTERP_TO_STRING:
+                    # Wrap with the appropriate to_string call
+                    fn_name = self._INTERP_TO_STRING[vera_type]
+                    parts.append(ast.FnCall(
+                        name=fn_name, args=(p,), span=expr.span,
+                    ))
+                else:
+                    # Fallback: try to_string (Int-compatible types)
+                    parts.append(ast.FnCall(
+                        name="to_string", args=(p,), span=expr.span,
+                    ))
+
+        if not parts:
+            # All fragments were empty -> empty string
+            offset, length = self.string_pool.intern("")
+            return [f"i32.const {offset}", f"i32.const {length}"]
+
+        if len(parts) == 1:
+            # Single part -- translate directly
+            return self.translate_expr(parts[0], env)
+
+        # Left-fold with string_concat: concat(concat(a, b), c) ...
+        result = ast.FnCall(
+            name="string_concat",
+            args=(parts[0], parts[1]),
+            span=expr.span,
+        )
+        for part in parts[2:]:
+            result = ast.FnCall(
+                name="string_concat",
+                args=(result, part),
+                span=expr.span,
+            )
+        return self.translate_expr(result, env)
+
+    # -----------------------------------------------------------------
     # Result references (postconditions)
     # -----------------------------------------------------------------
 

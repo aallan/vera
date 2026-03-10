@@ -332,6 +332,16 @@ class StringLit(Expr):
 
 
 @dataclass(frozen=True)
+class InterpolatedString(Expr):
+    """String with interpolated expressions: "text \\(expr) more".
+
+    Parts alternate: str, Expr, str, Expr, ..., str.
+    Always starts and ends with a string fragment (may be empty ``""``).
+    """
+    parts: tuple[str | Expr, ...]
+
+
+@dataclass(frozen=True)
 class BoolLit(Expr):
     """Boolean literal."""
     value: bool
@@ -720,6 +730,14 @@ def format_expr(expr: Expr) -> str:
         return "true" if expr.value else "false"
     if isinstance(expr, StringLit):
         return f'"{expr.value}"'
+    if isinstance(expr, InterpolatedString):
+        parts = []
+        for p in expr.parts:
+            if isinstance(p, str):
+                parts.append(p)
+            else:
+                parts.append(f"\\({format_expr(p)})")
+        return '"' + "".join(parts) + '"'
     if isinstance(expr, SlotRef):
         base = expr.type_name
         if expr.type_args:

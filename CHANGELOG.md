@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.76] - 2026-03-10
+
+### Added
+- **Close #230: String interpolation** ([#230](https://github.com/aallan/vera/issues/230)):
+  New `\(expr)` syntax inside double-quoted strings for ergonomic string building.
+  Non-String expressions of type Int, Nat, Bool, Byte, and Float64 are automatically
+  converted using the appropriate `*_to_string` built-in. `InterpolatedString` is a
+  first-class AST node (canonical form, survives formatting). Touches every compiler
+  stage: grammar, transformer, type checker, formatter, and WASM codegen.
+- New conformance test `ch04_string_interpolation` (conformance suite: 43→44 programs)
+- 18 new tests (9 type checker + 9 codegen end-to-end)
+- Spec Sections 1.4 "String Interpolation" and 4.13.1 "String Interpolation"
+
 ## [0.0.75] - 2026-03-10
 
 ### Added
@@ -1152,7 +1165,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.75...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.76...HEAD
+[0.0.76]: https://github.com/aallan/vera/compare/v0.0.75...v0.0.76
 [0.0.75]: https://github.com/aallan/vera/compare/v0.0.74...v0.0.75
 [0.0.74]: https://github.com/aallan/vera/compare/v0.0.73...v0.0.74
 [0.0.73]: https://github.com/aallan/vera/compare/v0.0.72...v0.0.73

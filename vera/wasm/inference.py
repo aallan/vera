@@ -151,6 +151,8 @@ class InferenceMixin:
             return "i32_pair"
         if isinstance(expr, ast.StringLit):
             return "i32_pair"
+        if isinstance(expr, ast.InterpolatedString):
+            return "i32_pair"
         if isinstance(expr, ast.QualifiedCall):
             return self._infer_qualified_call_wasm_type(expr)
         if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
@@ -300,6 +302,8 @@ class InferenceMixin:
             return self._infer_qualified_call_wasm_type(expr)
         if isinstance(expr, ast.StringLit):
             return "i32_pair"
+        if isinstance(expr, ast.InterpolatedString):
+            return "i32_pair"
         if isinstance(expr, ast.Block):
             return self._infer_block_result_type(expr)
         if isinstance(expr, ast.ConstructorCall):
@@ -350,6 +354,8 @@ class InferenceMixin:
         if isinstance(expr, ast.FnCall):
             return self._infer_fncall_vera_type(expr)
         if isinstance(expr, ast.StringLit):
+            return "String"
+        if isinstance(expr, ast.InterpolatedString):
             return "String"
         if isinstance(expr, ast.ArrayLit):
             return "Array"

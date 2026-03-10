@@ -1,0 +1,79 @@
+-- Conformance: string interpolation (Chapter 4)
+-- Tests: interpolated strings, auto-conversion (Int, Bool, Nat, Float64)
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn test_basic(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @String = "world";
+  "hello \(@String.0)"
+}
+
+public fn test_int_convert(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = 42;
+  "x = \(@Int.0)"
+}
+
+public fn test_bool_convert(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Bool = true;
+  "flag: \(@Bool.0)"
+}
+
+public fn test_nat_convert(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = string_length("abc");
+  "len=\(@Nat.0)"
+}
+
+public fn test_multiple(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = 1;
+  let @Int = 2;
+  "a=\(@Int.1), b=\(@Int.0)"
+}
+
+public fn test_only_expr(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @String = "hello";
+  "\(@String.0)"
+}
+
+public fn test_nested_call(@Unit -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @String = "hello";
+  "len=\(string_length(@String.0))"
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Int = 42;
+  IO.print("value = \(@Int.0)");
+  ()
+}

@@ -63,6 +63,8 @@ class ExpressionsMixin:
             return FLOAT64
         if isinstance(expr, ast.StringLit):
             return STRING
+        if isinstance(expr, ast.InterpolatedString):
+            return self._check_interpolated_string(expr)
         if isinstance(expr, ast.BoolLit):
             return BOOL
         if isinstance(expr, ast.UnitLit):
@@ -113,6 +115,49 @@ class ExpressionsMixin:
             return self._check_new_expr(expr)
         self._error(expr, f"Unknown expression type: {type(expr).__name__}", error_code="E176")
         return None
+
+    # -----------------------------------------------------------------
+    # String interpolation
+    # -----------------------------------------------------------------
+
+    # Types that have a corresponding *_to_string builtin.
+    _TO_STRING_TYPES: dict[str, str] = {
+        "Int": "to_string",
+        "Nat": "nat_to_string",
+        "Bool": "bool_to_string",
+        "Byte": "byte_to_string",
+        "Float64": "float_to_string",
+    }
+
+    def _check_interpolated_string(
+        self, expr: ast.InterpolatedString,
+    ) -> Type:
+        """Type-check an interpolated string expression."""
+        for part in expr.parts:
+            if isinstance(part, str):
+                continue
+            part_ty = self._synth_expr(part)
+            if part_ty is None:
+                continue  # error already emitted
+            # String expressions are fine as-is
+            if is_subtype(part_ty, STRING):
+                continue
+            # Check for auto-convertible primitive types
+            type_name = (
+                part_ty.name
+                if isinstance(part_ty, PrimitiveType)
+                else None
+            )
+            if type_name not in self._TO_STRING_TYPES:
+                self._error(
+                    part,
+                    f"Type '{pretty_type(part_ty)}' cannot be "
+                    f"automatically converted to String in string "
+                    f"interpolation. Only String, Int, Nat, Bool, "
+                    f"Byte, and Float64 are supported.",
+                    error_code="E148",
+                )
+        return STRING
 
     # -----------------------------------------------------------------
     # Slot references

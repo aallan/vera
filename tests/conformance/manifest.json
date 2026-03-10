@@ -216,6 +216,15 @@
     "features": ["string_length", "string_concat", "string_slice", "char_code", "to_string"]
   },
   {
+    "id": "ch04_string_interpolation",
+    "file": "ch04_string_interpolation.vera",
+    "chapter": 4,
+    "title": "String interpolation",
+    "level": "run",
+    "spec_ref": "Section 4.6",
+    "features": ["string_interpolation", "auto_to_string"]
+  },
+  {
     "id": "ch04_array_ops",
     "file": "ch04_array_ops.vera",
     "chapter": 4,

@@ -3399,3 +3399,86 @@ public fn main(-> @Unit)
         assert any("read_line" in w.description for w in warnings), \
             f"Expected warning about read_line, got: " \
             f"{[w.description for w in warnings]}"
+
+
+# =====================================================================
+# String interpolation
+# =====================================================================
+
+
+class TestStringInterpolation:
+    """String interpolation type checking."""
+
+    def test_interp_string_ok(self) -> None:
+        """Interpolating a String expression is allowed."""
+        _check_ok("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello \\(@String.0)" }
+""")
+
+    def test_interp_int_auto_convert(self) -> None:
+        """Int expressions are auto-converted to String."""
+        _check_ok("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "x = \\(@Int.0)" }
+""")
+
+    def test_interp_bool_auto_convert(self) -> None:
+        """Bool expressions are auto-converted to String."""
+        _check_ok("""
+private fn f(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "flag: \\(@Bool.0)" }
+""")
+
+    def test_interp_nat_auto_convert(self) -> None:
+        """Nat expressions are auto-converted to String."""
+        _check_ok("""
+private fn f(@Nat -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "n = \\(@Nat.0)" }
+""")
+
+    def test_interp_float_auto_convert(self) -> None:
+        """Float64 expressions are auto-converted to String."""
+        _check_ok("""
+private fn f(@Float64 -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "f = \\(@Float64.0)" }
+""")
+
+    def test_interp_byte_auto_convert(self) -> None:
+        """Byte expressions are auto-converted to String."""
+        _check_ok("""
+private fn f(@Byte -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "b = \\(@Byte.0)" }
+""")
+
+    def test_interp_multiple_exprs(self) -> None:
+        """Multiple interpolated expressions in one string."""
+        _check_ok("""
+private fn f(@Int, @Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "a=\\(@Int.0) b=\\(@Bool.0)" }
+""")
+
+    def test_interp_no_interp_still_works(self) -> None:
+        """A plain string without interpolation still works as StringLit."""
+        _check_ok("""
+private fn f(-> @String)
+  requires(true) ensures(true) effects(pure)
+{ "plain string" }
+""")
+
+    def test_interp_unsupported_type(self) -> None:
+        """ADT types without to_string produce E148."""
+        _check_err("""
+private data Color { Red, Green, Blue }
+
+private fn f(-> @String)
+  requires(true) ensures(true) effects(pure)
+{ "color: \\(Red)" }
+""", "cannot be automatically converted to String")

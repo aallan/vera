@@ -316,6 +316,10 @@ class CrossModuleMixin:
             self._scan_body_for_unknown_calls(node.scrutinee, known, seen)
             for arm in node.arms:
                 self._scan_body_for_unknown_calls(arm.body, known, seen)
+        elif isinstance(node, ast.InterpolatedString):
+            for part in node.parts:
+                if not isinstance(part, str):
+                    self._scan_body_for_unknown_calls(part, known, seen)
 
     def _emit_cross_module_error(
         self,

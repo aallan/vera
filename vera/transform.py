@@ -49,6 +49,7 @@ from vera.ast import (
     IfExpr,
     ImportDecl,
     IndexExpr,
+    InterpolatedString,
     IntLit,
     IntPattern,
     Invariant,
@@ -189,6 +190,98 @@ def _decode_string_escapes(s: str, meta: Any = None) -> str:
     return "".join(result)
 
 
+# ---------------------------------------------------------------------------
+# String interpolation helpers (spec §4)
+# ---------------------------------------------------------------------------
+
+def _has_interpolation(raw: str) -> bool:
+    """Check whether a raw (between-quotes) string contains ``\\(``."""
+    i = 0
+    while i < len(raw) - 1:
+        if raw[i] == "\\" and raw[i + 1] == "(":
+            return True
+        if raw[i] == "\\":
+            i += 2  # skip escaped char
+        else:
+            i += 1
+    return False
+
+
+def _split_interpolation(raw: str, meta: Any = None) -> list[str]:
+    r"""Split a raw string on ``\(`` and matching ``)`` markers.
+
+    Returns an alternating list ``[literal, expr, literal, expr, ..., literal]``
+    where even-indexed elements are literal text and odd-indexed elements are
+    expression source strings.
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    i = 0
+    while i < len(raw):
+        if raw[i] == "\\" and i + 1 < len(raw) and raw[i + 1] == "(":
+            # Flush literal buffer
+            parts.append("".join(buf))
+            buf = []
+            # Find matching ')' tracking paren depth
+            depth = 1
+            j = i + 2
+            while j < len(raw) and depth > 0:
+                if raw[j] == "(":
+                    depth += 1
+                elif raw[j] == ")":
+                    depth -= 1
+                j += 1
+            if depth != 0:
+                raise _transform_error(
+                    "Unmatched '\\(' in string interpolation — "
+                    "missing closing ')'.",
+                    meta, error_code="E009",
+                )
+            expr_text = raw[i + 2:j - 1]
+            if not expr_text.strip():
+                raise _transform_error(
+                    "Empty expression in string interpolation '\\()'.",
+                    meta, error_code="E009",
+                )
+            parts.append(expr_text)
+            i = j
+        else:
+            buf.append(raw[i])
+            i += 1
+    parts.append("".join(buf))
+    return parts
+
+
+def _parse_interp_expr(source: str, meta: Any = None) -> Expr:
+    """Parse an interpolated expression by wrapping in a dummy function."""
+    from vera.parser import parse as _parse
+
+    wrapper = (
+        "private fn interpExpr(@Unit -> @Unit)\n"
+        "  requires(true) ensures(true) effects(pure)\n"
+        f"{{ {source} }}\n"
+    )
+    try:
+        tree = _parse(wrapper)
+    except Exception:
+        raise _transform_error(
+            f"Invalid expression in string interpolation: "
+            f"\\({source})",
+            meta, error_code="E009",
+        )
+    # Transform the parse tree and extract the body expression
+    program = VeraTransformer().transform(tree)
+    fn_decl = program.declarations[0].decl
+    body = fn_decl.body
+    if body.statements:
+        raise _transform_error(
+            "Statements are not allowed inside string interpolation. "
+            "Only expressions may appear inside '\\(...)'.",
+            meta, error_code="E009",
+        )
+    return body.expr
+
+
 class VeraTransformer(Transformer):
     """Transforms a Lark parse tree into Vera AST nodes."""
 
@@ -219,8 +312,10 @@ class VeraTransformer(Transformer):
     def FLOAT_LIT(self, token: Token) -> float:
         return float(token)
 
-    def STRING_LIT(self, token: Token) -> str:
+    def STRING_LIT(self, token: Token) -> str | list[str]:
         raw = str(token)[1:-1]  # Strip surrounding quotes
+        if _has_interpolation(raw):
+            return _split_interpolation(raw, token)
         return _decode_string_escapes(raw, token)
 
     # =================================================================
@@ -696,7 +791,24 @@ class VeraTransformer(Transformer):
 
     @v_args(meta=True)
     def string_lit(self, meta, children):
-        return StringLit(value=children[0], span=_span_from_meta(meta))
+        child = children[0]
+        if isinstance(child, list):
+            # Interpolated string — child is alternating [lit, expr, lit, ...]
+            span = _span_from_meta(meta)
+            resolved: list[str | Expr] = []
+            for i, segment in enumerate(child):
+                if i % 2 == 0:
+                    # Literal fragment — decode escapes
+                    resolved.append(
+                        _decode_string_escapes(segment, meta)
+                    )
+                else:
+                    # Expression — recursively parse
+                    resolved.append(_parse_interp_expr(segment, meta))
+            return InterpolatedString(
+                parts=tuple(resolved), span=span,
+            )
+        return StringLit(value=child, span=_span_from_meta(meta))
 
     @v_args(meta=True)
     def true_lit(self, meta, children):
