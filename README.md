@@ -324,7 +324,7 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - <del>[#230](https://github.com/aallan/vera/issues/230) string interpolation</del> ([v0.0.76](https://github.com/aallan/vera/releases/tag/v0.0.76))
 - [#231](https://github.com/aallan/vera/issues/231) regex support
 - [#232](https://github.com/aallan/vera/issues/232) URL parsing and construction builtins
-- <del>[#234](https://github.com/aallan/vera/issues/234) base64 encoding and decoding</del>
+- <del>[#234](https://github.com/aallan/vera/issues/234) base64 encoding and decoding</del> ([v0.0.79](https://github.com/aallan/vera/releases/tag/v0.0.79))
 
 **Module system** — sequential dependency (#187 before #127)
 
