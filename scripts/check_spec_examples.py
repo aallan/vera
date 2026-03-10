@@ -161,16 +161,20 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 970): "FRAGMENT",  # base64_encode signature (no body)
     ("09-standard-library.md", 989): "FRAGMENT",  # base64_decode signature (no body)
 
+    # Chapter 9 — URL encoding builtin signatures (no body)
+    ("09-standard-library.md", 1016): "FRAGMENT",  # url_encode signature (no body)
+    ("09-standard-library.md", 1035): "FRAGMENT",  # url_decode signature (no body)
+
     # Chapter 9 — ML/vector builtin signatures (no body)
-    ("09-standard-library.md", 1016): "FRAGMENT",  # similarity signature (no body)
+    ("09-standard-library.md", 1061): "FRAGMENT",  # similarity signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 1120): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
-    ("09-standard-library.md", 1129): "FUTURE",   # md_render(@MdBlock -> @String)
-    ("09-standard-library.md", 1140): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
-    ("09-standard-library.md", 1149): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
-    ("09-standard-library.md", 1158): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
-    ("09-standard-library.md", 1182): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 1165): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 1174): "FUTURE",   # md_render(@MdBlock -> @String)
+    ("09-standard-library.md", 1185): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
+    ("09-standard-library.md", 1194): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
+    ("09-standard-library.md", 1203): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
+    ("09-standard-library.md", 1227): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
 }
 
 

@@ -2643,6 +2643,35 @@ private fn f(@Int -> @String)
 { base64_decode(@Int.0) }
 """, "expected String")
 
+    def test_url_encode_ok(self) -> None:
+        _check_ok("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ url_encode(@String.0) }
+""")
+
+    def test_url_encode_wrong_type(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ url_encode(@Int.0) }
+""", "expected String")
+
+    def test_url_decode_ok(self) -> None:
+        _check_ok("""
+private data Result<T, E> { Ok(T), Err(E) }
+private fn f(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(pure)
+{ url_decode(@String.0) }
+""")
+
+    def test_url_decode_wrong_type(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ url_decode(@Int.0) }
+""", "expected String")
+
     def test_to_string_ok(self) -> None:
         _check_ok("""
 private fn f(@Int -> @String)

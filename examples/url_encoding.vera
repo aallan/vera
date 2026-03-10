@@ -1,0 +1,23 @@
+-- URL percent-encoding and decoding
+effect IO {
+  op print(String -> Unit);
+}
+
+private data Result<T, E> {
+  Ok(T),
+  Err(E)
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(url_encode("Hello, World!"));
+  IO.print(url_encode("key=value&foo=bar"));
+  match url_decode("Hello%2C%20World%21") { Ok(@String) -> IO.print(@String.0), Err(@String) -> IO.print(@String.0) };
+  match url_decode(url_encode("round-trip test!")) {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  }
+}

@@ -1009,7 +1009,52 @@ base64_decode("ABC")                   -- Err("invalid base64 length")
 base64_decode("QQ!!")                  -- Err("invalid base64")
 ```
 
-### 9.6.12 similarity (Future)
+### 9.6.12 URL Encoding
+
+#### url\_encode
+
+```
+public fn url_encode(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Percent-encodes a string for use in URLs (RFC 3986). Unreserved characters (`A`–`Z`, `a`–`z`, `0`–`9`, `-`, `_`, `.`, `~`) pass through unchanged. All other bytes are encoded as `%XX` where `XX` is the uppercase hexadecimal representation of the byte value.
+
+```vera
+url_encode("Hello, World!")     -- "Hello%2C%20World%21"
+url_encode("foo@bar.com")       -- "foo%40bar.com"
+url_encode("a b c")             -- "a%20b%20c"
+url_encode("safe-text_123.~")   -- "safe-text_123.~"
+url_encode("")                  -- ""
+```
+
+#### url\_decode
+
+```
+public fn url_decode(@String -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Decodes a percent-encoded string (RFC 3986). Each `%XX` sequence is converted to the byte with that hexadecimal value. Both uppercase and lowercase hex digits are accepted. Returns `Ok(String)` on success or `Err(String)` with an error message on failure.
+
+**Error conditions:**
+
+- `"invalid percent-encoding"` — truncated `%` sequence (fewer than 2 hex digits following `%`) or invalid hex digits
+
+```vera
+url_decode("Hello%2C%20World%21")  -- Ok("Hello, World!")
+url_decode("%41%42%43")            -- Ok("ABC")
+url_decode("hello")               -- Ok("hello")
+url_decode("")                     -- Ok("")
+url_decode("%ZZ")                  -- Err("invalid percent-encoding")
+url_decode("%4")                   -- Err("invalid percent-encoding")
+```
+
+### 9.6.13 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 

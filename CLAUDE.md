@@ -40,8 +40,8 @@ vera fmt --check file.vera        # Check if already canonical
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
 mypy vera/                        # Type-check the compiler itself
 
-python scripts/check_conformance.py    # Verify all 43 conformance programs pass their declared level
-python scripts/check_examples.py      # Verify all 18 examples parse + check + verify
+python scripts/check_conformance.py    # Verify all 48 conformance programs pass their declared level
+python scripts/check_examples.py      # Verify all 20 examples parse + check + verify
 python scripts/check_spec_examples.py # Verify spec code blocks parse
 python scripts/check_readme_examples.py # Verify README code blocks parse
 python scripts/check_skill_examples.py # Verify SKILL.md code blocks parse
@@ -54,9 +54,9 @@ python scripts/fix_allowlists.py --fix # Auto-fix stale allowlist line numbers
 
 - `spec/` — Language specification (Chapters 0-12)
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
-- `examples/` — 18 example Vera programs (all must pass `vera check` and `vera verify`)
+- `examples/` — 20 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite (unit tests + conformance suite)
-- `tests/conformance/` — 43 conformance programs validating every language feature against the spec
+- `tests/conformance/` — 48 conformance programs validating every language feature against the spec
 - `scripts/` — CI and validation scripts
 
 ## Writing Vera code
@@ -74,8 +74,8 @@ Each stage is a module with a public API function and is independently testable.
 ## What not to break
 
 - Pre-commit hooks run mypy + pytest + conformance suite + example validation on every commit
-- All 43 conformance programs in `tests/conformance/` must pass their declared level
-- All 18 examples in `examples/` must pass `vera check` and `vera verify`
+- All 48 conformance programs in `tests/conformance/` must pass their declared level
+- All 20 examples in `examples/` must pass `vera check` and `vera verify`
 - Version must stay in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 - All tests must pass: `pytest tests/ -v`
 - Type checking must be clean: `mypy vera/`
