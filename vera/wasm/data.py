@@ -340,8 +340,8 @@ class DataMixin:
         Computes field offsets from concrete binding types (same
         monomorphization approach as _translate_constructor_call).
         """
-        _sizes = {"i32": 4, "i64": 8, "f64": 8}
-        _aligns = {"i32": 4, "i64": 8, "f64": 8}
+        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
+        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
         offset = 4  # after tag (i32, 4 bytes)
         instrs: list[str] = []
         new_env = env

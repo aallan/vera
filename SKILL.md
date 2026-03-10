@@ -285,7 +285,7 @@ private fn abs(@Int -> @Nat)
 @Array<Int>                              -- array of ints
 @Array<Option<Int>>                      -- array of ADT (compound element type)
 @Array<String>                           -- array of strings
-@Tuple<Int, String>                      -- tuple
+@Tuple<Int, String>                      -- tuple (type-checks but no WASM codegen yet, see #267)
 @Option<Int>                             -- Option type (Some/None)
 Fn(Int -> Int) effects(pure)              -- function type
 { @Int | @Int.0 > 0 }                   -- refinement type
@@ -816,6 +816,11 @@ Type aliases and effect declarations are module-local and cannot be imported. If
 Module-qualified calls use `::` between the module path and the function name: `vera.math::abs(42)`. The dot-separated path identifies the module and `::` separates it from the function name. This syntax can be used anywhere a function call is valid, and always resolves against the specific module's public declarations — it is not affected by local shadowing. Note: module-qualified calls (`math::abs(42)`) are available for readability but do not yet resolve name collisions in flat compilation — the compiler will still report a collision error. A future version will support qualified-call disambiguation via name mangling.
 
 There is no import aliasing (`import m(abs as math_abs)`) and no wildcard exclusion (`import m hiding(x)`). These are intentional design decisions, not limitations. When names clash across modules, rename the conflicting declaration in one of the source modules. This preserves the one-canonical-form principle — every function has exactly one name.
+
+### Known codegen limitations
+
+- **ADT constructors with String/Array fields** do not compile (#266). User-defined ADTs with only numeric fields (Int, Nat, Bool, Byte, Float64) work correctly. ADTs with String or Array fields crash the layout computation. Builtins returning `Result<String, String>` work because they use hand-coded WASM layout.
+- **Tuple types** are specified and type-check but have no WASM codegen (#267). Functions containing Tuple expressions are silently skipped. Use named ADTs (e.g. `data Pair<A, B> { Pair(A, B) }`) as a workaround.
 
 There are no raw strings (`r"..."`) or multi-line string literals. Use escape sequences (`\\`, `\n`, `\t`, `\"`) for special characters. This is by design — alternative string syntaxes would create two representations for the same value.
 

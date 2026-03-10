@@ -584,3 +584,5 @@ The current compilation model has the following limitations, each tracked as a G
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
 | Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |
+| ADT constructors with String/Array fields | [#266](https://github.com/aallan/vera/issues/266) | ADT constructor layout computation crashes on `i32_pair` (String/Array) fields; builtins bypass this via hand-coded WASM layout |
+| Tuple type codegen | [#267](https://github.com/aallan/vera/issues/267) | Tuple types are fully specified and type-checked but have no WASM backend; functions containing Tuple expressions are skipped with E602 |
