@@ -226,6 +226,9 @@ class WasmContext(
         if isinstance(expr, ast.StringLit):
             return self._translate_string_lit(expr)
 
+        if isinstance(expr, ast.InterpolatedString):
+            return self._translate_interpolated_string(expr, env)
+
         if isinstance(expr, ast.ResultRef):
             return self._translate_result_ref()
 
@@ -373,6 +376,8 @@ class WasmContext(
         calls returning i32_pair all produce two values.
         """
         if isinstance(expr, ast.StringLit):
+            return True
+        if isinstance(expr, ast.InterpolatedString):
             return True
         if isinstance(expr, ast.ArrayLit):
             return True

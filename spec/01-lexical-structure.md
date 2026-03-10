@@ -171,8 +171,25 @@ Escape sequences:
 | `\r`     | Carriage return |
 | `\0`     | Null |
 | `\u{XXXX}` | Unicode code point (1-6 hex digits) |
+| `\(`...`)` | String interpolation (see §4.6) |
 
-No other escape sequences are valid.
+No other escape sequences are valid (except `\(` which begins interpolation).
+
+#### String Interpolation
+
+String interpolation embeds expressions inside string literals using `\(expr)` syntax:
+
+```
+"hello \(@String.0)"
+"x = \(@Int.0)"
+"a=\(@Int.1), b=\(@Int.0)"
+```
+
+The `\(` sequence opens an interpolation hole. The expression inside is parsed and type-checked normally. The matching `)` closes the hole (parentheses nest correctly). Non-String expressions of type Int, Nat, Bool, Byte, or Float64 are automatically converted to String using the appropriate `*_to_string` built-in. Other types produce a type error (E148).
+
+An `InterpolatedString` is a first-class expression that returns String. It is the canonical form for strings with embedded expressions — there is no equivalent `string_concat`/`to_string` desugaring at the source level.
+
+**Limitation.** Expressions inside `\(...)` cannot contain string literals, because the lexer's regex-based string matching would terminate at the inner `"`. Use `let` bindings for expressions requiring string arguments.
 
 **Design note.** Vera does not support raw string syntax or multi-line string literals. A raw string (`r"..."`) would be an alternative representation for any string containing backslash characters, and a multi-line literal would be an alternative representation for any string containing newline characters. Both would violate the one-canonical-form principle (§0.2.3): the same string value would be expressible in two syntactically distinct ways. Since Vera targets LLM emission rather than human authoring (§0.3.1), the readability benefit of alternative string syntaxes does not justify the representational ambiguity. The escape sequence table above is the canonical and only mechanism for embedding special characters in strings.
 

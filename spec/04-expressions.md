@@ -328,6 +328,35 @@ String concatenation uses a function, not an operator. There is no `+` on string
 
 String memory is allocated via the bump allocator and is not freed. Garbage collection for WASM linear memory is tracked in [#51](https://github.com/aallan/vera/issues/51). See Chapter 11, Section 11.5 for the string pool implementation.
 
+### 4.13.1 String Interpolation
+
+String interpolation provides ergonomic syntax for building strings from mixed types. The syntax uses `\(expr)` inside double-quoted strings:
+
+```
+"hello \(@String.0)"               -- embeds a String value
+"x = \(@Int.0)"                    -- auto-converts Int to String
+"a=\(@Int.1), b=\(@Int.0)"        -- multiple interpolations
+"\(@String.0)"                     -- interpolation-only (no literal text)
+"len=\(string_length(@String.0))"  -- function call inside interpolation
+```
+
+**Type rules.** An interpolated string is an expression of type String. Each interpolated expression is type-checked independently:
+
+- If the expression has type String, it is used directly.
+- If the expression has type Int, Nat, Bool, Byte, or Float64, it is automatically converted using the appropriate built-in (`to_string`, `nat_to_string`, `bool_to_string`, `byte_to_string`, `float_to_string`).
+- All other types produce error E148.
+
+**Canonical form.** `InterpolatedString` is a first-class AST node and the canonical representation for strings with embedded expressions. The formatter preserves interpolation syntax — it does not desugar to `string_concat`/`to_string` chains.
+
+**Compilation.** At the WASM level, interpolation desugars to a chain of `string_concat` and `*_to_string` calls. For example, `"a=\(@Int.0), b=\(@Bool.0)"` becomes `string_concat(string_concat(string_concat("a=", to_string(@Int.0)), ", b="), bool_to_string(@Bool.0))`.
+
+**Limitation.** Expressions inside `\(...)` cannot contain string literals (nested `"` terminates the outer string in the regex lexer). Use `let` bindings for expressions that require string arguments:
+
+```
+let @String = string_concat("a", "b");
+"result: \(@String.0)"
+```
+
 ## 4.14 Expression Precedence (Complete)
 
 From highest to lowest precedence:

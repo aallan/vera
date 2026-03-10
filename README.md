@@ -183,7 +183,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (1,865 tests across 20 files, testing compiler internals), a **conformance suite** (43 programs across 8 spec chapters, systematically validating every language feature against the spec), and **example programs** (18 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
+Testing is organized in three layers: **unit tests** (1,899 tests across 20 files, testing compiler internals), a **conformance suite** (44 programs across 8 spec chapters, systematically validating every language feature against the spec), and **example programs** (18 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
 
 ## Roadmap
 
@@ -321,7 +321,7 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - <del>[#210](https://github.com/aallan/vera/issues/210) from_char_code builtin</del> ([v0.0.74](https://github.com/aallan/vera/releases/tag/v0.0.74))
 - <del>[#212](https://github.com/aallan/vera/issues/212) Float64 special value operations (is_nan, is_infinite)</del> ([v0.0.72](https://github.com/aallan/vera/releases/tag/v0.0.72))
 - <del>[#213](https://github.com/aallan/vera/issues/213) string_repeat builtin</del> ([v0.0.75](https://github.com/aallan/vera/releases/tag/v0.0.75))
-- [#230](https://github.com/aallan/vera/issues/230) string interpolation
+- <del>[#230](https://github.com/aallan/vera/issues/230) string interpolation</del> ([v0.0.76](https://github.com/aallan/vera/releases/tag/v0.0.76))
 - [#231](https://github.com/aallan/vera/issues/231) regex support
 - [#232](https://github.com/aallan/vera/issues/232) URL parsing and construction builtins
 - [#234](https://github.com/aallan/vera/issues/234) base64 encoding and decoding

@@ -68,6 +68,7 @@ from vera.ast import (
     IfExpr,
     ImportDecl,
     IndexExpr,
+    InterpolatedString,
     IntLit,
     IntPattern,
     Invariant,
@@ -807,6 +808,14 @@ class Formatter:
             return "true" if expr.value else "false"
         if isinstance(expr, StringLit):
             return f'"{_encode_string_escapes(expr.value)}"'
+        if isinstance(expr, InterpolatedString):
+            chunks: list[str] = []
+            for part in expr.parts:
+                if isinstance(part, str):
+                    chunks.append(_encode_string_escapes(part))
+                else:
+                    chunks.append(f"\\({self._fmt_expr(part)})")
+            return '"' + "".join(chunks) + '"'
         if isinstance(expr, UnitLit):
             return "()"
         if isinstance(expr, ArrayLit):

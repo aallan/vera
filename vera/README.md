@@ -145,7 +145,7 @@ The AST is a shallow class hierarchy. Every node is a frozen dataclass carrying 
 Node
 ├── Expr                                    Expressions
 │   ├── IntLit, FloatLit, StringLit         Literals
-│   ├── BoolLit, UnitLit, ArrayLit
+│   ├── BoolLit, UnitLit, ArrayLit, InterpolatedString
 │   ├── SlotRef(@Type.n)                    Typed De Bruijn reference
 │   ├── ResultRef(@Type.result)             Return value reference
 │   ├── BinaryExpr, UnaryExpr              Operators

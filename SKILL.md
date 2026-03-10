@@ -417,6 +417,18 @@ float_to_string(@Float64.0)             -- returns String (decimal representatio
 strip(@String.0)                        -- returns String (trim whitespace)
 ```
 
+#### String interpolation
+
+```vera
+"hello \(@String.0)"               -- embeds a String value
+"x = \(@Int.0)"                    -- auto-converts Int to String
+"a=\(@Int.1), b=\(@Int.0)"        -- multiple interpolations
+"\(@String.0)"                     -- interpolation-only (no literal text)
+"len=\(string_length(@String.0))"  -- function call inside interpolation
+```
+
+Expressions inside `\(...)` are auto-converted to String for types: Int, Nat, Bool, Byte, Float64. Other types produce error E148. Expressions cannot contain string literals (use `let` bindings instead).
+
 #### String search
 
 ```vera

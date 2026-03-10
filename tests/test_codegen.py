@@ -6106,3 +6106,130 @@ public fn main(-> @Unit)
 """
         result = _compile_ok(source)
         assert '(export "alloc"' not in result.wat
+
+
+# =====================================================================
+# String interpolation
+# =====================================================================
+
+
+class TestStringInterpolation:
+    """String interpolation compiles and executes correctly."""
+
+    def test_basic_string(self) -> None:
+        """Interpolating a String value into a literal."""
+        source = _IO_PRELUDE + """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print("hello \\(@String.0)") }
+"""
+        # Pass a string via string_concat workaround — use a known string
+        # Instead, use a function that builds the interpolated string
+        source2 = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = "world";
+  IO.print("hello \\(@String.0)")
+}
+"""
+        assert _run_io(source2, fn="main") == "hello world"
+
+    def test_int_convert(self) -> None:
+        """Int expressions are auto-converted to String."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Int = 42;
+  IO.print("x = \\(@Int.0)")
+}
+"""
+        assert _run_io(source, fn="main") == "x = 42"
+
+    def test_bool_convert(self) -> None:
+        """Bool expressions are auto-converted to String."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Bool = true;
+  IO.print("flag: \\(@Bool.0)")
+}
+"""
+        assert _run_io(source, fn="main") == "flag: true"
+
+    def test_multiple_parts(self) -> None:
+        """Multiple interpolated expressions."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Int = 1;
+  let @Int = 2;
+  IO.print("a=\\(@Int.1), b=\\(@Int.0)")
+}
+"""
+        assert _run_io(source, fn="main") == "a=1, b=2"
+
+    def test_only_expr(self) -> None:
+        """Interpolation with only an expression, no literal text."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = "hello";
+  IO.print("\\(@String.0)")
+}
+"""
+        assert _run_io(source, fn="main") == "hello"
+
+    def test_empty_fragments(self) -> None:
+        """Adjacent interpolations with no text between them."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Int = 1;
+  let @Int = 2;
+  IO.print("\\(@Int.1)\\(@Int.0)")
+}
+"""
+        assert _run_io(source, fn="main") == "12"
+
+    def test_nat_convert(self) -> None:
+        """Nat auto-conversion works."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Nat = string_length("abc");
+  IO.print("len=\\(@Nat.0)")
+}
+"""
+        assert _run_io(source, fn="main") == "len=3"
+
+    def test_float_convert(self) -> None:
+        """Float64 auto-conversion works."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Float64 = 3.14;
+  IO.print("pi=\\(@Float64.0)")
+}
+"""
+        out = _run_io(source, fn="main")
+        assert out.startswith("pi=3.14")
+
+    def test_nested_fn_call(self) -> None:
+        """Function call inside interpolation."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = "hello";
+  IO.print("len=\\(string_length(@String.0))")
+}
+"""
+        assert _run_io(source, fn="main") == "len=5"
