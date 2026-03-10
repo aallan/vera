@@ -394,5 +394,14 @@
     "level": "run",
     "spec_ref": "Section 9.6.5",
     "features": ["is_nan", "is_infinite", "nan", "infinity"]
+  },
+  {
+    "id": "ch04_parse_completeness",
+    "file": "ch04_parse_completeness.vera",
+    "chapter": 4,
+    "title": "Parse completeness (parse_int, parse_bool, parse_float64 Result)",
+    "level": "run",
+    "spec_ref": "Section 4.6",
+    "features": ["parse_int", "parse_bool", "parse_float64", "result_type"]
   }
 ]
