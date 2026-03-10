@@ -393,8 +393,10 @@ Statements end with `;`. The final expression (no `;`) is the block's value.
 ### Array operations
 
 ```vera
-length(@Array<Int>.0)                   -- returns Int (always >= 0)
-array_push(@Array<Int>.0, @Int.0)       -- returns Array<Int> (new array with element appended)
+array_length(@Array<Int>.0)             -- returns Int (always >= 0)
+array_append(@Array<Int>.0, @Int.0)     -- returns Array<Int> (new array with element appended)
+array_range(@Int.0, @Int.1)             -- returns Array<Int> (integers [start, end))
+array_concat(@Array<Int>.0, @Array<Int>.1)  -- returns Array<Int> (merge two arrays)
 ```
 
 ### String operations
@@ -495,7 +497,7 @@ infinity()                         -- returns Float64 (positive infinity)
 
 `is_nan` and `is_infinite` test for IEEE 754 special values. `nan()` and `infinity()` construct them — use `0.0 - infinity()` for negative infinity. All four are Tier 3 (runtime-tested, not SMT-verifiable).
 
-**Shadowing**: If you define a function with the same name as a built-in (e.g. `length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
+**Shadowing**: If you define a function with the same name as a built-in (e.g. `array_length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
 
 Example:
 
@@ -553,12 +555,12 @@ For nested recursion, use lexicographic ordering: `decreases(@Nat.0, @Nat.1)`.
 
 ```vera
 -- For all indices in [0, bound):
-forall(@Nat, length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
+forall(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
   @Array<Int>.0[@Nat.0] > 0
 })
 
 -- There exists an index in [0, bound):
-exists(@Nat, length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
+exists(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
   @Array<Int>.0[@Nat.0] == 0
 })
 ```

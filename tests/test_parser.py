@@ -496,7 +496,7 @@ class TestRefinementTypes:
         """)
 
     def test_parameterized_refinement_alias(self) -> None:
-        parse("type NonEmpty<T> = { @Array<T> | length(@Array<T>.0) > 0 };")
+        parse("type NonEmpty<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };")
 
 
 class TestTupleDestructuring:
@@ -521,7 +521,7 @@ class TestQuantifiers:
           ensures(true)
           effects(pure)
         {
-          forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+          forall(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
             @Array<Int>.0[@Int.0] > 0
           })
         }
@@ -534,7 +534,7 @@ class TestQuantifiers:
           ensures(true)
           effects(pure)
         {
-          exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+          exists(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
             @Array<Int>.0[@Int.0] == 0
           })
         }

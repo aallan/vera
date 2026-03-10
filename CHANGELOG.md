@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.78] - 2026-03-10
+
+### Added
+- **Close #209: Array construction builtins** ([#209](https://github.com/aallan/vera/issues/209)):
+  New `array_range(@Int, @Int -> @Array<Int>)` — integer range [start, end), empty
+  if start >= end. New `array_concat(forall<T> @Array<T>, @Array<T> -> @Array<T>)` —
+  merge two arrays into a new array.
+- New conformance test `ch04_array_construction` (conformance suite: 45→46 programs)
+- 17 new tests (4 type checker + 7 codegen array_range + 6 codegen array_concat)
+
+### Changed
+- **Breaking:** `length` renamed to `array_length`. The array length builtin now
+  follows the same `array_` prefix convention used by string builtins (`string_length`,
+  `string_concat`, etc.). All code using `length()` on arrays must be updated.
+- **Breaking:** `array_push` renamed to `array_append`. Clearer intent and consistent
+  naming with the new array builtins.
+
 ## [0.0.77] - 2026-03-10
 
 ### Added
@@ -1183,7 +1200,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.77...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.78...HEAD
+[0.0.78]: https://github.com/aallan/vera/compare/v0.0.77...v0.0.78
 [0.0.77]: https://github.com/aallan/vera/compare/v0.0.76...v0.0.77
 [0.0.76]: https://github.com/aallan/vera/compare/v0.0.75...v0.0.76
 [0.0.75]: https://github.com/aallan/vera/compare/v0.0.74...v0.0.75

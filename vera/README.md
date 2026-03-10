@@ -292,7 +292,10 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `State<T>` | Effect | `get(Unit) → T`, `put(T) → Unit` operations |
 | `IO` | Effect | `print`, `read_line`, `read_file`, `write_file`, `args`, `exit`, `get_env` |
 | `Diverge` | Effect | No operations — marker for non-termination |
-| `length` | Function | `forall<T> Array<T> → Int`, pure |
+| `array_length` | Function | `forall<T> Array<T> → Int`, pure |
+| `array_append` | Function | `forall<T> Array<T>, T → Array<T>`, pure |
+| `array_range` | Function | `Int, Int → Array<Int>`, pure |
+| `array_concat` | Function | `forall<T> Array<T>, Array<T> → Array<T>`, pure |
 | `string_length` | Function | `String → Nat`, pure |
 | `string_concat` | Function | `String, String → String`, pure |
 | `string_slice` | Function | `String, Nat, Nat → String`, pure |
@@ -350,7 +353,7 @@ The spec defines three verification tiers. The compiler implements Tiers 1 and 3
 
 | Tier | What | How | Status |
 |------|------|-----|--------|
-| **1** | Decidable fragment: QF_LIA + Booleans + comparisons + if/else + let + match + constructors + `length` + decreases | Z3 proves automatically | Implemented |
+| **1** | Decidable fragment: QF_LIA + Booleans + comparisons + if/else + let + match + constructors + `array_length` + decreases | Z3 proves automatically | Implemented |
 | **2** | Extended: quantifiers, function call reasoning, array access | Z3 with hints/timeouts | Future |
 | **3** | Everything else | Runtime assertion fallback | Warning emitted |
 
@@ -405,7 +408,7 @@ When a contract or function body contains constructs that can't be translated to
 | `&&`, `\|\|`, `==>` | `z3.And`, `z3.Or`, `z3.Implies` |
 | `!`, `-` (unary) | `z3.Not`, negation |
 | `if c then t else e` | `z3.If(c, t, e)` |
-| `length(arr)` | Uninterpreted function, constrained `>= 0` |
+| `array_length(arr)` | Uninterpreted function, constrained `>= 0` |
 | `abs(x)` | `z3.If(x >= 0, x, -x)` |
 | `min(a, b)` | `z3.If(a <= b, a, b)` |
 | `max(a, b)` | `z3.If(a >= b, a, b)` |

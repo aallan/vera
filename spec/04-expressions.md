@@ -234,7 +234,7 @@ Functions are applied by name with parenthesised arguments:
 
 ```
 add(@Int.0, @Int.1)
-length(@String.0)
+string_length(@String.0)
 factorial(@Nat.0)
 ```
 
@@ -290,16 +290,28 @@ Indexing uses square brackets with an `Int` or `Nat` index. Array indexing is bo
 
 ### 4.12.3 Array Operations
 
-The built-in `length` function returns the number of elements in an array (see Chapter 9, Section 9.6.1):
+The built-in `array_length` function returns the number of elements in an array (see Chapter 9, Section 9.6.1):
 
 ```
-length(@Array<Int>.0)                -- returns Int (>= 0)
+array_length(@Array<Int>.0)                -- returns Int (>= 0)
 ```
 
-The built-in `array_push` function returns a new array with an element appended (see Chapter 9, Section 9.6.2):
+The built-in `array_append` function returns a new array with an element appended (see Chapter 9, Section 9.6.2):
 
 ```
-array_push(@Array<Int>.0, @Int.0)    -- returns Array<Int>
+array_append(@Array<Int>.0, @Int.0)    -- returns Array<Int>
+```
+
+The built-in `array_range` function produces an array of integers over a half-open interval (see Chapter 9, Section 9.6.3):
+
+```
+array_range(@Int.0, @Int.1)            -- returns Array<Int> ([start, end))
+```
+
+The built-in `array_concat` function merges two arrays (see Chapter 9, Section 9.6.4):
+
+```
+array_concat(@Array<Int>.0, @Array<Int>.1)  -- returns Array<Int>
 ```
 
 Future array operations (`map`, `fold`, `slice`) will be added alongside the module system and abilities (see Chapter 9, Section 9.4.1).

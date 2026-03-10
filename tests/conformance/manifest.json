@@ -231,7 +231,16 @@
     "title": "Array operations",
     "level": "run",
     "spec_ref": "Section 4.7",
-    "features": ["array_literal", "array_length", "array_get", "array_push"]
+    "features": ["array_literal", "array_length", "array_get", "array_append"]
+  },
+  {
+    "id": "ch04_array_construction",
+    "file": "ch04_array_construction.vera",
+    "chapter": 4,
+    "title": "Array construction builtins",
+    "level": "run",
+    "spec_ref": "Section 9.6",
+    "features": ["array_range", "array_concat", "array_append"]
   },
   {
     "id": "ch05_basic_function",

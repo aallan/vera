@@ -47,7 +47,7 @@ Tuple elements are accessed by type-indexed slot references within the destructu
 Array<Int>
 ```
 
-Arrays are fixed-size, homogeneous, immutable ordered collections. Array length is known at runtime and accessible via the `length` built-in.
+Arrays are fixed-size, homogeneous, immutable ordered collections. Array length is known at runtime and accessible via the `array_length` built-in.
 
 Array elements are accessed by integer index: `@Array<Int>.0[3]` accesses the element at index 3 of the nearest `Array<Int>` binding.
 
@@ -171,7 +171,7 @@ More examples:
 
 ```
 { @Int | @Int.0 >= 0 && @Int.0 < 100 }       -- integers in [0, 100)
-{ @Array<Int> | length(@Array<Int>.0) > 0 }   -- non-empty integer arrays
+{ @Array<Int> | array_length(@Array<Int>.0) > 0 }   -- non-empty integer arrays
 { @String | length(@String.0) <= 255 }         -- strings of at most 255 characters
 ```
 
@@ -184,7 +184,7 @@ Refinement predicates MUST be drawn from the following decidable logic fragment:
 - Arithmetic: `+`, `-`, `*` (where at least one operand of `*` is a literal)
 - Comparison: `==`, `!=`, `<`, `>`, `<=`, `>=`
 - Boolean connectives: `&&`, `||`, `!`, `==>`  (where `==>` is logical implication)
-- `length(@Array<T>.n)` — array length
+- `array_length(@Array<T>.n)` — array length
 - `length(@String.n)` — string length
 - `true`, `false`
 - Parenthesised sub-expressions
@@ -214,7 +214,7 @@ Type aliases can capture commonly used refinements:
 
 ```
 type PosInt = { @Int | @Int.0 > 0 };
-type NonEmptyArray<T> = { @Array<T> | length(@Array<T>.0) > 0 };
+type NonEmptyArray<T> = { @Array<T> | array_length(@Array<T>.0) > 0 };
 type Percentage = { @Int | @Int.0 >= 0 && @Int.0 <= 100 };
 type Byte = { @Int | @Int.0 >= 0 && @Int.0 <= 255 };
 ```

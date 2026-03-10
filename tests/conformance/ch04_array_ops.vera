@@ -1,11 +1,11 @@
 -- Conformance: array operations (Chapter 4)
--- Tests: array literal, length, array indexing, array_push
+-- Tests: array literal, array_length, array indexing, array_append
 public fn test_length(@Unit -> @Int)
   requires(true)
   ensures(@Int.result == 3)
   effects(pure)
 {
-  length([1, 2, 3])
+  array_length([1, 2, 3])
 }
 
 public fn test_get(@Unit -> @Int)
@@ -22,7 +22,7 @@ public fn test_push(@Unit -> @Int)
   ensures(@Int.result == 4)
   effects(pure)
 {
-  length(array_push([1, 2, 3], 4))
+  array_length(array_append([1, 2, 3], 4))
 }
 
 public fn main(@Unit -> @Bool)
