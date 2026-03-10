@@ -335,6 +335,7 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 
 - <del>[#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, args, exit, get_env)</del> ([v0.0.66](https://github.com/aallan/vera/releases/tag/v0.0.66))
 - <del>[#216](https://github.com/aallan/vera/issues/216) string escape sequences (\n, \t, etc.) not parsed in string literals</del> ([v0.0.67](https://github.com/aallan/vera/releases/tag/v0.0.67))
+- [#263](https://github.com/aallan/vera/issues/263) CLI argument passing: support strings, floats, and typed dispatch
 
 **Testing improvements** — sequential dependency (#169 before #170)
 
