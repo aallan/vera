@@ -827,7 +827,107 @@ string_repeat("hello", 0)                -- "" (empty)
 string_repeat("", 100)                   -- "" (empty)
 ```
 
-### 9.6.8 similarity (Future)
+### 9.6.8 Parsing Functions
+
+Parsing functions convert strings to typed values, returning `Result<T, String>` to represent success or failure. All strip leading and trailing ASCII whitespace (spaces, tabs, `\r`, `\n`) before parsing. All are pure and Tier 3 for verification.
+
+The `Result` type used by parsing functions is the standard ADT:
+
+```vera
+private data Result<T, E> { Ok(T), Err(E) }
+```
+
+On success, the `Ok` variant contains the parsed value. On failure, the `Err` variant contains a descriptive error message string.
+
+#### parse_nat
+
+```vera
+public fn parse_nat(@String -> @Result<Nat, String>)
+  requires(true) ensures(true) effects(pure)
+```
+
+Parses a non-negative integer from a string. After stripping whitespace, the remaining characters must all be ASCII digits (`0`–`9`). Leading zeros are permitted (e.g., `"007"` parses as `7`).
+
+Error messages:
+- `"empty string"` — the input is empty or contains only whitespace
+- `"invalid digit"` — a non-digit character was encountered
+
+```vera
+parse_nat("42")        -- Ok(42)
+parse_nat("  7  ")     -- Ok(7)   (whitespace stripped)
+parse_nat("007")       -- Ok(7)   (leading zeros allowed)
+parse_nat("abc")       -- Err("invalid digit")
+parse_nat("")          -- Err("empty string")
+parse_nat("  ")        -- Err("empty string")
+```
+
+#### parse_int
+
+```vera
+public fn parse_int(@String -> @Result<Int, String>)
+  requires(true) ensures(true) effects(pure)
+```
+
+Parses a signed integer from a string. After stripping whitespace, an optional leading `+` or `-` sign is consumed. The remaining characters must all be ASCII digits (`0`–`9`). A bare sign with no digits (e.g., `"-"`) is an error.
+
+Error messages:
+- `"empty string"` — the input is empty or contains only whitespace
+- `"invalid character"` — a non-digit character was encountered (after any sign)
+
+```vera
+parse_int("42")        -- Ok(42)
+parse_int("-7")        -- Ok(-7)
+parse_int("+3")        -- Ok(3)
+parse_int("  -42  ")   -- Ok(-42) (whitespace stripped)
+parse_int("abc")       -- Err("invalid character")
+parse_int("-")         -- Err("invalid character")
+parse_int("")          -- Err("empty string")
+```
+
+#### parse_float64
+
+```vera
+public fn parse_float64(@String -> @Result<Float64, String>)
+  requires(true) ensures(true) effects(pure)
+```
+
+Parses a 64-bit floating-point number from a string. After stripping whitespace, an optional leading `-` sign is consumed, followed by one or more digits, an optional decimal point with additional digits, and an optional exponent (`e` or `E` followed by an optional sign and digits). At least one digit must appear in the integer part.
+
+Error messages:
+- `"empty string"` — the input is empty or contains only whitespace
+- `"invalid character"` — a non-digit, non-`.`, non-`e`/`E` character was encountered
+
+```vera
+parse_float64("3.14")      -- Ok(3.14)
+parse_float64("-2.5")      -- Ok(-2.5)
+parse_float64("42")        -- Ok(42.0)
+parse_float64("  1.0  ")   -- Ok(1.0) (whitespace stripped)
+parse_float64("abc")       -- Err("invalid character")
+parse_float64("")          -- Err("empty string")
+```
+
+#### parse_bool
+
+```vera
+public fn parse_bool(@String -> @Result<Bool, String>)
+  requires(true) ensures(true) effects(pure)
+```
+
+Parses a boolean from a string. After stripping whitespace, the remaining content must be exactly `"true"` or `"false"` (strict lowercase). No other forms are accepted — `"True"`, `"TRUE"`, `"yes"`, `"1"`, etc. all produce errors. This strictness prevents ambiguity when models generate boolean values.
+
+Error messages:
+- `"expected true or false"` — the input does not match `"true"` or `"false"` after whitespace stripping
+
+```vera
+parse_bool("true")         -- Ok(true)
+parse_bool("false")        -- Ok(false)
+parse_bool("  true  ")     -- Ok(true) (whitespace stripped)
+parse_bool("True")         -- Err("expected true or false")
+parse_bool("yes")          -- Err("expected true or false")
+parse_bool("")             -- Err("expected true or false")
+```
+
+### 9.6.9 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 
