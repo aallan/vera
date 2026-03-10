@@ -1,0 +1,82 @@
+-- Conformance: url_parse, url_join (Chapter 9)
+-- Tests: url_parse returning Result<UrlParts, String>, url_join
+effect IO {
+  op print(String -> Unit);
+}
+
+private data UrlParts {
+  UrlParts(String, String, String, String, String)
+}
+
+private data Result<T, E> {
+  Ok(T),
+  Err(E)
+}
+
+public fn test_parse_full(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  match url_parse("https://example.com/path?q=1#frag") {
+    Ok(@UrlParts) -> match @UrlParts.0 { UrlParts(@String, @String, @String, @String, @String) -> string_length(@String.4) },
+    Err(_) -> 0 - 1
+  }
+}
+
+public fn test_parse_no_query(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  match url_parse("https://example.com/path") {
+    Ok(@UrlParts) -> match @UrlParts.0 { UrlParts(@String, @String, @String, @String, @String) -> string_length(@String.2) },
+    Err(_) -> 0 - 1
+  }
+}
+
+public fn test_parse_err(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match url_parse("no-scheme") {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
+public fn test_join_full(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 33)
+  effects(pure)
+{
+  match url_parse("https://example.com/path?q=1#frag") {
+    Ok(@UrlParts) -> string_length(url_join(@UrlParts.0)),
+    Err(_) -> 0 - 1
+  }
+}
+
+public fn test_roundtrip(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  match url_parse("https://example.com/path?q=1#frag") {
+    Ok(@UrlParts) -> match url_parse(url_join(@UrlParts.0)) { Ok(@UrlParts) -> match @UrlParts.0 { UrlParts(@String, @String, @String, @String, @String) -> string_length(@String.4) }, Err(_) -> 0 - 2 },
+    Err(_) -> 0 - 1
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(to_string(test_parse_full(())));
+  IO.print(to_string(test_parse_no_query(())));
+  IO.print(to_string(test_parse_err(())));
+  IO.print(to_string(test_join_full(())));
+  IO.print(to_string(test_roundtrip(())));
+  ()
+}

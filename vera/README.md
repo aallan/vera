@@ -310,6 +310,8 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `base64_decode` | Function | `String → Result<String, String>`, pure |
 | `url_encode` | Function | `String → String`, pure (RFC 3986 percent-encoding) |
 | `url_decode` | Function | `String → Result<String, String>`, pure |
+| `url_parse` | Function | `String → Result<UrlParts, String>`, pure (RFC 3986 decomposition) |
+| `url_join` | Function | `UrlParts → String`, pure (reassemble URL) |
 | `to_string` | Function | `Int → String`, pure |
 | `int_to_string` | Function | `Int → String`, pure (alias for `to_string`) |
 | `bool_to_string` | Function | `Bool → String`, pure |
@@ -609,7 +611,6 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No LSP server** | No IDE integration or structured code intelligence for agents | [#222](https://github.com/aallan/vera/issues/222) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |
-| **ADT constructors with String/Array fields crash** | Layout computation (`_wasm_type_align`) only handles `i32`, `i64`, `f64` — not `i32_pair` (String/Array representation); builtins work via hand-coded layout | [#266](https://github.com/aallan/vera/issues/266) |
 | **No Tuple codegen** | Tuple types are specified and type-checked but have zero WASM backend support; functions with Tuple expressions get E602 | [#267](https://github.com/aallan/vera/issues/267) |
 | **No string interpolation** | Strings built via `string_concat` or chained `IO.print` calls | [#230](https://github.com/aallan/vera/issues/230) |
 | **No regex** | String processing limited to builtin functions (contains, substring, etc.) | [#231](https://github.com/aallan/vera/issues/231) |

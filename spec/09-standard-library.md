@@ -1054,7 +1054,53 @@ url_decode("%ZZ")                  -- Err("invalid percent-encoding")
 url_decode("%4")                   -- Err("invalid percent-encoding")
 ```
 
-### 9.6.13 similarity (Future)
+### 9.6.13 URL Parsing
+
+```
+data UrlParts {
+  UrlParts(String, String, String, String, String)
+}
+```
+
+`UrlParts` is a built-in ADT representing the five components of a URL per RFC 3986: scheme, authority, path, query, and fragment. Programs must redefine `UrlParts` locally (like `Result` and `Option`) to use it in match expressions.
+
+```
+public fn url_parse(@String -> @Result<UrlParts, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Decomposes a URL string into its RFC 3986 components. Returns `Ok(UrlParts(scheme, authority, path, query, fragment))` on success, or `Err("missing scheme")` if no `:` delimiter is found. Missing optional components (authority, query, fragment) are represented as empty strings.
+
+```
+url_parse("https://example.com/path?q=1#frag")
+  -- Ok(UrlParts("https", "example.com", "/path", "q=1", "frag"))
+url_parse("http:")
+  -- Ok(UrlParts("http", "", "", "", ""))
+url_parse("file:///path")
+  -- Ok(UrlParts("file", "", "/path", "", ""))
+url_parse("no-scheme")
+  -- Err("missing scheme")
+```
+
+```
+public fn url_join(@UrlParts -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Reassembles a `UrlParts` value into a URL string. If the scheme is non-empty, the `://` separator is inserted. The `?` and `#` delimiters are only included when their respective components are non-empty.
+
+```
+url_join(UrlParts("https", "example.com", "/path", "q=1", "frag"))
+  -- "https://example.com/path?q=1#frag"
+url_join(UrlParts("", "", "", "", ""))
+  -- ""
+```
+
+### 9.6.14 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 

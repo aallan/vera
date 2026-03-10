@@ -430,5 +430,14 @@
     "level": "run",
     "spec_ref": "Section 9.6.5",
     "features": ["url_encode", "url_decode", "result_type"]
+  },
+  {
+    "id": "ch09_url_parsing",
+    "file": "ch09_url_parsing.vera",
+    "chapter": 9,
+    "title": "URL parsing and joining",
+    "level": "run",
+    "spec_ref": "Section 9.6.5",
+    "features": ["url_parse", "url_join", "urlparts", "result_type"]
   }
 ]

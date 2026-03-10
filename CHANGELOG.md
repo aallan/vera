@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.81] - 2026-03-10
+
+### Added
+- **URL parsing and joining** ([#232](https://github.com/aallan/vera/issues/232), Phase 2):
+  New `url_parse(@String -> @Result<UrlParts, String>)` — RFC 3986 URL decomposition
+  into scheme, authority, path, query, and fragment components.
+  New `url_join(@UrlParts -> @String)` — reassembles a `UrlParts` value into a URL string.
+  New built-in `UrlParts` ADT type with five String fields.
+- New conformance test `ch09_url_parsing` (conformance suite: 48→49 programs)
+- New example `examples/url_parsing.vera` — parse, extract components, join, and error demo
+- 29 new tests (4 type checker + 25 codegen)
+
+### Fixed
+- **ADT constructors with String/Array fields** ([#266](https://github.com/aallan/vera/issues/266)):
+  Layout computation (`_wasm_type_size`, `_wasm_type_align`) now handles `i32_pair`
+  (String/Array representation). User-defined ADTs with String fields compile correctly.
+
 ## [0.0.80] - 2026-03-10
 
 ### Added
@@ -1223,7 +1240,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.80...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.81...HEAD
+[0.0.81]: https://github.com/aallan/vera/compare/v0.0.80...v0.0.81
 [0.0.80]: https://github.com/aallan/vera/compare/v0.0.79...v0.0.80
 [0.0.79]: https://github.com/aallan/vera/compare/v0.0.78...v0.0.79
 [0.0.78]: https://github.com/aallan/vera/compare/v0.0.77...v0.0.78

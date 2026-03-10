@@ -165,16 +165,20 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1016): "FRAGMENT",  # url_encode signature (no body)
     ("09-standard-library.md", 1035): "FRAGMENT",  # url_decode signature (no body)
 
+    # Chapter 9 — URL parsing builtin signatures (no body)
+    ("09-standard-library.md", 1067): "FRAGMENT",  # url_parse signature (no body)
+    ("09-standard-library.md", 1087): "FRAGMENT",  # url_join signature (no body)
+
     # Chapter 9 — ML/vector builtin signatures (no body)
-    ("09-standard-library.md", 1061): "FRAGMENT",  # similarity signature (no body)
+    ("09-standard-library.md", 1107): "FRAGMENT",  # similarity signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 1165): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
-    ("09-standard-library.md", 1174): "FUTURE",   # md_render(@MdBlock -> @String)
-    ("09-standard-library.md", 1185): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
-    ("09-standard-library.md", 1194): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
-    ("09-standard-library.md", 1203): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
-    ("09-standard-library.md", 1227): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 1211): "FUTURE",   # md_parse(@String -> @Result<MdBlock, String>)
+    ("09-standard-library.md", 1220): "FUTURE",   # md_render(@MdBlock -> @String)
+    ("09-standard-library.md", 1231): "FUTURE",   # md_has_heading(@MdBlock, @Nat -> @Bool)
+    ("09-standard-library.md", 1240): "FUTURE",   # md_has_code_block(@MdBlock, @String -> @Bool)
+    ("09-standard-library.md", 1249): "FUTURE",   # md_extract_code_blocks(@MdBlock, @String -> @Array<String>)
+    ("09-standard-library.md", 1273): "FUTURE",   # convert_to_markdown(@String -> @Result<MdBlock, String>)
 }
 
 
@@ -226,6 +230,9 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
 
     # Chapter 9 — async/await (future feature, tracked in spec as not implemented)
     ("09-standard-library.md", 248): "FUTURE",  # async, await, Http, Future
+
+    # Chapter 9 — UrlParts type definition (standalone, no visibility)
+    ("09-standard-library.md", 1059): "INCOMPLETE",  # data UrlParts (no visibility keyword)
 }
 
 

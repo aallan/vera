@@ -227,8 +227,10 @@ class InferenceMixin:
             "base64_decode", "url_decode",
         ):
             return "i32"
-        if expr.name in ("base64_encode", "url_encode"):
+        if expr.name in ("base64_encode", "url_encode", "url_join"):
             return "i32_pair"
+        if expr.name == "url_parse":
+            return "i32"
         # Numeric math builtins
         if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
             return "i64"
@@ -405,8 +407,10 @@ class InferenceMixin:
             "base64_decode", "url_decode",
         ):
             return "Result"
-        if call.name in ("base64_encode", "url_encode"):
+        if call.name in ("base64_encode", "url_encode", "url_join"):
             return "String"
+        if call.name == "url_parse":
+            return "Result"
         # Numeric math builtins
         if call.name == "abs":
             return "Nat"

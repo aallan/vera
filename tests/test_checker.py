@@ -2672,6 +2672,37 @@ private fn f(@Int -> @String)
 { url_decode(@Int.0) }
 """, "expected String")
 
+    def test_url_parse_ok(self) -> None:
+        _check_ok("""
+private data UrlParts { UrlParts(String, String, String, String, String) }
+private data Result<T, E> { Ok(T), Err(E) }
+private fn f(@String -> @Result<UrlParts, String>)
+  requires(true) ensures(true) effects(pure)
+{ url_parse(@String.0) }
+""")
+
+    def test_url_parse_wrong_type(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ url_parse(@Int.0) }
+""", "expected String")
+
+    def test_url_join_ok(self) -> None:
+        _check_ok("""
+private data UrlParts { UrlParts(String, String, String, String, String) }
+private fn f(@UrlParts -> @String)
+  requires(true) ensures(true) effects(pure)
+{ url_join(@UrlParts.0) }
+""")
+
+    def test_url_join_wrong_type(self) -> None:
+        _check_err("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ url_join(@String.0) }
+""", "expected UrlParts")
+
     def test_to_string_ok(self) -> None:
         _check_ok("""
 private fn f(@Int -> @String)

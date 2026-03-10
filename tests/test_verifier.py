@@ -1480,9 +1480,9 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 121, f"Expected 121 T1, got {t1}"
+        assert t1 == 123, f"Expected 123 T1, got {t1}"
         assert t3 == 5, f"Expected 5 T3, got {t3}"
-        assert total == 126, f"Expected 126 total, got {total}"
+        assert total == 128, f"Expected 128 total, got {total}"
 
 
 # =====================================================================
