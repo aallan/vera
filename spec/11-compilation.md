@@ -504,7 +504,7 @@ The unsigned comparison `i32.ge_u` handles negative indices (which wrap to large
 
 ### 11.12.4 Length
 
-The built-in `length(array)` function extracts the length component from the `(ptr, len)` pair and extends it to `i64` (since `length` returns `Int`).
+The built-in `array_length(array)` function extracts the length component from the `(ptr, len)` pair and extends it to `i64` (since `array_length` returns `Int`).
 
 ### 11.12.5 Array Let Bindings
 
@@ -559,7 +559,7 @@ When the compiler encounters a type alias in a function signature or slot refere
 
 - `PosInt` → `{ @Int | @Int.0 > 0 }` → `Int` → `i64`
 - `Percentage` → `{ @Int | @Int.0 >= 0 && @Int.0 <= 100 }` → `Int` → `i64`
-- `NonEmptyArray` → `{ @Array<Int> | length(...) > 0 }` → `Array<Int>` → `(i32, i32)` pair
+- `NonEmptyArray` → `{ @Array<Int> | array_length(...) > 0 }` → `Array<Int>` → `(i32, i32)` pair
 
 This resolution applies uniformly to parameter types, return types, let bindings, and slot references within function bodies.
 

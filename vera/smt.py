@@ -513,12 +513,12 @@ class SmtContext:
     ) -> z3.ExprRef | None:
         """Translate a function call via modular contract verification.
 
-        For ``length()``, uses the built-in uninterpreted function.
+        For ``array_length()``, uses the built-in uninterpreted function.
         For user-defined functions, looks up the callee and delegates
         to ``_translate_call_with_info``.
         """
-        # Built-in: length()
-        if call.name == "length" and len(call.args) == 1:
+        # Built-in: array_length()
+        if call.name == "array_length" and len(call.args) == 1:
             arg = self.translate_expr(call.args[0], env)
             if arg is not None:
                 length_fn = self._get_length_fn(arg.sort())

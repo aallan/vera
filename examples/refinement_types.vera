@@ -35,7 +35,7 @@ private fn to_percentage(@Int -> @Percentage)
 }
 
 -- Non-empty array
-type NonEmptyArray = { @Array<Int> | length(@Array<Int>.0) > 0 };
+type NonEmptyArray = { @Array<Int> | array_length(@Array<Int>.0) > 0 };
 
 -- Head of a non-empty array — always safe
 private fn head(@NonEmptyArray -> @Int)

@@ -135,7 +135,7 @@ Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 - Linear arithmetic (`+`, `-`, `*` with literal multiplier)
 - Comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - Boolean connectives (`&&`, `||`, `!`)
-- `length()` on arrays and strings
+- `array_length()` on arrays, `length()` on strings
 - Logical implication (`==>`)
 - `true`, `false`
 
@@ -153,12 +153,12 @@ Beyond the decidable fragment, contracts may also use:
 Vera supports bounded quantification in contracts:
 
 ```
-forall(@Nat, length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
+forall(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
   @Array<Int>.0[@Nat.0] > 0
 })
 ```
 
-This reads: "for all `@Nat.0` in `[0, length(@Array<Int>.0))`, the array element at that index is positive."
+This reads: "for all `@Nat.0` in `[0, array_length(@Array<Int>.0))`, the array element at that index is positive."
 
 The syntax is:
 
@@ -176,12 +176,12 @@ Bounded quantification is decidable for finite bounds and is handled by Z3 via f
 The `exists` quantifier uses the same syntax and asserts that at least one value in the range satisfies the predicate:
 
 ```
-exists(@Nat, length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
+exists(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
   @Array<Int>.0[@Nat.0] == 0
 })
 ```
 
-This reads: "there exists some `@Nat.0` in `[0, length(@Array<Int>.0))` such that the array element at that index is zero."
+This reads: "there exists some `@Nat.0` in `[0, array_length(@Array<Int>.0))` such that the array element at that index is zero."
 
 The syntax is:
 

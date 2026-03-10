@@ -219,22 +219,37 @@ class TypeEnv:
             operations={},
         )
 
-        # Built-in function: length
-        self.functions["length"] = FunctionInfo(
-            name="length",
+        # Built-in array operations
+        self.functions["array_length"] = FunctionInfo(
+            name="array_length",
             forall_vars=("T",),
             param_types=(AdtType("Array", (TypeVar("T"),)),),
             return_type=INT,
             effect=PureEffectRow(),
         )
-
-        # Built-in function: array_push
-        self.functions["array_push"] = FunctionInfo(
-            name="array_push",
+        self.functions["array_append"] = FunctionInfo(
+            name="array_append",
             forall_vars=("T",),
             param_types=(
                 AdtType("Array", (TypeVar("T"),)),
                 TypeVar("T"),
+            ),
+            return_type=AdtType("Array", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+        )
+        self.functions["array_range"] = FunctionInfo(
+            name="array_range",
+            forall_vars=None,
+            param_types=(INT, INT),
+            return_type=AdtType("Array", (INT,)),
+            effect=PureEffectRow(),
+        )
+        self.functions["array_concat"] = FunctionInfo(
+            name="array_concat",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Array", (TypeVar("T"),)),
+                AdtType("Array", (TypeVar("T"),)),
             ),
             return_type=AdtType("Array", (TypeVar("T"),)),
             effect=PureEffectRow(),

@@ -438,7 +438,7 @@ public fn assumed(@Int -> @Int)
 public fn all_pos(@Array<Int> -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
-  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.0[@Int.0] > 0 })
+  forall(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.0[@Int.0] > 0 })
 }
 """
         result = _compile_ok(source)
@@ -451,7 +451,7 @@ public fn all_pos(@Array<Int> -> @Bool)
 public fn has_zero(@Array<Int> -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
-  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.0[@Int.0] == 0 })
+  exists(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.0[@Int.0] == 0 })
 }
 """
         result = _compile_ok(source)
@@ -477,7 +477,7 @@ public fn arr_len(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Array<Int> = [1, 2, 3];
-  length(@Array<Int>.0)
+  array_length(@Array<Int>.0)
 }
 """
         assert _run(source, "arr_len") == 3
@@ -513,7 +513,7 @@ public fn empty_len(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Array<Int> = [];
-  length(@Array<Int>.0)
+  array_length(@Array<Int>.0)
 }
 """
         assert _run(source, "empty_len") == 0
@@ -1346,14 +1346,14 @@ public fn test_pipe(@Unit -> @Int)
 """
         assert _run(source, "test_pipe") == 11
 
-    def test_length_builtin(self) -> None:
-        """length() builtin translates to (ptr, len) → drop ptr, extend len."""
+    def test_array_length_builtin(self) -> None:
+        """array_length() builtin translates to (ptr, len) → drop ptr, extend len."""
         source = """\
 public fn arr_length(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Array<Int> = [1, 2, 3, 4, 5];
-  length(@Array<Int>.0)
+  array_length(@Array<Int>.0)
 }
 """
         assert _run(source, "arr_length") == 5
@@ -1626,7 +1626,7 @@ public fn cond_forall(@Bool, @Array<Int> -> @Bool)
   requires(true) ensures(true) effects(pure)
 {
   if @Bool.0 then {
-    forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.0[@Int.0] > 0 })
+    forall(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) { @Array<Int>.0[@Int.0] > 0 })
   } else {
     false
   }

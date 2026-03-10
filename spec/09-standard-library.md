@@ -9,7 +9,7 @@ The standard library comprises:
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, plus future collections (`Set<T>`, `Map<K, V>`).
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
-- **Built-in functions**: `length` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), string search (`string_contains`, `starts_with`, `ends_with`, `index_of`), string transformation (`to_upper`, `to_lower`, `replace`, `split`, `join`, `from_char_code`), plus future functions for vector similarity.
+- **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), string search (`string_contains`, `starts_with`, `ends_with`, `index_of`), string transformation (`to_upper`, `to_lower`, `replace`, `split`, `join`, `from_char_code`), plus future functions for vector similarity.
 - **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
 - **Future abilities**: Type constraints for generic programming (post-v0.1).
 
@@ -44,7 +44,7 @@ private fn safe_head(@Array<Int> -> @Option<Int>)
   ensures(true)
   effects(pure)
 {
-  if length(@Array<Int>.0) > 0 then {
+  if array_length(@Array<Int>.0) > 0 then {
     Some(@Array<Int>.0[0])
   } else {
     None
@@ -104,7 +104,7 @@ let @Array<Int> = [1, 2, 3];
 
 **Element types:** Arrays can contain any type for which a WASM representation exists, including primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`), ADT types (`Option<Int>`, `Result<Nat, String>`), `String`, and nested arrays (`Array<Array<Int>>`).
 
-**Length:** The `length` built-in function returns the number of elements (see Section 9.6.1).
+**Length:** The `array_length` built-in function returns the number of elements (see Section 9.6.1).
 
 For the compilation model of arrays, see Chapter 11, Section 11.12.
 
@@ -299,45 +299,81 @@ private fn classify(@String -> @String)
 
 ## 9.6 Built-in Functions
 
-### 9.6.1 length
+### 9.6.1 array\_length
 
 ```
-public forall<T> fn length(@Array<T> -> @Int)
+public forall<T> fn array_length(@Array<T> -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
   effects(pure)
 ```
 
-Returns the number of elements in an array. The result is always non-negative. `length` is generic over the element type.
+Returns the number of elements in an array. The result is always non-negative. `array_length` is generic over the element type.
 
 ```
 let @Array<Int> = [10, 20, 30];
-length(@Array<Int>.0)
+array_length(@Array<Int>.0)
 ```
 
 This expression evaluates to `3`.
 
-For the compilation of `length`, see Chapter 11, Section 11.12.
+For the compilation of `array_length`, see Chapter 11, Section 11.12.
 
-### 9.6.2 array_push
+### 9.6.2 array\_append
 
 ```
-public forall<T> fn array_push(@Array<T>, @T -> @Array<T>)
+public forall<T> fn array_append(@Array<T>, @T -> @Array<T>)
   requires(true)
   ensures(true)
   effects(pure)
 ```
 
-Returns a new array with the element appended at the end. The returned array has length `length(input) + 1`, with the new element at the last index. The original array is unchanged (arrays are immutable values). `array_push` is generic over the element type.
+Returns a new array with the element appended at the end. The returned array has length `array_length(input) + 1`, with the new element at the last index. The original array is unchanged (arrays are immutable values). `array_append` is generic over the element type.
 
 ```
-let @Array<Int> = array_push([10, 20, 30], 40);
-length(@Array<Int>.0)
+let @Array<Int> = array_append([10, 20, 30], 40);
+array_length(@Array<Int>.0)
 ```
 
 This expression evaluates to `4`.
 
-### 9.6.3 Numeric Operations
+### 9.6.3 array\_range
+
+```vera
+public fn array_range(@Int, @Int -> @Array<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Produces an array of integers over the half-open interval `[start, end)`. The first argument is the start (inclusive) and the second is the end (exclusive). If `start >= end`, the result is an empty array. The elements are consecutive integers from `start` to `end - 1`.
+
+```vera
+array_range(0, 5)       -- [0, 1, 2, 3, 4]
+array_range(3, 7)       -- [3, 4, 5, 6]
+array_range(5, 5)       -- [] (empty, start == end)
+array_range(10, 3)      -- [] (empty, start > end)
+```
+
+### 9.6.4 array\_concat
+
+```vera
+public forall<T> fn array_concat(@Array<T>, @Array<T> -> @Array<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Merges two arrays into a single array. The elements of the first array appear before the elements of the second. The result has length `array_length(first) + array_length(second)`. Both input arrays are unchanged (arrays are immutable values). `array_concat` is generic over the element type.
+
+```vera
+array_concat([1, 2, 3], [4, 5])       -- [1, 2, 3, 4, 5]
+array_concat([], [1, 2])               -- [1, 2]
+array_concat([1, 2], [])               -- [1, 2]
+array_concat([], [])                   -- [] (empty)
+```
+
+### 9.6.5 Numeric Operations
 
 Vera provides eight built-in numeric functions for common mathematical operations. The integer functions (`abs`, `min`, `max`) operate on `Int` values and are pure — they perform no effects and are fully verifiable by the SMT solver (Tier 1). The floating-point functions (`floor`, `ceil`, `round`, `sqrt`, `pow`) use IEEE 754 semantics via WebAssembly's native instructions.
 
@@ -477,7 +513,7 @@ pow(2.0, 10)
 
 This expression evaluates to `1024.0`.
 
-### 9.6.4 Type Conversions
+### 9.6.6 Type Conversions
 
 Vera has no implicit numeric conversions. The following built-in functions provide explicit conversions between numeric types.
 
@@ -579,7 +615,7 @@ match int_to_byte(65) {
 
 This expression evaluates to `65`.
 
-### 9.6.5 Float64 Predicates
+### 9.6.7 Float64 Predicates
 
 Vera provides built-in functions for testing and constructing IEEE 754 special float values (NaN and infinity).
 
@@ -651,7 +687,7 @@ public fn test_infinity(@Unit -> @Float64)
 { infinity() }
 ```
 
-### 9.6.6 String Search
+### 9.6.8 String Search
 
 String search functions test for the presence or position of substrings. All are pure, take `String` arguments, and operate on raw bytes (ASCII). All are Tier 3 for verification (String is not modeled in Z3).
 
@@ -717,7 +753,7 @@ match index_of("hello world", "world") {
 -- evaluates to 6
 ```
 
-### 9.6.7 String Transformation
+### 9.6.9 String Transformation
 
 String transformation functions produce new strings by modifying characters or structure. All allocate heap memory for the result and register it with the GC shadow stack. All are pure and Tier 3.
 
@@ -827,7 +863,7 @@ string_repeat("hello", 0)                -- "" (empty)
 string_repeat("", 100)                   -- "" (empty)
 ```
 
-### 9.6.8 Parsing Functions
+### 9.6.10 Parsing Functions
 
 Parsing functions convert strings to typed values, returning `Result<T, String>` to represent success or failure. All strip leading and trailing ASCII whitespace (spaces, tabs, `\r`, `\n`) before parsing. All are pure and Tier 3 for verification.
 
@@ -927,13 +963,13 @@ parse_bool("yes")          -- Err("expected true or false")
 parse_bool("")             -- Err("expected true or false")
 ```
 
-### 9.6.9 similarity (Future)
+### 9.6.11 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 
 ```
 public fn similarity(@Array<Float64>, @Array<Float64> -> @Float64)
-  requires(length(@Array<Float64>.0) == length(@Array<Float64>.1))
+  requires(array_length(@Array<Float64>.0) == array_length(@Array<Float64>.1))
   ensures(@Float64.result >= -1.0 && @Float64.result <= 1.0)
   effects(pure)
 ```
@@ -1140,7 +1176,7 @@ public forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
   ensures(true)
   effects(pure)
 {
-  exists(@Nat, length(@Array<T>.0), fn(@Nat -> @Bool) effects(pure) {
+  exists(@Nat, array_length(@Array<T>.0), fn(@Nat -> @Bool) effects(pure) {
     eq(@Array<T>.0[@Nat.0], @T.0)
   })
 }

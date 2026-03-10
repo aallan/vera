@@ -3273,7 +3273,7 @@ class TestArrayLength:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
-  length(@Array<Int>.0)
+  array_length(@Array<Int>.0)
 }
 """
         assert _run(src) == 3
@@ -3282,7 +3282,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [42];
-  length(@Array<Int>.0)
+  array_length(@Array<Int>.0)
 }
 """
         assert _run(src) == 1
@@ -3291,7 +3291,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         src = """
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
-  length(@Array<Int>.0) == 3
+  array_length(@Array<Int>.0) == 3
 }
 """
         assert _run(src) == 1
@@ -3300,48 +3300,48 @@ public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3, 4, 5];
-  let @Int = length(@Array<Int>.0);
+  let @Int = array_length(@Array<Int>.0);
   @Int.0
 }
 """
         assert _run(src) == 5
 
-    # --- array_push (#242) ---
+    # --- array_append (#242) ---
 
-    def test_array_push_length(self) -> None:
-        """array_push returns an array with length + 1."""
+    def test_array_append_length(self) -> None:
+        """array_append returns an array with length + 1."""
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  length(array_push([1, 2, 3], 4))
+  array_length(array_append([1, 2, 3], 4))
 }
 """
         assert _run(src) == 4
 
-    def test_array_push_element_value(self) -> None:
-        """The pushed element is accessible at the last index."""
+    def test_array_append_element_value(self) -> None:
+        """The appended element is accessible at the last index."""
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Array<Int> = array_push([10, 20, 30], 99);
+  let @Array<Int> = array_append([10, 20, 30], 99);
   @Array<Int>.0[3]
 }
 """
         assert _run(src) == 99
 
-    def test_array_push_preserves_existing(self) -> None:
-        """array_push preserves all existing elements."""
+    def test_array_append_preserves_existing(self) -> None:
+        """array_append preserves all existing elements."""
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Array<Int> = array_push([10, 20, 30], 99);
+  let @Array<Int> = array_append([10, 20, 30], 99);
   @Array<Int>.0[1]
 }
 """
         assert _run(src) == 20
 
-    def test_array_push_empty(self) -> None:
-        """array_push onto empty array produces [elem]."""
+    def test_array_append_empty(self) -> None:
+        """array_append onto empty array produces [elem]."""
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Array<Int> = array_push([], 42);
+  let @Array<Int> = array_append([], 42);
   @Array<Int>.0[0]
 }
 """
@@ -3364,6 +3364,142 @@ public fn g(-> @Int) requires(true) ensures(true) effects(pure) {
         # f should have pair params
         assert "(param $p0_ptr i32)" in result.wat
         assert "(param $p0_len i32)" in result.wat
+
+
+# =====================================================================
+# Array construction builtins (#209)
+# =====================================================================
+
+
+class TestArrayRange:
+    """Tests for array_range(start, end) → Array<Int>."""
+
+    def test_range_length(self) -> None:
+        """array_range(0, 5) produces an array of length 5."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  array_length(array_range(0, 5))
+}
+"""
+        assert _run(src) == 5
+
+    def test_range_first_element(self) -> None:
+        """First element of array_range(3, 7) is 3."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = array_range(3, 7);
+  @Array<Int>.0[0]
+}
+"""
+        assert _run(src) == 3
+
+    def test_range_last_element(self) -> None:
+        """Last element of array_range(3, 7) is 6 (end-exclusive)."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = array_range(3, 7);
+  @Array<Int>.0[3]
+}
+"""
+        assert _run(src) == 6
+
+    def test_range_empty_reversed(self) -> None:
+        """array_range(5, 3) produces an empty array."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  array_length(array_range(5, 3))
+}
+"""
+        assert _run(src) == 0
+
+    def test_range_empty_equal(self) -> None:
+        """array_range(5, 5) produces an empty array."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  array_length(array_range(5, 5))
+}
+"""
+        assert _run(src) == 0
+
+    def test_range_negative_start(self) -> None:
+        """array_range with negative start works correctly."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = array_range(0 - 2, 2);
+  @Array<Int>.0[0]
+}
+"""
+        assert _run(src) == -2
+
+    def test_range_negative_length(self) -> None:
+        """array_range with negative start has correct length."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  array_length(array_range(0 - 2, 3))
+}
+"""
+        assert _run(src) == 5
+
+
+class TestArrayConcat:
+    """Tests for array_concat(array_a, array_b) → Array<T>."""
+
+    def test_concat_length(self) -> None:
+        """Concatenation has combined length."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  array_length(array_concat([1, 2], [3, 4, 5]))
+}
+"""
+        assert _run(src) == 5
+
+    def test_concat_first_half(self) -> None:
+        """Elements from first array are preserved."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = array_concat([10, 20], [30, 40]);
+  @Array<Int>.0[1]
+}
+"""
+        assert _run(src) == 20
+
+    def test_concat_second_half(self) -> None:
+        """Elements from second array are at the right offset."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = array_concat([10, 20], [30, 40]);
+  @Array<Int>.0[2]
+}
+"""
+        assert _run(src) == 30
+
+    def test_concat_empty_left(self) -> None:
+        """Concatenating empty left with non-empty right works."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Array<Int> = array_concat([], [1, 2]);
+  @Array<Int>.0[0]
+}
+"""
+        assert _run(src) == 1
+
+    def test_concat_empty_right(self) -> None:
+        """Concatenating non-empty left with empty right works."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  array_length(array_concat([1, 2], []))
+}
+"""
+        assert _run(src) == 2
+
+    def test_concat_both_empty(self) -> None:
+        """Concatenating two empty arrays produces empty."""
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  array_length(array_concat([], []))
+}
+"""
+        assert _run(src) == 0
 
 
 # =====================================================================
@@ -3417,12 +3553,12 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 """
         assert _run(src) == 1
 
-    def test_builtin_length_still_works(self) -> None:
+    def test_builtin_array_length_still_works(self) -> None:
         """Array length built-in works when no user-defined length exists."""
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [10, 20, 30];
-  length(@Array<Int>.0)
+  array_length(@Array<Int>.0)
 }
 """
         assert _run(src) == 3
@@ -3512,7 +3648,7 @@ class TestForall:
         assert _run("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
-  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  forall(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] > 0
   })
 }
@@ -3523,7 +3659,7 @@ public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
         assert _run("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, -2, 3];
-  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  forall(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] > 0
   })
 }
@@ -3544,7 +3680,7 @@ public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
         assert _run("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [42];
-  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  forall(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] > 0
   })
 }
@@ -3555,7 +3691,7 @@ public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
         assert _run("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [-1];
-  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  forall(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] > 0
   })
 }
@@ -3566,7 +3702,7 @@ public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
         assert _run("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [7, 7, 7];
-  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  forall(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 7
   })
 }
@@ -3584,7 +3720,7 @@ class TestExists:
         assert _run("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 0, 3];
-  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  exists(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 0
   })
 }
@@ -3595,7 +3731,7 @@ public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
         assert _run("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
-  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  exists(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 0
   })
 }
@@ -3616,7 +3752,7 @@ public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
         assert _run("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [0];
-  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  exists(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 0
   })
 }
@@ -3627,7 +3763,7 @@ public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
         assert _run("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [5];
-  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  exists(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 0
   })
 }
@@ -3645,7 +3781,7 @@ class TestQuantifierWat:
         result = _compile_ok("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
-  forall(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  forall(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] > 0
   })
 }
@@ -3659,7 +3795,7 @@ public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
         result = _compile_ok("""
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
-  exists(@Int, length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
+  exists(@Int, array_length(@Array<Int>.0), fn(@Int -> @Bool) effects(pure) {
     @Array<Int>.0[@Int.0] == 0
   })
 }
@@ -3841,7 +3977,7 @@ public fn main(-> @Unit)
         src = """
 public fn get_len(@Array<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
-{ length(@Array<Int>.0) }
+{ array_length(@Array<Int>.0) }
 """
         result = _compile_ok(src)
         assert "get_len" in result.exports
@@ -4940,7 +5076,7 @@ public fn main(@Unit -> @Unit)
     def test_count(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  length(split("a,b,c", ","))
+  array_length(split("a,b,c", ","))
 }
 """
         assert _run(src) == 3
@@ -4948,7 +5084,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_consecutive_delimiters(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  length(split("a,,b", ","))
+  array_length(split("a,,b", ","))
 }
 """
         assert _run(src) == 3
@@ -5901,13 +6037,13 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         assert _run(src) == 30
 
     def test_option_array_length(self) -> None:
-        """length() on Array<Option<Int>>."""
+        """array_length() on Array<Option<Int>>."""
         src = """
 private data Option<T> { None, Some(T) }
 
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Option<Int>> = [Some(1), None, Some(3), None];
-  length(@Array<Option<Int>>.0)
+  array_length(@Array<Option<Int>>.0)
 }
 """
         assert _run(src) == 4
@@ -5943,11 +6079,11 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         assert _run(src) == 1
 
     def test_string_array_length(self) -> None:
-        """length() on Array<String>."""
+        """array_length() on Array<String>."""
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<String> = ["a", "bb", "ccc"];
-  length(@Array<String>.0)
+  array_length(@Array<String>.0)
 }
 """
         assert _run(src) == 3
@@ -5981,12 +6117,12 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         assert _run(src) == 20
 
     def test_nested_array_length(self) -> None:
-        """length() on Array<Array<Int>>."""
+        """array_length() on Array<Array<Int>>."""
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
   let @Array<Int> = [1, 2, 3];
   let @Array<Array<Int>> = [@Array<Int>.0, @Array<Int>.0, @Array<Int>.0];
-  length(@Array<Array<Int>>.0)
+  array_length(@Array<Array<Int>>.0)
 }
 """
         assert _run(src) == 3
@@ -6142,7 +6278,7 @@ public fn main(-> @Int)
   requires(true) ensures(true) effects(<IO>)
 {
   let @Array<String> = IO.args(());
-  length(@Array<String>.0)
+  array_length(@Array<String>.0)
 }
 """
         result = _compile_ok(source)

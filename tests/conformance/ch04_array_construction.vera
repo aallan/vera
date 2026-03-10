@@ -1,0 +1,63 @@
+-- Conformance: array construction builtins (Chapter 4, #209)
+-- Tests: array_range, array_concat, array_append
+public fn test_range_length(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  array_length(array_range(0, 5))
+}
+
+public fn test_range_element(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  let @Array<Int> = array_range(3, 7);
+  @Array<Int>.0[0]
+}
+
+public fn test_range_empty(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  array_length(array_range(5, 3))
+}
+
+public fn test_concat_length(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  array_length(array_concat([1, 2], [3, 4, 5]))
+}
+
+public fn test_concat_element(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 30)
+  effects(pure)
+{
+  let @Array<Int> = array_concat([10, 20], [30, 40]);
+  @Array<Int>.0[2]
+}
+
+public fn test_append_value(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 99)
+  effects(pure)
+{
+  let @Array<Int> = array_append([10, 20, 30], 99);
+  @Array<Int>.0[3]
+}
+
+public fn main(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  let @Int = test_range_length(());
+  let @Int = test_concat_length(());
+  let @Int = test_append_value(());
+  @Int.0 == 99
+}

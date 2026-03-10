@@ -28,8 +28,8 @@ class CallsMixin:
         # so that e.g. a user-defined length(@List<Int> -> @Nat) is
         # not mistakenly compiled as the array-length built-in.
         if call.name not in self._known_fns:
-            if call.name == "length" and len(call.args) == 1:
-                return self._translate_length(call.args[0], env)
+            if call.name == "array_length" and len(call.args) == 1:
+                return self._translate_array_length(call.args[0], env)
             if call.name == "string_length" and len(call.args) == 1:
                 return self._translate_string_length(call.args[0], env)
             if call.name == "string_concat" and len(call.args) == 2:
@@ -106,8 +106,16 @@ class CallsMixin:
                 return self._translate_join(
                     call.args[0], call.args[1], env,
                 )
-            if call.name == "array_push" and len(call.args) == 2:
-                return self._translate_array_push(
+            if call.name == "array_append" and len(call.args) == 2:
+                return self._translate_array_append(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "array_range" and len(call.args) == 2:
+                return self._translate_array_range(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "array_concat" and len(call.args) == 2:
+                return self._translate_array_concat(
                     call.args[0], call.args[1], env,
                 )
             # Numeric math builtins
@@ -275,10 +283,10 @@ class CallsMixin:
                             and param_ta.name not in mapping):
                         mapping[param_ta.name] = arg_ta_name
 
-    def _translate_length(
+    def _translate_array_length(
         self, arg: ast.Expr, env: WasmSlotEnv,
     ) -> list[str] | None:
-        """Translate length(array) → Int (i64).
+        """Translate array_length(array) → Int (i64).
 
         Evaluates the array → (ptr, len), drops ptr, extends len to i64.
         """
@@ -295,13 +303,13 @@ class CallsMixin:
         instructions.append("i64.extend_i32_u")
         return instructions
 
-    def _translate_array_push(
+    def _translate_array_append(
         self,
         arr_arg: ast.Expr,
         elem_arg: ast.Expr,
         env: WasmSlotEnv,
     ) -> list[str] | None:
-        """Translate array_push(array, element) → Array<T>.
+        """Translate array_append(array, element) → Array<T>.
 
         Allocates a new array of size (len + 1), copies the old elements
         byte-by-byte, appends the new element, and returns (new_ptr, new_len).
@@ -424,6 +432,270 @@ class CallsMixin:
         instructions.append("i32.const 1")
         instructions.append("i32.add")
         return instructions
+
+    def _translate_array_range(
+        self,
+        start_arg: ast.Expr,
+        end_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate array_range(start, end) → Array<Int>.
+
+        Allocates an array of max(0, end - start) Int elements and fills
+        it with consecutive integers [start, end).
+        """
+        start_instrs = self.translate_expr(start_arg, env)
+        end_instrs = self.translate_expr(end_arg, env)
+        if start_instrs is None or end_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        start_val = self.alloc_local("i64")
+        end_val = self.alloc_local("i64")
+        n_i64 = self.alloc_local("i64")
+        n_i32 = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+
+        instructions: list[str] = []
+
+        # Evaluate start and end
+        instructions.extend(start_instrs)
+        instructions.append(f"local.set {start_val}")
+        instructions.extend(end_instrs)
+        instructions.append(f"local.set {end_val}")
+
+        # n = max(0, end - start)
+        instructions.append(f"local.get {end_val}")
+        instructions.append(f"local.get {start_val}")
+        instructions.append("i64.sub")
+        instructions.append(f"local.set {n_i64}")
+        instructions.append(f"local.get {n_i64}")
+        instructions.append("i64.const 0")
+        instructions.append("i64.lt_s")
+        instructions.append(f"if")
+        instructions.append("  i64.const 0")
+        instructions.append(f"  local.set {n_i64}")
+        instructions.append("end")
+        instructions.append(f"local.get {n_i64}")
+        instructions.append("i32.wrap_i64")
+        instructions.append(f"local.set {n_i32}")
+
+        # Empty check: if n == 0 return (0, 0)
+        instructions.append(f"local.get {n_i32}")
+        instructions.append("i32.eqz")
+        instructions.append("if (result i32 i32)")
+        instructions.append("  i32.const 0")
+        instructions.append("  i32.const 0")
+        instructions.append("else")
+
+        # Allocate n * 8 bytes (Int elements are i64 = 8 bytes each)
+        instructions.append(f"  local.get {n_i32}")
+        instructions.append("  i32.const 8")
+        instructions.append("  i32.mul")
+        instructions.append("  call $alloc")
+        instructions.append(f"  local.set {dst}")
+        instructions.extend(f"  {line}" for line in gc_shadow_push(dst))
+
+        # Fill loop: dst[i*8] = start + i for i = 0..n-1
+        instructions.append("  i32.const 0")
+        instructions.append(f"  local.set {idx}")
+        instructions.append("  block $brk_fill")
+        instructions.append("    loop $lp_fill")
+        instructions.append(f"      local.get {idx}")
+        instructions.append(f"      local.get {n_i32}")
+        instructions.append("      i32.ge_u")
+        instructions.append("      br_if $brk_fill")
+        # Store start + idx at dst + idx*8
+        instructions.append(f"      local.get {dst}")
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.const 8")
+        instructions.append("      i32.mul")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.get {start_val}")
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i64.extend_i32_u")
+        instructions.append("      i64.add")
+        instructions.append("      i64.store offset=0")
+        # idx++
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.const 1")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.set {idx}")
+        instructions.append("      br $lp_fill")
+        instructions.append("    end")
+        instructions.append("  end")
+
+        # Push result: (dst, n)
+        instructions.append(f"  local.get {dst}")
+        instructions.append(f"  local.get {n_i32}")
+        instructions.append("end")
+        return instructions
+
+    def _translate_array_concat(
+        self,
+        arr_a_arg: ast.Expr,
+        arr_b_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate array_concat(array_a, array_b) → Array<T>.
+
+        Allocates a new array of size (len_a + len_b), copies both arrays'
+        bytes contiguously, and returns (new_ptr, new_len).
+        """
+        arr_a_instrs = self.translate_expr(arr_a_arg, env)
+        arr_b_instrs = self.translate_expr(arr_b_arg, env)
+        if arr_a_instrs is None or arr_b_instrs is None:
+            return None
+
+        # Infer element type — try first arg, fall back to second
+        elem_type = (
+            self._infer_concat_elem_type(arr_a_arg)
+            or self._infer_concat_elem_type(arr_b_arg)
+        )
+        if elem_type is None:
+            # Both empty literals — no bytes to copy, use any size
+            elem_size = 8
+        else:
+            size = _element_mem_size(elem_type)
+            if size is None:
+                return None
+            elem_size = size
+
+        self.needs_alloc = True
+
+        ptr_a = self.alloc_local("i32")
+        len_a = self.alloc_local("i32")
+        ptr_b = self.alloc_local("i32")
+        len_b = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        total_len = self.alloc_local("i32")
+        bytes_a = self.alloc_local("i32")
+        total_bytes = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+
+        instructions: list[str] = []
+
+        # Evaluate array A → (ptr, len)
+        instructions.extend(arr_a_instrs)
+        instructions.append(f"local.set {len_a}")
+        instructions.append(f"local.set {ptr_a}")
+
+        # Evaluate array B → (ptr, len)
+        instructions.extend(arr_b_instrs)
+        instructions.append(f"local.set {len_b}")
+        instructions.append(f"local.set {ptr_b}")
+
+        # total_len = len_a + len_b
+        instructions.append(f"local.get {len_a}")
+        instructions.append(f"local.get {len_b}")
+        instructions.append("i32.add")
+        instructions.append(f"local.set {total_len}")
+
+        # Empty check: if total_len == 0 return (0, 0)
+        instructions.append(f"local.get {total_len}")
+        instructions.append("i32.eqz")
+        instructions.append("if (result i32 i32)")
+        instructions.append("  i32.const 0")
+        instructions.append("  i32.const 0")
+        instructions.append("else")
+
+        # bytes_a = len_a * elem_size
+        instructions.append(f"  local.get {len_a}")
+        instructions.append(f"  i32.const {elem_size}")
+        instructions.append("  i32.mul")
+        instructions.append(f"  local.set {bytes_a}")
+
+        # total_bytes = total_len * elem_size
+        instructions.append(f"  local.get {total_len}")
+        instructions.append(f"  i32.const {elem_size}")
+        instructions.append("  i32.mul")
+        instructions.append(f"  local.set {total_bytes}")
+
+        # Allocate
+        instructions.append(f"  local.get {total_bytes}")
+        instructions.append("  call $alloc")
+        instructions.append(f"  local.set {dst}")
+        instructions.extend(f"  {line}" for line in gc_shadow_push(dst))
+
+        # Copy array A bytes: byte-by-byte loop
+        instructions.append("  i32.const 0")
+        instructions.append(f"  local.set {idx}")
+        instructions.append("  block $brk_a")
+        instructions.append("    loop $lp_a")
+        instructions.append(f"      local.get {idx}")
+        instructions.append(f"      local.get {bytes_a}")
+        instructions.append("      i32.ge_u")
+        instructions.append("      br_if $brk_a")
+        instructions.append(f"      local.get {dst}")
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.get {ptr_a}")
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.add")
+        instructions.append("      i32.load8_u offset=0")
+        instructions.append("      i32.store8 offset=0")
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.const 1")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.set {idx}")
+        instructions.append("      br $lp_a")
+        instructions.append("    end")
+        instructions.append("  end")
+
+        # Copy array B bytes at offset bytes_a
+        instructions.append("  i32.const 0")
+        instructions.append(f"  local.set {idx}")
+        instructions.append("  block $brk_b")
+        instructions.append("    loop $lp_b")
+        instructions.append(f"      local.get {idx}")
+        instructions.append(f"      local.get {total_bytes}")
+        instructions.append(f"      local.get {bytes_a}")
+        instructions.append("      i32.sub")  # bytes_b = total_bytes - bytes_a
+        instructions.append("      i32.ge_u")
+        instructions.append("      br_if $brk_b")
+        instructions.append(f"      local.get {dst}")
+        instructions.append(f"      local.get {bytes_a}")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.get {ptr_b}")
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.add")
+        instructions.append("      i32.load8_u offset=0")
+        instructions.append("      i32.store8 offset=0")
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.const 1")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.set {idx}")
+        instructions.append("      br $lp_b")
+        instructions.append("    end")
+        instructions.append("  end")
+
+        # Push result: (dst, total_len)
+        instructions.append(f"  local.get {dst}")
+        instructions.append(f"  local.get {total_len}")
+        instructions.append("end")
+        return instructions
+
+    def _infer_concat_elem_type(self, expr: ast.Expr) -> str | None:
+        """Infer the element type name from an array-typed expression."""
+        if isinstance(expr, ast.SlotRef):
+            if expr.type_name == "Array" and expr.type_args:
+                ta = expr.type_args[0]
+                if isinstance(ta, ast.NamedType):
+                    return ta.name
+        if isinstance(expr, ast.ArrayLit):
+            if expr.elements:
+                return self._infer_vera_type(expr.elements[0])
+            return None
+        if isinstance(expr, ast.FnCall):
+            if expr.name == "array_range":
+                return "Int"
+            if expr.name in ("array_concat", "array_append") and expr.args:
+                return self._infer_concat_elem_type(expr.args[0])
+        return None
 
     def _translate_string_length(
         self, arg: ast.Expr, env: WasmSlotEnv,

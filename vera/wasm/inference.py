@@ -187,9 +187,12 @@ class InferenceMixin:
         registered return type directly.  For apply_fn, infers from
         the closure's function type.
         """
-        # length(array) → Int (i64)
-        if expr.name == "length":
+        # array_length(array) → Int (i64)
+        if expr.name == "array_length":
             return "i64"
+        # array_range(start, end) → Array<Int> (i32_pair)
+        if expr.name == "array_range":
+            return "i32_pair"
         # string_length(string) → Int (i64)
         if expr.name == "string_length":
             return "i64"
@@ -365,8 +368,10 @@ class InferenceMixin:
         the return TypeExpr.  For non-generic calls, maps from WASM
         return type back to Vera type name.
         """
-        if call.name == "length":
+        if call.name == "array_length":
             return "Int"
+        if call.name == "array_range":
+            return "Array"
         if call.name == "string_length":
             return "Int"
         if call.name in ("string_concat", "string_slice", "strip",

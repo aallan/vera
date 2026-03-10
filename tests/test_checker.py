@@ -1350,23 +1350,65 @@ private fn bad(@Int -> @Int)
 { @Int.0[0] }
 """, "Cannot index")
 
-    # --- array_push (#242) ---
+    # --- array_append (#242) ---
 
-    def test_array_push_type_checks(self) -> None:
-        """array_push(Array<T>, T) -> Array<T> type-checks cleanly."""
+    def test_array_append_type_checks(self) -> None:
+        """array_append(Array<T>, T) -> Array<T> type-checks cleanly."""
         _check_ok("""
 private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{ length(array_push([1, 2, 3], 4)) }
+{ array_length(array_append([1, 2, 3], 4)) }
 """)
 
-    def test_array_push_string(self) -> None:
-        """array_push works with String element type."""
+    def test_array_append_string(self) -> None:
+        """array_append works with String element type."""
         _check_ok("""
 private fn foo(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{ length(array_push(["a", "b"], "c")) }
+{ array_length(array_append(["a", "b"], "c")) }
 """)
+
+
+# =====================================================================
+# Array construction builtins (#209)
+# =====================================================================
+
+class TestArrayRange:
+
+    def test_array_range_ok(self) -> None:
+        """array_range(Int, Int) -> Array<Int> type-checks cleanly."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(array_range(0, 5)) }
+""")
+
+    def test_array_range_wrong_type(self) -> None:
+        """array_range requires Int arguments."""
+        _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(array_range("a", 5)) }
+""", "type")
+
+
+class TestArrayConcat:
+
+    def test_array_concat_ok(self) -> None:
+        """array_concat(Array<T>, Array<T>) -> Array<T> type-checks cleanly."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(array_concat([1, 2], [3, 4])) }
+""")
+
+    def test_array_concat_type_mismatch(self) -> None:
+        """array_concat requires both arrays to have the same element type."""
+        _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(array_concat([1, 2], ["a", "b"])) }
+""", "type")
 
 
 # =====================================================================

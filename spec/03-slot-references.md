@@ -238,7 +238,7 @@ In the else branch after the let:
 ```
 private fn map_array<A, B>(@Array<A>, fn(A -> B) effects(pure) -> @Array<B>)
   requires(true)
-  ensures(length(@Array<B>.result) == length(@Array<A>.0))
+  ensures(array_length(@Array<B>.result) == array_length(@Array<A>.0))
   effects(pure)
 {
   -- implementation uses built-in array mapping primitive
@@ -328,8 +328,8 @@ Function-type parameters use the same `@T.n` system, where `T` is the full funct
 type IntTransform = fn(Int -> Int) effects(pure);
 
 private fn apply_to_array(@Array<Int>, @IntTransform -> @Array<Int>)
-  requires(length(@Array<Int>.0) > 0)
-  ensures(length(@Array<Int>.result) == length(@Array<Int>.0))
+  requires(array_length(@Array<Int>.0) > 0)
+  ensures(array_length(@Array<Int>.result) == array_length(@Array<Int>.0))
   effects(pure)
 {
   array_map(@Array<Int>.0, @IntTransform.0)
