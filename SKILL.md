@@ -416,6 +416,8 @@ base64_encode(@String.0)                -- returns String (RFC 4648)
 base64_decode(@String.0)                -- returns Result<String, String>
 url_encode(@String.0)                   -- returns String (RFC 3986 percent-encoding)
 url_decode(@String.0)                   -- returns Result<String, String>
+url_parse(@String.0)                    -- returns Result<UrlParts, String> (RFC 3986 decomposition)
+url_join(@UrlParts.0)                   -- returns String (reassemble URL from UrlParts)
 to_string(@Int.0)                       -- returns String (integer to decimal)
 int_to_string(@Int.0)                   -- returns String (alias for to_string)
 bool_to_string(@Bool.0)                 -- returns String ("true" or "false")
@@ -460,7 +462,7 @@ join(@Array<String>.0, @String.0)               -- returns String (join with sep
 
 `to_upper` and `to_lower` convert ASCII letters only (a-z ↔ A-Z). `replace` substitutes all non-overlapping occurrences; an empty needle returns the original string unchanged. `split` returns an array of segments; an empty delimiter returns a single-element array. `join` concatenates array elements with the separator between each pair.
 
-String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. All four parse functions return `Result<T, String>`: `parse_nat`, `parse_int`, `parse_float64`, and `parse_bool`. They return `Ok(value)` on valid input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated. `parse_int` accepts an optional `+` or `-` sign. `parse_bool` is strict: only `"true"` and `"false"` (lowercase) are valid. `base64_encode` encodes a string to standard Base64 (RFC 4648); `base64_decode` returns `Result<String, String>`, failing on invalid length or characters. `url_encode` percent-encodes a string for use in URLs (RFC 3986), leaving unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`) unchanged; `url_decode` returns `Result<String, String>`, failing on invalid `%XX` sequences.
+String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. All four parse functions return `Result<T, String>`: `parse_nat`, `parse_int`, `parse_float64`, and `parse_bool`. They return `Ok(value)` on valid input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated. `parse_int` accepts an optional `+` or `-` sign. `parse_bool` is strict: only `"true"` and `"false"` (lowercase) are valid. `base64_encode` encodes a string to standard Base64 (RFC 4648); `base64_decode` returns `Result<String, String>`, failing on invalid length or characters. `url_encode` percent-encodes a string for use in URLs (RFC 3986), leaving unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`) unchanged; `url_decode` returns `Result<String, String>`, failing on invalid `%XX` sequences. `url_parse` decomposes a URL into its RFC 3986 components, returning `Result<UrlParts, String>` where `UrlParts(scheme, authority, path, query, fragment)` is a built-in ADT with five String fields; it returns `Err("missing scheme")` if no `:` is found. `url_join` reassembles a `UrlParts` value into a URL string. Programs must redefine `UrlParts` locally (like `Result`) to use it in match expressions.
 
 ### Numeric operations
 
@@ -819,7 +821,6 @@ There is no import aliasing (`import m(abs as math_abs)`) and no wildcard exclus
 
 ### Known codegen limitations
 
-- **ADT constructors with String/Array fields** do not compile (#266). User-defined ADTs with only numeric fields (Int, Nat, Bool, Byte, Float64) work correctly. ADTs with String or Array fields crash the layout computation. Builtins returning `Result<String, String>` work because they use hand-coded WASM layout.
 - **Tuple types** are specified and type-check but have no WASM codegen (#267). Functions containing Tuple expressions are silently skipped. Use named ADTs (e.g. `data Pair<A, B> { Pair(A, B) }`) as a workaround.
 
 There are no raw strings (`r"..."`) or multi-line string literals. Use escape sequences (`\\`, `\n`, `\t`, `\"`) for special characters. This is by design — alternative string syntaxes would create two representations for the same value.

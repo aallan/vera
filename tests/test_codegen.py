@@ -4952,6 +4952,201 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
         assert _run_io(src) == "Hello, World!"
 
 
+class TestUrlParse:
+    """url_parse returns Result<UrlParts, String>."""
+
+    _PREAMBLE = """
+private data UrlParts { UrlParts(String, String, String, String, String) }
+private data Result<T, E> { Ok(T), Err(E) }
+"""
+
+    def _component_prog(self, url: str, index: int) -> str:
+        """Extract a single component from a parsed URL by field index.
+
+        index 0=scheme, 1=authority, 2=path, 3=query, 4=fragment.
+        Slot refs are stack-indexed, so .4=scheme, .3=auth, .2=path,
+        .1=query, .0=fragment.
+        """
+        slot = 4 - index
+        return self._PREAMBLE + f"""
+effect IO {{ op print(String -> Unit); }}
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
+  match url_parse("{url}") {{
+    Ok(@UrlParts) -> match @UrlParts.0 {{
+      UrlParts(@String, @String, @String, @String, @String) ->
+        IO.print(@String.{slot})
+    }},
+    Err(@String) -> IO.print(@String.0)
+  }}
+}}
+"""
+
+    def _err_prog(self, url: str) -> str:
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match url_parse("{url}") {{
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }}
+}}
+"""
+
+    def _join_prog(self, url: str) -> str:
+        return self._PREAMBLE + f"""
+effect IO {{ op print(String -> Unit); }}
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
+  match url_parse("{url}") {{
+    Ok(@UrlParts) -> IO.print(url_join(@UrlParts.0)),
+    Err(@String) -> IO.print(@String.0)
+  }}
+}}
+"""
+
+    # Full URL decomposition
+    def test_full_scheme(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://example.com/path?q=1#frag", 0)) == "https"
+
+    def test_full_authority(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://example.com/path?q=1#frag", 1)) == "example.com"
+
+    def test_full_path(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://example.com/path?q=1#frag", 2)) == "/path"
+
+    def test_full_query(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://example.com/path?q=1#frag", 3)) == "q=1"
+
+    def test_full_fragment(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://example.com/path?q=1#frag", 4)) == "frag"
+
+    # Edge cases
+    def test_scheme_only(self) -> None:
+        assert _run_io(self._component_prog("http:", 0)) == "http"
+
+    def test_no_authority(self) -> None:
+        """file:///path has scheme=file, empty authority, path=/path."""
+        assert _run_io(self._component_prog("file:///path", 0)) == "file"
+
+    def test_no_authority_path(self) -> None:
+        assert _run_io(self._component_prog("file:///path", 2)) == "/path"
+
+    def test_no_query_fragment(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://example.com/path", 3)) == ""
+
+    def test_query_no_fragment(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://example.com/?q=1", 3)) == "q=1"
+
+    def test_fragment_no_query(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://example.com/#frag", 4)) == "frag"
+
+    def test_empty_path(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://example.com", 2)) == ""
+
+    # Error cases
+    def test_missing_scheme(self) -> None:
+        assert _run(self._err_prog("no-scheme")) == 1
+
+    def test_empty_string(self) -> None:
+        assert _run(self._err_prog("")) == 1
+
+    # Complex URL
+    def test_complex_authority(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://user:pass@host:8080/p?a=b&c=d#sec", 1,
+        )) == "user:pass@host:8080"
+
+    def test_complex_query(self) -> None:
+        assert _run_io(self._component_prog(
+            "https://user:pass@host:8080/p?a=b&c=d#sec", 3,
+        )) == "a=b&c=d"
+
+    # Roundtrip
+    def test_roundtrip_full(self) -> None:
+        assert _run_io(self._join_prog(
+            "https://example.com/path?q=1#frag",
+        )) == "https://example.com/path?q=1#frag"
+
+    def test_roundtrip_no_query(self) -> None:
+        assert _run_io(self._join_prog(
+            "https://example.com/path",
+        )) == "https://example.com/path"
+
+    def test_roundtrip_fragment_only(self) -> None:
+        assert _run_io(self._join_prog(
+            "https://example.com#frag",
+        )) == "https://example.com#frag"
+
+
+class TestUrlJoin:
+    """url_join reassembles a UrlParts into a URL string."""
+
+    _PREAMBLE = """
+private data UrlParts { UrlParts(String, String, String, String, String) }
+"""
+
+    def test_all_components(self) -> None:
+        src = self._PREAMBLE + """
+effect IO { op print(String -> Unit); }
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
+  IO.print(url_join(UrlParts("https", "example.com", "/path", "q=1", "frag")))
+}
+"""
+        assert _run_io(src) == "https://example.com/path?q=1#frag"
+
+    def test_scheme_authority_path(self) -> None:
+        src = self._PREAMBLE + """
+effect IO { op print(String -> Unit); }
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
+  IO.print(url_join(UrlParts("https", "example.com", "/path", "", "")))
+}
+"""
+        assert _run_io(src) == "https://example.com/path"
+
+    def test_with_query_no_fragment(self) -> None:
+        src = self._PREAMBLE + """
+effect IO { op print(String -> Unit); }
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
+  IO.print(url_join(UrlParts("https", "example.com", "/", "key=val", "")))
+}
+"""
+        assert _run_io(src) == "https://example.com/?key=val"
+
+    def test_with_fragment_no_query(self) -> None:
+        src = self._PREAMBLE + """
+effect IO { op print(String -> Unit); }
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
+  IO.print(url_join(UrlParts("https", "example.com", "", "", "top")))
+}
+"""
+        assert _run_io(src) == "https://example.com#top"
+
+    def test_scheme_only(self) -> None:
+        src = self._PREAMBLE + """
+effect IO { op print(String -> Unit); }
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
+  IO.print(url_join(UrlParts("http", "", "", "", "")))
+}
+"""
+        assert _run_io(src) == "http://"
+
+    def test_empty_parts(self) -> None:
+        src = self._PREAMBLE + """
+effect IO { op print(String -> Unit); }
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
+  IO.print(url_join(UrlParts("", "", "", "", "")))
+}
+"""
+        assert _run_io(src) == ""
+
+
 class TestToString:
     def test_positive(self) -> None:
         src = """

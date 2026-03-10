@@ -172,6 +172,20 @@ class TypeEnv:
         for c in self.data_types["Result"].constructors.values():
             self.constructors[c.name] = c
 
+        # UrlParts — URL components (scheme, authority, path, query, fragment)
+        self.data_types["UrlParts"] = AdtInfo(
+            name="UrlParts",
+            type_params=(),
+            constructors={
+                "UrlParts": ConstructorInfo(
+                    "UrlParts", "UrlParts", (),
+                    (STRING, STRING, STRING, STRING, STRING),
+                ),
+            },
+        )
+        for c in self.data_types["UrlParts"].constructors.values():
+            self.constructors[c.name] = c
+
         # State<T> effect with get/put
         self.effects["State"] = EffectInfo(
             name="State",
@@ -354,6 +368,22 @@ class TypeEnv:
             forall_vars=None,
             param_types=(STRING,),
             return_type=AdtType("Result", (STRING, STRING)),
+            effect=PureEffectRow(),
+        )
+        self.functions["url_parse"] = FunctionInfo(
+            name="url_parse",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType(
+                "Result", (AdtType("UrlParts", ()), STRING)
+            ),
+            effect=PureEffectRow(),
+        )
+        self.functions["url_join"] = FunctionInfo(
+            name="url_join",
+            forall_vars=None,
+            param_types=(AdtType("UrlParts", ()),),
+            return_type=STRING,
             effect=PureEffectRow(),
         )
         self.functions["to_string"] = FunctionInfo(

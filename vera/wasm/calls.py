@@ -66,6 +66,10 @@ class CallsMixin:
                 return self._translate_url_encode(call.args[0], env)
             if call.name == "url_decode" and len(call.args) == 1:
                 return self._translate_url_decode(call.args[0], env)
+            if call.name == "url_parse" and len(call.args) == 1:
+                return self._translate_url_parse(call.args[0], env)
+            if call.name == "url_join" and len(call.args) == 1:
+                return self._translate_url_join(call.args[0], env)
             if call.name == "to_string" and len(call.args) == 1:
                 return self._translate_to_string(call.args[0], env)
             if call.name == "int_to_string" and len(call.args) == 1:
@@ -3300,6 +3304,774 @@ class CallsMixin:
         ins.append("end")  # block $done_ud
 
         ins.append(f"local.get {out}")
+        return ins
+
+    def _translate_url_parse(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate url_parse(s) → Result<UrlParts, String> (i32 ptr).
+
+        RFC 3986 simplified URL decomposition.  Scans the input for
+        delimiters (:, ://, /, ?, #) and records each component as a
+        substring of the original input (no copies needed for scheme,
+        authority, path, query, fragment).
+
+        UrlParts layout (48 bytes):
+          [tag=0     : i32 @ 0 ]
+          [scheme_ptr: i32 @ 4 ] [scheme_len: i32 @ 8 ]
+          [auth_ptr  : i32 @ 12] [auth_len  : i32 @ 16]
+          [path_ptr  : i32 @ 20] [path_len  : i32 @ 24]
+          [query_ptr : i32 @ 28] [query_len : i32 @ 32]
+          [frag_ptr  : i32 @ 36] [frag_len  : i32 @ 40]
+          [pad 4     @ 44]
+
+        Result layout (16 bytes):
+          Ok(UrlParts):  [tag=0 : i32] [urlparts_ptr : i32] [pad 8]
+          Err(String):   [tag=1 : i32] [ptr : i32] [len : i32] [pad 4]
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        err_off, err_ln = self.string_pool.intern("missing scheme")
+        empty_off, empty_len = self.string_pool.intern("")
+
+        # Input string
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        # Scanning index
+        i = self.alloc_local("i32")
+        ch = self.alloc_local("i32")
+        # Component boundaries (offsets relative to ptr)
+        colon_pos = self.alloc_local("i32")   # position of first ':'
+        auth_start = self.alloc_local("i32")  # start of authority
+        auth_end = self.alloc_local("i32")    # end of authority
+        path_start = self.alloc_local("i32")  # start of path
+        path_end = self.alloc_local("i32")    # end of path
+        query_start = self.alloc_local("i32")  # start of query (after '?')
+        query_end = self.alloc_local("i32")    # end of query
+        frag_start = self.alloc_local("i32")   # start of fragment (after '#')
+        has_auth = self.alloc_local("i32")     # bool: found ://
+        has_query = self.alloc_local("i32")    # bool: found ?
+        has_frag = self.alloc_local("i32")     # bool: found #
+        # Output pointers
+        up = self.alloc_local("i32")   # UrlParts heap pointer
+        out = self.alloc_local("i32")  # Result heap pointer
+
+        ins: list[str] = []
+
+        # Evaluate string arg → (ptr, len)
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+
+        ins.append("block $done_up")
+        ins.append("block $err_up")
+
+        # ---- Step 1: Find colon (scheme delimiter) ----
+        # Scan for first ':'
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+        ins.append("i32.const -1")
+        ins.append(f"local.set {colon_pos}")
+
+        ins.append("block $found_colon")
+        ins.append("  loop $scan_colon")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    if")
+        # No colon found → Err
+        ins.append("      br $err_up")
+        ins.append("    end")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append(f"    local.set {ch}")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 58")   # ':'
+        ins.append("    i32.eq")
+        ins.append("    if")
+        ins.append(f"      local.get {i}")
+        ins.append(f"      local.set {colon_pos}")
+        ins.append("      br $found_colon")
+        ins.append("    end")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append("    br $scan_colon")
+        ins.append("  end")  # loop
+        ins.append("end")    # block $found_colon
+
+        # scheme is input[0..colon_pos]
+        # Now check if :// follows the colon
+
+        # ---- Step 2: Check for :// (authority indicator) ----
+        ins.append("i32.const 0")
+        ins.append(f"local.set {has_auth}")
+
+        # Need colon_pos + 3 <= slen  and  input[colon_pos+1] == '/'
+        # and input[colon_pos+2] == '/'
+        ins.append(f"local.get {colon_pos}")
+        ins.append("i32.const 3")
+        ins.append("i32.add")
+        ins.append(f"local.get {slen}")
+        ins.append("i32.le_u")
+        ins.append("if")
+        # Check input[colon_pos+1] == '/' (47)
+        ins.append(f"  local.get {ptr}")
+        ins.append(f"  local.get {colon_pos}")
+        ins.append("  i32.add")
+        ins.append("  i32.load8_u offset=1")
+        ins.append("  i32.const 47")
+        ins.append("  i32.eq")
+        ins.append("  if")
+        # Check input[colon_pos+2] == '/' (47)
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {colon_pos}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=2")
+        ins.append("    i32.const 47")
+        ins.append("    i32.eq")
+        ins.append("    if")
+        ins.append("      i32.const 1")
+        ins.append(f"      local.set {has_auth}")
+        ins.append("    end")
+        ins.append("  end")
+        ins.append("end")
+
+        # ---- Step 3: Determine authority, path, query, fragment ----
+        # Set cursor position after scheme
+        ins.append("i32.const 0")
+        ins.append(f"local.set {has_query}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {has_frag}")
+
+        # If has_auth: cursor = colon_pos + 3 (after ://)
+        # Else: cursor = colon_pos + 1 (after :)
+        ins.append(f"local.get {has_auth}")
+        ins.append("if")
+        ins.append(f"  local.get {colon_pos}")
+        ins.append("  i32.const 3")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {auth_start}")
+        ins.append("else")
+        # No authority — set auth to empty
+        ins.append(f"  local.get {colon_pos}")
+        ins.append("  i32.const 1")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {auth_start}")
+        ins.append("end")
+
+        # auth_end = auth_start initially (will scan to find end)
+        ins.append(f"local.get {auth_start}")
+        ins.append(f"local.set {auth_end}")
+
+        # If has_auth: scan authority until /, ?, #, or end
+        ins.append(f"local.get {has_auth}")
+        ins.append("if")
+        ins.append(f"  local.get {auth_start}")
+        ins.append(f"  local.set {i}")
+        ins.append("  block $auth_done")
+        ins.append("    loop $scan_auth")
+        ins.append(f"      local.get {i}")
+        ins.append(f"      local.get {slen}")
+        ins.append("      i32.ge_u")
+        ins.append("      if")
+        ins.append(f"        local.get {i}")
+        ins.append(f"        local.set {auth_end}")
+        ins.append("        br $auth_done")
+        ins.append("      end")
+        ins.append(f"      local.get {ptr}")
+        ins.append(f"      local.get {i}")
+        ins.append("      i32.add")
+        ins.append("      i32.load8_u offset=0")
+        ins.append(f"      local.set {ch}")
+        # Check for / (47), ? (63), # (35)
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 47")
+        ins.append("      i32.eq")
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 63")
+        ins.append("      i32.eq")
+        ins.append("      i32.or")
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 35")
+        ins.append("      i32.eq")
+        ins.append("      i32.or")
+        ins.append("      if")
+        ins.append(f"        local.get {i}")
+        ins.append(f"        local.set {auth_end}")
+        ins.append("        br $auth_done")
+        ins.append("      end")
+        ins.append(f"      local.get {i}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {i}")
+        ins.append("      br $scan_auth")
+        ins.append("    end")  # loop
+        ins.append("  end")    # block $auth_done
+        ins.append("else")
+        # No authority: auth_end = auth_start (empty)
+        ins.append(f"  local.get {auth_start}")
+        ins.append(f"  local.set {auth_end}")
+        ins.append("end")
+
+        # ---- Path: from auth_end until ? or # or end ----
+        ins.append(f"local.get {auth_end}")
+        ins.append(f"local.set {path_start}")
+        ins.append(f"local.get {auth_end}")
+        ins.append(f"local.set {i}")
+
+        ins.append("block $path_done")
+        ins.append("  loop $scan_path")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    if")
+        ins.append(f"      local.get {i}")
+        ins.append(f"      local.set {path_end}")
+        ins.append("      br $path_done")
+        ins.append("    end")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append(f"    local.set {ch}")
+        # Check for ? (63) or # (35)
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 63")
+        ins.append("    i32.eq")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 35")
+        ins.append("    i32.eq")
+        ins.append("    i32.or")
+        ins.append("    if")
+        ins.append(f"      local.get {i}")
+        ins.append(f"      local.set {path_end}")
+        ins.append("      br $path_done")
+        ins.append("    end")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append("    br $scan_path")
+        ins.append("  end")  # loop
+        ins.append("end")    # block $path_done
+
+        # ---- Query: if input[path_end] == '?', scan until # or end ----
+        ins.append(f"local.get {path_end}")
+        ins.append(f"local.get {slen}")
+        ins.append("i32.lt_u")
+        ins.append("if")
+        ins.append(f"  local.get {ptr}")
+        ins.append(f"  local.get {path_end}")
+        ins.append("  i32.add")
+        ins.append("  i32.load8_u offset=0")
+        ins.append("  i32.const 63")   # '?'
+        ins.append("  i32.eq")
+        ins.append("  if")
+        ins.append("    i32.const 1")
+        ins.append(f"    local.set {has_query}")
+        ins.append(f"    local.get {path_end}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {query_start}")
+        # Scan query until # or end
+        ins.append(f"    local.get {query_start}")
+        ins.append(f"    local.set {i}")
+        ins.append("    block $query_done")
+        ins.append("      loop $scan_query")
+        ins.append(f"        local.get {i}")
+        ins.append(f"        local.get {slen}")
+        ins.append("        i32.ge_u")
+        ins.append("        if")
+        ins.append(f"          local.get {i}")
+        ins.append(f"          local.set {query_end}")
+        ins.append("          br $query_done")
+        ins.append("        end")
+        ins.append(f"        local.get {ptr}")
+        ins.append(f"        local.get {i}")
+        ins.append("        i32.add")
+        ins.append("        i32.load8_u offset=0")
+        ins.append("        i32.const 35")   # '#'
+        ins.append("        i32.eq")
+        ins.append("        if")
+        ins.append(f"          local.get {i}")
+        ins.append(f"          local.set {query_end}")
+        ins.append("          br $query_done")
+        ins.append("        end")
+        ins.append(f"        local.get {i}")
+        ins.append("        i32.const 1")
+        ins.append("        i32.add")
+        ins.append(f"        local.set {i}")
+        ins.append("        br $scan_query")
+        ins.append("      end")  # loop
+        ins.append("    end")    # block $query_done
+        ins.append("  end")  # if '?'
+        ins.append("end")   # if path_end < slen
+
+        # ---- Fragment: check after query (or after path if no query) ----
+        # The fragment start is wherever we stopped + 1 if we see '#'
+        # We need to check: if has_query, check at query_end; else at path_end
+        ins.append(f"local.get {has_query}")
+        ins.append("if")
+        # Check if query_end < slen and input[query_end] == '#'
+        ins.append(f"  local.get {query_end}")
+        ins.append(f"  local.get {slen}")
+        ins.append("  i32.lt_u")
+        ins.append("  if")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {query_end}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.const 35")
+        ins.append("    i32.eq")
+        ins.append("    if")
+        ins.append("      i32.const 1")
+        ins.append(f"      local.set {has_frag}")
+        ins.append(f"      local.get {query_end}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {frag_start}")
+        ins.append("    end")
+        ins.append("  end")
+        ins.append("else")
+        # No query — check at path_end for '#'
+        ins.append(f"  local.get {path_end}")
+        ins.append(f"  local.get {slen}")
+        ins.append("  i32.lt_u")
+        ins.append("  if")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {path_end}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.const 35")
+        ins.append("    i32.eq")
+        ins.append("    if")
+        ins.append("      i32.const 1")
+        ins.append(f"      local.set {has_frag}")
+        ins.append(f"      local.get {path_end}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {frag_start}")
+        ins.append("    end")
+        ins.append("  end")
+        ins.append("end")
+
+        # ---- Step 4: Allocate UrlParts (48 bytes) ----
+        ins.append("i32.const 48")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {up}")
+        ins.append("i32.const 0")
+        ins.append("i32.store")              # tag = 0 (UrlParts constructor)
+        ins.extend(gc_shadow_push(up))
+
+        # Scheme: input[0..colon_pos]
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {ptr}")
+        ins.append("i32.store offset=4")     # scheme_ptr
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {colon_pos}")
+        ins.append("i32.store offset=8")     # scheme_len
+
+        # Authority: input[auth_start..auth_end]  (empty if no ://)
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {has_auth}")
+        ins.append("if (result i32)")
+        ins.append(f"  local.get {ptr}")
+        ins.append(f"  local.get {auth_start}")
+        ins.append("  i32.add")
+        ins.append("else")
+        ins.append(f"  i32.const {empty_off}")
+        ins.append("end")
+        ins.append("i32.store offset=12")    # auth_ptr
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {has_auth}")
+        ins.append("if (result i32)")
+        ins.append(f"  local.get {auth_end}")
+        ins.append(f"  local.get {auth_start}")
+        ins.append("  i32.sub")
+        ins.append("else")
+        ins.append(f"  i32.const {empty_len}")
+        ins.append("end")
+        ins.append("i32.store offset=16")    # auth_len
+
+        # Path: input[path_start..path_end]
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {path_start}")
+        ins.append(f"local.get {path_end}")
+        ins.append("i32.lt_u")
+        ins.append("if (result i32)")
+        ins.append(f"  local.get {ptr}")
+        ins.append(f"  local.get {path_start}")
+        ins.append("  i32.add")
+        ins.append("else")
+        ins.append(f"  i32.const {empty_off}")
+        ins.append("end")
+        ins.append("i32.store offset=20")    # path_ptr
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {path_end}")
+        ins.append(f"local.get {path_start}")
+        ins.append("i32.sub")
+        ins.append("i32.store offset=24")    # path_len
+
+        # Query: input[query_start..query_end]  (empty if no ?)
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {has_query}")
+        ins.append("if (result i32)")
+        ins.append(f"  local.get {ptr}")
+        ins.append(f"  local.get {query_start}")
+        ins.append("  i32.add")
+        ins.append("else")
+        ins.append(f"  i32.const {empty_off}")
+        ins.append("end")
+        ins.append("i32.store offset=28")    # query_ptr
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {has_query}")
+        ins.append("if (result i32)")
+        ins.append(f"  local.get {query_end}")
+        ins.append(f"  local.get {query_start}")
+        ins.append("  i32.sub")
+        ins.append("else")
+        ins.append(f"  i32.const {empty_len}")
+        ins.append("end")
+        ins.append("i32.store offset=32")    # query_len
+
+        # Fragment: input[frag_start..slen]  (empty if no #)
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {has_frag}")
+        ins.append("if (result i32)")
+        ins.append(f"  local.get {ptr}")
+        ins.append(f"  local.get {frag_start}")
+        ins.append("  i32.add")
+        ins.append("else")
+        ins.append(f"  i32.const {empty_off}")
+        ins.append("end")
+        ins.append("i32.store offset=36")    # frag_ptr
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {has_frag}")
+        ins.append("if (result i32)")
+        ins.append(f"  local.get {slen}")
+        ins.append(f"  local.get {frag_start}")
+        ins.append("  i32.sub")
+        ins.append("else")
+        ins.append(f"  i32.const {empty_len}")
+        ins.append("end")
+        ins.append("i32.store offset=40")    # frag_len
+
+        # ---- Step 5: Allocate Result (16 bytes), Ok(UrlParts) ----
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 0")
+        ins.append("i32.store")              # tag = 0 (Ok)
+        ins.extend(gc_shadow_push(out))
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {up}")
+        ins.append("i32.store offset=4")     # UrlParts ptr
+        ins.append("br $done_up")
+
+        # ---- Err path ----
+        ins.append("end")  # block $err_up
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 1")
+        ins.append("i32.store")              # tag = 1 (Err)
+        ins.extend(gc_shadow_push(out))
+        ins.append(f"local.get {out}")
+        ins.append(f"i32.const {err_off}")
+        ins.append("i32.store offset=4")
+        ins.append(f"local.get {out}")
+        ins.append(f"i32.const {err_ln}")
+        ins.append("i32.store offset=8")
+
+        ins.append("end")  # block $done_up
+
+        ins.append(f"local.get {out}")
+        return ins
+
+    def _translate_url_join(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate url_join(parts) → String (i32_pair).
+
+        Takes a UrlParts heap pointer and reassembles a URL string.
+        Components: scheme://authority/path?query#fragment
+        Empty components are omitted (including their delimiters).
+
+        The argument is an i32 (heap pointer to UrlParts struct).
+        Returns i32_pair (ptr, len) on the stack.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        # Intern "://" for the scheme separator
+        sep_off, sep_len = self.string_pool.intern("://")
+        q_off, _ = self.string_pool.intern("?")
+        h_off, _ = self.string_pool.intern("#")
+
+        # UrlParts pointer
+        up = self.alloc_local("i32")
+        # Component locals (5 pairs: ptr, len)
+        s_ptr = self.alloc_local("i32")    # scheme
+        s_len = self.alloc_local("i32")
+        a_ptr = self.alloc_local("i32")    # authority
+        a_len = self.alloc_local("i32")
+        p_ptr = self.alloc_local("i32")    # path
+        p_len = self.alloc_local("i32")
+        q_ptr = self.alloc_local("i32")    # query
+        q_len = self.alloc_local("i32")
+        f_ptr = self.alloc_local("i32")    # fragment
+        f_len = self.alloc_local("i32")
+        # Output
+        total = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        k = self.alloc_local("i32")        # write cursor
+
+        ins: list[str] = []
+
+        # Evaluate arg → i32 (UrlParts heap pointer)
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {up}")
+
+        # Load all 5 String fields (each is ptr + len at known offsets)
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=4")
+        ins.append(f"local.set {s_ptr}")
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=8")
+        ins.append(f"local.set {s_len}")
+
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=12")
+        ins.append(f"local.set {a_ptr}")
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=16")
+        ins.append(f"local.set {a_len}")
+
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=20")
+        ins.append(f"local.set {p_ptr}")
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=24")
+        ins.append(f"local.set {p_len}")
+
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=28")
+        ins.append(f"local.set {q_ptr}")
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=32")
+        ins.append(f"local.set {q_len}")
+
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=36")
+        ins.append(f"local.set {f_ptr}")
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=40")
+        ins.append(f"local.set {f_len}")
+
+        # ---- Pass 1: compute total output length ----
+        # total = scheme_len + path_len
+        ins.append(f"local.get {s_len}")
+        ins.append(f"local.get {p_len}")
+        ins.append("i32.add")
+        ins.append(f"local.set {total}")
+        # If scheme_len > 0: total += 3 (for "://")
+        ins.append(f"local.get {s_len}")
+        ins.append("i32.const 0")
+        ins.append("i32.gt_u")
+        ins.append("if")
+        ins.append(f"  local.get {total}")
+        ins.append("  i32.const 3")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {total}")
+        ins.append("end")
+        # total += auth_len
+        ins.append(f"local.get {total}")
+        ins.append(f"local.get {a_len}")
+        ins.append("i32.add")
+        ins.append(f"local.set {total}")
+        # If query_len > 0: total += 1 + query_len
+        ins.append(f"local.get {q_len}")
+        ins.append("i32.const 0")
+        ins.append("i32.gt_u")
+        ins.append("if")
+        ins.append(f"  local.get {total}")
+        ins.append("  i32.const 1")
+        ins.append("  i32.add")
+        ins.append(f"  local.get {q_len}")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {total}")
+        ins.append("end")
+        # If frag_len > 0: total += 1 + frag_len
+        ins.append(f"local.get {f_len}")
+        ins.append("i32.const 0")
+        ins.append("i32.gt_u")
+        ins.append("if")
+        ins.append(f"  local.get {total}")
+        ins.append("  i32.const 1")
+        ins.append("  i32.add")
+        ins.append(f"  local.get {f_len}")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {total}")
+        ins.append("end")
+
+        # If total == 0: skip allocation, use empty string
+        empty_off2, empty_len2 = self.string_pool.intern("")
+        ins.append(f"local.get {total}")
+        ins.append("i32.eqz")
+        ins.append("if")
+        ins.append(f"  i32.const {empty_off2}")
+        ins.append(f"  local.set {dst}")
+        ins.append("end")
+
+        ins.append("block $uj_done")
+        ins.append(f"local.get {total}")
+        ins.append("i32.eqz")
+        ins.append("br_if $uj_done")
+
+        # ---- Pass 2: allocate and write ----
+        ins.append(f"local.get {total}")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        ins.append("i32.const 0")
+        ins.append(f"local.set {k}")
+
+        # If scheme non-empty: copy scheme, write "://"
+        ins.append(f"local.get {s_len}")
+        ins.append("i32.const 0")
+        ins.append("i32.gt_u")
+        ins.append("if")
+        # memory.copy(dst+k, s_ptr, s_len)
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.add")
+        ins.append(f"  local.get {s_ptr}")
+        ins.append(f"  local.get {s_len}")
+        ins.append("  memory.copy")
+        ins.append(f"  local.get {k}")
+        ins.append(f"  local.get {s_len}")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {k}")
+        # Write "://" (3 bytes from string pool)
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.add")
+        ins.append(f"  i32.const {sep_off}")
+        ins.append("  i32.const 3")
+        ins.append("  memory.copy")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.const 3")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {k}")
+        ins.append("end")
+
+        # Copy authority (even if empty — zero-length copy is a no-op)
+        ins.append(f"local.get {a_len}")
+        ins.append("i32.const 0")
+        ins.append("i32.gt_u")
+        ins.append("if")
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.add")
+        ins.append(f"  local.get {a_ptr}")
+        ins.append(f"  local.get {a_len}")
+        ins.append("  memory.copy")
+        ins.append(f"  local.get {k}")
+        ins.append(f"  local.get {a_len}")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {k}")
+        ins.append("end")
+
+        # Copy path
+        ins.append(f"local.get {p_len}")
+        ins.append("i32.const 0")
+        ins.append("i32.gt_u")
+        ins.append("if")
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.add")
+        ins.append(f"  local.get {p_ptr}")
+        ins.append(f"  local.get {p_len}")
+        ins.append("  memory.copy")
+        ins.append(f"  local.get {k}")
+        ins.append(f"  local.get {p_len}")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {k}")
+        ins.append("end")
+
+        # If query non-empty: write "?" + query
+        ins.append(f"local.get {q_len}")
+        ins.append("i32.const 0")
+        ins.append("i32.gt_u")
+        ins.append("if")
+        # Write '?' (1 byte)
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.add")
+        ins.append("  i32.const 63")   # '?'
+        ins.append("  i32.store8 offset=0")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.const 1")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {k}")
+        # Copy query
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.add")
+        ins.append(f"  local.get {q_ptr}")
+        ins.append(f"  local.get {q_len}")
+        ins.append("  memory.copy")
+        ins.append(f"  local.get {k}")
+        ins.append(f"  local.get {q_len}")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {k}")
+        ins.append("end")
+
+        # If fragment non-empty: write "#" + fragment
+        ins.append(f"local.get {f_len}")
+        ins.append("i32.const 0")
+        ins.append("i32.gt_u")
+        ins.append("if")
+        # Write '#' (1 byte)
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.add")
+        ins.append("  i32.const 35")   # '#'
+        ins.append("  i32.store8 offset=0")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.const 1")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {k}")
+        # Copy fragment
+        ins.append(f"  local.get {dst}")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.add")
+        ins.append(f"  local.get {f_ptr}")
+        ins.append(f"  local.get {f_len}")
+        ins.append("  memory.copy")
+        ins.append(f"  local.get {k}")
+        ins.append(f"  local.get {f_len}")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {k}")
+        ins.append("end")
+
+        ins.append("end")  # block $uj_done
+
+        # Return (dst, total) as i32_pair
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {total}")
         return ins
 
     def _translate_to_string(

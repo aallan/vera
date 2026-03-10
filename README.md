@@ -183,7 +183,11 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (2,003 tests across 20 files, testing compiler internals), a **conformance suite** (48 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (20 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
+Testing is organized in three layers: **unit tests** (2,003 tests across 20 files, testing compiler internals), a **conformance suite** (49 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (21 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
+
+### Known Bugs
+
+No known bugs.
 
 ## Roadmap
 
@@ -323,7 +327,7 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - <del>[#213](https://github.com/aallan/vera/issues/213) string_repeat builtin</del> ([v0.0.75](https://github.com/aallan/vera/releases/tag/v0.0.75))
 - <del>[#230](https://github.com/aallan/vera/issues/230) string interpolation</del> ([v0.0.76](https://github.com/aallan/vera/releases/tag/v0.0.76))
 - [#231](https://github.com/aallan/vera/issues/231) regex support
-- [#232](https://github.com/aallan/vera/issues/232) URL parsing and construction builtins
+- <del>[#232](https://github.com/aallan/vera/issues/232) URL parsing and construction builtins</del> ([v0.0.81](https://github.com/aallan/vera/releases/tag/v0.0.81))
 - <del>[#234](https://github.com/aallan/vera/issues/234) base64 encoding and decoding</del> ([v0.0.79](https://github.com/aallan/vera/releases/tag/v0.0.79))
 
 **Module system** — sequential dependency (#187 before #127)
@@ -333,7 +337,6 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 
 **Codegen** — WASM compilation gaps
 
-- [#266](https://github.com/aallan/vera/issues/266) ADT constructors with String/Array fields crash codegen layout
 - [#267](https://github.com/aallan/vera/issues/267) Tuple type WASM codegen
 
 **IO runtime** — host bindings for file and stdin access
@@ -459,7 +462,7 @@ OK: examples/safe_divide.vera
 Verification: 4 verified (Tier 1)
 ```
 
-`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 20 examples, 122 of 126 contracts (96.8%) are verified statically.
+`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 21 examples, 122 of 126 contracts (96.8%) are verified statically.
 
 ### Format a program
 
