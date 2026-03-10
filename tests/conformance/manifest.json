@@ -421,5 +421,14 @@
     "level": "run",
     "spec_ref": "Section 9.6.5",
     "features": ["base64_encode", "base64_decode", "result_type"]
+  },
+  {
+    "id": "ch09_url_encoding",
+    "file": "ch09_url_encoding.vera",
+    "chapter": 9,
+    "title": "URL percent-encoding and decoding",
+    "level": "run",
+    "spec_ref": "Section 9.6.5",
+    "features": ["url_encode", "url_decode", "result_type"]
   }
 ]

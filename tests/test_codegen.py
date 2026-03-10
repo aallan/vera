@@ -4758,6 +4758,109 @@ public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
         assert _run_io(src) == "Hello, World!"
 
 
+class TestUrlEncode:
+    """url_encode returns String."""
+
+    def _io_prog(self, literal: str) -> str:
+        return f"""
+effect IO {{ op print(String -> Unit); }}
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
+  IO.print(url_encode("{literal}"));
+  ()
+}}
+"""
+
+    def test_empty(self) -> None:
+        assert _run_io(self._io_prog("")) == ""
+
+    def test_unreserved_passthrough(self) -> None:
+        assert _run_io(self._io_prog("abc-XYZ_012.~")) == "abc-XYZ_012.~"
+
+    def test_space(self) -> None:
+        assert _run_io(self._io_prog("a b")) == "a%20b"
+
+    def test_special_chars(self) -> None:
+        assert _run_io(self._io_prog("foo@bar.com")) == "foo%40bar.com"
+
+    def test_query_string(self) -> None:
+        assert _run_io(self._io_prog("key=value&x=1")) == "key%3Dvalue%26x%3D1"
+
+    def test_slash_and_colon(self) -> None:
+        assert _run_io(self._io_prog("http://x.com")) == "http%3A%2F%2Fx.com"
+
+    def test_hello_world(self) -> None:
+        assert _run_io(self._io_prog("Hello, World!")) == "Hello%2C%20World%21"
+
+
+class TestUrlDecode:
+    """url_decode returns Result<String, String>."""
+
+    _PREAMBLE = """
+private data Result<T, E> { Ok(T), Err(E) }
+"""
+
+    def _ok_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+effect IO {{ op print(String -> Unit); }}
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {{
+  match url_decode("{literal}") {{
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  }}
+}}
+"""
+
+    def _err_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match url_decode("{literal}") {{
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }}
+}}
+"""
+
+    def test_empty(self) -> None:
+        assert _run_io(self._ok_prog("")) == ""
+
+    def test_no_encoding(self) -> None:
+        assert _run_io(self._ok_prog("hello")) == "hello"
+
+    def test_space(self) -> None:
+        assert _run_io(self._ok_prog("a%20b")) == "a b"
+
+    def test_uppercase_hex(self) -> None:
+        assert _run_io(self._ok_prog("%41%42%43")) == "ABC"
+
+    def test_lowercase_hex(self) -> None:
+        assert _run_io(self._ok_prog("%61%62%63")) == "abc"
+
+    def test_mixed_case_hex(self) -> None:
+        assert _run_io(self._ok_prog("%2f%2F")) == "//"
+
+    def test_hello_world(self) -> None:
+        assert _run_io(self._ok_prog("Hello%2C%20World%21")) == "Hello, World!"
+
+    def test_invalid_truncated(self) -> None:
+        assert _run(self._err_prog("%4")) == 1
+
+    def test_invalid_hex(self) -> None:
+        assert _run(self._err_prog("%ZZ")) == 1
+
+    def test_roundtrip(self) -> None:
+        """Encode then decode round-trips correctly."""
+        src = self._PREAMBLE + """
+effect IO { op print(String -> Unit); }
+public fn f(@Unit -> @Unit) requires(true) ensures(true) effects(<IO>) {
+  match url_decode(url_encode("Hello, World!")) {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  }
+}
+"""
+        assert _run_io(src) == "Hello, World!"
+
+
 class TestToString:
     def test_positive(self) -> None:
         src = """

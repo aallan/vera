@@ -62,6 +62,10 @@ class CallsMixin:
                 return self._translate_base64_encode(call.args[0], env)
             if call.name == "base64_decode" and len(call.args) == 1:
                 return self._translate_base64_decode(call.args[0], env)
+            if call.name == "url_encode" and len(call.args) == 1:
+                return self._translate_url_encode(call.args[0], env)
+            if call.name == "url_decode" and len(call.args) == 1:
+                return self._translate_url_decode(call.args[0], env)
             if call.name == "to_string" and len(call.args) == 1:
                 return self._translate_to_string(call.args[0], env)
             if call.name == "int_to_string" and len(call.args) == 1:
@@ -2719,6 +2723,581 @@ class CallsMixin:
         ins.append("i32.store offset=8")
 
         ins.append("end")  # block $done_bd
+
+        ins.append(f"local.get {out}")
+        return ins
+
+    def _translate_url_encode(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate url_encode(s) → String (i32_pair).
+
+        Percent-encodes all bytes except RFC 3986 unreserved characters:
+        A-Z, a-z, 0-9, '-', '_', '.', '~'.
+        Each reserved byte becomes %XX (uppercase hex).
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        # Intern the hex digit alphabet for fast lookup
+        hex_off, _ = self.string_pool.intern("0123456789ABCDEF")
+        empty_off, empty_len = self.string_pool.intern("")
+
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        out_len = self.alloc_local("i32")
+        i = self.alloc_local("i32")    # input index
+        j = self.alloc_local("i32")    # output index
+        ch = self.alloc_local("i32")   # current byte
+
+        ins: list[str] = []
+
+        # Evaluate string arg → (ptr, len)
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+
+        # Empty input → empty output
+        ins.append(f"local.get {slen}")
+        ins.append("i32.eqz")
+        ins.append("if (result i32 i32)")
+        ins.append(f"  i32.const {empty_off}")
+        ins.append(f"  i32.const {empty_len}")
+        ins.append("else")
+
+        # First pass: count output length
+        # Each byte is either 1 (unreserved) or 3 (%XX)
+        ins.append("i32.const 0")
+        ins.append(f"local.set {out_len}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+        ins.append("block $brk_cnt")
+        ins.append("  loop $lp_cnt")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_cnt")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append(f"    local.set {ch}")
+
+        # Check if unreserved: A-Z || a-z || 0-9 || '-' || '_' || '.' || '~'
+        ins.append("    block $unreserved_c")
+        # A-Z (65-90)
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 65")
+        ins.append("    i32.ge_u")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 90")
+        ins.append("    i32.le_u")
+        ins.append("    i32.and")
+        ins.append("    br_if $unreserved_c")
+        # a-z (97-122)
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 97")
+        ins.append("    i32.ge_u")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 122")
+        ins.append("    i32.le_u")
+        ins.append("    i32.and")
+        ins.append("    br_if $unreserved_c")
+        # 0-9 (48-57)
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 48")
+        ins.append("    i32.ge_u")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 57")
+        ins.append("    i32.le_u")
+        ins.append("    i32.and")
+        ins.append("    br_if $unreserved_c")
+        # '-' (45)
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 45")
+        ins.append("    i32.eq")
+        ins.append("    br_if $unreserved_c")
+        # '_' (95)
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 95")
+        ins.append("    i32.eq")
+        ins.append("    br_if $unreserved_c")
+        # '.' (46)
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 46")
+        ins.append("    i32.eq")
+        ins.append("    br_if $unreserved_c")
+        # '~' (126)
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 126")
+        ins.append("    i32.eq")
+        ins.append("    br_if $unreserved_c")
+
+        # Reserved: out_len += 3
+        ins.append(f"    local.get {out_len}")
+        ins.append("    i32.const 3")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {out_len}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append("    br $lp_cnt")
+        ins.append("    end")  # block $unreserved_c
+
+        # Unreserved: out_len += 1
+        ins.append(f"    local.get {out_len}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {out_len}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append("    br $lp_cnt")
+        ins.append("  end")  # loop
+        ins.append("end")    # block $brk_cnt
+
+        # Allocate output buffer
+        ins.append(f"local.get {out_len}")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        # Second pass: write encoded output
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {j}")
+        ins.append("block $brk_enc")
+        ins.append("  loop $lp_enc")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_enc")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append(f"    local.set {ch}")
+
+        # Check if unreserved (same logic as counting pass)
+        ins.append("    block $unreserved_e")
+        # A-Z
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 65")
+        ins.append("    i32.ge_u")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 90")
+        ins.append("    i32.le_u")
+        ins.append("    i32.and")
+        ins.append("    br_if $unreserved_e")
+        # a-z
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 97")
+        ins.append("    i32.ge_u")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 122")
+        ins.append("    i32.le_u")
+        ins.append("    i32.and")
+        ins.append("    br_if $unreserved_e")
+        # 0-9
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 48")
+        ins.append("    i32.ge_u")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 57")
+        ins.append("    i32.le_u")
+        ins.append("    i32.and")
+        ins.append("    br_if $unreserved_e")
+        # '-'
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 45")
+        ins.append("    i32.eq")
+        ins.append("    br_if $unreserved_e")
+        # '_'
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 95")
+        ins.append("    i32.eq")
+        ins.append("    br_if $unreserved_e")
+        # '.'
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 46")
+        ins.append("    i32.eq")
+        ins.append("    br_if $unreserved_e")
+        # '~'
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 126")
+        ins.append("    i32.eq")
+        ins.append("    br_if $unreserved_e")
+
+        # Reserved: write '%', hex_hi, hex_lo
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.add")
+        ins.append("    i32.const 37")         # '%'
+        ins.append("    i32.store8 offset=0")
+        # High nibble: hex[ch >> 4]
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.add")
+        ins.append(f"    i32.const {hex_off}")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 4")
+        ins.append("    i32.shr_u")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=1")
+        # Low nibble: hex[ch & 0xF]
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.add")
+        ins.append(f"    i32.const {hex_off}")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 15")
+        ins.append("    i32.and")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=2")
+        # j += 3
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.const 3")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {j}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append("    br $lp_enc")
+        ins.append("    end")  # block $unreserved_e
+
+        # Unreserved: copy byte directly
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.store8 offset=0")
+        # j += 1
+        ins.append(f"    local.get {j}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {j}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append("    br $lp_enc")
+        ins.append("  end")  # loop
+        ins.append("end")    # block $brk_enc
+
+        # Leave (dst, out_len) on the stack
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {out_len}")
+
+        ins.append("end")  # else branch of empty check
+
+        return ins
+
+    def _translate_url_decode(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate url_decode(s) → Result<String, String> (i32 ptr).
+
+        Decodes percent-encoded strings (RFC 3986).  Each %XX sequence
+        is converted to the byte with that hex value.  Returns Err on
+        invalid sequences (truncated %, invalid hex digits).
+
+        ADT layout (16 bytes):
+          Ok(String):  [tag=0 : i32] [ptr : i32] [len : i32] [pad 4]
+          Err(String): [tag=1 : i32] [ptr : i32] [len : i32] [pad 4]
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        err_off, err_ln = self.string_pool.intern("invalid percent-encoding")
+        empty_off, empty_len = self.string_pool.intern("")
+
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        out = self.alloc_local("i32")    # Result ADT pointer
+        dst = self.alloc_local("i32")    # decoded bytes pointer
+        out_len = self.alloc_local("i32")
+        i = self.alloc_local("i32")      # input index
+        k = self.alloc_local("i32")      # output index
+        ch = self.alloc_local("i32")     # current byte
+        hi = self.alloc_local("i32")     # high hex nibble value
+        lo = self.alloc_local("i32")     # low hex nibble value
+
+        ins: list[str] = []
+
+        # Evaluate string arg → (ptr, len)
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+
+        ins.append("block $done_ud")
+        ins.append("block $err_ud")
+
+        # Empty input → Ok("")
+        ins.append(f"local.get {slen}")
+        ins.append("i32.eqz")
+        ins.append("if")
+        ins.append("  i32.const 16")
+        ins.append("  call $alloc")
+        ins.append(f"  local.tee {out}")
+        ins.append("  i32.const 0")
+        ins.append("  i32.store")              # tag = 0 (Ok)
+        ins.extend(["  " + x for x in gc_shadow_push(out)])
+        ins.append(f"  local.get {out}")
+        ins.append(f"  i32.const {empty_off}")
+        ins.append("  i32.store offset=4")
+        ins.append(f"  local.get {out}")
+        ins.append(f"  i32.const {empty_len}")
+        ins.append("  i32.store offset=8")
+        ins.append("  br $done_ud")
+        ins.append("end")
+
+        # Allocate output buffer (at most slen bytes — decoding shrinks)
+        ins.append(f"local.get {slen}")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        # Decode loop
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {k}")
+
+        ins.append("block $brk_dl")
+        ins.append("  loop $lp_dl")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_dl")
+
+        # Load current byte
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append(f"    local.set {ch}")
+
+        # Check if '%' (37)
+        ins.append(f"    local.get {ch}")
+        ins.append("    i32.const 37")
+        ins.append("    i32.eq")
+        ins.append("    if")
+
+        # Need at least 2 more bytes
+        ins.append(f"      local.get {i}")
+        ins.append("      i32.const 2")
+        ins.append("      i32.add")
+        ins.append(f"      local.get {slen}")
+        ins.append("      i32.ge_u")
+        ins.append("      br_if $err_ud")
+
+        # Decode high nibble (i+1)
+        ins.append(f"      local.get {ptr}")
+        ins.append(f"      local.get {i}")
+        ins.append("      i32.add")
+        ins.append("      i32.load8_u offset=1")
+        ins.append(f"      local.set {ch}")
+
+        # Convert hex char to value (hi)
+        ins.append("      block $hi_ok")
+        ins.append("      block $hi_bad")
+        # 0-9 (48-57) → 0-9
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 48")
+        ins.append("      i32.ge_u")
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 57")
+        ins.append("      i32.le_u")
+        ins.append("      i32.and")
+        ins.append("      if")
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 48")
+        ins.append("        i32.sub")
+        ins.append(f"        local.set {hi}")
+        ins.append("        br $hi_ok")
+        ins.append("      end")
+        # A-F (65-70) → 10-15
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 65")
+        ins.append("      i32.ge_u")
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 70")
+        ins.append("      i32.le_u")
+        ins.append("      i32.and")
+        ins.append("      if")
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 55")
+        ins.append("        i32.sub")
+        ins.append(f"        local.set {hi}")
+        ins.append("        br $hi_ok")
+        ins.append("      end")
+        # a-f (97-102) → 10-15
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 97")
+        ins.append("      i32.ge_u")
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 102")
+        ins.append("      i32.le_u")
+        ins.append("      i32.and")
+        ins.append("      if")
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 87")
+        ins.append("        i32.sub")
+        ins.append(f"        local.set {hi}")
+        ins.append("        br $hi_ok")
+        ins.append("      end")
+        ins.append("      br $hi_bad")
+        ins.append("      end")  # block $hi_bad
+        ins.append("      br $err_ud")
+        ins.append("      end")  # block $hi_ok
+
+        # Decode low nibble (i+2)
+        ins.append(f"      local.get {ptr}")
+        ins.append(f"      local.get {i}")
+        ins.append("      i32.add")
+        ins.append("      i32.load8_u offset=2")
+        ins.append(f"      local.set {ch}")
+
+        # Convert hex char to value (lo)
+        ins.append("      block $lo_ok")
+        ins.append("      block $lo_bad")
+        # 0-9
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 48")
+        ins.append("      i32.ge_u")
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 57")
+        ins.append("      i32.le_u")
+        ins.append("      i32.and")
+        ins.append("      if")
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 48")
+        ins.append("        i32.sub")
+        ins.append(f"        local.set {lo}")
+        ins.append("        br $lo_ok")
+        ins.append("      end")
+        # A-F
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 65")
+        ins.append("      i32.ge_u")
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 70")
+        ins.append("      i32.le_u")
+        ins.append("      i32.and")
+        ins.append("      if")
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 55")
+        ins.append("        i32.sub")
+        ins.append(f"        local.set {lo}")
+        ins.append("        br $lo_ok")
+        ins.append("      end")
+        # a-f
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 97")
+        ins.append("      i32.ge_u")
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.const 102")
+        ins.append("      i32.le_u")
+        ins.append("      i32.and")
+        ins.append("      if")
+        ins.append(f"        local.get {ch}")
+        ins.append("        i32.const 87")
+        ins.append("        i32.sub")
+        ins.append(f"        local.set {lo}")
+        ins.append("        br $lo_ok")
+        ins.append("      end")
+        ins.append("      br $lo_bad")
+        ins.append("      end")  # block $lo_bad
+        ins.append("      br $err_ud")
+        ins.append("      end")  # block $lo_ok
+
+        # Store decoded byte: (hi << 4) | lo
+        ins.append(f"      local.get {dst}")
+        ins.append(f"      local.get {k}")
+        ins.append("      i32.add")
+        ins.append(f"      local.get {hi}")
+        ins.append("      i32.const 4")
+        ins.append("      i32.shl")
+        ins.append(f"      local.get {lo}")
+        ins.append("      i32.or")
+        ins.append("      i32.store8 offset=0")
+        ins.append(f"      local.get {k}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {k}")
+        # i += 3
+        ins.append(f"      local.get {i}")
+        ins.append("      i32.const 3")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {i}")
+
+        ins.append("    else")
+
+        # Not '%': copy byte directly
+        ins.append(f"      local.get {dst}")
+        ins.append(f"      local.get {k}")
+        ins.append("      i32.add")
+        ins.append(f"      local.get {ch}")
+        ins.append("      i32.store8 offset=0")
+        ins.append(f"      local.get {k}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {k}")
+        ins.append(f"      local.get {i}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.add")
+        ins.append(f"      local.set {i}")
+
+        ins.append("    end")  # if '%'
+
+        ins.append("    br $lp_dl")
+        ins.append("  end")  # loop
+        ins.append("end")    # block $brk_dl
+
+        # --- Ok path ---
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 0")
+        ins.append("i32.store")                # tag = 0 (Ok)
+        ins.extend(gc_shadow_push(out))
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {dst}")
+        ins.append("i32.store offset=4")       # string ptr
+        ins.append(f"local.get {out}")
+        ins.append(f"local.get {k}")
+        ins.append("i32.store offset=8")       # string len
+        ins.append("br $done_ud")
+
+        # --- Err path ---
+        ins.append("end")  # block $err_ud
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.tee {out}")
+        ins.append("i32.const 1")
+        ins.append("i32.store")                # tag = 1 (Err)
+        ins.extend(gc_shadow_push(out))
+        ins.append(f"local.get {out}")
+        ins.append(f"i32.const {err_off}")
+        ins.append("i32.store offset=4")
+        ins.append(f"local.get {out}")
+        ins.append(f"i32.const {err_ln}")
+        ins.append("i32.store offset=8")
+
+        ins.append("end")  # block $done_ud
 
         ins.append(f"local.get {out}")
         return ins

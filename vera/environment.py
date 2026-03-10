@@ -342,6 +342,20 @@ class TypeEnv:
             return_type=AdtType("Result", (STRING, STRING)),
             effect=PureEffectRow(),
         )
+        self.functions["url_encode"] = FunctionInfo(
+            name="url_encode",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["url_decode"] = FunctionInfo(
+            name="url_decode",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType("Result", (STRING, STRING)),
+            effect=PureEffectRow(),
+        )
         self.functions["to_string"] = FunctionInfo(
             name="to_string",
             forall_vars=None,

@@ -183,7 +183,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (1,978 tests across 20 files, testing compiler internals), a **conformance suite** (47 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (19 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
+Testing is organized in three layers: **unit tests** (2,003 tests across 20 files, testing compiler internals), a **conformance suite** (48 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (20 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
 
 ## Roadmap
 
@@ -454,7 +454,7 @@ OK: examples/safe_divide.vera
 Verification: 4 verified (Tier 1)
 ```
 
-`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 19 examples, 120 of 124 contracts (96.8%) are verified statically.
+`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 20 examples, 122 of 126 contracts (96.8%) are verified statically.
 
 ### Format a program
 

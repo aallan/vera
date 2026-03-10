@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.80] - 2026-03-10
+
+### Added
+- **URL percent-encoding and decoding** ([#232](https://github.com/aallan/vera/issues/232)):
+  New `url_encode(@String -> @String)` — RFC 3986 percent-encoding, leaving
+  unreserved characters unchanged.
+  New `url_decode(@String -> @Result<String, String>)` — percent-decoding with
+  error handling for invalid `%XX` sequences.
+- New conformance test `ch09_url_encoding` (conformance suite: 47→48 programs)
+- New example `examples/url_encoding.vera` — encode, decode, and round-trip demo
+- 21 new tests (4 type checker + 17 codegen)
+
 ## [0.0.79] - 2026-03-10
 
 ### Added
@@ -1211,7 +1223,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.79...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.80...HEAD
+[0.0.80]: https://github.com/aallan/vera/compare/v0.0.79...v0.0.80
 [0.0.79]: https://github.com/aallan/vera/compare/v0.0.78...v0.0.79
 [0.0.78]: https://github.com/aallan/vera/compare/v0.0.77...v0.0.78
 [0.0.77]: https://github.com/aallan/vera/compare/v0.0.76...v0.0.77

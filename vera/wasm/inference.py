@@ -224,10 +224,10 @@ class InferenceMixin:
         # parse/decode builtins → Result<T, String> (i32 heap pointer)
         if expr.name in (
             "parse_nat", "parse_int", "parse_float64", "parse_bool",
-            "base64_decode",
+            "base64_decode", "url_decode",
         ):
             return "i32"
-        if expr.name == "base64_encode":
+        if expr.name in ("base64_encode", "url_encode"):
             return "i32_pair"
         # Numeric math builtins
         if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
@@ -402,10 +402,10 @@ class InferenceMixin:
             return "Array"
         if call.name in (
             "parse_nat", "parse_int", "parse_float64", "parse_bool",
-            "base64_decode",
+            "base64_decode", "url_decode",
         ):
             return "Result"
-        if call.name == "base64_encode":
+        if call.name in ("base64_encode", "url_encode"):
             return "String"
         # Numeric math builtins
         if call.name == "abs":
