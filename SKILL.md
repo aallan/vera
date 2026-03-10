@@ -407,7 +407,9 @@ char_code(@String.0, @Int.0)            -- returns Nat (ASCII code at index)
 from_char_code(@Nat.0)                  -- returns String (single char from code point)
 string_repeat(@String.0, @Nat.0)        -- returns String (repeated N times)
 parse_nat(@String.0)                    -- returns Result<Nat, String>
-parse_float64(@String.0)                -- returns Float64
+parse_int(@String.0)                    -- returns Result<Int, String>
+parse_float64(@String.0)                -- returns Result<Float64, String>
+parse_bool(@String.0)                   -- returns Result<Bool, String>
 to_string(@Int.0)                       -- returns String (integer to decimal)
 int_to_string(@Int.0)                   -- returns String (alias for to_string)
 bool_to_string(@Bool.0)                 -- returns String ("true" or "false")
@@ -452,7 +454,7 @@ join(@Array<String>.0, @String.0)               -- returns String (join with sep
 
 `to_upper` and `to_lower` convert ASCII letters only (a-z ↔ A-Z). `replace` substitutes all non-overlapping occurrences; an empty needle returns the original string unchanged. `split` returns an array of segments; an empty delimiter returns a single-element array. `join` concatenates array elements with the separator between each pair.
 
-String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. `parse_nat` returns `Ok(n)` on valid decimal input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated.
+String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. All four parse functions return `Result<T, String>`: `parse_nat`, `parse_int`, `parse_float64`, and `parse_bool`. They return `Ok(value)` on valid input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated. `parse_int` accepts an optional `+` or `-` sign. `parse_bool` is strict: only `"true"` and `"false"` (lowercase) are valid.
 
 ### Numeric operations
 

@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.77] - 2026-03-10
+
+### Added
+- **Close #200: Parsing completeness** ([#200](https://github.com/aallan/vera/issues/200)):
+  New `parse_int` (`String → Result<Int, String>`) and `parse_bool`
+  (`String → Result<Bool, String>`) built-in functions. `parse_int` handles
+  optional `+`/`-` sign. `parse_bool` is strict lowercase only — only `"true"`
+  and `"false"` are valid.
+- New conformance test `ch04_parse_completeness` (conformance suite: 44→45 programs)
+- 22 new tests (6 type checker + 8 codegen parse_int + 6 codegen parse_bool + 2 codegen parse_float64 error cases)
+
+### Changed
+- **Breaking:** `parse_float64` return type changed from `Float64` to
+  `Result<Float64, String>`. Previously returned `0.0` silently on invalid input;
+  now returns `Err(msg)` with a descriptive error message. All four parse functions
+  (`parse_nat`, `parse_int`, `parse_float64`, `parse_bool`) now consistently
+  return `Result<T, String>`.
+
 ## [0.0.76] - 2026-03-10
 
 ### Added
@@ -1165,7 +1183,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.76...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.77...HEAD
+[0.0.77]: https://github.com/aallan/vera/compare/v0.0.76...v0.0.77
 [0.0.76]: https://github.com/aallan/vera/compare/v0.0.75...v0.0.76
 [0.0.75]: https://github.com/aallan/vera/compare/v0.0.74...v0.0.75
 [0.0.74]: https://github.com/aallan/vera/compare/v0.0.73...v0.0.74

@@ -4308,45 +4308,191 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 
 
 class TestParseFloat64:
-    def test_integer(self) -> None:
-        src = """
-public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
-  parse_float64("42")
-}
+    """parse_float64 returns Result<Float64, String>."""
+
+    _PREAMBLE = """
+private data Result<T, E> { Ok(T), Err(E) }
 """
-        assert _run_float(src) == 42.0
+
+    def _ok_prog(self, literal: str, expect_int: int) -> str:
+        """Build a program that parses a float and compares to expected value.
+
+        Returns 1 if the float matches the expected integer value, 0 otherwise.
+        This avoids returning f64 directly since Result wrapping returns i32.
+        """
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match parse_float64("{literal}") {{
+    Ok(@Float64) -> float_to_int(@Float64.0),
+    Err(_) -> 0 - 999
+  }}
+}}
+"""
+
+    def _err_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match parse_float64("{literal}") {{
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }}
+}}
+"""
+
+    def test_integer(self) -> None:
+        assert _run(self._ok_prog("42", 42)) == 42
 
     def test_decimal(self) -> None:
-        src = """
-public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
-  parse_float64("3.14")
-}
-"""
-        assert abs(_run_float(src) - 3.14) < 1e-10
+        # float_to_int truncates, so 3.14 -> 3
+        assert _run(self._ok_prog("3.14", 3)) == 3
 
     def test_negative(self) -> None:
-        src = """
-public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
-  parse_float64("-2.5")
-}
-"""
-        assert _run_float(src) == -2.5
+        # -2.5 truncated to int -> -2
+        assert _run(self._ok_prog("-2.5", -2)) == -2
 
     def test_leading_spaces(self) -> None:
-        src = """
-public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
-  parse_float64("  1.0")
-}
-"""
-        assert _run_float(src) == 1.0
+        assert _run(self._ok_prog("  1.0", 1)) == 1
 
     def test_no_decimal(self) -> None:
-        src = """
-public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
-  parse_float64("100")
+        assert _run(self._ok_prog("100", 100)) == 100
+
+    def test_empty_err(self) -> None:
+        assert _run(self._err_prog("")) == 1
+
+    def test_invalid_err(self) -> None:
+        assert _run(self._err_prog("abc")) == 1
+
+    def test_err_string_extraction(self) -> None:
+        """Err arm can bind and use the error string."""
+        src = self._PREAMBLE + """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match parse_float64("abc") {
+    Ok(_) -> 0,
+    Err(@String) -> string_length(@String.0)
+  }
 }
 """
-        assert _run_float(src) == 100.0
+        # "invalid character" has length 17
+        assert _run(src) == 17
+
+
+class TestParseInt:
+    """parse_int returns Result<Int, String>."""
+
+    _PREAMBLE = """
+private data Result<T, E> { Ok(T), Err(E) }
+"""
+
+    def _ok_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match parse_int("{literal}") {{
+    Ok(@Int) -> @Int.0,
+    Err(_) -> 0 - 999
+  }}
+}}
+"""
+
+    def _err_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match parse_int("{literal}") {{
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }}
+}}
+"""
+
+    def test_basic(self) -> None:
+        assert _run(self._ok_prog("42")) == 42
+
+    def test_negative(self) -> None:
+        assert _run(self._ok_prog("-7")) == -7
+
+    def test_positive_sign(self) -> None:
+        assert _run(self._ok_prog("+5")) == 5
+
+    def test_zero(self) -> None:
+        assert _run(self._ok_prog("0")) == 0
+
+    def test_spaces(self) -> None:
+        assert _run(self._ok_prog("  42  ")) == 42
+
+    def test_empty_err(self) -> None:
+        assert _run(self._err_prog("")) == 1
+
+    def test_invalid_err(self) -> None:
+        assert _run(self._err_prog("abc")) == 1
+
+    def test_err_string_extraction(self) -> None:
+        """Err arm can bind and use the error string."""
+        src = self._PREAMBLE + """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match parse_int("abc") {
+    Ok(_) -> 0,
+    Err(@String) -> string_length(@String.0)
+  }
+}
+"""
+        # "invalid digit" has length 13
+        assert _run(src) == 13
+
+
+class TestParseBool:
+    """parse_bool returns Result<Bool, String>."""
+
+    _PREAMBLE = """
+private data Result<T, E> { Ok(T), Err(E) }
+"""
+
+    def _ok_prog(self, literal: str, expect_true: bool) -> str:
+        expected = 1 if expect_true else 0
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match parse_bool("{literal}") {{
+    Ok(@Bool) -> if @Bool.0 then {{ 1 }} else {{ 0 }},
+    Err(_) -> 0 - 999
+  }}
+}}
+"""
+
+    def _err_prog(self, literal: str) -> str:
+        return self._PREAMBLE + f"""
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
+  match parse_bool("{literal}") {{
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }}
+}}
+"""
+
+    def test_true(self) -> None:
+        assert _run(self._ok_prog("true", True)) == 1
+
+    def test_false(self) -> None:
+        assert _run(self._ok_prog("false", False)) == 0
+
+    def test_invalid(self) -> None:
+        assert _run(self._err_prog("yes")) == 1
+
+    def test_empty(self) -> None:
+        assert _run(self._err_prog("")) == 1
+
+    def test_whitespace(self) -> None:
+        assert _run(self._ok_prog("  true  ", True)) == 1
+
+    def test_err_string_extraction(self) -> None:
+        """Err arm can bind and use the error string."""
+        src = self._PREAMBLE + """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  match parse_bool("yes") {
+    Ok(_) -> 0,
+    Err(@String) -> string_length(@String.0)
+  }
+}
+"""
+        # "expected true or false" has length 22
+        assert _run(src) == 22
 
 
 class TestToString:

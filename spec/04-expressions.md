@@ -314,7 +314,10 @@ string_concat(@String.0, @String.1)     -- returns String
 string_slice(@String.0, @Nat.0, @Nat.1) -- returns String
 char_code(@String.0, @Int.0)            -- returns Nat (ASCII code at index)
 parse_nat(@String.0)                    -- returns Result<Nat, String>
-parse_float64(@String.0)                -- returns Float64
+parse_int(@String.0)                    -- returns Result<Int, String>
+parse_float64(@String.0)                -- returns Result<Float64, String>
+parse_bool(@String.0)                   -- returns Result<Bool, String>
+                                        -- strict: only "true" and "false" are valid
 to_string(@Int.0)                       -- returns String
 int_to_string(@Int.0)                   -- returns String (alias for to_string)
 bool_to_string(@Bool.0)                 -- returns String ("true" or "false")

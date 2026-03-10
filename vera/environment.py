@@ -292,11 +292,25 @@ class TypeEnv:
             return_type=AdtType("Result", (NAT, STRING)),
             effect=PureEffectRow(),
         )
+        self.functions["parse_int"] = FunctionInfo(
+            name="parse_int",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType("Result", (INT, STRING)),
+            effect=PureEffectRow(),
+        )
         self.functions["parse_float64"] = FunctionInfo(
             name="parse_float64",
             forall_vars=None,
             param_types=(STRING,),
-            return_type=FLOAT64,
+            return_type=AdtType("Result", (FLOAT64, STRING)),
+            effect=PureEffectRow(),
+        )
+        self.functions["parse_bool"] = FunctionInfo(
+            name="parse_bool",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType("Result", (BOOL, STRING)),
             effect=PureEffectRow(),
         )
         self.functions["to_string"] = FunctionInfo(

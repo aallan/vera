@@ -2529,10 +2529,48 @@ private fn f(@String -> @Nat)
 
     def test_parse_float64_ok(self) -> None:
         _check_ok("""
-private fn f(@String -> @Float64)
+private data Result<T, E> { Ok(T), Err(E) }
+private fn f(@String -> @Result<Float64, String>)
   requires(true) ensures(true) effects(pure)
 { parse_float64(@String.0) }
 """)
+
+    def test_parse_float64_bare_mismatch(self) -> None:
+        _check_err("""
+private fn f(@String -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ parse_float64(@String.0) }
+""", "expected Float64")
+
+    def test_parse_int_ok(self) -> None:
+        _check_ok("""
+private data Result<T, E> { Ok(T), Err(E) }
+private fn f(@String -> @Result<Int, String>)
+  requires(true) ensures(true) effects(pure)
+{ parse_int(@String.0) }
+""")
+
+    def test_parse_int_bare_mismatch(self) -> None:
+        _check_err("""
+private fn f(@String -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ parse_int(@String.0) }
+""", "expected Int")
+
+    def test_parse_bool_ok(self) -> None:
+        _check_ok("""
+private data Result<T, E> { Ok(T), Err(E) }
+private fn f(@String -> @Result<Bool, String>)
+  requires(true) ensures(true) effects(pure)
+{ parse_bool(@String.0) }
+""")
+
+    def test_parse_bool_bare_mismatch(self) -> None:
+        _check_err("""
+private fn f(@String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ parse_bool(@String.0) }
+""", "expected Bool")
 
     def test_to_string_ok(self) -> None:
         _check_ok("""

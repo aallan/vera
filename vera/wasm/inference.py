@@ -218,12 +218,9 @@ class InferenceMixin:
             return "i32_pair"
         if expr.name == "split":
             return "i32_pair"
-        # parse_nat → Result<Nat, String> (i32 heap pointer)
-        if expr.name == "parse_nat":
+        # parse builtins → Result<T, String> (i32 heap pointer)
+        if expr.name in ("parse_nat", "parse_int", "parse_float64", "parse_bool"):
             return "i32"
-        # parse_float64 → Float64 (f64)
-        if expr.name == "parse_float64":
-            return "f64"
         # Numeric math builtins
         if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
             return "i64"
@@ -393,10 +390,8 @@ class InferenceMixin:
             return "String"
         if call.name == "split":
             return "Array"
-        if call.name == "parse_nat":
+        if call.name in ("parse_nat", "parse_int", "parse_float64", "parse_bool"):
             return "Result"
-        if call.name == "parse_float64":
-            return "Float64"
         # Numeric math builtins
         if call.name == "abs":
             return "Nat"

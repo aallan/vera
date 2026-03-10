@@ -1,0 +1,114 @@
+-- Conformance: parse_int, parse_bool, and updated parse_float64 (Chapter 4)
+-- Tests: parse_int, parse_bool, parse_float64 returning Result<T, String>
+effect IO {
+  op print(String -> Unit);
+}
+
+private data Result<T, E> {
+  Ok(T),
+  Err(E)
+}
+
+public fn test_parse_int_basic(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  match parse_int("42") {
+    Ok(@Int) -> @Int.0,
+    Err(_) -> 0 - 1
+  }
+}
+
+public fn test_parse_int_negative(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0 - 7)
+  effects(pure)
+{
+  match parse_int("-7") {
+    Ok(@Int) -> @Int.0,
+    Err(_) -> 0
+  }
+}
+
+public fn test_parse_int_err(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match parse_int("abc") {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
+public fn test_parse_bool_true(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match parse_bool("true") {
+    Ok(@Bool) -> if @Bool.0 then { 1 } else { 0 },
+    Err(_) -> 0 - 1
+  }
+}
+
+public fn test_parse_bool_false(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  match parse_bool("false") {
+    Ok(@Bool) -> if @Bool.0 then { 1 } else { 0 },
+    Err(_) -> 0 - 1
+  }
+}
+
+public fn test_parse_bool_err(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match parse_bool("yes") {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
+public fn test_parse_float64_ok(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  match parse_float64("3.14") {
+    Ok(@Float64) -> float_to_int(@Float64.0),
+    Err(_) -> 0 - 1
+  }
+}
+
+public fn test_parse_float64_err(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match parse_float64("abc") {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(to_string(test_parse_int_basic(())));
+  IO.print(to_string(test_parse_int_negative(())));
+  IO.print(to_string(test_parse_int_err(())));
+  IO.print(to_string(test_parse_bool_true(())));
+  IO.print(to_string(test_parse_bool_false(())));
+  IO.print(to_string(test_parse_bool_err(())));
+  IO.print(to_string(test_parse_float64_ok(())));
+  IO.print(to_string(test_parse_float64_err(())));
+  ()
+}

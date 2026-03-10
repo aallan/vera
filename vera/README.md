@@ -300,7 +300,9 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `from_char_code` | Function | `Nat → String`, pure |
 | `string_repeat` | Function | `String, Nat → String`, pure |
 | `parse_nat` | Function | `String → Result<Nat, String>`, pure |
-| `parse_float64` | Function | `String → Float64`, pure |
+| `parse_int` | Function | `String → Result<Int, String>`, pure |
+| `parse_float64` | Function | `String → Result<Float64, String>`, pure |
+| `parse_bool` | Function | `String → Result<Bool, String>`, pure |
 | `to_string` | Function | `Int → String`, pure |
 | `int_to_string` | Function | `Int → String`, pure (alias for `to_string`) |
 | `bool_to_string` | Function | `Bool → String`, pure |
