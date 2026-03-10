@@ -46,6 +46,10 @@ class CallsMixin:
                 )
             if call.name == "from_char_code" and len(call.args) == 1:
                 return self._translate_from_char_code(call.args[0], env)
+            if call.name == "string_repeat" and len(call.args) == 2:
+                return self._translate_string_repeat(
+                    call.args[0], call.args[1], env,
+                )
             if call.name == "parse_nat" and len(call.args) == 1:
                 return self._translate_parse_nat(call.args[0], env)
             if call.name == "parse_float64" and len(call.args) == 1:
@@ -711,6 +715,87 @@ class CallsMixin:
         # Result: (ptr, 1)
         ins.append(f"local.get {ptr}")
         ins.append("i32.const 1")
+        return ins
+
+    def _translate_string_repeat(
+        self,
+        arg_s: ast.Expr,
+        arg_n: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate string_repeat(s, n) → String (i32_pair).
+
+        Allocates len(s)*n bytes and copies the source string n times.
+        """
+        s_instrs = self.translate_expr(arg_s, env)
+        n_instrs = self.translate_expr(arg_n, env)
+        if s_instrs is None or n_instrs is None:
+            return None
+
+        self.needs_alloc = True
+
+        ptr_s = self.alloc_local("i32")
+        len_s = self.alloc_local("i32")
+        count = self.alloc_local("i32")
+        total_len = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        out_idx = self.alloc_local("i32")
+
+        ins: list[str] = []
+
+        # Evaluate string → (ptr, len)
+        ins.extend(s_instrs)
+        ins.append(f"local.set {len_s}")
+        ins.append(f"local.set {ptr_s}")
+
+        # Evaluate count (Nat = i64 → i32)
+        ins.extend(n_instrs)
+        ins.append("i32.wrap_i64")
+        ins.append(f"local.set {count}")
+
+        # total_len = len_s * count
+        ins.append(f"local.get {len_s}")
+        ins.append(f"local.get {count}")
+        ins.append("i32.mul")
+        ins.append(f"local.set {total_len}")
+
+        # Allocate output buffer
+        ins.append(f"local.get {total_len}")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        # Copy loop: out_idx = 0..total_len-1
+        ins.append("i32.const 0")
+        ins.append(f"local.set {out_idx}")
+        ins.append("block $brk_sr")
+        ins.append("  loop $lp_sr")
+        ins.append(f"    local.get {out_idx}")
+        ins.append(f"    local.get {total_len}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_sr")
+        # dst[out_idx] = src[out_idx % len_s]
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {out_idx}")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {ptr_s}")
+        ins.append(f"    local.get {out_idx}")
+        ins.append(f"    local.get {len_s}")
+        ins.append("    i32.rem_u")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=0")
+        ins.append(f"    local.get {out_idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {out_idx}")
+        ins.append("    br $lp_sr")
+        ins.append("  end")
+        ins.append("end")
+
+        # Result: (dst, total_len)
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {total_len}")
         return ins
 
     def _translate_parse_nat(

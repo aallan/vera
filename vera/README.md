@@ -298,6 +298,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `string_slice` | Function | `String, Nat, Nat → String`, pure |
 | `char_code` | Function | `String, Int → Nat`, pure |
 | `from_char_code` | Function | `Nat → String`, pure |
+| `string_repeat` | Function | `String, Nat → String`, pure |
 | `parse_nat` | Function | `String → Result<Nat, String>`, pure |
 | `parse_float64` | Function | `String → Float64`, pure |
 | `to_string` | Function | `Int → String`, pure |

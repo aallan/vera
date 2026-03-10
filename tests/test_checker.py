@@ -3052,6 +3052,22 @@ private fn f(@String -> @String)
 { from_char_code(@String.0) }
 """, "type")
 
+    # -- string_repeat --
+
+    def test_string_repeat_ok(self) -> None:
+        _check_ok("""
+private fn f(@String, @Nat -> @String)
+  requires(true) ensures(true) effects(pure)
+{ string_repeat(@String.0, @Nat.0) }
+""")
+
+    def test_string_repeat_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@String, @Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{ string_repeat(@String.0, @Bool.0) }
+""", "type")
+
 
 # =====================================================================
 # Bidirectional type inference (issue #55)

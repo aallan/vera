@@ -4195,6 +4195,53 @@ public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
         assert _run(src) == 1
 
 
+class TestStringRepeat:
+    """string_repeat repeats a string N times."""
+
+    def test_basic(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = string_length(string_repeat("ab", 3));
+  @Nat.0
+}
+"""
+        assert _run(src) == 6
+
+    def test_single_char(self) -> None:
+        src = """
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  starts_with(string_repeat("x", 5), "xxxxx")
+}
+"""
+        assert _run(src) == 1
+
+    def test_zero_count(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = string_length(string_repeat("hello", 0));
+  @Nat.0
+}
+"""
+        assert _run(src) == 0
+
+    def test_one_count(self) -> None:
+        src = """
+public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
+  starts_with(string_repeat("hello", 1), "hello")
+}
+"""
+        assert _run(src) == 1
+
+    def test_empty_string(self) -> None:
+        src = """
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Nat = string_length(string_repeat("", 100));
+  @Nat.0
+}
+"""
+        assert _run(src) == 0
+
+
 class TestParseNat:
     """parse_nat returns Result<Nat, String>."""
 
