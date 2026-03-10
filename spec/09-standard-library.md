@@ -963,7 +963,53 @@ parse_bool("yes")          -- Err("expected true or false")
 parse_bool("")             -- Err("expected true or false")
 ```
 
-### 9.6.11 similarity (Future)
+### 9.6.11 Base64
+
+#### base64\_encode
+
+```
+public fn base64_encode(@String -> @String)
+  requires(true)
+  ensures(string_length(@String.result) == ((string_length(@String.0) + 2) / 3) * 4
+          || string_length(@String.0) == 0 && string_length(@String.result) == 0)
+  effects(pure)
+```
+
+Encodes a UTF-8 string to standard Base64 (RFC 4648). Every 3 input bytes produce 4 output characters from the alphabet `A`–`Z`, `a`–`z`, `0`–`9`, `+`, `/`. Remaining 1–2 bytes are padded with `=`. An empty input produces an empty string.
+
+```vera
+base64_encode("Hello, World!")   -- "SGVsbG8sIFdvcmxkIQ=="
+base64_encode("ABC")             -- "QUJD"
+base64_encode("A")               -- "QQ=="
+base64_encode("")                 -- ""
+```
+
+#### base64\_decode
+
+```
+public fn base64_decode(@String -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Decodes a standard Base64 string (RFC 4648) to its original UTF-8 bytes. Returns `Ok(String)` on success or `Err(String)` with an error message on failure.
+
+**Error conditions:**
+
+- `"invalid base64 length"` — the input length is not a multiple of 4
+- `"invalid base64"` — the input contains characters outside the Base64 alphabet
+
+```vera
+base64_decode("QUJD")                  -- Ok("ABC")
+base64_decode("SGVsbG8sIFdvcmxkIQ==")  -- Ok("Hello, World!")
+base64_decode("QQ==")                  -- Ok("A")
+base64_decode("")                      -- Ok("")
+base64_decode("ABC")                   -- Err("invalid base64 length")
+base64_decode("QQ!!")                  -- Err("invalid base64")
+```
+
+### 9.6.12 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 

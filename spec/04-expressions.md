@@ -330,6 +330,8 @@ parse_int(@String.0)                    -- returns Result<Int, String>
 parse_float64(@String.0)                -- returns Result<Float64, String>
 parse_bool(@String.0)                   -- returns Result<Bool, String>
                                         -- strict: only "true" and "false" are valid
+base64_encode(@String.0)                -- returns String (RFC 4648)
+base64_decode(@String.0)                -- returns Result<String, String>
 to_string(@Int.0)                       -- returns String
 int_to_string(@Int.0)                   -- returns String (alias for to_string)
 bool_to_string(@Bool.0)                 -- returns String ("true" or "false")

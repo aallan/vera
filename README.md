@@ -183,7 +183,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (1,943 tests across 20 files, testing compiler internals), a **conformance suite** (46 programs across 8 spec chapters, systematically validating every language feature against the spec), and **example programs** (18 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
+Testing is organized in three layers: **unit tests** (1,978 tests across 20 files, testing compiler internals), a **conformance suite** (47 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (19 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
 
 ## Roadmap
 
@@ -324,7 +324,7 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - <del>[#230](https://github.com/aallan/vera/issues/230) string interpolation</del> ([v0.0.76](https://github.com/aallan/vera/releases/tag/v0.0.76))
 - [#231](https://github.com/aallan/vera/issues/231) regex support
 - [#232](https://github.com/aallan/vera/issues/232) URL parsing and construction builtins
-- [#234](https://github.com/aallan/vera/issues/234) base64 encoding and decoding
+- <del>[#234](https://github.com/aallan/vera/issues/234) base64 encoding and decoding</del>
 
 **Module system** — sequential dependency (#187 before #127)
 
@@ -453,7 +453,7 @@ OK: examples/safe_divide.vera
 Verification: 4 verified (Tier 1)
 ```
 
-`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 18 examples, 118 of 122 contracts (96.7%) are verified statically.
+`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 19 examples, 120 of 124 contracts (96.8%) are verified statically.
 
 ### Format a program
 

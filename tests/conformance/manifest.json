@@ -412,5 +412,14 @@
     "level": "run",
     "spec_ref": "Section 4.6",
     "features": ["parse_int", "parse_bool", "parse_float64", "result_type"]
+  },
+  {
+    "id": "ch09_base64",
+    "file": "ch09_base64.vera",
+    "chapter": 9,
+    "title": "Base64 encoding and decoding",
+    "level": "run",
+    "spec_ref": "Section 9.6.5",
+    "features": ["base64_encode", "base64_decode", "result_type"]
   }
 ]

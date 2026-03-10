@@ -1,0 +1,22 @@
+-- Base64 encoding and decoding
+effect IO {
+  op print(String -> Unit);
+}
+
+private data Result<T, E> {
+  Ok(T),
+  Err(E)
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(base64_encode("Hello, World!"));
+  match base64_decode("SGVsbG8sIFdvcmxkIQ==") { Ok(@String) -> IO.print(@String.0), Err(@String) -> IO.print(@String.0) };
+  match base64_decode(base64_encode("Hello, World!")) {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  }
+}
