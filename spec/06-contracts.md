@@ -135,7 +135,7 @@ Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 - Linear arithmetic (`+`, `-`, `*` with literal multiplier)
 - Comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - Boolean connectives (`&&`, `||`, `!`)
-- `array_length()` on arrays, `length()` on strings
+- `array_length()` on arrays, `string_length()` on strings
 - Logical implication (`==>`)
 - `true`, `false`
 
