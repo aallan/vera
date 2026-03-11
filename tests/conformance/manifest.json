@@ -94,7 +94,7 @@
     "file": "ch02_refinement_types.vera",
     "chapter": 2,
     "title": "Refinement types",
-    "level": "verify",
+    "level": "run",
     "spec_ref": "Section 2.4",
     "features": ["refinement_type", "type_alias"]
   },
@@ -139,7 +139,7 @@
     "file": "ch03_slot_result.vera",
     "chapter": 3,
     "title": "Result slot in ensures",
-    "level": "verify",
+    "level": "run",
     "spec_ref": "Section 3.3",
     "features": ["slot_result", "ensures"]
   },
@@ -301,7 +301,7 @@
     "file": "ch06_requires.vera",
     "chapter": 6,
     "title": "Preconditions",
-    "level": "verify",
+    "level": "run",
     "spec_ref": "Section 6.1",
     "features": ["requires", "precondition"]
   },
@@ -310,7 +310,7 @@
     "file": "ch06_ensures.vera",
     "chapter": 6,
     "title": "Postconditions",
-    "level": "verify",
+    "level": "run",
     "spec_ref": "Section 6.2",
     "features": ["ensures", "postcondition", "result_slot"]
   },
@@ -319,7 +319,7 @@
     "file": "ch06_decreases.vera",
     "chapter": 6,
     "title": "Decreases clauses",
-    "level": "verify",
+    "level": "run",
     "spec_ref": "Section 6.3",
     "features": ["decreases", "termination"]
   },
@@ -328,7 +328,7 @@
     "file": "ch06_assert_assume.vera",
     "chapter": 6,
     "title": "Assert and assume",
-    "level": "verify",
+    "level": "run",
     "spec_ref": "Section 6.4",
     "features": ["assert", "assume"]
   },
