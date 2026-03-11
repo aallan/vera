@@ -1,0 +1,44 @@
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn fizzbuzz(@Nat -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Nat.0 % 15 == 0 then {
+    "FizzBuzz"
+  } else {
+    if @Nat.0 % 3 == 0 then {
+      "Fizz"
+    } else {
+      if @Nat.0 % 5 == 0 then {
+        "Buzz"
+      } else {
+        "\(@Nat.0)"
+      }
+    }
+  }
+}
+
+private fn loop(@Nat, @Nat -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(string_concat(fizzbuzz(@Nat.0), "\n"));
+  if @Nat.0 < @Nat.1 then {
+    loop(@Nat.1, @Nat.0 + 1)
+  } else {
+    ()
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  loop(100, 1)
+}

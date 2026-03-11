@@ -231,6 +231,61 @@ public fn main(@Unit -> @Unit)
 
 > [`examples/async_futures.vera`](examples/async_futures.vera) — run with `vera run examples/async_futures.vera`
 
+### Recursion as iteration
+
+Vera has no `for` or `while` loops — iteration is always recursion. The `loop` function calls itself with `@Nat.0 + 1` until it reaches the bound. This is the standard Vera pattern for counted iteration.
+
+Notice the separation of concerns: `fizzbuzz` is `effects(pure)` — the verifier can reason about it with SMT. `loop` has `effects(<IO>)` because it prints. `main` calls `loop` and also has `effects(<IO>)`. The effect annotations propagate up the call chain but never contaminate the pure classifier.
+
+```vera
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn fizzbuzz(@Nat -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Nat.0 % 15 == 0 then {
+    "FizzBuzz"
+  } else {
+    if @Nat.0 % 3 == 0 then {
+      "Fizz"
+    } else {
+      if @Nat.0 % 5 == 0 then {
+        "Buzz"
+      } else {
+        "\(@Nat.0)"
+      }
+    }
+  }
+}
+
+private fn loop(@Nat, @Nat -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(string_concat(fizzbuzz(@Nat.0), "\n"));
+  if @Nat.0 < @Nat.1 then {
+    loop(@Nat.1, @Nat.0 + 1)
+  } else {
+    ()
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  loop(100, 1)
+}
+```
+
+> [`examples/fizzbuzz.vera`](examples/fizzbuzz.vera) — run with `vera run examples/fizzbuzz.vera`
+
 ### Typed Markdown
 
 Vera has a built-in Markdown document type. `md_parse` produces a typed `MdBlock` tree; `md_has_heading` and `md_extract_code_blocks` query its structure. This is designed for agent workflows where an LLM produces structured output and the contract system validates its shape.
@@ -509,7 +564,7 @@ vera/
 │   ├── formatter.py               # Canonical code formatter
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
-├── examples/                      # 24 example Vera programs
+├── examples/                      # 25 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
 ```
@@ -522,11 +577,12 @@ For compiler architecture, pipeline internals, and how to extend the compiler, s
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (2,287 tests across 23 files, testing compiler internals and browser parity), a **conformance suite** (53 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (24 end-to-end demos). The compiler has 91% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
+Testing is organized in three layers: **unit tests** (2,292 tests across 23 files, testing compiler internals and browser parity), a **conformance suite** (53 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (25 end-to-end demos). The compiler has 91% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
 
 ### Known Bugs
 
 - [#274](https://github.com/aallan/vera/issues/274) — Formatter collapses multi-statement blocks in match arms to single unparseable lines; comments inside function bodies are repositioned outside. Workaround: extract multi-statement match arm logic into helper functions.
+- [#283](https://github.com/aallan/vera/issues/283) — Verifier doesn't use branch conditions when checking call-site preconditions: a recursive call guarded by `if @Nat.0 < @Nat.1` still reports E501 even though the counterexample is unreachable. Workaround: use `requires(true)` with an internal if-guard.
 
 ## Project Roadmap
 

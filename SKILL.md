@@ -408,6 +408,31 @@ Blocks contain statements followed by a final expression:
 
 Statements end with `;`. The final expression (no `;`) is the block's value.
 
+## Iteration
+
+Vera has no `for` or `while` loops. Iteration is always expressed as tail-recursive functions. The standard pattern for counted iteration:
+
+```vera
+private fn loop(@Nat, @Nat -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(string_concat(fizzbuzz(@Nat.0), "\n"));
+  if @Nat.0 < @Nat.1 then {
+    loop(@Nat.1, @Nat.0 + 1)
+  } else {
+    ()
+  }
+}
+```
+
+Here `@Nat.0` is the counter (De Bruijn index 0 = most recent, i.e. the second parameter) and `@Nat.1` is the limit (the first parameter). The function prints, then either recurses with an incremented counter or returns `()`.
+
+Call with the limit first and counter second: `loop(100, 1)`.
+
+For pure recursive functions that need termination proofs, add a `decreases` clause (see [Recursion](#recursion)). Effectful recursive functions like the loop above do not require `decreases`.
+
 ## Built-in Functions
 
 ### Array operations
@@ -1269,6 +1294,57 @@ public fn length(@List<Int> -> @Nat)
     Nil -> 0,
     Cons(@Int, @List<Int>) -> 1 + length(@List<Int>.0)
   }
+}
+```
+
+### Iteration with IO
+
+FizzBuzz with a recursive loop and IO effects. `fizzbuzz` is pure; `loop` and `main` have `effects(<IO>)`. Run with `vera run examples/fizzbuzz.vera`.
+
+```vera
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn fizzbuzz(@Nat -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Nat.0 % 15 == 0 then {
+    "FizzBuzz"
+  } else {
+    if @Nat.0 % 3 == 0 then {
+      "Fizz"
+    } else {
+      if @Nat.0 % 5 == 0 then {
+        "Buzz"
+      } else {
+        "\(@Nat.0)"
+      }
+    }
+  }
+}
+
+private fn loop(@Nat, @Nat -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(string_concat(fizzbuzz(@Nat.0), "\n"));
+  if @Nat.0 < @Nat.1 then {
+    loop(@Nat.1, @Nat.0 + 1)
+  } else {
+    ()
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  loop(100, 1)
 }
 ```
 
