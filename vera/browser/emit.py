@@ -75,7 +75,7 @@ _INDEX_HTML_TEMPLATE = """\
 <body>
   <h1>{title}</h1>
   <pre id="output">Loading...</pre>
-  <p class="meta">Compiled with <a href="https://github.com/negroniclub/vera">Vera</a></p>
+  <p class="meta">Compiled with <a href="https://veralang.dev">Vera</a></p>
   <script type="module">
     import init, {{ call, getStdout, getState, getExitCode }} from './runtime.mjs';
 
