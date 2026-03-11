@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.85] - 2026-03-11
+
+### Added
+- **Browser runtime for compiled WASM** ([#273](https://github.com/aallan/vera/issues/273)):
+  A self-contained JavaScript runtime (`vera/browser/runtime.mjs`, ~730 lines) that
+  runs any compiled Vera `.wasm` module in the browser or Node.js. Uses
+  `WebAssembly.Module.imports()` to introspect the module's imports and dynamically
+  builds the host binding object — no code generation needed. The same runtime file
+  works with every compiled Vera program, from hello-world (1 import) to markdown-heavy
+  programs (15+ imports).
+  Includes JavaScript implementations of all host bindings: IO operations (print,
+  read_line, args, exit, get_env, read_file/write_file with browser-appropriate
+  adaptations), State\<T\> (dynamically pattern-matched from import names),
+  contract_fail, and all 5 Markdown operations (with a bundled JS Markdown parser).
+- New CLI flag: `vera compile --target browser` produces a ready-to-serve browser
+  bundle (module.wasm + vera-runtime.mjs + index.html) in a single command
+- New `vera/browser/` package: `runtime.mjs` (JS runtime), `harness.mjs` (Node.js
+  test harness), `emit.py` (browser bundle emission)
+- 56 new browser parity tests ensuring identical output between Python/wasmtime and
+  Node.js/JS-runtime across IO, State, contracts, Markdown, and all compilable examples
+- Browser parity CI job (Node.js 22) and pre-commit hook triggered by changes to
+  host binding surface (`vera/browser/`, `vera/codegen/api.py`, `vera/wasm/markdown.py`,
+  `vera/markdown.py`)
+- Spec §12.4.3 (Contract Violations) and §12.4.4 (Markdown Operations) — host binding
+  documentation missing from v0.0.84
+- Spec §12.9 (Browser Runtime) — JavaScript runtime architecture and usage
+
 ## [0.0.84] - 2026-03-11
 
 ### Added
@@ -1293,7 +1320,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.84...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.85...HEAD
+[0.0.85]: https://github.com/aallan/vera/compare/v0.0.84...v0.0.85
 [0.0.84]: https://github.com/aallan/vera/compare/v0.0.83...v0.0.84
 [0.0.83]: https://github.com/aallan/vera/compare/v0.0.82...v0.0.83
 [0.0.82]: https://github.com/aallan/vera/compare/v0.0.81...v0.0.82

@@ -69,3 +69,10 @@ repos:
         language: system
         pass_filenames: false
         files: '(SKILL\.md$|vera/.*\.py$|vera/grammar\.lark$)'
+
+      - id: browser-parity
+        name: browser parity
+        entry: .venv/bin/pytest tests/test_browser.py -q
+        language: system
+        pass_filenames: false
+        files: '(vera/browser/.*|vera/codegen/api\.py$|vera/wasm/markdown\.py$|vera/markdown\.py$)'

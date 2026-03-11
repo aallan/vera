@@ -41,6 +41,12 @@ The module imports host functions for effects that the program uses:
 | `vera.get_env` | `(i32, i32) -> (i32)` | Program uses `IO.get_env` |
 | `vera.state_get_{T}` | `() -> {wasm_t}` | Program uses `State<T>.get` |
 | `vera.state_put_{T}` | `({wasm_t}) -> ()` | Program uses `State<T>.put` |
+| `vera.contract_fail` | `(i32, i32) -> ()` | Program has runtime contracts |
+| `vera.md_parse` | `(i32, i32) -> (i32)` | Program uses `md_parse` |
+| `vera.md_render` | `(i32) -> (i32, i32)` | Program uses `md_render` |
+| `vera.md_has_heading` | `(i32, i64) -> (i32)` | Program uses `md_has_heading` |
+| `vera.md_has_code_block` | `(i32, i32, i32) -> (i32)` | Program uses `md_has_code_block` |
+| `vera.md_extract_code_blocks` | `(i32, i32, i32) -> (i32, i32)` | Program uses `md_extract_code_blocks` |
 
 Imports are only emitted when the program actually uses the corresponding effect operations. A pure program produces a module with no imports.
 
@@ -232,6 +238,100 @@ The `execute()` function catches this exception and returns an `ExecuteResult` w
 
 Multiple independent state types can coexist — each has its own cell and its own pair of host functions.
 
+### 12.4.3 Contract Violations
+
+**Import:** `(import "vera" "contract_fail" (func $vera.contract_fail (param i32 i32)))`
+
+**Parameters:**
+- `ptr` (i32): byte offset into linear memory where the violation message begins.
+- `len` (i32): length of the violation message in bytes.
+
+**Behaviour:**
+1. Read `len` bytes from linear memory starting at offset `ptr`.
+2. Decode the bytes as UTF-8.
+3. Store the decoded message for later reporting.
+
+The WASM code always follows a `call $vera.contract_fail` with `unreachable`, causing a WASM trap. The host runtime catches the trap and converts it to an informative error using the stored violation message.
+
+The import is only emitted when the program contains runtime contract assertions (Tier 3 contracts that the verifier could not prove statically). Programs where all contracts are verified at compile time do not import `contract_fail`.
+
+### 12.4.4 Markdown Operations
+
+The Markdown standard library provides five host function bindings for parsing and querying Markdown documents. Each is imported only when the program uses the corresponding builtin function. All five functions are pure — they have no side effects and produce deterministic results.
+
+For the `MdInline` and `MdBlock` ADT definitions, see Section 9.3.5 and Section 9.3.6. For the function specifications, see Section 9.7.3.
+
+#### 12.4.4.1 md\_parse
+
+**Import:** `(import "vera" "md_parse" (func $vera.md_parse (param i32 i32) (result i32)))`
+
+**Parameters:**
+- `ptr` (i32): byte offset of the Markdown source string.
+- `len` (i32): length of the source string in bytes.
+
+**Returns:** `i32` — a heap pointer to a `Result<MdBlock, String>` ADT value.
+
+**Behaviour:**
+1. Decode the Markdown source from linear memory.
+2. Parse it into an `MdDocument` AST.
+3. On success: construct a `Result.Ok` ADT containing the `MdDocument` tree on the WASM heap. Return the heap pointer.
+4. On failure: construct a `Result.Err` ADT containing the error message. Return the heap pointer.
+
+The host allocates all tree nodes (including nested `MdBlock` and `MdInline` values) via the exported `$alloc` function.
+
+#### 12.4.4.2 md\_render
+
+**Import:** `(import "vera" "md_render" (func $vera.md_render (param i32) (result i32 i32)))`
+
+**Parameters:**
+- `block_ptr` (i32): heap pointer to an `MdBlock` ADT value.
+
+**Returns:** `(ptr, len)` — a String pair containing the rendered Markdown text.
+
+**Behaviour:**
+1. Read the `MdBlock` tree from WASM linear memory by tag dispatch.
+2. Render it to canonical Markdown text.
+3. Allocate memory for the result string via `$alloc`.
+4. Return the `(ptr, len)` pair.
+
+#### 12.4.4.3 md\_has\_heading
+
+**Import:** `(import "vera" "md_has_heading" (func $vera.md_has_heading (param i32 i64) (result i32)))`
+
+**Parameters:**
+- `block_ptr` (i32): heap pointer to an `MdBlock` ADT value.
+- `level` (i64): the heading level to search for (1–6).
+
+**Returns:** `i32` — 1 if a heading of the given level exists, 0 otherwise.
+
+#### 12.4.4.4 md\_has\_code\_block
+
+**Import:** `(import "vera" "md_has_code_block" (func $vera.md_has_code_block (param i32 i32 i32) (result i32)))`
+
+**Parameters:**
+- `block_ptr` (i32): heap pointer to an `MdBlock` ADT value.
+- `lang_ptr` (i32): byte offset of the language string.
+- `lang_len` (i32): length of the language string in bytes.
+
+**Returns:** `i32` — 1 if a fenced code block with the given language exists, 0 otherwise.
+
+#### 12.4.4.5 md\_extract\_code\_blocks
+
+**Import:** `(import "vera" "md_extract_code_blocks" (func $vera.md_extract_code_blocks (param i32 i32 i32) (result i32 i32)))`
+
+**Parameters:**
+- `block_ptr` (i32): heap pointer to an `MdBlock` ADT value.
+- `lang_ptr` (i32): byte offset of the language string.
+- `lang_len` (i32): length of the language string in bytes.
+
+**Returns:** `(ptr, count)` — an `Array<String>` pair (pointer to element data and element count).
+
+**Behaviour:**
+1. Read the `MdBlock` tree from WASM linear memory.
+2. Recursively find all fenced code blocks whose language matches the given string.
+3. Allocate backing storage for the result array via `$alloc`.
+4. Return `(backing_ptr, count)`.
+
 ## 12.5 Memory Model
 
 ### 12.5.1 Linear Memory Layout
@@ -388,3 +488,77 @@ The current runtime has the following limitations, each tracked as a GitHub issu
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
 | Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |
+
+## 12.9 Browser Runtime
+
+The browser runtime (`vera/browser/runtime.mjs`) is a self-contained JavaScript module that provides host function implementations for running compiled Vera WASM modules in the browser or Node.js. It is an alternative to the Python/wasmtime reference runtime described in Section 12.3.
+
+### 12.9.1 Architecture
+
+The runtime uses **dynamic import introspection** to work with any compiled Vera program. At initialization, it calls `WebAssembly.Module.imports(module)` to discover which host functions the module requires, then builds the import object containing only those bindings. This means the same runtime file works with every compiled Vera program — from a hello-world (1 import: `print`) to a markdown-heavy program (15+ imports).
+
+State\<T\> bindings are pattern-matched from import names: `state_get_Int` and `state_put_Int` are recognized as `State<Int>` operations and dynamically paired.
+
+### 12.9.2 Public API
+
+```javascript
+import init, { call, getStdout, getState, resetState } from './vera-runtime.mjs';
+
+// Initialize with a WASM module (URL or ArrayBuffer)
+await init('module.wasm');
+
+// Call exported functions
+call('main');
+
+// Retrieve captured output
+const output = getStdout();
+
+// Read/reset state
+const state = getState();
+resetState();
+```
+
+The `init()` function follows the **init-then-use pattern**: async initialization, synchronous calls after. The module is cached — calling `init()` again with the same URL is a no-op.
+
+### 12.9.3 IO Adaptations
+
+The browser runtime provides browser-appropriate implementations of IO operations:
+
+| Operation | Browser Behaviour | Reference (Python) Behaviour |
+|-----------|-------------------|------------------------------|
+| `IO.print` | Appends to internal buffer, flushed via `getStdout()` | Writes to stdout capture buffer |
+| `IO.read_line` | Reads from pre-queued input array, falls back to `prompt()` | Reads from `stdin` parameter or process stdin |
+| `IO.read_file` | Returns `Result.Err("File I/O not available in browser")` | Reads from filesystem |
+| `IO.write_file` | Returns `Result.Err("File I/O not available in browser")` | Writes to filesystem |
+| `IO.args` | Returns configurable array (default empty) | Returns CLI arguments |
+| `IO.exit` | Throws `VeraExit` error with exit code | Raises `_VeraExit` exception |
+| `IO.get_env` | Returns `Option.None` (configurable map) | Reads from `os.environ` |
+
+All non-IO operations (State, contracts, Markdown) produce identical results in both runtimes. This is enforced by mandatory parity tests.
+
+### 12.9.4 Memory Protocol
+
+The JavaScript runtime follows the same memory protocol as the Python runtime (Section 12.5):
+
+- **Never cache TypedArray views** across WASM calls — `memory.buffer` can be detached by `memory.grow`. Always create fresh views before each access.
+- **BigInt for i64**: JavaScript WASM i64 values are `BigInt`, not `number`. The runtime handles the conversion transparently.
+- **ADT layout**: All ADT values use the same byte layout as the Python runtime (tag at offset 0, fields at computed offsets matching `codegen/registration.py`).
+
+### 12.9.5 CLI Integration
+
+The `vera compile --target browser` command produces a ready-to-serve directory:
+
+```
+output_dir/
+├── module.wasm          # Compiled WASM binary
+├── vera-runtime.mjs     # Self-contained JavaScript runtime
+└── index.html           # Loads and runs the program
+```
+
+The `index.html` file uses an ES module script that imports from `vera-runtime.mjs`, initializes the WASM module, calls `main()`, and displays the captured stdout in a `<pre>` element.
+
+### 12.9.6 Parity Testing
+
+The browser parity test suite (`tests/test_browser.py`) runs every compilable example through both the Python/wasmtime runtime and the Node.js/JS-runtime, asserting identical stdout output. This catches any drift between the two implementations. The tests cover IO operations, State operations, contract violations, Markdown parsing/rendering, and browser bundle emission.
+
+Pre-commit hooks trigger parity tests on any change to the host binding surface (`vera/browser/`, `vera/codegen/api.py`, `vera/wasm/markdown.py`, `vera/markdown.py`). CI runs the full parity suite on every PR.

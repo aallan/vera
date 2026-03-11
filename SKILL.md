@@ -38,9 +38,10 @@ vera check --json file.vera       # Type-check with JSON diagnostics
 vera typecheck file.vera          # Same as check (explicit alias)
 vera verify file.vera             # Type-check and verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON diagnostics
-vera compile file.vera            # Compile to .wasm binary
-vera compile --wat file.vera      # Print WAT text (human-readable WASM)
-vera compile --json file.vera     # Compile with JSON diagnostics
+vera compile file.vera                    # Compile to .wasm binary
+vera compile --wat file.vera              # Print WAT text (human-readable WASM)
+vera compile --json file.vera             # Compile with JSON diagnostics
+vera compile --target browser file.vera   # Compile + emit browser bundle (wasm + JS + html)
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42   # Call function f with argument 42
 vera run --json file.vera         # Run with JSON output
@@ -58,6 +59,25 @@ pytest tests/ -v                  # Run the test suite
 ```
 
 Errors are natural language instructions explaining what went wrong and how to fix it. Feed them back into your context to correct the code.
+
+### Browser compilation
+
+`vera compile --target browser` produces a ready-to-serve browser bundle:
+
+```bash
+vera compile --target browser file.vera            # Output to file_browser/
+vera compile --target browser file.vera -o dist/   # Output to dist/
+```
+
+This generates three files: `module.wasm` (the compiled binary), `vera-runtime.mjs` (self-contained JavaScript runtime with all host bindings), and `index.html` (loads and runs the program). Open `index.html` in any browser or serve it with a local HTTP server.
+
+The JavaScript runtime provides browser-appropriate implementations: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, file IO returns `Result.Err`, and all other operations (State, contracts, Markdown) work identically to the Python runtime.
+
+To run the WASM directly in Node.js:
+
+```bash
+node --experimental-wasm-exnref vera/browser/harness.mjs module.wasm
+```
 
 ### JSON diagnostics
 

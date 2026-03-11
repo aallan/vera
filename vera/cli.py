@@ -10,6 +10,7 @@ Usage:
     vera compile   <file.vera>              Compile to .wasm binary
     vera compile   --wat <file.vera>        Print WAT text to stdout
     vera compile   -o out.wasm <file.vera>  Specify output path
+    vera compile   --target browser <file>  Emit browser bundle (wasm + JS + HTML)
     vera run       <file.vera>              Compile and execute
     vera run       --fn name <file.vera>    Execute a specific function
     vera run       <file.vera> -- 5 10      Pass arguments to the function
@@ -228,6 +229,7 @@ def cmd_compile(
     as_json: bool = False,
     wat: bool = False,
     output: str | None = None,
+    target: str = "wasm",
 ) -> int:
     """Parse, type-check, and compile a .vera file to WebAssembly."""
     from vera.checker import typecheck
@@ -306,6 +308,18 @@ def cmd_compile(
         # Output mode: --wat prints WAT text, otherwise write .wasm binary
         if wat:
             print(result.wat)
+            return 0
+
+        # --target browser: emit a self-contained browser bundle
+        if target == "browser":
+            from vera.browser.emit import emit_browser_bundle
+
+            out_dir = Path(output) if output else p.parent / (p.stem + "_browser")
+            title = p.stem.replace("_", " ").title()
+            files = emit_browser_bundle(result.wasm_bytes, out_dir, title=title)
+            print(f"Browser bundle: {out_dir}/")
+            for f in files:
+                print(f"  {f.name}")
             return 0
 
         # Write .wasm binary
@@ -802,6 +816,7 @@ Commands:
     verify [--json]      Parse, type-check, and verify contracts
     test [--json]        Test contracts via Z3-guided input generation
     compile [--wat]      Compile a .vera file to WebAssembly
+    compile --target browser  Emit browser bundle (wasm + JS + HTML)
     run [--fn name]      Compile and execute a .vera file
     ast [--json]         Parse a .vera file and print the AST
     fmt [--write|--check] Format a .vera file to canonical form
@@ -811,7 +826,8 @@ Options:
     --wat                Print WAT text instead of writing .wasm binary
     --fn <name>          Function to execute or test
     --trials <n>         Number of test trials (default: 100, for vera test)
-    -o <path>            Output path for .wasm binary
+    -o <path>            Output path for .wasm binary (or directory for --target browser)
+    --target <t>         Compilation target: wasm (default) or browser
     --write              Format in place (vera fmt)
     --check              Check if already canonical (vera fmt)
     -- <args...>         Arguments to pass to the executed function
@@ -856,6 +872,23 @@ def main() -> None:
                     print(f"Error: {msg}", file=sys.stderr)
                 sys.exit(1)
 
+    # Parse --target <target> option
+    target: str = "wasm"
+    if "--target" in args:
+        target_idx = args.index("--target")
+        if target_idx + 1 < len(args):
+            target = args[target_idx + 1]
+            if target not in ("wasm", "browser"):
+                msg = f"Invalid --target value: {target} (expected 'wasm' or 'browser')"
+                if use_json:
+                    print(json.dumps({"ok": False, "file": "",
+                                      "diagnostics": [{"severity": "error",
+                                                       "description": msg}]},
+                                     indent=2))
+                else:
+                    print(f"Error: {msg}", file=sys.stderr)
+                sys.exit(1)
+
     # Parse -o <path> option
     output_path: str | None = None
     if "-o" in args:
@@ -885,7 +918,7 @@ def main() -> None:
 
     # Remove flags from remaining args to find the filepath
     skip_flags = {"--json", "--wat", "--write", "--check"}
-    skip_next = {"--fn", "-o", "--trials"}
+    skip_next = {"--fn", "-o", "--trials", "--target"}
     remaining: list[str] = []
     i = 1  # skip command
     while i < len(args):
@@ -918,7 +951,8 @@ def main() -> None:
         ))
     elif command == "compile":
         sys.exit(cmd_compile(
-            filepath, as_json=use_json, wat=use_wat, output=output_path
+            filepath, as_json=use_json, wat=use_wat, output=output_path,
+            target=target,
         ))
     elif command == "run":
         sys.exit(cmd_run(
