@@ -418,6 +418,8 @@ url_encode(@String.0)                   -- returns String (RFC 3986 percent-enco
 url_decode(@String.0)                   -- returns Result<String, String>
 url_parse(@String.0)                    -- returns Result<UrlParts, String> (RFC 3986 decomposition)
 url_join(@UrlParts.0)                   -- returns String (reassemble URL from UrlParts)
+async(@T.0)                            -- returns Future<T> (requires effects(<Async>))
+await(@Future<T>.0)                    -- returns T (requires effects(<Async>))
 to_string(@Int.0)                       -- returns String (integer to decimal)
 int_to_string(@Int.0)                   -- returns String (alias for to_string)
 bool_to_string(@Bool.0)                 -- returns String ("true" or "false")
@@ -582,6 +584,7 @@ effects(pure)                    -- no effects
 effects(<IO>)                    -- performs IO
 effects(<State<Int>>)            -- uses integer state
 effects(<State<Int>, IO>)        -- multiple effects
+effects(<Async>)                 -- async computation
 effects(<Diverge>)               -- may not terminate
 effects(<Diverge, IO>)           -- divergent with IO
 ```
@@ -692,6 +695,31 @@ private fn try_div(@Int, @Int -> @Option<Int>)
 ```
 
 The handler catches the exception and returns a fallback value. The `throw` handler clause receives the error value and must return the same type as the overall `handle` expression. Exception handlers do not use `resume` — throwing is non-resumable.
+
+### Async effect
+
+The `Async` effect enables asynchronous computation with `Future<T>`:
+
+```vera
+effects(<Async>)                 -- async computation
+effects(<IO, Async>)             -- async with IO
+```
+
+`async` and `await` are built-in generic functions:
+
+```vera
+private fn compute(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Async>)
+{
+  let @Future<Int> = async(@Int.1 * 2);
+  let @Future<Int> = async(@Int.0 * 3);
+  await(@Future<Int>.0) + await(@Future<Int>.1)
+}
+```
+
+`async(expr)` evaluates `expr` and wraps the result in `Future<T>`. `await(@Future<T>.n)` unwraps it. In the reference implementation, evaluation is eager/sequential — `Future<T>` has the same WASM representation as `T` with no runtime overhead.
 
 ### Effect handlers
 

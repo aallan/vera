@@ -1,0 +1,43 @@
+-- Async effect with Future<T>
+--
+-- The Async effect enables async(expr) and await(future) operations.
+-- In the reference implementation, async(expr) evaluates eagerly and
+-- wraps the result in Future<T>; await(future) unwraps it.
+-- Future<T> is WASM-transparent — no runtime overhead.
+effect IO {
+  op print(String -> Unit);
+}
+
+-- Create a future and immediately await it
+private fn roundtrip(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(<Async>)
+{
+  let @Future<Int> = async(@Int.0);
+  await(@Future<Int>.0)
+}
+
+-- Multiple futures can be composed
+private fn sum_futures(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.1)
+  effects(<Async>)
+{
+  let @Future<Int> = async(@Int.1);
+  let @Future<Int> = async(@Int.0);
+  await(@Future<Int>.0) + await(@Future<Int>.1)
+}
+
+-- Async composes with IO
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO, Async>)
+{
+  let @Int = roundtrip(42);
+  IO.print("roundtrip(42) = \(@Int.0)");
+  let @Int = sum_futures(10, 20);
+  IO.print("sum_futures(10, 20) = \(@Int.0)");
+  ()
+}

@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.82] - 2026-03-11
+
+### Added
+- **`<Async>` effect with `Future<T>` type** ([#59](https://github.com/aallan/vera/issues/59)):
+  New `Async` marker effect and `Future<T>` ADT for asynchronous computation.
+  New `async(@T -> @Future<T>)` — wraps a value in a future (eager evaluation).
+  New `await(@Future<T> -> @T)` — unwraps a future to its result.
+  `Future<T>` is WASM-transparent — same runtime representation as `T`, zero overhead.
+  The reference implementation uses sequential evaluation; true concurrency will be
+  available via WASI 0.3 native `future<T>` support ([#237](https://github.com/aallan/vera/issues/237)).
+- New conformance test `ch09_async` (conformance suite: 49→50 programs)
+- New example `examples/async_futures.vera` — async/await roundtrip and composition demo
+- 15 new tests (7 type checker + 8 codegen)
+
 ## [0.0.81] - 2026-03-10
 
 ### Added
@@ -1240,7 +1254,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.81...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.82...HEAD
+[0.0.82]: https://github.com/aallan/vera/compare/v0.0.81...v0.0.82
 [0.0.81]: https://github.com/aallan/vera/compare/v0.0.80...v0.0.81
 [0.0.80]: https://github.com/aallan/vera/compare/v0.0.79...v0.0.80
 [0.0.79]: https://github.com/aallan/vera/compare/v0.0.78...v0.0.79

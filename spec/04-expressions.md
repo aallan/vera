@@ -336,6 +336,8 @@ url_encode(@String.0)                   -- returns String (RFC 3986 percent-enco
 url_decode(@String.0)                   -- returns Result<String, String>
 url_parse(@String.0)                    -- returns Result<UrlParts, String>
 url_join(@UrlParts.0)                   -- returns String
+async(@T.0)                            -- returns Future<T> (effects(<Async>))
+await(@Future<T>.0)                    -- returns T (effects(<Async>))
 to_string(@Int.0)                       -- returns String
 int_to_string(@Int.0)                   -- returns String (alias for to_string)
 bool_to_string(@Bool.0)                 -- returns String ("true" or "false")

@@ -36,13 +36,15 @@ class CompilabilityMixin:
                         # Exn<E> — E must be a compilable type
                         if not self._check_exn_type(decl, eff):
                             return False
+                    elif eff.name == "Async":
+                        pass  # Sequential execution, no host imports
                     else:
                         self._warning(
                             decl,
                             f"Function '{decl.name}' uses unsupported "
                             f"effect '{eff.name}' — skipped.",
-                            rationale="Only pure, IO, and State<T> effects "
-                            "are compilable.",
+                            rationale="Only pure, IO, State<T>, Exn<E>, "
+                            "and Async effects are compilable.",
                             error_code="E603",
                         )
                         return False

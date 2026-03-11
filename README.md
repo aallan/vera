@@ -362,11 +362,12 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 **Effects** — new effect types for agent workloads
 
 - [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect
-- [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises
+- <del>[#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises</del> ([v0.0.82](https://github.com/aallan/vera/releases/tag/v0.0.82))
 - [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
 - [#227](https://github.com/aallan/vera/issues/227) `<Timeout>` timeout and cancellation effects
 - [#228](https://github.com/aallan/vera/issues/228) `<WebSocket>` / `<SSE>` streaming client effects
 - [#229](https://github.com/aallan/vera/issues/229) `<DB>` database access effect
+- [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` custom scheduling strategies
 
 **Standard library** — types, data formats, and host-provided functions
 
@@ -462,7 +463,7 @@ OK: examples/safe_divide.vera
 Verification: 4 verified (Tier 1)
 ```
 
-`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 21 examples, 122 of 126 contracts (96.8%) are verified statically.
+`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 22 examples, 127 of 134 contracts (94.8%) are verified statically.
 
 ### Format a program
 

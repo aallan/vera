@@ -239,11 +239,7 @@ effect Http {
 
 This fits naturally with Vera's algebraic effect system and makes network I/O explicit and testable.
 
-### 9.5.4 Async (Future)
-
-> **Status: Not yet implemented.** Tracked in [#59](https://github.com/aallan/vera/issues/59).
-
-Asynchronous operations will be modelled as an algebraic effect. An `<Async>` effect with `async` and `await` operations will allow concurrent computation:
+When the `<Async>` effect is available, Http naturally composes with it for concurrent requests:
 
 ```
 private fn fetch_both(@String, @String -> @Tuple<Json, Json>)
@@ -251,19 +247,53 @@ private fn fetch_both(@String, @String -> @Tuple<Json, Json>)
   ensures(true)
   effects(<Http, Async>)
 {
-  let @Future<Json> = async(http_get(@String.0));
-  let @Future<Json> = async(http_get(@String.1));
+  let @Future<Json> = async(Http.get(@String.0));
+  let @Future<Json> = async(Http.get(@String.1));
   let @Json = await(@Future<Json>.1);
   let @Json = await(@Future<Json>.0);
   Tuple(@Json.1, @Json.0)
 }
 ```
 
+### 9.5.4 Async
+
+The `<Async>` effect enables asynchronous computation via `async(expr)` and `await(future)` operations with a `Future<T>` type.
+
+**Type:**
+
+```
+data Future<T> { Future(T) }
+```
+
+**Built-in functions:**
+
+```
+fn async<T>(@T.0 -> @Future<T>) effects(<Async>)
+fn await<T>(@Future<T>.0 -> @T) effects(<Async>)
+```
+
+**Example:**
+
+```
+private fn compute(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Async>)
+{
+  let @Future<Int> = async(@Int.1 * 2);
+  let @Future<Int> = async(@Int.0 * 3);
+  await(@Future<Int>.0) + await(@Future<Int>.1)
+}
+```
+
 Key design points:
-- `async(expr)` wraps an effectful computation in a `Future<T>`, starting it concurrently.
-- `await(@Future<T>.n)` suspends until the future resolves, yielding the result.
+- `async(expr)` evaluates `expr` and wraps the result in `Future<T>`.
+- `await(@Future<T>.n)` unwraps the future, yielding the result of type `T`.
 - The `<Async>` effect must be declared, making concurrency explicit and trackable.
-- Handlers can provide different scheduling strategies (thread pool, event loop, sequential).
+- `Async` is a marker effect with no operations — `async` and `await` are built-in generic functions that require `effects(<Async>)`.
+- `Future<T>` is WASM-transparent: it has the same runtime representation as `T`, with no overhead.
+- The reference implementation evaluates `async(expr)` eagerly (sequential execution). True concurrent scheduling will be available when WASI 0.3 support is added ([#237](https://github.com/aallan/vera/issues/237)).
+- Custom scheduling strategies (thread pool, event loop) can be provided via `handle[Async]` handlers (see [#270](https://github.com/aallan/vera/issues/270)).
 - This avoids coloured-function problems because algebraic effects already separate the description of an operation from its execution.
 
 ### 9.5.5 Inference (Future)

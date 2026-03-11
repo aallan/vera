@@ -186,6 +186,19 @@ class TypeEnv:
         for c in self.data_types["UrlParts"].constructors.values():
             self.constructors[c.name] = c
 
+        # Future<T> — async computation result (WASM-transparent wrapper)
+        self.data_types["Future"] = AdtInfo(
+            name="Future",
+            type_params=("T",),
+            constructors={
+                "Future": ConstructorInfo(
+                    "Future", "Future", ("T",), (TypeVar("T"),),
+                ),
+            },
+        )
+        for c in self.data_types["Future"].constructors.values():
+            self.constructors[c.name] = c
+
         # State<T> effect with get/put
         self.effects["State"] = EffectInfo(
             name="State",
@@ -229,6 +242,16 @@ class TypeEnv:
         # termination checking (Chapter 7, Section 7.7.3).
         self.effects["Diverge"] = EffectInfo(
             name="Diverge",
+            type_params=None,
+            operations={},
+        )
+
+        # Async effect — marker for concurrent computation.
+        # No operations; async/await are registered as built-in functions
+        # with effects(<Async>).  The reference implementation evaluates
+        # eagerly (sequential); WASI 0.3 will provide true concurrency.
+        self.effects["Async"] = EffectInfo(
+            name="Async",
             type_params=None,
             operations={},
         )
@@ -385,6 +408,24 @@ class TypeEnv:
             param_types=(AdtType("UrlParts", ()),),
             return_type=STRING,
             effect=PureEffectRow(),
+        )
+        # Async builtins — require effects(<Async>)
+        _ASYNC_EFFECT = ConcreteEffectRow(
+            frozenset({EffectInstance("Async", ())}), row_var=None,
+        )
+        self.functions["async"] = FunctionInfo(
+            name="async",
+            forall_vars=("T",),
+            param_types=(TypeVar("T"),),
+            return_type=AdtType("Future", (TypeVar("T"),)),
+            effect=_ASYNC_EFFECT,
+        )
+        self.functions["await"] = FunctionInfo(
+            name="await",
+            forall_vars=("T",),
+            param_types=(AdtType("Future", (TypeVar("T"),)),),
+            return_type=TypeVar("T"),
+            effect=_ASYNC_EFFECT,
         )
         self.functions["to_string"] = FunctionInfo(
             name="to_string",

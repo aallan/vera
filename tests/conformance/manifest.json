@@ -439,5 +439,14 @@
     "level": "run",
     "spec_ref": "Section 9.6.5",
     "features": ["url_parse", "url_join", "urlparts", "result_type"]
+  },
+  {
+    "id": "ch09_async",
+    "file": "ch09_async.vera",
+    "chapter": 9,
+    "title": "Async effect with Future<T>",
+    "level": "run",
+    "spec_ref": "Section 9.5.4",
+    "features": ["async", "await", "future", "async_effect"]
   }
 ]

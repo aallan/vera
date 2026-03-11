@@ -231,6 +231,9 @@ class InferenceMixin:
             return "i32_pair"
         if expr.name == "url_parse":
             return "i32"
+        # Async builtins — identity operations (Future<T> is transparent)
+        if expr.name in ("async", "await") and expr.args:
+            return self._infer_expr_wasm_type(expr.args[0])
         # Numeric math builtins
         if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
             return "i64"
@@ -411,6 +414,21 @@ class InferenceMixin:
             return "String"
         if call.name == "url_parse":
             return "Result"
+        # Async builtins — Future<T> is transparent
+        if call.name == "async" and call.args:
+            inner = self._infer_fncall_vera_type(call.args[0]) \
+                if isinstance(call.args[0], ast.FnCall) \
+                else self._infer_vera_type(call.args[0])
+            return f"Future<{inner}>" if inner else "Future"
+        if call.name == "await" and call.args:
+            # await(Future<T>) → T; at WASM level it's the inner type
+            inner = self._infer_fncall_vera_type(call.args[0]) \
+                if isinstance(call.args[0], ast.FnCall) \
+                else self._infer_vera_type(call.args[0])
+            # Strip the Future<...> wrapper if present
+            if inner and inner.startswith("Future<") and inner.endswith(">"):
+                return inner[7:-1]
+            return inner
         # Numeric math builtins
         if call.name == "abs":
             return "Nat"
@@ -674,6 +692,10 @@ class InferenceMixin:
             return "f64"
         if name in ("Bool", "Byte"):
             return "i32"
+        # Future<T> is WASM-transparent — same representation as T
+        if name.startswith("Future<") and name.endswith(">"):
+            inner = name[7:-1]
+            return self._slot_name_to_wasm_type(inner)
         # ADT types are heap pointers
         base = name.split("<")[0] if "<" in name else name
         if base in self._adt_type_names:

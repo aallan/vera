@@ -7031,3 +7031,113 @@ public fn main(-> @Unit)
 }
 """
         assert _run_io(source, fn="main") == "len=5"
+
+
+# =====================================================================
+# Async / Future<T>
+# =====================================================================
+
+
+class TestAsync:
+    """Async effect compiles and executes correctly (sequential/eager)."""
+
+    def test_async_await_int(self) -> None:
+        """async(42) → await → 42."""
+        source = """\
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(<Async>)
+{
+  let @Future<Int> = async(42);
+  await(@Future<Int>.0)
+}
+"""
+        assert _run(source, fn="f") == 42
+
+    def test_async_await_arithmetic(self) -> None:
+        """async(5 * 7) → await → 35."""
+        source = """\
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(<Async>)
+{
+  let @Future<Int> = async(5 * 7);
+  await(@Future<Int>.0)
+}
+"""
+        assert _run(source, fn="f") == 35
+
+    def test_async_await_bool(self) -> None:
+        """async(true) → await → 1 (Bool true)."""
+        source = """\
+public fn f(-> @Bool)
+  requires(true) ensures(true) effects(<Async>)
+{
+  let @Future<Bool> = async(true);
+  await(@Future<Bool>.0)
+}
+"""
+        assert _run(source, fn="f") == 1
+
+    def test_async_await_multiple(self) -> None:
+        """Two futures, await both, add results."""
+        source = """\
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(<Async>)
+{
+  let @Future<Int> = async(10);
+  let @Future<Int> = async(20);
+  await(@Future<Int>.1) + await(@Future<Int>.0)
+}
+"""
+        assert _run(source, fn="f") == 30
+
+    def test_async_in_effectful_fn(self) -> None:
+        """Private helper with effects(<Async>) called from main."""
+        source = """\
+private fn compute(-> @Int)
+  requires(true) ensures(true) effects(<Async>)
+{
+  let @Future<Int> = async(100);
+  await(@Future<Int>.0)
+}
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Async>)
+{ compute() }
+"""
+        assert _run(source, fn="main") == 100
+
+    def test_async_with_io(self) -> None:
+        """effects(<IO, Async>) — composition with IO."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO, Async>)
+{
+  let @Future<Int> = async(42);
+  IO.print(to_string(await(@Future<Int>.0)))
+}
+"""
+        assert _run_io(source, fn="main") == "42"
+
+    def test_async_await_nat(self) -> None:
+        """Nat type roundtrip through Future."""
+        source = """\
+public fn f(-> @Nat)
+  requires(true) ensures(true) effects(<Async>)
+{
+  let @Future<Nat> = async(string_length("hello"));
+  await(@Future<Nat>.0)
+}
+"""
+        assert _run(source, fn="f") == 5
+
+    def test_async_await_float(self) -> None:
+        """Float64 type roundtrip through Future."""
+        source = """\
+public fn f(-> @Float64)
+  requires(true) ensures(true) effects(<Async>)
+{
+  let @Future<Float64> = async(3.14);
+  await(@Future<Float64>.0)
+}
+"""
+        assert abs(_run_float(source, fn="f") - 3.14) < 0.001
