@@ -70,6 +70,12 @@ class CallsMixin:
                 return self._translate_url_parse(call.args[0], env)
             if call.name == "url_join" and len(call.args) == 1:
                 return self._translate_url_join(call.args[0], env)
+            # Async builtins — identity (eager evaluation, Future<T>
+            # is WASM-transparent)
+            if call.name == "async" and len(call.args) == 1:
+                return self._translate_async(call.args[0], env)
+            if call.name == "await" and len(call.args) == 1:
+                return self._translate_await(call.args[0], env)
             if call.name == "to_string" and len(call.args) == 1:
                 return self._translate_to_string(call.args[0], env)
             if call.name == "int_to_string" and len(call.args) == 1:
@@ -4073,6 +4079,26 @@ class CallsMixin:
         ins.append(f"local.get {dst}")
         ins.append(f"local.get {total}")
         return ins
+
+    def _translate_async(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate async(expr) → Future<T> (identity, eager evaluation).
+
+        The reference implementation evaluates async(expr) eagerly.
+        Future<T> is WASM-transparent — same representation as T.
+        True concurrency will be available via WASI 0.3 (#237).
+        """
+        return self.translate_expr(arg, env)
+
+    def _translate_await(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate await(future) → T (identity unwrap).
+
+        Future<T> is WASM-transparent, so await is a no-op.
+        """
+        return self.translate_expr(arg, env)
 
     def _translate_to_string(
         self, arg: ast.Expr, env: WasmSlotEnv,

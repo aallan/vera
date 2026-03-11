@@ -289,8 +289,10 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 |----------|------|---------|
 | `Option<T>` | ADT | `None`, `Some(T)` constructors |
 | `Result<T, E>` | ADT | `Ok(T)`, `Err(E)` constructors |
+| `Future<T>` | ADT | `Future(T)` constructor — WASM-transparent wrapper |
 | `State<T>` | Effect | `get(Unit) → T`, `put(T) → Unit` operations |
 | `IO` | Effect | `print`, `read_line`, `read_file`, `write_file`, `args`, `exit`, `get_env` |
+| `Async` | Effect | No operations — marker for async computation |
 | `Diverge` | Effect | No operations — marker for non-termination |
 | `array_length` | Function | `forall<T> Array<T> → Int`, pure |
 | `array_append` | Function | `forall<T> Array<T>, T → Array<T>`, pure |
@@ -312,6 +314,8 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `url_decode` | Function | `String → Result<String, String>`, pure |
 | `url_parse` | Function | `String → Result<UrlParts, String>`, pure (RFC 3986 decomposition) |
 | `url_join` | Function | `UrlParts → String`, pure (reassemble URL) |
+| `async` | Function | `T → Future<T>`, `effects(<Async>)` (generic, eager evaluation) |
+| `await` | Function | `Future<T> → T`, `effects(<Async>)` (generic, identity unwrap) |
 | `to_string` | Function | `Int → String`, pure |
 | `int_to_string` | Function | `Int → String`, pure (alias for `to_string`) |
 | `bool_to_string` | Function | `Bool → String`, pure |

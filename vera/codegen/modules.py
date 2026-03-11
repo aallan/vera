@@ -252,6 +252,7 @@ class CrossModuleMixin:
             "to_float", "float_to_int", "nat_to_int", "int_to_nat",
             "byte_to_int", "int_to_byte",
             "is_nan", "is_infinite", "nan", "infinity",
+            "async", "await",
         })
 
         seen: set[str] = set()  # deduplicate by function name

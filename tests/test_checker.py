@@ -3651,3 +3651,75 @@ private fn f(-> @String)
   requires(true) ensures(true) effects(pure)
 { "color: \\(Red)" }
 """, "cannot be automatically converted to String")
+
+
+# =====================================================================
+# Async effect
+# =====================================================================
+
+
+class TestAsyncEffect:
+    """Async effect and Future<T> type checking."""
+
+    def test_async_ok(self) -> None:
+        """async(expr) in a function with effects(<Async>) type-checks."""
+        _check_ok("""
+private fn f(-> @Future<Int>)
+  requires(true) ensures(true) effects(<Async>)
+{ async(42) }
+""")
+
+    def test_await_ok(self) -> None:
+        """await(future) in a function with effects(<Async>) type-checks."""
+        _check_ok("""
+private fn f(-> @Int)
+  requires(true) ensures(true) effects(<Async>)
+{
+  let @Future<Int> = async(42);
+  await(@Future<Int>.0)
+}
+""")
+
+    def test_async_requires_effect(self) -> None:
+        """async(expr) in effects(pure) function produces an error."""
+        _check_err("""
+private fn f(-> @Future<Int>)
+  requires(true) ensures(true) effects(pure)
+{ async(42) }
+""", "effect")
+
+    def test_await_requires_effect(self) -> None:
+        """await(future) in effects(pure) function produces an error."""
+        _check_err("""
+private fn f(@Future<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ await(@Future<Int>.0) }
+""", "effect")
+
+    def test_async_wrong_arity(self) -> None:
+        """async() with no arguments is an error."""
+        _check_err("""
+private fn f(-> @Future<Int>)
+  requires(true) ensures(true) effects(<Async>)
+{ async() }
+""", "expects 1 argument")
+
+    def test_await_wrong_type(self) -> None:
+        """await(42) where 42 is Int not Future<T> is an error."""
+        _check_err("""
+private fn f(-> @Int)
+  requires(true) ensures(true) effects(<Async>)
+{ await(42) }
+""", "expected Future")
+
+    def test_async_with_io(self) -> None:
+        """Async composes with IO in the same effect set."""
+        _check_ok("""
+private fn f(-> @Unit)
+  requires(true) ensures(true) effects(<IO, Async>)
+{
+  let @Future<Int> = async(42);
+  IO.print(to_string(await(@Future<Int>.0)));
+  ()
+}
+""")

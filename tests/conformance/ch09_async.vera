@@ -1,0 +1,62 @@
+-- Conformance: Async effect with Future<T> (Chapter 9)
+-- Tests: async, await, Future<T> type, Async effect
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn test_async_int(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(<Async>)
+{
+  let @Future<Int> = async(42);
+  await(@Future<Int>.0)
+}
+
+public fn test_async_arithmetic(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 35)
+  effects(<Async>)
+{
+  let @Future<Int> = async(5 * 7);
+  await(@Future<Int>.0)
+}
+
+public fn test_async_multiple(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 30)
+  effects(<Async>)
+{
+  let @Future<Int> = async(10);
+  let @Future<Int> = async(20);
+  await(@Future<Int>.1) + await(@Future<Int>.0)
+}
+
+private fn async_helper(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Async>)
+{
+  let @Future<Int> = async(@Int.0 * 2);
+  await(@Future<Int>.0)
+}
+
+public fn test_async_composition(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Async>)
+{
+  async_helper(25)
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO, Async>)
+{
+  IO.print(to_string(test_async_int(())));
+  IO.print(to_string(test_async_arithmetic(())));
+  IO.print(to_string(test_async_multiple(())));
+  IO.print(to_string(test_async_composition(())));
+  ()
+}
