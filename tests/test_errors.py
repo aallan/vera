@@ -1,5 +1,11 @@
 """Error message tests — verify LLM-oriented diagnostic quality."""
 
+from __future__ import annotations
+
+import html as html_mod
+import re
+from pathlib import Path
+
 import pytest
 
 from vera.errors import (
@@ -16,6 +22,11 @@ from vera.errors import (
     _get_source_line,
 )
 from vera.parser import parse
+
+ROOT = Path(__file__).parent.parent
+README = ROOT / "README.md"
+INDEX_HTML = ROOT / "docs" / "index.html"
+SPEC_INTRO = ROOT / "spec" / "00-introduction.md"
 
 
 class TestDiagnosticFormat:
@@ -285,3 +296,230 @@ class TestVeraError:
         d = Diagnostic(description="test error", location=SourceLocation(line=1, column=1))
         err = VeraError(d)
         assert "test error" in str(err)
+
+
+# =====================================================================
+# Error display sync: documentation must match compiler output
+# =====================================================================
+
+def _extract_readme_error_block() -> str:
+    """Extract the fenced code block under 'What Errors Look Like' in README.md."""
+    lines = README.read_text(encoding="utf-8").splitlines()
+    in_section = False
+    in_fence = False
+    block_lines: list[str] = []
+    for line in lines:
+        if line.startswith("## What Errors Look Like"):
+            in_section = True
+            continue
+        if in_section and line.startswith("## "):
+            break  # next section
+        if in_section and not in_fence and line.strip() == "```":
+            in_fence = True
+            continue
+        if in_fence and line.strip() == "```":
+            break
+        if in_fence:
+            block_lines.append(line)
+    return "\n".join(block_lines)
+
+
+def _extract_html_error_block() -> str:
+    """Extract the error display <pre> block from docs/index.html.
+
+    Strips all <span> tags and decodes HTML entities to recover plain text.
+    """
+    text = INDEX_HTML.read_text(encoding="utf-8")
+    # Find the <pre> block containing the E001 error
+    match = re.search(
+        r"<pre>(<span[^>]*>\[E001\].*?)</pre>", text, re.DOTALL
+    )
+    assert match, "Could not find E001 error block in docs/index.html"
+    raw = match.group(1)
+    # Strip HTML tags and decode entities
+    plain = re.sub(r"<[^>]+>", "", raw)
+    return html_mod.unescape(plain)
+
+
+def _extract_spec_error_block() -> str:
+    """Extract the fenced code block under '0.5.2 Example' in spec/00-introduction.md."""
+    lines = SPEC_INTRO.read_text(encoding="utf-8").splitlines()
+    in_section = False
+    in_fence = False
+    block_lines: list[str] = []
+    for line in lines:
+        if line.startswith("### 0.5.2 Example"):
+            in_section = True
+            continue
+        if in_section and line.startswith("### "):
+            break  # next subsection
+        if in_section and not in_fence and line.strip() == "```":
+            in_fence = True
+            continue
+        if in_fence and line.strip() == "```":
+            break
+        if in_fence:
+            block_lines.append(line)
+    return "\n".join(block_lines)
+
+
+def _normalize_ws(text: str) -> str:
+    """Collapse all whitespace sequences to single spaces."""
+    return " ".join(text.split())
+
+
+class TestErrorDisplaySync:
+    """The E001 error in README, docs/index.html, and spec must match the compiler.
+
+    Generates the canonical E001 diagnostic from vera.errors and verifies
+    that every semantic component (description, rationale, fix, spec_ref)
+    appears identically in all documentation files.  Whitespace is
+    normalised before comparison because the docs wrap long lines.
+    """
+
+    @pytest.fixture()
+    def canonical(self) -> Diagnostic:
+        """Generate the canonical E001 diagnostic."""
+        return missing_contract_block(
+            "main.vera",
+            "private fn add(@Int, @Int -> @Int)\n{",
+            2,
+            1,
+        )
+
+    # -- README.md --------------------------------------------------------
+
+    def test_readme_has_error_code(self, canonical: Diagnostic) -> None:
+        block = _extract_readme_error_block()
+        assert f"[{canonical.error_code}]" in block
+
+    def test_readme_has_description(self, canonical: Diagnostic) -> None:
+        block = _normalize_ws(_extract_readme_error_block())
+        expected = _normalize_ws(canonical.description)
+        assert expected in block, (
+            f"README error block is missing the canonical description.\n"
+            f"Expected: {expected!r}"
+        )
+
+    def test_readme_has_rationale(self, canonical: Diagnostic) -> None:
+        block = _normalize_ws(_extract_readme_error_block())
+        expected = _normalize_ws(canonical.rationale)
+        assert expected in block, (
+            f"README error block is missing the canonical rationale.\n"
+            f"Expected: {expected!r}"
+        )
+
+    def test_readme_has_fix(self, canonical: Diagnostic) -> None:
+        block = _extract_readme_error_block()
+        # Check each non-blank line of the fix individually (indentation
+        # differs between the Diagnostic.fix field and the formatted output).
+        for line in canonical.fix.splitlines():
+            stripped = line.strip()
+            if stripped:
+                assert stripped in block, (
+                    f"README error block is missing fix line: {stripped!r}"
+                )
+
+    def test_readme_has_spec_ref(self, canonical: Diagnostic) -> None:
+        block = _extract_readme_error_block()
+        assert canonical.spec_ref in block, (
+            f"README error block is missing the canonical spec ref.\n"
+            f"Expected: {canonical.spec_ref!r}"
+        )
+
+    # -- docs/index.html --------------------------------------------------
+
+    def test_html_has_error_code(self, canonical: Diagnostic) -> None:
+        block = _extract_html_error_block()
+        assert f"[{canonical.error_code}]" in block
+
+    def test_html_has_description(self, canonical: Diagnostic) -> None:
+        block = _normalize_ws(_extract_html_error_block())
+        expected = _normalize_ws(canonical.description)
+        assert expected in block, (
+            f"HTML error block is missing the canonical description.\n"
+            f"Expected: {expected!r}"
+        )
+
+    def test_html_has_rationale(self, canonical: Diagnostic) -> None:
+        block = _normalize_ws(_extract_html_error_block())
+        expected = _normalize_ws(canonical.rationale)
+        assert expected in block, (
+            f"HTML error block is missing the canonical rationale.\n"
+            f"Expected: {expected!r}"
+        )
+
+    def test_html_has_fix(self, canonical: Diagnostic) -> None:
+        block = _extract_html_error_block()
+        for line in canonical.fix.splitlines():
+            stripped = line.strip()
+            if stripped:
+                assert stripped in block, (
+                    f"HTML error block is missing fix line: {stripped!r}"
+                )
+
+    def test_html_has_spec_ref(self, canonical: Diagnostic) -> None:
+        block = _extract_html_error_block()
+        assert canonical.spec_ref in block, (
+            f"HTML error block is missing the canonical spec ref.\n"
+            f"Expected: {canonical.spec_ref!r}"
+        )
+
+    def test_html_has_header_format(self, canonical: Diagnostic) -> None:
+        """The header line should follow the [CODE] Error at FILE, line N format."""
+        block = _extract_html_error_block()
+        assert re.search(
+            r"\[E001\] Error at .+, line \d+, column \d+:", block
+        ), "HTML error block header doesn't match expected format"
+
+    def test_readme_has_header_format(self, canonical: Diagnostic) -> None:
+        """The header line should follow the [CODE] Error at FILE, line N format."""
+        block = _extract_readme_error_block()
+        assert re.search(
+            r"\[E001\] Error at .+, line \d+, column \d+:", block
+        ), "README error block header doesn't match expected format"
+
+    # -- spec/00-introduction.md ------------------------------------------
+
+    def test_spec_has_error_code(self, canonical: Diagnostic) -> None:
+        block = _extract_spec_error_block()
+        assert f"[{canonical.error_code}]" in block
+
+    def test_spec_has_description(self, canonical: Diagnostic) -> None:
+        block = _normalize_ws(_extract_spec_error_block())
+        expected = _normalize_ws(canonical.description)
+        assert expected in block, (
+            f"Spec error block is missing the canonical description.\n"
+            f"Expected: {expected!r}"
+        )
+
+    def test_spec_has_rationale(self, canonical: Diagnostic) -> None:
+        block = _normalize_ws(_extract_spec_error_block())
+        expected = _normalize_ws(canonical.rationale)
+        assert expected in block, (
+            f"Spec error block is missing the canonical rationale.\n"
+            f"Expected: {expected!r}"
+        )
+
+    def test_spec_has_fix(self, canonical: Diagnostic) -> None:
+        block = _extract_spec_error_block()
+        for line in canonical.fix.splitlines():
+            stripped = line.strip()
+            if stripped:
+                assert stripped in block, (
+                    f"Spec error block is missing fix line: {stripped!r}"
+                )
+
+    def test_spec_has_spec_ref(self, canonical: Diagnostic) -> None:
+        block = _extract_spec_error_block()
+        assert canonical.spec_ref in block, (
+            f"Spec error block is missing the canonical spec ref.\n"
+            f"Expected: {canonical.spec_ref!r}"
+        )
+
+    def test_spec_has_header_format(self, canonical: Diagnostic) -> None:
+        """The spec header should follow the [CODE] Error at FILE, line N format."""
+        block = _extract_spec_error_block()
+        assert re.search(
+            r"\[E001\] Error at .+, line \d+, column \d+:", block
+        ), "Spec error block header doesn't match expected format"

@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 2,241 across 23 files (~23,800 lines of test code) |
+| **Tests** | 2,259 across 23 files (~24,000 lines of test code) |
 | **Compiler code coverage** | 91% of 14,298 statements (CI minimum: 80%) |
 | **Conformance programs** | 52 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 23, all validated through `vera check` + `vera verify` |
@@ -56,7 +56,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_closures.py` | 17 | 416 | Closure lifting, captured variables, higher-order functions |
 | `test_codegen_modules.py` | 18 | 529 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 249 | Defensive error paths: E600, E601, E605, E606, unknown module calls |
-| `test_errors.py` | 34 | 287 | Error code registry, diagnostic formatting, serialisation, SourceLocation |
+| `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 80 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
 | `test_cli.py` | 111 | 1,440 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
