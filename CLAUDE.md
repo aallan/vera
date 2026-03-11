@@ -122,10 +122,22 @@ Every diagnostic has a stable error code (`E001`–`E702`). Codes are grouped by
 
 See `vera/errors.py` `ERROR_CODES` dict for the full registry.
 
-## Git commits
+## Git workflow
+
+The `main` branch is protected — all changes require a PR with passing CI. Never commit directly to main; always create a feature branch, push it, and open a PR.
 
 When creating commits, use this co-author trailer:
 
     Co-Authored-By: Claude <noreply@anthropic.invalid>
 
 Do NOT use `noreply@anthropic.com` — that email resolves to an unrelated GitHub account. The `.invalid` TLD (RFC 2606) is reserved and will never resolve to a real address.
+
+## Release workflow
+
+- **Roadmap strikethrough in the feature PR**: Include the full `<del>[#NNN](...) description</del> ([vX.Y.Z](release-url))` in the same commit/PR as the feature itself. The tag link will resolve after merge+tag. Do NOT leave it as a separate post-merge commit — main is protected and that forces a tedious second PR.
+- **CHANGELOG link references**: Keep a Changelog format requires `[version]: compare-url` link references at the bottom of CHANGELOG.md. These must be added for every new version. The `[Unreleased]` link must point to `latest-tag...HEAD`.
+- **Roadmap is in ROADMAP.md**: The project roadmap (phase table, C6–C10 details, issue strikethroughs) lives in `ROADMAP.md`, not README.md. README.md links to it.
+
+## Shell pitfalls
+
+- **Heredocs with single quotes in `gh` commands**: `gh issue create --body "$(cat <<'EOF' ... EOF)"` breaks if the body contains single quotes (apostrophes, contractions). Use plain double-quoted `--body "..."` instead.
