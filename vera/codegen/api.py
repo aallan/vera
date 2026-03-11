@@ -79,6 +79,7 @@ class CompileResult:
     exports: list[str]
     diagnostics: list["Diagnostic"] = field(default_factory=list)
     state_types: list[tuple[str, str]] = field(default_factory=list)
+    md_ops_used: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -493,6 +494,129 @@ def execute(
         for key, val in initial_state.items():
             if key in state_store:
                 state_store[key] = val
+
+    # -----------------------------------------------------------------
+    # Markdown host functions (§9.7.3)
+    # -----------------------------------------------------------------
+
+    if result.md_ops_used:
+        from vera.markdown import (
+            extract_code_blocks as _md_extract_code_blocks,
+            has_code_block as _md_has_code_block,
+            has_heading as _md_has_heading,
+            parse_markdown as _md_parse,
+            render_markdown as _md_render,
+        )
+        from vera.wasm.markdown import (
+            read_md_block,
+            write_md_block,
+        )
+
+        def _alloc_result_ok_i32(
+            caller: wasmtime.Caller, value: int,
+        ) -> int:
+            """Allocate Result.Ok(i32) — wraps a heap pointer in Ok."""
+            # Layout: tag(i32)=0 at +0, value(i32) at +4
+            adt_ptr = _call_alloc(caller, 8)
+            _write_i32(caller, adt_ptr, 0)       # tag = Ok
+            _write_i32(caller, adt_ptr + 4, value)
+            return adt_ptr
+
+        # md_parse(ptr, len) → i32 (Result<MdBlock, String>)
+        def host_md_parse(
+            caller: wasmtime.Caller, ptr: int, length: int,
+        ) -> int:
+            text = _read_wasm_string(caller, ptr, length)
+            try:
+                doc = _md_parse(text)
+                block_ptr = write_md_block(
+                    caller, _call_alloc, _write_i32,
+                    _write_bytes, _alloc_string, doc,
+                )
+                return _alloc_result_ok_i32(caller, block_ptr)
+            except Exception as exc:
+                return _alloc_result_err_string(caller, str(exc))
+
+        md_parse_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+            [wasmtime.ValType.i32()],
+        )
+        linker.define_func(
+            "vera", "md_parse", md_parse_type,
+            host_md_parse, access_caller=True,
+        )
+
+        # md_render(ptr) → (i32, i32) (String pair)
+        def host_md_render(
+            caller: wasmtime.Caller, ptr: int,
+        ) -> tuple[int, int]:
+            block = read_md_block(caller, ptr)
+            text = _md_render(block)
+            return _alloc_string(caller, text)
+
+        md_render_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32()],
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+        )
+        linker.define_func(
+            "vera", "md_render", md_render_type,
+            host_md_render, access_caller=True,
+        )
+
+        # md_has_heading(ptr, level_i64) → i32 (Bool)
+        def host_md_has_heading(
+            caller: wasmtime.Caller, ptr: int, level: int,
+        ) -> int:
+            block = read_md_block(caller, ptr)
+            return 1 if _md_has_heading(block, level) else 0
+
+        md_has_heading_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i64()],
+            [wasmtime.ValType.i32()],
+        )
+        linker.define_func(
+            "vera", "md_has_heading", md_has_heading_type,
+            host_md_has_heading, access_caller=True,
+        )
+
+        # md_has_code_block(ptr, lang_ptr, lang_len) → i32 (Bool)
+        def host_md_has_code_block(
+            caller: wasmtime.Caller,
+            ptr: int, lang_ptr: int, lang_len: int,
+        ) -> int:
+            block = read_md_block(caller, ptr)
+            lang = _read_wasm_string(caller, lang_ptr, lang_len)
+            return 1 if _md_has_code_block(block, lang) else 0
+
+        md_has_code_block_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32(),
+             wasmtime.ValType.i32()],
+            [wasmtime.ValType.i32()],
+        )
+        linker.define_func(
+            "vera", "md_has_code_block", md_has_code_block_type,
+            host_md_has_code_block, access_caller=True,
+        )
+
+        # md_extract_code_blocks(ptr, lang_ptr, lang_len) → (i32, i32)
+        def host_md_extract_code_blocks(
+            caller: wasmtime.Caller,
+            ptr: int, lang_ptr: int, lang_len: int,
+        ) -> tuple[int, int]:
+            block = read_md_block(caller, ptr)
+            lang = _read_wasm_string(caller, lang_ptr, lang_len)
+            codes = _md_extract_code_blocks(block, lang)
+            return _alloc_array_of_strings(caller, codes)
+
+        md_extract_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32(),
+             wasmtime.ValType.i32()],
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+        )
+        linker.define_func(
+            "vera", "md_extract_code_blocks", md_extract_type,
+            host_md_extract_code_blocks, access_caller=True,
+        )
 
     instance = linker.instantiate(store, module)
 

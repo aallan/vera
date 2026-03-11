@@ -38,6 +38,29 @@ class AssemblyMixin:
         if self._io_ops_used & _IO_OPS_NEEDING_ALLOC:
             self._needs_alloc = True
 
+        # Import Markdown host-import builtins (pure functions)
+        _MD_IMPORTS: dict[str, str] = {
+            "md_parse":
+                "(func $vera.md_parse (param i32 i32) (result i32))",
+            "md_render":
+                "(func $vera.md_render (param i32) (result i32 i32))",
+            "md_has_heading":
+                "(func $vera.md_has_heading"
+                " (param i32 i64) (result i32))",
+            "md_has_code_block":
+                "(func $vera.md_has_code_block"
+                " (param i32 i32 i32) (result i32))",
+            "md_extract_code_blocks":
+                "(func $vera.md_extract_code_blocks"
+                " (param i32 i32 i32) (result i32 i32))",
+        }
+        for op_name in sorted(self._md_ops_used):
+            sig = _MD_IMPORTS.get(op_name)
+            if sig:
+                parts.append(f'  (import "vera" "{op_name}" {sig})')
+        if self._md_ops_used:
+            self._needs_alloc = True
+
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:
             parts.append(
@@ -100,7 +123,7 @@ class AssemblyMixin:
             parts.append(self._emit_gc_collect())
 
         # Export $alloc when host functions need to allocate WASM memory
-        if self._io_ops_used & _IO_OPS_NEEDING_ALLOC:
+        if (self._io_ops_used & _IO_OPS_NEEDING_ALLOC) or self._md_ops_used:
             parts.append('  (export "alloc" (func $alloc))')
 
         # Closure type declarations (for call_indirect)

@@ -144,11 +144,17 @@ class CompilabilityMixin:
             self._exn_types.append((type_name, wt))
         return True
 
+    _MD_BUILTINS = frozenset({
+        "md_parse", "md_render", "md_has_heading",
+        "md_has_code_block", "md_extract_code_blocks",
+    })
+
     def _scan_io_ops(self, node: ast.Node) -> None:
-        """Walk a function body looking for IO qualified calls.
+        """Walk a function body looking for IO qualified calls and md_* builtins.
 
         Registers each distinct IO operation name (print, read_line, etc.)
-        into ``_io_ops_used`` for per-operation import emission.
+        into ``_io_ops_used`` for per-operation import emission.  Also
+        registers Markdown host-import builtins into ``_md_ops_used``.
         """
         if isinstance(node, ast.QualifiedCall):
             if node.qualifier == "IO":
@@ -164,6 +170,8 @@ class CompilabilityMixin:
                     self._scan_io_ops(stmt.expr)
             self._scan_io_ops(node.expr)
         elif isinstance(node, ast.FnCall):
+            if node.name in self._MD_BUILTINS:
+                self._md_ops_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
         elif isinstance(node, ast.ConstructorCall):

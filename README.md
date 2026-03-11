@@ -183,11 +183,11 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (2,003 tests across 20 files, testing compiler internals), a **conformance suite** (49 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (21 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
+Testing is organized in three layers: **unit tests** (2,003 tests across 20 files, testing compiler internals), a **conformance suite** (52 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (23 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
 
 ### Known Bugs
 
-No known bugs.
+- [#274](https://github.com/aallan/vera/issues/274) — Formatter collapses multi-statement blocks in match arms to single unparseable lines; comments inside function bodies are repositioned outside. Workaround: extract multi-statement match arm logic into helper functions.
 
 ## Roadmap
 
@@ -374,7 +374,7 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 - [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal)
 - [#133](https://github.com/aallan/vera/issues/133) array operations (map, fold, slice)
 - [#58](https://github.com/aallan/vera/issues/58) JSON standard library type
-- [#147](https://github.com/aallan/vera/issues/147) Markdown standard library type
+- <del>[#147](https://github.com/aallan/vera/issues/147) Markdown standard library type</del> ([v0.0.84](https://github.com/aallan/vera/releases/tag/v0.0.84))
 - [#211](https://github.com/aallan/vera/issues/211) Option and Result combinators
 - [#233](https://github.com/aallan/vera/issues/233) date and time handling (ISO 8601)
 - [#235](https://github.com/aallan/vera/issues/235) cryptographic hashing (SHA-256, HMAC)
@@ -396,6 +396,7 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 - [#238](https://github.com/aallan/vera/issues/238) Component Model (WIT) interop
 - [#239](https://github.com/aallan/vera/issues/239) resource limit configuration (fuel, memory, timeout)
 - [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package
+- [#273](https://github.com/aallan/vera/issues/273) browser runtime for compiled WASM (JS host bindings)
 
 **Ecosystem**
 
@@ -406,7 +407,7 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 
 ### Where this is going
 
-The features on the C9 roadmap -- `<Http>` ([#57](https://github.com/aallan/vera/issues/57)), `<Inference>` ([#61](https://github.com/aallan/vera/issues/61)), and the `Markdown` type ([#147](https://github.com/aallan/vera/issues/147)) -- converge into a single design goal: an LLM should be able to write a short Vera function that searches the web, feeds the results into another model, and returns typed, contract-checked output. No scaffolding, no untyped string wrangling, no unchecked side effects.
+The features on the C9 roadmap -- `<Http>` ([#57](https://github.com/aallan/vera/issues/57)), `<Inference>` ([#61](https://github.com/aallan/vera/issues/61)), and the now-implemented `Markdown` type ([#147](https://github.com/aallan/vera/issues/147)) -- converge into a single design goal: an LLM should be able to write a short Vera function that searches the web, feeds the results into another model, and returns typed, contract-checked output. No scaffolding, no untyped string wrangling, no unchecked side effects.
 
 A research function that searches YouTube, summarises the results via LLM inference, and returns structured Markdown might look like this:
 
@@ -463,7 +464,7 @@ OK: examples/safe_divide.vera
 Verification: 4 verified (Tier 1)
 ```
 
-`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 22 examples, 127 of 134 contracts (94.8%) are verified statically.
+`vera verify` runs the type checker and then verifies contracts using Z3. Tier 1 contracts (decidable arithmetic, comparisons, Boolean logic, match expressions, ADT constructors, and decreases clauses) are proved automatically. Contracts that Z3 cannot decide are reported as Tier 3 (runtime checks) with a warning. Across all 23 examples, 131 of 138 contracts (94.9%) are verified statically.
 
 ### Format a program
 

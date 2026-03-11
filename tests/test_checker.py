@@ -3774,3 +3774,49 @@ private fn f(@Tuple<Int, Int> -> @Int)
   }
 }
 """)
+
+
+class TestMarkdownBuiltins:
+    """Type-checking for md_parse, md_render, md_has_heading, etc."""
+
+    def test_md_parse_ok(self) -> None:
+        _check_ok("""
+private fn f(@String -> @Result<MdBlock, String>)
+  requires(true) ensures(true) effects(pure)
+{ md_parse(@String.0) }
+""")
+
+    def test_md_parse_wrong_type(self) -> None:
+        _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ md_parse(@Int.0) }
+""", "expected String")
+
+    def test_md_render_ok(self) -> None:
+        _check_ok("""
+private fn f(@MdBlock -> @String)
+  requires(true) ensures(true) effects(pure)
+{ md_render(@MdBlock.0) }
+""")
+
+    def test_md_has_heading_ok(self) -> None:
+        _check_ok("""
+private fn f(@MdBlock, @Nat -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ md_has_heading(@MdBlock.0, @Nat.0) }
+""")
+
+    def test_md_has_code_block_ok(self) -> None:
+        _check_ok("""
+private fn f(@MdBlock, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ md_has_code_block(@MdBlock.0, @String.0) }
+""")
+
+    def test_md_extract_code_blocks_ok(self) -> None:
+        _check_ok("""
+private fn f(@MdBlock, @String -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+{ md_extract_code_blocks(@MdBlock.0, @String.0) }
+""")

@@ -69,6 +69,68 @@ class RegistrationMixin:
                 tag=0, field_offsets=(), total_size=8,
             ),
         }
+        # MdInline — inline Markdown elements (6 constructors)
+        # String/Array fields are i32_pair (8 bytes, 4-byte align)
+        self._adt_layouts["MdInline"] = {
+            "MdText": ConstructorLayout(
+                tag=0, field_offsets=((4, "i32_pair"),), total_size=16,
+            ),
+            "MdCode": ConstructorLayout(
+                tag=1, field_offsets=((4, "i32_pair"),), total_size=16,
+            ),
+            "MdEmph": ConstructorLayout(
+                tag=2, field_offsets=((4, "i32_pair"),), total_size=16,
+            ),
+            "MdStrong": ConstructorLayout(
+                tag=3, field_offsets=((4, "i32_pair"),), total_size=16,
+            ),
+            "MdLink": ConstructorLayout(
+                tag=4,
+                field_offsets=((4, "i32_pair"), (12, "i32_pair")),
+                total_size=24,
+            ),
+            "MdImage": ConstructorLayout(
+                tag=5,
+                field_offsets=((4, "i32_pair"), (12, "i32_pair")),
+                total_size=24,
+            ),
+        }
+        # MdBlock — block-level Markdown elements (8 constructors)
+        # MdHeading: Nat (i64, 8-byte align) at offset 8, Array at 16
+        # MdList: Bool (i32) at offset 4, Array at offset 8
+        # MdThematicBreak: no fields (tag only)
+        self._adt_layouts["MdBlock"] = {
+            "MdParagraph": ConstructorLayout(
+                tag=0, field_offsets=((4, "i32_pair"),), total_size=16,
+            ),
+            "MdHeading": ConstructorLayout(
+                tag=1,
+                field_offsets=((8, "i64"), (16, "i32_pair")),
+                total_size=24,
+            ),
+            "MdCodeBlock": ConstructorLayout(
+                tag=2,
+                field_offsets=((4, "i32_pair"), (12, "i32_pair")),
+                total_size=24,
+            ),
+            "MdBlockQuote": ConstructorLayout(
+                tag=3, field_offsets=((4, "i32_pair"),), total_size=16,
+            ),
+            "MdList": ConstructorLayout(
+                tag=4,
+                field_offsets=((4, "i32"), (8, "i32_pair")),
+                total_size=16,
+            ),
+            "MdThematicBreak": ConstructorLayout(
+                tag=5, field_offsets=(), total_size=8,
+            ),
+            "MdTable": ConstructorLayout(
+                tag=6, field_offsets=((4, "i32_pair"),), total_size=16,
+            ),
+            "MdDocument": ConstructorLayout(
+                tag=7, field_offsets=((4, "i32_pair"),), total_size=16,
+            ),
+        }
 
     def _register_data(self, decl: ast.DataDecl) -> None:
         """Register an ADT and precompute constructor layouts."""

@@ -369,8 +369,8 @@ class WasmContext(
         if isinstance(expr, ast.MatchExpr):
             return all(self._is_void_expr(arm.body) for arm in expr.arms)
         if isinstance(expr, ast.IfExpr):
-            return (self._is_void_expr(expr.then_expr)
-                    and self._is_void_expr(expr.else_expr))
+            return (self._is_void_expr(expr.then_branch)
+                    and self._is_void_expr(expr.else_branch))
         if isinstance(expr, ast.Block):
             return self._is_void_expr(expr.expr)
         return False

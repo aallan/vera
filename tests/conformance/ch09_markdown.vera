@@ -1,0 +1,38 @@
+-- Chapter 9: Markdown Standard Library (§9.7.3)
+-- Tests: md_parse, md_render, md_has_heading, md_has_code_block,
+--        md_extract_code_blocks, MdBlock, MdInline constructors.
+-- Level: run (requires WASM execution with host bindings)
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("# Hello World");
+  match @Result<MdBlock, String>.0 { Ok(@MdBlock) -> IO.print("parse: ok"), Err(_) -> IO.print("FAIL") };
+  let @Result<MdBlock, String> = md_parse("# Title\n\n## Section");
+  match @Result<MdBlock, String>.0 { Ok(@MdBlock) -> if md_has_heading(@MdBlock.0, 1) then { IO.print("h1: ok") } else { IO.print("FAIL") }, Err(_) -> IO.print("FAIL") };
+  let @Result<MdBlock, String> = md_parse("# Title");
+  match @Result<MdBlock, String>.0 { Ok(@MdBlock) -> if md_has_heading(@MdBlock.0, 3) then { IO.print("FAIL") } else { IO.print("h3: ok") }, Err(_) -> IO.print("FAIL") };
+  let @Result<MdBlock, String> = md_parse("```python\ncode\n```");
+  match @Result<MdBlock, String>.0 { Ok(@MdBlock) -> if md_has_code_block(@MdBlock.0, "python") then { IO.print("py: ok") } else { IO.print("FAIL") }, Err(_) -> IO.print("FAIL") };
+  let @Result<MdBlock, String> = md_parse("```python\ncode\n```");
+  match @Result<MdBlock, String>.0 { Ok(@MdBlock) -> if md_has_code_block(@MdBlock.0, "rust") then { IO.print("FAIL") } else { IO.print("rs: ok") }, Err(_) -> IO.print("FAIL") };
+  let @Result<MdBlock, String> = md_parse("# Hello");
+  match @Result<MdBlock, String>.0 { Ok(@MdBlock) -> IO.print(md_render(@MdBlock.0)), Err(_) -> IO.print("FAIL") };
+  let @Result<MdBlock, String> = md_parse("```vera\nx\n```\n\n```vera\ny\n```");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> IO.print(int_to_string(array_length(md_extract_code_blocks(@MdBlock.0, "vera")))),
+    Err(_) -> IO.print("FAIL")
+  }
+}
+-- 1. Parse a heading
+-- 2. has_heading true
+-- 3. has_heading false
+-- 4. has_code_block true
+-- 5. has_code_block false
+-- 6. Render
+-- 7. Extract code blocks

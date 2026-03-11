@@ -253,6 +253,8 @@ class CrossModuleMixin:
             "byte_to_int", "int_to_byte",
             "is_nan", "is_infinite", "nan", "infinity",
             "async", "await",
+            "md_parse", "md_render", "md_has_heading",
+            "md_has_code_block", "md_extract_code_blocks",
         })
 
         seen: set[str] = set()  # deduplicate by function name
