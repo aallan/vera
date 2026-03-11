@@ -6,10 +6,10 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 2,259 across 23 files (~24,000 lines of test code) |
+| **Tests** | 2,287 across 23 files (~24,000 lines of test code) |
 | **Compiler code coverage** | 91% of 14,298 statements (CI minimum: 80%) |
-| **Conformance programs** | 52 programs across 9 spec chapters, validating every language feature |
-| **Example programs** | 23, all validated through `vera check` + `vera verify` |
+| **Conformance programs** | 53 programs across 9 spec chapters, validating every language feature |
+| **Example programs** | 24, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 148 parseable blocks from 13 spec chapters: 81 parse, 67 type-check, 66 verify |
 | **README code blocks** | 9 Vera blocks (8 validated, 1 allowlisted future syntax) |
 | **HTML code blocks** | 2 Vera blocks in docs/index.html (2 validated: parse + check + verify) |
@@ -32,8 +32,8 @@ pytest tests/ --cov=vera --cov-report=term-missing   # with coverage
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_conformance.py                  # conformance suite (52 programs)
-python scripts/check_examples.py                     # 23 example programs
+python scripts/check_conformance.py                  # conformance suite (53 programs)
+python scripts/check_examples.py                     # 24 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
 python scripts/check_skill_examples.py               # SKILL.md code blocks
@@ -46,18 +46,18 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 
 | File | Tests | Lines | What it covers |
 |------|------:|------:|----------------|
-| `test_parser.py` | 112 | 888 | Grammar rules, operator precedence, parse errors |
-| `test_ast.py` | 110 | 1,046 | AST transformation, node structure, serialisation, string escape sequences |
-| `test_checker.py` | 336 | 3,822 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types |
-| `test_verifier.py` | 108 | 1,582 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
-| `test_codegen.py` | 644 | 7,445 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, example round-trips |
+| `test_parser.py` | 113 | 888 | Grammar rules, operator precedence, parse errors |
+| `test_ast.py` | 111 | 1,046 | AST transformation, node structure, serialisation, string escape sequences |
+| `test_checker.py` | 342 | 3,869 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types |
+| `test_verifier.py` | 109 | 1,582 | Z3 verification, counterexamples, tier classification, call-site preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
+| `test_codegen.py` | 654 | 7,608 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 17 | 361 | Generic instantiation, type inference, monomorphization edge cases |
 | `test_codegen_closures.py` | 17 | 416 | Closure lifting, captured variables, higher-order functions |
 | `test_codegen_modules.py` | 18 | 529 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 249 | Defensive error paths: E600, E601, E605, E606, unknown module calls |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
-| `test_formatter.py` | 80 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
+| `test_formatter.py` | 82 | 554 | Comment extraction, expression/declaration formatting, idempotency, parenthesization, spec rules |
 | `test_cli.py` | 111 | 1,440 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
@@ -65,8 +65,8 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_wasm_coverage.py` | 113 | 1,738 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
 | `test_tester.py` | 13 | 345 | Contract-driven testing: tier classification, input generation, test execution |
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
-| `test_browser.py` | 56 | 705 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, and all compilable examples |
-| `test_conformance.py` | 260 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 52 programs |
+| `test_browser.py` | 58 | 706 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
+| `test_conformance.py` | 265 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 53 programs |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
 
@@ -97,7 +97,7 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | `parse` | Source text is syntactically valid | 0 |
 | `check` | Parses and type-checks cleanly | 0 |
 | `verify` | Type-checks and all contracts verified by Z3 | 0 |
-| `run` | Compiles to WASM and executes correctly | 52 |
+| `run` | Compiles to WASM and executes correctly | 53 |
 
 All programs are at the `run` level — they compile and execute, producing correct results.
 
@@ -109,12 +109,13 @@ tests/conformance/
 ├── ch01_int_literals.vera     # Chapter 1: Integer literals
 ├── ch01_float_literals.vera   # Chapter 1: Float64 literals
 ├── ch01_string_escapes.vera   # Chapter 1: String escape sequences
-├── ...                        # 52 programs total, organized by spec chapter
+├── ...                        # 53 programs total, organized by spec chapter
 ├── ch07_state_handler.vera    # Chapter 7: State<T> effect handler
 ├── ch07_exn_handler.vera      # Chapter 7: Exn<E> effect handler
 ├── ch09_numeric_builtins.vera # Chapter 9: Numeric built-in functions
 ├── ch09_type_conversions.vera # Chapter 9: Numeric type conversions
 ├── ch09_markdown.vera         # Chapter 9: Markdown standard library
+├── ch09_regex.vera            # Chapter 9: Regular expression matching
 └── ch10_float_predicates.vera # Chapter 9: Float64 predicates and constants
 ```
 
@@ -191,7 +192,7 @@ The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 68%) reflect auto-g
 
 Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved correct statically by Z3 — no runtime overhead. **Tier 3** contracts cannot be fully decided by the SMT solver and fall back to runtime assertion checks. The verifier never rejects a valid program; it simply warns when a contract drops to Tier 3.
 
-Across all 23 example programs:
+Across all 24 example programs:
 
 | Metric | Value |
 |--------|-------|
@@ -223,7 +224,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | ch02_adt_basic, ch02_adt_recursive, ch02_option_result | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen, test_verifier | ch02_refinement_types | refinement_types, safe_divide |
 | Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker | ch02_generics | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 23 examples |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 24 examples |
 | Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker | ch04_arithmetic, ch04_comparison, ch04_boolean_ops | factorial, absolute_value |
 | Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker | ch04_if_else, ch04_let_binding, ch04_match_basic, ch04_match_nested, ch04_pipe_operator | pattern_matching |
 | Ch 4: Expressions | String and array builtins | test_codegen | ch04_string_builtins, ch04_array_ops | string_ops |
@@ -245,6 +246,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 8: Modules | Imports, cross-module typing and codegen | test_codegen_modules, test_resolver | — | modules |
 | Ch 11: Compilation | Cross-module name collision detection (E608/E609/E610) | test_codegen_modules | — | — |
 | Ch 9: Stdlib | Markdown (md_parse, md_render, md_has_heading, md_has_code_block, md_extract_code_blocks) | test_codegen, test_markdown | ch09_markdown | markdown |
+| Ch 9: Stdlib | Regex (regex_match, regex_find, regex_find_all, regex_replace) | test_codegen, test_checker | ch09_regex | regex |
 | Ch 11: Compilation | Contract-driven testing (Z3 input gen + WASM execution) | test_tester, test_cli | — | safe_divide, factorial |
 | Ch 12: Runtime | Browser runtime parity (JS host bindings match Python) | test_browser | — | — |
 
@@ -271,7 +273,7 @@ _run_trap(source, fn, args)    # compile + execute, assert WASM trap
 
 ## Round-Trip Testing
 
-Every one of the 23 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
+Every one of the 24 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
 
 The formatter has **idempotency tests**: `format(format(x)) == format(x)` for all tested programs.
 
@@ -335,7 +337,7 @@ After running `pre-commit install`, every commit is checked by 17 hooks:
 | `pytest tests/ -q` | Run full test suite |
 | `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
 | `check_conformance.py` | All 52 conformance programs pass their declared level |
-| `check_examples.py` | All 23 examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 24 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 | `check_skill_examples.py` | SKILL.md code blocks parse correctly |
 | `check_html_examples.py` | HTML landing page code blocks pass parse + check + verify |

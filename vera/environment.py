@@ -526,6 +526,39 @@ class TypeEnv:
             return_type=AdtType("Array", (STRING,)),
             effect=PureEffectRow(),
         )
+        # Regex builtins (§9.6.15) — host-imported, pure
+        self.functions["regex_match"] = FunctionInfo(
+            name="regex_match",
+            forall_vars=None,
+            param_types=(STRING, STRING),
+            return_type=AdtType("Result", (BOOL, STRING)),
+            effect=PureEffectRow(),
+        )
+        self.functions["regex_find"] = FunctionInfo(
+            name="regex_find",
+            forall_vars=None,
+            param_types=(STRING, STRING),
+            return_type=AdtType(
+                "Result", (AdtType("Option", (STRING,)), STRING),
+            ),
+            effect=PureEffectRow(),
+        )
+        self.functions["regex_find_all"] = FunctionInfo(
+            name="regex_find_all",
+            forall_vars=None,
+            param_types=(STRING, STRING),
+            return_type=AdtType(
+                "Result", (AdtType("Array", (STRING,)), STRING),
+            ),
+            effect=PureEffectRow(),
+        )
+        self.functions["regex_replace"] = FunctionInfo(
+            name="regex_replace",
+            forall_vars=None,
+            param_types=(STRING, STRING, STRING),
+            return_type=AdtType("Result", (STRING, STRING)),
+            effect=PureEffectRow(),
+        )
         # Async builtins — require effects(<Async>)
         _ASYNC_EFFECT = ConcreteEffectRow(
             frozenset({EffectInstance("Async", ())}), row_var=None,

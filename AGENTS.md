@@ -143,8 +143,8 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 52 conformance programs must pass
-python scripts/check_examples.py       # All 23 examples must pass
+python scripts/check_conformance.py    # All 53 conformance programs must pass
+python scripts/check_examples.py       # All 24 examples must pass
 ```
 
 Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)` / `_verify_ok(source)` / `_verify_err(source, match)`. See existing tests for examples.
@@ -153,8 +153,8 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 52 conformance programs in `tests/conformance/` must pass their declared level
-- All 23 examples in `examples/` must pass `vera check` and `vera verify`
+- All 53 conformance programs in `tests/conformance/` must pass their declared level
+- All 24 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
 - Version must be in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`

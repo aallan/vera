@@ -1,0 +1,45 @@
+-- Chapter 9: Regular Expression Matching (§9.6.15)
+-- Tests: regex_match, regex_find, regex_find_all, regex_replace
+-- Level: run (requires WASM execution with host bindings)
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Result<Bool, String> = regex_match("hello123", "\\d+");
+  match @Result<Bool, String>.0 { Ok(@Bool) -> if @Bool.0 then { IO.print("match_found: ok") } else { IO.print("FAIL") }, Err(_) -> IO.print("FAIL") };
+  let @Result<Bool, String> = regex_match("hello", "\\d+");
+  match @Result<Bool, String>.0 { Ok(@Bool) -> if @Bool.0 then { IO.print("FAIL") } else { IO.print("match_none: ok") }, Err(_) -> IO.print("FAIL") };
+  let @Result<Option<String>, String> = regex_find("abc123def", "\\d+");
+  match @Result<Option<String>, String>.0 { Ok(@Option<String>) -> match @Option<String>.0 { Some(@String) -> IO.print(string_concat("find: ", @String.0)), None -> IO.print("FAIL") }, Err(_) -> IO.print("FAIL") };
+  let @Result<Option<String>, String> = regex_find("hello", "\\d+");
+  match @Result<Option<String>, String>.0 { Ok(@Option<String>) -> match @Option<String>.0 { Some(_) -> IO.print("FAIL"), None -> IO.print("find_none: ok") }, Err(_) -> IO.print("FAIL") };
+  let @Result<Array<String>, String> = regex_find_all("a1b2c3", "\\d");
+  match @Result<Array<String>, String>.0 { Ok(@Array<String>) -> IO.print(string_concat("find_all: ", int_to_string(array_length(@Array<String>.0)))), Err(_) -> IO.print("FAIL") };
+  let @Result<String, String> = regex_replace("hello world", "world", "vera");
+  match @Result<String, String>.0 { Ok(@String) -> IO.print(string_concat("replace: ", @String.0)), Err(_) -> IO.print("FAIL") };
+  let @Result<Bool, String> = regex_match("test", "[invalid");
+  match @Result<Bool, String>.0 {
+    Ok(_) -> IO.print("FAIL"),
+    Err(@String) -> IO.print("err: ok")
+  }
+}
+-- regex_match: pattern found
+-- regex_match: pattern not found
+-- regex_find: match found
+-- regex_find: no match
+-- regex_find_all: multiple matches
+-- regex_replace: first match only
+-- regex_match: invalid pattern produces Err
+-- Expected output:
+-- match_found: ok
+-- match_none: ok
+-- find: 123
+-- find_none: ok
+-- find_all: 3
+-- replace: hello vera
+-- err: ok

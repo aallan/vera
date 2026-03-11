@@ -182,6 +182,7 @@ EXAMPLES_WITH_MAIN = [
     "url_encoding",
     "url_parsing",
     "markdown",
+    "regex",
     "effect_handler",
     "gc_pressure",
     "async_futures",

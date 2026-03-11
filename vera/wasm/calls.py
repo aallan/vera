@@ -89,6 +89,23 @@ class CallsMixin:
                 return self._translate_md_extract_code_blocks(
                     call.args[0], call.args[1], env,
                 )
+            # Regex host-import builtins (pure, host-provided)
+            if call.name == "regex_match" and len(call.args) == 2:
+                return self._translate_regex_match(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "regex_find" and len(call.args) == 2:
+                return self._translate_regex_find(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "regex_find_all" and len(call.args) == 2:
+                return self._translate_regex_find_all(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "regex_replace" and len(call.args) == 3:
+                return self._translate_regex_replace(
+                    call.args[0], call.args[1], call.args[2], env,
+                )
             if call.name == "async" and len(call.args) == 1:
                 return self._translate_async(call.args[0], env)
             if call.name == "await" and len(call.args) == 1:
@@ -4181,6 +4198,86 @@ class CallsMixin:
         ins.extend(b_instrs)
         ins.extend(l_instrs)
         ins.append("call $vera.md_extract_code_blocks")
+        return ins
+
+    # ---- Regex host-import builtins -------------------------------------
+
+    def _translate_regex_match(
+        self, input_arg: ast.Expr, pattern_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """regex_match(input, pattern) → Result<Bool, String> via host import.
+
+        Two string args → (i32, i32, i32, i32) → call $vera.regex_match → i32.
+        """
+        in_instrs = self.translate_expr(input_arg, env)
+        pat_instrs = self.translate_expr(pattern_arg, env)
+        if in_instrs is None or pat_instrs is None:
+            return None
+        self.needs_alloc = True
+        ins: list[str] = []
+        ins.extend(in_instrs)
+        ins.extend(pat_instrs)
+        ins.append("call $vera.regex_match")
+        return ins
+
+    def _translate_regex_find(
+        self, input_arg: ast.Expr, pattern_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """regex_find(input, pattern) → Result<Option<String>, String>.
+
+        Two string args → (i32, i32, i32, i32) → call $vera.regex_find → i32.
+        """
+        in_instrs = self.translate_expr(input_arg, env)
+        pat_instrs = self.translate_expr(pattern_arg, env)
+        if in_instrs is None or pat_instrs is None:
+            return None
+        self.needs_alloc = True
+        ins: list[str] = []
+        ins.extend(in_instrs)
+        ins.extend(pat_instrs)
+        ins.append("call $vera.regex_find")
+        return ins
+
+    def _translate_regex_find_all(
+        self, input_arg: ast.Expr, pattern_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """regex_find_all(input, pattern) → Result<Array<String>, String>.
+
+        Two string args → (i32, i32, i32, i32) → call → i32.
+        """
+        in_instrs = self.translate_expr(input_arg, env)
+        pat_instrs = self.translate_expr(pattern_arg, env)
+        if in_instrs is None or pat_instrs is None:
+            return None
+        self.needs_alloc = True
+        ins: list[str] = []
+        ins.extend(in_instrs)
+        ins.extend(pat_instrs)
+        ins.append("call $vera.regex_find_all")
+        return ins
+
+    def _translate_regex_replace(
+        self, input_arg: ast.Expr, pattern_arg: ast.Expr,
+        replacement_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """regex_replace(input, pattern, replacement) → Result<String, String>.
+
+        Three string args → (i32, i32, i32, i32, i32, i32) → call → i32.
+        """
+        in_instrs = self.translate_expr(input_arg, env)
+        pat_instrs = self.translate_expr(pattern_arg, env)
+        rep_instrs = self.translate_expr(replacement_arg, env)
+        if in_instrs is None or pat_instrs is None or rep_instrs is None:
+            return None
+        self.needs_alloc = True
+        ins: list[str] = []
+        ins.extend(in_instrs)
+        ins.extend(pat_instrs)
+        ins.extend(rep_instrs)
+        ins.append("call $vera.regex_replace")
         return ins
 
     # ---- Async builtins -----------------------------------------------

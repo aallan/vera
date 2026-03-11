@@ -9,7 +9,7 @@ The standard library comprises:
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, plus future collections (`Set<T>`, `Map<K, V>`).
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
-- **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), string search (`string_contains`, `starts_with`, `ends_with`, `index_of`), string transformation (`to_upper`, `to_lower`, `replace`, `split`, `join`, `from_char_code`), plus future functions for vector similarity.
+- **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), string search (`string_contains`, `starts_with`, `ends_with`, `index_of`), string transformation (`to_upper`, `to_lower`, `replace`, `split`, `join`, `from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
 - **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
 - **Future abilities**: Type constraints for generic programming (post-v0.1).
 
@@ -1214,6 +1214,76 @@ public fn similarity(@Array<Float64>, @Array<Float64> -> @Float64)
 Computes the cosine similarity between two vectors (embeddings). The arrays must have equal length (enforced by precondition). The result is in the range \[-1, 1\], where 1 indicates identical direction, 0 indicates orthogonality, and -1 indicates opposite direction.
 
 This function is pure — it performs no effects. It is intended for use with the `Inference.embed` operation to compare semantic similarity of text.
+
+### 9.6.15 Regular Expressions
+
+Four pure functions for pattern matching on strings using regular expressions. All accept patterns in standard regex syntax and return `Result` types to safely handle invalid patterns.
+
+#### regex\_match
+
+```
+public fn regex_match(@String, @String -> @Result<Bool, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Tests whether the input string (first argument) contains a substring matching the regex pattern (second argument). Returns `Ok(true)` if a match is found, `Ok(false)` otherwise, or `Err(msg)` if the pattern is invalid.
+
+```vera
+let @Result<Bool, String> = regex_match("hello123", "\\d+");
+-- Ok(true) — digits found
+```
+
+#### regex\_find
+
+```
+public fn regex_find(@String, @String -> @Result<Option<String>, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns the first substring of the input that matches the pattern. Returns `Ok(Some(match))` if found, `Ok(None)` if not found, or `Err(msg)` for invalid patterns.
+
+```vera
+let @Result<Option<String>, String> = regex_find("abc123def", "\\d+");
+-- Ok(Some("123"))
+```
+
+#### regex\_find\_all
+
+```
+public fn regex_find_all(@String, @String -> @Result<Array<String>, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns all non-overlapping substrings of the input that match the pattern. Always returns full match strings (group 0), even when the pattern contains capture groups. Returns `Ok([])` (empty array) if no matches are found, or `Err(msg)` for invalid patterns.
+
+```vera
+let @Result<Array<String>, String> = regex_find_all("a1b2c3", "\\d");
+-- Ok(["1", "2", "3"])
+```
+
+#### regex\_replace
+
+```
+public fn regex_replace(@String, @String, @String -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Replaces the **first** occurrence of the pattern in the input string with the replacement string (third argument). Returns the modified string, or the original string unchanged if no match is found. Returns `Err(msg)` for invalid patterns.
+
+```vera
+let @Result<String, String> = regex_replace("hello world", "world", "vera");
+-- Ok("hello vera")
+```
+
+**Implementation note:** These functions are implemented as host imports — they delegate to the runtime's native regex engine (Python's `re` module for wasmtime, JavaScript's `RegExp` for the browser runtime). This avoids embedding a regex engine in WASM while providing access to mature, well-tested implementations.
 
 ## 9.7 Built-in Types (Future)
 

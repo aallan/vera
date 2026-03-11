@@ -443,6 +443,10 @@ md_render(@MdBlock.0)                   -- returns String (render to canonical M
 md_has_heading(@MdBlock.0, @Nat.0)      -- returns Bool (check if heading of level exists)
 md_has_code_block(@MdBlock.0, @String.0) -- returns Bool (check if code block of language exists)
 md_extract_code_blocks(@MdBlock.0, @String.0) -- returns Array<String> (extract code by language)
+regex_match(@String.0, @String.1)      -- returns Result<Bool, String> (test if pattern matches)
+regex_find(@String.0, @String.1)       -- returns Result<Option<String>, String> (first match)
+regex_find_all(@String.0, @String.1)   -- returns Result<Array<String>, String> (all matches)
+regex_replace(@String.0, @String.1, @String.2) -- returns Result<String, String> (replace first match)
 async(@T.0)                            -- returns Future<T> (requires effects(<Async>))
 await(@Future<T>.0)                    -- returns T (requires effects(<Async>))
 to_string(@Int.0)                       -- returns String (integer to decimal)
@@ -524,6 +528,29 @@ Two built-in ADTs represent the Markdown document structure:
 - `MdDocument(Array<MdBlock>)` — top-level document
 
 All Markdown functions are pure and available without imports. Pattern match on `MdBlock` and `MdInline` constructors to traverse the document tree.
+
+### Regular expressions
+
+```vera
+regex_match(@String.0, @String.1)                -- returns Result<Bool, String>
+regex_find(@String.0, @String.1)                 -- returns Result<Option<String>, String>
+regex_find_all(@String.0, @String.1)             -- returns Result<Array<String>, String>
+regex_replace(@String.0, @String.1, @String.2)   -- returns Result<String, String>
+```
+
+All four regex functions take the input string as the first argument and the regex pattern as the second. `regex_replace` takes a third argument for the replacement string. All return `Result` types — `Err(msg)` for invalid patterns, `Ok(value)` on success.
+
+`regex_match` tests whether the pattern matches anywhere in the input (substring match, not full-string). `regex_find` returns the first matching substring wrapped in `Option`. `regex_find_all` returns all non-overlapping matches as an `Array<String>` — always returns full match strings (group 0), even when the pattern contains capture groups. `regex_replace` replaces only the **first** match.
+
+```vera
+let @Result<Bool, String> = regex_match("hello123", "\\d+");
+match @Result<Bool, String>.0 {
+  Ok(@Bool) -> if @Bool.0 then { IO.print("found digits") } else { IO.print("no digits") },
+  Err(@String) -> IO.print(string_concat("Error: ", @String.0))
+}
+```
+
+All regex functions are pure and implemented as host imports (Python `re` / JavaScript `RegExp`).
 
 ### Numeric operations
 

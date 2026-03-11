@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.86] - 2026-03-11
+
+### Added
+- **Regex support** ([#231](https://github.com/aallan/vera/issues/231)):
+  Four new pure functions for regular expression matching on strings:
+  `regex_match`, `regex_find`, `regex_find_all`, `regex_replace`.
+  All return `Result` types for safe handling of invalid patterns.
+  Implemented as WASM host imports — Python's `re` module for wasmtime,
+  JavaScript's `RegExp` for the browser runtime. Browser parity verified.
+- New conformance test `ch09_regex` (conformance suite: 52→53 programs)
+- New example `examples/regex.vera` (example suite: 23→24 programs)
+- Spec §9.6.15 "Regular Expressions"
+- 16 new tests (10 codegen + 6 type checker) plus browser parity coverage
+
 ## [0.0.85] - 2026-03-11
 
 ### Added
@@ -1320,7 +1334,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.85...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.86...HEAD
+[0.0.86]: https://github.com/aallan/vera/compare/v0.0.85...v0.0.86
 [0.0.85]: https://github.com/aallan/vera/compare/v0.0.84...v0.0.85
 [0.0.84]: https://github.com/aallan/vera/compare/v0.0.83...v0.0.84
 [0.0.83]: https://github.com/aallan/vera/compare/v0.0.82...v0.0.83
