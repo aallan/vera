@@ -255,6 +255,8 @@ class CrossModuleMixin:
             "async", "await",
             "md_parse", "md_render", "md_has_heading",
             "md_has_code_block", "md_extract_code_blocks",
+            "regex_match", "regex_find", "regex_find_all",
+            "regex_replace",
         })
 
         seen: set[str] = set()  # deduplicate by function name

@@ -7443,3 +7443,166 @@ public fn main(@Unit -> @Unit)
 }
 """
         assert _run_io(source, fn="main") == "0"
+
+
+class TestRegex:
+    """Regex built-in functions: regex_match, regex_find, regex_find_all,
+    regex_replace."""
+
+    _PREAMBLE = """
+effect IO { op print(String -> Unit); }
+"""
+
+    # ---- regex_match ----
+
+    def test_regex_match_found(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Bool, String> = regex_match("hello123", "\\d+");
+  match @Result<Bool, String>.0 {
+    Ok(@Bool) -> if @Bool.0 then { IO.print("yes") } else { IO.print("no") },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "yes"
+
+    def test_regex_match_not_found(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Bool, String> = regex_match("hello", "\\d+");
+  match @Result<Bool, String>.0 {
+    Ok(@Bool) -> if @Bool.0 then { IO.print("yes") } else { IO.print("no") },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "no"
+
+    def test_regex_match_invalid_pattern(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Bool, String> = regex_match("test", "[bad");
+  match @Result<Bool, String>.0 {
+    Ok(_) -> IO.print("unexpected"),
+    Err(@String) -> IO.print("caught")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "caught"
+
+    # ---- regex_find ----
+
+    def test_regex_find_some(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Option<String>, String> = regex_find("abc123def", "\\d+");
+  match @Result<Option<String>, String>.0 {
+    Ok(@Option<String>) -> match @Option<String>.0 {
+      Some(@String) -> IO.print(@String.0),
+      None -> IO.print("none")
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "123"
+
+    def test_regex_find_none(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Option<String>, String> = regex_find("hello", "\\d+");
+  match @Result<Option<String>, String>.0 {
+    Ok(@Option<String>) -> match @Option<String>.0 {
+      Some(_) -> IO.print("some"),
+      None -> IO.print("none")
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "none"
+
+    # ---- regex_find_all ----
+
+    def test_regex_find_all_multiple(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Array<String>, String> = regex_find_all("a1b2c3", "\\d");
+  match @Result<Array<String>, String>.0 {
+    Ok(@Array<String>) -> IO.print(int_to_string(array_length(@Array<String>.0))),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "3"
+
+    def test_regex_find_all_no_matches(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Array<String>, String> = regex_find_all("hello", "\\d");
+  match @Result<Array<String>, String>.0 {
+    Ok(@Array<String>) -> IO.print(int_to_string(array_length(@Array<String>.0))),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "0"
+
+    # ---- regex_replace ----
+
+    def test_regex_replace_first_only(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<String, String> = regex_replace("hello world", "world", "vera");
+  match @Result<String, String>.0 {
+    Ok(@String) -> IO.print(@String.0),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "hello vera"
+
+    def test_regex_replace_pattern(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<String, String> = regex_replace("abc123def", "\\d+", "NUM");
+  match @Result<String, String>.0 {
+    Ok(@String) -> IO.print(@String.0),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "abcNUMdef"
+
+    def test_regex_replace_no_match(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<String, String> = regex_replace("hello", "\\d+", "NUM");
+  match @Result<String, String>.0 {
+    Ok(@String) -> IO.print(@String.0),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "hello"

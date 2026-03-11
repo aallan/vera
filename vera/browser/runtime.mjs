@@ -925,6 +925,81 @@ function hostMdExtractCodeBlocks(blockPtr, langPtr, langLen) {
 }
 
 // ---------------------------------------------------------------------------
+// Regex host functions (mirror api.py host_regex_* — §9.6.15)
+// ---------------------------------------------------------------------------
+
+/** vera.regex_match(inPtr, inLen, patPtr, patLen) → Result<Bool, String>. */
+function hostRegexMatch(inPtr, inLen, patPtr, patLen) {
+  const input = readString(inPtr, inLen);
+  const pattern = readString(patPtr, patLen);
+  try {
+    const re = new RegExp(pattern);
+    const matched = re.test(input);
+    return allocResultOkI32(matched ? 1 : 0);
+  } catch (e) {
+    return allocResultErrString(`invalid regex: ${e.message}`);
+  }
+}
+
+/** vera.regex_find(inPtr, inLen, patPtr, patLen) → Result<Option<String>, String>. */
+function hostRegexFind(inPtr, inLen, patPtr, patLen) {
+  const input = readString(inPtr, inLen);
+  const pattern = readString(patPtr, patLen);
+  try {
+    const re = new RegExp(pattern);
+    const m = input.match(re);
+    let optionPtr;
+    if (m) {
+      optionPtr = allocOptionSomeString(m[0]);
+    } else {
+      optionPtr = allocOptionNone();
+    }
+    return allocResultOkI32(optionPtr);
+  } catch (e) {
+    return allocResultErrString(`invalid regex: ${e.message}`);
+  }
+}
+
+/** vera.regex_find_all(inPtr, inLen, patPtr, patLen) → Result<Array<String>, String>. */
+function hostRegexFindAll(inPtr, inLen, patPtr, patLen) {
+  const input = readString(inPtr, inLen);
+  const pattern = readString(patPtr, patLen);
+  try {
+    const re = new RegExp(pattern, 'g');
+    const matches = [];
+    let m;
+    while ((m = re.exec(input)) !== null) {
+      matches.push(m[0]);
+      // Prevent infinite loop on zero-length matches
+      if (m[0].length === 0) re.lastIndex++;
+    }
+    const [backingPtr, count] = allocArrayOfStrings(matches);
+    // Wrap in Result.Ok — layout: tag=0, backing_ptr, count (12 bytes)
+    const ptr = alloc(12);
+    writeI32(ptr, 0);              // tag = Ok
+    writeI32(ptr + 4, backingPtr);
+    writeI32(ptr + 8, count);
+    return ptr;
+  } catch (e) {
+    return allocResultErrString(`invalid regex: ${e.message}`);
+  }
+}
+
+/** vera.regex_replace(inPtr, inLen, patPtr, patLen, repPtr, repLen) → Result<String, String>. */
+function hostRegexReplace(inPtr, inLen, patPtr, patLen, repPtr, repLen) {
+  const input = readString(inPtr, inLen);
+  const pattern = readString(patPtr, patLen);
+  const replacement = readString(repPtr, repLen);
+  try {
+    const re = new RegExp(pattern);  // no 'g' flag — first match only
+    const result = input.replace(re, replacement);
+    return allocResultOkString(result);
+  } catch (e) {
+    return allocResultErrString(`invalid regex: ${e.message}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Import object builder (dynamic introspection)
 // ---------------------------------------------------------------------------
 
@@ -944,6 +1019,13 @@ const MD_BINDINGS = {
   md_has_heading: hostMdHasHeading,
   md_has_code_block: hostMdHasCodeBlock,
   md_extract_code_blocks: hostMdExtractCodeBlocks,
+};
+
+const REGEX_BINDINGS = {
+  regex_match: hostRegexMatch,
+  regex_find: hostRegexFind,
+  regex_find_all: hostRegexFindAll,
+  regex_replace: hostRegexReplace,
 };
 
 function buildImportObject(module) {
@@ -986,6 +1068,11 @@ function buildImportObject(module) {
 
   // Markdown bindings
   for (const [name, fn] of Object.entries(MD_BINDINGS)) {
+    if (needed.has(name)) imports.vera[name] = fn;
+  }
+
+  // Regex bindings
+  for (const [name, fn] of Object.entries(REGEX_BINDINGS)) {
     if (needed.has(name)) imports.vera[name] = fn;
   }
 

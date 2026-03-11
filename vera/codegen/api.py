@@ -80,6 +80,7 @@ class CompileResult:
     diagnostics: list["Diagnostic"] = field(default_factory=list)
     state_types: list[tuple[str, str]] = field(default_factory=list)
     md_ops_used: set[str] = field(default_factory=set)
+    regex_ops_used: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -286,6 +287,16 @@ def execute(
             _write_i32(caller, backing_ptr + i * 8, str_ptr)
             _write_i32(caller, backing_ptr + i * 8 + 4, str_len)
         return (backing_ptr, count)
+
+    def _alloc_result_ok_i32(
+        caller: wasmtime.Caller, value: int,
+    ) -> int:
+        """Allocate Result.Ok(i32) — wraps a heap pointer in Ok."""
+        # Layout: tag(i32)=0 at +0, value(i32) at +4
+        adt_ptr = _call_alloc(caller, 8)
+        _write_i32(caller, adt_ptr, 0)       # tag = Ok
+        _write_i32(caller, adt_ptr + 4, value)
+        return adt_ptr
 
     # -----------------------------------------------------------------
     # IO host functions
@@ -512,16 +523,6 @@ def execute(
             write_md_block,
         )
 
-        def _alloc_result_ok_i32(
-            caller: wasmtime.Caller, value: int,
-        ) -> int:
-            """Allocate Result.Ok(i32) — wraps a heap pointer in Ok."""
-            # Layout: tag(i32)=0 at +0, value(i32) at +4
-            adt_ptr = _call_alloc(caller, 8)
-            _write_i32(caller, adt_ptr, 0)       # tag = Ok
-            _write_i32(caller, adt_ptr + 4, value)
-            return adt_ptr
-
         # md_parse(ptr, len) → i32 (Result<MdBlock, String>)
         def host_md_parse(
             caller: wasmtime.Caller, ptr: int, length: int,
@@ -616,6 +617,129 @@ def execute(
         linker.define_func(
             "vera", "md_extract_code_blocks", md_extract_type,
             host_md_extract_code_blocks, access_caller=True,
+        )
+
+    # -----------------------------------------------------------------
+    # Regex host functions (§9.6.15)
+    # -----------------------------------------------------------------
+
+    if result.regex_ops_used:
+        import re as _re
+
+        def host_regex_match(
+            caller: wasmtime.Caller,
+            in_ptr: int, in_len: int, pat_ptr: int, pat_len: int,
+        ) -> int:
+            input_str = _read_wasm_string(caller, in_ptr, in_len)
+            pattern = _read_wasm_string(caller, pat_ptr, pat_len)
+            try:
+                matched = _re.search(pattern, input_str) is not None
+                return _alloc_result_ok_i32(caller, 1 if matched else 0)
+            except _re.error as exc:
+                return _alloc_result_err_string(
+                    caller, f"invalid regex: {exc}",
+                )
+
+        regex_match_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32()] * 4,
+            [wasmtime.ValType.i32()],
+        )
+        linker.define_func(
+            "vera", "regex_match", regex_match_type,
+            host_regex_match, access_caller=True,
+        )
+
+        def host_regex_find(
+            caller: wasmtime.Caller,
+            in_ptr: int, in_len: int, pat_ptr: int, pat_len: int,
+        ) -> int:
+            input_str = _read_wasm_string(caller, in_ptr, in_len)
+            pattern = _read_wasm_string(caller, pat_ptr, pat_len)
+            try:
+                m = _re.search(pattern, input_str)
+                if m:
+                    option_ptr = _alloc_option_some_string(
+                        caller, m.group(0),
+                    )
+                else:
+                    option_ptr = _alloc_option_none(caller)
+                return _alloc_result_ok_i32(caller, option_ptr)
+            except _re.error as exc:
+                return _alloc_result_err_string(
+                    caller, f"invalid regex: {exc}",
+                )
+
+        regex_find_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32()] * 4,
+            [wasmtime.ValType.i32()],
+        )
+        linker.define_func(
+            "vera", "regex_find", regex_find_type,
+            host_regex_find, access_caller=True,
+        )
+
+        def host_regex_find_all(
+            caller: wasmtime.Caller,
+            in_ptr: int, in_len: int, pat_ptr: int, pat_len: int,
+        ) -> int:
+            input_str = _read_wasm_string(caller, in_ptr, in_len)
+            pattern = _read_wasm_string(caller, pat_ptr, pat_len)
+            try:
+                # Use finditer + group(0) to always get full match
+                # strings, even when the pattern has capture groups.
+                matches = [
+                    m.group(0)
+                    for m in _re.finditer(pattern, input_str)
+                ]
+                backing_ptr, count = _alloc_array_of_strings(
+                    caller, matches,
+                )
+                # Wrap in Result.Ok: tag=0, backing_ptr, count (12 bytes)
+                adt_ptr = _call_alloc(caller, 12)
+                _write_i32(caller, adt_ptr, 0)            # tag = Ok
+                _write_i32(caller, adt_ptr + 4, backing_ptr)
+                _write_i32(caller, adt_ptr + 8, count)
+                return adt_ptr
+            except _re.error as exc:
+                return _alloc_result_err_string(
+                    caller, f"invalid regex: {exc}",
+                )
+
+        regex_find_all_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32()] * 4,
+            [wasmtime.ValType.i32()],
+        )
+        linker.define_func(
+            "vera", "regex_find_all", regex_find_all_type,
+            host_regex_find_all, access_caller=True,
+        )
+
+        def host_regex_replace(
+            caller: wasmtime.Caller,
+            in_ptr: int, in_len: int,
+            pat_ptr: int, pat_len: int,
+            rep_ptr: int, rep_len: int,
+        ) -> int:
+            input_str = _read_wasm_string(caller, in_ptr, in_len)
+            pattern = _read_wasm_string(caller, pat_ptr, pat_len)
+            replacement = _read_wasm_string(caller, rep_ptr, rep_len)
+            try:
+                result_str = _re.sub(
+                    pattern, replacement, input_str, count=1,
+                )
+                return _alloc_result_ok_string(caller, result_str)
+            except _re.error as exc:
+                return _alloc_result_err_string(
+                    caller, f"invalid regex: {exc}",
+                )
+
+        regex_replace_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32()] * 6,
+            [wasmtime.ValType.i32()],
+        )
+        linker.define_func(
+            "vera", "regex_replace", regex_replace_type,
+            host_regex_replace, access_caller=True,
         )
 
     instance = linker.instantiate(store, module)

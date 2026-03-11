@@ -1,0 +1,40 @@
+-- Regex: pattern matching on strings using regular expressions.
+--
+-- Demonstrates the four regex builtins: regex_match, regex_find,
+-- regex_find_all, regex_replace. All return Result types to handle
+-- invalid patterns safely.
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("-- Matching --");
+  let @Result<Bool, String> = regex_match("hello123", "\\d+");
+  match @Result<Bool, String>.0 { Ok(@Bool) -> if @Bool.0 then { IO.print("hello123: matched") } else { IO.print("hello123: no match") }, Err(@String) -> IO.print(string_concat("Error: ", @String.0)) };
+  let @Result<Bool, String> = regex_match("hello", "\\d+");
+  match @Result<Bool, String>.0 { Ok(@Bool) -> if @Bool.0 then { IO.print("hello: matched") } else { IO.print("hello: no match") }, Err(@String) -> IO.print(string_concat("Error: ", @String.0)) };
+  IO.print("-- Finding --");
+  let @Result<Option<String>, String> = regex_find("contact: user@example.com today", "[a-zA-Z0-9.]+@[a-zA-Z0-9.]+");
+  match @Result<Option<String>, String>.0 { Ok(@Option<String>) -> match @Option<String>.0 { Some(@String) -> IO.print(string_concat("Found: ", @String.0)), None -> IO.print("Not found") }, Err(@String) -> IO.print(string_concat("Error: ", @String.0)) };
+  IO.print("-- Find all --");
+  let @Result<Array<String>, String> = regex_find_all("2024-01-15 and 2024-06-30", "\\d{4}-\\d{2}-\\d{2}");
+  match @Result<Array<String>, String>.0 { Ok(@Array<String>) -> IO.print(string_concat("Dates found: ", int_to_string(array_length(@Array<String>.0)))), Err(@String) -> IO.print(string_concat("Error: ", @String.0)) };
+  IO.print("-- Replacing --");
+  let @Result<String, String> = regex_replace("Hello World", "[A-Z]", "_");
+  match @Result<String, String>.0 { Ok(@String) -> IO.print(@String.0), Err(@String) -> IO.print(string_concat("Error: ", @String.0)) };
+  IO.print("-- Error handling --");
+  let @Result<Bool, String> = regex_match("test", "[unclosed");
+  match @Result<Bool, String>.0 {
+    Ok(_) -> IO.print("Unexpected success"),
+    Err(_) -> IO.print("Caught: invalid pattern")
+  }
+}
+-- Match: does the string contain digits?
+-- Find: extract the first match
+-- Find all: extract all matches
+-- Replace: substitute the first match
+-- Error handling: invalid pattern

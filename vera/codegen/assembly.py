@@ -61,6 +61,28 @@ class AssemblyMixin:
         if self._md_ops_used:
             self._needs_alloc = True
 
+        # Import Regex host-import builtins (pure functions)
+        _REGEX_IMPORTS: dict[str, str] = {
+            "regex_match":
+                "(func $vera.regex_match"
+                " (param i32 i32 i32 i32) (result i32))",
+            "regex_find":
+                "(func $vera.regex_find"
+                " (param i32 i32 i32 i32) (result i32))",
+            "regex_find_all":
+                "(func $vera.regex_find_all"
+                " (param i32 i32 i32 i32) (result i32))",
+            "regex_replace":
+                "(func $vera.regex_replace"
+                " (param i32 i32 i32 i32 i32 i32) (result i32))",
+        }
+        for op_name in sorted(self._regex_ops_used):
+            sig = _REGEX_IMPORTS.get(op_name)
+            if sig:
+                parts.append(f'  (import "vera" "{op_name}" {sig})')
+        if self._regex_ops_used:
+            self._needs_alloc = True
+
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:
             parts.append(
@@ -123,7 +145,11 @@ class AssemblyMixin:
             parts.append(self._emit_gc_collect())
 
         # Export $alloc when host functions need to allocate WASM memory
-        if (self._io_ops_used & _IO_OPS_NEEDING_ALLOC) or self._md_ops_used:
+        if (
+            (self._io_ops_used & _IO_OPS_NEEDING_ALLOC)
+            or self._md_ops_used
+            or self._regex_ops_used
+        ):
             parts.append('  (export "alloc" (func $alloc))')
 
         # Closure type declarations (for call_indirect)

@@ -14,8 +14,8 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C7 | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31)–[v0.0.39](https://github.com/aallan/vera/releases/tag/v0.0.39) | **Module system** — cross-file imports, visibility, multi-module compilation | Done |
 | C8 | [v0.0.40](https://github.com/aallan/vera/releases/tag/v0.0.40)–[v0.0.65](https://github.com/aallan/vera/releases/tag/v0.0.65) | **Polish** — refactoring, tooling, diagnostics, verification depth, codegen gaps | Done |
 | C8.5 | — | **Completeness** — module refinements, lexical extensions, IO runtime | In progress |
-| C9 | — | **Language design** — abilities, new effects, stdlib extensions | Planned |
-| C10 | — | **Ecosystem** — package management and registry | Planned |
+| C9 | — | **Language design** — abilities, new effects, stdlib extensions | In progress |
+| C10 | — | **Ecosystem** — package management and registry | In progress |
 
 <details>
 <summary>C6 — Codegen Completeness (<a href="https://github.com/aallan/vera/releases/tag/v0.0.10">v0.0.10</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.24">v0.0.24</a>) ✓</summary>
@@ -135,7 +135,7 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 - <del>[#212](https://github.com/aallan/vera/issues/212) Float64 special value operations (is_nan, is_infinite)</del> ([v0.0.72](https://github.com/aallan/vera/releases/tag/v0.0.72))
 - <del>[#213](https://github.com/aallan/vera/issues/213) string_repeat builtin</del> ([v0.0.75](https://github.com/aallan/vera/releases/tag/v0.0.75))
 - <del>[#230](https://github.com/aallan/vera/issues/230) string interpolation</del> ([v0.0.76](https://github.com/aallan/vera/releases/tag/v0.0.76))
-- [#231](https://github.com/aallan/vera/issues/231) regex support
+- <del>[#231](https://github.com/aallan/vera/issues/231) regex support</del> ([v0.0.86](https://github.com/aallan/vera/releases/tag/v0.0.86))
 - <del>[#232](https://github.com/aallan/vera/issues/232) URL parsing and construction builtins</del> ([v0.0.81](https://github.com/aallan/vera/releases/tag/v0.0.81))
 - <del>[#234](https://github.com/aallan/vera/issues/234) base64 encoding and decoding</del> ([v0.0.79](https://github.com/aallan/vera/releases/tag/v0.0.79))
 

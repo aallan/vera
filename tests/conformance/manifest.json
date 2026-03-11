@@ -466,5 +466,14 @@
     "level": "run",
     "spec_ref": "Section 9.7.3",
     "features": ["md_parse", "md_render", "md_has_heading", "md_has_code_block", "md_extract_code_blocks"]
+  },
+  {
+    "id": "ch09_regex",
+    "file": "ch09_regex.vera",
+    "chapter": 9,
+    "title": "Regular expression matching",
+    "level": "run",
+    "spec_ref": "Section 9.6.15",
+    "features": ["regex_match", "regex_find", "regex_find_all", "regex_replace"]
   }
 ]

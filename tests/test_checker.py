@@ -3820,3 +3820,50 @@ private fn f(@MdBlock, @String -> @Array<String>)
   requires(true) ensures(true) effects(pure)
 { md_extract_code_blocks(@MdBlock.0, @String.0) }
 """)
+
+
+class TestRegexBuiltins:
+    """Type-checking for regex_match, regex_find, regex_find_all,
+    regex_replace."""
+
+    def test_regex_match_ok(self) -> None:
+        _check_ok(r"""
+private fn f(@String -> @Result<Bool, String>)
+  requires(true) ensures(true) effects(pure)
+{ regex_match(@String.0, "\\d+") }
+""")
+
+    def test_regex_match_wrong_type(self) -> None:
+        _check_err("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ regex_match(@Int.0, @Int.0) }
+""", "expected String")
+
+    def test_regex_find_ok(self) -> None:
+        _check_ok(r"""
+private fn f(@String -> @Result<Option<String>, String>)
+  requires(true) ensures(true) effects(pure)
+{ regex_find(@String.0, "\\d+") }
+""")
+
+    def test_regex_find_all_ok(self) -> None:
+        _check_ok(r"""
+private fn f(@String -> @Result<Array<String>, String>)
+  requires(true) ensures(true) effects(pure)
+{ regex_find_all(@String.0, "\\d+") }
+""")
+
+    def test_regex_replace_ok(self) -> None:
+        _check_ok(r"""
+private fn f(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(pure)
+{ regex_replace(@String.0, "\\d+", "X") }
+""")
+
+    def test_regex_replace_wrong_arity(self) -> None:
+        _check_err(r"""
+private fn f(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(pure)
+{ regex_replace(@String.0, "\\d+") }
+""", "expects 3 argument")

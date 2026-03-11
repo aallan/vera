@@ -149,12 +149,17 @@ class CompilabilityMixin:
         "md_has_code_block", "md_extract_code_blocks",
     })
 
+    _REGEX_BUILTINS = frozenset({
+        "regex_match", "regex_find", "regex_find_all", "regex_replace",
+    })
+
     def _scan_io_ops(self, node: ast.Node) -> None:
-        """Walk a function body looking for IO qualified calls and md_* builtins.
+        """Walk a function body looking for IO, Markdown, and Regex builtins.
 
         Registers each distinct IO operation name (print, read_line, etc.)
         into ``_io_ops_used`` for per-operation import emission.  Also
-        registers Markdown host-import builtins into ``_md_ops_used``.
+        registers Markdown host-import builtins into ``_md_ops_used``
+        and regex host-import builtins into ``_regex_ops_used``.
         """
         if isinstance(node, ast.QualifiedCall):
             if node.qualifier == "IO":
@@ -172,6 +177,8 @@ class CompilabilityMixin:
         elif isinstance(node, ast.FnCall):
             if node.name in self._MD_BUILTINS:
                 self._md_ops_used.add(node.name)
+            if node.name in self._REGEX_BUILTINS:
+                self._regex_ops_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
         elif isinstance(node, ast.ConstructorCall):

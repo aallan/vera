@@ -236,6 +236,12 @@ class InferenceMixin:
             return "i32"
         if expr.name in ("md_render", "md_extract_code_blocks"):
             return "i32_pair"
+        # Regex builtins — all return Result<T, String> → heap ptr (i32)
+        if expr.name in (
+            "regex_match", "regex_find", "regex_find_all",
+            "regex_replace",
+        ):
+            return "i32"
         # Async builtins — identity operations (Future<T> is transparent)
         if expr.name in ("async", "await") and expr.args:
             return self._infer_expr_wasm_type(expr.args[0])
@@ -428,6 +434,12 @@ class InferenceMixin:
             return "Bool"
         if call.name == "md_extract_code_blocks":
             return "Array"
+        # Regex builtins — all return Result
+        if call.name in (
+            "regex_match", "regex_find", "regex_find_all",
+            "regex_replace",
+        ):
+            return "Result"
         # Async builtins — Future<T> is transparent
         if call.name == "async" and call.args:
             inner = self._infer_fncall_vera_type(call.args[0]) \

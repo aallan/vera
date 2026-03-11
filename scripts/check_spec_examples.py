@@ -72,6 +72,10 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 658): "FRAGMENT",  # byte_to_int signature (no body)
     ("09-standard-library.md", 832): "FRAGMENT",  # ends_with signature (no body)
     ("09-standard-library.md", 1095): "FRAGMENT",  # base64_decode signature (no body)
+    ("09-standard-library.md", 1224): "FRAGMENT",  # regex_match signature (no body)
+    ("09-standard-library.md", 1240): "FRAGMENT",  # regex_find signature (no body)
+    ("09-standard-library.md", 1256): "FRAGMENT",  # regex_find_all signature (no body)
+    ("09-standard-library.md", 1272): "FRAGMENT",  # regex_replace signature (no body)
 
     # =================================================================
     # FRAGMENT — heuristic false positives (look like declarations but
@@ -178,12 +182,12 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1207): "FRAGMENT",  # similarity signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 1309): "FUTURE",   # md_parse
-    ("09-standard-library.md", 1318): "FUTURE",   # md_render
-    ("09-standard-library.md", 1329): "FUTURE",   # md_has_heading
-    ("09-standard-library.md", 1338): "FUTURE",   # md_has_code_block
-    ("09-standard-library.md", 1347): "FUTURE",   # md_extract_code_blocks
-    ("09-standard-library.md", 1371): "FUTURE",   # convert_to_markdown
+    ("09-standard-library.md", 1379): "FUTURE",   # md_parse
+    ("09-standard-library.md", 1388): "FUTURE",   # md_render
+    ("09-standard-library.md", 1399): "FUTURE",   # md_has_heading
+    ("09-standard-library.md", 1408): "FUTURE",   # md_has_code_block
+    ("09-standard-library.md", 1417): "FUTURE",   # md_extract_code_blocks
+    ("09-standard-library.md", 1441): "FUTURE",   # convert_to_markdown
 }
 
 
