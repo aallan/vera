@@ -223,6 +223,10 @@ class CallsMixin:
     def _check_constructor_call(self, expr: ast.ConstructorCall, *,
                                 expected: Type | None = None) -> Type | None:
         """Type-check a constructor call: Ctor(args)."""
+        # Tuple is a variadic built-in constructor — handle specially
+        if expr.name == "Tuple":
+            return self._check_tuple_constructor(expr)
+
         ci = self.env.lookup_constructor(expr.name)
         if ci is None:
             self._error(
@@ -316,6 +320,27 @@ class CallsMixin:
                 )
 
         return self._ctor_result_type(ci, arg_types, expected=expected)
+
+    def _check_tuple_constructor(
+        self, expr: ast.ConstructorCall
+    ) -> Type | None:
+        """Type-check a variadic Tuple constructor: Tuple(a, b, ...)."""
+        if not expr.args:
+            self._error(
+                expr,
+                "Tuple constructor requires at least one field.",
+                spec_ref='Chapter 2, Section 2.3.1 "Tuple Types"',
+                error_code="E210",
+            )
+            return UnknownType()
+        arg_types: list[Type] = []
+        for arg in expr.args:
+            t = self._synth_expr(arg)
+            if t is not None and not isinstance(t, UnknownType):
+                arg_types.append(t)
+            else:
+                arg_types.append(UnknownType())
+        return AdtType("Tuple", tuple(arg_types))
 
     def _check_nullary_constructor(self, expr: ast.NullaryConstructor, *,
                                     expected: Type | None = None) -> Type | None:

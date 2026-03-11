@@ -123,6 +123,72 @@ class DataMixin:
         return instructions
 
     # -----------------------------------------------------------------
+    # Let destructuring
+    # -----------------------------------------------------------------
+
+    def _translate_let_destruct(
+        self, stmt: ast.LetDestruct, env: WasmSlotEnv
+    ) -> tuple[list[str], WasmSlotEnv] | None:
+        """Translate ``let Ctor<@T1, @T2> = expr;`` into field extractions.
+
+        Works for any single-constructor ADT (Tuple, UrlParts, user-defined).
+        The algorithm mirrors ``_extract_constructor_fields`` but iterates
+        over ``stmt.type_bindings`` (TypeExpr items) instead of match
+        sub-patterns.
+        """
+        # Translate the value expression — should produce a heap pointer (i32)
+        val_instrs = self.translate_expr(stmt.value, env)
+        if val_instrs is None:
+            return None
+
+        # Save to a local
+        scr_local = self.alloc_local("i32")
+        instrs: list[str] = list(val_instrs)
+        instrs.append(f"local.set {scr_local}")
+
+        # Extract each field using the same offset algorithm as constructors
+        _sizes = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 8}
+        _aligns = {"i32": 4, "i64": 8, "f64": 8, "i32_pair": 4}
+        offset = 4  # skip past tag (i32, 4 bytes)
+        new_env = env
+
+        for te in stmt.type_bindings:
+            type_name = self._type_expr_to_slot_name(te)
+            if type_name is None:
+                return None
+            # Unit bindings: no WASM representation, just bind with dummy
+            if type_name == "Unit":
+                continue
+            # Pair types (String, Array<T>): two consecutive i32 locals
+            if self._is_pair_type_name(type_name):
+                align = _aligns["i32"]
+                offset = (offset + align - 1) & ~(align - 1)
+                ptr_local = self.alloc_local("i32")
+                len_local = self.alloc_local("i32")
+                instrs.append(f"local.get {scr_local}")
+                instrs.append(f"i32.load offset={offset}")
+                instrs.append(f"local.set {ptr_local}")
+                instrs.append(f"local.get {scr_local}")
+                instrs.append(f"i32.load offset={offset + 4}")
+                instrs.append(f"local.set {len_local}")
+                new_env = new_env.push(type_name, ptr_local)
+                offset += 8
+                continue
+            wt = self._slot_name_to_wasm_type(type_name)
+            if wt is None:
+                return None
+            align = _aligns.get(wt, 8)
+            offset = (offset + align - 1) & ~(align - 1)
+            local_idx = self.alloc_local(wt)
+            instrs.append(f"local.get {scr_local}")
+            instrs.append(f"{wt}.load offset={offset}")
+            instrs.append(f"local.set {local_idx}")
+            new_env = new_env.push(type_name, local_idx)
+            offset += _sizes.get(wt, 8)
+
+        return (instrs, new_env)
+
+    # -----------------------------------------------------------------
     # Match expressions
     # -----------------------------------------------------------------
 

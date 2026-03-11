@@ -322,8 +322,14 @@ class WasmContext(
                         instructions.extend(["drop", "drop"])
                     else:
                         instructions.append("drop")
+            elif isinstance(stmt, ast.LetDestruct):
+                result = self._translate_let_destruct(stmt, current_env)
+                if result is None:
+                    return None
+                destr_instrs, current_env = result
+                instructions.extend(destr_instrs)
             else:
-                # LetDestruct or unknown
+                # Unknown statement type
                 return None
 
         # Final expression

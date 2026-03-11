@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.83] - 2026-03-11
+
+### Added
+- **Tuple type WASM codegen** ([#267](https://github.com/aallan/vera/issues/267)):
+  Tuple construction (`Tuple(1, "hello", true)`) and destructuring now compile to WASM.
+  Match destructuring (`Tuple(@Int, @String) -> ...`) extracts fields from heap-allocated Tuples.
+  `LetDestruct` (`let Tuple<@Int, @String> = expr;`) works for Tuples and all single-constructor
+  ADTs (including UrlParts, Future, and user-defined types).
+  Tuples are variadic — any arity from 1 field upward is supported.
+- New conformance test `ch02_tuple_basic` (conformance suite: 50→51 programs)
+- Updated `examples/url_parsing.vera` with LetDestruct demonstration
+- 15 new tests (5 type checker + 10 codegen)
+
 ## [0.0.82] - 2026-03-11
 
 ### Added
@@ -1254,7 +1267,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.82...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.83...HEAD
+[0.0.83]: https://github.com/aallan/vera/compare/v0.0.82...v0.0.83
 [0.0.82]: https://github.com/aallan/vera/compare/v0.0.81...v0.0.82
 [0.0.81]: https://github.com/aallan/vera/compare/v0.0.80...v0.0.81
 [0.0.80]: https://github.com/aallan/vera/compare/v0.0.79...v0.0.80

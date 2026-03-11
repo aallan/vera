@@ -274,6 +274,10 @@ class ControlFlowMixin:
     def _check_ctor_pattern(self, pat: ast.ConstructorPattern,
                             expected: Type | None) -> list[Binding]:
         """Check a constructor pattern."""
+        # Tuple is variadic — derive field types from sub-pattern bindings
+        if pat.name == "Tuple":
+            return self._check_tuple_pattern(pat, expected)
+
         ci = self.env.lookup_constructor(pat.name)
         if ci is None:
             self._error(pat, f"Unknown constructor '{pat.name}' in pattern.",
@@ -300,6 +304,28 @@ class ControlFlowMixin:
             )
             return []
 
+        bindings: list[Binding] = []
+        for sub_pat, field_ty in zip(pat.sub_patterns, field_types):
+            bindings.extend(self._check_pattern(sub_pat, field_ty))
+        return bindings
+
+    def _check_tuple_pattern(
+        self, pat: ast.ConstructorPattern, expected: Type | None,
+    ) -> list[Binding]:
+        """Check a variadic Tuple constructor pattern."""
+        if not pat.sub_patterns:
+            self._error(
+                pat,
+                "Tuple pattern requires at least one field.",
+                spec_ref='Chapter 2, Section 2.3.1 "Tuple Types"',
+                error_code="E320",
+            )
+            return []
+        # Derive field types from expected Tuple type if available
+        field_types: tuple[Type | None, ...] = (None,) * len(pat.sub_patterns)
+        if (isinstance(expected, AdtType) and expected.name == "Tuple"
+                and len(expected.type_args) == len(pat.sub_patterns)):
+            field_types = expected.type_args
         bindings: list[Binding] = []
         for sub_pat, field_ty in zip(pat.sub_patterns, field_types):
             bindings.extend(self._check_pattern(sub_pat, field_ty))

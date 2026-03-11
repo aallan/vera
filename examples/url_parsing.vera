@@ -17,22 +17,17 @@ public fn main(@Unit -> @Unit)
   ensures(true)
   effects(<IO>)
 {
-  -- Parse a URL into components
-  match url_parse("https://example.com/path?q=1#frag") {
-    Ok(@UrlParts) -> match @UrlParts.0 {
-      UrlParts(@String, @String, @String, @String, @String) ->
-        IO.print("scheme=\(@String.4) auth=\(@String.3) path=\(@String.2) query=\(@String.1) frag=\(@String.0)")
-    },
-    Err(@String) -> IO.print("error: \(@String.0)")
-  };
-  -- Join components back into a URL
-  match url_parse("https://example.com/path?q=1#frag") {
-    Ok(@UrlParts) -> IO.print(url_join(@UrlParts.0)),
-    Err(@String) -> IO.print("error: \(@String.0)")
-  };
-  -- Error case: missing scheme
+  match url_parse("https://example.com/path?q=1#frag") { Ok(@UrlParts) -> match @UrlParts.0 { UrlParts(@String, @String, @String, @String, @String) -> IO.print("scheme=\(@String.4) auth=\(@String.3) path=\(@String.2) query=\(@String.1) frag=\(@String.0)") }, Err(@String) -> IO.print("error: \(@String.0)") };
+  match url_parse("https://example.com/path?q=1#frag") { Ok(@UrlParts) -> IO.print(url_join(@UrlParts.0)), Err(@String) -> IO.print("error: \(@String.0)") };
+  let @UrlParts = UrlParts("https", "api.example.com", "/v2", "key=abc", "");
+  let UrlParts<@String, @String, @String, @String, @String> = @UrlParts.0;
+  IO.print("scheme=\(@String.4) host=\(@String.3)");
   match url_parse("no-scheme") {
     Ok(_) -> IO.print("unexpected ok"),
     Err(@String) -> IO.print("error: \(@String.0)")
   }
 }
+-- Parse a URL into components
+-- Join components back into a URL
+-- LetDestruct: extract UrlParts fields directly (no nested match)
+-- Error case: missing scheme

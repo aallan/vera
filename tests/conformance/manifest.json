@@ -108,6 +108,15 @@
     "features": ["generics", "forall", "monomorphization"]
   },
   {
+    "id": "ch02_tuple_basic",
+    "file": "ch02_tuple_basic.vera",
+    "chapter": 2,
+    "title": "Tuple types",
+    "level": "run",
+    "spec_ref": "Section 2.3.1",
+    "features": ["tuple", "let_destruct", "match", "constructor"]
+  },
+  {
     "id": "ch03_slot_basic",
     "file": "ch03_slot_basic.vera",
     "chapter": 3,

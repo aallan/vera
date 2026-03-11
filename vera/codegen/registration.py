@@ -63,6 +63,12 @@ class RegistrationMixin:
                 tag=1, field_offsets=((4, "i32"),), total_size=8,
             ),
         }
+        # Tuple — variadic product type (tag=0, layout recomputed per-call)
+        self._adt_layouts["Tuple"] = {
+            "Tuple": ConstructorLayout(
+                tag=0, field_offsets=(), total_size=8,
+            ),
+        }
 
     def _register_data(self, decl: ast.DataDecl) -> None:
         """Register an ADT and precompute constructor layouts."""

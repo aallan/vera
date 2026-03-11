@@ -3723,3 +3723,54 @@ private fn f(-> @Unit)
   ()
 }
 """)
+
+
+class TestTuple:
+    """Tuple type construction, destructuring, and pattern matching."""
+
+    def test_tuple_constructor_ok(self) -> None:
+        """Tuple(42, 'hello') type-checks without E210 warning."""
+        _check_ok("""
+private fn f(-> @Tuple<Int, String>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(42, "hello") }
+""")
+
+    def test_tuple_constructor_int_int(self) -> None:
+        """Tuple(1, 2) produces Tuple<Int, Int>."""
+        _check_ok("""
+private fn f(-> @Tuple<Int, Int>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(1, 2) }
+""")
+
+    def test_tuple_empty_error(self) -> None:
+        """Tuple() with no fields is an error."""
+        _check_err("""
+private fn f(-> @Tuple<Int>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple() }
+""", "at least one field")
+
+    def test_tuple_let_destruct_ok(self) -> None:
+        """let Tuple<@Int, @String> = ... type-checks."""
+        _check_ok("""
+private fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @String> = Tuple(42, "hello");
+  @Int.0
+}
+""")
+
+    def test_tuple_match_pattern_ok(self) -> None:
+        """Tuple pattern in match binds slots correctly."""
+        _check_ok("""
+private fn f(@Tuple<Int, Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Tuple<Int, Int>.0 {
+    Tuple(@Int, @Int) -> @Int.0 + @Int.1
+  }
+}
+""")

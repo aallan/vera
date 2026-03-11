@@ -337,7 +337,7 @@ Module refinements, lexical extensions, and IO runtime — completing the existi
 
 **Codegen** — WASM compilation gaps
 
-- [#267](https://github.com/aallan/vera/issues/267) Tuple type WASM codegen
+- <del>[#267](https://github.com/aallan/vera/issues/267) Tuple type WASM codegen</del> ([v0.0.83](https://github.com/aallan/vera/releases/tag/v0.0.83))
 
 **IO runtime** — host bindings for file and stdin access
 
