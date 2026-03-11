@@ -696,24 +696,28 @@
       <div class="code-subsection">
         <p class="code-intro">Vera error messages are instructions for the model that wrote the code. Every error includes what went wrong, why, how to fix it, and a spec reference.</p>
         <div class="code-block">
-<pre><span class="err-head">Error in main.vera at line 12, column 1:</span>
+<pre><span class="err-head">[E001] Error at main.vera, line 14, column 1:</span>
 
-    <span class="err-code">private fn add(@Int, @Int -> @Int)</span>
+    <span class="err-code">{</span>
     <span class="err-caret">^</span>
 
-  <span class="err-msg">Function "add" is missing its contract block. Every function in Vera
-  must declare requires(), ensures(), and effects() clauses between the
-  signature and the body.</span>
+  <span class="err-msg">Function is missing its contract block. Every function in Vera must declare
+  requires(), ensures(), and effects() clauses between the signature and the body.
 
-  <span class="err-fix">Add a contract block after the signature:
+  Vera requires all functions to have explicit contracts so that every function's
+  behaviour is mechanically checkable.</span>
 
-    private fn add(@Int, @Int -> @Int)
-      requires(true)
-      ensures(@Int.result == @Int.0 + @Int.1)
-      effects(pure)
-    {
-      ...
-    }</span>
+  <span class="err-fix">Fix:
+
+    Add a contract block after the signature:
+
+      private fn example(@Int -> @Int)
+        requires(true)
+        ensures(@Int.result >= 0)
+        effects(pure)
+      {
+        ...
+      }</span>
 
   <span class="err-ref">See: Chapter 5, Section 5.1 "Function Structure"</span></pre>
         </div>
