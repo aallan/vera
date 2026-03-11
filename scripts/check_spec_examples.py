@@ -371,7 +371,7 @@ def main() -> int:
         return 1
 
     # Non-Vera language tags to skip entirely
-    skip_langs = {"ebnf", "bash", "python", "json", "toml", "yaml", "shell", "sh"}
+    skip_langs = {"ebnf", "bash", "python", "json", "toml", "yaml", "shell", "sh", "javascript"}
 
     # -- Parse stage counters --
     total_blocks = 0

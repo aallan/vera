@@ -115,10 +115,14 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `tester.py` | ~530 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
 | `formatter.py` | 1,018 | Format | Canonical code formatter | `format_source()` |
 | `errors.py` | 459 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
-| `cli.py` | 725 | All | CLI commands | `main()` |
+| `browser/` | 138+1,227 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
+| ` ├ emit.py` | 137 | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
+| ` ├ runtime.mjs` | 1,123 | | Self-contained JS runtime: IO, State, contracts, Markdown | |
+| ` └ harness.mjs` | 104 | | Node.js test harness for parity testing | |
+| `cli.py` | 972 | All | CLI commands | `main()` |
 | `registration.py` | 58 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~12,069 lines of Python + 330 lines of grammar.
+Total: ~12,850 lines of Python + 330 lines of grammar + 1,227 lines of JavaScript.
 
 ## Parsing
 
@@ -495,7 +499,21 @@ The two-pass architecture mirrors the type checker: pass 1 registers all functio
 
 `wasm/markdown.py` provides bidirectional WASM memory marshalling for the `MdInline` and `MdBlock` ADT trees. Write direction (`write_md_inline`, `write_md_block`) allocates ADT nodes in WASM linear memory using the same `$alloc` + tag-dispatch layout as user-defined ADTs. Read direction (`read_md_inline`, `read_md_block`) reconstructs Python objects from WASM memory. Helper functions `_read_i32`, `_read_i64`, and `_write_i64` handle raw memory access for struct fields.
 
-The WASM import interface is the portability contract: the compiled `.wasm` binary declares `(import "vera" "md_parse" ...)` etc., and any host runtime provides matching implementations. The Python implementation in `api.py` is the reference; a browser runtime would provide JavaScript host bindings (e.g., using `markdown-it`) with the same WASM memory allocation protocol. This is identical to how `IO.print` already works.
+The WASM import interface is the portability contract: the compiled `.wasm` binary declares `(import "vera" "md_parse" ...)` etc., and any host runtime provides matching implementations. The Python implementation in `api.py` is the reference; the browser runtime in `browser/runtime.mjs` provides JavaScript host bindings with the same WASM memory allocation protocol.
+
+### Browser runtime
+
+`browser/runtime.mjs` is a self-contained JavaScript runtime (~1,123 lines) that provides JavaScript implementations of all Vera host bindings. It works with **any** compiled Vera `.wasm` module — no code generation needed.
+
+**Dynamic import introspection:** Instead of generating per-program glue code, the runtime uses `WebAssembly.Module.imports(module)` at initialization to discover which host functions the module actually needs, then builds the import object dynamically. State\<T\> types are pattern-matched from `state_get_*`/`state_put_*` import names.
+
+**Browser adaptations:** IO operations have browser-appropriate implementations. `IO.print` captures output in a buffer (flushed via `getStdout()`). `IO.read_line` reads from a pre-queued input array or falls back to `prompt()`. File IO returns `Result.Err("File I/O not available in browser")`. `IO.exit` throws a `VeraExit` error.
+
+**Bundled Markdown parser:** The runtime includes a JavaScript Markdown parser (~400 lines, bundled inline) matching the Python §9.7.3 subset. Zero external dependencies.
+
+**Parity enforcement:** 56 mandatory parity tests in `tests/test_browser.py` run every compilable example through both Python/wasmtime and Node.js/JS-runtime, asserting identical stdout. Pre-commit hooks and CI trigger these tests on any change to the host binding surface.
+
+`browser/emit.py` provides `emit_browser_bundle()` for the `vera compile --target browser` CLI command, which produces a ready-to-serve directory (module.wasm + vera-runtime.mjs + index.html).
 
 ### Runtime contracts
 

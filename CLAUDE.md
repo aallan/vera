@@ -23,8 +23,9 @@ vera check file.vera              # Parse and type-check
 vera check --json file.vera       # Type-check with JSON diagnostics
 vera verify file.vera             # Type-check + verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON diagnostics
-vera compile file.vera            # Compile to .wasm binary
-vera compile --wat file.vera      # Print WAT text (human-readable WASM)
+vera compile file.vera                    # Compile to .wasm binary
+vera compile --wat file.vera              # Print WAT text (human-readable WASM)
+vera compile --target browser file.vera   # Compile + emit browser bundle
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42   # Call function f with argument 42
 vera test file.vera               # Contract-driven testing via Z3 + WASM

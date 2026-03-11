@@ -396,7 +396,7 @@ New effects, types, abilities, and standard library extensions (spec §0.8).
 - [#238](https://github.com/aallan/vera/issues/238) Component Model (WIT) interop
 - [#239](https://github.com/aallan/vera/issues/239) resource limit configuration (fuel, memory, timeout)
 - [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package
-- [#273](https://github.com/aallan/vera/issues/273) browser runtime for compiled WASM (JS host bindings)
+- <del>[#273](https://github.com/aallan/vera/issues/273) browser runtime for compiled WASM (JS host bindings)</del> ([v0.0.85](https://github.com/aallan/vera/releases/tag/v0.0.85))
 
 **Ecosystem**
 
@@ -434,8 +434,9 @@ This is what "designed for LLMs to write" means in practice: the language makes 
 
 - Python 3.11+
 - Git
+- Node.js 22+ *(optional, for browser runtime and parity tests)*
 
-The install step pulls in several dependencies via pip — [Lark](https://github.com/lark-parser/lark) (parser generator), [Z3](https://github.com/Z3Prover/z3) (SMT solver for contract verification), and [wasmtime](https://wasmtime.dev/) (WASM runtime for compilation and execution). These all install into the virtual environment and don't require separate system packages.
+The install step pulls in several dependencies via pip — [Lark](https://github.com/lark-parser/lark) (parser generator), [Z3](https://github.com/Z3Prover/z3) (SMT solver for contract verification), and [wasmtime](https://wasmtime.dev/) (WASM runtime for compilation and execution). These all install into the virtual environment and don't require separate system packages. Node.js is only required if you want to run compiled WASM in the browser or run the browser parity tests.
 
 ### Installation
 
@@ -490,6 +491,24 @@ Compiled: examples/hello_world.wasm (1 function exported)
 
 ```bash
 vera compile --wat examples/hello_world.vera
+```
+
+### Compile for the browser
+
+```
+$ vera compile --target browser examples/hello_world.vera
+Compiled: hello_world_browser/module.wasm (1 function exported)
+Browser bundle: hello_world_browser/ (module.wasm + vera-runtime.mjs + index.html)
+```
+
+`vera compile --target browser` produces a ready-to-serve directory with three files: the compiled `.wasm` binary, the self-contained JavaScript runtime (`vera-runtime.mjs`), and an `index.html` that loads and runs the program. Open `index.html` in any browser or serve it with a local HTTP server.
+
+The JavaScript runtime provides browser-appropriate implementations of all Vera host bindings: `IO.print` writes to a `<pre>` element, `IO.read_line` uses `prompt()`, and file IO returns `Result.Err` (unavailable in browser). State, contracts, and Markdown operations work identically to the Python runtime — mandatory parity tests enforce this on every PR.
+
+You can also use the runtime directly from Node.js:
+
+```bash
+node --experimental-wasm-exnref vera/browser/harness.mjs hello_world_browser/module.wasm
 ```
 
 ### Run a program
@@ -727,14 +746,15 @@ vera/
 │   │   └── control.py             #   If/match, patterns, handlers
 │   ├── smt.py                     # Z3 SMT translation layer
 │   ├── verifier.py                # Contract verifier
-│   ├── wasm/                     # WASM translation layer (8 modules)
+│   ├── wasm/                     # WASM translation layer (9 modules)
 │   │   ├── context.py            #   Composed WasmContext, expression dispatcher
 │   │   ├── helpers.py            #   WasmSlotEnv, StringPool, type mapping helpers
 │   │   ├── inference.py          #   Type inference and utilities
 │   │   ├── operators.py          #   Binary/unary operators, quantifiers
 │   │   ├── calls.py              #   Function calls, effect handlers
 │   │   ├── closures.py           #   Closures, free variable analysis
-│   │   └── data.py               #   Constructors, match, arrays
+│   │   ├── data.py               #   Constructors, match, arrays
+│   │   └── markdown.py           #   WASM memory marshalling for Markdown ADTs
 │   ├── codegen/                    # Code generation orchestrator (11 modules)
 │   │   ├── api.py               #   Public API, compile(), execute()
 │   │   ├── core.py              #   Composed CodeGenerator class
@@ -746,14 +766,20 @@ vera/
 │   │   ├── contracts.py         #   Runtime contract insertion
 │   │   ├── assembly.py          #   WAT module assembly
 │   │   └── compilability.py     #   Compilability checks
+│   ├── markdown.py                # Python Markdown parser/renderer (§9.7.3 subset)
+│   ├── browser/                   # Browser runtime for compiled WASM
+│   │   ├── runtime.mjs            #   Self-contained JS runtime (~730 lines)
+│   │   ├── harness.mjs            #   Node.js test harness
+│   │   └── emit.py                #   Browser bundle emission (wasm + html)
 │   ├── tester.py                  # Contract-driven testing engine
 │   ├── resolver.py                # Module resolver
 │   ├── formatter.py               # Canonical code formatter
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
-├── examples/                      # 18 example Vera programs
+├── examples/                      # 23 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
+    ├── check_conformance.py       # Verify all conformance programs pass
     ├── check_examples.py          # Verify all .vera examples
     ├── check_spec_examples.py     # Verify spec code blocks parse
     ├── check_readme_examples.py   # Verify README code blocks parse
