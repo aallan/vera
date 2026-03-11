@@ -7141,3 +7141,156 @@ public fn f(-> @Float64)
 }
 """
         assert abs(_run_float(source, fn="f") - 3.14) < 0.001
+
+
+# =====================================================================
+# Tuple codegen
+# =====================================================================
+
+
+class TestTuple:
+    """Tuple construction, match destructuring, and LetDestruct codegen."""
+
+    def test_tuple_int_int(self) -> None:
+        """Tuple(10, 20) — match destructuring, @Int.0 is most recent (20)."""
+        source = """\
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Tuple<Int, Int> = Tuple(10, 20);
+  match @Tuple<Int, Int>.0 {
+    Tuple(@Int, @Int) -> @Int.0
+  }
+}
+"""
+        # @Int.0 = most recently bound = second field = 20
+        assert _run(source, fn="f") == 20
+
+    def test_tuple_int_int_sum(self) -> None:
+        """Tuple(10, 20) — match destructure and sum both fields."""
+        source = """\
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Tuple<Int, Int> = Tuple(10, 20);
+  match @Tuple<Int, Int>.0 {
+    Tuple(@Int, @Int) -> @Int.0 + @Int.1
+  }
+}
+"""
+        assert _run(source, fn="f") == 30
+
+    def test_tuple_int_string(self) -> None:
+        """Tuple(42, "hello") — mixed Int and String fields."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Tuple<Int, String> = Tuple(42, "hello");
+  match @Tuple<Int, String>.0 {
+    Tuple(@Int, @String) -> IO.print(@String.0)
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "hello"
+
+    def test_tuple_let_destruct_int(self) -> None:
+        """let Tuple<@Int, @Int> = Tuple(42, 99); @Int.0 → 99 (most recent)."""
+        source = """\
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @Int> = Tuple(42, 99);
+  @Int.0
+}
+"""
+        # @Int.0 = most recently bound = second field = 99
+        assert _run(source, fn="f") == 99
+
+    def test_tuple_let_destruct_second(self) -> None:
+        """let Tuple<@Int, @Int> = Tuple(42, 99); @Int.1 → 42 (first field)."""
+        source = """\
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@Int, @Int> = Tuple(42, 99);
+  @Int.1
+}
+"""
+        # @Int.1 = earlier binding = first field = 42
+        assert _run(source, fn="f") == 42
+
+    def test_tuple_let_destruct_string(self) -> None:
+        """LetDestruct Tuple with String field."""
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let Tuple<@Int, @String> = Tuple(42, "world");
+  IO.print(@String.0)
+}
+"""
+        assert _run_io(source, fn="main") == "world"
+
+    def test_tuple_three_fields(self) -> None:
+        """3-field Tuple: Tuple(100, 5, 3) — sum all fields."""
+        source = """\
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Tuple<Int, Int, Int> = Tuple(100, 5, 3);
+  match @Tuple<Int, Int, Int>.0 {
+    Tuple(@Int, @Int, @Int) -> @Int.0 + @Int.1 + @Int.2
+  }
+}
+"""
+        assert _run(source, fn="f") == 108
+
+    def test_tuple_in_result(self) -> None:
+        """Ok(Tuple(1, 2)) — nested Tuple inside Result."""
+        source = """\
+private data Result<T, E> { Ok(T), Err(E) }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Tuple<Int, Int>, Int> = Ok(Tuple(10, 20));
+  match @Result<Tuple<Int, Int>, Int>.0 {
+    Ok(@Tuple<Int, Int>) -> match @Tuple<Int, Int>.0 {
+      Tuple(@Int, @Int) -> @Int.0 + @Int.1
+    },
+    Err(@Int) -> 0 - 1
+  }
+}
+"""
+        assert _run(source, fn="f") == 30
+
+    def test_let_destruct_user_adt(self) -> None:
+        """LetDestruct with a user-defined single-constructor ADT."""
+        source = """\
+private data Pair<A, B> { Pair(A, B) }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Pair<@Int, @Int> = Pair(7, 8);
+  @Int.0 + @Int.1
+}
+"""
+        assert _run(source, fn="f") == 15
+
+    def test_let_destruct_urlparts(self) -> None:
+        """LetDestruct with UrlParts (5-field ADT, knock-on effect)."""
+        source = _IO_PRELUDE + """\
+private data UrlParts { UrlParts(String, String, String, String, String) }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let UrlParts<@String, @String, @String, @String, @String> =
+    UrlParts("https", "example.com", "/path", "q=1", "frag");
+  IO.print(@String.4)
+}
+"""
+        # @String.4 = deepest binding = first field = "https"
+        assert _run_io(source, fn="main") == "https"

@@ -1,0 +1,46 @@
+-- Conformance: Tuple types (Chapter 2, Section 2.3.1)
+-- Tests: Tuple construction, match destructuring, LetDestruct, nested Tuple
+effect IO {
+  op print(String -> Unit);
+}
+
+private fn test_tuple_construct(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 30)
+  effects(pure)
+{
+  let @Tuple<Int, Int> = Tuple(10, 20);
+  match @Tuple<Int, Int>.0 {
+    Tuple(@Int, @Int) -> @Int.0 + @Int.1
+  }
+}
+
+private fn test_tuple_let_destruct(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  let Tuple<@Int, @Int> = Tuple(42, 99);
+  @Int.1
+}
+
+private fn test_tuple_three(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 108)
+  effects(pure)
+{
+  let @Tuple<Int, Int, Int> = Tuple(100, 5, 3);
+  match @Tuple<Int, Int, Int>.0 {
+    Tuple(@Int, @Int, @Int) -> @Int.0 + @Int.1 + @Int.2
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(to_string(test_tuple_construct(())));
+  IO.print(to_string(test_tuple_let_destruct(())));
+  IO.print(to_string(test_tuple_three(())))
+}

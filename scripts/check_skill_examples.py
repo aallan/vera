@@ -74,7 +74,7 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     805: ("FRAGMENT", "Module declaration and import example"),
 
     # Line comments — bare comments
-    860: ("FRAGMENT", "Comment syntax example"),
+    856: ("FRAGMENT", "Comment syntax example"),
 
     # Type conversions — bare function calls
     486: ("FRAGMENT", "Type conversion examples, bare calls"),
@@ -83,25 +83,25 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     499: ("FRAGMENT", "Float64 predicate examples, bare calls"),
 
     # Common mistakes section — intentionally wrong code
-    888: ("FRAGMENT", "Wrong: missing contracts"),
-    908: ("FRAGMENT", "Wrong: missing effects clause"),
-    942: ("FRAGMENT", "Wrong: bare expression without indices"),
-    955: ("FRAGMENT", "Wrong: bare expression no indices"),
-    960: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
-    1026: ("FRAGMENT", "Wrong: match arm with incorrect return"),
-    1050: ("FRAGMENT", "Wrong: non-exhaustive match"),
-    1057: ("FRAGMENT", "Correct: match arm example"),
-    1067: ("FRAGMENT", "Wrong: if/else without braces (bare expression)"),
-    1072: ("FRAGMENT", "Correct: if/else with braces"),
+    884: ("FRAGMENT", "Wrong: missing contracts"),
+    904: ("FRAGMENT", "Wrong: missing effects clause"),
+    938: ("FRAGMENT", "Wrong: bare expression without indices"),
+    951: ("FRAGMENT", "Wrong: bare expression no indices"),
+    956: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
+    1022: ("FRAGMENT", "Wrong: match arm with incorrect return"),
+    1046: ("FRAGMENT", "Wrong: non-exhaustive match"),
+    1053: ("FRAGMENT", "Correct: match arm example"),
+    1063: ("FRAGMENT", "Wrong: if/else without braces (bare expression)"),
+    1068: ("FRAGMENT", "Correct: if/else with braces"),
 
     # Import syntax — intentionally unsupported
-    1083: ("FRAGMENT", "Wrong: import aliasing not supported"),
-    1088: ("FRAGMENT", "Correct: import syntax example"),
-    1098: ("FRAGMENT", "Wrong: import hiding not supported"),
-    1103: ("FRAGMENT", "Correct: multi-import syntax"),
+    1079: ("FRAGMENT", "Wrong: import aliasing not supported"),
+    1084: ("FRAGMENT", "Correct: import syntax example"),
+    1094: ("FRAGMENT", "Wrong: import hiding not supported"),
+    1099: ("FRAGMENT", "Correct: multi-import syntax"),
 
     # String escapes — bare expression
-    1117: ("FRAGMENT", "String escape example"),
+    1113: ("FRAGMENT", "String escape example"),
 
     # =================================================================
     # MISMATCH — uses syntax the parser doesn't handle in isolation.

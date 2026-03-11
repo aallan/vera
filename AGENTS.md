@@ -148,13 +148,9 @@ Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)`
 
 When implementing a new language feature, write the conformance program *first* — add a `.vera` file and manifest entry in `tests/conformance/`, then implement the feature until the conformance test passes.
 
-### Known codegen limitations
-
-- **Tuple types** have no WASM codegen (#267). Functions with Tuple expressions get E602 and are skipped. Use named ADTs as a workaround.
-
 ### Invariants
 
-- All 50 conformance programs in `tests/conformance/` must pass their declared level
+- All 51 conformance programs in `tests/conformance/` must pass their declared level
 - All 22 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
