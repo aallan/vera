@@ -303,24 +303,28 @@ Traditional compilers produce diagnostics for humans: `expected token '{'`. Vera
 Every error includes what went wrong, why, how to fix it with a concrete code example, and a spec reference. The compiler's output is designed to be fed directly back to the model as corrective context.
 
 ```
-Error in main.vera at line 12, column 1:
+[E001] Error at main.vera, line 14, column 1:
 
-    private fn add(@Int, @Int -> @Int)
+    {
     ^
 
-  Function "add" is missing its contract block. Every function in Vera
-  must declare requires(), ensures(), and effects() clauses between the
-  signature and the body.
+  Function is missing its contract block. Every function in Vera must declare
+  requires(), ensures(), and effects() clauses between the signature and the body.
 
-  Add a contract block after the signature:
+  Vera requires all functions to have explicit contracts so that every function's
+  behaviour is mechanically checkable.
 
-    private fn add(@Int, @Int -> @Int)
-      requires(true)
-      ensures(@Int.result == @Int.0 + @Int.1)
-      effects(pure)
-    {
-      ...
-    }
+  Fix:
+
+    Add a contract block after the signature:
+
+      private fn example(@Int -> @Int)
+        requires(true)
+        ensures(@Int.result >= 0)
+        effects(pure)
+      {
+        ...
+      }
 
   See: Chapter 5, Section 5.1 "Function Structure"
 ```
@@ -518,7 +522,7 @@ For compiler architecture, pipeline internals, and how to extend the compiler, s
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (2,237 tests across 22 files, testing compiler internals and browser parity), a **conformance suite** (52 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (23 end-to-end demos). The compiler has 91% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
+Testing is organized in three layers: **unit tests** (2,259 tests across 23 files, testing compiler internals and browser parity), a **conformance suite** (52 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (23 end-to-end demos). The compiler has 91% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
 
 ### Known Bugs
 

@@ -70,12 +70,19 @@ repos:
         pass_filenames: false
         files: '(SKILL\.md$|vera/.*\.py$|vera/grammar\.lark$)'
 
+      - id: html-examples
+        name: html examples
+        entry: .venv/bin/python scripts/check_html_examples.py
+        language: system
+        pass_filenames: false
+        files: '(docs/index\.html$|vera/.*\.py$|vera/grammar\.lark$)'
+
       - id: doc-counts
         name: doc counts
         entry: .venv/bin/python scripts/check_doc_counts.py
         language: system
         pass_filenames: false
-        files: '(README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
+        files: '(README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|docs/index\.html$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
 
       - id: browser-parity
         name: browser parity

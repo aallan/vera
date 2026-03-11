@@ -80,6 +80,9 @@ jobs:
       - name: Check SKILL.md code blocks parse correctly
         run: python scripts/check_skill_examples.py
 
+      - name: Check HTML code blocks parse, check, and verify
+        run: python scripts/check_html_examples.py
+
   browser-parity:
     runs-on: ubuntu-latest
     steps:
