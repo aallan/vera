@@ -35,9 +35,27 @@ ROOT = Path(__file__).parent.parent
 EXAMPLES_DIR = ROOT / "examples"
 HARNESS = ROOT / "vera" / "browser" / "harness.mjs"
 
-# Skip the entire module if Node.js is not available
+# Skip the entire module if Node.js is not available or lacks exnref support
 NODE = shutil.which("node")
-pytestmark = pytest.mark.skipif(NODE is None, reason="Node.js not available")
+
+def _node_supports_exnref() -> bool:
+    """Check if the system Node.js supports --experimental-wasm-exnref."""
+    if NODE is None:
+        return False
+    try:
+        proc = subprocess.run(
+            [NODE, "--experimental-wasm-exnref", "-e", "0"],
+            capture_output=True, timeout=5,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+_HAS_EXNREF = _node_supports_exnref()
+pytestmark = pytest.mark.skipif(
+    not _HAS_EXNREF,
+    reason="Node.js not available or lacks --experimental-wasm-exnref support",
+)
 
 
 # ---------------------------------------------------------------------------
