@@ -73,6 +73,7 @@ class CodeGenerator(
         self._needs_memory: bool = False
         self._state_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
         self._exn_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
+        self._md_ops_used: set[str] = set()  # Markdown host-import builtins
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
@@ -155,6 +156,7 @@ class CodeGenerator(
                 exports=[],
                 diagnostics=self.diagnostics,
                 state_types=list(self._state_types),
+                md_ops_used=set(self._md_ops_used),
             )
 
         # Pass 2: compile function bodies
@@ -224,6 +226,7 @@ class CodeGenerator(
                 exports=exports,
                 diagnostics=self.diagnostics,
                 state_types=list(self._state_types),
+                md_ops_used=set(self._md_ops_used),
             )
 
         return CompileResult(
@@ -232,6 +235,7 @@ class CodeGenerator(
             exports=exports,
             diagnostics=self.diagnostics,
             state_types=list(self._state_types),
+            md_ops_used=set(self._md_ops_used),
         )
 
     # -----------------------------------------------------------------

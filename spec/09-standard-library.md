@@ -83,6 +83,88 @@ private fn parse_nat(@Int -> @Result<Nat, String>)
 }
 ```
 
+### 9.3.3 UrlParts
+
+```
+data UrlParts {
+  UrlParts(String, String, String, String, String)
+}
+```
+
+`UrlParts` is a built-in ADT representing the five components of a URL per RFC 3986: scheme, authority, path, query, and fragment. Programs must redefine `UrlParts` locally (like `Result` and `Option`) to use it in match expressions.
+
+Constructors:
+- `UrlParts(@String, @String, @String, @String, @String)` — scheme, authority, path, query, fragment.
+
+See §9.6.13 for the `url_parse` and `url_join` function specifications.
+
+### 9.3.4 Future\<T\>
+
+```
+data Future<T> { Future(T) }
+```
+
+`Future<T>` represents the result of an asynchronous computation. It is WASM-transparent: it has the same runtime representation as `T`, with no overhead.
+
+Constructors:
+- `Future(@T)` — wraps a value.
+
+See §9.5.4 for the `async` and `await` function specifications.
+
+### 9.3.5 MdInline
+
+```
+public data MdInline {
+  MdText(String),
+  MdCode(String),
+  MdEmph(Array<MdInline>),
+  MdStrong(Array<MdInline>),
+  MdLink(Array<MdInline>, String),
+  MdImage(String, String)
+}
+```
+
+`MdInline` represents inline-level Markdown content. It is one of two mutually defined ADTs (with `MdBlock`) that make illegal states unrepresentable — a heading cannot contain another heading at the type level.
+
+Constructors:
+- `MdText(@String)` — plain text run.
+- `MdCode(@String)` — inline code span.
+- `MdEmph(@Array<MdInline>)` — emphasis (italic).
+- `MdStrong(@Array<MdInline>)` — strong emphasis (bold).
+- `MdLink(@Array<MdInline>, @String)` — hyperlink: display text and URL.
+- `MdImage(@String, @String)` — image: alt text and source URL.
+
+See §9.7.3 for the Markdown function specifications.
+
+### 9.3.6 MdBlock
+
+```
+public data MdBlock {
+  MdParagraph(Array<MdInline>),
+  MdHeading(Nat, Array<MdInline>),
+  MdCodeBlock(String, String),
+  MdBlockQuote(Array<MdBlock>),
+  MdList(Bool, Array<Array<MdBlock>>),
+  MdThematicBreak,
+  MdTable(Array<Array<Array<MdInline>>>),
+  MdDocument(Array<MdBlock>)
+}
+```
+
+`MdBlock` represents block-level Markdown elements.
+
+Constructors:
+- `MdParagraph(@Array<MdInline>)` — paragraph.
+- `MdHeading(@Nat, @Array<MdInline>)` — heading: level (1--6) and content.
+- `MdCodeBlock(@String, @String)` — fenced code block: language and code body.
+- `MdBlockQuote(@Array<MdBlock>)` — block quote.
+- `MdList(@Bool, @Array<Array<MdBlock>>)` — list: ordered/unordered, with items.
+- `MdThematicBreak` — horizontal rule (nullary).
+- `MdTable(@Array<Array<Array<MdInline>>>)` — table: rows of cells of inlines.
+- `MdDocument(@Array<MdBlock>)` — top-level document.
+
+See §9.7.3 for the Markdown function specifications.
+
 ## 9.4 Built-in Collections
 
 ### 9.4.1 Array\<T\>
@@ -257,13 +339,7 @@ private fn fetch_both(@String, @String -> @Tuple<Json, Json>)
 
 ### 9.5.4 Async
 
-The `<Async>` effect enables asynchronous computation via `async(expr)` and `await(future)` operations with a `Future<T>` type.
-
-**Type:**
-
-```
-data Future<T> { Future(T) }
-```
+The `<Async>` effect enables asynchronous computation via `async(expr)` and `await(future)` operations with a `Future<T>` type (see §9.3.4 for the ADT definition).
 
 **Built-in functions:**
 
@@ -1086,13 +1162,7 @@ url_decode("%4")                   -- Err("invalid percent-encoding")
 
 ### 9.6.13 URL Parsing
 
-```
-data UrlParts {
-  UrlParts(String, String, String, String, String)
-}
-```
-
-`UrlParts` is a built-in ADT representing the five components of a URL per RFC 3986: scheme, authority, path, query, and fragment. Programs must redefine `UrlParts` locally (like `Result` and `Option`) to use it in match expressions.
+The `UrlParts` ADT is defined in §9.3.3. Programs must redefine `UrlParts` locally (like `Result` and `Option`) to use it in match expressions.
 
 ```
 public fn url_parse(@String -> @Result<UrlParts, String>)
@@ -1178,13 +1248,11 @@ This approach keeps the core language small while providing ergonomic JSON suppo
 
 `Decimal` will provide exact decimal arithmetic for financial and precision-sensitive applications. It will be implemented as a library type (not a primitive) since WebAssembly does not have native decimal floating-point. The runtime will provide a software implementation.
 
-### 9.7.3 Markdown (Future)
-
-> **Status: Not yet implemented.** Tracked in [#147](https://github.com/aallan/vera/issues/147). Dependencies resolved: dynamic string construction ([#52](https://github.com/aallan/vera/issues/52), done) and string built-in operations ([#134](https://github.com/aallan/vera/issues/134), done). Does **not** depend on `Map<K, V>`.
+### 9.7.3 Markdown
 
 Markdown is the lingua franca of large language models — they understand it natively and generate it naturally. A typed Markdown ADT makes document structure visible to the type system, enabling contracts that verify the structural properties of agent output.
 
-Markdown will be represented as two mutually defined ADTs: `MdBlock` for block-level elements and `MdInline` for inline-level content. The two-level design makes illegal states unrepresentable — a heading cannot contain another heading at the type level.
+Markdown is represented as two mutually defined ADTs: `MdBlock` for block-level elements (§9.3.6) and `MdInline` for inline-level content (§9.3.5). The two-level design makes illegal states unrepresentable — a heading cannot contain another heading at the type level.
 
 ```
 public data MdInline {

@@ -457,5 +457,14 @@
     "level": "run",
     "spec_ref": "Section 9.5.4",
     "features": ["async", "await", "future", "async_effect"]
+  },
+  {
+    "id": "ch09_markdown",
+    "file": "ch09_markdown.vera",
+    "chapter": 9,
+    "title": "Markdown standard library",
+    "level": "run",
+    "spec_ref": "Section 9.7.3",
+    "features": ["md_parse", "md_render", "md_has_heading", "md_has_code_block", "md_extract_code_blocks"]
   }
 ]

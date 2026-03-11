@@ -98,7 +98,9 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ operators.py` | 430 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
 | ` ├ calls.py` | 223 | | Function calls, generic resolution, effect handlers | |
 | ` ├ closures.py` | 248 | | Closures, anonymous functions, free variable analysis | |
-| ` └ data.py` | 590 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
+| ` ├ data.py` | 590 | | Constructors, match expressions (incl. nested patterns), arrays, indexing |
+| ` └ markdown.py` | ~380 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
+| `markdown.py` | ~450 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
 | `codegen/` | 3,137 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
 | `  api.py` | 265 | | Public API, dataclasses, host bindings, `execute()` | |
 | `  core.py` | 285 | | CodeGenerator class, orchestration, type helpers | |
@@ -290,6 +292,8 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `Option<T>` | ADT | `None`, `Some(T)` constructors |
 | `Result<T, E>` | ADT | `Ok(T)`, `Err(E)` constructors |
 | `Future<T>` | ADT | `Future(T)` constructor — WASM-transparent wrapper |
+| `MdInline` | ADT | `MdText(String)`, `MdCode(String)`, `MdEmph(Array<MdInline>)`, `MdStrong(Array<MdInline>)`, `MdLink(Array<MdInline>, String)`, `MdImage(String, String)` |
+| `MdBlock` | ADT | `MdParagraph(Array<MdInline>)`, `MdHeading(Nat, Array<MdInline>)`, `MdCodeBlock(String, String)`, `MdBlockQuote(Array<MdBlock>)`, `MdList(Bool, Array<Array<MdBlock>>)`, `MdThematicBreak`, `MdTable(Array<Array<Array<MdInline>>>)`, `MdDocument(Array<MdBlock>)` |
 | `State<T>` | Effect | `get(Unit) → T`, `put(T) → Unit` operations |
 | `IO` | Effect | `print`, `read_line`, `read_file`, `write_file`, `args`, `exit`, `get_env` |
 | `Async` | Effect | No operations — marker for async computation |
@@ -314,6 +318,11 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `url_decode` | Function | `String → Result<String, String>`, pure |
 | `url_parse` | Function | `String → Result<UrlParts, String>`, pure (RFC 3986 decomposition) |
 | `url_join` | Function | `UrlParts → String`, pure (reassemble URL) |
+| `md_parse` | Function | `String → Result<MdBlock, String>`, pure (Markdown → typed AST) |
+| `md_render` | Function | `MdBlock → String`, pure (typed AST → canonical Markdown) |
+| `md_has_heading` | Function | `MdBlock, Nat → Bool`, pure (query heading level) |
+| `md_has_code_block` | Function | `MdBlock, String → Bool`, pure (query code block language) |
+| `md_extract_code_blocks` | Function | `MdBlock, String → Array<String>`, pure (extract code by language) |
 | `async` | Function | `T → Future<T>`, `effects(<Async>)` (generic, eager evaluation) |
 | `await` | Function | `Future<T> → T`, `effects(<Async>)` (generic, identity unwrap) |
 | `to_string` | Function | `Int → String`, pure |
@@ -476,6 +485,18 @@ The two-pass architecture mirrors the type checker: pass 1 registers all functio
 
 `IO.print` compiles to a call to an imported host function. The `execute()` function in `codegen/api.py` provides the host implementation via wasmtime's `Linker`: it reads UTF-8 bytes from WASM linear memory and writes to stdout (or a capture buffer for testing).
 
+### Markdown host bindings
+
+`markdown.py` implements a hand-written Python Markdown parser and renderer (§9.7.3 subset). This is the **first set of pure functions implemented as host bindings** rather than inline WASM. The architectural rationale:
+
+- Markdown parsing is too complex for inline WASM (recursive tree construction, regex-based tokenization)
+- Functions are genuinely pure (deterministic, referentially transparent) — the host implementation is part of the trusted computing base
+- No external dependency — the parser handles ATX headings, fenced code blocks, paragraphs, lists, block quotes, GFM tables, thematic breaks, and inline formatting (emphasis, strong, code, links, images)
+
+`wasm/markdown.py` provides bidirectional WASM memory marshalling for the `MdInline` and `MdBlock` ADT trees. Write direction (`write_md_inline`, `write_md_block`) allocates ADT nodes in WASM linear memory using the same `$alloc` + tag-dispatch layout as user-defined ADTs. Read direction (`read_md_inline`, `read_md_block`) reconstructs Python objects from WASM memory. Helper functions `_read_i32`, `_read_i64`, and `_write_i64` handle raw memory access for struct fields.
+
+The WASM import interface is the portability contract: the compiled `.wasm` binary declares `(import "vera" "md_parse" ...)` etc., and any host runtime provides matching implementations. The Python implementation in `api.py` is the reference; a browser runtime would provide JavaScript host bindings (e.g., using `markdown-it`) with the same WASM memory allocation protocol. This is identical to how `IO.print` already works.
+
 ### Runtime contracts
 
 The code generator classifies contracts using the verifier's tier results:
@@ -597,7 +618,7 @@ The `ERROR_CODES` dict in `errors.py` maps every code to a short description (80
 
 ## Test Suite
 
-Testing is organized in three layers: **unit tests** (1,673 tests testing compiler internals), a **conformance suite** (43 programs in `tests/conformance/` validating every language feature against the spec), and **example programs** (18 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
+Testing is organized in three layers: **unit tests** (2,170 tests testing compiler internals), a **conformance suite** (52 programs in `tests/conformance/` validating every language feature against the spec), and **example programs** (23 end-to-end demos). The conformance suite is the definitive specification artifact — each program tests one feature and serves as a minimal working example.
 
 See **[TESTING.md](../TESTING.md)** for the comprehensive testing reference -- test file table, conformance suite details, compiler code coverage, language feature coverage, helper conventions, validation scripts, CI pipeline, and guidelines for adding tests.
 

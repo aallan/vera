@@ -72,6 +72,23 @@ class CallsMixin:
                 return self._translate_url_join(call.args[0], env)
             # Async builtins — identity (eager evaluation, Future<T>
             # is WASM-transparent)
+            # Markdown host-import builtins (pure, implemented in Python)
+            if call.name == "md_parse" and len(call.args) == 1:
+                return self._translate_md_parse(call.args[0], env)
+            if call.name == "md_render" and len(call.args) == 1:
+                return self._translate_md_render(call.args[0], env)
+            if call.name == "md_has_heading" and len(call.args) == 2:
+                return self._translate_md_has_heading(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "md_has_code_block" and len(call.args) == 2:
+                return self._translate_md_has_code_block(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "md_extract_code_blocks" and len(call.args) == 2:
+                return self._translate_md_extract_code_blocks(
+                    call.args[0], call.args[1], env,
+                )
             if call.name == "async" and len(call.args) == 1:
                 return self._translate_async(call.args[0], env)
             if call.name == "await" and len(call.args) == 1:
@@ -4079,6 +4096,94 @@ class CallsMixin:
         ins.append(f"local.get {dst}")
         ins.append(f"local.get {total}")
         return ins
+
+    # ---- Markdown host-import builtins ---------------------------------
+
+    def _translate_md_parse(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """md_parse(s) → Result<MdBlock, String> via host import.
+
+        String arg is (ptr, len) pair on stack → call $vera.md_parse → i32.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append("call $vera.md_parse")
+        return ins
+
+    def _translate_md_render(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """md_render(block) → String via host import.
+
+        MdBlock arg is i32 (heap ptr) → call $vera.md_render → (i32, i32).
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append("call $vera.md_render")
+        return ins
+
+    def _translate_md_has_heading(
+        self, block_arg: ast.Expr, level_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """md_has_heading(block, level) → Bool via host import.
+
+        (i32 ptr, i64 level) → call $vera.md_has_heading → i32.
+        """
+        b_instrs = self.translate_expr(block_arg, env)
+        l_instrs = self.translate_expr(level_arg, env)
+        if b_instrs is None or l_instrs is None:
+            return None
+        ins: list[str] = []
+        ins.extend(b_instrs)
+        ins.extend(l_instrs)
+        ins.append("call $vera.md_has_heading")
+        return ins
+
+    def _translate_md_has_code_block(
+        self, block_arg: ast.Expr, lang_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """md_has_code_block(block, lang) → Bool via host import.
+
+        (i32 ptr, i32 lang_ptr, i32 lang_len) → call → i32.
+        """
+        b_instrs = self.translate_expr(block_arg, env)
+        l_instrs = self.translate_expr(lang_arg, env)
+        if b_instrs is None or l_instrs is None:
+            return None
+        ins: list[str] = []
+        ins.extend(b_instrs)
+        ins.extend(l_instrs)
+        ins.append("call $vera.md_has_code_block")
+        return ins
+
+    def _translate_md_extract_code_blocks(
+        self, block_arg: ast.Expr, lang_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """md_extract_code_blocks(block, lang) → Array<String> via host import.
+
+        (i32 ptr, i32 lang_ptr, i32 lang_len) → call → (i32, i32).
+        """
+        b_instrs = self.translate_expr(block_arg, env)
+        l_instrs = self.translate_expr(lang_arg, env)
+        if b_instrs is None or l_instrs is None:
+            return None
+        self.needs_alloc = True
+        ins: list[str] = []
+        ins.extend(b_instrs)
+        ins.extend(l_instrs)
+        ins.append("call $vera.md_extract_code_blocks")
+        return ins
+
+    # ---- Async builtins -----------------------------------------------
 
     def _translate_async(
         self, arg: ast.Expr, env: WasmSlotEnv,

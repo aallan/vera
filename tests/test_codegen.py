@@ -7294,3 +7294,152 @@ public fn main(-> @Unit)
 """
         # @String.4 = deepest binding = first field = "https"
         assert _run_io(source, fn="main") == "https"
+
+
+# =====================================================================
+# Markdown built-ins (§9.7.3) — host-imported functions
+# =====================================================================
+
+
+class TestMarkdown:
+    """Markdown built-in functions: md_parse, md_render, md_has_heading,
+    md_has_code_block, md_extract_code_blocks."""
+
+    _PREAMBLE = """
+effect IO { op print(String -> Unit); }
+"""
+
+    def test_md_parse_heading(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("# Hello");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> IO.print("ok"),
+    Err(@String) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "ok"
+
+    def test_md_has_heading_true(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("# Title");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> {
+      let @Bool = md_has_heading(@MdBlock.0, 1);
+      if @Bool.0 then { IO.print("yes") } else { IO.print("no") }
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "yes"
+
+    def test_md_has_heading_false(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("# Title");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> {
+      let @Bool = md_has_heading(@MdBlock.0, 2);
+      if @Bool.0 then { IO.print("yes") } else { IO.print("no") }
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "no"
+
+    def test_md_has_code_block_true(self) -> None:
+        source = self._PREAMBLE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("```python\\ncode\\n```");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> {
+      let @Bool = md_has_code_block(@MdBlock.0, "python");
+      if @Bool.0 then { IO.print("yes") } else { IO.print("no") }
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "yes"
+
+    def test_md_has_code_block_false(self) -> None:
+        source = self._PREAMBLE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("```python\\ncode\\n```");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> {
+      let @Bool = md_has_code_block(@MdBlock.0, "rust");
+      if @Bool.0 then { IO.print("yes") } else { IO.print("no") }
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "no"
+
+    def test_md_render_round_trip(self) -> None:
+        source = self._PREAMBLE + r"""
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("# Hello");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> {
+      let @String = md_render(@MdBlock.0);
+      IO.print(@String.0)
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "# Hello"
+
+    def test_md_extract_code_blocks(self) -> None:
+        source = self._PREAMBLE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("```python\\nprint(1)\\n```\\n\\n```python\\nprint(2)\\n```");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> {
+      let @Array<String> = md_extract_code_blocks(@MdBlock.0, "python");
+      IO.print(int_to_string(array_length(@Array<String>.0)));
+      IO.print(@Array<String>.0[0]);
+      IO.print(@Array<String>.0[1])
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "2print(1)print(2)"
+
+    def test_md_extract_code_blocks_empty(self) -> None:
+        source = self._PREAMBLE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("# Just a heading");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> {
+      let @Array<String> = md_extract_code_blocks(@MdBlock.0, "python");
+      IO.print(int_to_string(array_length(@Array<String>.0)))
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(source, fn="main") == "0"

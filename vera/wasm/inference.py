@@ -231,6 +231,11 @@ class InferenceMixin:
             return "i32_pair"
         if expr.name == "url_parse":
             return "i32"
+        # Markdown builtins
+        if expr.name in ("md_parse", "md_has_heading", "md_has_code_block"):
+            return "i32"
+        if expr.name in ("md_render", "md_extract_code_blocks"):
+            return "i32_pair"
         # Async builtins — identity operations (Future<T> is transparent)
         if expr.name in ("async", "await") and expr.args:
             return self._infer_expr_wasm_type(expr.args[0])
@@ -414,6 +419,15 @@ class InferenceMixin:
             return "String"
         if call.name == "url_parse":
             return "Result"
+        # Markdown builtins
+        if call.name == "md_parse":
+            return "Result"
+        if call.name == "md_render":
+            return "String"
+        if call.name in ("md_has_heading", "md_has_code_block"):
+            return "Bool"
+        if call.name == "md_extract_code_blocks":
+            return "Array"
         # Async builtins — Future<T> is transparent
         if call.name == "async" and call.args:
             inner = self._infer_fncall_vera_type(call.args[0]) \

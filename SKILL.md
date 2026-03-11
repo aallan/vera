@@ -418,6 +418,11 @@ url_encode(@String.0)                   -- returns String (RFC 3986 percent-enco
 url_decode(@String.0)                   -- returns Result<String, String>
 url_parse(@String.0)                    -- returns Result<UrlParts, String> (RFC 3986 decomposition)
 url_join(@UrlParts.0)                   -- returns String (reassemble URL from UrlParts)
+md_parse(@String.0)                     -- returns Result<MdBlock, String> (parse Markdown)
+md_render(@MdBlock.0)                   -- returns String (render to canonical Markdown)
+md_has_heading(@MdBlock.0, @Nat.0)      -- returns Bool (check if heading of level exists)
+md_has_code_block(@MdBlock.0, @String.0) -- returns Bool (check if code block of language exists)
+md_extract_code_blocks(@MdBlock.0, @String.0) -- returns Array<String> (extract code by language)
 async(@T.0)                            -- returns Future<T> (requires effects(<Async>))
 await(@Future<T>.0)                    -- returns T (requires effects(<Async>))
 to_string(@Int.0)                       -- returns String (integer to decimal)
@@ -465,6 +470,40 @@ join(@Array<String>.0, @String.0)               -- returns String (join with sep
 `to_upper` and `to_lower` convert ASCII letters only (a-z ↔ A-Z). `replace` substitutes all non-overlapping occurrences; an empty needle returns the original string unchanged. `split` returns an array of segments; an empty delimiter returns a single-element array. `join` concatenates array elements with the separator between each pair.
 
 String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. All four parse functions return `Result<T, String>`: `parse_nat`, `parse_int`, `parse_float64`, and `parse_bool`. They return `Ok(value)` on valid input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated. `parse_int` accepts an optional `+` or `-` sign. `parse_bool` is strict: only `"true"` and `"false"` (lowercase) are valid. `base64_encode` encodes a string to standard Base64 (RFC 4648); `base64_decode` returns `Result<String, String>`, failing on invalid length or characters. `url_encode` percent-encodes a string for use in URLs (RFC 3986), leaving unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`) unchanged; `url_decode` returns `Result<String, String>`, failing on invalid `%XX` sequences. `url_parse` decomposes a URL into its RFC 3986 components, returning `Result<UrlParts, String>` where `UrlParts(scheme, authority, path, query, fragment)` is a built-in ADT with five String fields; it returns `Err("missing scheme")` if no `:` is found. `url_join` reassembles a `UrlParts` value into a URL string. Programs must redefine `UrlParts` locally (like `Result`) to use it in match expressions.
+
+### Markdown operations
+
+```vera
+md_parse(@String.0)                     -- returns Result<MdBlock, String>
+md_render(@MdBlock.0)                   -- returns String
+md_has_heading(@MdBlock.0, @Nat.0)      -- returns Bool
+md_has_code_block(@MdBlock.0, @String.0) -- returns Bool
+md_extract_code_blocks(@MdBlock.0, @String.0) -- returns Array<String>
+```
+
+`md_parse` parses a Markdown string into a typed `MdBlock` document tree. Returns `Ok(MdDocument(...))` on success. `md_render` converts an `MdBlock` back to canonical Markdown text. `md_has_heading` checks whether the document contains a heading at the given level (1–6). `md_has_code_block` checks for a fenced code block with the given language tag (use `""` for untagged blocks). `md_extract_code_blocks` returns an array of code content strings for all blocks matching the language.
+
+Two built-in ADTs represent the Markdown document structure:
+
+**MdInline** — inline content within blocks:
+- `MdText(String)` — plain text
+- `MdCode(String)` — inline code
+- `MdEmph(Array<MdInline>)` — emphasis (*italic*)
+- `MdStrong(Array<MdInline>)` — strong (**bold**)
+- `MdLink(Array<MdInline>, String)` — link with text and URL
+- `MdImage(String, String)` — image with alt text and source
+
+**MdBlock** — block-level content:
+- `MdParagraph(Array<MdInline>)` — paragraph
+- `MdHeading(Nat, Array<MdInline>)` — heading with level (1–6)
+- `MdCodeBlock(String, String)` — fenced code block (language, code)
+- `MdBlockQuote(Array<MdBlock>)` — block quote
+- `MdList(Bool, Array<Array<MdBlock>>)` — list (ordered?, items)
+- `MdThematicBreak` — horizontal rule
+- `MdTable(Array<Array<Array<MdInline>>>)` — table (rows of cells)
+- `MdDocument(Array<MdBlock>)` — top-level document
+
+All Markdown functions are pure and available without imports. Pattern match on `MdBlock` and `MdInline` constructors to traverse the document tree.
 
 ### Numeric operations
 

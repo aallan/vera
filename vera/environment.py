@@ -199,6 +199,84 @@ class TypeEnv:
         for c in self.data_types["Future"].constructors.values():
             self.constructors[c.name] = c
 
+        # MdInline — inline Markdown elements (§9.3.5 / §9.7.3)
+        _MD_INLINE = AdtType("MdInline", ())
+        _ARR_MD_INLINE = AdtType("Array", (_MD_INLINE,))
+        self.data_types["MdInline"] = AdtInfo(
+            name="MdInline",
+            type_params=(),
+            constructors={
+                "MdText": ConstructorInfo(
+                    "MdText", "MdInline", (), (STRING,),
+                ),
+                "MdCode": ConstructorInfo(
+                    "MdCode", "MdInline", (), (STRING,),
+                ),
+                "MdEmph": ConstructorInfo(
+                    "MdEmph", "MdInline", (), (_ARR_MD_INLINE,),
+                ),
+                "MdStrong": ConstructorInfo(
+                    "MdStrong", "MdInline", (), (_ARR_MD_INLINE,),
+                ),
+                "MdLink": ConstructorInfo(
+                    "MdLink", "MdInline", (),
+                    (_ARR_MD_INLINE, STRING),
+                ),
+                "MdImage": ConstructorInfo(
+                    "MdImage", "MdInline", (), (STRING, STRING),
+                ),
+            },
+        )
+        for c in self.data_types["MdInline"].constructors.values():
+            self.constructors[c.name] = c
+
+        # MdBlock — block-level Markdown elements (§9.3.6 / §9.7.3)
+        _MD_BLOCK = AdtType("MdBlock", ())
+        _ARR_MD_BLOCK = AdtType("Array", (_MD_BLOCK,))
+        _ARR_ARR_MD_BLOCK = AdtType("Array", (_ARR_MD_BLOCK,))
+        _ARR_ARR_ARR_MD_INLINE = AdtType(
+            "Array", (AdtType("Array", (_ARR_MD_INLINE,)),),
+        )
+        self.data_types["MdBlock"] = AdtInfo(
+            name="MdBlock",
+            type_params=(),
+            constructors={
+                "MdParagraph": ConstructorInfo(
+                    "MdParagraph", "MdBlock", (),
+                    (_ARR_MD_INLINE,),
+                ),
+                "MdHeading": ConstructorInfo(
+                    "MdHeading", "MdBlock", (),
+                    (NAT, _ARR_MD_INLINE),
+                ),
+                "MdCodeBlock": ConstructorInfo(
+                    "MdCodeBlock", "MdBlock", (),
+                    (STRING, STRING),
+                ),
+                "MdBlockQuote": ConstructorInfo(
+                    "MdBlockQuote", "MdBlock", (),
+                    (_ARR_MD_BLOCK,),
+                ),
+                "MdList": ConstructorInfo(
+                    "MdList", "MdBlock", (),
+                    (BOOL, _ARR_ARR_MD_BLOCK),
+                ),
+                "MdThematicBreak": ConstructorInfo(
+                    "MdThematicBreak", "MdBlock", (), (),
+                ),
+                "MdTable": ConstructorInfo(
+                    "MdTable", "MdBlock", (),
+                    (_ARR_ARR_ARR_MD_INLINE,),
+                ),
+                "MdDocument": ConstructorInfo(
+                    "MdDocument", "MdBlock", (),
+                    (_ARR_MD_BLOCK,),
+                ),
+            },
+        )
+        for c in self.data_types["MdBlock"].constructors.values():
+            self.constructors[c.name] = c
+
         # State<T> effect with get/put
         self.effects["State"] = EffectInfo(
             name="State",
@@ -407,6 +485,45 @@ class TypeEnv:
             forall_vars=None,
             param_types=(AdtType("UrlParts", ()),),
             return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        # Markdown builtins — pure host-import functions (§9.7.3)
+        _MD_BLOCK_TYPE = AdtType("MdBlock", ())
+        self.functions["md_parse"] = FunctionInfo(
+            name="md_parse",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType(
+                "Result", (_MD_BLOCK_TYPE, STRING),
+            ),
+            effect=PureEffectRow(),
+        )
+        self.functions["md_render"] = FunctionInfo(
+            name="md_render",
+            forall_vars=None,
+            param_types=(_MD_BLOCK_TYPE,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["md_has_heading"] = FunctionInfo(
+            name="md_has_heading",
+            forall_vars=None,
+            param_types=(_MD_BLOCK_TYPE, NAT),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+        self.functions["md_has_code_block"] = FunctionInfo(
+            name="md_has_code_block",
+            forall_vars=None,
+            param_types=(_MD_BLOCK_TYPE, STRING),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+        self.functions["md_extract_code_blocks"] = FunctionInfo(
+            name="md_extract_code_blocks",
+            forall_vars=None,
+            param_types=(_MD_BLOCK_TYPE, STRING),
+            return_type=AdtType("Array", (STRING,)),
             effect=PureEffectRow(),
         )
         # Async builtins — require effects(<Async>)

@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.84] - 2026-03-11
+
+### Added
+- **Markdown standard library** ([#147](https://github.com/aallan/vera/issues/147)):
+  Two new built-in ADTs for typed Markdown document representation:
+  `MdInline` (6 constructors: MdText, MdCode, MdEmph, MdStrong, MdLink, MdImage)
+  and `MdBlock` (8 constructors: MdParagraph, MdHeading, MdCodeBlock, MdBlockQuote,
+  MdList, MdThematicBreak, MdTable, MdDocument).
+  Five new pure functions: `md_parse(String → Result<MdBlock, String>)`,
+  `md_render(MdBlock → String)`, `md_has_heading(MdBlock, Nat → Bool)`,
+  `md_has_code_block(MdBlock, String → Bool)`,
+  `md_extract_code_blocks(MdBlock, String → Array<String>)`.
+  All implemented as WASM host imports with a hand-written Python parser —
+  the first pure functions using the host-binding pattern.
+  The WASM import interface is the portability contract: the same `.wasm`
+  binary works with any host runtime (Python, JavaScript, Rust) that provides
+  matching implementations.
+- New conformance test `ch09_markdown` (conformance suite: 51→52 programs)
+- New example `examples/markdown.vera` — parse, query, extract, and render Markdown
+- 78 new tests (59 parser/renderer + 6 type checker + 8 codegen + 5 conformance)
+
+### Changed
+- **Spec §9.3 reorganization:** UrlParts (from §9.6.13), Future\<T\> (from §9.5.4),
+  MdInline, and MdBlock are now documented in §9.3 (Built-in ADTs) as §9.3.3–§9.3.6.
+  Function specs remain in their original sections with cross-references.
+
 ## [0.0.83] - 2026-03-11
 
 ### Added
@@ -1267,7 +1293,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.83...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.84...HEAD
+[0.0.84]: https://github.com/aallan/vera/compare/v0.0.83...v0.0.84
 [0.0.83]: https://github.com/aallan/vera/compare/v0.0.82...v0.0.83
 [0.0.82]: https://github.com/aallan/vera/compare/v0.0.81...v0.0.82
 [0.0.81]: https://github.com/aallan/vera/compare/v0.0.80...v0.0.81
