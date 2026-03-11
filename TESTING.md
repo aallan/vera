@@ -288,7 +288,7 @@ When extending the compiler, add tests following the existing patterns:
 
 ## Validation Scripts
 
-Seven scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
+Eight scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
@@ -298,6 +298,7 @@ Seven scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_skill_examples.py` | All Vera code blocks in SKILL.md parse correctly |
 | `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
+| `check_doc_counts.py` | Counts cited in TESTING.md, CONTRIBUTING.md, and CLAUDE.md match live codebase |
 | `fix_allowlists.py` | Auto-fix stale allowlist line numbers after Markdown edits |
 
 These run in both pre-commit hooks and CI, so issues are caught locally before they reach the remote.
@@ -316,7 +317,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-After running `pre-commit install`, every commit is checked by 15 hooks:
+After running `pre-commit install`, every commit is checked by 16 hooks:
 
 | Hook | What it does |
 |------|-------------|
@@ -333,6 +334,7 @@ After running `pre-commit install`, every commit is checked by 15 hooks:
 | `check_examples.py` | All 23 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 | `check_skill_examples.py` | SKILL.md code blocks parse correctly |
+| `check_doc_counts.py` | Counts in docs match live codebase |
 | `browser parity` | Browser runtime produces identical output to Python runtime |
 
 The validation hooks are smart about triggers -- they only run when relevant files change (`.vera`, `vera/**/*.py`, `grammar.lark`, the corresponding Markdown file, or `vera/browser/*` for browser parity).
