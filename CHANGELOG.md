@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.87] - 2026-03-11
+
+### Added
+- **FizzBuzz example** — complete runnable program demonstrating recursion as iteration with IO effects (`examples/fizzbuzz.vera`)
+- **"Recursion as iteration" section** in README "What Vera Looks Like" — explains the standard Vera pattern for counted iteration
+- **"Iteration" section** in SKILL.md — documents the tail-recursive loop pattern for agents
+- **De Bruijn slot reference reminder** in CLAUDE.md — documents that `@T.0` = most recent (last) parameter
+
+### Fixed
+- **Verifier branch-condition bug** documented ([#283](https://github.com/aallan/vera/issues/283)) — call-site precondition checking doesn't use if-guard path conditions; added to Known Bugs with workaround
+
 ## [0.0.86] - 2026-03-11
 
 ### Added
@@ -1334,7 +1345,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.86...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.87...HEAD
+[0.0.87]: https://github.com/aallan/vera/compare/v0.0.86...v0.0.87
 [0.0.86]: https://github.com/aallan/vera/compare/v0.0.85...v0.0.86
 [0.0.85]: https://github.com/aallan/vera/compare/v0.0.84...v0.0.85
 [0.0.84]: https://github.com/aallan/vera/compare/v0.0.83...v0.0.84
