@@ -4,9 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Vera — A language designed for machines to write</title>
-  <meta name="description" content="Vera is a programming language designed for large language models to write. Mandatory contracts, algebraic effects, typed slot references, and compilation to WebAssembly.">
+  <meta name="description" content="Vera is a programming language designed for large language models to write. Mandatory contracts, algebraic effects, typed slot references, and compilation to WebAssembly — runs at the command line or in the browser.">
   <meta property="og:title" content="Vera — A language designed for machines to write">
-  <meta property="og:description" content="A programming language where verification is a first-class citizen. Mandatory contracts, algebraic effects, typed slot references, compiles to WebAssembly.">
+  <meta property="og:description" content="A programming language where verification is a first-class citizen. Mandatory contracts, algebraic effects, typed slot references. Compiles to WebAssembly — runs at the CLI or in any browser.">
   <meta property="og:image" content="https://veralang.dev/vera-hero.jpg">
   <meta property="og:url" content="https://veralang.dev">
   <meta property="og:type" content="website">
@@ -288,6 +288,7 @@
       color: var(--cream);
       white-space: pre;
       margin: 0;
+      font-variant-ligatures: none;         /* prevent != → ≠ and == → ≡ ligatures */
     }
 
     /* Syntax highlighting */
@@ -323,6 +324,49 @@
     .install {
       background: var(--cream-light);
     }
+
+    /* === Runs Everywhere Section === */
+    .runs-everywhere {
+      background: var(--cream-light);
+      border-bottom: 1px solid rgba(26, 11, 0, 0.06);
+    }
+
+    .runs-block {
+      margin-top: 1.5rem;
+    }
+
+    .runs-block h3 {
+      font-family: 'DM Serif Display', Georgia, serif;
+      font-size: 1.2rem;
+      color: var(--brown-900);
+      margin-bottom: 0.75rem;
+    }
+
+    .runs-note {
+      font-size: 0.95rem;
+      color: var(--brown-500);
+      margin-top: 1rem;
+      line-height: 1.6;
+    }
+
+    .runs-code {
+      background: var(--brown-900);
+      border-radius: 8px;
+      padding: 1.25rem;
+      overflow-x: auto;
+      border: 1px solid rgba(255, 226, 206, 0.1);
+    }
+
+    .runs-code pre {
+      font-size: 0.85rem;
+      line-height: 1.7;
+      color: var(--cream);
+      white-space: pre;
+      margin: 0;
+    }
+
+    .runs-code .cm { color: #975526; font-style: italic; }
+    .runs-code .str { color: #F9E1B8; }
 
     .install-steps {
       background: var(--brown-900);
@@ -464,15 +508,16 @@
         For Agents → SKILL.md
       </a>
     </div>
+    <p style="text-align: center; margin-top: 1rem; font-size: 0.9rem; color: var(--brown-400);">Current Version: <a href="https://github.com/aallan/vera/releases/tag/v0.0.85" style="color: var(--brown-500); font-weight: 500;">v0.0.85</a></p>
   </div>
 
   <!-- Why -->
   <section class="why">
     <div class="container">
       <h2 class="section-heading">Why?</h2>
-      <p>Programming languages have always co-evolved with their users. Assembly emerged from hardware constraints. C from operating system needs. Python from productivity needs. If models become the primary authors of software, it follows that languages should adapt to that.</p>
-      <p>The biggest problem models face isn't syntax it's coherence over scale. Models struggle with maintaining invariants across a codebase, understanding the ripple effects of changes, and reasoning about state over time. They're pattern matchers optimising for local plausibility, not architects holding the entire system in mind.</p>
-      <p>Vera addresses this by making everything explicit and verifiable. The model doesn't need to be right, it just needs to be checkable.</p>
+      <p>Programming languages have always co-evolved with their users. Assembly emerged from hardware constraints. C from operating systems. Python from productivity needs. If models become the primary authors of code, it follows that languages should adapt to that too.</p>
+      <p>The evidence suggests the biggest problem models face isn't syntax, instead it's coherence over scale. Models struggle with maintaining invariants across a codebase, understanding the ripple effects of changes, and reasoning about state over time. They're pattern matchers optimising for local plausibility, not architects holding the entire system in mind. The <a href="https://arxiv.org/abs/2308.15657">empirical literature</a> shows that models are particularly vulnerable to naming-related errors &mdash; choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value.</p>
+      <p>Vera addresses this by making everything explicit and verifiable. The model doesn't need to be right, it needs to be checkable. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification that the compiler can verify against its implementation.</p>
     </div>
   </section>
 
@@ -524,28 +569,28 @@
           <div class="feature-marker"></div>
           <div>
             <div class="feature-title">No variable names</div>
-            <div class="feature-desc">Typed <a href="https://en.wikipedia.org/wiki/De_Bruijn_index">De Bruijn indices</a> (<code>@T.n</code>) replace traditional variable names</div>
+            <div class="feature-desc">Typed <a href="https://en.wikipedia.org/wiki/De_Bruijn_index">De Bruijn indices</a> (<code>@T.n</code>) replace traditional variable names, eliminating naming hallucinations</div>
           </div>
         </div>
         <div class="feature">
           <div class="feature-marker"></div>
           <div>
             <div class="feature-title">Full contracts</div>
-            <div class="feature-desc">Mandatory preconditions, postconditions, invariants, and effect declarations</div>
+            <div class="feature-desc">Mandatory preconditions, postconditions, invariants, and effect declarations on all functions</div>
           </div>
         </div>
         <div class="feature">
           <div class="feature-marker"></div>
           <div>
             <div class="feature-title">Algebraic effects</div>
-            <div class="feature-desc">Declared, typed, and handled explicitly — pure by default</div>
+            <div class="feature-desc">Declared, typed, and handled explicitly &mdash; pure by default</div>
           </div>
         </div>
         <div class="feature">
           <div class="feature-marker"></div>
           <div>
             <div class="feature-title">Refinement types</div>
-            <div class="feature-desc">Types that express constraints like "a list of positive integers of length n"</div>
+            <div class="feature-desc">Types that express constraints like &ldquo;a list of positive integers of length n&rdquo;</div>
           </div>
         </div>
         <div class="feature">
@@ -565,8 +610,29 @@
         <div class="feature">
           <div class="feature-marker"></div>
           <div>
-            <div class="feature-title">Compiles to WebAssembly</div>
-            <div class="feature-desc">Portable, sandboxed execution via wasmtime</div>
+            <div class="feature-title">String interpolation</div>
+            <div class="feature-desc"><code>"\(@Int.0)"</code> with auto-conversion for all primitive types</div>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-marker"></div>
+          <div>
+            <div class="feature-title">Typed Markdown</div>
+            <div class="feature-desc">Built-in <code>MdBlock</code> and <code>MdInline</code> ADTs for structured document processing</div>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-marker"></div>
+          <div>
+            <div class="feature-title">Async/await</div>
+            <div class="feature-desc"><code>Future&lt;T&gt;</code> with declared <code>&lt;Async&gt;</code> effects, integrated into the effect system</div>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-marker"></div>
+          <div>
+            <div class="feature-title">Runs everywhere</div>
+            <div class="feature-desc">Compiles to WebAssembly &mdash; runs at the command line via wasmtime or in any browser with a self-contained JS runtime</div>
           </div>
         </div>
         <div class="feature">
@@ -583,13 +649,6 @@
             <div class="feature-desc">Generate test inputs from contracts via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, compile and run through WASM &mdash; no manual test cases</div>
           </div>
         </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Canonical formatter</div>
-            <div class="feature-desc">One canonical textual form, enforced by <code>vera fmt</code> &mdash; no style choices</div>
-          </div>
-        </div>
       </div>
     </div>
   </section>
@@ -598,19 +657,40 @@
   <section class="code-section">
     <div class="container">
       <h2 class="section-heading">What Vera Looks Like</h2>
-      <p class="code-intro">Every function declares what it requires, what it guarantees, and what effects it performs. Even a one-liner has a full contract.</p>
+      <p class="code-intro">Nothing is implicit. The signature declares parameter types, return type, preconditions, postconditions, and effects. The compiler verifies the contract via SMT solver. Division by zero is not a runtime error &mdash; it is a type error.</p>
       <div class="code-block">
-<pre><span class="kw">effect</span> <span class="ty">IO</span> {
-  <span class="kw">op</span> print(<span class="ty">String</span> -> <span class="ty">Unit</span>);
-}
+<pre><span class="kw">public</span> <span class="kw">fn</span> safe_divide(<span class="sl">@Int</span>, <span class="sl">@Int</span> -> <span class="sl">@Int</span>)
+  <span class="ct">requires</span>(<span class="sl">@Int.1</span> != <span class="num">0</span>)
+  <span class="ct">ensures</span>(<span class="sl">@Int.result</span> == <span class="sl">@Int.0</span> / <span class="sl">@Int.1</span>)
+  <span class="ct">effects</span>(pure)
+{
+  <span class="sl">@Int.0</span> / <span class="sl">@Int.1</span>
+}</pre>
+      </div>
 
-<span class="kw">public</span> <span class="kw">fn</span> main(<span class="sl">@Unit</span> -> <span class="sl">@Unit</span>)
+      <div class="code-subsection">
+        <p class="code-intro">String interpolation, conditionals, and the <code>@T.n</code> slot reference system &mdash; in a program everyone recognises. There are no naming decisions to make, and none to hallucinate.</p>
+        <div class="code-block">
+<pre><span class="kw">public</span> <span class="kw">fn</span> fizzbuzz(<span class="sl">@Nat</span> -> <span class="sl">@String</span>)
   <span class="ct">requires</span>(<span class="num">true</span>)
   <span class="ct">ensures</span>(<span class="num">true</span>)
-  <span class="ct">effects</span>(&lt;<span class="ty">IO</span>&gt;)
+  <span class="ct">effects</span>(pure)
 {
-  <span class="ty">IO</span>.print(<span class="str">"Hello, World!"</span>)
+  <span class="kw">if</span> <span class="sl">@Nat.0</span> % <span class="num">15</span> == <span class="num">0</span> <span class="kw">then</span> {
+    <span class="str">"FizzBuzz"</span>
+  } <span class="kw">else</span> {
+    <span class="kw">if</span> <span class="sl">@Nat.0</span> % <span class="num">3</span> == <span class="num">0</span> <span class="kw">then</span> {
+      <span class="str">"Fizz"</span>
+    } <span class="kw">else</span> {
+      <span class="kw">if</span> <span class="sl">@Nat.0</span> % <span class="num">5</span> == <span class="num">0</span> <span class="kw">then</span> {
+        <span class="str">"Buzz"</span>
+      } <span class="kw">else</span> {
+        <span class="str">"\(<span class="sl">@Nat.0</span>)"</span>
+      }
+    }
+  }
 }</pre>
+        </div>
       </div>
 
       <div class="code-subsection">
@@ -642,6 +722,36 @@
     </div>
   </section>
 
+  <!-- Runs Everywhere -->
+  <section class="runs-everywhere">
+    <div class="container">
+      <h2 class="section-heading">Runs Everywhere</h2>
+      <p style="color: var(--brown-500); font-size: 1.05rem; margin-bottom: 1.5rem;">Vera compiles to WebAssembly. The same <code>.wasm</code> binary runs at the command line via wasmtime or in any browser with a self-contained JavaScript runtime.</p>
+      <div class="runs-block">
+        <h3>Command line</h3>
+        <div class="runs-code">
+<pre><span class="cm">$ vera run examples/hello_world.vera</span>
+Hello, World!
+
+<span class="cm">$ vera run examples/factorial.vera --fn factorial -- 10</span>
+3628800</pre>
+        </div>
+        <p class="runs-note"><code>vera run</code> compiles to WASM and executes via <a href="https://wasmtime.dev/">wasmtime</a>. Use <code>--fn</code> to call any public function and pass arguments after <code>--</code> on the command line.</p>
+      </div>
+      <div class="runs-block">
+        <h3>Browser</h3>
+        <div class="runs-code">
+<pre><span class="cm">$ vera compile --target browser examples/hello_world.vera</span>
+Browser bundle: examples/hello_world_browser/
+  module.wasm
+  runtime.mjs
+  index.html</pre>
+        </div>
+        <p class="runs-note">The browser bundle is self-contained &mdash; open <code>index.html</code> directly, no build step or bundler needed. <code>IO.print</code> writes to the page, <code>IO.read_line</code> uses <code>prompt()</code>, and all other operations work identically to the CLI runtime. Mandatory parity tests enforce this on every PR.</p>
+      </div>
+    </div>
+  </section>
+
   <!-- Install -->
   <section class="install" id="install">
     <div class="container">
@@ -658,11 +768,14 @@ pip install -e ".[dev]"
 <span class="cm"># Check a program</span>
 vera check examples/absolute_value.vera
 
-<span class="cm"># Verify contracts</span>
+<span class="cm"># Verify contracts via Z3</span>
 vera verify examples/safe_divide.vera
 
 <span class="cm"># Compile and run</span>
-vera run examples/hello_world.vera</pre>
+vera run examples/hello_world.vera
+
+<span class="cm"># Compile for the browser</span>
+vera compile --target browser examples/hello_world.vera</pre>
       </div>
 
       <h3 style="font-family: 'DM Serif Display', Georgia, serif; font-size: 1.35rem; color: var(--brown-900); margin-top: 2.5rem; margin-bottom: 0.75rem;">For Agents</h3>
@@ -687,12 +800,13 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
     <div class="container">
       <div class="status-badge">
         <span class="status-dot"></span>
-        Vera is under <a href="https://github.com/aallan/vera/blob/main/README.md#roadmap" class="status-link">active development</a>
+        Vera is under <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md" class="status-link">active development</a>
       </div>
       <p class="status-text">
-        The language specification, parser, type checker, contract verifier, and WASM code generator are functional.
+        The language specification, parser, type checker, contract verifier, WASM code generator, and browser runtime are functional.
         <br>
         <a href="https://github.com/aallan/vera/blob/main/README.md">README</a> ·
+        <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md">Roadmap</a> ·
         <a href="https://github.com/aallan/vera/blob/main/CHANGELOG.md">Changelog</a> ·
         <a href="https://github.com/aallan/vera/blob/main/CONTRIBUTING.md">Contributing</a> ·
         <a href="https://github.com/aallan/vera/issues">Issues</a>

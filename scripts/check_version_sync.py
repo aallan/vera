@@ -28,6 +28,19 @@ def main() -> int:
         print("ERROR: Could not find __version__ in vera/__init__.py", file=sys.stderr)
         return 1
 
+    # docs/index.html — version badge and release link
+    index_html = root / "docs" / "index.html"
+    if index_html.is_file():
+        html_text = index_html.read_text()
+        match = re.search(r"releases/tag/v([^\"]+)", html_text)
+        if match:
+            versions["docs/index.html"] = match.group(1)
+        else:
+            print(
+                "WARNING: Could not find version in docs/index.html",
+                file=sys.stderr,
+            )
+
     # Check they all match
     unique = set(versions.values())
     if len(unique) == 1:
