@@ -23,8 +23,9 @@ vera check file.vera              # Parse and type-check
 vera check --json file.vera       # Type-check with JSON output (for parsing)
 vera verify file.vera             # Type-check + verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON output (for parsing)
-vera compile file.vera            # Compile to .wasm binary
-vera compile --wat file.vera      # Print WAT text (human-readable WASM)
+vera compile file.vera                    # Compile to .wasm binary
+vera compile --wat file.vera              # Print WAT text (human-readable WASM)
+vera compile --target browser file.vera   # Compile + emit browser bundle
 vera run file.vera                # Compile and execute (calls main)
 vera run file.vera --fn f -- 42   # Call function f with argument 42
 vera test file.vera               # Contract-driven testing via Z3 + WASM
@@ -109,7 +110,7 @@ Read `vera/README.md` for architecture docs, module map, and design patterns.
 ### Pipeline
 
 ```
-source -> parse (parser.py) -> transform (transform.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime)
+source -> parse (parser.py) -> transform (transform.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime or browser/runtime.mjs)
 ```
 
 Each stage is a module with a single public API function (`parse_file`, `transform`, `typecheck`, `verify`, `compile`, `execute`, `test`) and is independently testable.
@@ -133,6 +134,8 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 | `vera/codegen/` | Code generation orchestrator (mixin package) |
 | `vera/tester.py` | Contract-driven testing engine |
 | `vera/cli.py` | Command-line interface |
+| `vera/markdown.py` | Markdown parser (host-side implementation) |
+| `vera/browser/` | Browser runtime: JS host bindings, Node.js harness, bundle emission |
 
 ### Testing
 

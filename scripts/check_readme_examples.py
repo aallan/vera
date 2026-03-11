@@ -21,22 +21,13 @@ from pathlib import Path
 
 ALLOWLIST: dict[int, tuple[str, str]] = {
     # =================================================================
-    # MISMATCH — uses unqualified effect operations (get/put) which the
-    # parser treats as regular function calls; the full effect resolution
-    # system is not yet implemented.
-    # =================================================================
-
-    # Section "Algebraic effects" — uses get(()) and put(...) unqualified
-    # 93: ("MISMATCH", "State effect example uses unqualified get/put"),
-
-    # =================================================================
     # FUTURE — uses syntax/types from unimplemented features.
     # When the feature lands, this entry will go stale and CI will flag
     # it for removal (meaning the block should then parse successfully).
     # =================================================================
 
-    # Section "Where this is going" — depends on #57 (Http), #61 (Inference), #147 (Markdown)
-    414: ("FUTURE", "Vision example uses MdBlock, Http, Inference (issues #57, #61, #147)"),
+    # Section "Project Roadmap" — depends on #57 (Http), #61 (Inference)
+    533: ("FUTURE", "Vision example uses Http, Inference effects (issues #57, #61)"),
 }
 
 
