@@ -54,6 +54,7 @@ When adding or modifying built-in functions (registered in `vera/environment.py`
 
 - Python 3.11 or later
 - Git
+- Node.js 22+ *(optional, for browser runtime parity tests)*
 
 ### Installation
 
@@ -68,7 +69,7 @@ pre-commit install
 
 ### Pre-commit Hooks
 
-After running `pre-commit install`, every commit is automatically checked for:
+After running `pre-commit install`, every commit is automatically checked by 15 hooks including:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -76,7 +77,10 @@ After running `pre-commit install`, every commit is automatically checked for:
 - Python debug statements
 - mypy type checking
 - pytest test suite
-- All `.vera` examples type-check cleanly
+- All 52 conformance programs pass their declared level
+- All 23 `.vera` examples type-check and verify cleanly
+- README, SKILL.md, and spec code blocks parse correctly
+- Browser parity (JS runtime matches Python runtime)
 
 ### Running Tests
 
@@ -98,9 +102,11 @@ mypy vera/
 ### Validation Scripts
 
 ```bash
-python scripts/check_examples.py         # verify all .vera examples
+python scripts/check_conformance.py      # verify all 52 conformance programs
+python scripts/check_examples.py         # verify all 23 .vera examples
 python scripts/check_spec_examples.py    # verify spec code blocks parse
 python scripts/check_readme_examples.py  # verify README code blocks parse
+python scripts/check_skill_examples.py   # verify SKILL.md code blocks parse
 python scripts/check_version_sync.py     # verify version consistency
 ```
 

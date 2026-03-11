@@ -183,7 +183,7 @@ The language specification is in draft across 13 chapters:
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (2,003 tests across 20 files, testing compiler internals), a **conformance suite** (52 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (23 end-to-end demos). The compiler has 90% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations. Every commit validates all conformance programs, example programs, and 95 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
+Testing is organized in three layers: **unit tests** (2,237 tests across 22 files, testing compiler internals and browser parity), a **conformance suite** (52 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (23 end-to-end demos). The compiler has 91% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and 148 specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference -- coverage tables, conformance suite details, CI pipeline, and infrastructure.
 
 ### Known Bugs
 

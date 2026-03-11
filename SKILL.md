@@ -9,7 +9,7 @@ Vera is a programming language designed for LLMs to write. It uses typed slot re
 
 ## Installation
 
-Vera requires Python 3.11 or later. Install it from the repository:
+Vera requires Python 3.11 or later. Node.js 22+ is optional (only needed for `vera compile --target browser` and browser parity tests). Install from the repository:
 
 ```bash
 git clone https://github.com/aallan/vera.git && cd vera
