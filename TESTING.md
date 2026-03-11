@@ -11,7 +11,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **Conformance programs** | 52 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 23, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 148 parseable blocks from 13 spec chapters: 81 parse, 67 type-check, 66 verify |
-| **README code blocks** | 7 Vera blocks (6 validated, 1 allowlisted future syntax) |
+| **README code blocks** | 9 Vera blocks (8 validated, 1 allowlisted future syntax) |
 | **Contract verification** | 131 of 138 contracts (94.9%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) + browser parity (Node.js 22) |
 
@@ -65,7 +65,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_browser.py` | 56 | 705 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, and all compilable examples |
 | `test_conformance.py` | 260 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 52 programs |
-| `test_readme.py` | 2 | 78 | README code sample parsing |
+| `test_readme.py` | 2 | 79 | README code sample parsing |
 
 ## Conformance Suite
 

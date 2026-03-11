@@ -314,6 +314,43 @@ def main() -> int:
             )
 
     # ------------------------------------------------------------------
+    # 9. Check README.md
+    # ------------------------------------------------------------------
+
+    readme_md = (root / "README.md").read_text()
+
+    def check_readme(pattern: str, expected: int, label: str) -> None:
+        m = re.search(pattern, readme_md)
+        if not m:
+            return  # Pattern absent from README is OK — not all counts appear
+        doc_val = int(m.group(1).replace(",", ""))
+        if doc_val != expected:
+            errors.append(
+                f"README.md {label}: doc says {doc_val}, live is {expected}"
+            )
+
+    check_readme(
+        r"([\d,]+) tests across",
+        live_total_tests,
+        "total tests",
+    )
+    check_readme(
+        r"tests across (\d+) files",
+        live_test_files,
+        "test file count",
+    )
+    check_readme(
+        r"(\d+) programs across \d+ spec",
+        live_conformance,
+        "conformance programs",
+    )
+    check_readme(
+        r"(\d+) end-to-end",
+        live_examples,
+        "example count",
+    )
+
+    # ------------------------------------------------------------------
     # Report
     # ------------------------------------------------------------------
 

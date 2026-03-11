@@ -75,7 +75,7 @@ repos:
         entry: .venv/bin/python scripts/check_doc_counts.py
         language: system
         pass_filenames: false
-        files: '(TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
+        files: '(README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
 
       - id: browser-parity
         name: browser parity
