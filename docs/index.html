@@ -751,7 +751,7 @@ Browser bundle: examples/hello_world_browser/
   runtime.mjs
   index.html</pre>
         </div>
-        <p class="runs-note">The browser bundle is self-contained &mdash; open <code>index.html</code> directly, no build step or bundler needed. <code>IO.print</code> writes to the page, <code>IO.read_line</code> uses <code>prompt()</code>, and all other operations work identically to the CLI runtime. Mandatory parity tests enforce this on every PR.</p>
+        <p class="runs-note">The browser bundle is self-contained &mdash; no build step or bundler needed. Serve the output directory with any HTTP server (<code>python&nbsp;-m&nbsp;http.server</code>) and open <code>index.html</code>. <code>IO.print</code> writes to the page, <code>IO.read_line</code> uses <code>prompt()</code>, and all other operations work identically to the CLI runtime. Mandatory parity tests enforce this on every PR.</p>
       </div>
     </div>
   </section>

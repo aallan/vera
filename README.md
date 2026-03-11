@@ -288,7 +288,7 @@ Browser bundle: examples/hello_world_browser/
   index.html
 ```
 
-This produces a ready-to-serve directory. Open `index.html` in any browser — no build step, no bundler, no dependencies. The JavaScript runtime provides browser-appropriate implementations of all Vera host bindings: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, and all other operations (State, contracts, Markdown) work identically to the Python runtime. Mandatory parity tests enforce this on every PR.
+This produces a ready-to-serve directory — no build step, no bundler, no dependencies. Serve it with any HTTP server (`python -m http.server`) and open `index.html`. The JavaScript runtime provides browser-appropriate implementations of all Vera host bindings: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, and all other operations (State, contracts, Markdown) work identically to the Python runtime. Mandatory parity tests enforce this on every PR.
 
 The runtime also works in Node.js:
 
