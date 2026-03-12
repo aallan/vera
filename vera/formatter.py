@@ -245,6 +245,12 @@ def _attach_comments(
             anchors.append(tld.span.line)
             if tld.span.end_line > last_end:
                 last_end = tld.span.end_line
+        # Interior anchors let comments inside function bodies attach
+        # to the statement/expression they precede rather than falling
+        # to the footer.  last_end stays top-level-only so that the
+        # header/footer boundary is unaffected.
+        if isinstance(tld.decl, FnDecl):
+            _collect_interior_anchors(tld.decl, anchors)
 
     # Also consider module/import spans
     first_code_line = 0
@@ -288,6 +294,36 @@ def _attach_comments(
 
     return _Attached(before=before, inline=inline,
                      header=header, footer=footer)
+
+
+def _collect_interior_anchors(node: object, anchors: list[int]) -> None:
+    """Recursively collect span start lines from interior AST nodes.
+
+    Walks into blocks, if branches, match arm blocks, handler bodies,
+    and where functions to find every statement and result-expression
+    position that the formatter emits on its own line.
+    """
+    if isinstance(node, Block):
+        for stmt in node.statements:
+            if stmt.span:
+                anchors.append(stmt.span.line)
+        if node.expr.span:
+            anchors.append(node.expr.span.line)
+        # Recurse into the result expression for nested multi-line forms
+        _collect_interior_anchors(node.expr, anchors)
+    elif isinstance(node, IfExpr):
+        _collect_interior_anchors(node.then_branch, anchors)
+        _collect_interior_anchors(node.else_branch, anchors)
+    elif isinstance(node, MatchExpr):
+        for arm in node.arms:
+            _collect_interior_anchors(arm.body, anchors)
+    elif isinstance(node, HandleExpr):
+        _collect_interior_anchors(node.body, anchors)
+    elif isinstance(node, FnDecl):
+        _collect_interior_anchors(node.body, anchors)
+        if node.where_fns:
+            for wfn in node.where_fns:
+                _collect_interior_anchors(wfn, anchors)
 
 
 # =====================================================================
@@ -695,7 +731,11 @@ class Formatter:
     def _emit_block_body(self, block: Block) -> None:
         """Emit the interior of a block (statements then expression)."""
         for stmt in block.statements:
+            if stmt.span:
+                self._emit_comments(stmt.span.line)
             self._emit_stmt(stmt)
+        if block.expr.span:
+            self._emit_comments(block.expr.span.line)
         self._emit_block_expr(block.expr)
 
     def _emit_block_expr(self, expr: Expr) -> None:
