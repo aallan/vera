@@ -718,7 +718,9 @@ The IO effect is built-in — no declaration is needed. It provides seven operat
 | `IO.exit` | `Int -> Never` | Exit with status code |
 | `IO.get_env` | `String -> Option<String>` | Read environment variable |
 
-If you declare `effect IO { op print(String -> Unit); }` explicitly, that overrides the built-in and only the declared operations are available.
+If you declare `effect IO { op print(String -> Unit); }` explicitly, that overrides the built-in and only the declared operations are available. Most examples do this — declaring only `print` — because it follows the principle of least privilege: a program that only declares `op print` cannot accidentally perform file I/O or call `exit`.
+
+**Why IO works differently from State and Async:** IO has 7 operations and programs choose which ones they need. State and Async have fixed, minimal operation sets (State: `get`/`put`; Async: no operations, it is a marker effect), so there is nothing to restrict.
 
 ### Performing effects
 
@@ -986,6 +988,41 @@ See: spec Chapter 8 for the full module system specification.
 | 8 | `*` `/` `%` | left |
 | 9 | `!` `-` (unary) | prefix |
 | 10 | `[]` (index) `()` (call) | postfix |
+
+## Best Practices
+
+### Keep functions small
+
+Vera's De Bruijn slot references (`@T.n`) are clear when functions have 2–3 parameters of different types. They become harder to track with 4+ parameters of the same type or long let-chains where indices shift with each binding.
+
+**Guidelines:**
+- Keep functions under ~5 parameters total
+- When multiple parameters share a type, prefer breaking into smaller helper functions or where-functions
+- Break long let-chains (4+ bindings of the same type) into where-functions — they create fresh scopes with reset slot indices
+- Commutative operations (`+`, `*`) mask index errors; be especially careful with non-commutative operations (`-`, `/`, `<`, `>`) and recursive calls
+
+### Use where-functions for complex logic
+
+Where-functions are private helpers scoped to their parent function. They reset the slot index namespace, making code easier to reason about:
+
+```vera
+public fn process(@Int, @Int, @String -> @Int)
+  requires(@Int.1 > 0)
+  ensures(true)
+  effects(pure)
+{
+  compute(@Int.1, @Int.0, string_length(@String.0))
+}
+where {
+  fn compute(@Int, @Int, @Int -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    (@Int.2 + @Int.1) * @Int.0
+  }
+}
+```
 
 ## Common Mistakes
 
