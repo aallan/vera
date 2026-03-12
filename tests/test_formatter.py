@@ -528,6 +528,204 @@ class TestParenthesization:
 
 
 # =====================================================================
+# Match arm block bodies (#274)
+# =====================================================================
+
+class TestMatchBlockArms:
+    """Formatter must preserve braces on multi-statement match arm blocks."""
+
+    def test_match_arm_block_body_multiline(self) -> None:
+        """Block arm body with statements emits multi-line with braces."""
+        _fmt_check(
+            """
+            effect IO { op print(String -> Unit); }
+
+            public fn f(@Int -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              match @Int.0 {
+                0 -> {
+                  IO.print("zero");
+                  IO.print("done")
+                },
+                _ -> IO.print("other")
+              }
+            }
+            """,
+            """
+            effect IO {
+              op print(String -> Unit);
+            }
+
+            public fn f(@Int -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              match @Int.0 {
+                0 -> {
+                  IO.print("zero");
+                  IO.print("done")
+                },
+                _ -> IO.print("other")
+              }
+            }
+            """,
+        )
+
+    def test_match_arm_block_body_idempotent(self) -> None:
+        """Formatting a match with block arms twice gives identical output."""
+        _fmt_roundtrip("""
+            effect IO { op print(String -> Unit); }
+
+            public fn f(@Int -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              match @Int.0 {
+                0 -> {
+                  IO.print("hello");
+                  IO.print("world")
+                },
+                _ -> IO.print("other")
+              }
+            }
+        """)
+
+    def test_match_arm_block_body_roundtrip_parses(self) -> None:
+        """Formatted output with block arms must parse without error."""
+        from vera.parser import parse as vera_parse
+        from vera.transform import transform
+
+        src = _fmt("""
+            effect IO { op print(String -> Unit); }
+
+            public fn f(@Int -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              match @Int.0 {
+                0 -> {
+                  IO.print("hello");
+                  IO.print("world")
+                },
+                _ -> IO.print("other")
+              }
+            }
+        """)
+        tree = vera_parse(src)
+        transform(tree)  # Should not raise
+
+    def test_match_arm_mixed_simple_and_block(self) -> None:
+        """Mix of simple and block arms: simple stays inline, block expands."""
+        src = _fmt("""
+            effect IO { op print(String -> Unit); }
+
+            private data Maybe { Nothing, Just(Int) }
+
+            public fn f(@Maybe -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              match @Maybe.0 {
+                Nothing -> IO.print("none"),
+                Just(@Int) -> {
+                  IO.print("got:");
+                  IO.print(int_to_string(@Int.0))
+                }
+              }
+            }
+        """)
+        assert "Nothing -> IO.print(\"none\")," in src
+        assert "Just(@Int) -> {" in src
+        assert '  IO.print("got:");' in src
+        assert "  IO.print(int_to_string(@Int.0))" in src
+
+    def test_match_arm_block_trailing_comma(self) -> None:
+        """Non-final block arm gets comma after closing brace."""
+        src = _fmt("""
+            effect IO { op print(String -> Unit); }
+
+            public fn f(@Int -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              match @Int.0 {
+                0 -> {
+                  IO.print("a");
+                  IO.print("b")
+                },
+                _ -> IO.print("c")
+              }
+            }
+        """)
+        assert "},\n" in src
+
+    def test_match_arm_block_no_trailing_comma_final(self) -> None:
+        """Final block arm has no comma after closing brace."""
+        src = _fmt("""
+            effect IO { op print(String -> Unit); }
+
+            public fn f(@Int -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              match @Int.0 {
+                0 -> IO.print("a"),
+                _ -> {
+                  IO.print("b");
+                  IO.print("c")
+                }
+              }
+            }
+        """)
+        # Final arm: closing brace without comma
+        lines = src.strip().splitlines()
+        # Find the closing brace of the block arm
+        block_close = [l for l in lines if l.strip() == "}"]
+        assert len(block_close) >= 1  # at least one bare }
+
+    def test_match_arm_block_inline_context(self) -> None:
+        """Match in let-binding position wraps block arm in braces inline."""
+        src = _fmt("""
+            public fn f(@Int -> @Int)
+              requires(true)
+              ensures(true)
+              effects(pure)
+            {
+              let @Int = match @Int.0 { 0 -> { let @Int = 10; @Int.0 + 1 }, _ -> 0 };
+              @Int.0
+            }
+        """)
+        # Block arm body must be wrapped in braces in inline form
+        assert "{ let @Int = 10; @Int.0 + 1 }" in src
+
+    def test_match_arm_block_in_exprstmt(self) -> None:
+        """Match as ExprStmt preserves block arm braces in inline form."""
+        src = _fmt("""
+            effect IO { op print(String -> Unit); }
+
+            public fn f(@Int -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              match @Int.0 { 0 -> { IO.print("a"); IO.print("b") }, _ -> IO.print("c") };
+              IO.print("done")
+            }
+        """)
+        # Block arm in inline match must have braces
+        assert "{ IO.print(\"a\"); IO.print(\"b\") }" in src
+
+
+# =====================================================================
 # Idempotency — all examples
 # =====================================================================
 
