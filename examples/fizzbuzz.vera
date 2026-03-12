@@ -23,7 +23,7 @@ public fn fizzbuzz(@Nat -> @String)
 }
 
 private fn loop(@Nat, @Nat -> @Unit)
-  requires(true)
+  requires(@Nat.0 <= @Nat.1)
   ensures(true)
   effects(<IO>)
 {

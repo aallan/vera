@@ -160,6 +160,9 @@ class SmtContext:
         self._module_fn_lookup = module_fn_lookup
         self._call_violations: list[CallViolation] = []
         self._fresh_counter: int = 0
+        # Path conditions accumulated from if/match branches so that
+        # call-site precondition checks can see which branch is active.
+        self._path_conditions: list[z3.ExprRef] = []
         # ADT support
         self._adt_registry: dict[str, AdtInfo] = {}
         self._ctor_to_adt: dict[str, str] = {}  # ctor name → ADT name
@@ -500,11 +503,32 @@ class SmtContext:
     def _translate_if(
         self, expr: ast.IfExpr, env: SlotEnv
     ) -> z3.ExprRef | None:
-        """Translate if-then-else to Z3 If."""
+        """Translate if-then-else to Z3 If.
+
+        Tracks the branch condition in ``_path_conditions`` while
+        translating each branch so that call-site precondition checks
+        (via ``check_valid``) can see which branch is active.
+        """
         cond = self.translate_expr(expr.condition, env)
+        if cond is None:
+            # Can't translate condition — no path condition available
+            then = self.translate_expr(expr.then_branch, env)
+            else_ = self.translate_expr(expr.else_branch, env)
+            if then is None or else_ is None:
+                return None
+            return None
+
+        # Translate then-branch with cond as path condition
+        self._path_conditions.append(cond)
         then = self.translate_expr(expr.then_branch, env)
+        self._path_conditions.pop()
+
+        # Translate else-branch with Not(cond) as path condition
+        self._path_conditions.append(z3.Not(cond))
         else_ = self.translate_expr(expr.else_branch, env)
-        if cond is None or then is None or else_ is None:
+        self._path_conditions.pop()
+
+        if then is None or else_ is None:
             return None
         return z3.If(cond, then, else_)
 
@@ -717,7 +741,12 @@ class SmtContext:
     def _translate_match(
         self, expr: ast.MatchExpr, env: SlotEnv
     ) -> z3.ExprRef | None:
-        """Translate a match expression to a Z3 If-chain."""
+        """Translate a match expression to a Z3 If-chain.
+
+        Tracks pattern conditions in ``_path_conditions`` while
+        translating each arm's body so that call-site precondition
+        checks can see which arm is active.
+        """
         scrutinee = self.translate_expr(expr.scrutinee, env)
         if scrutinee is None:
             return None
@@ -727,11 +756,25 @@ class SmtContext:
         if not arms:
             return None
 
+        # Collect preceding arm conditions for the default case
+        preceding_conds: list[z3.ExprRef] = []
+        for arm in arms[:-1]:
+            pc = self._pattern_condition(scrutinee, arm.pattern)
+            if pc is not None:
+                preceding_conds.append(pc)
+
         # Translate last arm body (default case)
         last_env = self._bind_pattern(scrutinee, arms[-1].pattern, env)
         if last_env is None:
             return None
+
+        # Default arm: none of the preceding patterns matched
+        for pc in preceding_conds:
+            self._path_conditions.append(z3.Not(pc))
         result = self.translate_expr(arms[-1].body, last_env)
+        for _ in preceding_conds:
+            self._path_conditions.pop()
+
         if result is None:
             return None
 
@@ -743,7 +786,11 @@ class SmtContext:
             arm_env = self._bind_pattern(scrutinee, arm.pattern, env)
             if arm_env is None:
                 return None
+
+            self._path_conditions.append(cond)
             arm_body = self.translate_expr(arm.body, arm_env)
+            self._path_conditions.pop()
+
             if arm_body is None:
                 return None
             result = z3.If(cond, arm_body, result)
@@ -900,6 +947,8 @@ class SmtContext:
         """Check if assumptions ⟹ goal is valid.
 
         Uses refutation: assert assumptions and ¬goal.
+        Also includes any accumulated ``_path_conditions`` from
+        if/match branches so branch-guarded preconditions verify.
         - unsat → goal always holds (verified)
         - sat → counterexample found (violated)
         - unknown → solver timeout or incomplete (unknown)
@@ -907,6 +956,8 @@ class SmtContext:
         self.solver.push()
         for a in assumptions:
             self.solver.add(a)
+        for pc in self._path_conditions:
+            self.solver.add(pc)
         self.solver.add(z3.Not(goal))
 
         result = self.solver.check()
