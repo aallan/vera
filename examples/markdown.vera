@@ -7,19 +7,6 @@ effect IO {
   op print(String -> Unit);
 }
 
--- Process a parsed Markdown document: query headings, code blocks, and render.
-private fn process_doc(@MdBlock -> @Unit)
-  requires(true)
-  ensures(true)
-  effects(<IO>)
-{
-  if md_has_heading(@MdBlock.0, 1) then { IO.print("Has title heading") } else { IO.print("No title heading") };
-  if md_has_code_block(@MdBlock.0, "vera") then { IO.print("Has Vera code") } else { IO.print("No Vera code") };
-  let @Array<String> = md_extract_code_blocks(@MdBlock.0, "vera");
-  IO.print(int_to_string(array_length(@Array<String>.0)));
-  IO.print(md_render(@MdBlock.0))
-}
-
 -- Parse a Markdown string and process the result.
 public fn main(@Unit -> @Unit)
   requires(true)
@@ -28,7 +15,13 @@ public fn main(@Unit -> @Unit)
 {
   let @Result<MdBlock, String> = md_parse("# Welcome\n\nHello, **world**!\n\n```vera\nlet x = 42\n```");
   match @Result<MdBlock, String>.0 {
-    Ok(@MdBlock) -> process_doc(@MdBlock.0),
+    Ok(@MdBlock) -> {
+      if md_has_heading(@MdBlock.0, 1) then { IO.print("Has title heading") } else { IO.print("No title heading") };
+      if md_has_code_block(@MdBlock.0, "vera") then { IO.print("Has Vera code") } else { IO.print("No Vera code") };
+      let @Array<String> = md_extract_code_blocks(@MdBlock.0, "vera");
+      IO.print(int_to_string(array_length(@Array<String>.0)));
+      IO.print(md_render(@MdBlock.0))
+    },
     Err(@String) -> IO.print(@String.0)
   }
 }

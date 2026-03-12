@@ -753,8 +753,16 @@ class Formatter:
         for i, arm in enumerate(expr.arms):
             comma = "," if i < len(expr.arms) - 1 else ""
             pat = self._fmt_pattern(arm.pattern)
-            body = self._fmt_expr(arm.body)
-            self._line(f"{pat} -> {body}{comma}")
+            if isinstance(arm.body, Block) and arm.body.statements:
+                # Multi-statement block: emit multi-line with braces
+                self._line(f"{pat} -> {{")
+                self._indent_inc()
+                self._emit_block_body(arm.body)
+                self._indent_dec()
+                self._line(f"}}{comma}")
+            else:
+                body = self._fmt_expr(arm.body)
+                self._line(f"{pat} -> {body}{comma}")
         self._indent_dec()
         self._line("}")
 
@@ -957,10 +965,16 @@ class Formatter:
         """Format match as inline."""
         scrut = self._fmt_expr(expr.scrutinee)
         arms = ", ".join(
-            f"{self._fmt_pattern(a.pattern)} -> {self._fmt_expr(a.body)}"
+            f"{self._fmt_pattern(a.pattern)} -> {self._fmt_arm_body(a.body)}"
             for a in expr.arms
         )
         return f"match {scrut} {{ {arms} }}"
+
+    def _fmt_arm_body(self, body: Expr) -> str:
+        """Format a match arm body, wrapping multi-statement blocks in braces."""
+        if isinstance(body, Block) and body.statements:
+            return f"{{ {self._fmt_block_inline(body)} }}"
+        return self._fmt_expr(body)
 
     def _fmt_handle_inline(self, expr: HandleExpr) -> str:
         """Format handle as inline (shouldn't normally be needed)."""
