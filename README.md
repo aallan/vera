@@ -581,9 +581,29 @@ For compiler architecture, pipeline internals, and how to extend the compiler, s
 
 Testing is organized in three layers: **unit tests** (2,330 tests across 24 files, testing compiler internals and browser parity), a **conformance suite** (54 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (25 end-to-end demos). The compiler has 91% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
 
-### Known Bugs
+### Known Bugs and Limitations
+
+#### Bugs
 
 No open issues.
+
+#### Limitations
+
+| Limitation | Issue |
+|-----------|-------|
+| Incremental compilation | [#56](https://github.com/aallan/vera/issues/56) |
+| Module re-exports | [#127](https://github.com/aallan/vera/issues/127) |
+| Package system and registry | [#130](https://github.com/aallan/vera/issues/130) |
+| LSP server | [#222](https://github.com/aallan/vera/issues/222) |
+| REPL | [#224](https://github.com/aallan/vera/issues/224) |
+| Typed holes for partial programs | [#226](https://github.com/aallan/vera/issues/226) |
+| Date and time handling | [#233](https://github.com/aallan/vera/issues/233) |
+| Cryptographic hashing | [#235](https://github.com/aallan/vera/issues/235) |
+| CSV parsing and generation | [#236](https://github.com/aallan/vera/issues/236) |
+| WASI 0.2 compliance | [#237](https://github.com/aallan/vera/issues/237) |
+| Resource limits (fuel, memory, timeout) | [#239](https://github.com/aallan/vera/issues/239) |
+| Combinator bare-constructor type inference | [#293](https://github.com/aallan/vera/issues/293) |
+| Effect row variable unification | [#294](https://github.com/aallan/vera/issues/294) |
 
 ## Project Roadmap
 

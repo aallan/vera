@@ -324,7 +324,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-After running `pre-commit install`, every commit is checked by 17 hooks:
+After running `pre-commit install`, every commit is checked by 18 hooks:
 
 | Hook | What it does |
 |------|-------------|
@@ -343,6 +343,7 @@ After running `pre-commit install`, every commit is checked by 17 hooks:
 | `check_skill_examples.py` | SKILL.md code blocks parse correctly |
 | `check_html_examples.py` | HTML landing page code blocks pass parse + check + verify |
 | `check_doc_counts.py` | Counts in docs match live codebase |
+| `check_limitations_sync.py` | Limitation tables consistent across README, vera/README, and spec |
 | `browser parity` | Browser runtime produces identical output to Python runtime |
 
 The validation hooks are smart about triggers -- they only run when relevant files change (`.vera`, `vera/**/*.py`, `grammar.lark`, the corresponding Markdown file, or `vera/browser/*` for browser parity).

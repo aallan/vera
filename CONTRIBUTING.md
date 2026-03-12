@@ -69,7 +69,7 @@ pre-commit install
 
 ### Pre-commit Hooks
 
-After running `pre-commit install`, every commit is automatically checked by 17 hooks including:
+After running `pre-commit install`, every commit is automatically checked by 18 hooks including:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
