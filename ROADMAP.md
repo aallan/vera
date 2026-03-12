@@ -1,6 +1,6 @@
 # Roadmap
 
-Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next.
+Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. The core language and compiler are complete through v0.0.88. What remains is standard library, effects, and ecosystem — the gap between a working language and a viable agent target.
 
 | Phase | Version | Layer | Status |
 |-------|---------|-------|--------|
@@ -13,9 +13,96 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C6.5 | [v0.0.25](https://github.com/aallan/vera/releases/tag/v0.0.25)–[v0.0.30](https://github.com/aallan/vera/releases/tag/v0.0.30) | **Codegen cleanup** — handler fixes, missing operators, String/Array support | Done |
 | C7 | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31)–[v0.0.39](https://github.com/aallan/vera/releases/tag/v0.0.39) | **Module system** — cross-file imports, visibility, multi-module compilation | Done |
 | C8 | [v0.0.40](https://github.com/aallan/vera/releases/tag/v0.0.40)–[v0.0.65](https://github.com/aallan/vera/releases/tag/v0.0.65) | **Polish** — refactoring, tooling, diagnostics, verification depth, codegen gaps | Done |
-| C8.5 | — | **Completeness** — module refinements, lexical extensions, IO runtime | In progress |
-| C9 | — | **Language design** — abilities, new effects, stdlib extensions | In progress |
-| C10 | — | **Ecosystem** — package management and registry | In progress |
+| C8.5 | [v0.0.66](https://github.com/aallan/vera/releases/tag/v0.0.66)–[v0.0.88](https://github.com/aallan/vera/releases/tag/v0.0.88) | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
+
+## Where we are
+
+**v0.0.88** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 68 built-in functions, a module system, algebraic effect handlers, a 53-program conformance suite, a canonical formatter, and contract-driven testing. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
+
+Most remaining features are gated by a single dependency chain:
+
+**Abilities ([#60](https://github.com/aallan/vera/issues/60)) → Map ([#62](https://github.com/aallan/vera/issues/62)) → JSON ([#58](https://github.com/aallan/vera/issues/58)) → HTTP ([#57](https://github.com/aallan/vera/issues/57))**
+
+Abilities introduce type constraints (`Eq`, `Hash`, `Show`). Map needs abilities for key constraints. JSON needs Map for `JObject`. HTTP needs JSON for request/response bodies. Unblocking abilities unblocks the entire chain.
+
+## What's next
+
+```
+Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave)
+─────────────────           ──────────────────                ──────────────────
+#211 Combinators            #60 Abilities ─┐                  #289 Prelude
+#133 Array slice            #133 map/fold ←┘─┐                #226 Typed holes
+#288 Naming audit                #62 Map ←───┘─┐              #233 DateTime
+                                 #58 JSON ←────┘─┐            #235 Crypto
+                                 #57 HTTP ←──────┘            #61 Inference
+```
+
+### Tier 0 — Ship now
+
+No blocking dependencies. Highest value-per-effort.
+
+- [#211](https://github.com/aallan/vera/issues/211) **Option/Result combinators** — pure Vera functions, no compiler changes. Eliminates 5-line match blocks for every fallible operation. Fundamental enough for a standard prelude.
+- [#133](https://github.com/aallan/vera/issues/133) **Array `slice`** — the `slice` operation has no abilities dependency and can ship independently of `map`/`fold`/`filter`. Unblocks basic array manipulation.
+- [#288](https://github.com/aallan/vera/issues/288) **Built-in function naming audit** — four naming patterns where there should be one or two. Must happen before new functions ship to establish the convention they follow. Breaking change — do it early.
+
+### Tier 1 — Critical path
+
+The chain that unlocks agent-viable data processing. Each item depends on the previous.
+
+1. [#60](https://github.com/aallan/vera/issues/60) **Abilities and type constraints** — highest-leverage foundation work. Every item below is transitively blocked by this. The viability assessment's "60–70%" verdict is largely gated here.
+2. [#133](https://github.com/aallan/vera/issues/133) **Array `map`/`fold`/`filter`** (remainder) — requires abilities for generic iteration. The iteration verbosity tax — 12-line recursive loop vs 1-line `map`, multiplied across every data transformation — is the single biggest usability gap for agent workloads.
+3. [#62](https://github.com/aallan/vera/issues/62) **Map and Set collections** — requires abilities for key constraints (`Eq + Hash`). Unlocks structured data handling.
+4. [#58](https://github.com/aallan/vera/issues/58) **JSON type** — requires Map for `JObject`. Without JSON parsing and serialisation, Vera cannot participate in any API integration workflow.
+5. [#57](https://github.com/aallan/vera/issues/57) **HTTP effect** — requires JSON for request/response bodies. Completes the chain: a Vera program can make an HTTP call, parse the JSON response, and return typed, verified data.
+
+### Tier 2 — Interleave as opportunities arise
+
+Independent of the Tier 1 chain. Can be scheduled between Tier 1 items or in parallel.
+
+- [#289](https://github.com/aallan/vera/issues/289) **Standard prelude** — eliminates 2–6 lines of identical boilerplate in every program that uses `Result` or `Option`
+- [#226](https://github.com/aallan/vera/issues/226) **Typed holes** — partial program generation; type context at hole sites improves LLM completion quality
+- [#233](https://github.com/aallan/vera/issues/233) **Date and time** (ISO 8601) — agent workloads frequently need timestamps
+- [#235](https://github.com/aallan/vera/issues/235) **Cryptographic hashing** (SHA-256, HMAC) — needed for API authentication (webhook signatures, OAuth)
+- [#61](https://github.com/aallan/vera/issues/61) **Inference effect** — `effects(<Inference>)` in a signature means "this function calls an LLM, and you can mock it for testing." The feature that most differentiates Vera from Dafny as a verification target, and the one that positions it as the natural language for verified LLM orchestration.
+
+### Remaining completeness
+
+Items from the original compiler phases not yet done:
+
+- [#187](https://github.com/aallan/vera/issues/187) → [#127](https://github.com/aallan/vera/issues/127) Module-qualified call disambiguation → module re-exports (sequential dependency)
+- [#263](https://github.com/aallan/vera/issues/263) CLI argument passing: strings, floats, typed dispatch
+- [#169](https://github.com/aallan/vera/issues/169) → [#170](https://github.com/aallan/vera/issues/170) `vera test` Float64/compound input generation → hypothesis integration (sequential)
+
+### Tooling and ecosystem
+
+Lower priority than data-format support but important for adoption.
+
+- [#222](https://github.com/aallan/vera/issues/222) **LSP server** — the standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf); the existing `--json` infrastructure is a solid foundation to build on
+- [#224](https://github.com/aallan/vera/issues/224) REPL
+- [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — a HumanEval/MBPP-style benchmark adapted for Vera would quantify LLM code generation progress and attract research attention. DafnyBench demonstrated that verification success rates can improve from 68% to 96% over one year of tracking.
+- [#56](https://github.com/aallan/vera/issues/56) Incremental compilation
+- [#237](https://github.com/aallan/vera/issues/237) WASI 0.2 compliance
+- [#238](https://github.com/aallan/vera/issues/238) Component Model (WIT) interop
+- [#239](https://github.com/aallan/vera/issues/239) Resource limit configuration (fuel, memory, timeout)
+- [#163](https://github.com/aallan/vera/issues/163) Standalone WASM runtime package
+- [#130](https://github.com/aallan/vera/issues/130) Package system and registry
+- [#143](https://github.com/aallan/vera/issues/143) Comprehensive example programs
+- [#181](https://github.com/aallan/vera/issues/181) Signature refactoring (mechanical slot index rewriting)
+- [#183](https://github.com/aallan/vera/issues/183) Human-readable slot annotations
+
+### Additional effects
+
+Future effect types for extended agent workloads:
+
+- [#227](https://github.com/aallan/vera/issues/227) `<Timeout>` — timeout and cancellation
+- [#228](https://github.com/aallan/vera/issues/228) `<WebSocket>` / `<SSE>` — streaming clients
+- [#229](https://github.com/aallan/vera/issues/229) `<DB>` — database access
+- [#236](https://github.com/aallan/vera/issues/236) CSV parsing and generation
+- [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` — custom scheduling strategies
+
+---
+
+## Completed phases
 
 <details>
 <summary>C6 — Codegen Completeness (<a href="https://github.com/aallan/vera/releases/tag/v0.0.10">v0.0.10</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.24">v0.0.24</a>) ✓</summary>
@@ -120,96 +207,40 @@ C8 addressed accumulated technical debt and UX gaps before v0.1.0. Issues were g
 
 </details>
 
-## Working on C8.5 — Completeness
+<details>
+<summary>C8.5 — Completeness (<a href="https://github.com/aallan/vera/releases/tag/v0.0.66">v0.0.66</a>–<a href="https://github.com/aallan/vera/releases/tag/v0.0.88">v0.0.88</a>) ✓</summary>
 
-Module refinements, lexical extensions, and IO runtime — completing the existing language before adding new features.
-
-**Builtin extensions** — independent of each other, no module deps
-
-- <del>[#199](https://github.com/aallan/vera/issues/199) numeric math builtins</del> ([v0.0.70](https://github.com/aallan/vera/releases/tag/v0.0.70))
-- <del>[#200](https://github.com/aallan/vera/issues/200) parsing completeness (parse_int, parse_bool, safe parse_float64)</del> ([v0.0.77](https://github.com/aallan/vera/releases/tag/v0.0.77))
-- <del>[#198](https://github.com/aallan/vera/issues/198) string search and transformation builtins</del> ([v0.0.73](https://github.com/aallan/vera/releases/tag/v0.0.73))
-- <del>[#208](https://github.com/aallan/vera/issues/208) numeric type conversions</del> ([v0.0.71](https://github.com/aallan/vera/releases/tag/v0.0.71))
-- <del>[#209](https://github.com/aallan/vera/issues/209) array construction builtins (range, append, concat)</del>
-- <del>[#210](https://github.com/aallan/vera/issues/210) from_char_code builtin</del> ([v0.0.74](https://github.com/aallan/vera/releases/tag/v0.0.74))
-- <del>[#212](https://github.com/aallan/vera/issues/212) Float64 special value operations (is_nan, is_infinite)</del> ([v0.0.72](https://github.com/aallan/vera/releases/tag/v0.0.72))
-- <del>[#213](https://github.com/aallan/vera/issues/213) string_repeat builtin</del> ([v0.0.75](https://github.com/aallan/vera/releases/tag/v0.0.75))
-- <del>[#230](https://github.com/aallan/vera/issues/230) string interpolation</del> ([v0.0.76](https://github.com/aallan/vera/releases/tag/v0.0.76))
-- <del>[#231](https://github.com/aallan/vera/issues/231) regex support</del> ([v0.0.86](https://github.com/aallan/vera/releases/tag/v0.0.86))
-- <del>[#232](https://github.com/aallan/vera/issues/232) URL parsing and construction builtins</del> ([v0.0.81](https://github.com/aallan/vera/releases/tag/v0.0.81))
-- <del>[#234](https://github.com/aallan/vera/issues/234) base64 encoding and decoding</del> ([v0.0.79](https://github.com/aallan/vera/releases/tag/v0.0.79))
-
-**Module system** — sequential dependency (#187 before #127)
-
-- [#187](https://github.com/aallan/vera/issues/187) module-qualified call disambiguation via name mangling
-- [#127](https://github.com/aallan/vera/issues/127) module re-exports
-
-**Codegen** — WASM compilation gaps
-
-- <del>[#267](https://github.com/aallan/vera/issues/267) Tuple type WASM codegen</del> ([v0.0.83](https://github.com/aallan/vera/releases/tag/v0.0.83))
+C8.5 built out the standard library, IO runtime, and remaining type/effect support — completing the existing language before new features.
 
 **IO runtime** — host bindings for file and stdin access
 
 - <del>[#135](https://github.com/aallan/vera/issues/135) IO operations (read_line, read_file, write_file, args, exit, get_env)</del> ([v0.0.66](https://github.com/aallan/vera/releases/tag/v0.0.66))
 - <del>[#216](https://github.com/aallan/vera/issues/216) string escape sequences (\n, \t, etc.) not parsed in string literals</del> ([v0.0.67](https://github.com/aallan/vera/releases/tag/v0.0.67))
-- [#263](https://github.com/aallan/vera/issues/263) CLI argument passing: support strings, floats, and typed dispatch
 
-**Testing improvements** — sequential dependency (#169 before #170)
+**Builtin extensions** — standard library functions
 
-- [#169](https://github.com/aallan/vera/issues/169) `vera test` Float64 and compound type input generation
-- [#170](https://github.com/aallan/vera/issues/170) `vera test` hypothesis integration and advanced testing
+- <del>[#199](https://github.com/aallan/vera/issues/199) numeric math builtins</del> ([v0.0.70](https://github.com/aallan/vera/releases/tag/v0.0.70))
+- <del>[#208](https://github.com/aallan/vera/issues/208) numeric type conversions</del> ([v0.0.71](https://github.com/aallan/vera/releases/tag/v0.0.71))
+- <del>[#212](https://github.com/aallan/vera/issues/212) Float64 special value operations (is_nan, is_infinite)</del> ([v0.0.72](https://github.com/aallan/vera/releases/tag/v0.0.72))
+- <del>[#198](https://github.com/aallan/vera/issues/198) string search and transformation builtins</del> ([v0.0.73](https://github.com/aallan/vera/releases/tag/v0.0.73))
+- <del>[#210](https://github.com/aallan/vera/issues/210) from_char_code builtin</del> ([v0.0.74](https://github.com/aallan/vera/releases/tag/v0.0.74))
+- <del>[#213](https://github.com/aallan/vera/issues/213) string_repeat builtin</del> ([v0.0.75](https://github.com/aallan/vera/releases/tag/v0.0.75))
+- <del>[#230](https://github.com/aallan/vera/issues/230) string interpolation</del> ([v0.0.76](https://github.com/aallan/vera/releases/tag/v0.0.76))
+- <del>[#200](https://github.com/aallan/vera/issues/200) parsing completeness (parse_int, parse_bool, safe parse_float64)</del> ([v0.0.77](https://github.com/aallan/vera/releases/tag/v0.0.77))
+- <del>[#209](https://github.com/aallan/vera/issues/209) array construction builtins (range, append, concat)</del> ([v0.0.78](https://github.com/aallan/vera/releases/tag/v0.0.78))
+- <del>[#234](https://github.com/aallan/vera/issues/234) base64 encoding and decoding</del> ([v0.0.79](https://github.com/aallan/vera/releases/tag/v0.0.79))
+- <del>[#232](https://github.com/aallan/vera/issues/232) URL parsing and construction builtins</del> ([v0.0.81](https://github.com/aallan/vera/releases/tag/v0.0.81))
+- <del>[#231](https://github.com/aallan/vera/issues/231) regex support</del> ([v0.0.86](https://github.com/aallan/vera/releases/tag/v0.0.86))
 
-## C9 — Language design
+**Types and effects** — new type and effect support
 
-New effects, types, abilities, and standard library extensions (spec §0.8).
-
-**Language features** — new syntax and type system extensions
-
-- [#60](https://github.com/aallan/vera/issues/60) abilities and type constraints
-- [#226](https://github.com/aallan/vera/issues/226) typed holes for partial program generation
-
-**Effects** — new effect types for agent workloads
-
-- [#57](https://github.com/aallan/vera/issues/57) `<Http>` network access effect
 - <del>[#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises</del> ([v0.0.82](https://github.com/aallan/vera/releases/tag/v0.0.82))
-- [#61](https://github.com/aallan/vera/issues/61) `<Inference>` LLM inference effect
-- [#227](https://github.com/aallan/vera/issues/227) `<Timeout>` timeout and cancellation effects
-- [#228](https://github.com/aallan/vera/issues/228) `<WebSocket>` / `<SSE>` streaming client effects
-- [#229](https://github.com/aallan/vera/issues/229) `<DB>` database access effect
-- [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` custom scheduling strategies
-
-**Standard library** — types, data formats, and host-provided functions
-
-- [#62](https://github.com/aallan/vera/issues/62) standard library collections (Set, Map, Decimal)
-- [#133](https://github.com/aallan/vera/issues/133) array operations (map, fold, slice)
-- [#58](https://github.com/aallan/vera/issues/58) JSON standard library type
+- <del>[#267](https://github.com/aallan/vera/issues/267) Tuple type WASM codegen</del> ([v0.0.83](https://github.com/aallan/vera/releases/tag/v0.0.83))
 - <del>[#147](https://github.com/aallan/vera/issues/147) Markdown standard library type</del> ([v0.0.84](https://github.com/aallan/vera/releases/tag/v0.0.84))
-- [#211](https://github.com/aallan/vera/issues/211) Option and Result combinators
-- [#233](https://github.com/aallan/vera/issues/233) date and time handling (ISO 8601)
-- [#235](https://github.com/aallan/vera/issues/235) cryptographic hashing (SHA-256, HMAC)
-- [#236](https://github.com/aallan/vera/issues/236) CSV parsing and generation
 
-## C10 — Tooling and ecosystem
+**Tooling and runtime**
 
-**Agent tooling** — feedback loops that determine whether agents can use Vera at all
-
-- [#222](https://github.com/aallan/vera/issues/222) LSP server
 - <del>[#223](https://github.com/aallan/vera/issues/223) conformance test suite</del> ([v0.0.68](https://github.com/aallan/vera/releases/tag/v0.0.68))
-- [#224](https://github.com/aallan/vera/issues/224) REPL (interactive read-eval-print loop)
-- [#225](https://github.com/aallan/vera/issues/225) benchmark suite for LLM code generation
-
-**Compilation and runtime**
-
-- [#56](https://github.com/aallan/vera/issues/56) incremental compilation
-- [#237](https://github.com/aallan/vera/issues/237) WASI 0.2 compliance
-- [#238](https://github.com/aallan/vera/issues/238) Component Model (WIT) interop
-- [#239](https://github.com/aallan/vera/issues/239) resource limit configuration (fuel, memory, timeout)
-- [#163](https://github.com/aallan/vera/issues/163) standalone WASM runtime package
 - <del>[#273](https://github.com/aallan/vera/issues/273) browser runtime for compiled WASM (JS host bindings)</del> ([v0.0.85](https://github.com/aallan/vera/releases/tag/v0.0.85))
 
-**Ecosystem**
-
-- [#130](https://github.com/aallan/vera/issues/130) package system and registry
-- [#143](https://github.com/aallan/vera/issues/143) comprehensive example programs
-- [#181](https://github.com/aallan/vera/issues/181) signature refactoring (mechanical slot index rewriting)
-- [#183](https://github.com/aallan/vera/issues/183) human-readable slot annotations (display layer for `@T.n` references)
+</details>
