@@ -70,6 +70,7 @@ def cmd_check(path: str, as_json: bool = False) -> int:
         tree = parse_file(path)
         ast = transform(tree)
 
+
         # Resolve imports (C7a)
         resolver = ModuleResolver(_root=p.parent)
         resolved = resolver.resolve_imports(ast, p)
@@ -133,6 +134,7 @@ def cmd_verify(path: str, as_json: bool = False) -> int:
         source = p.read_text(encoding="utf-8")
         tree = parse_file(path)
         ast = transform(tree)
+
 
         # Resolve imports (C7a)
         resolver = ModuleResolver(_root=p.parent)
@@ -241,6 +243,7 @@ def cmd_compile(
         source = p.read_text(encoding="utf-8")
         tree = parse_file(path)
         ast = transform(tree)
+
 
         # Resolve imports (C7a)
         resolver = ModuleResolver(_root=p.parent)
@@ -368,6 +371,7 @@ def cmd_run(
         source = p.read_text(encoding="utf-8")
         tree = parse_file(path)
         ast = transform(tree)
+
 
         # Resolve imports (C7a)
         resolver = ModuleResolver(_root=p.parent)
@@ -614,6 +618,7 @@ def cmd_test(
         source = p.read_text(encoding="utf-8")
         tree = parse_file(path)
         ast = transform(tree)
+
 
         # Resolve imports (C7a)
         resolver = ModuleResolver(_root=p.parent)

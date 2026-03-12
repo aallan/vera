@@ -28,7 +28,7 @@ private data Option<T> {
 
 type IntMapper = fn(Int -> Int) effects(pure);
 
-private fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
+private fn option_map(@Option<Int>, @IntMapper -> @Option<Int>)
   requires(true)
   ensures(true)
   effects(pure)
@@ -50,13 +50,13 @@ public fn test_closure(@Unit -> @Int)
 }
 
 -- Test: map a closure over an Option
-public fn test_map_option(@Unit -> @Int)
+public fn test_option_map(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
   let @IntToInt = make_adder(100);
-  let @Option<Int> = map_option(Some(5), @IntToInt.0);
+  let @Option<Int> = option_map(Some(5), @IntToInt.0);
   match @Option<Int>.0 {
     None -> 0,
     Some(@Int) -> @Int.0

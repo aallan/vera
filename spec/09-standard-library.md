@@ -165,6 +165,27 @@ Constructors:
 
 See §9.7.3 for the Markdown function specifications.
 
+### 9.3.7 Option and Result Combinators
+
+The standard prelude provides combinator functions that eliminate common match boilerplate for `Option<T>` and `Result<T, E>`. These are automatically available when the corresponding ADT is defined.
+
+**Option combinators:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `option_unwrap_or` | `forall<T> (Option<T>, T) -> T` | Extract `Some` value or return default |
+| `option_map` | `forall<A, B> (Option<A>, fn(A -> B)) -> Option<B>` | Transform the value inside `Some` |
+| `option_and_then` | `forall<A, B> (Option<A>, fn(A -> Option<B>)) -> Option<B>` | Chain fallible operations |
+
+**Result combinators:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `result_unwrap_or` | `forall<T, E> (Result<T, E>, T) -> T` | Extract `Ok` value or return default |
+| `result_map` | `forall<A, B, E> (Result<A, E>, fn(A -> B)) -> Result<B, E>` | Transform the `Ok` value |
+
+Combinators follow the `domain_verb` naming convention (see §5). They are injected as private generic functions before compilation and undergo normal monomorphization. A combinator is not injected if the user defines a function with the same name.
+
 ## 9.4 Built-in Collections
 
 ### 9.4.1 Array\<T\>

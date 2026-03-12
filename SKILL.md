@@ -435,6 +435,36 @@ For pure recursive functions that need termination proofs, add a `decreases` cla
 
 ## Built-in Functions
 
+### Option and Result Combinators
+
+When a program defines `Option<T>` or `Result<T, E>`, combinator functions are automatically available:
+
+```vera
+-- Option: unwrap with default
+option_unwrap_or(Some(42), 0)           -- returns 42
+option_unwrap_or(None, 0)               -- returns 0
+
+-- Option: transform the value inside Some
+option_map(Some(10), fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
+-- returns Some(11)
+
+-- Option: chain fallible operations (flatmap)
+option_and_then(Some(5), fn(@Int -> @Option<Int>) effects(pure) {
+  if @Int.0 > 0 then { Some(@Int.0 * 2) } else { None }
+})
+-- returns Some(10)
+
+-- Result: unwrap with default
+result_unwrap_or(Ok(42), 0)             -- returns 42
+result_unwrap_or(Err("oops"), 0)        -- returns 0
+
+-- Result: transform the Ok value
+result_map(Ok(10), fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
+-- returns Ok(11)
+```
+
+These are generic functions that follow the `domain_verb` naming convention. They are automatically injected and undergo normal monomorphization. If you define a function with the same name, your definition takes precedence.
+
 ### Array operations
 
 ```vera

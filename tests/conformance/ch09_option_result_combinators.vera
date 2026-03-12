@@ -1,0 +1,65 @@
+-- Conformance: Option and Result Combinators (Chapter 9, Section 9.3.7)
+-- Tests: option_unwrap_or, option_map, option_and_then, result_unwrap_or, result_map
+public data Option<T> {
+  None,
+  Some(T)
+}
+
+public data Result<T, E> {
+  Ok(T),
+  Err(E)
+}
+
+-- option_unwrap_or: Some returns inner value
+public fn test_unwrap_some(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  option_unwrap_or(Some(42), 0)
+}
+
+-- option_map: transforms value inside Some
+public fn test_map_some(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  option_unwrap_or(option_map(Some(10), fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }), 0)
+}
+
+-- option_and_then: chains fallible operations
+public fn test_and_then_some(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  option_unwrap_or(option_and_then(Some(5), fn(@Int -> @Option<Int>) effects(pure) { Some(@Int.0 * 2) }), 0)
+}
+
+-- result_unwrap_or: Ok returns inner value
+public fn test_result_ok(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  result_unwrap_or(Ok(77), 0)
+}
+
+-- result_map: transforms Ok value
+public fn test_result_map(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  result_unwrap_or(result_map(Ok(100), fn(@Int -> @Int) effects(pure) { @Int.0 - 1 }), 0)
+}
+
+-- Integration: all combinators compose
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  test_unwrap_some(()) + test_map_some(()) + test_and_then_some(()) + test_result_ok(()) + test_result_map(())
+}

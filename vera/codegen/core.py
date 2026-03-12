@@ -83,6 +83,9 @@ class CodeGenerator(
         # Type aliases (populated during registration)
         # Maps alias name -> TypeExpr (for resolving function type aliases)
         self._type_aliases: dict[str, ast.TypeExpr] = {}
+        # Type alias parameters: alias name -> param names
+        # Needed for generic type alias resolution in closure codegen
+        self._type_alias_params: dict[str, tuple[str, ...]] = {}
 
         # Closure compilation state
         self._closure_table: list[str] = []  # lifted fn names for table
@@ -142,6 +145,24 @@ class CodeGenerator(
 
         # Pass 1: register local function signatures (shadows imports)
         self._register_all(program)
+
+        # Pass 1.2: inject prelude combinator implementations
+        # Prelude functions are registered as builtins in the type checker
+        # (environment.py) but need compilable AST bodies for codegen.
+        # inject_prelude prepends FnDecl + TypeAliasDecl nodes to
+        # program.declarations; we register them here.
+        existing_fns = set(self._fn_sigs.keys())
+        from vera.prelude import inject_prelude
+        inject_prelude(program)
+        for tld in program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl) and decl.name not in existing_fns:
+                self._register_fn(decl)
+            elif isinstance(decl, ast.TypeAliasDecl):
+                if decl.name not in self._type_aliases:
+                    self._type_aliases[decl.name] = decl.type_expr
+                    if decl.type_params:
+                        self._type_alias_params[decl.name] = decl.type_params
 
         # Pass 1.5: monomorphize generic functions
         mono_decls = self._monomorphize(program)

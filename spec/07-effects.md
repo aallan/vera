@@ -247,7 +247,7 @@ This demonstrates that `resume` is a first-class continuation: it can be called 
 Functions can be polymorphic over effects:
 
 ```
-private forall<A, B> fn map_option(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
+private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
   requires(true)
   ensures(true)
   effects(<E>)
@@ -259,7 +259,7 @@ private forall<A, B> fn map_option(@Option<A>, fn(A -> B) effects(<E>) -> @Optio
 }
 ```
 
-The effect variable `E` is unified at each call site. If the passed function is `pure`, then `map_option` is `pure`. If it has `effects(<IO>)`, then `map_option` has `effects(<IO>)`.
+The effect variable `E` is unified at each call site. If the passed function is `pure`, then `option_map` is `pure`. If it has `effects(<IO>)`, then `option_map` has `effects(<IO>)`.
 
 ### 7.6.1 Effect Row Variables
 

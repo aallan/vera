@@ -370,6 +370,72 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # Option / Result combinators
+        # Implementations are injected as Vera source AST during codegen
+        # (see vera.prelude); these signatures enable type checking.
+        self.functions["option_unwrap_or"] = FunctionInfo(
+            name="option_unwrap_or",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Option", (TypeVar("T"),)),
+                TypeVar("T"),
+            ),
+            return_type=TypeVar("T"),
+            effect=PureEffectRow(),
+        )
+        self.functions["option_map"] = FunctionInfo(
+            name="option_map",
+            forall_vars=("A", "B"),
+            param_types=(
+                AdtType("Option", (TypeVar("A"),)),
+                FunctionType(
+                    params=(TypeVar("A"),),
+                    return_type=TypeVar("B"),
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=AdtType("Option", (TypeVar("B"),)),
+            effect=PureEffectRow(),
+        )
+        self.functions["option_and_then"] = FunctionInfo(
+            name="option_and_then",
+            forall_vars=("A", "B"),
+            param_types=(
+                AdtType("Option", (TypeVar("A"),)),
+                FunctionType(
+                    params=(TypeVar("A"),),
+                    return_type=AdtType("Option", (TypeVar("B"),)),
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=AdtType("Option", (TypeVar("B"),)),
+            effect=PureEffectRow(),
+        )
+        self.functions["result_unwrap_or"] = FunctionInfo(
+            name="result_unwrap_or",
+            forall_vars=("T", "E"),
+            param_types=(
+                AdtType("Result", (TypeVar("T"), TypeVar("E"))),
+                TypeVar("T"),
+            ),
+            return_type=TypeVar("T"),
+            effect=PureEffectRow(),
+        )
+        self.functions["result_map"] = FunctionInfo(
+            name="result_map",
+            forall_vars=("A", "B", "E"),
+            param_types=(
+                AdtType("Result", (TypeVar("A"), TypeVar("E"))),
+                FunctionType(
+                    params=(TypeVar("A"),),
+                    return_type=TypeVar("B"),
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=AdtType("Result", (TypeVar("B"), TypeVar("E"))),
+            effect=PureEffectRow(),
+        )
+
         # Built-in string operations
         self.functions["string_length"] = FunctionInfo(
             name="string_length",

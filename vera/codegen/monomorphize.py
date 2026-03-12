@@ -138,6 +138,11 @@ class MonomorphizationMixin:
                 self._collect_calls_in_expr(
                     arm.body, generic_decls, ctor_to_adt, instances,
                 )
+        elif isinstance(expr, ast.AnonFn):
+            # Recurse into closure bodies for generic call collection
+            self._collect_calls_in_expr(
+                expr.body, generic_decls, ctor_to_adt, instances,
+            )
         elif isinstance(expr, ast.ModuleCall):
             # C7e: recurse into ModuleCall args for generic call collection
             for arg in expr.args:
@@ -166,11 +171,15 @@ class MonomorphizationMixin:
             self._unify_param_arg(param_te, arg, forall_vars, ctor_to_adt,
                                   mapping, generic_decls)
 
-        # Check all type vars are resolved
+        # Check all type vars are resolved; default phantom vars to Unit
         result = []
         for tv in forall_vars:
             if tv not in mapping:
-                return None
+                # Phantom type variable (e.g. E in result_unwrap_or(Ok(x), d))
+                # — the generated WASM is identical regardless of this type.
+                # Use Bool (i32) rather than Unit (no WASM repr) so the
+                # monomorphized body can still compile unused branches.
+                mapping[tv] = "Bool"
             result.append(mapping[tv])
         return tuple(result)
 
@@ -204,6 +213,21 @@ class MonomorphizationMixin:
 
         # Parameterized type like Option<T> — match type args
         if param_te.type_args:
+            # Handle type alias for FnType matched against AnonFn arg
+            if isinstance(arg, ast.AnonFn):
+                alias_concrete = self._infer_fn_alias_type_args(
+                    param_te, arg,
+                )
+                if alias_concrete is not None:
+                    for param_ta, concrete_name in zip(
+                        param_te.type_args, alias_concrete,
+                    ):
+                        if (isinstance(param_ta, ast.NamedType)
+                                and param_ta.name in forall_vars
+                                and param_ta.name not in mapping):
+                            mapping[param_ta.name] = concrete_name
+                    return
+
             arg_info = self._get_arg_type_info(arg, ctor_to_adt)
             if arg_info and arg_info[0] == param_te.name:
                 for param_ta, arg_ta_name in zip(
@@ -324,6 +348,94 @@ class MonomorphizationMixin:
                         return None
                 return (adt_name, tuple(arg_types))
         return None
+
+    def _infer_fn_alias_type_args(
+        self,
+        param_te: ast.NamedType,
+        anon_fn: ast.AnonFn,
+    ) -> tuple[str, ...] | None:
+        """Infer concrete types for a type alias's params from an AnonFn.
+
+        When ``param_te`` is e.g. ``NamedType("OptionMapFn", [A, B])``
+        which aliases ``fn(A -> B)``, and the argument is an AnonFn
+        with concrete param/return types, infer one concrete type name
+        per alias type parameter.
+
+        Returns a tuple of concrete type names aligned to the alias's
+        type parameters, or None if inference fails.
+        """
+        type_aliases: dict[str, ast.TypeExpr] = getattr(
+            self, "_type_aliases", {},
+        )
+        type_alias_params: dict[str, tuple[str, ...]] = getattr(
+            self, "_type_alias_params", {},
+        )
+
+        alias_te = type_aliases.get(param_te.name)
+        if not isinstance(alias_te, ast.FnType):
+            return None
+
+        alias_params = type_alias_params.get(param_te.name)
+        if (
+            not alias_params
+            or not param_te.type_args
+            or len(alias_params) != len(param_te.type_args)
+        ):
+            return None
+
+        # Match the FnType body against the AnonFn to build an
+        # alias-local mapping:  alias_param_name -> concrete_type_name
+        alias_mapping: dict[str, str] = {}
+
+        # Match parameter types positionally
+        for fn_param_te, anon_param_te in zip(
+            alias_te.params, anon_fn.params,
+        ):
+            if (
+                isinstance(fn_param_te, ast.NamedType)
+                and fn_param_te.name in alias_params
+                and isinstance(anon_param_te, ast.NamedType)
+            ):
+                alias_mapping[fn_param_te.name] = anon_param_te.name
+
+        # Match return type
+        ret = alias_te.return_type
+        if isinstance(ret, ast.NamedType) and ret.name in alias_params:
+            if isinstance(anon_fn.return_type, ast.NamedType):
+                alias_mapping[ret.name] = anon_fn.return_type.name
+            elif isinstance(anon_fn.return_type, ast.FnType):
+                # Return type is itself a FnType — map to "Fn"
+                alias_mapping[ret.name] = "Fn"
+        # Handle ADT return types like Option<B> where B is an alias param
+        if isinstance(ret, ast.NamedType) and ret.type_args:
+            for ret_ta in ret.type_args:
+                if (
+                    isinstance(ret_ta, ast.NamedType)
+                    and ret_ta.name in alias_params
+                    and isinstance(anon_fn.return_type, ast.NamedType)
+                ):
+                    # For Option<B> matched against Option<Int>, extract
+                    # B from the AnonFn's return type args
+                    if anon_fn.return_type.type_args:
+                        idx = [
+                            i for i, rta in enumerate(ret.type_args)
+                            if (isinstance(rta, ast.NamedType)
+                                and rta.name == ret_ta.name)
+                        ]
+                        if idx:
+                            pos = idx[0]
+                            if pos < len(anon_fn.return_type.type_args):
+                                art = anon_fn.return_type.type_args[pos]
+                                if isinstance(art, ast.NamedType):
+                                    alias_mapping[ret_ta.name] = art.name
+
+        # Produce result in alias param order
+        result: list[str] = []
+        for ap in alias_params:
+            if ap not in alias_mapping:
+                return None
+            result.append(alias_mapping[ap])
+        return tuple(result)
 
     @staticmethod
     def _mangle_fn_name(name: str, concrete_types: tuple[str, ...]) -> str:

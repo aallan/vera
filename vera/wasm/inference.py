@@ -601,29 +601,72 @@ class InferenceMixin:
 
         Looks at the closure argument's type (via slot ref type name
         and type alias resolution) to determine the return type.
+
+        For generic type aliases like ``OptionMapFn<Int, String>``
+        (defined as ``fn(A -> B) effects(pure)``), the slot ref
+        carries type_args that must be substituted into the alias
+        body before inferring the WASM return type.
         """
         if isinstance(closure_arg, ast.SlotRef):
             type_name = closure_arg.type_name
             # Check if this is a type alias for a function type
             alias_te = self._type_aliases.get(type_name)
             if isinstance(alias_te, ast.FnType):
+                # Handle generic type aliases: substitute type_args
+                alias_params = self._type_alias_params.get(type_name)
+                if (
+                    alias_params
+                    and closure_arg.type_args
+                    and len(alias_params) == len(closure_arg.type_args)
+                ):
+                    return self._resolve_generic_fn_return(
+                        alias_te, alias_params, closure_arg.type_args,
+                    )
                 return self._fn_type_return_wasm(alias_te)
         return "i64"  # safe default for most cases
+
+    def _resolve_generic_fn_return(
+        self,
+        fn_type: ast.FnType,
+        alias_params: tuple[str, ...],
+        type_args: tuple[ast.TypeExpr, ...],
+    ) -> str | None:
+        """Resolve the return type of a generic FnType alias.
+
+        Builds a substitution map from alias type params to concrete
+        type args, then resolves the return type to a WASM type.
+        """
+        # Build substitution: param_name -> concrete NamedType name
+        subst: dict[str, str] = {}
+        for param, arg in zip(alias_params, type_args):
+            if isinstance(arg, ast.NamedType):
+                subst[param] = arg.name
+
+        ret = fn_type.return_type
+        if isinstance(ret, ast.NamedType):
+            # If the return type is a type variable, substitute it
+            name = subst.get(ret.name, ret.name)
+            return self._named_type_to_wasm(name)
+        return "i64"  # default
+
+    @staticmethod
+    def _named_type_to_wasm(name: str) -> str | None:
+        """Map a concrete type name to its WASM representation."""
+        if name in ("Int", "Nat"):
+            return "i64"
+        if name == "Float64":
+            return "f64"
+        if name == "Bool":
+            return "i32"
+        if name == "Unit":
+            return None
+        return "i32"  # ADT or other pointer type
 
     def _fn_type_return_wasm(self, fn_type: ast.FnType) -> str | None:
         """Get the WASM return type from a FnType AST node."""
         ret = fn_type.return_type
         if isinstance(ret, ast.NamedType):
-            name = ret.name
-            if name in ("Int", "Nat"):
-                return "i64"
-            if name == "Float64":
-                return "f64"
-            if name == "Bool":
-                return "i32"
-            if name == "Unit":
-                return None
-            return "i32"  # ADT or other pointer type
+            return self._named_type_to_wasm(ret.name)
         return "i64"  # default
 
     def _fn_type_param_wasm_types(

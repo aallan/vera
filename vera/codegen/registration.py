@@ -24,6 +24,8 @@ class RegistrationMixin:
                 self._register_data(decl)
             elif isinstance(decl, ast.TypeAliasDecl):
                 self._type_aliases[decl.name] = decl.type_expr
+                if decl.type_params:
+                    self._type_alias_params[decl.name] = decl.type_params
 
     def _register_fn(self, decl: ast.FnDecl) -> None:
         """Register a function's WASM signature."""

@@ -288,11 +288,11 @@ class CallsMixin:
         for param_te, arg in zip(param_types, call.args):
             self._unify_param_arg_wasm(param_te, arg, forall_vars, mapping)
 
-        # Build mangled name
+        # Build mangled name; default phantom vars to Unit
         parts = []
         for tv in forall_vars:
             if tv not in mapping:
-                return None
+                mapping[tv] = "Bool"
             parts.append(mapping[tv])
         return f"{call.name}${'_'.join(parts)}"
 
@@ -325,6 +325,21 @@ class CallsMixin:
 
         # Parameterized type like Option<T>
         if param_te.type_args:
+            # Handle type alias for FnType matched against AnonFn arg
+            if isinstance(arg, ast.AnonFn):
+                alias_concrete = self._infer_fn_alias_type_args_wasm(
+                    param_te, arg,
+                )
+                if alias_concrete is not None:
+                    for param_ta, concrete_name in zip(
+                        param_te.type_args, alias_concrete,
+                    ):
+                        if (isinstance(param_ta, ast.NamedType)
+                                and param_ta.name in forall_vars
+                                and param_ta.name not in mapping):
+                            mapping[param_ta.name] = concrete_name
+                    return
+
             arg_info = self._get_arg_type_info_wasm(arg)
             if arg_info and arg_info[0] == param_te.name:
                 for param_ta, arg_ta_name in zip(
@@ -334,6 +349,74 @@ class CallsMixin:
                             and param_ta.name in forall_vars
                             and param_ta.name not in mapping):
                         mapping[param_ta.name] = arg_ta_name
+
+    def _infer_fn_alias_type_args_wasm(
+        self,
+        param_te: ast.NamedType,
+        anon_fn: ast.AnonFn,
+    ) -> tuple[str, ...] | None:
+        """Infer concrete types for a type alias's params from an AnonFn.
+
+        Mirrors MonomorphizationMixin._infer_fn_alias_type_args for use
+        during WASM call-site rewriting.
+        """
+        alias_te = self._type_aliases.get(param_te.name)
+        if not isinstance(alias_te, ast.FnType):
+            return None
+
+        alias_params = self._type_alias_params.get(param_te.name)
+        if (
+            not alias_params
+            or not param_te.type_args
+            or len(alias_params) != len(param_te.type_args)
+        ):
+            return None
+
+        alias_mapping: dict[str, str] = {}
+
+        # Match parameter types positionally
+        for fn_param_te, anon_param_te in zip(
+            alias_te.params, anon_fn.params,
+        ):
+            if (
+                isinstance(fn_param_te, ast.NamedType)
+                and fn_param_te.name in alias_params
+                and isinstance(anon_param_te, ast.NamedType)
+            ):
+                alias_mapping[fn_param_te.name] = anon_param_te.name
+
+        # Match return type
+        ret = alias_te.return_type
+        if isinstance(ret, ast.NamedType) and ret.name in alias_params:
+            if isinstance(anon_fn.return_type, ast.NamedType):
+                alias_mapping[ret.name] = anon_fn.return_type.name
+        # Handle ADT return types like Option<B>
+        if isinstance(ret, ast.NamedType) and ret.type_args:
+            for ret_ta in ret.type_args:
+                if (
+                    isinstance(ret_ta, ast.NamedType)
+                    and ret_ta.name in alias_params
+                    and isinstance(anon_fn.return_type, ast.NamedType)
+                    and anon_fn.return_type.type_args
+                ):
+                    idx = [
+                        i for i, rta in enumerate(ret.type_args)
+                        if (isinstance(rta, ast.NamedType)
+                            and rta.name == ret_ta.name)
+                    ]
+                    if idx:
+                        pos = idx[0]
+                        if pos < len(anon_fn.return_type.type_args):
+                            art = anon_fn.return_type.type_args[pos]
+                            if isinstance(art, ast.NamedType):
+                                alias_mapping[ret_ta.name] = art.name
+
+        result: list[str] = []
+        for ap in alias_params:
+            if ap not in alias_mapping:
+                return None
+            result.append(alias_mapping[ap])
+        return tuple(result)
 
     def _translate_array_length(
         self, arg: ast.Expr, env: WasmSlotEnv,

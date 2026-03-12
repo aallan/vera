@@ -104,6 +104,8 @@ class WasmContext(
         ] = []
         # Type aliases: alias_name -> TypeExpr (for FnType resolution)
         self._type_aliases: dict[str, ast.TypeExpr] = {}
+        # Type alias parameters: alias_name -> param names (for generic aliases)
+        self._type_alias_params: dict[str, tuple[str, ...]] = {}
         # Closure signature registry: sig_key -> (type_name, param/result WAT)
         self._closure_sigs: dict[str, str] = {}
         # Flags for resource requirements detected during translation
@@ -129,9 +131,26 @@ class WasmContext(
         """Set type alias mappings for FnType resolution."""
         self._type_aliases = aliases
 
+    def set_type_alias_params(
+        self, params: dict[str, tuple[str, ...]],
+    ) -> None:
+        """Set type alias parameter names for generic alias resolution."""
+        self._type_alias_params = params
+
     def set_closure_id_start(self, start: int) -> None:
         """Set the starting closure ID for this context."""
         self._next_closure_id = start
+
+    def set_closure_sigs(self, sigs: dict[str, str]) -> None:
+        """Seed with accumulated module-level closure signatures.
+
+        Each context independently numbers ``$closure_sig_N`` from zero.
+        When multiple functions use closures with different signatures,
+        the names collide after module-level merge.  By seeding the
+        context with signatures already registered at module level, new
+        signatures get unique numbers and existing ones reuse their names.
+        """
+        self._closure_sigs = dict(sigs)
 
     def set_result_local(self, local_idx: int) -> None:
         """Set the local index used for @T.result in postconditions."""
