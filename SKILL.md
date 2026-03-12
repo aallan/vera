@@ -414,7 +414,7 @@ Vera has no `for` or `while` loops. Iteration is always expressed as tail-recurs
 
 ```vera
 private fn loop(@Nat, @Nat -> @Unit)
-  requires(true)
+  requires(@Nat.0 <= @Nat.1)
   ensures(true)
   effects(<IO>)
 {
@@ -427,7 +427,7 @@ private fn loop(@Nat, @Nat -> @Unit)
 }
 ```
 
-Here `@Nat.0` is the counter (De Bruijn index 0 = most recent, i.e. the second parameter) and `@Nat.1` is the limit (the first parameter). The function prints, then either recurses with an incremented counter or returns `()`.
+Here `@Nat.0` is the counter (De Bruijn index 0 = most recent, i.e. the second parameter) and `@Nat.1` is the limit (the first parameter). The contract `requires(@Nat.0 <= @Nat.1)` ensures the counter never exceeds the limit — and since the recursive call passes `@Nat.0 + 1` where `@Nat.0 < @Nat.1`, the precondition is maintained at every step. The function prints, then either recurses with an incremented counter or returns `()`.
 
 Call with the limit first and counter second: `loop(100, 1)`.
 
@@ -1327,7 +1327,7 @@ public fn fizzbuzz(@Nat -> @String)
 }
 
 private fn loop(@Nat, @Nat -> @Unit)
-  requires(true)
+  requires(@Nat.0 <= @Nat.1)
   ensures(true)
   effects(<IO>)
 {

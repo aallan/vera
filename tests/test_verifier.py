@@ -920,6 +920,133 @@ private fn bad(@Int -> @Int)
         # Check that the error mentions the callee name
         assert any("non_zero" in e.description for e in errors)
 
+    # -- Branch-aware precondition checking (#283) -------------------------
+
+    def test_call_precondition_satisfied_by_if_guard(self) -> None:
+        """Call inside if-branch where branch condition implies precondition."""
+        _verify_ok("""
+private fn positive(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn caller(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 > 0 then { positive(@Int.0) }
+  else { 0 }
+}
+""")
+
+    def test_call_precondition_with_else_guard(self) -> None:
+        """Call inside else-branch where negated condition implies precondition."""
+        _verify_ok("""
+private fn non_negative(@Int -> @Int)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn caller(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 < 0 then { 0 }
+  else { non_negative(@Int.0) }
+}
+""")
+
+    def test_recursive_call_guarded_by_if(self) -> None:
+        """Recursive call guarded by if — the fizzbuzz pattern (#283).
+
+        De Bruijn: @Nat.0 = counter (second param, most recent),
+        @Nat.1 = limit (first param).  The recursive call passes
+        limit first, counter+1 second: loop(@Nat.1, @Nat.0 + 1).
+        """
+        _verify_ok("""
+private fn loop(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(true)
+  effects(pure)
+{
+  if @Nat.0 < @Nat.1 then {
+    loop(@Nat.1, @Nat.0 + 1)
+  } else { @Nat.0 }
+}
+""")
+
+    def test_call_precondition_with_match_guard(self) -> None:
+        """Call inside match arm with nested if-guard."""
+        _verify_ok("""
+private data Maybe {
+  Nothing,
+  Just(Int)
+}
+
+private fn use_positive(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn process(@Maybe -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Maybe.0 {
+    Just(@Int) -> if @Int.0 > 0 then { use_positive(@Int.0) } else { 0 },
+    Nothing -> 0
+  }
+}
+""")
+
+    def test_call_precondition_nested_if(self) -> None:
+        """Nested if-branches compounding conditions."""
+        _verify_ok("""
+private fn bounded(@Int -> @Int)
+  requires(@Int.0 > 0)
+  requires(@Int.0 < 100)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn caller(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 > 0 then {
+    if @Int.0 < 100 then {
+      bounded(@Int.0)
+    } else { 0 }
+  } else { 0 }
+}
+""")
+
+    def test_call_precondition_violated_despite_branch(self) -> None:
+        """Call violates precondition even inside an if-branch."""
+        _verify_err("""
+private fn positive(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+
+private fn bad_caller(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 > 10 then { positive(@Int.0) }
+  else { positive(@Int.0) }
+}
+""", "precondition")
+
 
 # =====================================================================
 # Pipe operator verification
