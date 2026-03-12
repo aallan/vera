@@ -645,8 +645,12 @@ This is what "designed for LLMs to write" means in practice: the language makes 
 | Diagnostics | Structured JSON with `--json` flag | Machine-readable errors for LLM feedback loops |
 | Testing | Contract-driven via Z3 + WASM (`vera test`) | Generate test inputs from contracts, no manual test cases |
 | Formatting | Canonical formatter (`vera fmt`) | One canonical form, enforced by tooling |
+| Data types | Algebraic data types + exhaustive `match` | No classes, no inheritance; compiler enforces every case is handled |
+| Polymorphism | Monomorphized generics (`forall<T>`) | No runtime dispatch, no type classes; types fully specialized at compile time |
 | Error handling | `Result<T, E>` ADTs, no exceptions | Errors are values; models handle every case via `match` |
+| Recursion | Explicit termination measures (`decreases`) | Compiler verifies termination via Z3; no unbounded loops |
 | Naming | No user-chosen variable names | `@T.n` indices are the only binding mechanism |
+| Run everywhere | Dual-target WASM (native + browser bundle) | Same program runs via `wasmtime` or in the browser with `--target browser` |
 
 ## Prior Art
 
