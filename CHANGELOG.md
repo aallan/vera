@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.88] - 2026-03-12
+
+### Fixed
+- **Formatter comment repositioning** ([#274](https://github.com/aallan/vera/issues/274)) — comments inside function bodies were moved to the file footer during formatting. Extended the anchor system to collect interior AST spans (statements, result expressions) and emit comments at the correct positions within blocks, if/else branches, match arms, and handler bodies. Added `_collect_interior_anchors` recursive walker. 7 new tests, `examples/string_ops.vera` reformatted to canonical form. Closes #274.
+
 ## [0.0.87] - 2026-03-11
 
 ### Added
@@ -1345,7 +1350,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.87...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.88...HEAD
+[0.0.88]: https://github.com/aallan/vera/compare/v0.0.87...v0.0.88
 [0.0.87]: https://github.com/aallan/vera/compare/v0.0.86...v0.0.87
 [0.0.86]: https://github.com/aallan/vera/compare/v0.0.85...v0.0.86
 [0.0.85]: https://github.com/aallan/vera/compare/v0.0.84...v0.0.85

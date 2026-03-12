@@ -1,10 +1,12 @@
 -- String operations and type-to-string conversions
-
 effect IO {
   op print(String -> Unit);
 }
 
-private data Result<T, E> { Ok(T), Err(E) }
+private data Result<T, E> {
+  Ok(T),
+  Err(E)
+}
 
 public fn main(@Unit -> @Unit)
   requires(true)
@@ -13,63 +15,33 @@ public fn main(@Unit -> @Unit)
 {
   -- string_length
   let @Int = string_length("hello");
-
   -- string_concat
   IO.print(string_concat("hello", " world"));
-
   -- string_slice
   IO.print(string_slice("MPCORB", 0, 3));
-
   -- char_code: 'A' = 65
   let @Nat = char_code("A", 0);
-
   -- parse_nat (returns Result<Nat, String>)
-  let @Nat = match parse_nat("42") {
-    Ok(@Nat) -> @Nat.0,
-    Err(_) -> 0
-  };
-
+  let @Nat = match parse_nat("42") { Ok(@Nat) -> @Nat.0, Err(_) -> 0 };
   -- parse_float64 (returns Result<Float64, String>)
-  let @Float64 = match parse_float64("3.14") {
-    Ok(@Float64) -> @Float64.0,
-    Err(_) -> 0.0
-  };
-
+  let @Float64 = match parse_float64("3.14") { Ok(@Float64) -> @Float64.0, Err(_) -> 0.0 };
   -- parse_int (returns Result<Int, String>)
-  let @Int = match parse_int("-7") {
-    Ok(@Int) -> @Int.0,
-    Err(_) -> 0
-  };
-
+  let @Int = match parse_int("-7") { Ok(@Int) -> @Int.0, Err(_) -> 0 };
   -- parse_bool (returns Result<Bool, String>)
-  let @Bool = match parse_bool("true") {
-    Ok(@Bool) -> @Bool.0,
-    Err(_) -> false
-  };
-
+  let @Bool = match parse_bool("true") { Ok(@Bool) -> @Bool.0, Err(_) -> false };
   -- to_string
   IO.print(to_string(2025));
-
   -- strip
   IO.print(strip("  hello  "));
-
   -- compose: parse then convert back
-  IO.print(match parse_nat("99") {
-    Ok(@Nat) -> to_string(@Nat.0),
-    Err(_) -> "error"
-  });
-
+  IO.print(match parse_nat("99") { Ok(@Nat) -> to_string(@Nat.0), Err(_) -> "error" });
   -- bool_to_string
   IO.print(bool_to_string(true));
-
   -- nat_to_string
   IO.print(nat_to_string(42));
-
   -- int_to_string (alias for to_string)
   IO.print(int_to_string(-7));
-
   -- float_to_string
   IO.print(float_to_string(3.14));
-
   ()
 }

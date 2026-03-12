@@ -726,6 +726,240 @@ class TestMatchBlockArms:
 
 
 # =====================================================================
+# Interior comment positioning (#274)
+# =====================================================================
+
+class TestInteriorComments:
+    """Comments inside function bodies must stay in position, not move to footer."""
+
+    def test_comment_before_statement(self) -> None:
+        """A comment before a let statement stays before it."""
+        _fmt_check(
+            """
+            effect IO { op print(String -> Unit); }
+
+            public fn main(@Unit -> @Unit)
+              requires(true) ensures(true) effects(<IO>)
+            {
+              -- set up the value
+              let @Int = 42;
+              IO.print(int_to_string(@Int.0))
+            }
+            """,
+            """
+            effect IO {
+              op print(String -> Unit);
+            }
+
+            public fn main(@Unit -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              -- set up the value
+              let @Int = 42;
+              IO.print(int_to_string(@Int.0))
+            }
+            """,
+        )
+
+    def test_comment_before_result_expr(self) -> None:
+        """A comment before the result expression stays before it."""
+        _fmt_check(
+            """
+            effect IO { op print(String -> Unit); }
+
+            public fn main(@Unit -> @Unit)
+              requires(true) ensures(true) effects(<IO>)
+            {
+              let @Int = 42;
+              -- now print it
+              IO.print(int_to_string(@Int.0))
+            }
+            """,
+            """
+            effect IO {
+              op print(String -> Unit);
+            }
+
+            public fn main(@Unit -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              let @Int = 42;
+              -- now print it
+              IO.print(int_to_string(@Int.0))
+            }
+            """,
+        )
+
+    def test_multiple_interior_comments(self) -> None:
+        """Multiple comments inside a body each stay before their statement."""
+        _fmt_check(
+            """
+            effect IO { op print(String -> Unit); }
+
+            public fn main(@Unit -> @Unit)
+              requires(true) ensures(true) effects(<IO>)
+            {
+              -- first
+              let @Int = 1;
+              -- second
+              let @Int = 2;
+              -- result
+              IO.print(int_to_string(@Int.0))
+            }
+            """,
+            """
+            effect IO {
+              op print(String -> Unit);
+            }
+
+            public fn main(@Unit -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              -- first
+              let @Int = 1;
+              -- second
+              let @Int = 2;
+              -- result
+              IO.print(int_to_string(@Int.0))
+            }
+            """,
+        )
+
+    def test_comment_inside_match_arm_block(self) -> None:
+        """Comments inside a match arm block body stay in position."""
+        _fmt_check(
+            """
+            effect IO { op print(String -> Unit); }
+
+            public fn f(@Int -> @Unit)
+              requires(true) ensures(true) effects(<IO>)
+            {
+              match @Int.0 {
+                0 -> {
+                  -- zero case
+                  let @String = "zero";
+                  IO.print(@String.0)
+                },
+                _ -> IO.print("other")
+              }
+            }
+            """,
+            """
+            effect IO {
+              op print(String -> Unit);
+            }
+
+            public fn f(@Int -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              match @Int.0 {
+                0 -> {
+                  -- zero case
+                  let @String = "zero";
+                  IO.print(@String.0)
+                },
+                _ -> IO.print("other")
+              }
+            }
+            """,
+        )
+
+    def test_comment_not_moved_to_footer(self) -> None:
+        """Interior comments must NOT appear after the closing brace."""
+        src = _fmt("""
+            effect IO { op print(String -> Unit); }
+
+            public fn main(@Unit -> @Unit)
+              requires(true) ensures(true) effects(<IO>)
+            {
+              -- this stays inside
+              let @Int = 42;
+              IO.print(int_to_string(@Int.0))
+            }
+        """)
+        # The comment must appear before the let, not after the closing }
+        lines = src.strip().splitlines()
+        closing_brace_idx = None
+        for i, line in enumerate(lines):
+            if line.strip() == "}":
+                closing_brace_idx = i
+        assert closing_brace_idx is not None
+        # Nothing after closing brace except empty lines
+        after = [l for l in lines[closing_brace_idx + 1:] if l.strip()]
+        assert not after, f"Comment leaked to footer: {after}"
+        # Comment is inside the body
+        assert "-- this stays inside" in src
+        body_start = src.index("{", src.index("effects"))
+        body_end = src.rindex("}")
+        comment_pos = src.index("-- this stays inside")
+        assert body_start < comment_pos < body_end
+
+    def test_interior_comment_idempotent(self) -> None:
+        """Formatting a program with interior comments is idempotent."""
+        _fmt_roundtrip("""
+            effect IO { op print(String -> Unit); }
+
+            public fn main(@Unit -> @Unit)
+              requires(true) ensures(true) effects(<IO>)
+            {
+              -- first comment
+              let @Int = 1;
+              -- second comment
+              let @Int = 2;
+              -- before result
+              IO.print(int_to_string(@Int.0))
+            }
+        """)
+
+    def test_if_branch_interior_comment(self) -> None:
+        """Comments inside if/else branch blocks stay in position."""
+        _fmt_check(
+            """
+            effect IO { op print(String -> Unit); }
+
+            public fn f(@Bool -> @Unit)
+              requires(true) ensures(true) effects(<IO>)
+            {
+              if @Bool.0 then {
+                -- true branch
+                IO.print("yes")
+              } else {
+                -- false branch
+                IO.print("no")
+              }
+            }
+            """,
+            """
+            effect IO {
+              op print(String -> Unit);
+            }
+
+            public fn f(@Bool -> @Unit)
+              requires(true)
+              ensures(true)
+              effects(<IO>)
+            {
+              if @Bool.0 then {
+                -- true branch
+                IO.print("yes")
+              } else {
+                -- false branch
+                IO.print("no")
+              }
+            }
+            """,
+        )
+
+
+# =====================================================================
 # Idempotency — all examples
 # =====================================================================
 
