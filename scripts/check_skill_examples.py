@@ -69,22 +69,22 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # (old entry at 580 removed — block shifted to 582 with Async addition)
 
     # Effect handler syntax template
-    856: ("FRAGMENT", "Handler syntax template, not real code"),
+    858: ("FRAGMENT", "Handler syntax template, not real code"),
 
     # Effect declarations — bare effects(...) clauses
     693: ("FRAGMENT", "Effect declarations list"),
-    794: ("FRAGMENT", "Async effect declarations list"),
-    814: ("FRAGMENT", "Async effect declarations, bare clauses"),
+    796: ("FRAGMENT", "Async effect declarations list"),
+    816: ("FRAGMENT", "Async effect declarations, bare clauses"),
 
     # Qualified calls and handler fragments — bare expressions
-    868: ("FRAGMENT", "Handler with clause, bare expression"),
-    878: ("FRAGMENT", "Qualified call examples, bare expressions"),
+    870: ("FRAGMENT", "Handler with clause, bare expression"),
+    880: ("FRAGMENT", "Qualified call examples, bare expressions"),
 
     # Module declaration and import syntax
-    916: ("FRAGMENT", "Module declaration and import example"),
+    918: ("FRAGMENT", "Module declaration and import example"),
 
     # Line comments — bare comments
-    967: ("FRAGMENT", "Comment syntax example"),
+    969: ("FRAGMENT", "Comment syntax example"),
 
     # Type conversions — bare function calls
     597: ("FRAGMENT", "Type conversion examples, bare calls"),
@@ -93,26 +93,27 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     610: ("FRAGMENT", "Float64 predicate examples, bare calls"),
 
     # Common mistakes section — intentionally wrong code
-    995: ("FRAGMENT", "Wrong: missing contracts"),
-    1015: ("FRAGMENT", "Wrong: missing effects clause"),
-    1049: ("FRAGMENT", "Wrong: bare expression without indices"),
+    1032: ("FRAGMENT", "Wrong: missing contracts"),
+    1052: ("FRAGMENT", "Wrong: missing effects clause"),
+    1086: ("FRAGMENT", "Wrong: bare expression without indices"),
     1062: ("FRAGMENT", "Wrong: bare expression no indices"),
-    1067: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
-    1133: ("FRAGMENT", "Wrong: match arm with incorrect return"),
-    1157: ("FRAGMENT", "Wrong: non-exhaustive match"),
-    1119: ("FRAGMENT", "Correct: match arm example"),
-    1164: ("FRAGMENT", "Correct: match expression (bare expression)"),
-    1174: ("FRAGMENT", "Wrong: if/else without braces (bare expression)"),
-    1179: ("FRAGMENT", "Correct: if/else with braces"),
+    1099: ("FRAGMENT", "Wrong: missing index on slot reference"),
+    1104: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
+    1170: ("FRAGMENT", "Wrong: match arm with incorrect return"),
+    1194: ("FRAGMENT", "Wrong: non-exhaustive match"),
+    1156: ("FRAGMENT", "Correct: match arm example"),
+    1201: ("FRAGMENT", "Correct: match expression (bare expression)"),
+    1211: ("FRAGMENT", "Wrong: if/else without braces (bare expression)"),
+    1216: ("FRAGMENT", "Correct: if/else with braces"),
 
     # Import syntax — intentionally unsupported
-    1190: ("FRAGMENT", "Wrong: import aliasing not supported"),
-    1195: ("FRAGMENT", "Correct: import syntax example"),
-    1205: ("FRAGMENT", "Wrong: import hiding not supported"),
-    1190: ("FRAGMENT", "Correct: multi-import syntax"),
+    1227: ("FRAGMENT", "Wrong: import aliasing not supported"),
+    1232: ("FRAGMENT", "Correct: import syntax example"),
+    1242: ("FRAGMENT", "Wrong: import hiding not supported"),
+    1227: ("FRAGMENT", "Correct: multi-import syntax"),
 
     # String escapes — bare expression
-    1224: ("FRAGMENT", "String escape example"),
+    1261: ("FRAGMENT", "String escape example"),
 
     # =================================================================
     # MISMATCH — uses syntax the parser doesn't handle in isolation.
