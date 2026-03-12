@@ -579,8 +579,4 @@ Imported functions are **not** exported from the WASM module — only the import
 
 ## 11.17 Limitations
 
-The current compilation model has the following limitations, each tracked as a GitHub issue:
-
-| Limitation | Issue | Notes |
-|-----------|-------|-------|
-| Flat module compilation | [#110](https://github.com/aallan/vera/issues/110) | Imported functions are compiled into the importing module; name collisions are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |
+No open limitations.

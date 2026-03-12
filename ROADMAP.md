@@ -30,7 +30,7 @@ Abilities introduce type constraints (`Eq`, `Hash`, `Show`). Map needs abilities
 ```
 Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave)
 ─────────────────           ──────────────────                ──────────────────
-<del>#211 Combinators</del>    #60 Abilities ─┐                  #289 Prelude
+✓ #211 Combinators          #60 Abilities ─┐                  #289 Prelude
 #133 Array slice            #133 map/fold ←┘─┐                #226 Typed holes
 #288 Naming audit                #62 Map ←───┘─┐              #233 DateTime
                                  #58 JSON ←────┘─┐            #235 Crypto

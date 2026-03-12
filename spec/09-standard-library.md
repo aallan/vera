@@ -1521,3 +1521,11 @@ Key design points:
 5. **Constraint syntax** uses `forall<T where Ability<T>>`, consistent with the placeholder noted in Chapter 2, Section 2.7.1.
 
 This design draws on Roc's abilities (deliberately no HKTs, auto-derivable) and Gleam's validation that useful languages need not have typeclasses.
+
+## 9.9 Limitations
+
+The current standard library has the following limitations, each tracked as a GitHub issue:
+
+| Limitation | Issue | Notes |
+|-----------|-------|-------|
+| Combinator type inference with bare constructors | [#293](https://github.com/aallan/vera/issues/293) | `option_map(None, f)` cannot infer `None`'s type variable; use a typed binding instead |

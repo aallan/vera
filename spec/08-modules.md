@@ -474,6 +474,5 @@ The current module system has the following limitations, each tracked as a GitHu
 
 | Limitation | Issue | Notes |
 |-----------|-------|-------|
-| Name collision in flat compilation | — | Name collisions between imported modules are detected (E608/E609/E610); qualified-call disambiguation via name mangling is tracked separately |
-| No re-exports | — | A module cannot re-export declarations imported from other modules |
-| No package system | — | Module resolution is file-system-only; no package manager or registry |
+| No re-exports | [#127](https://github.com/aallan/vera/issues/127) | A module cannot re-export declarations imported from other modules |
+| No package system | [#130](https://github.com/aallan/vera/issues/130) | Module resolution is file-system-only; no package manager or registry |

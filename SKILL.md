@@ -465,6 +465,15 @@ result_map(Ok(10), fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
 
 These are generic functions that follow the `domain_verb` naming convention. They are automatically injected and undergo normal monomorphization. If you define a function with the same name, your definition takes precedence.
 
+> **Limitation ([#293](https://github.com/aallan/vera/issues/293)):** When a combinator's type variable appears only in a return position (not in any argument), the type checker cannot infer it from a bare constructor like `None` or `Err("msg")`. Use a typed binding instead:
+>
+> ```vera
+> -- Won't type-check: option_map(None, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
+> -- Use a typed binding:
+> let @Option<Int> = None;
+> option_map(@Option<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
+> ```
+
 ### Array operations
 
 ```vera

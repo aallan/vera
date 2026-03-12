@@ -646,21 +646,15 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Module system limitations** | Module system complete (C7a-C7f); name collisions detected (E608-E610); qualified-call disambiguation pending | Done ([#110](https://github.com/aallan/vera/issues/110)) |
-| **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | — |
-| **No quantifier termination** | `decreases` verified for self-recursive and mutual recursion (where-blocks); no support for lexicographic ordering or non-structural measures | [#45](https://github.com/aallan/vera/issues/45) |
-| **No quantifier verification** | `forall`/`exists` in contracts always Tier 3 | [#13](https://github.com/aallan/vera/issues/13) |
-| **Local type inference only** | Bidirectional checking resolves nullary constructors from context; no Hindley-Milner | Done ([#55](https://github.com/aallan/vera/issues/55)) |
+| **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | [#294](https://github.com/aallan/vera/issues/294) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No LSP server** | No IDE integration or structured code intelligence for agents | [#222](https://github.com/aallan/vera/issues/222) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |
-| **No string interpolation** | Strings built via `string_concat` or chained `IO.print` calls | [#230](https://github.com/aallan/vera/issues/230) |
-| **No regex** | String processing limited to builtin functions (contains, substring, etc.) | [#231](https://github.com/aallan/vera/issues/231) |
 | **No date/time, crypto, CSV** | Standard library limited to core types, strings, and arrays | [#233](https://github.com/aallan/vera/issues/233), [#235](https://github.com/aallan/vera/issues/235), [#236](https://github.com/aallan/vera/issues/236) |
 | **No WASI compliance** | IO uses ad-hoc host imports, not standardised WASI interfaces | [#237](https://github.com/aallan/vera/issues/237) |
 | **No typed holes** | Partial programs cannot type-check; no placeholder expressions | [#226](https://github.com/aallan/vera/issues/226) |
 | **No resource limits** | No built-in fuel, memory, or timeout controls for untrusted code | [#239](https://github.com/aallan/vera/issues/239) |
-| **No garbage collection** | Conservative mark-sweep GC with shadow stack root tracking; memory reclaimed automatically | Done ([#51](https://github.com/aallan/vera/issues/51)) |
+| **Combinator bare-constructor inference** | `option_map(None, f)` cannot infer type variable from bare `None`/`Err`; use typed binding | [#293](https://github.com/aallan/vera/issues/293) |
 
 ## Extending the Compiler
 
