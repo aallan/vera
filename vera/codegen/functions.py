@@ -77,7 +77,9 @@ class FunctionCompilationMixin:
         ctx.set_fn_ret_types(fn_ret_types)
         # Provide type aliases so closures can resolve FnType return types
         ctx.set_type_aliases(self._type_aliases)
+        ctx.set_type_alias_params(self._type_alias_params)
         ctx.set_closure_id_start(self._next_closure_id)
+        ctx.set_closure_sigs(self._closure_sigs)
         env = WasmSlotEnv()
 
         # Allocate parameters and track pointer params for GC prologue

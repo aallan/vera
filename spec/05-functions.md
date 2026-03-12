@@ -322,7 +322,7 @@ Type variables are introduced by `forall<...>` and are scoped to the entire func
 Functions can be polymorphic over effects:
 
 ```
-private forall<A, B> fn map_option(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
+private forall<A, B> fn option_map(@Option<A>, fn(A -> B) effects(<E>) -> @Option<B>)
   requires(true)
   ensures(true)
   effects(<E>)

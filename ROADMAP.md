@@ -1,6 +1,6 @@
 # Roadmap
 
-Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. The core language and compiler are complete through v0.0.88. What remains is standard library, effects, and ecosystem — the gap between a working language and a viable agent target.
+Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. The core language and compiler are complete through v0.0.89. What remains is standard library, effects, and ecosystem — the gap between a working language and a viable agent target.
 
 | Phase | Version | Layer | Status |
 |-------|---------|-------|--------|
@@ -17,7 +17,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 ## Where we are
 
-**v0.0.88** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 68 built-in functions, a module system, algebraic effect handlers, a 53-program conformance suite, a canonical formatter, and contract-driven testing. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
+**v0.0.89** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 68 built-in functions plus 5 Option/Result combinators, a module system, algebraic effect handlers, a 54-program conformance suite, a canonical formatter, and contract-driven testing. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
 
 Most remaining features are gated by a single dependency chain:
 
@@ -30,7 +30,7 @@ Abilities introduce type constraints (`Eq`, `Hash`, `Show`). Map needs abilities
 ```
 Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave)
 ─────────────────           ──────────────────                ──────────────────
-#211 Combinators            #60 Abilities ─┐                  #289 Prelude
+<del>#211 Combinators</del>    #60 Abilities ─┐                  #289 Prelude
 #133 Array slice            #133 map/fold ←┘─┐                #226 Typed holes
 #288 Naming audit                #62 Map ←───┘─┐              #233 DateTime
                                  #58 JSON ←────┘─┐            #235 Crypto
@@ -41,7 +41,7 @@ Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave
 
 No blocking dependencies. Highest value-per-effort.
 
-- [#211](https://github.com/aallan/vera/issues/211) **Option/Result combinators** — pure Vera functions, no compiler changes. Eliminates 5-line match blocks for every fallible operation. Fundamental enough for a standard prelude.
+- <del>[#211](https://github.com/aallan/vera/issues/211) **Option/Result combinators** — pure Vera functions, no compiler changes. Eliminates 5-line match blocks for every fallible operation. Fundamental enough for a standard prelude.</del> ([v0.0.89](https://github.com/aallan/vera/releases/tag/v0.0.89))
 - [#133](https://github.com/aallan/vera/issues/133) **Array `slice`** — the `slice` operation has no abilities dependency and can ship independently of `map`/`fold`/`filter`. Unblocks basic array manipulation.
 - [#288](https://github.com/aallan/vera/issues/288) **Built-in function naming audit** — four naming patterns where there should be one or two. Must happen before new functions ship to establish the convention they follow. Breaking change — do it early.
 

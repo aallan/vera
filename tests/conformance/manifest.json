@@ -450,6 +450,15 @@
     "features": ["url_parse", "url_join", "urlparts", "result_type"]
   },
   {
+    "id": "ch09_option_result_combinators",
+    "file": "ch09_option_result_combinators.vera",
+    "chapter": 9,
+    "title": "Option and Result combinators",
+    "level": "run",
+    "spec_ref": "Section 9.3.7",
+    "features": ["option_unwrap_or", "option_map", "option_and_then", "result_unwrap_or", "result_map", "prelude_injection", "generic_closures"]
+  },
+  {
     "id": "ch09_async",
     "file": "ch09_async.vera",
     "chapter": 9,

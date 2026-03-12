@@ -225,7 +225,7 @@ FUNCTION_CALL_EXAMPLES = [
     ("safe_divide", "test_divide", [], []),
     ("increment", "increment", [], []),
     ("closures", "test_closure", [], []),
-    ("closures", "test_map_option", [], []),
+    ("closures", "test_option_map", [], []),
     ("generics", "test_generics", [], []),
     ("list_ops", "test_list", [], []),
     ("mutual_recursion", "is_even", ["4"], [4]),

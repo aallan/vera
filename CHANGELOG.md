@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.89] - 2026-03-12
+
+### Added
+- **Option/Result combinators** ([#211](https://github.com/aallan/vera/issues/211)) — five prelude functions that eliminate common match boilerplate: `option_unwrap_or`, `option_map`, `option_and_then`, `result_unwrap_or`, `result_map`. Implemented via source injection (parsed Vera AST, injected before codegen). Includes compiler fixes for generic type alias return type inference in closures, closure signature deduplication across functions, and AnonFn type variable inference in the monomorphizer. New conformance test, 12 unit tests, spec section 9.3.7.
+
+### Changed
+- **`map_option` renamed to `option_map`** — all references across spec, examples, and tests updated to follow the `domain_verb` naming convention ([#288](https://github.com/aallan/vera/issues/288)).
+
 ## [0.0.88] - 2026-03-12
 
 ### Fixed
@@ -1350,7 +1358,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.88...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.89...HEAD
+[0.0.89]: https://github.com/aallan/vera/compare/v0.0.88...v0.0.89
 [0.0.88]: https://github.com/aallan/vera/compare/v0.0.87...v0.0.88
 [0.0.87]: https://github.com/aallan/vera/compare/v0.0.86...v0.0.87
 [0.0.86]: https://github.com/aallan/vera/compare/v0.0.85...v0.0.86

@@ -221,7 +221,7 @@ public fn test(@Unit -> @Int)
         src = """\
 private data Option<T> { None, Some(T) }
 type IntMapper = fn(Int -> Int) effects(pure);
-public fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
+public fn option_map(@Option<Int>, @IntMapper -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -238,7 +238,7 @@ public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntMapper = make_adder(100);
-  let @Option<Int> = map_option(Some(5), @IntMapper.0);
+  let @Option<Int> = option_map(Some(5), @IntMapper.0);
   match @Option<Int>.0 {
     None -> 0,
     Some(@Int) -> @Int.0
@@ -248,11 +248,11 @@ public fn test(@Unit -> @Int)
         assert _run(src, "test") == 105
 
     def test_closure_in_match_none(self) -> None:
-        """map_option on None returns None."""
+        """option_map on None returns None."""
         src = """\
 private data Option<T> { None, Some(T) }
 type IntMapper = fn(Int -> Int) effects(pure);
-public fn map_option(@Option<Int>, @IntMapper -> @Option<Int>)
+public fn option_map(@Option<Int>, @IntMapper -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
 {
   match @Option<Int>.0 {
@@ -269,7 +269,7 @@ public fn test(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @IntMapper = make_adder(100);
-  let @Option<Int> = map_option(None, @IntMapper.0);
+  let @Option<Int> = option_map(None, @IntMapper.0);
   match @Option<Int>.0 {
     None -> -1,
     Some(@Int) -> @Int.0
@@ -364,13 +364,13 @@ public fn make_fn(@Unit -> @IntToInt)
         exec_result = execute(result, fn_name="test_closure")
         assert exec_result.value == 15
 
-    def test_closures_example_test_map_option(self) -> None:
-        """examples/closures.vera test_map_option returns 105."""
+    def test_closures_example_test_option_map(self) -> None:
+        """examples/closures.vera test_option_map returns 105."""
         from pathlib import Path
         path = Path(__file__).parent.parent / "examples" / "closures.vera"
         source = path.read_text()
         result = _compile_ok(source)
-        exec_result = execute(result, fn_name="test_map_option")
+        exec_result = execute(result, fn_name="test_option_map")
         assert exec_result.value == 105
 
     def test_multiple_closures(self) -> None:

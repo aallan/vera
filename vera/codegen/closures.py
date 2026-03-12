@@ -98,6 +98,7 @@ class ClosureLiftingMixin:
                 fn_ret_types[fn_name] = ret_wt
         ctx.set_fn_ret_types(fn_ret_types)
         ctx.set_type_aliases(self._type_aliases)
+        ctx.set_type_alias_params(self._type_alias_params)
         env = WasmSlotEnv()
 
         # Parameter 0: $env (i32 — closure environment pointer)
