@@ -84,6 +84,13 @@ repos:
         pass_filenames: false
         files: '(README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|docs/index\.html$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
 
+      - id: limitations-sync
+        name: limitations sync
+        entry: .venv/bin/python scripts/check_limitations_sync.py
+        language: system
+        pass_filenames: false
+        files: '(README\.md$|vera/README\.md$|spec/0[89]-.*\.md$|spec/1[12]-.*\.md$)'
+
       - id: browser-parity
         name: browser parity
         entry: .venv/bin/pytest tests/test_browser.py -q
