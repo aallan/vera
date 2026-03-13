@@ -196,6 +196,7 @@ class ContractVerifier:
                 self._register_effect(decl)
             elif isinstance(decl, ast.TypeAliasDecl):
                 self._register_alias(decl)
+            # AbilityDecl: registered in PR 2
 
     def _register_fn(
         self, decl: ast.FnDecl, visibility: str | None = None,

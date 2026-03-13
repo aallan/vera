@@ -974,6 +974,38 @@ private fn bad(@Unit -> @Unit)
 
 
 # =====================================================================
+# Abilities (Spec §9.8) — PR 1: syntax only
+# =====================================================================
+
+class TestAbilities:
+    """Ability declarations parse and pass through the checker."""
+
+    def test_ability_decl_accepted(self) -> None:
+        """Ability declaration is accepted without errors."""
+        _check_ok("""
+        ability Eq<T> {
+          op eq(T, T -> Bool);
+        }
+
+        private fn main(@Unit -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { 0 }
+        """)
+
+    def test_forall_with_constraint_accepted(self) -> None:
+        """Function with forall constraint is accepted."""
+        _check_ok("""
+        private forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { true }
+        """)
+
+
+# =====================================================================
 # Effect Subtyping (Spec §7.8)
 # =====================================================================
 
@@ -1719,6 +1751,7 @@ class TestModuleCallDiagnostics:
         fn = ast.FnDecl(
             name="main",
             forall_vars=None,
+            forall_constraints=None,
             params=(),
             return_type=ast.NamedType(name="Unit", type_args=None),
             contracts=(
@@ -1925,7 +1958,7 @@ private fn main(@Int -> @List<Int>)
         )
         imp = ast.ImportDecl(path=("math",), names=("abs",))
         fn = ast.FnDecl(
-            name="main", forall_vars=None, params=(),
+            name="main", forall_vars=None, forall_constraints=None, params=(),
             return_type=ast.NamedType(name="Int", type_args=None),
             contracts=(
                 ast.Requires(expr=ast.BoolLit(value=True)),
@@ -1955,7 +1988,7 @@ private fn main(@Int -> @List<Int>)
         )
         imp = ast.ImportDecl(path=("math",), names=("abs",))
         fn = ast.FnDecl(
-            name="main", forall_vars=None, params=(),
+            name="main", forall_vars=None, forall_constraints=None, params=(),
             return_type=ast.NamedType(name="Int", type_args=None),
             contracts=(
                 ast.Requires(expr=ast.BoolLit(value=True)),
@@ -1984,7 +2017,7 @@ private fn main(@Int -> @List<Int>)
         # Only import "abs", not "max"
         imp = ast.ImportDecl(path=("math",), names=("abs",))
         fn = ast.FnDecl(
-            name="main", forall_vars=None, params=(),
+            name="main", forall_vars=None, forall_constraints=None, params=(),
             return_type=ast.NamedType(name="Int", type_args=None),
             contracts=(
                 ast.Requires(expr=ast.BoolLit(value=True)),
@@ -2012,7 +2045,7 @@ private fn main(@Int -> @List<Int>)
         )
         imp = ast.ImportDecl(path=("math",), names=None)  # wildcard
         fn = ast.FnDecl(
-            name="main", forall_vars=None, params=(),
+            name="main", forall_vars=None, forall_constraints=None, params=(),
             return_type=ast.NamedType(name="Unit", type_args=None),
             contracts=(
                 ast.Requires(expr=ast.BoolLit(value=True)),
@@ -2041,7 +2074,7 @@ private fn main(@Int -> @List<Int>)
         )
         imp = ast.ImportDecl(path=("vera", "math"), names=("abs",))
         fn = ast.FnDecl(
-            name="main", forall_vars=None, params=(),
+            name="main", forall_vars=None, forall_constraints=None, params=(),
             return_type=ast.NamedType(name="Int", type_args=None),
             contracts=(
                 ast.Requires(expr=ast.BoolLit(value=True)),
@@ -2231,7 +2264,7 @@ private fn main(@Int -> @Int)
         )
         imp = ast.ImportDecl(path=("mod",), names=None)
         fn = ast.FnDecl(
-            name="main", forall_vars=None, params=(),
+            name="main", forall_vars=None, forall_constraints=None, params=(),
             return_type=ast.NamedType(name="Int", type_args=None),
             contracts=(
                 ast.Requires(expr=ast.BoolLit(value=True)),

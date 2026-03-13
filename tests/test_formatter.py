@@ -259,6 +259,95 @@ class TestFormatDeclarations:
             """,
         )
 
+    def test_ability_declaration(self) -> None:
+        _fmt_check(
+            """
+            ability Eq<T> {
+              op eq(T, T -> Bool);
+            }
+            """,
+            """
+            ability Eq<T> {
+              op eq(T, T -> Bool);
+            }
+            """,
+        )
+
+    def test_ability_multiple_ops(self) -> None:
+        _fmt_check(
+            """
+            ability Ord<T> {
+              op lt(T, T -> Bool);
+              op le(T, T -> Bool);
+            }
+            """,
+            """
+            ability Ord<T> {
+              op lt(T, T -> Bool);
+              op le(T, T -> Bool);
+            }
+            """,
+        )
+
+    def test_forall_with_constraint(self) -> None:
+        _fmt_check(
+            """
+            private forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
+              requires(true)
+              ensures(true)
+              effects(pure)
+            {
+              true
+            }
+            """,
+            """
+            private forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
+              requires(true)
+              ensures(true)
+              effects(pure)
+            {
+              true
+            }
+            """,
+        )
+
+    def test_forall_with_multiple_constraints(self) -> None:
+        _fmt_check(
+            """
+            private forall<T where Eq<T>, Ord<T>> fn sorted(@Array<T> -> @Array<T>)
+              requires(true)
+              ensures(true)
+              effects(pure)
+            {
+              @Array<T>.0
+            }
+            """,
+            """
+            private forall<T where Eq<T>, Ord<T>> fn sorted(@Array<T> -> @Array<T>)
+              requires(true)
+              ensures(true)
+              effects(pure)
+            {
+              @Array<T>.0
+            }
+            """,
+        )
+
+    def test_ability_roundtrip(self) -> None:
+        _fmt_roundtrip("""
+            ability Eq<T> {
+              op eq(T, T -> Bool);
+            }
+
+            private forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
+              requires(true)
+              ensures(true)
+              effects(pure)
+            {
+              true
+            }
+        """)
+
     def test_where_block(self) -> None:
         src = _fmt("""
             public fn is_even(@Nat -> @Bool)

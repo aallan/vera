@@ -12,6 +12,8 @@ from typing import Any
 from lark import Token, Transformer, Tree, v_args
 
 from vera.ast import (
+    AbilityConstraint,
+    AbilityDecl,
     AnonFn,
     ArrayLit,
     AssertExpr,
@@ -417,8 +419,10 @@ class VeraTransformer(Transformer):
         #            EffectRow, Block, _WhereFns?]
         idx = 0
         forall_vars = None
+        forall_constraints = None
         if isinstance(children[idx], _ForallVars):
             forall_vars = children[idx].vars
+            forall_constraints = children[idx].constraints
             idx += 1
         name = children[idx]; idx += 1
         sig = children[idx]; idx += 1
@@ -431,6 +435,7 @@ class VeraTransformer(Transformer):
         return FnDecl(
             name=name,
             forall_vars=forall_vars,
+            forall_constraints=forall_constraints,
             params=sig.params,
             return_type=sig.return_type,
             contracts=contracts,
@@ -441,8 +446,11 @@ class VeraTransformer(Transformer):
         )
 
     def forall_clause(self, children):
-        # children: [tuple[str, ...]] (from type_var_list)
-        return _ForallVars(vars=children[0])
+        # Alt 1: [tuple[str, ...]]
+        # Alt 2: [tuple[str, ...], tuple[AbilityConstraint, ...]]
+        if len(children) == 1:
+            return _ForallVars(vars=children[0])
+        return _ForallVars(vars=children[0], constraints=children[1])
 
     def type_var_list(self, children):
         return tuple(children)
@@ -629,6 +637,38 @@ class VeraTransformer(Transformer):
 
     def param_types(self, children):
         return tuple(children)
+
+    # =================================================================
+    # Ability Declarations
+    # =================================================================
+
+    @v_args(meta=True)
+    def ability_decl(self, meta, children):
+        # children: [str, _TypeParams?, OpDecl, OpDecl, ...]
+        name = children[0]
+        rest = children[1:]
+        type_params = None
+        ops_start = 0
+        if rest and isinstance(rest[0], _TypeParams):
+            type_params = rest[0].params
+            ops_start = 1
+        return AbilityDecl(
+            name=name,
+            type_params=type_params,
+            operations=tuple(rest[ops_start:]),
+            span=_span_from_meta(meta),
+        )
+
+    def ability_constraint_list(self, children):
+        return tuple(children)
+
+    @v_args(meta=True)
+    def ability_constraint(self, meta, children):
+        # children: [str (ability name), str (type var)]
+        return AbilityConstraint(
+            ability_name=children[0], type_var=children[1],
+            span=_span_from_meta(meta),
+        )
 
     # =================================================================
     # Type Expressions

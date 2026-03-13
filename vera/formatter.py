@@ -32,6 +32,7 @@ def _encode_string_escapes(s: str) -> str:
 
 
 from vera.ast import (
+    AbilityDecl,
     AnonFn,
     ArrayLit,
     AssertExpr,
@@ -502,6 +503,8 @@ class Formatter:
             self._emit_type_alias(decl, vis)
         elif isinstance(decl, EffectDecl):
             self._emit_effect_decl(decl, vis)
+        elif isinstance(decl, AbilityDecl):
+            self._emit_ability_decl(decl, vis)
 
     # -- Function declarations -----------------------------------------
 
@@ -513,7 +516,14 @@ class Formatter:
 
         if fn.forall_vars:
             vars_str = ", ".join(fn.forall_vars)
-            parts.append(f"forall<{vars_str}>")
+            if fn.forall_constraints:
+                constraints_str = ", ".join(
+                    f"{c.ability_name}<{c.type_var}>"
+                    for c in fn.forall_constraints
+                )
+                parts.append(f"forall<{vars_str} where {constraints_str}>")
+            else:
+                parts.append(f"forall<{vars_str}>")
 
         parts.append("fn")
         parts.append(fn.name + self._fmt_signature(fn.params, fn.return_type))
@@ -688,6 +698,28 @@ class Formatter:
             self._line(f"op {op.name}({params} -> {ret});")
         else:
             self._line(f"op {op.name}(-> {ret});")
+
+    # -- Ability declarations ------------------------------------------
+
+    def _emit_ability_decl(self, ab: AbilityDecl, vis: str | None) -> None:
+        parts: list[str] = []
+        if vis:
+            parts.append(vis)
+        parts.append("ability")
+
+        name = ab.name
+        if ab.type_params:
+            tps = ", ".join(ab.type_params)
+            name += f"<{tps}>"
+        parts.append(name)
+
+        self._line(" ".join(parts) + " {")
+
+        self._indent_inc()
+        for op in ab.operations:
+            self._emit_op_decl(op)
+        self._indent_dec()
+        self._line("}")
 
     # -- Contracts -----------------------------------------------------
 

@@ -43,6 +43,7 @@ INVARIANT: "invariant"
 DECREASES: "decreases"
 ASSERT: "assert"
 ASSUME: "assume"
+ABILITY: "ability"
 EFFECT: "effect"
 HANDLE: "handle"
 RESUME: "resume"
@@ -130,6 +131,7 @@ top_level_decl: visibility? fn_decl
               | visibility? data_decl
               | type_alias_decl
               | effect_decl
+              | ability_decl
 
 visibility: PUBLIC | PRIVATE
 ```
@@ -145,6 +147,11 @@ fn_decl: forall_clause? FN LOWER_IDENT fn_signature contract_block effect_clause
        | forall_clause? FN LOWER_IDENT fn_signature contract_block effect_clause fn_body
 
 forall_clause: FORALL LT type_var_list GT
+             | FORALL LT type_var_list WHERE ability_constraint_list GT
+
+ability_constraint_list: ability_constraint (COMMA ability_constraint)*
+
+ability_constraint: UPPER_IDENT LT UPPER_IDENT GT
 
 type_var_list: UPPER_IDENT (COMMA UPPER_IDENT)*
 
@@ -215,7 +222,15 @@ effect_decl: EFFECT UPPER_IDENT type_params? LBRACE op_decl+ RBRACE
 op_decl: OP LOWER_IDENT LPAREN param_types ARROW type_expr RPAREN SEMICOLON
 ```
 
-### 10.3.6 Type Expressions
+### 10.3.6 Ability Declarations
+
+```ebnf
+ability_decl: ABILITY UPPER_IDENT type_params? LBRACE op_decl+ RBRACE
+```
+
+Abilities share the `op_decl` production with effects. Both use the same `op` keyword for declaring operations. See Section 9.8 for semantics.
+
+### 10.3.7 Type Expressions
 
 ```ebnf
 type_expr: UPPER_IDENT type_args?          // named type: Int, Array<Int>, Option<String>
@@ -234,7 +249,7 @@ tuple_type: UPPER_IDENT LT type_expr (COMMA type_expr)* GT
 refinement_type: LBRACE AT type_expr BAR expr RBRACE
 ```
 
-### 10.3.7 Expressions
+### 10.3.8 Expressions
 
 ```ebnf
 expr: pipe_expr
@@ -286,7 +301,7 @@ primary_expr: INT_LIT
             | LPAREN expr RPAREN            // parenthesized expression
 ```
 
-### 10.3.8 Slot References
+### 10.3.9 Slot References
 
 ```ebnf
 slot_ref: AT type_expr DOT INT_LIT
@@ -294,7 +309,7 @@ slot_ref: AT type_expr DOT INT_LIT
 result_ref: AT type_expr DOT RESULT
 ```
 
-### 10.3.9 Function Calls and Constructors
+### 10.3.10 Function Calls and Constructors
 
 ```ebnf
 fn_call: LOWER_IDENT LPAREN arg_list? RPAREN          // function call
@@ -310,19 +325,19 @@ module_call: module_path DOUBLE_COLON LOWER_IDENT LPAREN arg_list? RPAREN  // mo
 arg_list: expr (COMMA expr)*
 ```
 
-### 10.3.10 Anonymous Functions
+### 10.3.11 Anonymous Functions
 
 ```ebnf
 anonymous_fn: FN LPAREN fn_params? ARROW AT type_expr RPAREN effect_clause fn_body
 ```
 
-### 10.3.11 Conditional Expressions
+### 10.3.12 Conditional Expressions
 
 ```ebnf
 if_expr: IF expr THEN block_expr ELSE block_expr
 ```
 
-### 10.3.12 Match Expressions
+### 10.3.13 Match Expressions
 
 ```ebnf
 match_expr: MATCH expr LBRACE match_arm (COMMA match_arm)* RBRACE
@@ -339,7 +354,7 @@ pattern: UPPER_IDENT LPAREN pattern (COMMA pattern)* RPAREN  // constructor patt
        | AT type_expr                                          // typed binding pattern
 ```
 
-### 10.3.13 Block Expressions
+### 10.3.14 Block Expressions
 
 ```ebnf
 block_expr: LBRACE block_contents RBRACE
@@ -357,7 +372,7 @@ let_stmt: LET AT type_expr ASSIGN expr SEMICOLON
 tuple_destruct: UPPER_IDENT LT AT type_expr (COMMA AT type_expr)* GT
 ```
 
-### 10.3.14 Effect Handlers
+### 10.3.15 Effect Handlers
 
 ```ebnf
 handle_expr: HANDLE LBRACKET effect_ref RBRACKET handler_state? LBRACE handler_clause (COMMA handler_clause)* RBRACE IN block_expr
@@ -377,13 +392,13 @@ handler_body: expr
 // These are parsed as regular function calls; 'resume' and 'with' are keywords.
 ```
 
-### 10.3.15 Array Literals
+### 10.3.16 Array Literals
 
 ```ebnf
 array_literal: LBRACKET arg_list? RBRACKET
 ```
 
-### 10.3.16 Contract-Only Expressions
+### 10.3.17 Contract-Only Expressions
 
 ```ebnf
 old_expr: OLD LPAREN effect_ref RPAREN
@@ -399,7 +414,7 @@ forall_expr: FORALL LPAREN AT type_expr COMMA expr COMMA anonymous_fn RPAREN
 exists_expr: EXISTS LPAREN AT type_expr COMMA expr COMMA anonymous_fn RPAREN
 ```
 
-### 10.3.17 Tuple Literals
+### 10.3.18 Tuple Literals
 
 ```ebnf
 tuple_literal: UPPER_IDENT LPAREN arg_list RPAREN
@@ -441,9 +456,9 @@ The parser distinguishes these by context: after `UPPER_IDENT` in a type context
 
 ### 10.5.3 Identifier Classification
 
-`UPPER_IDENT` can be a type name, constructor name, or effect name. `LOWER_IDENT` can be a function name or module name. The parser uses syntactic context to distinguish:
+`UPPER_IDENT` can be a type name, constructor name, effect name, or ability name. `LOWER_IDENT` can be a function name or module name. The parser uses syntactic context to distinguish:
 
-- After `data`, `type`, `effect`, `handle[`, in type annotations: type/effect name
+- After `data`, `type`, `effect`, `ability`, `handle[`, in type annotations: type/effect/ability name
 - After `match` patterns, in constructor position: constructor name
 - After `fn`, in call position with `LOWER_IDENT(`: function name
 - In `module`/`import`: module name

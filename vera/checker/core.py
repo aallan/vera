@@ -198,7 +198,8 @@ class TypeChecker(
             self._check_fn(decl)
         elif isinstance(decl, ast.DataDecl):
             self._check_data(decl)
-        # TypeAliasDecl and EffectDecl are validated during registration
+        # TypeAliasDecl, EffectDecl, and AbilityDecl are validated
+        # during registration
 
     def _check_data(self, decl: ast.DataDecl) -> None:
         """Check an ADT declaration (invariant well-formedness)."""
