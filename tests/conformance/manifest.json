@@ -484,5 +484,14 @@
     "level": "run",
     "spec_ref": "Section 9.6.15",
     "features": ["regex_match", "regex_find", "regex_find_all", "regex_replace"]
+  },
+  {
+    "id": "ch09_abilities",
+    "file": "ch09_abilities.vera",
+    "chapter": 9,
+    "title": "Abilities and constrained generics",
+    "level": "run",
+    "spec_ref": "Section 9.8",
+    "features": ["ability", "ability_constraint", "forall_where", "eq_operation", "constrained_generic"]
   }
 ]

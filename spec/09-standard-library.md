@@ -1484,7 +1484,7 @@ This follows the same pattern as JSON: `json_parse(Http.get(url))`, not a dedica
 
 ## 9.8 Abilities
 
-> **Status: Partially implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Ability declarations, constraint syntax, and type checking are implemented. The built-in `Eq` ability is registered. Monomorphization and code generation for ability operations are planned for a future release.
+> **Status: Partially implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Ability declarations, constraint syntax, type checking, and code generation for `Eq` are implemented. The built-in `Eq` ability is fully compilable for primitive types (Int, Nat, Bool, Float64, String, Byte, Unit). ADT auto-derivation and other abilities (Ord, Hash, Show) are planned for PR 4.
 
 Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
 

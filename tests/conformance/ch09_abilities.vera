@@ -1,0 +1,79 @@
+-- Conformance: abilities and constrained generics (Chapter 9)
+-- Tests: ability constraints, eq operation, constrained generic instantiation
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(@T.1, @T.0)
+}
+
+-- Test: are_equal with equal Ints returns 1
+public fn test_eq_int_equal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if are_equal(42, 42) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- Test: are_equal with unequal Ints returns 0
+public fn test_eq_int_unequal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  if are_equal(1, 2) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- Test: are_equal with equal Bools returns 1
+public fn test_eq_bool_equal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if are_equal(true, true) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- Test: are_equal with unequal Bools returns 0
+public fn test_eq_bool_unequal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  if are_equal(true, false) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- Test: eq used directly in a non-generic context
+public fn test_eq_direct(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  eq(10, 10)
+}
+
+-- Test: eq used directly with unequal values
+public fn test_eq_direct_unequal(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == false)
+  effects(pure)
+{
+  eq(7, 8)
+}

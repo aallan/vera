@@ -101,20 +101,20 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ data.py` | 590 | | Constructors, match expressions (incl. nested patterns), arrays, indexing |
 | ` └ markdown.py` | ~380 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
 | `markdown.py` | ~450 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
-| `codegen/` | 3,137 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
-| `  api.py` | 265 | | Public API, dataclasses, host bindings, `execute()` | |
-| `  core.py` | 285 | | CodeGenerator class, orchestration, type helpers | |
-| `  modules.py` | 200 | | Cross-module registration + call detection (C7e) | |
-| `  registration.py` | 105 | | Pass 1 forward declarations, ADT layout | |
-| `  monomorphize.py` | 410 | | Generic instantiation, type inference (Pass 1.5) | |
-| `  functions.py` | 262 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
-| `  closures.py` | 245 | | Closure lifting, GC instrumentation | |
-| `  contracts.py` | 250 | | Runtime pre/postconditions, old state snapshots | |
-| `  assembly.py` | 596 | | WAT module assembly, `$alloc`, `$gc_collect` | |
-| `  compilability.py` | 155 | | Compilability checks, state handler scanning | |
+| `codegen/` | 4,279 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
+| `  api.py` | 842 | | Public API, dataclasses, host bindings, `execute()` | |
+| `  core.py` | 541 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6) | |
+| `  modules.py` | 356 | | Cross-module registration + call detection (C7e) | |
+| `  registration.py` | 198 | | Pass 1 forward declarations, ADT layout | |
+| `  monomorphize.py` | 618 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
+| `  functions.py` | 267 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
+| `  closures.py` | 246 | | Closure lifting, GC instrumentation | |
+| `  contracts.py` | 282 | | Runtime pre/postconditions, old state snapshots | |
+| `  assembly.py` | 666 | | WAT module assembly, `$alloc`, `$gc_collect` | |
+| `  compilability.py` | 263 | | Compilability checks, state handler scanning | |
 | `tester.py` | ~530 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
 | `formatter.py` | 1,018 | Format | Canonical code formatter | `format_source()` |
-| `errors.py` | 459 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
+| `errors.py` | 515 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
 | `browser/` | 138+1,227 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
 | ` ├ emit.py` | 137 | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
 | ` ├ runtime.mjs` | 1,123 | | Self-contained JS runtime: IO, State, contracts, Markdown | |

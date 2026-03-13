@@ -359,3 +359,147 @@ public fn main(-> @Int)
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="test_list")
         assert exec_result.value == 60
+
+
+# =====================================================================
+# C6j: Ability constraint satisfaction and operation codegen
+# =====================================================================
+
+
+class TestAbilityConstraints:
+    """Tests for ability constraint checking and eq() operation rewriting."""
+
+    def test_eq_int(self) -> None:
+        """forall<T where Eq<T>> with Int — equal values return true."""
+        source = """\
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ eq(@T.0, @T.1) }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if are_equal(42, 42) then { 1 } else { 0 }
+}
+"""
+        assert _run(source, fn="main") == 1
+
+    def test_eq_int_false(self) -> None:
+        """forall<T where Eq<T>> with Int — unequal values return false."""
+        source = """\
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ eq(@T.0, @T.1) }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if are_equal(1, 2) then { 1 } else { 0 }
+}
+"""
+        assert _run(source, fn="main") == 0
+
+    def test_eq_bool(self) -> None:
+        """forall<T where Eq<T>> with Bool."""
+        source = """\
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ eq(@T.0, @T.1) }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if are_equal(true, true) then { 1 } else { 0 }
+}
+"""
+        assert _run(source, fn="main") == 1
+
+    def test_eq_in_if(self) -> None:
+        """eq result used directly as if condition."""
+        source = """\
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ eq(@T.0, @T.1) }
+
+public fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if are_equal(@Int.0, 10) then { 100 } else { 200 }
+}
+"""
+        assert _run(source, fn="main", args=[10]) == 100
+        assert _run(source, fn="main", args=[5]) == 200
+
+    def test_eq_constraint_multiple_calls(self) -> None:
+        """Same constrained fn called with Int and Bool."""
+        source = """\
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ eq(@T.0, @T.1) }
+
+public fn test_int(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if are_equal(5, 5) then { 1 } else { 0 }
+}
+
+public fn test_bool(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if are_equal(false, false) then { 1 } else { 0 }
+}
+"""
+        result = _compile_ok(source)
+        exec_int = execute(result, fn_name="test_int")
+        assert exec_int.value == 1
+        exec_bool = execute(result, fn_name="test_bool")
+        assert exec_bool.value == 1
+
+    def test_eq_non_generic_direct_call(self) -> None:
+        """eq(1, 1) in a non-generic function — rewritten by Pass 1.6."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if eq(1, 1) then { 1 } else { 0 }
+}
+"""
+        assert _run(source, fn="main") == 1
+
+    def test_eq_nested_in_expression(self) -> None:
+        """eq in let bindings combined with boolean and."""
+        source = """\
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ eq(@T.0, @T.1) }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Bool = are_equal(3, 3);
+  let @Bool = are_equal(7, 7);
+  if @Bool.0 && @Bool.1 then { 1 } else { 0 }
+}
+"""
+        assert _run(source, fn="main") == 1
+
+    def test_unsatisfied_constraint_adt(self) -> None:
+        """ADT type passed to Eq constraint → E613 error."""
+        source = """\
+private data Color { Red, Green, Blue }
+
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ eq(@T.0, @T.1) }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if are_equal(Red, Blue) then { 1 } else { 0 }
+}
+"""
+        result = _compile(source)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert any(d.error_code == "E613" for d in errors), (
+            f"Expected E613, got: {[d.error_code for d in errors]}"
+        )

@@ -263,7 +263,7 @@ class CrossModuleMixin:
 
         for tld in program.declarations:
             decl = tld.decl
-            if isinstance(decl, ast.FnDecl):
+            if isinstance(decl, ast.FnDecl) and not decl.forall_vars:
                 self._scan_body_for_unknown_calls(
                     decl.body, known, seen,
                 )

@@ -169,6 +169,9 @@ class CodeGenerator(
         for mdecl in mono_decls:
             self._register_fn(mdecl)
 
+        # Pass 1.6: rewrite ability operation calls → concrete expressions
+        program, mono_decls = self._rewrite_ability_ops(program, mono_decls)
+
         # Pass 1.9: check for cross-module calls that codegen can't handle
         self._check_cross_module_calls(program)
         if any(d.severity == "error" for d in self.diagnostics):
@@ -338,3 +341,205 @@ class CodeGenerator(
                 for b in ch.encode("utf-8"):
                     result.append(f"\\{b:02x}")
         return "".join(result)
+
+    # -----------------------------------------------------------------
+    # Pass 1.6: Ability operation rewriting
+    # -----------------------------------------------------------------
+
+    def _rewrite_ability_ops(
+        self,
+        program: ast.Program,
+        mono_decls: list[ast.FnDecl],
+    ) -> tuple[ast.Program, list[ast.FnDecl]]:
+        """Rewrite ability operation calls to concrete expressions.
+
+        Replaces ``eq(a, b)`` with ``BinaryExpr(a, EQ, b)`` in all
+        function bodies (regular and monomorphized).
+        """
+        from dataclasses import replace as _replace
+
+        # Built-in ability operations that need rewriting.
+        # Currently only Eq's eq(a, b) → BinaryExpr(a, EQ, b).
+        ability_ops: dict[str, str] = {"eq": "Eq"}
+
+        # Rewrite program declarations (non-generic only)
+        new_tlds: list[ast.TopLevelDecl] = []
+        prog_changed = False
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.FnDecl) and not tld.decl.forall_vars:
+                new_body = self._rewrite_ops_in_expr(
+                    tld.decl.body, ability_ops)
+                new_where = self._rewrite_where_fns(
+                    tld.decl.where_fns, ability_ops)
+                if (new_body is not tld.decl.body
+                        or new_where is not tld.decl.where_fns):
+                    new_decl = _replace(
+                        tld.decl, body=new_body,  # type: ignore[arg-type]
+                        where_fns=new_where)
+                    tld = _replace(tld, decl=new_decl)
+                    prog_changed = True
+            new_tlds.append(tld)
+        if prog_changed:
+            program = _replace(program, declarations=tuple(new_tlds))
+
+        # Rewrite monomorphized declarations
+        new_monos: list[ast.FnDecl] = []
+        for mdecl in mono_decls:
+            new_body = self._rewrite_ops_in_expr(mdecl.body, ability_ops)
+            new_where = self._rewrite_where_fns(
+                mdecl.where_fns, ability_ops)
+            if new_body is not mdecl.body or new_where is not mdecl.where_fns:
+                mdecl = _replace(
+                    mdecl, body=new_body,  # type: ignore[arg-type]
+                    where_fns=new_where)
+            new_monos.append(mdecl)
+
+        return program, new_monos
+
+    def _rewrite_where_fns(
+        self,
+        where_fns: tuple[ast.FnDecl, ...] | None,
+        ability_ops: dict[str, str],
+    ) -> tuple[ast.FnDecl, ...] | None:
+        """Rewrite ability ops in where-block function bodies."""
+        if not where_fns:
+            return where_fns
+        from dataclasses import replace as _replace
+
+        new_fns: list[ast.FnDecl] = []
+        changed = False
+        for wfn in where_fns:
+            new_body = self._rewrite_ops_in_expr(wfn.body, ability_ops)
+            if new_body is not wfn.body:
+                new_fns.append(_replace(wfn, body=new_body))  # type: ignore[arg-type]
+                changed = True
+            else:
+                new_fns.append(wfn)
+        return tuple(new_fns) if changed else where_fns
+
+    def _rewrite_ops_in_expr(
+        self,
+        expr: ast.Expr,
+        ability_ops: dict[str, str],
+    ) -> ast.Expr:
+        """Recursively rewrite ability op calls in an expression tree."""
+        from dataclasses import replace as _replace
+
+        # FnCall: check if it's an ability op to rewrite
+        if isinstance(expr, ast.FnCall):
+            if (expr.name in ability_ops
+                    and expr.name not in self._fn_sigs
+                    and expr.name == "eq"
+                    and len(expr.args) == 2):
+                left = self._rewrite_ops_in_expr(expr.args[0], ability_ops)
+                right = self._rewrite_ops_in_expr(expr.args[1], ability_ops)
+                return ast.BinaryExpr(
+                    left=left, op=ast.BinOp.EQ, right=right, span=expr.span,
+                )
+            # Recurse into args of non-ability calls
+            new_args = tuple(
+                self._rewrite_ops_in_expr(a, ability_ops)
+                for a in expr.args
+            )
+            if any(n is not o for n, o in zip(new_args, expr.args)):
+                return _replace(expr, args=new_args)
+            return expr
+
+        # Block: rewrite statements + final expr
+        if isinstance(expr, ast.Block):
+            new_stmts = tuple(
+                self._rewrite_ops_in_stmt(s, ability_ops)
+                for s in expr.statements
+            )
+            new_final = self._rewrite_ops_in_expr(expr.expr, ability_ops)
+            if (any(n is not o for n, o in zip(new_stmts, expr.statements))
+                    or new_final is not expr.expr):
+                return _replace(
+                    expr, statements=new_stmts, expr=new_final)
+            return expr
+
+        if isinstance(expr, ast.BinaryExpr):
+            left = self._rewrite_ops_in_expr(expr.left, ability_ops)
+            right = self._rewrite_ops_in_expr(expr.right, ability_ops)
+            if left is not expr.left or right is not expr.right:
+                return _replace(expr, left=left, right=right)
+            return expr
+
+        if isinstance(expr, ast.UnaryExpr):
+            operand = self._rewrite_ops_in_expr(expr.operand, ability_ops)
+            if operand is not expr.operand:
+                return _replace(expr, operand=operand)
+            return expr
+
+        if isinstance(expr, ast.IfExpr):
+            cond = self._rewrite_ops_in_expr(expr.condition, ability_ops)
+            then = self._rewrite_ops_in_expr(expr.then_branch, ability_ops)
+            els = self._rewrite_ops_in_expr(expr.else_branch, ability_ops)
+            if (cond is not expr.condition or then is not expr.then_branch
+                    or els is not expr.else_branch):
+                return _replace(
+                    expr, condition=cond,
+                    then_branch=then,  # type: ignore[arg-type]
+                    else_branch=els)  # type: ignore[arg-type]
+            return expr
+
+        if isinstance(expr, ast.MatchExpr):
+            scr = self._rewrite_ops_in_expr(expr.scrutinee, ability_ops)
+            rewritten_arms: list[ast.MatchArm] = []
+            for arm in expr.arms:
+                new_body = self._rewrite_ops_in_expr(arm.body, ability_ops)
+                if new_body is not arm.body:
+                    rewritten_arms.append(_replace(arm, body=new_body))
+                else:
+                    rewritten_arms.append(arm)
+            new_arms = tuple(rewritten_arms)
+            if (scr is not expr.scrutinee
+                    or any(n is not o
+                           for n, o in zip(new_arms, expr.arms))):
+                return _replace(expr, scrutinee=scr, arms=new_arms)
+            return expr
+
+        if isinstance(expr, ast.ConstructorCall):
+            new_args = tuple(
+                self._rewrite_ops_in_expr(a, ability_ops)
+                for a in expr.args
+            )
+            if any(n is not o for n, o in zip(new_args, expr.args)):
+                return _replace(expr, args=new_args)
+            return expr
+
+        if isinstance(expr, ast.AnonFn):
+            new_body = self._rewrite_ops_in_expr(expr.body, ability_ops)
+            if new_body is not expr.body:
+                return _replace(expr, body=new_body)  # type: ignore[arg-type]
+            return expr
+
+        if isinstance(expr, ast.ModuleCall):
+            new_args = tuple(
+                self._rewrite_ops_in_expr(a, ability_ops)
+                for a in expr.args
+            )
+            if any(n is not o for n, o in zip(new_args, expr.args)):
+                return _replace(expr, args=new_args)
+            return expr
+
+        # Leaf nodes (literals, slot refs, etc.) — no rewriting needed
+        return expr
+
+    def _rewrite_ops_in_stmt(
+        self,
+        stmt: ast.Stmt,
+        ability_ops: dict[str, str],
+    ) -> ast.Stmt:
+        """Rewrite ability ops inside a statement."""
+        from dataclasses import replace as _replace
+
+        if isinstance(stmt, ast.LetStmt):
+            new_val = self._rewrite_ops_in_expr(stmt.value, ability_ops)
+            if new_val is not stmt.value:
+                return _replace(stmt, value=new_val)
+        elif isinstance(stmt, ast.ExprStmt):
+            new_expr = self._rewrite_ops_in_expr(stmt.expr, ability_ops)
+            if new_expr is not stmt.expr:
+                return _replace(stmt, expr=new_expr)
+        return stmt
