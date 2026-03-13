@@ -1482,11 +1482,11 @@ match md_parse(@String.0) {
 
 This follows the same pattern as JSON: `json_parse(Http.get(url))`, not a dedicated `get_json` operation. One way to do things (§0.2.3).
 
-## 9.8 Abilities (Future)
+## 9.8 Abilities
 
-> **Status: Not yet implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Post-v0.1 feature.
+> **Status: Partially implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Ability declarations, constraint syntax, and type checking are implemented. The built-in `Eq` ability is registered. Monomorphization and code generation for ability operations are planned for a future release.
 
-Vera's type variables are currently unconstrained (`forall<T>`). To support practical generic programming — sorting, hashing, serialisation — type variables will need constraints. Vera will adopt restricted abilities rather than full typeclasses:
+Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
 
 ```
 ability Eq<T> {
@@ -1512,7 +1512,7 @@ Key design points:
 
 1. **No higher-kinded types.** No `Functor`, `Monad`, or `Applicative`. Abilities are first-order only: `Eq<T>`, not `Mappable<F>` where `F` is a type constructor. This preserves decidable type checking and prevents the abstraction hierarchy that makes code harder for LLMs to generate correctly.
 
-2. **Built-in abilities** will be auto-derivable for ADTs composed of types that already support them: `Eq`, `Ord`, `Hash`, `Encode`, `Decode`, `Show`. If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically.
+2. **Built-in abilities** are auto-derivable for ADTs composed of types that already support them: `Eq`, `Ord`, `Hash`, `Encode`, `Decode`, `Show`. If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically. Currently only `Eq` is built-in; `Ord`, `Hash`, and others are planned.
 
 3. **User-defined abilities** are permitted but restricted to first-order type parameters. This allows library authors to define domain-specific abilities without the complexity of higher-kinded polymorphism.
 

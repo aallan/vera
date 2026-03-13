@@ -196,7 +196,8 @@ class ContractVerifier:
                 self._register_effect(decl)
             elif isinstance(decl, ast.TypeAliasDecl):
                 self._register_alias(decl)
-            # AbilityDecl: registered in PR 2
+            elif isinstance(decl, ast.AbilityDecl):
+                self._register_ability(decl)
 
     def _register_fn(
         self, decl: ast.FnDecl, visibility: str | None = None,
@@ -255,6 +256,28 @@ class ContractVerifier:
             type_params=decl.type_params,
             resolved_type=resolved,
         )
+
+    def _register_ability(self, decl: ast.AbilityDecl) -> None:
+        """Register an ability declaration."""
+        from vera.environment import AbilityInfo, OpInfo
+        from vera.types import TypeVar
+        saved_params = dict(self.env.type_params)
+        if decl.type_params:
+            for tv in decl.type_params:
+                self.env.type_params[tv] = TypeVar(tv)
+        ops: dict[str, OpInfo] = {}
+        for op in decl.operations:
+            param_types = tuple(
+                self._resolve_type(p) for p in op.param_types)
+            ret_type = self._resolve_type(op.return_type)
+            ops[op.name] = OpInfo(op.name, param_types, ret_type,
+                                  decl.name)
+        self.env.abilities[decl.name] = AbilityInfo(
+            name=decl.name,
+            type_params=decl.type_params,
+            operations=ops,
+        )
+        self.env.type_params = saved_params
 
     # -----------------------------------------------------------------
     # Cross-module registration (C7d)

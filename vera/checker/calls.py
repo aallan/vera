@@ -54,6 +54,11 @@ class CallsMixin:
             self._effect_ops_used.add(op_info.parent_effect)
             return self._check_op_call(op_info, args, node)
 
+        # Maybe it's an ability operation
+        ab_op = self.env.lookup_ability_op(name)
+        if ab_op:
+            return self._check_ability_op_call(ab_op, args, node)
+
         # Unresolved — emit warning and continue
         self._error(
             node,
@@ -215,6 +220,72 @@ class CallsMixin:
                 if eff_info and eff_info.type_params and ei.type_args:
                     return dict(zip(eff_info.type_params, ei.type_args))
         return {}
+
+    # -----------------------------------------------------------------
+    # Ability operations
+    # -----------------------------------------------------------------
+
+    def _check_ability_op_call(self, op_info: OpInfo,
+                               args: tuple[ast.Expr, ...],
+                               node: ast.Node) -> Type | None:
+        """Check a call to an ability operation."""
+        arg_types: list[Type | None] = []
+        for arg in args:
+            arg_types.append(self._synth_expr(arg))
+
+        # Build type mapping from ability params → concrete types
+        mapping = self._ability_type_mapping(op_info, arg_types)
+        param_types = tuple(
+            substitute(p, mapping) for p in op_info.param_types)
+        return_type = substitute(op_info.return_type, mapping)
+
+        if len(args) != len(param_types):
+            self._error(
+                node,
+                f"Ability operation '{op_info.name}' expects "
+                f"{len(param_types)} argument(s), got {len(args)}.",
+                error_code="E240",
+            )
+            return return_type
+
+        for i, (arg_ty, param_ty) in enumerate(
+                zip(arg_types, param_types)):
+            if arg_ty is None or isinstance(arg_ty, UnknownType):
+                continue
+            if isinstance(param_ty, (TypeVar, UnknownType)):
+                continue
+            if not is_subtype(arg_ty, param_ty):
+                self._error(
+                    args[i],
+                    f"Argument {i} of '{op_info.name}' has type "
+                    f"{pretty_type(arg_ty)}, expected "
+                    f"{pretty_type(param_ty)}.",
+                    error_code="E241",
+                )
+
+        return return_type
+
+    def _ability_type_mapping(
+        self, op_info: OpInfo,
+        arg_types: list[Type | None],
+    ) -> dict[str, Type]:
+        """Infer ability type parameter mapping from argument types.
+
+        For ``ability Eq<A>`` with ``op eq(A, A -> Bool)``, if called as
+        ``eq(x, y)`` where ``x: Int``, maps ``A → Int``.
+        """
+        ab_info = self.env.abilities.get(op_info.parent_effect)
+        if not ab_info or not ab_info.type_params:
+            return {}
+        mapping: dict[str, Type] = {}
+        for param_ty, arg_ty in zip(op_info.param_types, arg_types):
+            if arg_ty is None or isinstance(arg_ty, UnknownType):
+                continue
+            if (isinstance(param_ty, TypeVar)
+                    and param_ty.name in ab_info.type_params):
+                if param_ty.name not in mapping:
+                    mapping[param_ty.name] = arg_ty
+        return mapping
 
     # -----------------------------------------------------------------
     # Constructors

@@ -46,6 +46,7 @@ class FunctionInfo:
     contracts: tuple[object, ...] = ()  # ast.Contract nodes (for C4)
     param_type_exprs: tuple[object, ...] = ()  # ast.TypeExpr nodes (for C6b)
     visibility: str | None = None  # "public" | "private" | None (C7c)
+    forall_constraints: tuple[object, ...] = ()  # ast.AbilityConstraint nodes
 
 
 @dataclass
@@ -84,11 +85,19 @@ class EffectInfo:
 
 @dataclass
 class OpInfo:
-    """Registered effect operation."""
+    """Registered effect or ability operation."""
     name: str
     param_types: tuple[Type, ...]
     return_type: Type
-    parent_effect: str
+    parent_effect: str  # also used for parent ability name
+
+
+@dataclass
+class AbilityInfo:
+    """Registered ability declaration."""
+    name: str
+    type_params: tuple[str, ...] | None
+    operations: dict[str, OpInfo]
 
 
 # =====================================================================
@@ -123,6 +132,7 @@ class TypeEnv:
     data_types: dict[str, AdtInfo] = field(default_factory=dict)
     type_aliases: dict[str, TypeAliasInfo] = field(default_factory=dict)
     effects: dict[str, EffectInfo] = field(default_factory=dict)
+    abilities: dict[str, AbilityInfo] = field(default_factory=dict)
     constructors: dict[str, ConstructorInfo] = field(default_factory=dict)
 
     # Type variables currently in scope (from forall<T>)
@@ -332,6 +342,19 @@ class TypeEnv:
             name="Async",
             type_params=None,
             operations={},
+        )
+
+        # Built-in abilities
+        # Eq<A> — equality comparison (spec §9.8).
+        # Uses type param "A" (not "T") to avoid confusion with
+        # function-level forall<T where Eq<T>>.
+        self.abilities["Eq"] = AbilityInfo(
+            name="Eq",
+            type_params=("A",),
+            operations={
+                "eq": OpInfo("eq", (TypeVar("A"), TypeVar("A")),
+                             BOOL, "Eq"),
+            },
         )
 
         # Built-in array operations
@@ -987,6 +1010,17 @@ class TypeEnv:
             if op_name in eff.operations:
                 return eff.operations[op_name]
 
+        return None
+
+    def lookup_ability_op(self, op_name: str) -> OpInfo | None:
+        """Look up an ability operation by name.
+
+        Searches all registered abilities.  Constraint scoping is
+        enforced by the caller (checker/calls.py), not here.
+        """
+        for ab in self.abilities.values():
+            if op_name in ab.operations:
+                return ab.operations[op_name]
         return None
 
     def is_type_name(self, name: str) -> bool:

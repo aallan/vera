@@ -446,6 +446,8 @@ ERROR_CODES: dict[str, str] = {
     "E174": "old() outside ensures",
     "E175": "new() outside ensures",
     "E176": "Unknown expression type",
+    "E180": "Unknown ability in constraint",
+    "E181": "Constraint references undeclared type variable",
     # E2xx — Type Checker: Calls
     "E200": "Unresolved function",
     "E201": "Wrong argument count",
@@ -463,6 +465,8 @@ ERROR_CODES: dict[str, str] = {
     "E231": "Function not imported from module",
     "E232": "Function is private in module",
     "E233": "Function not found in module",
+    "E240": "Ability operation wrong argument count",
+    "E241": "Ability operation argument type mismatch",
     # E3xx — Type Checker: Control Flow
     "E300": "If condition not Bool",
     "E301": "If branches incompatible types",
