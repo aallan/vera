@@ -964,6 +964,39 @@ private forall<T> fn identity(@T -> @T)
 }
 ```
 
+## Abilities (Type Constraints)
+
+Abilities constrain type variables in generic functions. An ability declares operations that a type must support:
+
+```vera
+ability Eq<T> {
+  op eq(T, T -> Bool);
+}
+```
+
+Use `where` in the `forall` clause to constrain type parameters:
+
+```vera
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(@T.1, @T.0)
+}
+```
+
+The built-in `Eq` ability is automatically available — no declaration needed. Call `eq(x, y)` to compare values of a constrained type.
+
+Key rules:
+- Abilities are first-order only: `Eq<T>`, not `Mappable<F>` where `F` is a type constructor
+- Constraint syntax: `forall<T where Eq<T>>` — constraints go inside the angle brackets
+- Multiple constraints: `forall<T where Eq<T>, Ord<T>>`
+- Ability declarations mirror effect declarations (both use `op`)
+- User-defined abilities are supported with the same syntax
+
+> **Note:** Abilities are currently type-checked but not yet compilable. Monomorphization and code generation for ability operations are planned for a future release. Programs using ability operations will pass `vera check` but cannot yet be compiled with `vera compile` or run with `vera run`.
+
 ## Modules
 
 ```vera

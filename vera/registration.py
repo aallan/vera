@@ -49,6 +49,7 @@ def register_fn(
         contracts=decl.contracts,
         param_type_exprs=decl.params,
         visibility=visibility,
+        forall_constraints=decl.forall_constraints or (),
     )
 
     if decl.where_fns:

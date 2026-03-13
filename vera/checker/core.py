@@ -236,6 +236,40 @@ class TypeChecker(
             for tv in decl.forall_vars:
                 self.env.type_params[tv] = TypeVar(tv)
 
+        # 1b. Validate ability constraints
+        if decl.forall_constraints:
+            for constraint in decl.forall_constraints:
+                # E180: ability must exist
+                if not self.env.abilities.get(constraint.ability_name):
+                    self._error(
+                        constraint,
+                        f"Unknown ability '{constraint.ability_name}' "
+                        f"in constraint.",
+                        rationale="Ability constraints must reference a "
+                                  "declared ability.",
+                        fix=f"Declare 'ability "
+                            f"{constraint.ability_name}<T> {{ ... }}' "
+                            f"or use a built-in ability like Eq.",
+                        spec_ref='Chapter 9, Section 9.8 "Abilities"',
+                        error_code="E180",
+                    )
+                # E181: type var must be declared in forall
+                if (decl.forall_vars is None
+                        or constraint.type_var not in decl.forall_vars):
+                    self._error(
+                        constraint,
+                        f"Constraint references undeclared type variable "
+                        f"'{constraint.type_var}'.",
+                        rationale="Type variables in constraints must be "
+                                  "declared in the forall clause.",
+                        fix=f"Add '{constraint.type_var}' to the forall "
+                            f"clause: forall<{constraint.type_var} where "
+                            f"{constraint.ability_name}"
+                            f"<{constraint.type_var}>>",
+                        spec_ref='Chapter 9, Section 9.8 "Abilities"',
+                        error_code="E181",
+                    )
+
         # 2. Resolve parameter and return types
         param_types = tuple(self._resolve_type(p) for p in decl.params)
         return_type = self._resolve_type(decl.return_type)

@@ -974,11 +974,11 @@ private fn bad(@Unit -> @Unit)
 
 
 # =====================================================================
-# Abilities (Spec §9.8) — PR 1: syntax only
+# Abilities (Spec §9.8) — PR 2: registration + constraint validation
 # =====================================================================
 
 class TestAbilities:
-    """Ability declarations parse and pass through the checker."""
+    """Ability declarations, constraint validation, and operation resolution."""
 
     def test_ability_decl_accepted(self) -> None:
         """Ability declaration is accepted without errors."""
@@ -1003,6 +1003,82 @@ class TestAbilities:
           effects(pure)
         { true }
         """)
+
+    def test_ability_with_builtin_eq(self) -> None:
+        """Built-in Eq ability: eq() call in constrained function resolves."""
+        _check_ok("""
+        private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { eq(@T.1, @T.0) }
+        """)
+
+    def test_ability_op_resolves_return_type(self) -> None:
+        """eq() returns Bool, usable in if condition."""
+        _check_ok("""
+        private forall<T where Eq<T>> fn check(@T, @T -> @Int)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        {
+          if eq(@T.1, @T.0) then { 1 } else { 0 }
+        }
+        """)
+
+    def test_user_defined_ability_op_call(self) -> None:
+        """User-defined ability operation resolves in constrained function."""
+        _check_ok("""
+        ability Show<T> {
+          op show(T -> String);
+        }
+
+        private forall<T where Show<T>> fn display(@T -> @String)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { show(@T.0) }
+        """)
+
+    def test_unknown_ability_in_constraint(self) -> None:
+        """Unknown ability in constraint → E180."""
+        _check_err("""
+        private forall<T where Unknown<T>> fn f(@T -> @T)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { @T.0 }
+        """, "Unknown ability 'Unknown'")
+
+    def test_undeclared_typevar_in_constraint(self) -> None:
+        """Constraint references undeclared type variable → E181."""
+        _check_err("""
+        private forall<T where Eq<X>> fn f(@T -> @T)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { @T.0 }
+        """, "undeclared type variable 'X'")
+
+    def test_ability_op_wrong_arity(self) -> None:
+        """Ability operation with wrong argument count → E240."""
+        _check_err("""
+        private forall<T where Eq<T>> fn bad(@T -> @Bool)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { eq(@T.0) }
+        """, "expects 2 argument(s), got 1")
+
+    def test_ability_op_type_mismatch(self) -> None:
+        """Ability operation with mismatched argument types → E241."""
+        _check_err("""
+        private fn bad(@Int, @String -> @Bool)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { eq(@Int.0, @String.0) }
+        """, "Argument 1 of 'eq'")
 
 
 # =====================================================================

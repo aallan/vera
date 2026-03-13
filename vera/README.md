@@ -79,14 +79,14 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `transform.py` | 1,000 | Transform | Lark tree → AST transformer | `transform()` |
 | `ast.py` | 785 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
 | `types.py` | 307 | Type check | Semantic type representation | `Type`, `is_subtype()` |
-| `environment.py` | 302 | Type check | Type environment, scope stacks | `TypeEnv` |
+| `environment.py` | 302 | Type check | Type environment, scope stacks, ability registry | `TypeEnv`, `AbilityInfo` |
 | `checker/` | 2,248 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
-| `  core.py` | 356 | | TypeChecker class, orchestration, contracts | |
+| `  core.py` | 356 | | TypeChecker class, orchestration, contracts, constraint validation | |
 | `  resolution.py` | 190 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 153 | | Cross-module registration (C7b/C7c) | |
-| `  registration.py` | 138 | | Pass 1 forward declarations | |
+| `  registration.py` | 138 | | Pass 1 forward declarations, ability registration | |
 | `  expressions.py` | 555 | | Expression synthesis (bidirectional), operators, statements | |
-| `  calls.py` | 486 | | Function/constructor/module calls | |
+| `  calls.py` | 486 | | Function/constructor/module/ability calls | |
 | `  control.py` | 482 | | If/match, patterns, effect handlers | |
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `smt.py` | 547 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |

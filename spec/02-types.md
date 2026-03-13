@@ -245,13 +245,13 @@ Type variables:
 
 ### 2.7.1 Type Constraints
 
-Type variables may be constrained (future extension, not in v0.1):
+Type variables may be constrained using ability constraints:
 
 ```
 private forall<T where Ord<T>> fn sort(@Array<T> -> @Array<T>)
 ```
 
-For v0.1, type variables are unconstrained.
+Constraints are declared in the `forall` clause using `where`. Each constraint binds a type variable to an ability, requiring that any concrete type substituted for that variable satisfies the ability. See Section 9.8 for ability declarations and built-in abilities.
 
 ## 2.8 Subtyping Rules
 

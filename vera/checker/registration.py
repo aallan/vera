@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from vera import ast
 from vera.environment import (
+    AbilityInfo,
     AdtInfo,
     ConstructorInfo,
     EffectInfo,
@@ -50,7 +51,7 @@ class RegistrationMixin:
         elif isinstance(decl, ast.FnDecl):
             self._register_fn(decl, visibility=visibility)
         elif isinstance(decl, ast.AbilityDecl):
-            pass  # PR 2: semantic validation of ability declarations
+            self._register_ability(decl)
 
     def _register_data(
         self, decl: ast.DataDecl, visibility: str | None = None,
@@ -121,6 +122,33 @@ class RegistrationMixin:
             )
 
         self.env.effects[decl.name] = EffectInfo(
+            name=decl.name,
+            type_params=decl.type_params,
+            operations=ops,
+        )
+
+        self.env.type_params = saved_params
+
+    def _register_ability(self, decl: ast.AbilityDecl) -> None:
+        """Register an ability and its operations."""
+        saved_params = dict(self.env.type_params)
+        if decl.type_params:
+            for tv in decl.type_params:
+                self.env.type_params[tv] = TypeVar(tv)
+
+        ops: dict[str, OpInfo] = {}
+        for op in decl.operations:
+            param_types = tuple(
+                self._resolve_type(p) for p in op.param_types)
+            ret_type = self._resolve_type(op.return_type)
+            ops[op.name] = OpInfo(
+                name=op.name,
+                param_types=param_types,
+                return_type=ret_type,
+                parent_effect=decl.name,  # stores ability name
+            )
+
+        self.env.abilities[decl.name] = AbilityInfo(
             name=decl.name,
             type_params=decl.type_params,
             operations=ops,
