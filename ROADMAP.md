@@ -49,7 +49,7 @@ No blocking dependencies. Highest value-per-effort.
 
 The chain that unlocks agent-viable data processing. Each item depends on the previous.
 
-1. [#60](https://github.com/aallan/vera/issues/60) **Abilities and type constraints** — highest-leverage foundation work. Every item below is transitively blocked by this. The viability assessment's "60–70%" verdict is largely gated here. ([PR #297](https://github.com/aallan/vera/pull/297))
+1. [#60](https://github.com/aallan/vera/issues/60) **Abilities and type constraints** — highest-leverage foundation work. Every item below is transitively blocked by this. The viability assessment's "60–70%" verdict is largely gated here. ([PR #297](https://github.com/aallan/vera/pull/297), [PR #298](https://github.com/aallan/vera/pull/298))
 2. [#133](https://github.com/aallan/vera/issues/133) **Array `map`/`fold`/`filter`** (remainder) — requires abilities for generic iteration. The iteration verbosity tax — 12-line recursive loop vs 1-line `map`, multiplied across every data transformation — is the single biggest usability gap for agent workloads.
 3. [#62](https://github.com/aallan/vera/issues/62) **Map and Set collections** — requires abilities for key constraints (`Eq + Hash`). Unlocks structured data handling.
 4. [#58](https://github.com/aallan/vera/issues/58) **JSON type** — requires Map for `JObject`. Without JSON parsing and serialisation, Vera cannot participate in any API integration workflow.
