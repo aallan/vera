@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from vera.ast import (
+    AbilityConstraint,
+    AbilityDecl,
     AnonFn,
     ArrayLit,
     AssertExpr,
@@ -346,6 +348,88 @@ class TestEffectDecls:
         """)
         decl = prog.declarations[0].decl
         assert decl.type_params == ("T",)
+
+
+# -- Ability declarations --
+
+class TestAbilityDecls:
+    def test_ability_with_ops(self):
+        prog = _ast("""
+        ability Eq<T> {
+          op eq(T, T -> Bool);
+        }
+        """)
+        decl = prog.declarations[0].decl
+        assert isinstance(decl, AbilityDecl)
+        assert decl.name == "Eq"
+        assert decl.type_params == ("T",)
+        assert len(decl.operations) == 1
+        assert decl.operations[0].name == "eq"
+
+    def test_ability_multiple_ops(self):
+        prog = _ast("""
+        ability Ord<T> {
+          op lt(T, T -> Bool);
+          op le(T, T -> Bool);
+        }
+        """)
+        decl = prog.declarations[0].decl
+        assert isinstance(decl, AbilityDecl)
+        assert decl.name == "Ord"
+        assert len(decl.operations) == 2
+        assert decl.operations[0].name == "lt"
+        assert decl.operations[1].name == "le"
+
+    def test_ability_no_type_params(self):
+        prog = _ast("""
+        ability MyAbility {
+          op doSomething(Int -> Bool);
+        }
+        """)
+        decl = prog.declarations[0].decl
+        assert isinstance(decl, AbilityDecl)
+        assert decl.type_params is None
+
+    def test_forall_with_constraint(self):
+        fn = _first_fn("""
+        private forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { true }
+        """)
+        assert fn.forall_vars == ("T",)
+        assert fn.forall_constraints is not None
+        assert len(fn.forall_constraints) == 1
+        c = fn.forall_constraints[0]
+        assert isinstance(c, AbilityConstraint)
+        assert c.ability_name == "Eq"
+        assert c.type_var == "T"
+
+    def test_forall_with_multiple_constraints(self):
+        fn = _first_fn("""
+        private forall<T where Eq<T>, Ord<T>> fn sorted(@Array<T> -> @Array<T>)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { @Array<T>.0 }
+        """)
+        assert fn.forall_vars == ("T",)
+        assert fn.forall_constraints is not None
+        assert len(fn.forall_constraints) == 2
+        assert fn.forall_constraints[0].ability_name == "Eq"
+        assert fn.forall_constraints[1].ability_name == "Ord"
+
+    def test_forall_without_constraint(self):
+        fn = _first_fn("""
+        private forall<T> fn identity(@T -> @T)
+          requires(true)
+          ensures(true)
+          effects(pure)
+        { @T.0 }
+        """)
+        assert fn.forall_vars == ("T",)
+        assert fn.forall_constraints is None
 
 
 # -- Type expressions --

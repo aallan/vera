@@ -49,6 +49,8 @@ class RegistrationMixin:
             self._register_effect(decl)
         elif isinstance(decl, ast.FnDecl):
             self._register_fn(decl, visibility=visibility)
+        elif isinstance(decl, ast.AbilityDecl):
+            pass  # PR 2: semantic validation of ability declarations
 
     def _register_data(
         self, decl: ast.DataDecl, visibility: str | None = None,

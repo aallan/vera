@@ -4087,6 +4087,7 @@ class TestFormatExpr:
         decl = FnDecl(
             name="clamp",
             forall_vars=None,
+            forall_constraints=None,
             params=(
                 NamedType(name="Int", type_args=None),
                 NamedType(name="Int", type_args=None),

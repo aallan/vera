@@ -209,6 +209,7 @@ class FnDecl(Decl):
     """Function declaration with contracts, effects, and body."""
     name: str
     forall_vars: tuple[str, ...] | None
+    forall_constraints: tuple[AbilityConstraint, ...] | None
     params: tuple[TypeExpr, ...]
     return_type: TypeExpr
     contracts: tuple[Contract, ...]
@@ -251,10 +252,25 @@ class EffectDecl(Decl):
 
 @dataclass(frozen=True)
 class OpDecl(Node):
-    """Effect operation declaration."""
+    """Effect or ability operation declaration."""
     name: str
     param_types: tuple[TypeExpr, ...]
     return_type: TypeExpr
+
+
+@dataclass(frozen=True)
+class AbilityDecl(Decl):
+    """Ability declaration with operations."""
+    name: str
+    type_params: tuple[str, ...] | None
+    operations: tuple[OpDecl, ...]
+
+
+@dataclass(frozen=True)
+class AbilityConstraint(Node):
+    """A constraint on a type variable: Eq<T>."""
+    ability_name: str
+    type_var: str
 
 
 # =====================================================================
@@ -672,6 +688,7 @@ class QualifiedEffectRef(EffectRefNode):
 class _ForallVars:
     """Sentinel: forall type variable list."""
     vars: tuple[str, ...]
+    constraints: tuple[AbilityConstraint, ...] | None = None
 
 
 @dataclass(frozen=True)

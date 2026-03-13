@@ -26,6 +26,7 @@ top_level_decl: visibility? fn_decl     -> fn_top_level
               | visibility? data_decl   -> data_top_level
               | type_alias_decl
               | effect_decl
+              | ability_decl
 
 visibility: "public" | "private"
 
@@ -36,6 +37,7 @@ visibility: "public" | "private"
 fn_decl: forall_clause? "fn" LOWER_IDENT fn_signature contract_block effect_clause fn_body where_block?
 
 forall_clause: "forall" "<" type_var_list ">"
+             | "forall" "<" type_var_list "where" ability_constraint_list ">"
 
 type_var_list: UPPER_IDENT ("," UPPER_IDENT)*
 
@@ -105,6 +107,16 @@ type_alias_decl: "type" UPPER_IDENT type_params? "=" type_expr ";"
 effect_decl: "effect" UPPER_IDENT type_params? "{" op_decl+ "}"
 
 op_decl: "op" LOWER_IDENT "(" param_types? "->" type_expr ")" ";"
+
+// =====================================================================
+// Ability Declarations
+// =====================================================================
+
+ability_decl: "ability" UPPER_IDENT type_params? "{" op_decl+ "}"
+
+ability_constraint_list: ability_constraint ("," ability_constraint)*
+
+ability_constraint: UPPER_IDENT "<" UPPER_IDENT ">"
 
 // =====================================================================
 // Type Expressions

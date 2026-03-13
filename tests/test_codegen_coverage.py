@@ -143,6 +143,7 @@ class TestCodegenCoverageGaps:
         return FnDecl(
             name=name,
             forall_vars=None,
+            forall_constraints=None,
             params=params,
             return_type=return_type or NamedType(name="Int", type_args=None),
             contracts=(Requires(expr=BoolLit(value=True)),
