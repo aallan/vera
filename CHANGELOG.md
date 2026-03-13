@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Ability codegen** ([#60](https://github.com/aallan/vera/issues/60)) — constrained generic functions with `Eq` are now compilable. Monomorphizer checks constraint satisfaction (E613), and ability operation calls (`eq`) are rewritten to native equality via Pass 1.6 AST rewriting. Conformance test at `run` level. 8 new tests. (PR 3 of 4 for #60)
+
 ## [0.0.89] - 2026-03-12
 
 ### Added

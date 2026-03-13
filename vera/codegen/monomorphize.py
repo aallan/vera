@@ -2,7 +2,7 @@
 
 Collects concrete instantiations of generic functions from call sites,
 infers type variable bindings, and produces monomorphized FnDecl copies
-with mangled names.
+with mangled names.  Also checks ability constraint satisfaction.
 """
 
 from __future__ import annotations
@@ -11,6 +11,11 @@ from dataclasses import fields, replace
 from typing import Any
 
 from vera import ast
+
+# Types that satisfy the built-in Eq ability.
+_EQ_TYPES: frozenset[str] = frozenset({
+    "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
+})
 
 
 class MonomorphizationMixin:
@@ -56,6 +61,8 @@ class MonomorphizationMixin:
         for fn_name, type_arg_set in instances.items():
             for concrete_types in type_arg_set:
                 decl = generic_decls[fn_name]
+                if not self._check_constraints(decl, concrete_types):
+                    continue  # constraint violation — error emitted
                 mono = self._monomorphize_fn(decl, concrete_types)
                 mono_decls.append(mono)
 
@@ -463,8 +470,11 @@ class MonomorphizationMixin:
         substituted = self._substitute_in_ast(decl, mapping)
         assert isinstance(substituted, ast.FnDecl)
 
-        # Override name and clear forall_vars
-        return replace(substituted, name=mangled, forall_vars=None)
+        # Override name and clear forall_vars/constraints
+        return replace(
+            substituted, name=mangled,
+            forall_vars=None, forall_constraints=None,
+        )
 
     def _substitute_in_ast(
         self, node: ast.Node, mapping: dict[str, str],
@@ -556,3 +566,51 @@ class MonomorphizationMixin:
         result = self._substitute_in_ast(te, mapping)
         assert isinstance(result, ast.TypeExpr)
         return result
+
+    def _check_constraints(
+        self,
+        decl: ast.FnDecl,
+        concrete_types: tuple[str, ...],
+    ) -> bool:
+        """Verify all ability constraints are satisfied for an instantiation.
+
+        Returns True if all constraints are satisfied, False otherwise
+        (after emitting diagnostics).
+        """
+        if not decl.forall_constraints or not decl.forall_vars:
+            return True
+
+        from vera.errors import Diagnostic, SourceLocation
+
+        mapping = dict(zip(decl.forall_vars, concrete_types))
+        ok = True
+        for constraint in decl.forall_constraints:
+            concrete = mapping.get(constraint.type_var)
+            if concrete is None:
+                continue
+            if constraint.ability_name == "Eq":
+                if concrete not in _EQ_TYPES:
+                    self.diagnostics.append(Diagnostic(
+                        description=(
+                            f"Type '{concrete}' does not satisfy ability "
+                            f"'{constraint.ability_name}'. Only primitive "
+                            f"types (Int, Bool, Float64, String, Byte, "
+                            f"Nat, Unit) support Eq."
+                        ),
+                        location=SourceLocation(file=self.file),
+                        severity="error",
+                        error_code="E613",
+                    ))
+                    ok = False
+            else:
+                self.diagnostics.append(Diagnostic(
+                    description=(
+                        f"Ability '{constraint.ability_name}' is not yet "
+                        f"supported for code generation."
+                    ),
+                    location=SourceLocation(file=self.file),
+                    severity="error",
+                    error_code="E613",
+                ))
+                ok = False
+        return ok

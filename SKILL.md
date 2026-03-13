@@ -995,7 +995,7 @@ Key rules:
 - Ability declarations mirror effect declarations (both use `op`)
 - User-defined abilities are supported with the same syntax
 
-> **Note:** Abilities are currently type-checked but not yet compilable. Monomorphization and code generation for ability operations are planned for a future release. Programs using ability operations will pass `vera check` but cannot yet be compiled with `vera compile` or run with `vera run`.
+> **Note:** The built-in `Eq` ability is fully compilable for primitive types (Int, Nat, Bool, Float64, String, Byte, Unit). The monomorphizer checks constraint satisfaction (E613), and ability operation calls (`eq`) are rewritten to native equality at compile time. ADT auto-derivation and other abilities (Ord, Hash, Show) are planned for a future release.
 
 ## Modules
 
