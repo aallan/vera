@@ -92,6 +92,13 @@ class OperatorsMixin:
             rtype = self._infer_expr_wasm_type(expr.right)
             if ltype == "f64" or rtype == "f64":
                 return left + right + [self._CMP_OPS_F64[op]]
+            # String equality — byte-by-byte comparison
+            if (ltype == "i32_pair" and rtype == "i32_pair"
+                    and op in (ast.BinOp.EQ, ast.BinOp.NEQ)):
+                result = self._translate_string_eq(left, right)
+                if op == ast.BinOp.NEQ:
+                    result.append("i32.eqz")
+                return result
             if ltype == "i32" and rtype == "i32":
                 # Byte operands use unsigned i32 comparison
                 lv = self._infer_vera_type(expr.left)
@@ -100,6 +107,16 @@ class OperatorsMixin:
                     i32_op = self._CMP_OPS[op].replace("i64.", "i32.")
                     i32_op = i32_op.replace("_s", "_u")
                     return left + right + [i32_op]
+                # ADT structural equality (§9.8 auto-derivation)
+                if (op in (ast.BinOp.EQ, ast.BinOp.NEQ)
+                        and lv is not None
+                        and lv not in ("Bool", "Byte")
+                        and lv in self._adt_type_names):
+                    adt_eq = self._translate_adt_eq(left, right, lv)
+                    if adt_eq is not None:
+                        if op == ast.BinOp.NEQ:
+                            adt_eq.append("i32.eqz")
+                        return adt_eq
                 # Bool operands — use i32 comparison (signed)
                 i32_op = self._CMP_OPS[op].replace("i64.", "i32.")
                 return left + right + [i32_op]
@@ -116,6 +133,201 @@ class OperatorsMixin:
             return left + ["i32.eqz"] + right + ["i32.or"]
 
         return None
+
+    # -----------------------------------------------------------------
+    # ADT structural equality
+    # -----------------------------------------------------------------
+
+    def _translate_adt_eq(
+        self, left: list[str], right: list[str], adt_name: str,
+    ) -> list[str] | None:
+        """Generate WASM for structural equality of two ADT values.
+
+        Compares two heap-allocated ADT pointers structurally:
+        1. Load tags from both pointers (i32.load at offset 0)
+        2. If tags differ → false
+        3. If tags match and the constructor has no fields → true
+        4. If tags match with fields → load and compare each field
+
+        Only handles fields with scalar WASM types (i64, i32, f64).
+        String/Array (i32_pair) fields are not auto-derivable.
+        """
+        # Build list of (ctor_name, layout) for this ADT, sorted by tag
+        adt_ctors: list[tuple[str, object]] = []
+        for ctor_name, parent_adt in self._ctor_to_adt.items():
+            if parent_adt == adt_name and ctor_name in self._ctor_layouts:
+                adt_ctors.append((ctor_name, self._ctor_layouts[ctor_name]))
+        if not adt_ctors:
+            return None
+        adt_ctors.sort(key=lambda x: x[1].tag)
+
+        # Store operands in temp locals
+        tmp_l = self.alloc_local("i32")
+        tmp_r = self.alloc_local("i32")
+        instrs: list[str] = (
+            left + [f"local.set {tmp_l}"]
+            + right + [f"local.set {tmp_r}"]
+        )
+
+        # Simple enum: all constructors have 0 fields → compare tags
+        if all(len(lay.field_offsets) == 0 for _, lay in adt_ctors):
+            instrs += [
+                f"local.get {tmp_l}", "i32.load",
+                f"local.get {tmp_r}", "i32.load",
+                "i32.eq",
+            ]
+            return instrs
+
+        # General case: compare tags, then dispatch on tag for fields
+        tag_local = self.alloc_local("i32")
+        instrs += [
+            f"local.get {tmp_l}", "i32.load",
+            f"local.set {tag_local}",
+            # Tags must match
+            f"local.get {tag_local}",
+            f"local.get {tmp_r}", "i32.load",
+            "i32.eq",
+            "if (result i32)",
+        ]
+
+        # Inner: dispatch on tag value for constructors that have fields
+        ctors_with_fields = [
+            (name, lay) for name, lay in adt_ctors if lay.field_offsets
+        ]
+
+        if not ctors_with_fields:
+            # All fieldless — tags matching is sufficient
+            instrs.append("  i32.const 1")
+        else:
+            # Nested if-else chain for each constructor with fields
+            for i, (_cname, layout) in enumerate(ctors_with_fields):
+                pad = "  " * (i + 1)
+                instrs.append(f"{pad}local.get {tag_local}")
+                instrs.append(f"{pad}i32.const {layout.tag}")
+                instrs.append(f"{pad}i32.eq")
+                instrs.append(f"{pad}if (result i32)")
+                # Compare all fields for this constructor
+                fpad = pad + "  "
+                first_field = True
+                for offset, wasm_type in layout.field_offsets:
+                    load_op = self._adt_field_load(wasm_type)
+                    eq_op = self._adt_field_eq(wasm_type)
+                    if load_op is None or eq_op is None:
+                        return None  # unsupported field type
+                    instrs.append(f"{fpad}local.get {tmp_l}")
+                    instrs.append(f"{fpad}{load_op} offset={offset}")
+                    instrs.append(f"{fpad}local.get {tmp_r}")
+                    instrs.append(f"{fpad}{load_op} offset={offset}")
+                    instrs.append(f"{fpad}{eq_op}")
+                    if not first_field:
+                        instrs.append(f"{fpad}i32.and")
+                    first_field = False
+                instrs.append(f"{pad}else")
+            # Innermost else: fieldless constructor, tags match → true
+            inner_pad = "  " * (len(ctors_with_fields) + 1)
+            instrs.append(f"{inner_pad}i32.const 1")
+            # Close all nested if/else blocks
+            for i in range(len(ctors_with_fields) - 1, -1, -1):
+                pad = "  " * (i + 1)
+                instrs.append(f"{pad}end")
+
+        # Close outer tags-match if
+        instrs += ["else", "  i32.const 0", "end"]
+        return instrs
+
+    @staticmethod
+    def _adt_field_load(wasm_type: str) -> str | None:
+        """WASM load instruction for an ADT field type."""
+        return {"i64": "i64.load", "i32": "i32.load",
+                "f64": "f64.load"}.get(wasm_type)
+
+    @staticmethod
+    def _adt_field_eq(wasm_type: str) -> str | None:
+        """WASM equality instruction for an ADT field type."""
+        return {"i64": "i64.eq", "i32": "i32.eq",
+                "f64": "f64.eq"}.get(wasm_type)
+
+    # -----------------------------------------------------------------
+    # String equality
+    # -----------------------------------------------------------------
+
+    def _translate_string_eq(
+        self, left: list[str], right: list[str],
+    ) -> list[str]:
+        """Generate WASM for string equality (byte-by-byte).
+
+        Compares two (ptr, len) pairs:
+        1. Quick length check — if lengths differ, false
+        2. Same pointer shortcut — if ptrs match, true
+        3. Byte-by-byte comparison loop
+        """
+        ptr1 = self.alloc_local("i32")
+        len1 = self.alloc_local("i32")
+        ptr2 = self.alloc_local("i32")
+        len2 = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        result = self.alloc_local("i32")
+
+        instrs: list[str] = []
+        # Store both strings
+        instrs += left + [f"local.set {len1}", f"local.set {ptr1}"]
+        instrs += right + [f"local.set {len2}", f"local.set {ptr2}"]
+
+        # Default: equal (1)
+        instrs += [f"i32.const 1", f"local.set {result}"]
+
+        # Length check
+        instrs += [
+            f"local.get {len1}", f"local.get {len2}", "i32.ne",
+            "if",
+            f"  i32.const 0", f"  local.set {result}",
+            "else",
+        ]
+
+        # Pointer check (fast path for interned strings)
+        instrs += [
+            f"  local.get {ptr1}", f"  local.get {ptr2}", "  i32.ne",
+            "  if",
+        ]
+
+        # Byte-by-byte comparison loop
+        instrs += [
+            f"    i32.const 0", f"    local.set {idx}",
+            "    block $seq_break",
+            "      loop $seq_loop",
+            f"        local.get {idx}",
+            f"        local.get {len1}",
+            "        i32.ge_u",
+            "        br_if $seq_break",
+            # Compare bytes at idx
+            f"        local.get {ptr1}",
+            f"        local.get {idx}",
+            "        i32.add",
+            "        i32.load8_u",
+            f"        local.get {ptr2}",
+            f"        local.get {idx}",
+            "        i32.add",
+            "        i32.load8_u",
+            "        i32.ne",
+            "        if",
+            f"          i32.const 0",
+            f"          local.set {result}",
+            "          br $seq_break",
+            "        end",
+            # Increment idx
+            f"        local.get {idx}",
+            "        i32.const 1",
+            "        i32.add",
+            f"        local.set {idx}",
+            "        br $seq_loop",
+            "      end",  # loop
+            "    end",    # block
+        ]
+
+        # Close pointer-check if and length-check if
+        instrs += ["  end", "end"]
+        instrs += [f"local.get {result}"]
+        return instrs
 
     def _translate_f64_mod(
         self, left: list[str], right: list[str]

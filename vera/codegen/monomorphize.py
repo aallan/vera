@@ -12,10 +12,27 @@ from typing import Any
 
 from vera import ast
 
-# Types that satisfy the built-in Eq ability.
+# Types that satisfy the built-in abilities.
 _EQ_TYPES: frozenset[str] = frozenset({
     "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
 })
+_ORD_TYPES: frozenset[str] = frozenset({
+    "Int", "Nat", "Bool", "Float64", "String", "Byte",
+})
+_HASH_TYPES: frozenset[str] = frozenset({
+    "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
+})
+_SHOW_TYPES: frozenset[str] = frozenset({
+    "Int", "Nat", "Bool", "Float64", "String", "Byte", "Unit",
+})
+
+# Maps ability name → (type set, error description fragment).
+_ABILITY_TYPE_SETS: dict[str, tuple[frozenset[str], str]] = {
+    "Eq": (_EQ_TYPES, "primitive types (Int, Bool, Float64, String, Byte, Nat, Unit) and simple enums"),
+    "Ord": (_ORD_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte)"),
+    "Hash": (_HASH_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
+    "Show": (_SHOW_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
+}
 
 
 class MonomorphizationMixin:
@@ -588,20 +605,26 @@ class MonomorphizationMixin:
             concrete = mapping.get(constraint.type_var)
             if concrete is None:
                 continue
-            if constraint.ability_name == "Eq":
-                if concrete not in _EQ_TYPES:
-                    self.diagnostics.append(Diagnostic(
-                        description=(
-                            f"Type '{concrete}' does not satisfy ability "
-                            f"'{constraint.ability_name}'. Only primitive "
-                            f"types (Int, Bool, Float64, String, Byte, "
-                            f"Nat, Unit) support Eq."
-                        ),
-                        location=SourceLocation(file=self.file),
-                        severity="error",
-                        error_code="E613",
-                    ))
-                    ok = False
+            entry = _ABILITY_TYPE_SETS.get(constraint.ability_name)
+            if entry is not None:
+                type_set, desc = entry
+                # For Eq, also check ADT auto-derivation.
+                if concrete in type_set:
+                    continue
+                if (constraint.ability_name == "Eq"
+                        and self._adt_satisfies_eq(concrete)):
+                    continue
+                self.diagnostics.append(Diagnostic(
+                    description=(
+                        f"Type '{concrete}' does not satisfy ability "
+                        f"'{constraint.ability_name}'. Only {desc} "
+                        f"support {constraint.ability_name}."
+                    ),
+                    location=SourceLocation(file=self.file),
+                    severity="error",
+                    error_code="E613",
+                ))
+                ok = False
             else:
                 self.diagnostics.append(Diagnostic(
                     description=(
@@ -614,3 +637,24 @@ class MonomorphizationMixin:
                 ))
                 ok = False
         return ok
+
+    def _adt_satisfies_eq(self, type_name: str) -> bool:
+        """Check if an ADT type satisfies Eq via auto-derivation.
+
+        An ADT satisfies Eq if all its constructor fields recursively
+        satisfy Eq.  Simple enums (all constructors have zero fields)
+        always satisfy Eq.  Only primitive numeric/boolean fields are
+        supported — String/Array (i32_pair) require runtime comparison
+        loops and are not auto-derivable.
+        """
+        layouts = self._adt_layouts.get(type_name)
+        if layouts is None:
+            return False
+        for layout in layouts.values():
+            for _offset, wasm_type in layout.field_offsets:
+                # Primitive WASM types that have scalar equality
+                if wasm_type in ("i64", "i32", "f64"):
+                    continue
+                # i32_pair (String/Array) would need comparison loops
+                return False
+        return True

@@ -6,8 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.90] - 2026-03-13
+
 ### Added
-- **Ability codegen** ([#60](https://github.com/aallan/vera/issues/60)) — constrained generic functions with `Eq` are now compilable. Monomorphizer checks constraint satisfaction (E613), and ability operation calls (`eq`) are rewritten to native equality via Pass 1.6 AST rewriting. Conformance test at `run` level. 8 new tests. (PR 3 of 4 for #60)
+- **Abilities release** ([#60](https://github.com/aallan/vera/issues/60)) — four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`) with full codegen support. Includes the built-in `Ordering` ADT (`Less`, `Equal`, `Greater`), ADT auto-derivation for `Eq` (structural equality for simple enums and ADTs with primitive fields), `compare` rewriting via Pass 1.6 AST transformation, `show`/`hash` dispatch at WASM level (FNV-1a for String hashing), and string equality via byte-by-byte comparison. Constraint satisfaction checked for all four abilities (E613). 20 unit tests, extended conformance test with 20 test functions. Closes #60.
 
 ## [0.0.89] - 2026-03-12
 
@@ -1361,7 +1363,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.89...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.90...HEAD
+[0.0.90]: https://github.com/aallan/vera/compare/v0.0.89...v0.0.90
 [0.0.89]: https://github.com/aallan/vera/compare/v0.0.88...v0.0.89
 [0.0.88]: https://github.com/aallan/vera/compare/v0.0.87...v0.0.88
 [0.0.87]: https://github.com/aallan/vera/compare/v0.0.86...v0.0.87

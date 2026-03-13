@@ -986,7 +986,28 @@ private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
 }
 ```
 
-The built-in `Eq` ability is automatically available — no declaration needed. Call `eq(x, y)` to compare values of a constrained type.
+Four built-in abilities are available — no declarations needed:
+
+- **`Eq<T>`** — `eq(x, y)` returns `@Bool`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and simple enum ADTs.
+- **`Ord<T>`** — `compare(x, y)` returns `@Ordering` (`Less`, `Equal`, `Greater`). Satisfied by: Int, Nat, Bool, Float64, String, Byte.
+- **`Hash<T>`** — `hash(x)` returns `@Int`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit.
+- **`Show<T>`** — `show(x)` returns `@String`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit.
+
+The `Ordering` type is a built-in ADT with three constructors: `Less`, `Equal`, `Greater`. Use it with pattern matching:
+
+```vera
+public fn sign(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match compare(@Int.1, @Int.0) {
+    Less -> 0 - 1,
+    Equal -> 0,
+    Greater -> 1
+  }
+}
+```
 
 Key rules:
 - Abilities are first-order only: `Eq<T>`, not `Mappable<F>` where `F` is a type constructor
@@ -994,8 +1015,8 @@ Key rules:
 - Multiple constraints: `forall<T where Eq<T>, Ord<T>>`
 - Ability declarations mirror effect declarations (both use `op`)
 - User-defined abilities are supported with the same syntax
-
-> **Note:** The built-in `Eq` ability is fully compilable for primitive types (Int, Nat, Bool, Float64, String, Byte, Unit). The monomorphizer checks constraint satisfaction (E613), and ability operation calls (`eq`) are rewritten to native equality at compile time. ADT auto-derivation and other abilities (Ord, Hash, Show) are planned for a future release.
+- ADT auto-derivation: Simple enums automatically satisfy `Eq` — the compiler generates structural equality (tag comparison)
+- Unsatisfied constraints produce error E613
 
 ## Modules
 
