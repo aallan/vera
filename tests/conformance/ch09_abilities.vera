@@ -1,5 +1,8 @@
 -- Conformance: abilities and constrained generics (Chapter 9)
--- Tests: ability constraints, eq operation, constrained generic instantiation
+-- Tests: Eq, Ord, Hash, Show abilities; ADT auto-derivation; constrained generics
+-- ================================================================
+-- Helper: constrained generic Eq
+-- ================================================================
 private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
   requires(true)
   ensures(true)
@@ -8,6 +11,9 @@ private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
   eq(@T.1, @T.0)
 }
 
+-- ================================================================
+-- Eq ability
+-- ================================================================
 -- Test: are_equal with equal Ints returns 1
 public fn test_eq_int_equal(@Unit -> @Int)
   requires(true)
@@ -76,4 +82,161 @@ public fn test_eq_direct_unequal(@Unit -> @Bool)
   effects(pure)
 {
   eq(7, 8)
+}
+
+-- ADT for Eq auto-derivation tests
+private data Color {
+  Red,
+  Green,
+  Blue
+}
+
+-- Test: ADT auto-derivation for Eq (equal constructors)
+public fn test_eq_adt_equal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if are_equal(Red, Red) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- Test: ADT auto-derivation for Eq (unequal constructors)
+public fn test_eq_adt_unequal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  if are_equal(Red, Blue) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- Ord ability (compare)
+-- ================================================================
+-- Test: compare less — 1 < 2 → Less
+public fn test_compare_less(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match compare(1, 2) {
+    Less -> 1,
+    Equal -> 2,
+    Greater -> 3
+  }
+}
+
+-- Test: compare equal — 5 == 5 → Equal
+public fn test_compare_equal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  match compare(5, 5) {
+    Less -> 1,
+    Equal -> 2,
+    Greater -> 3
+  }
+}
+
+-- Test: compare greater — 9 > 3 → Greater
+public fn test_compare_greater(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  match compare(9, 3) {
+    Less -> 1,
+    Equal -> 2,
+    Greater -> 3
+  }
+}
+
+-- Helper: constrained generic Ord
+private forall<T where Ord<T>> fn cmp_sign(@T, @T -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match compare(@T.1, @T.0) {
+    Less -> 0 - 1,
+    Equal -> 0,
+    Greater -> 1
+  }
+}
+
+-- Test: compare in constrained generic
+public fn test_compare_generic(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0 - 1)
+  effects(pure)
+{
+  cmp_sign(3, 7)
+}
+
+-- ================================================================
+-- Show ability
+-- ================================================================
+-- Test: show(42) produces "42"
+public fn test_show_int(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  eq(show(42), "42")
+}
+
+-- Test: show(true) produces "true"
+public fn test_show_bool(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  eq(show(true), "true")
+}
+
+-- Test: show on String is identity
+public fn test_show_string(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  eq(show("hello"), "hello")
+}
+
+-- ================================================================
+-- Hash ability
+-- ================================================================
+-- Test: hash(42) is identity for Int
+public fn test_hash_int(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  hash(42)
+}
+
+-- Test: hash(true) == 1
+public fn test_hash_bool(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  hash(true)
+}
+
+-- Test: hash is consistent (same input → same output)
+public fn test_hash_consistent(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{
+  eq(hash("hello"), hash("hello"))
 }

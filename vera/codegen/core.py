@@ -358,9 +358,11 @@ class CodeGenerator(
         """
         from dataclasses import replace as _replace
 
-        # Built-in ability operations that need rewriting.
-        # Currently only Eq's eq(a, b) → BinaryExpr(a, EQ, b).
-        ability_ops: dict[str, str] = {"eq": "Eq"}
+        # Built-in ability operations that need AST-level rewriting.
+        # eq(a, b) → BinaryExpr(a, EQ, b)
+        # compare(a, b) → if a < b then Less elif a == b then Equal else Greater
+        # (show and hash are dispatched at WASM level, not rewritten here)
+        ability_ops: dict[str, str] = {"eq": "Eq", "compare": "Ord"}
 
         # Rewrite program declarations (non-generic only)
         new_tlds: list[ast.TopLevelDecl] = []
@@ -428,14 +430,58 @@ class CodeGenerator(
         # FnCall: check if it's an ability op to rewrite
         if isinstance(expr, ast.FnCall):
             if (expr.name in ability_ops
-                    and expr.name not in self._fn_sigs
-                    and expr.name == "eq"
-                    and len(expr.args) == 2):
-                left = self._rewrite_ops_in_expr(expr.args[0], ability_ops)
-                right = self._rewrite_ops_in_expr(expr.args[1], ability_ops)
-                return ast.BinaryExpr(
-                    left=left, op=ast.BinOp.EQ, right=right, span=expr.span,
-                )
+                    and expr.name not in self._fn_sigs):
+                # eq(a, b) → BinaryExpr(a, EQ, b)
+                if expr.name == "eq" and len(expr.args) == 2:
+                    left = self._rewrite_ops_in_expr(
+                        expr.args[0], ability_ops)
+                    right = self._rewrite_ops_in_expr(
+                        expr.args[1], ability_ops)
+                    return ast.BinaryExpr(
+                        left=left, op=ast.BinOp.EQ, right=right,
+                        span=expr.span,
+                    )
+                # compare(a, b) →
+                #   if a < b then Less
+                #   else if a == b then Equal
+                #   else Greater
+                if expr.name == "compare" and len(expr.args) == 2:
+                    left = self._rewrite_ops_in_expr(
+                        expr.args[0], ability_ops)
+                    right = self._rewrite_ops_in_expr(
+                        expr.args[1], ability_ops)
+                    return ast.IfExpr(
+                        condition=ast.BinaryExpr(
+                            left=left, op=ast.BinOp.LT, right=right,
+                            span=expr.span,
+                        ),
+                        then_branch=ast.Block(
+                            statements=(), span=expr.span,
+                            expr=ast.NullaryConstructor(
+                                name="Less", span=expr.span),
+                        ),
+                        else_branch=ast.Block(
+                            statements=(), span=expr.span,
+                            expr=ast.IfExpr(
+                                condition=ast.BinaryExpr(
+                                    left=left, op=ast.BinOp.EQ,
+                                    right=right, span=expr.span,
+                                ),
+                                then_branch=ast.Block(
+                                    statements=(), span=expr.span,
+                                    expr=ast.NullaryConstructor(
+                                        name="Equal", span=expr.span),
+                                ),
+                                else_branch=ast.Block(
+                                    statements=(), span=expr.span,
+                                    expr=ast.NullaryConstructor(
+                                        name="Greater", span=expr.span),
+                                ),
+                                span=expr.span,
+                            ),
+                        ),
+                        span=expr.span,
+                    )
             # Recurse into args of non-ability calls
             new_args = tuple(
                 self._rewrite_ops_in_expr(a, ability_ops)

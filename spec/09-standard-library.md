@@ -11,7 +11,7 @@ The standard library comprises:
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
 - **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), string search (`string_contains`, `starts_with`, `ends_with`, `index_of`), string transformation (`to_upper`, `to_lower`, `replace`, `split`, `join`, `from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
 - **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
-- **Future abilities**: Type constraints for generic programming (post-v0.1).
+- **Built-in abilities**: `Eq`, `Ord`, `Hash`, `Show` — type constraints for generic programming. The `Ordering` ADT (`Less`, `Equal`, `Greater`) supports `Ord`'s `compare` operation.
 
 All built-in types participate fully in the type system: they can appear in contracts, be verified by the SMT solver, and be used with refinement types and pattern matching. Built-in effects follow the same algebraic effect semantics as user-defined effects (see Chapter 7).
 
@@ -1484,7 +1484,7 @@ This follows the same pattern as JSON: `json_parse(Http.get(url))`, not a dedica
 
 ## 9.8 Abilities
 
-> **Status: Partially implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Ability declarations, constraint syntax, type checking, and code generation for `Eq` are implemented. The built-in `Eq` ability is fully compilable for primitive types (Int, Nat, Bool, Float64, String, Byte, Unit). ADT auto-derivation and other abilities (Ord, Hash, Show) are planned for PR 4.
+> **Status: Implemented.** Tracked in [#60](https://github.com/aallan/vera/issues/60). Four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`) are fully compilable. Supported types: Int, Nat, Bool, Float64, String, Byte, Unit. `Eq` supports ADT auto-derivation for simple enums and ADTs whose fields are all Eq-satisfying primitive types. The built-in `Ordering` ADT (`Less`, `Equal`, `Greater`) is available for `Ord`'s `compare` operation.
 
 Vera supports restricted abilities for constraining type variables in generic functions. To support practical generic programming — sorting, hashing, serialisation — type variables need constraints. Vera adopts restricted abilities rather than full typeclasses:
 
@@ -1512,7 +1512,7 @@ Key design points:
 
 1. **No higher-kinded types.** No `Functor`, `Monad`, or `Applicative`. Abilities are first-order only: `Eq<T>`, not `Mappable<F>` where `F` is a type constructor. This preserves decidable type checking and prevents the abstraction hierarchy that makes code harder for LLMs to generate correctly.
 
-2. **Built-in abilities** are auto-derivable for ADTs composed of types that already support them: `Eq`, `Ord`, `Hash`, `Encode`, `Decode`, `Show`. If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically. Currently only `Eq` is built-in; `Ord`, `Hash`, and others are planned.
+2. **Built-in abilities** are auto-derivable for ADTs composed of types that already support them: `Eq`, `Ord`, `Hash`, `Encode`, `Decode`, `Show`. If all fields of an ADT support `Eq`, the ADT supports `Eq` automatically. Four abilities are currently built-in: `Eq`, `Ord`, `Hash`, and `Show`.
 
 3. **User-defined abilities** are permitted but restricted to first-order type parameters. This allows library authors to define domain-specific abilities without the complexity of higher-kinded polymorphism.
 
@@ -1521,6 +1521,84 @@ Key design points:
 5. **Constraint syntax** uses `forall<T where Ability<T>>`, consistent with the placeholder noted in Chapter 2, Section 2.7.1.
 
 This design draws on Roc's abilities (deliberately no HKTs, auto-derivable) and Gleam's validation that useful languages need not have typeclasses.
+
+### 9.8.1 Built-in Abilities
+
+Four abilities are built into the language. Each is auto-satisfied for primitive types and (where noted) for ADTs composed of satisfying types.
+
+**Eq\<T\>** — Equality comparison.
+
+```
+ability Eq<T> {
+  op eq(T, T -> Bool);
+}
+```
+
+Operation: `eq(@T, @T -> @Bool)`. Returns `true` if the two values are structurally equal.
+
+Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and ADTs whose constructors contain only Eq-satisfying field types (auto-derivation). Simple enums (all-nullary constructors) always satisfy Eq.
+
+**Ord\<T\>** — Ordering comparison.
+
+```
+ability Ord<T> {
+  op compare(T, T -> Ordering);
+}
+```
+
+Operation: `compare(@T, @T -> @Ordering)`. Returns `Less`, `Equal`, or `Greater`.
+
+The `Ordering` ADT is a built-in type:
+
+```
+public data Ordering {
+  Less,
+  Equal,
+  Greater
+}
+```
+
+Satisfied by: Int, Nat, Bool, Float64, String, Byte.
+
+**Hash\<T\>** — Hashing.
+
+```
+ability Hash<T> {
+  op hash(T -> Int);
+}
+```
+
+Operation: `hash(@T -> @Int)`. Returns a deterministic integer hash of the value.
+
+Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit.
+
+**Show\<T\>** — String representation.
+
+```
+ability Show<T> {
+  op show(T -> String);
+}
+```
+
+Operation: `show(@T -> @String)`. Returns a human-readable string representation.
+
+Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit.
+
+### 9.8.2 ADT Auto-Derivation
+
+For `Eq`, ADTs are automatically derivable when all constructor fields are Eq-satisfying types. The compiler generates structural equality: compare tags first, then compare fields pairwise.
+
+Simple enums (ADTs with only nullary constructors) always satisfy `Eq` — equality reduces to tag comparison.
+
+ADTs with `String` or `Array` fields do not currently auto-derive `Eq` (these use pair representation in WASM and require special comparison logic beyond field-level comparison).
+
+### 9.8.3 Compilation Strategy
+
+Ability operations are compiled via two mechanisms:
+
+1. **AST-level rewriting** (Pass 1.6): `eq(a, b)` is rewritten to `a == b`, and `compare(a, b)` is rewritten to `if a < b then Less else if a == b then Equal else Greater`. This reuses existing comparison codegen.
+
+2. **WASM-level dispatch**: `show(x)` and `hash(x)` are dispatched at WASM generation time based on the inferred type of the argument, routing to type-specific implementations (e.g., `to_string` for Int, FNV-1a for String hashing).
 
 ## 9.9 Limitations
 

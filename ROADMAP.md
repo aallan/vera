@@ -1,6 +1,6 @@
 # Roadmap
 
-Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. The core language and compiler are complete through v0.0.89. What remains is standard library, effects, and ecosystem — the gap between a working language and a viable agent target.
+Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. The core language and compiler are complete through v0.0.90. What remains is standard library, effects, and ecosystem — the gap between a working language and a viable agent target.
 
 | Phase | Version | Layer | Status |
 |-------|---------|-------|--------|
@@ -14,27 +14,28 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 | C7 | [v0.0.31](https://github.com/aallan/vera/releases/tag/v0.0.31)–[v0.0.39](https://github.com/aallan/vera/releases/tag/v0.0.39) | **Module system** — cross-file imports, visibility, multi-module compilation | Done |
 | C8 | [v0.0.40](https://github.com/aallan/vera/releases/tag/v0.0.40)–[v0.0.65](https://github.com/aallan/vera/releases/tag/v0.0.65) | **Polish** — refactoring, tooling, diagnostics, verification depth, codegen gaps | Done |
 | C8.5 | [v0.0.66](https://github.com/aallan/vera/releases/tag/v0.0.66)–[v0.0.88](https://github.com/aallan/vera/releases/tag/v0.0.88) | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
+| C9 | [v0.0.89](https://github.com/aallan/vera/releases/tag/v0.0.89)–[v0.0.90](https://github.com/aallan/vera/releases/tag/v0.0.90) | **Abilities** — Eq/Ord/Hash/Show, constrained generics, ADT auto-derivation | Done |
 
 ## Where we are
 
-**v0.0.89** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 68 built-in functions plus 5 Option/Result combinators, a module system, algebraic effect handlers, a 54-program conformance suite, a canonical formatter, and contract-driven testing. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
+**v0.0.90** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 68 built-in functions plus 5 Option/Result combinators, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 55-program conformance suite, a canonical formatter, and contract-driven testing. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
 
 Most remaining features are gated by a single dependency chain:
 
-**Abilities ([#60](https://github.com/aallan/vera/issues/60)) → Map ([#62](https://github.com/aallan/vera/issues/62)) → JSON ([#58](https://github.com/aallan/vera/issues/58)) → HTTP ([#57](https://github.com/aallan/vera/issues/57))**
+**Map ([#62](https://github.com/aallan/vera/issues/62)) → JSON ([#58](https://github.com/aallan/vera/issues/58)) → HTTP ([#57](https://github.com/aallan/vera/issues/57))**
 
-Abilities introduce type constraints (`Eq`, `Hash`, `Show`). Map needs abilities for key constraints. JSON needs Map for `JObject`. HTTP needs JSON for request/response bodies. Unblocking abilities unblocks the entire chain.
+Abilities are complete — `Eq`, `Ord`, `Hash`, `Show` are built-in with ADT auto-derivation for `Eq`. Map needs abilities for key constraints (now unblocked). JSON needs Map for `JObject`. HTTP needs JSON for request/response bodies.
 
 ## What's next
 
 ```
 Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave)
 ─────────────────           ──────────────────                ──────────────────
-✓ #211 Combinators          #60 Abilities ─┐                  #289 Prelude
-#133 Array slice            #133 map/fold ←┘─┐                #226 Typed holes
-#288 Naming audit                #62 Map ←───┘─┐              #233 DateTime
-                                 #58 JSON ←────┘─┐            #235 Crypto
-                                 #57 HTTP ←──────┘            #61 Inference
+✓ #211 Combinators          ✓ #60 Abilities                    #289 Prelude
+#133 Array slice            #133 map/fold ─┐                   #226 Typed holes
+#288 Naming audit                #62 Map ←─┘─┐                #233 DateTime
+                                 #58 JSON ←──┘─┐              #235 Crypto
+                                 #57 HTTP ←────┘              #61 Inference
 ```
 
 ### Tier 0 — Ship now
@@ -49,7 +50,7 @@ No blocking dependencies. Highest value-per-effort.
 
 The chain that unlocks agent-viable data processing. Each item depends on the previous.
 
-1. [#60](https://github.com/aallan/vera/issues/60) **Abilities and type constraints** — highest-leverage foundation work. Every item below is transitively blocked by this. The viability assessment's "60–70%" verdict is largely gated here. ([PR #297](https://github.com/aallan/vera/pull/297), [PR #298](https://github.com/aallan/vera/pull/298), [PR #299](https://github.com/aallan/vera/pull/299))
+1. <del>[#60](https://github.com/aallan/vera/issues/60) **Abilities and type constraints** — highest-leverage foundation work. Every item below is transitively blocked by this.</del> ([v0.0.90](https://github.com/aallan/vera/releases/tag/v0.0.90))
 2. [#133](https://github.com/aallan/vera/issues/133) **Array `map`/`fold`/`filter`** (remainder) — requires abilities for generic iteration. The iteration verbosity tax — 12-line recursive loop vs 1-line `map`, multiplied across every data transformation — is the single biggest usability gap for agent workloads.
 3. [#62](https://github.com/aallan/vera/issues/62) **Map and Set collections** — requires abilities for key constraints (`Eq + Hash`). Unlocks structured data handling.
 4. [#58](https://github.com/aallan/vera/issues/58) **JSON type** — requires Map for `JObject`. Without JSON parsing and serialisation, Vera cannot participate in any API integration workflow.

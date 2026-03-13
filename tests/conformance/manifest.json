@@ -6,7 +6,10 @@
     "title": "Integer literals",
     "level": "run",
     "spec_ref": "Section 1.1",
-    "features": ["int_literal", "negative_int"]
+    "features": [
+      "int_literal",
+      "negative_int"
+    ]
   },
   {
     "id": "ch01_float_literals",
@@ -15,7 +18,9 @@
     "title": "Float64 literals",
     "level": "run",
     "spec_ref": "Section 1.1",
-    "features": ["float64_literal"]
+    "features": [
+      "float64_literal"
+    ]
   },
   {
     "id": "ch01_string_escapes",
@@ -24,7 +29,13 @@
     "title": "String escape sequences",
     "level": "run",
     "spec_ref": "Section 1.2",
-    "features": ["string_escape", "newline", "tab", "backslash", "unicode"]
+    "features": [
+      "string_escape",
+      "newline",
+      "tab",
+      "backslash",
+      "unicode"
+    ]
   },
   {
     "id": "ch01_bool_literals",
@@ -33,7 +44,9 @@
     "title": "Boolean literals",
     "level": "run",
     "spec_ref": "Section 1.1",
-    "features": ["bool_literal"]
+    "features": [
+      "bool_literal"
+    ]
   },
   {
     "id": "ch01_byte_literals",
@@ -42,7 +55,10 @@
     "title": "Byte type",
     "level": "run",
     "spec_ref": "Section 1.1",
-    "features": ["byte_type", "byte_coercion"]
+    "features": [
+      "byte_type",
+      "byte_coercion"
+    ]
   },
   {
     "id": "ch01_comments",
@@ -51,7 +67,9 @@
     "title": "Single-line comments",
     "level": "run",
     "spec_ref": "Section 1.4",
-    "features": ["comment"]
+    "features": [
+      "comment"
+    ]
   },
   {
     "id": "ch02_builtin_types",
@@ -60,7 +78,15 @@
     "title": "Built-in types",
     "level": "run",
     "spec_ref": "Section 2.1",
-    "features": ["int", "nat", "bool", "string", "float64", "byte", "unit"]
+    "features": [
+      "int",
+      "nat",
+      "bool",
+      "string",
+      "float64",
+      "byte",
+      "unit"
+    ]
   },
   {
     "id": "ch02_option_result",
@@ -69,7 +95,12 @@
     "title": "Option and Result types",
     "level": "run",
     "spec_ref": "Section 2.3",
-    "features": ["option", "result", "adt", "match"]
+    "features": [
+      "option",
+      "result",
+      "adt",
+      "match"
+    ]
   },
   {
     "id": "ch02_adt_basic",
@@ -78,7 +109,11 @@
     "title": "Basic algebraic data types",
     "level": "run",
     "spec_ref": "Section 2.3",
-    "features": ["adt", "constructor", "match"]
+    "features": [
+      "adt",
+      "constructor",
+      "match"
+    ]
   },
   {
     "id": "ch02_adt_recursive",
@@ -87,7 +122,11 @@
     "title": "Recursive ADTs",
     "level": "run",
     "spec_ref": "Section 2.3",
-    "features": ["adt", "recursive_adt", "decreases"]
+    "features": [
+      "adt",
+      "recursive_adt",
+      "decreases"
+    ]
   },
   {
     "id": "ch02_refinement_types",
@@ -96,7 +135,10 @@
     "title": "Refinement types",
     "level": "run",
     "spec_ref": "Section 2.4",
-    "features": ["refinement_type", "type_alias"]
+    "features": [
+      "refinement_type",
+      "type_alias"
+    ]
   },
   {
     "id": "ch02_generics",
@@ -105,7 +147,11 @@
     "title": "Generic polymorphism",
     "level": "run",
     "spec_ref": "Section 2.5",
-    "features": ["generics", "forall", "monomorphization"]
+    "features": [
+      "generics",
+      "forall",
+      "monomorphization"
+    ]
   },
   {
     "id": "ch02_tuple_basic",
@@ -114,7 +160,12 @@
     "title": "Tuple types",
     "level": "run",
     "spec_ref": "Section 2.3.1",
-    "features": ["tuple", "let_destruct", "match", "constructor"]
+    "features": [
+      "tuple",
+      "let_destruct",
+      "match",
+      "constructor"
+    ]
   },
   {
     "id": "ch03_slot_basic",
@@ -123,7 +174,9 @@
     "title": "Basic slot references",
     "level": "run",
     "spec_ref": "Section 3.1",
-    "features": ["slot_reference"]
+    "features": [
+      "slot_reference"
+    ]
   },
   {
     "id": "ch03_slot_indexing",
@@ -132,7 +185,10 @@
     "title": "De Bruijn slot indexing",
     "level": "run",
     "spec_ref": "Section 3.2",
-    "features": ["slot_indexing", "de_bruijn"]
+    "features": [
+      "slot_indexing",
+      "de_bruijn"
+    ]
   },
   {
     "id": "ch03_slot_result",
@@ -141,7 +197,10 @@
     "title": "Result slot in ensures",
     "level": "run",
     "spec_ref": "Section 3.3",
-    "features": ["slot_result", "ensures"]
+    "features": [
+      "slot_result",
+      "ensures"
+    ]
   },
   {
     "id": "ch04_arithmetic",
@@ -150,7 +209,14 @@
     "title": "Arithmetic operators",
     "level": "run",
     "spec_ref": "Section 4.1",
-    "features": ["add", "sub", "mul", "div", "mod", "unary_neg"]
+    "features": [
+      "add",
+      "sub",
+      "mul",
+      "div",
+      "mod",
+      "unary_neg"
+    ]
   },
   {
     "id": "ch04_comparison",
@@ -159,7 +225,14 @@
     "title": "Comparison operators",
     "level": "run",
     "spec_ref": "Section 4.1",
-    "features": ["eq", "neq", "lt", "gt", "le", "ge"]
+    "features": [
+      "eq",
+      "neq",
+      "lt",
+      "gt",
+      "le",
+      "ge"
+    ]
   },
   {
     "id": "ch04_boolean_ops",
@@ -168,7 +241,11 @@
     "title": "Boolean operators",
     "level": "run",
     "spec_ref": "Section 4.1",
-    "features": ["and", "or", "not"]
+    "features": [
+      "and",
+      "or",
+      "not"
+    ]
   },
   {
     "id": "ch04_if_else",
@@ -177,7 +254,10 @@
     "title": "If/else expressions",
     "level": "run",
     "spec_ref": "Section 4.2",
-    "features": ["if_else", "nested_conditional"]
+    "features": [
+      "if_else",
+      "nested_conditional"
+    ]
   },
   {
     "id": "ch04_let_binding",
@@ -186,7 +266,10 @@
     "title": "Let bindings",
     "level": "run",
     "spec_ref": "Section 4.3",
-    "features": ["let_binding", "shadowing"]
+    "features": [
+      "let_binding",
+      "shadowing"
+    ]
   },
   {
     "id": "ch04_match_basic",
@@ -195,7 +278,12 @@
     "title": "Basic match expressions",
     "level": "run",
     "spec_ref": "Section 4.4",
-    "features": ["match", "wildcard", "literal_pattern", "exhaustiveness"]
+    "features": [
+      "match",
+      "wildcard",
+      "literal_pattern",
+      "exhaustiveness"
+    ]
   },
   {
     "id": "ch04_match_nested",
@@ -204,7 +292,11 @@
     "title": "Nested match patterns",
     "level": "run",
     "spec_ref": "Section 4.4",
-    "features": ["nested_pattern", "constructor_pattern", "nested_constructor"]
+    "features": [
+      "nested_pattern",
+      "constructor_pattern",
+      "nested_constructor"
+    ]
   },
   {
     "id": "ch04_pipe_operator",
@@ -213,7 +305,9 @@
     "title": "Pipe operator",
     "level": "run",
     "spec_ref": "Section 4.5",
-    "features": ["pipe_operator"]
+    "features": [
+      "pipe_operator"
+    ]
   },
   {
     "id": "ch04_string_builtins",
@@ -222,7 +316,13 @@
     "title": "String built-in functions",
     "level": "run",
     "spec_ref": "Section 4.6",
-    "features": ["string_length", "string_concat", "string_slice", "char_code", "to_string"]
+    "features": [
+      "string_length",
+      "string_concat",
+      "string_slice",
+      "char_code",
+      "to_string"
+    ]
   },
   {
     "id": "ch04_string_interpolation",
@@ -231,7 +331,10 @@
     "title": "String interpolation",
     "level": "run",
     "spec_ref": "Section 4.6",
-    "features": ["string_interpolation", "auto_to_string"]
+    "features": [
+      "string_interpolation",
+      "auto_to_string"
+    ]
   },
   {
     "id": "ch04_array_ops",
@@ -240,7 +343,12 @@
     "title": "Array operations",
     "level": "run",
     "spec_ref": "Section 4.7",
-    "features": ["array_literal", "array_length", "array_get", "array_append"]
+    "features": [
+      "array_literal",
+      "array_length",
+      "array_get",
+      "array_append"
+    ]
   },
   {
     "id": "ch04_array_construction",
@@ -249,7 +357,11 @@
     "title": "Array construction builtins",
     "level": "run",
     "spec_ref": "Section 9.6",
-    "features": ["array_range", "array_concat", "array_append"]
+    "features": [
+      "array_range",
+      "array_concat",
+      "array_append"
+    ]
   },
   {
     "id": "ch05_basic_function",
@@ -258,7 +370,11 @@
     "title": "Function definition and calls",
     "level": "run",
     "spec_ref": "Section 5.1",
-    "features": ["function", "call", "multi_param"]
+    "features": [
+      "function",
+      "call",
+      "multi_param"
+    ]
   },
   {
     "id": "ch05_recursion",
@@ -267,7 +383,10 @@
     "title": "Self-recursion",
     "level": "run",
     "spec_ref": "Section 5.2",
-    "features": ["recursion", "decreases"]
+    "features": [
+      "recursion",
+      "decreases"
+    ]
   },
   {
     "id": "ch05_mutual_recursion",
@@ -276,7 +395,10 @@
     "title": "Mutual recursion via where blocks",
     "level": "run",
     "spec_ref": "Section 5.3",
-    "features": ["mutual_recursion", "where_block"]
+    "features": [
+      "mutual_recursion",
+      "where_block"
+    ]
   },
   {
     "id": "ch05_closures",
@@ -285,7 +407,12 @@
     "title": "Closures and higher-order functions",
     "level": "run",
     "spec_ref": "Section 5.4",
-    "features": ["closure", "higher_order", "function_type", "apply_fn"]
+    "features": [
+      "closure",
+      "higher_order",
+      "function_type",
+      "apply_fn"
+    ]
   },
   {
     "id": "ch05_visibility",
@@ -294,7 +421,10 @@
     "title": "Function visibility",
     "level": "run",
     "spec_ref": "Section 5.5",
-    "features": ["public", "private"]
+    "features": [
+      "public",
+      "private"
+    ]
   },
   {
     "id": "ch06_requires",
@@ -303,7 +433,10 @@
     "title": "Preconditions",
     "level": "run",
     "spec_ref": "Section 6.1",
-    "features": ["requires", "precondition"]
+    "features": [
+      "requires",
+      "precondition"
+    ]
   },
   {
     "id": "ch06_ensures",
@@ -312,7 +445,11 @@
     "title": "Postconditions",
     "level": "run",
     "spec_ref": "Section 6.2",
-    "features": ["ensures", "postcondition", "result_slot"]
+    "features": [
+      "ensures",
+      "postcondition",
+      "result_slot"
+    ]
   },
   {
     "id": "ch06_decreases",
@@ -321,7 +458,10 @@
     "title": "Decreases clauses",
     "level": "run",
     "spec_ref": "Section 6.3",
-    "features": ["decreases", "termination"]
+    "features": [
+      "decreases",
+      "termination"
+    ]
   },
   {
     "id": "ch06_assert_assume",
@@ -330,7 +470,10 @@
     "title": "Assert and assume",
     "level": "run",
     "spec_ref": "Section 6.4",
-    "features": ["assert", "assume"]
+    "features": [
+      "assert",
+      "assume"
+    ]
   },
   {
     "id": "ch06_quantifiers",
@@ -339,7 +482,10 @@
     "title": "Quantifiers in contracts",
     "level": "run",
     "spec_ref": "Section 6.5",
-    "features": ["forall_quantifier", "exists_quantifier"]
+    "features": [
+      "forall_quantifier",
+      "exists_quantifier"
+    ]
   },
   {
     "id": "ch07_pure",
@@ -348,7 +494,9 @@
     "title": "Pure effect",
     "level": "run",
     "spec_ref": "Section 7.1",
-    "features": ["pure_effect"]
+    "features": [
+      "pure_effect"
+    ]
   },
   {
     "id": "ch07_io",
@@ -357,7 +505,10 @@
     "title": "IO effect",
     "level": "run",
     "spec_ref": "Section 7.2",
-    "features": ["io_effect", "print"]
+    "features": [
+      "io_effect",
+      "print"
+    ]
   },
   {
     "id": "ch07_state_handler",
@@ -366,7 +517,12 @@
     "title": "State effect handler",
     "level": "run",
     "spec_ref": "Section 7.3",
-    "features": ["state_effect", "handler", "get", "put"]
+    "features": [
+      "state_effect",
+      "handler",
+      "get",
+      "put"
+    ]
   },
   {
     "id": "ch07_exn_handler",
@@ -375,7 +531,11 @@
     "title": "Exception effect handler",
     "level": "run",
     "spec_ref": "Section 7.4",
-    "features": ["exn_effect", "handler", "throw"]
+    "features": [
+      "exn_effect",
+      "handler",
+      "throw"
+    ]
   },
   {
     "id": "ch09_numeric_builtins",
@@ -384,7 +544,16 @@
     "title": "Numeric built-in functions",
     "level": "run",
     "spec_ref": "Section 9.6.3",
-    "features": ["abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow"]
+    "features": [
+      "abs",
+      "min",
+      "max",
+      "floor",
+      "ceil",
+      "round",
+      "sqrt",
+      "pow"
+    ]
   },
   {
     "id": "ch09_type_conversions",
@@ -393,7 +562,14 @@
     "title": "Numeric type conversion functions",
     "level": "run",
     "spec_ref": "Section 9.6.4",
-    "features": ["to_float", "float_to_int", "nat_to_int", "int_to_nat", "byte_to_int", "int_to_byte"]
+    "features": [
+      "to_float",
+      "float_to_int",
+      "nat_to_int",
+      "int_to_nat",
+      "byte_to_int",
+      "int_to_byte"
+    ]
   },
   {
     "id": "ch09_string_search",
@@ -402,7 +578,17 @@
     "title": "String search and transformation functions",
     "level": "run",
     "spec_ref": "Section 9.6.6-9.6.7",
-    "features": ["string_contains", "starts_with", "ends_with", "index_of", "to_upper", "to_lower", "replace", "split", "join"]
+    "features": [
+      "string_contains",
+      "starts_with",
+      "ends_with",
+      "index_of",
+      "to_upper",
+      "to_lower",
+      "replace",
+      "split",
+      "join"
+    ]
   },
   {
     "id": "ch10_float_predicates",
@@ -411,7 +597,12 @@
     "title": "Float64 predicate and constant functions",
     "level": "run",
     "spec_ref": "Section 9.6.5",
-    "features": ["is_nan", "is_infinite", "nan", "infinity"]
+    "features": [
+      "is_nan",
+      "is_infinite",
+      "nan",
+      "infinity"
+    ]
   },
   {
     "id": "ch04_parse_completeness",
@@ -420,7 +611,12 @@
     "title": "Parse completeness (parse_int, parse_bool, parse_float64 Result)",
     "level": "run",
     "spec_ref": "Section 4.6",
-    "features": ["parse_int", "parse_bool", "parse_float64", "result_type"]
+    "features": [
+      "parse_int",
+      "parse_bool",
+      "parse_float64",
+      "result_type"
+    ]
   },
   {
     "id": "ch09_base64",
@@ -429,7 +625,11 @@
     "title": "Base64 encoding and decoding",
     "level": "run",
     "spec_ref": "Section 9.6.5",
-    "features": ["base64_encode", "base64_decode", "result_type"]
+    "features": [
+      "base64_encode",
+      "base64_decode",
+      "result_type"
+    ]
   },
   {
     "id": "ch09_url_encoding",
@@ -438,7 +638,11 @@
     "title": "URL percent-encoding and decoding",
     "level": "run",
     "spec_ref": "Section 9.6.5",
-    "features": ["url_encode", "url_decode", "result_type"]
+    "features": [
+      "url_encode",
+      "url_decode",
+      "result_type"
+    ]
   },
   {
     "id": "ch09_url_parsing",
@@ -447,7 +651,12 @@
     "title": "URL parsing and joining",
     "level": "run",
     "spec_ref": "Section 9.6.5",
-    "features": ["url_parse", "url_join", "urlparts", "result_type"]
+    "features": [
+      "url_parse",
+      "url_join",
+      "urlparts",
+      "result_type"
+    ]
   },
   {
     "id": "ch09_option_result_combinators",
@@ -456,7 +665,15 @@
     "title": "Option and Result combinators",
     "level": "run",
     "spec_ref": "Section 9.3.7",
-    "features": ["option_unwrap_or", "option_map", "option_and_then", "result_unwrap_or", "result_map", "prelude_injection", "generic_closures"]
+    "features": [
+      "option_unwrap_or",
+      "option_map",
+      "option_and_then",
+      "result_unwrap_or",
+      "result_map",
+      "prelude_injection",
+      "generic_closures"
+    ]
   },
   {
     "id": "ch09_async",
@@ -465,7 +682,12 @@
     "title": "Async effect with Future<T>",
     "level": "run",
     "spec_ref": "Section 9.5.4",
-    "features": ["async", "await", "future", "async_effect"]
+    "features": [
+      "async",
+      "await",
+      "future",
+      "async_effect"
+    ]
   },
   {
     "id": "ch09_markdown",
@@ -474,7 +696,13 @@
     "title": "Markdown standard library",
     "level": "run",
     "spec_ref": "Section 9.7.3",
-    "features": ["md_parse", "md_render", "md_has_heading", "md_has_code_block", "md_extract_code_blocks"]
+    "features": [
+      "md_parse",
+      "md_render",
+      "md_has_heading",
+      "md_has_code_block",
+      "md_extract_code_blocks"
+    ]
   },
   {
     "id": "ch09_regex",
@@ -483,15 +711,31 @@
     "title": "Regular expression matching",
     "level": "run",
     "spec_ref": "Section 9.6.15",
-    "features": ["regex_match", "regex_find", "regex_find_all", "regex_replace"]
+    "features": [
+      "regex_match",
+      "regex_find",
+      "regex_find_all",
+      "regex_replace"
+    ]
   },
   {
     "id": "ch09_abilities",
     "file": "ch09_abilities.vera",
     "chapter": 9,
-    "title": "Abilities and constrained generics",
+    "title": "Abilities: Eq, Ord, Hash, Show",
     "level": "run",
     "spec_ref": "Section 9.8",
-    "features": ["ability", "ability_constraint", "forall_where", "eq_operation", "constrained_generic"]
+    "features": [
+      "ability",
+      "ability_constraint",
+      "forall_where",
+      "eq_operation",
+      "constrained_generic",
+      "adt_auto_derivation",
+      "ordering_adt",
+      "compare_operation",
+      "show_operation",
+      "hash_operation"
+    ]
   }
 ]

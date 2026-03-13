@@ -65,6 +65,18 @@ class RegistrationMixin:
                 tag=1, field_offsets=((4, "i32"),), total_size=8,
             ),
         }
+        # Ordering — result type for Ord's compare operation (§9.8)
+        self._adt_layouts["Ordering"] = {
+            "Less": ConstructorLayout(
+                tag=0, field_offsets=(), total_size=8,
+            ),
+            "Equal": ConstructorLayout(
+                tag=1, field_offsets=(), total_size=8,
+            ),
+            "Greater": ConstructorLayout(
+                tag=2, field_offsets=(), total_size=8,
+            ),
+        }
         # Tuple — variadic product type (tag=0, layout recomputed per-call)
         self._adt_layouts["Tuple"] = {
             "Tuple": ConstructorLayout(

@@ -344,9 +344,21 @@ class TypeEnv:
             operations={},
         )
 
-        # Built-in abilities
-        # Eq<A> — equality comparison (spec §9.8).
-        # Uses type param "A" (not "T") to avoid confusion with
+        # Ordering ADT — result type for Ord's compare operation (§9.8).
+        self.data_types["Ordering"] = AdtInfo(
+            name="Ordering",
+            type_params=(),
+            constructors={
+                "Less": ConstructorInfo("Less", "Ordering", (), None),
+                "Equal": ConstructorInfo("Equal", "Ordering", (), None),
+                "Greater": ConstructorInfo("Greater", "Ordering", (), None),
+            },
+        )
+        for c in self.data_types["Ordering"].constructors.values():
+            self.constructors[c.name] = c
+
+        # Built-in abilities (spec §9.8).
+        # All use type param "A" (not "T") to avoid confusion with
         # function-level forall<T where Eq<T>>.
         self.abilities["Eq"] = AbilityInfo(
             name="Eq",
@@ -354,6 +366,29 @@ class TypeEnv:
             operations={
                 "eq": OpInfo("eq", (TypeVar("A"), TypeVar("A")),
                              BOOL, "Eq"),
+            },
+        )
+        self.abilities["Ord"] = AbilityInfo(
+            name="Ord",
+            type_params=("A",),
+            operations={
+                "compare": OpInfo(
+                    "compare", (TypeVar("A"), TypeVar("A")),
+                    AdtType("Ordering", ()), "Ord"),
+            },
+        )
+        self.abilities["Hash"] = AbilityInfo(
+            name="Hash",
+            type_params=("A",),
+            operations={
+                "hash": OpInfo("hash", (TypeVar("A"),), INT, "Hash"),
+            },
+        )
+        self.abilities["Show"] = AbilityInfo(
+            name="Show",
+            type_params=("A",),
+            operations={
+                "show": OpInfo("show", (TypeVar("A"),), STRING, "Show"),
             },
         )
 

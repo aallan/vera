@@ -215,6 +215,11 @@ class CallsMixin:
                 return self._translate_nan()
             if call.name == "infinity" and len(call.args) == 0:
                 return self._translate_infinity()
+            # Ability operations dispatched at WASM level (§9.8)
+            if call.name == "show" and len(call.args) == 1:
+                return self._translate_show(call.args[0], env)
+            if call.name == "hash" and len(call.args) == 1:
+                return self._translate_hash(call.args[0], env)
 
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:
@@ -7020,6 +7025,162 @@ class CallsMixin:
         WASM: ``f64.const inf`` pushes positive infinity onto the stack.
         """
         return ["f64.const inf"]
+
+    # -----------------------------------------------------------------
+    # Ability operation dispatch: show and hash (§9.8)
+    # -----------------------------------------------------------------
+
+    # Dispatch map: Vera type → to_string builtin name
+    _SHOW_DISPATCH: dict[str, str] = {
+        "Int": "to_string",
+        "Nat": "nat_to_string",
+        "Bool": "bool_to_string",
+        "Byte": "byte_to_string",
+        "Float64": "float_to_string",
+    }
+
+    def _translate_show(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate show(x) to the appropriate to_string builtin.
+
+        Dispatches based on the inferred Vera type of the argument:
+        - Int/Nat/Bool/Byte/Float64 → corresponding to_string call
+        - String → identity (the string IS its own representation)
+        - Unit → literal "unit"
+        """
+        vera_type = self._infer_vera_type(arg)
+        if vera_type is None:
+            return None
+
+        # String → identity: show("hello") == "hello"
+        if vera_type == "String":
+            return self.translate_expr(arg, env)
+
+        # Unit → literal "unit" string
+        if vera_type == "Unit":
+            offset, length = self.string_pool.intern("unit")
+            return [f"i32.const {offset}", f"i32.const {length}"]
+
+        # Dispatch to existing to_string builtins
+        builtin = self._SHOW_DISPATCH.get(vera_type)
+        if builtin is not None:
+            # Reuse existing translate methods by constructing a FnCall
+            desugared = ast.FnCall(
+                name=builtin, args=(arg,), span=arg.span,
+            )
+            return self._translate_call(desugared, env)
+
+        return None
+
+    def _translate_hash(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate hash(x) to a type-specific hash implementation.
+
+        Returns an i64 hash value:
+        - Int/Nat → identity (the value IS the hash)
+        - Bool/Byte → i64.extend_i32_u (widen to i64)
+        - Float64 → i64.reinterpret_f64 (bit pattern)
+        - Unit → i64.const 0
+        - String → FNV-1a hash
+        """
+        vera_type = self._infer_vera_type(arg)
+        if vera_type is None:
+            return None
+
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        # Int/Nat → identity: hash(42) == 42
+        if vera_type in ("Int", "Nat"):
+            return arg_instrs
+
+        # Bool/Byte → extend to i64
+        if vera_type in ("Bool", "Byte"):
+            return arg_instrs + ["i64.extend_i32_u"]
+
+        # Float64 → bit-level reinterpretation
+        if vera_type == "Float64":
+            return arg_instrs + ["i64.reinterpret_f64"]
+
+        # Unit → constant 0
+        if vera_type == "Unit":
+            return ["i64.const 0"]
+
+        # String → FNV-1a hash
+        if vera_type == "String":
+            return self._translate_hash_string(arg_instrs)
+
+        return None
+
+    def _translate_hash_string(
+        self, arg_instrs: list[str],
+    ) -> list[str]:
+        """Generate FNV-1a hash for a string (ptr, len) pair.
+
+        FNV-1a: for each byte, hash = (hash XOR byte) * FNV_prime.
+        Uses the 64-bit FNV-1a variant:
+        - offset basis: 14695981039346656037
+        - prime: 1099511628211
+        """
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        hash_val = self.alloc_local("i64")
+
+        # FNV-1a offset basis (as signed i64)
+        fnv_basis = -3750763034362895579  # 14695981039346656037 as signed
+        fnv_prime = 1099511628211
+
+        instructions: list[str] = []
+        # Evaluate arg → (ptr, len) on stack
+        instructions.extend(arg_instrs)
+        instructions.append(f"local.set {slen}")
+        instructions.append(f"local.set {ptr}")
+
+        # Initialize hash to FNV offset basis
+        instructions.append(f"i64.const {fnv_basis}")
+        instructions.append(f"local.set {hash_val}")
+
+        # idx = 0
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+
+        # Loop over each byte
+        instructions.append("block $hbreak")
+        instructions.append("  loop $hloop")
+        # if idx >= len → break
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    local.get {slen}")
+        instructions.append("    i32.ge_u")
+        instructions.append("    br_if $hbreak")
+        # byte = mem[ptr + idx]
+        instructions.append(f"    local.get {ptr}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.add")
+        instructions.append("    i32.load8_u")
+        instructions.append("    i64.extend_i32_u")
+        # hash = hash XOR byte
+        instructions.append(f"    local.get {hash_val}")
+        instructions.append("    i64.xor")
+        # hash = hash * FNV_prime
+        instructions.append(f"    i64.const {fnv_prime}")
+        instructions.append("    i64.mul")
+        instructions.append(f"    local.set {hash_val}")
+        # idx++
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.const 1")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {idx}")
+        instructions.append("    br $hloop")
+        instructions.append("  end")
+        instructions.append("end")
+
+        # Push result
+        instructions.append(f"local.get {hash_val}")
+        return instructions
 
     def _translate_handle_expr(
         self, expr: ast.HandleExpr, env: WasmSlotEnv,

@@ -483,8 +483,8 @@ public fn main(-> @Int)
 """
         assert _run(source, fn="main") == 1
 
-    def test_unsatisfied_constraint_adt(self) -> None:
-        """ADT type passed to Eq constraint → E613 error."""
+    def test_eq_simple_enum(self) -> None:
+        """Simple enum ADT satisfies Eq via auto-derivation."""
         source = """\
 private data Color { Red, Green, Blue }
 
@@ -496,6 +496,197 @@ public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   if are_equal(Red, Blue) then { 1 } else { 0 }
+}
+"""
+        assert _run(source, fn="main") == 0
+
+    def test_eq_simple_enum_equal(self) -> None:
+        """Simple enum Eq returns true for same constructor."""
+        source = """\
+private data Color { Red, Green, Blue }
+
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ eq(@T.0, @T.1) }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if are_equal(Red, Red) then { 1 } else { 0 }
+}
+"""
+        assert _run(source, fn="main") == 1
+
+    # ----------------------------------------------------------------
+    # compare (Ord)
+    # ----------------------------------------------------------------
+
+    def test_compare_int_less(self) -> None:
+        """compare(1, 2) → Less, matched to return 1."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match compare(1, 2) {
+    Less -> 1,
+    Equal -> 2,
+    Greater -> 3
+  }
+}
+"""
+        assert _run(source, fn="main") == 1
+
+    def test_compare_int_equal(self) -> None:
+        """compare(5, 5) → Equal, matched to return 2."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match compare(5, 5) {
+    Less -> 1,
+    Equal -> 2,
+    Greater -> 3
+  }
+}
+"""
+        assert _run(source, fn="main") == 2
+
+    def test_compare_int_greater(self) -> None:
+        """compare(9, 3) → Greater, matched to return 3."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match compare(9, 3) {
+    Less -> 1,
+    Equal -> 2,
+    Greater -> 3
+  }
+}
+"""
+        assert _run(source, fn="main") == 3
+
+    def test_compare_constrained_generic(self) -> None:
+        """compare in constrained generic function."""
+        source = """\
+private forall<T where Ord<T>> fn cmp_result(@T, @T -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match compare(@T.1, @T.0) {
+    Less -> 0 - 1,
+    Equal -> 0,
+    Greater -> 1
+  }
+}
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  cmp_result(3, 7)
+}
+"""
+        # cmp_result(3, 7): @T.1 = 3 (first param), @T.0 = 7 (second)
+        # compare(3, 7): 3 < 7 → Less → 0 - 1 = -1
+        assert _run(source, fn="main") == -1
+
+    # ----------------------------------------------------------------
+    # show (Show)
+    # ----------------------------------------------------------------
+
+    def test_show_int(self) -> None:
+        """show(42) produces the string \"42\"."""
+        source = """\
+public fn main(-> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  eq(show(42), "42")
+}
+"""
+        assert _run(source, fn="main") == 1
+
+    def test_show_bool(self) -> None:
+        """show(true) produces the string \"true\"."""
+        source = """\
+public fn main(-> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  eq(show(true), "true")
+}
+"""
+        assert _run(source, fn="main") == 1
+
+    def test_show_string_identity(self) -> None:
+        """show on a String is the identity."""
+        source = """\
+public fn main(-> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  eq(show("hello"), "hello")
+}
+"""
+        assert _run(source, fn="main") == 1
+
+    # ----------------------------------------------------------------
+    # hash (Hash)
+    # ----------------------------------------------------------------
+
+    def test_hash_int_identity(self) -> None:
+        """hash(42) == 42 (identity for Int)."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  hash(42)
+}
+"""
+        assert _run(source, fn="main") == 42
+
+    def test_hash_bool(self) -> None:
+        """hash(true) == 1, hash(false) == 0."""
+        source = """\
+public fn test_true(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ hash(true) }
+
+public fn test_false(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ hash(false) }
+"""
+        assert _run(source, fn="test_true") == 1
+        assert _run(source, fn="test_false") == 0
+
+    def test_hash_string_consistent(self) -> None:
+        """hash of the same string is consistent and non-zero."""
+        source = """\
+public fn main(-> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  eq(hash("hello"), hash("hello"))
+}
+"""
+        assert _run(source, fn="main") == 1
+
+    # ----------------------------------------------------------------
+    # Unsatisfied constraint errors
+    # ----------------------------------------------------------------
+
+    def test_unsatisfied_ord_adt(self) -> None:
+        """ADT type with Ord constraint → E613."""
+        source = """\
+private data Color { Red, Green, Blue }
+
+private forall<T where Ord<T>> fn cmp(@T, @T -> @Ordering)
+  requires(true) ensures(true) effects(pure)
+{ compare(@T.1, @T.0) }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match cmp(Red, Blue) {
+    Less -> 1,
+    Equal -> 2,
+    Greater -> 3
+  }
 }
 """
         result = _compile(source)

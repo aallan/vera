@@ -155,6 +155,10 @@ class InferenceMixin:
             return "i32_pair"
         if isinstance(expr, ast.QualifiedCall):
             return self._infer_qualified_call_wasm_type(expr)
+        if isinstance(expr, ast.IfExpr):
+            return self._infer_block_result_type(expr.then_branch)
+        if isinstance(expr, ast.Block):
+            return self._infer_block_result_type(expr)
         if isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
             return "i32"  # quantifiers return Bool
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
@@ -242,6 +246,11 @@ class InferenceMixin:
             "regex_replace",
         ):
             return "i32"
+        # Ability operations: show → String (i32_pair), hash → Int (i64)
+        if expr.name == "show":
+            return "i32_pair"
+        if expr.name == "hash":
+            return "i64"
         # Async builtins — identity operations (Future<T> is transparent)
         if expr.name in ("async", "await") and expr.args:
             return self._infer_expr_wasm_type(expr.args[0])
@@ -440,6 +449,11 @@ class InferenceMixin:
             "regex_replace",
         ):
             return "Result"
+        # Ability operations: show → String, hash → Int
+        if call.name == "show":
+            return "String"
+        if call.name == "hash":
+            return "Int"
         # Async builtins — Future<T> is transparent
         if call.name == "async" and call.args:
             inner = self._infer_fncall_vera_type(call.args[0]) \

@@ -257,6 +257,8 @@ class CrossModuleMixin:
             "md_has_code_block", "md_extract_code_blocks",
             "regex_match", "regex_find", "regex_find_all",
             "regex_replace",
+            # Ability operations (§9.8) — rewritten or dispatched by codegen
+            "eq", "compare", "show", "hash",
         })
 
         seen: set[str] = set()  # deduplicate by function name
