@@ -138,11 +138,9 @@ The roadmap includes native HTTP, JSON, and Markdown support, which points towar
 
 Vera-specific data doesn't exist yet. Nobody has run a controlled comparison measuring whether models produce more reliable code in Vera than in existing languages. That's the experiment that needs to happen.
 
-However, the recent literature is encouraging. The type-constrained decoding paper (Mündler, He, Wang et al., PLDI 2025, [ACM DL](https://dl.acm.org/doi/10.1145/3729274)) found that enforcing type constraints during LLM code generation cut compilation errors by more than half and improved functional correctness by 3.5–4.5%. Syntax constraints alone provided limited improvement — it was the *type* constraints that made the difference.
+However, the recent literature is encouraging. The type-constrained decoding paper (Mündler, He, Wang et al., "Type-Constrained Code Generation with Language Models", PLDI 2025, [ACM DL](https://dl.acm.org/doi/10.1145/3729274)) found that enforcing type constraints during LLM code generation cut compilation errors by more than half and improved functional correctness by 3.5–4.5%. Syntax constraints alone provided limited improvement — it was the *type* constraints that made the difference. The same paper found that 94% of LLM-generated compilation errors are type-check failures — exactly the class of error that a strong static type system catches at compile time.
 
 The Vericoding benchmark (Sun et al., "A Benchmark for Vericoding", [arXiv:2509.22908](https://arxiv.org/abs/2509.22908)) shows LLMs achieving 82% verification success on Dafny versus 27% on Lean, which suggests SMT-automated verification (Vera's approach) is significantly more LLM-tractable than explicit proof construction.
-
-Ahmad et al. ("How Accurately Do Large Language Models Understand Code?", [arXiv:2504.04372](https://arxiv.org/abs/2504.04372)) found that 94% of LLM-generated compilation errors are type-check failures — exactly the class of error that a strong static type system catches at compile time.
 
 Blinn et al. ("Statically Contextualizing Large Language Models with Typed Holes", OOPSLA 2024, [ACM DL](https://doi.org/10.1145/3689728)) demonstrated that providing type context at incomplete program locations significantly improves LLM completion quality — a result that directly motivates Vera's planned typed holes feature ([#226](https://github.com/aallan/vera/issues/226)).
 
@@ -230,7 +228,6 @@ For agents, point your model at [SKILL.md](https://raw.githubusercontent.com/aal
 
 - Wang et al., "How Does Naming Affect LLMs on Code Analysis Tasks?", [arXiv:2307.12488](https://arxiv.org/abs/2307.12488)
 - Le et al., "When Names Disappear: Revealing What LLMs Actually Understand About Code", [arXiv:2510.03178](https://arxiv.org/abs/2510.03178)
-- Ahmad et al., "How Accurately Do Large Language Models Understand Code?", [arXiv:2504.04372](https://arxiv.org/abs/2504.04372)
 - Mündler, He, Wang et al., "Type-Constrained Code Generation with Language Models", PLDI 2025, [ACM DL](https://dl.acm.org/doi/10.1145/3729274)
 - Blinn et al., "Statically Contextualizing Large Language Models with Typed Holes", OOPSLA 2024, [ACM DL](https://doi.org/10.1145/3689728)
 - Sun et al., "A Benchmark for Vericoding: Formally Verified Program Synthesis", [arXiv:2509.22908](https://arxiv.org/abs/2509.22908)
