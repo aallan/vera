@@ -44,6 +44,8 @@ Vera adheres to six main design principles:
 5. **Contracts as the source of truth.** Every function declares what it requires and guarantees. The compiler verifies statically where possible.
 6. **Constrained expressiveness.** Fewer valid programs means fewer opportunities for the model to be wrong.
 
+See the **[FAQ](FAQ.md)** for deeper questions about the design — why no variable names, what gets verified, how Vera compares to Dafny/Lean/Koka/F*, and the empirical evidence behind the design choices.
+
 
 ## What Vera Looks Like
 
@@ -532,6 +534,7 @@ vera/
 ├── SKILL.md                       # Language reference for LLM agents
 ├── AGENTS.md                      # Instructions for any AI agent system
 ├── CLAUDE.md                      # Project orientation for Claude Code
+├── FAQ.md                         # Frequently asked questions
 ├── TESTING.md                     # Testing reference (single source of truth)
 ├── CONTRIBUTING.md                # Contributor guidelines
 ├── CODE_OF_CONDUCT.md             # Contributor Covenant
