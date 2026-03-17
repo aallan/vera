@@ -12,6 +12,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **Example programs** | 25, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 148 parseable blocks from 13 spec chapters: 81 parse, 67 type-check, 66 verify |
 | **README code blocks** | 9 Vera blocks (8 validated, 1 allowlisted future syntax) |
+| **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 allowlisted snippet) |
 | **HTML code blocks** | 2 Vera blocks in docs/index.html (2 validated: parse + check + verify) |
 | **Contract verification** | 131 of 138 contracts (94.9%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) + browser parity (Node.js 22) |
@@ -37,6 +38,7 @@ python scripts/check_examples.py                     # 25 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
 python scripts/check_skill_examples.py               # SKILL.md code blocks
+python scripts/check_faq_examples.py                 # FAQ.md code blocks
 python scripts/check_html_examples.py               # docs/index.html code blocks
 python scripts/check_version_sync.py                 # version consistency
 python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
@@ -294,7 +296,7 @@ When extending the compiler, add tests following the existing patterns:
 
 ## Validation Scripts
 
-Ten scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
+Eleven scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
@@ -303,6 +305,7 @@ Ten scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 | `check_spec_examples.py` | 148 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_skill_examples.py` | All Vera code blocks in SKILL.md parse correctly |
+| `check_faq_examples.py` | All Vera code blocks in FAQ.md parse correctly |
 | `check_html_examples.py` | All Vera code blocks in docs/index.html pass parse + check + verify |
 | `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
 | `check_doc_counts.py` | Counts cited in TESTING.md, CONTRIBUTING.md, and CLAUDE.md match live codebase |
@@ -325,7 +328,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-After running `pre-commit install`, every commit is checked by 19 hooks:
+After running `pre-commit install`, every commit is checked by 20 hooks:
 
 | Hook | What it does |
 |------|-------------|
@@ -342,6 +345,7 @@ After running `pre-commit install`, every commit is checked by 19 hooks:
 | `check_examples.py` | All 25 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 | `check_skill_examples.py` | SKILL.md code blocks parse correctly |
+| `check_faq_examples.py` | FAQ.md code blocks parse correctly |
 | `check_html_examples.py` | HTML landing page code blocks pass parse + check + verify |
 | `check_doc_counts.py` | Counts in docs match live codebase |
 | `check_limitations_sync.py` | Limitation tables consistent across README, vera/README, and spec |
@@ -359,7 +363,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs fou
 | **test** | Python 3.11, 3.12, 3.13 x Ubuntu, macOS (6 combos) | `pytest -v` passes on all combinations |
 | **test** (coverage) | Python 3.12 x Ubuntu only | `pytest --cov=vera --cov-fail-under=80` |
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
-| **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_html_examples.py`, `check_licenses.py` |
+| **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_licenses.py` |
 | **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime |
 
 The coverage threshold of **80%** is enforced in CI. Current coverage is 91%.

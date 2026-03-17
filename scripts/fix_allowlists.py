@@ -11,10 +11,11 @@ Usage:
     python scripts/fix_allowlists.py          # Preview changes (dry run)
     python scripts/fix_allowlists.py --fix    # Apply changes in place
 
-The script handles all four allowlist files:
+The script handles all five allowlist files:
   - scripts/check_readme_examples.py   (README.md)
   - tests/test_readme.py               (README.md)
   - scripts/check_skill_examples.py    (SKILL.md)
+  - scripts/check_faq_examples.py      (FAQ.md)
   - scripts/check_spec_examples.py     (spec/*.md)
 """
 
@@ -230,6 +231,21 @@ def main() -> int:
                     print(f"  {rel}: README.md line {old} → {new}")
                 if fix:
                     py_path.write_text(new_source, encoding="utf-8")
+
+    # ---- FAQ.md ------------------------------------------------------------
+    faq_map, faq_valid = build_line_map("FAQ.md")
+    if faq_map:
+        py_path = ROOT / "scripts" / "check_faq_examples.py"
+        new_source, changes = rewrite_simple_allowlist(
+            py_path, faq_map, faq_valid,
+        )
+        if changes:
+            total_changes += len(changes)
+            rel = py_path.relative_to(ROOT)
+            for old, new in changes:
+                print(f"  {rel}: FAQ.md line {old} → {new}")
+            if fix:
+                py_path.write_text(new_source, encoding="utf-8")
 
     # ---- SKILL.md ----------------------------------------------------------
     skill_map, skill_valid = build_line_map("SKILL.md")

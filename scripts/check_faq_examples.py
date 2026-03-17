@@ -1,8 +1,8 @@
 #!/usr/bin/env python
-"""Extract code blocks from README.md and verify parseable ones still parse.
+"""Extract code blocks from FAQ.md and verify parseable ones still parse.
 
-Strategy mirrors check_spec_examples.py:
-  1. Extract all fenced code blocks tagged as `vera` from README.md.
+Strategy mirrors check_readme_examples.py:
+  1. Extract all fenced code blocks tagged as `vera` from FAQ.md.
   2. Skip blocks tagged as non-Vera (```bash, ```python, etc.).
   3. Try to parse each Vera block with the Vera parser.
   4. Report failures. Maintain an allowlist for known-unparseable blocks.
@@ -15,19 +15,17 @@ import sys
 from pathlib import Path
 
 
-# -- Allowlist: README blocks that are intentionally unparseable. ----------
+# -- Allowlist: FAQ blocks that are intentionally unparseable. ----------------
 #
 # Each entry is (start_line_of_code_fence, category, reason).
 
 ALLOWLIST: dict[int, tuple[str, str]] = {
     # =================================================================
-    # FUTURE — uses syntax/types from unimplemented features.
-    # When the feature lands, this entry will go stale and CI will flag
-    # it for removal (meaning the block should then parse successfully).
+    # SNIPPET — incomplete code fragments used for illustration.
     # =================================================================
 
-    # Section "Project Roadmap" — depends on #57 (Http), #61 (Inference)
-    617: ("FUTURE", "Vision example uses Http, Inference effects (issues #57, #61)"),
+    # "What are abilities?" — snippet with `...` body
+    69: ("SNIPPET", "Abilities example with ellipsis body"),
 }
 
 
@@ -60,7 +58,7 @@ def try_parse(content: str) -> str | None:
     from vera.parser import parse
 
     try:
-        parse(content, file="<readme>")
+        parse(content, file="<faq>")
         return None
     except Exception as exc:
         return str(exc).split("\n")[0][:200]
@@ -68,16 +66,13 @@ def try_parse(content: str) -> str | None:
 
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
-    readme = root / "README.md"
+    faq = root / "FAQ.md"
 
-    if not readme.is_file():
-        print("ERROR: README.md not found.", file=sys.stderr)
+    if not faq.is_file():
+        print("ERROR: FAQ.md not found.", file=sys.stderr)
         return 1
 
-    # Non-Vera language tags to skip entirely
-    skip_langs = {"bash", "python", "json", "toml", "yaml", "shell", "sh", ""}
-
-    blocks = extract_code_blocks(readme)
+    blocks = extract_code_blocks(faq)
 
     total_blocks = 0
     vera_blocks = 0
@@ -119,7 +114,7 @@ def main() -> int:
             stale_allowlist.append((line_no, category, reason))
 
     # Report
-    print(f"README code blocks: {total_blocks} total")
+    print(f"FAQ code blocks: {total_blocks} total")
     print(f"  Skipped (non-Vera language): {skipped_lang}")
     print(f"  Vera blocks: {vera_blocks}")
     print(f"    Parsed OK: {passed}")
@@ -132,7 +127,7 @@ def main() -> int:
         print("\nSTALE ALLOWLIST ENTRIES:", file=sys.stderr)
         for line_no, category, reason in stale_allowlist:
             print(
-                f"  README.md line {line_no} [{category}]: {reason}",
+                f"  FAQ.md line {line_no} [{category}]: {reason}",
                 file=sys.stderr,
             )
         print(
@@ -144,10 +139,10 @@ def main() -> int:
     if failures:
         print("\nFAILURES:", file=sys.stderr)
         for line_no, error in failures:
-            print(f"\n  README.md line {line_no}:", file=sys.stderr)
+            print(f"\n  FAQ.md line {line_no}:", file=sys.stderr)
             print(f"    {error}", file=sys.stderr)
         print(
-            f"\n{len(failures)} README code block(s) failed to parse.",
+            f"\n{len(failures)} FAQ code block(s) failed to parse.",
             file=sys.stderr,
         )
         print(
@@ -155,13 +150,13 @@ def main() -> int:
             file=sys.stderr,
         )
         print(
-            "in scripts/check_readme_examples.py with the appropriate category.",
+            "in scripts/check_faq_examples.py with the appropriate category.",
             file=sys.stderr,
         )
         exit_code = 1
 
     if exit_code == 0:
-        print("\nAll README Vera code blocks parse successfully.")
+        print("\nAll FAQ Vera code blocks parse successfully.")
 
     return exit_code
 

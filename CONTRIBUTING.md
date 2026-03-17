@@ -69,7 +69,7 @@ pre-commit install
 
 ### Pre-commit Hooks
 
-After running `pre-commit install`, every commit is automatically checked by 19 hooks including:
+After running `pre-commit install`, every commit is automatically checked by 20 hooks including:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -109,6 +109,7 @@ python scripts/check_examples.py         # verify all 25 .vera examples
 python scripts/check_spec_examples.py    # verify spec code blocks parse
 python scripts/check_readme_examples.py  # verify README code blocks parse
 python scripts/check_skill_examples.py   # verify SKILL.md code blocks parse
+python scripts/check_faq_examples.py    # verify FAQ code blocks parse
 python scripts/check_html_examples.py   # verify HTML code blocks parse, check, verify
 python scripts/check_version_sync.py     # verify version consistency
 python scripts/check_doc_counts.py       # verify documentation counts match codebase

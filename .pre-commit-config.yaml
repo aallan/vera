@@ -40,7 +40,7 @@ repos:
         entry: .venv/bin/python scripts/fix_allowlists.py --fix
         language: system
         pass_filenames: false
-        files: '(README\.md$|SKILL\.md$|spec/.*\.md$)'
+        files: '(README\.md$|FAQ\.md$|SKILL\.md$|spec/.*\.md$)'
 
       - id: conformance-suite
         name: conformance suite
@@ -69,6 +69,13 @@ repos:
         language: system
         pass_filenames: false
         files: '(SKILL\.md$|vera/.*\.py$|vera/grammar\.lark$)'
+
+      - id: faq-examples
+        name: faq examples
+        entry: .venv/bin/python scripts/check_faq_examples.py
+        language: system
+        pass_filenames: false
+        files: '(FAQ\.md$|vera/.*\.py$|vera/grammar\.lark$)'
 
       - id: html-examples
         name: html examples
