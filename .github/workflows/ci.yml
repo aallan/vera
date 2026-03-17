@@ -83,6 +83,9 @@ jobs:
       - name: Check HTML code blocks parse, check, and verify
         run: python scripts/check_html_examples.py
 
+      - name: Check license compliance
+        run: python scripts/check_licenses.py
+
   browser-parity:
     runs-on: ubuntu-latest
     steps:
