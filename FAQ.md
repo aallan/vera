@@ -66,7 +66,7 @@ Vera has four built-in abilities:
 
 You use them in generic signatures with `where` clauses:
 
-```
+```vera
 public forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
   requires(true)
   ensures(true)
