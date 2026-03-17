@@ -676,7 +676,13 @@ See [CHANGELOG.md](CHANGELOG.md) for a history of changes.
 
 ## Licence
 
-Vera is licensed under the [MIT License](LICENSE).
+Vera is licensed under the [MIT License](LICENSE). All dependencies (direct and transitive) are MIT-compatible — licence compliance is enforced by CI and pre-commit hooks via `scripts/check_licenses.py`.
+
+| Dependency | Licence | Role |
+|-----------|---------|------|
+| [Lark](https://github.com/lark-parser/lark) | MIT | LALR(1) parser generator |
+| [z3-solver](https://github.com/Z3Prover/z3) | MIT | SMT solver for contract verification |
+| [wasmtime](https://github.com/bytecodealliance/wasmtime) | Apache-2.0 | WebAssembly runtime |
 
 Copyright &copy; 2026 Alasdair Allan
 

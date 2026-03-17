@@ -91,6 +91,13 @@ repos:
         pass_filenames: false
         files: '(README\.md$|vera/README\.md$|spec/0[89]-.*\.md$|spec/1[12]-.*\.md$)'
 
+      - id: license-check
+        name: license check
+        entry: .venv/bin/python scripts/check_licenses.py
+        language: system
+        pass_filenames: false
+        files: 'pyproject\.toml$'
+
       - id: browser-parity
         name: browser parity
         entry: .venv/bin/pytest tests/test_browser.py -q

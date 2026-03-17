@@ -69,7 +69,7 @@ pre-commit install
 
 ### Pre-commit Hooks
 
-After running `pre-commit install`, every commit is automatically checked by 18 hooks including:
+After running `pre-commit install`, every commit is automatically checked by 19 hooks including:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -81,6 +81,7 @@ After running `pre-commit install`, every commit is automatically checked by 18 
 - All 25 `.vera` examples type-check and verify cleanly
 - README, SKILL.md, HTML, and spec code blocks parse correctly
 - Documentation counts match live codebase
+- License compliance (all dependencies MIT-compatible)
 - Browser parity (JS runtime matches Python runtime)
 
 ### Running Tests

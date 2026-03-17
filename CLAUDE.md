@@ -49,6 +49,7 @@ python scripts/check_skill_examples.py # Verify SKILL.md code blocks parse
 python scripts/check_html_examples.py # Verify HTML code blocks parse + check + verify
 python scripts/check_version_sync.py  # Verify version consistency
 python scripts/check_doc_counts.py    # Verify documentation counts match codebase
+python scripts/check_licenses.py      # Verify all package licenses are MIT-compatible
 python scripts/check_limitations_sync.py              # Verify limitation tables are in sync
 python scripts/check_limitations_sync.py --check-states # Also verify issues are still open via GitHub API
 python scripts/fix_allowlists.py      # Preview stale allowlist line numbers
