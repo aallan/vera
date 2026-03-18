@@ -22,9 +22,9 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 Most remaining features are gated by a single dependency chain:
 
-**Map ([#62](https://github.com/aallan/vera/issues/62)) → JSON ([#58](https://github.com/aallan/vera/issues/58)) → HTTP ([#57](https://github.com/aallan/vera/issues/57))**
+**Map ([#62](https://github.com/aallan/vera/issues/62)) → JSON ([#58](https://github.com/aallan/vera/issues/58)) → HTTP ([#57](https://github.com/aallan/vera/issues/57)) → HTTP Server ([#305](https://github.com/aallan/vera/issues/305)) → MCP Server ([#306](https://github.com/aallan/vera/issues/306))**
 
-Abilities are complete — `Eq`, `Ord`, `Hash`, `Show` are built-in with ADT auto-derivation for `Eq`. Map needs abilities for key constraints (now unblocked). JSON needs Map for `JObject`. HTTP needs JSON for request/response bodies.
+Abilities are complete — `Eq`, `Ord`, `Hash`, `Show` are built-in with ADT auto-derivation for `Eq`. Map needs abilities for key constraints (now unblocked). JSON needs Map for `JObject`. HTTP needs JSON for request/response bodies. The chain extends to server-side effects: HTTP Server needs WASI 0.2 (#237) for incoming-handler support, and MCP Server needs JSON + HTTP Server to implement the JSON-RPC protocol.
 
 ## What's next
 
@@ -35,7 +35,9 @@ Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave
 #133 Array slice            #133 map/fold ─┐                   #226 Typed holes
 #288 Naming audit                #62 Map ←─┘─┐                #233 DateTime
                                  #58 JSON ←──┘─┐              #235 Crypto
-                                 #57 HTTP ←────┘              #61 Inference
+                                 #57 HTTP ←────┘─┐            #61 Inference
+                                 #305 Server ←───┘─┐
+                                 #306 MCP ←────────┘
 ```
 
 ### Tier 0 — Ship now
@@ -54,7 +56,9 @@ The chain that unlocks agent-viable data processing. Each item depends on the pr
 2. [#133](https://github.com/aallan/vera/issues/133) **Array `map`/`fold`/`filter`** (remainder) — requires abilities for generic iteration. The iteration verbosity tax — 12-line recursive loop vs 1-line `map`, multiplied across every data transformation — is the single biggest usability gap for agent workloads.
 3. [#62](https://github.com/aallan/vera/issues/62) **Map and Set collections** — requires abilities for key constraints (`Eq + Hash`). Unlocks structured data handling.
 4. [#58](https://github.com/aallan/vera/issues/58) **JSON type** — requires Map for `JObject`. Without JSON parsing and serialisation, Vera cannot participate in any API integration workflow.
-5. [#57](https://github.com/aallan/vera/issues/57) **HTTP effect** — requires JSON for request/response bodies. Completes the chain: a Vera program can make an HTTP call, parse the JSON response, and return typed, verified data.
+5. [#57](https://github.com/aallan/vera/issues/57) **HTTP effect** — requires JSON for request/response bodies. Completes the client chain: a Vera program can make an HTTP call, parse the JSON response, and return typed, verified data.
+6. [#305](https://github.com/aallan/vera/issues/305) **HTTP Server effect** — requires HTTP (#57) + WASI 0.2 (#237). Incoming requests map to effect operations via `handle[HttpServer]`, with contracts verifying response schemas.
+7. [#306](https://github.com/aallan/vera/issues/306) **MCP Server effect** — requires JSON (#58) + HTTP Server (#305). The flagship use case for Vera: verified MCP tool servers where contracts guarantee tool input/output schemas at compile time. Positions Vera as the natural language for verified LLM orchestration.
 
 ### Tier 2 — Interleave as opportunities arise
 
@@ -95,6 +99,8 @@ Lower priority than data-format support but important for adoption.
 
 Future effect types for extended agent workloads:
 
+- [#305](https://github.com/aallan/vera/issues/305) `<HttpServer>` — verified HTTP request handling (depends on #57 + #237)
+- [#306](https://github.com/aallan/vera/issues/306) `<McpServer>` — verified MCP tool server (depends on #58 + #305)
 - [#227](https://github.com/aallan/vera/issues/227) `<Timeout>` — timeout and cancellation
 - [#228](https://github.com/aallan/vera/issues/228) `<WebSocket>` / `<SSE>` — streaming clients
 - [#229](https://github.com/aallan/vera/issues/229) `<DB>` — database access
