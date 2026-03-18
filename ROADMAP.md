@@ -241,7 +241,7 @@ C8.5 built out the standard library, IO runtime, and remaining type/effect suppo
 
 **Types and effects** — new type and effect support
 
-- <del>[#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises</del> ([v0.0.82](https://github.com/aallan/vera/releases/tag/v0.0.82))
+- [#59](https://github.com/aallan/vera/issues/59) `<Async>` futures and promises — type-level infrastructure delivered in [v0.0.82](https://github.com/aallan/vera/releases/tag/v0.0.82) (marker effect, `Future<T>`, `async`/`await` builtins); true concurrency blocked on WASI 0.3 (#237)
 - <del>[#267](https://github.com/aallan/vera/issues/267) Tuple type WASM codegen</del> ([v0.0.83](https://github.com/aallan/vera/releases/tag/v0.0.83))
 - <del>[#147](https://github.com/aallan/vera/issues/147) Markdown standard library type</del> ([v0.0.84](https://github.com/aallan/vera/releases/tag/v0.0.84))
 
