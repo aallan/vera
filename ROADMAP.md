@@ -35,9 +35,9 @@ Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave
 #133 Array slice            #133 map/fold ─┐                   #226 Typed holes
 #288 Naming audit                #62 Map ←─┘─┐                #233 DateTime
                                  #58 JSON ←──┘─┐              #235 Crypto
-                                 #57 HTTP ←────┘─┐            #61 Inference
-                                 #305 Server ←───┘─┐
-                                 #306 MCP ←────────┘
+                                 #57 HTTP ←────┘─┐            #59 Async ──┐
+                                 #305 Server ←───┘─┐     #237 WASI 0.3 ←─┘
+                                 #306 MCP ←────────┘          #61 Inference
 ```
 
 ### Tier 0 — Ship now
@@ -68,6 +68,7 @@ Independent of the Tier 1 chain. Can be scheduled between Tier 1 items or in par
 - [#226](https://github.com/aallan/vera/issues/226) **Typed holes** — partial program generation; type context at hole sites improves LLM completion quality
 - [#233](https://github.com/aallan/vera/issues/233) **Date and time** (ISO 8601) — agent workloads frequently need timestamps
 - [#235](https://github.com/aallan/vera/issues/235) **Cryptographic hashing** (SHA-256, HMAC) — needed for API authentication (webhook signatures, OAuth)
+- [#59](https://github.com/aallan/vera/issues/59) **Async concurrency** — type-level infrastructure shipped in v0.0.82 (marker effect, `Future<T>`, `async`/`await`), but execution is eager/sequential. True concurrency requires WASI 0.3 (#237) for native `future<T>`/`stream<T>`. Co-dependent with #237; enables real concurrent request handling for #305/#306.
 - [#61](https://github.com/aallan/vera/issues/61) **Inference effect** — `effects(<Inference>)` in a signature means "this function calls an LLM, and you can mock it for testing." The feature that most differentiates Vera from Dafny as a verification target, and the one that positions it as the natural language for verified LLM orchestration.
 
 ### Remaining completeness
