@@ -37,7 +37,8 @@ Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave
                                  #58 JSON ←──┘─┐              #235 Crypto
                                  #57 HTTP ←────┘─┐            #59 Async ──┐
                                  #305 Server ←───┘─┐     #237 WASI 0.3 ←─┘
-                                 #306 MCP ←────────┘          #61 Inference
+                                 #306 MCP ←────────┘     #229 DB (←─ #62, #58)
+                                                              #61 Inference
 ```
 
 ### Tier 0 — Ship now
@@ -69,6 +70,7 @@ Independent of the Tier 1 chain. Can be scheduled between Tier 1 items or in par
 - [#233](https://github.com/aallan/vera/issues/233) **Date and time** (ISO 8601) — agent workloads frequently need timestamps
 - [#235](https://github.com/aallan/vera/issues/235) **Cryptographic hashing** (SHA-256, HMAC) — needed for API authentication (webhook signatures, OAuth)
 - [#59](https://github.com/aallan/vera/issues/59) **Async concurrency** — type-level infrastructure shipped in v0.0.82 (marker effect, `Future<T>`, `async`/`await`), but execution is eager/sequential. True concurrency requires WASI 0.3 (#237) for native `future<T>`/`stream<T>`. Co-dependent with #237; enables real concurrent request handling for #305/#306.
+- [#229](https://github.com/aallan/vera/issues/229) **Database access effect** — `<DB>` with `query`/`execute` operations, parameterised queries only. Phase 1 (positional rows, SQLite) has no blocking dependencies. Phase 2 (named columns) needs Map (#62). Phase 3 (JSON columns) needs JSON (#58). See #309 for contract-verified SQL injection prevention.
 - [#61](https://github.com/aallan/vera/issues/61) **Inference effect** — `effects(<Inference>)` in a signature means "this function calls an LLM, and you can mock it for testing." The feature that most differentiates Vera from Dafny as a verification target, and the one that positions it as the natural language for verified LLM orchestration.
 
 ### Remaining completeness
@@ -104,7 +106,8 @@ Future effect types for extended agent workloads:
 - [#306](https://github.com/aallan/vera/issues/306) `<McpServer>` — verified MCP tool server (depends on #58 + #305)
 - [#227](https://github.com/aallan/vera/issues/227) `<Timeout>` — timeout and cancellation
 - [#228](https://github.com/aallan/vera/issues/228) `<WebSocket>` / `<SSE>` — streaming clients
-- [#229](https://github.com/aallan/vera/issues/229) `<DB>` — database access
+- [#229](https://github.com/aallan/vera/issues/229) `<DB>` — database access (Phase 1: SQLite, no deps; Phase 2: named columns, depends on #62; Phase 3: JSON columns, depends on #58)
+- [#309](https://github.com/aallan/vera/issues/309) Contract-verified parameterised SQL queries — compile-time SQL injection prevention (depends on #229)
 - [#236](https://github.com/aallan/vera/issues/236) CSV parsing and generation
 - [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` — custom scheduling strategies
 
