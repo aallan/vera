@@ -1,0 +1,263 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit configuration for Vera — a programming language compiler
+# written in Python that compiles to WebAssembly.
+#
+# Repo: github.com/aallan/vera
+
+language: "en-GB"
+early_access: false
+
+tone_instructions: >-
+  Reviewing a Python compiler (Vera → WebAssembly). Be precise, focus on correctness and type safety. No stylistic rewrites unless they fix bugs. Uses mypy, mixin pattern, Z3 SMT, De Bruijn indices.
+
+knowledge_base:
+  opt_out: false
+  web_search:
+    enabled: true
+  learnings:
+    scope: auto
+  code_guidelines:
+    enabled: true
+    filePatterns:
+      - "SKILL.md"
+      - "CLAUDE.md"
+      - "CONTRIBUTING.md"
+      - "FAQ.md"
+
+chat:
+  auto_reply: true
+  art: false
+
+reviews:
+  profile: "assertive"
+  high_level_summary: true
+  high_level_summary_placeholder: "@coderabbitai summary"
+  poem: false
+  in_progress_fortune: false
+  collapse_walkthrough: true
+  sequence_diagrams: true
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+  suggested_labels: true
+  suggested_reviewers: false
+  review_status: true
+  commit_status: true
+
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    ignore_title_keywords:
+      - "WIP"
+      - "DO NOT MERGE"
+
+  # ── Path-based review exclusions ──────────────────────────────────
+  #
+  # CodeRabbit doesn't know Vera syntax, so .vera files produce false
+  # positives. The spec uses precise technical language and mathematical
+  # notation that confuses language/grammar tools. Lock files and
+  # generated output are noise.
+
+  path_filters:
+    # Vera source files — CodeRabbit cannot parse these
+    - "!**/*.vera"
+
+    # Website / static assets
+    - "!docs/**"
+
+    # Lock files and generated artefacts
+    - "!poetry.lock"
+    - "!uv.lock"
+    - "!**/__pycache__/**"
+    - "!**/*.pyc"
+
+  # ── Per-path review instructions ──────────────────────────────────
+
+  path_instructions:
+    - path: "vera/**/*.py"
+      instructions: |
+        This is the compiler source. Review for correctness, type safety,
+        and consistency with existing patterns.
+
+        MIXIN PATTERN: The codebase composes WasmContext via multiple
+        inheritance from mixins (CallsMixin, InferenceMixin, MatchMixin,
+        EffectMixin, etc.). Pyright reports "attribute unknown" for
+        cross-mixin attribute access, but mypy handles this correctly via
+        Protocols. Do NOT flag these Pyright-style mixin warnings — they
+        are expected and intentional.
+
+        DE BRUIJN INDICES: Vera uses De Bruijn indices (@T.0, @T.1)
+        instead of variable names. Comments in the compiler explaining
+        index assignments and slot mappings are critical documentation,
+        not noise. Do not suggest removing or shortening them.
+
+        Z3 VERIFICATION: The verifier module uses Z3 SMT solver
+        expressions extensively. Z3 API calls may look unusual but are
+        correct — do not flag z3.Int, z3.Bool, z3.And, z3.Or, z3.If
+        patterns as suspicious.
+
+        Type checking: the project uses mypy (not Pyright) as its
+        canonical type checker. Defer to mypy semantics when in doubt.
+
+    - path: "tests/**/*.py"
+      instructions: |
+        These are pytest test files. Review for correctness and coverage
+        gaps.
+
+        EXPECTED PATTERNS — do not flag:
+        - assert statements (this is pytest, S101 is expected)
+        - Magic numbers in assertions like `assert result == 42` — these
+          are specific expected outputs from Vera programs, not arbitrary
+          constants
+        - Repetitive test structure — many tests follow a deliberate
+          pattern of compile-then-assert
+        - Long test functions — integration tests that compile and run
+          full Vera programs are intentionally thorough
+
+        DO flag:
+        - Actual bugs in test logic
+        - Tests that don't assert anything meaningful
+        - Duplicated test names (pytest silently shadows these)
+        - Missing edge cases for new compiler features
+
+    - path: "tests/conformance/**"
+      instructions: |
+        Conformance test directory. The .vera files here are excluded from
+        review by path_filters. If Python harness files appear here,
+        review them for correctness but understand they exercise specific
+        language specification requirements.
+
+    - path: "scripts/**/*.py"
+      instructions: |
+        CI validation and utility scripts.
+
+        ALLOWLIST PATTERN: scripts/check_spec_examples.py and
+        scripts/check_skill_examples.py contain intentional
+        duplicate-looking dict patterns keyed by line numbers (allowlist
+        dicts). These are NOT accidental duplicates — they map specific
+        line numbers to expected behaviours. Flag actual duplicate keys
+        within a single dict, but do not flag the pattern itself as
+        suspicious or suggest refactoring it.
+
+        Allow sys.exit() calls and broad exception handlers in these
+        scripts — they are operational tooling, not library code.
+
+    - path: "examples/**"
+      instructions: |
+        Example Vera programs. The .vera files are excluded by
+        path_filters. If any Python support files appear here, review
+        them lightly — they exist to demonstrate usage, not to be
+        production code.
+
+    - path: "spec/**/*.md"
+      instructions: |
+        Language specification. Review for factual accuracy and broken
+        code examples. Do NOT review for prose style, grammar, or
+        formatting — the spec uses precise technical language with
+        mathematical notation that is intentional. Vera code blocks
+        are validated by scripts/check_spec_examples.py in CI.
+
+    - path: "**/*.md"
+      instructions: |
+        Review Markdown files for factual accuracy against the codebase,
+        broken links, and outdated information. Do NOT review for grammar
+        or prose style — the project documentation uses precise technical
+        language that is intentional.
+
+    - path: "CHANGELOG.md"
+      instructions: |
+        Do not review the changelog for style or formatting. Only flag
+        entries that reference nonexistent features or incorrect version
+        numbers.
+
+    - path: "pyproject.toml"
+      instructions: |
+        Review dependency changes for compatibility issues. Flag any
+        version pins that look overly restrictive or overly permissive.
+
+  # ── Labelling ─────────────────────────────────────────────────────
+
+  labeling_instructions:
+    - label: "compiler"
+      instructions: "Apply when files under vera/ are changed."
+    - label: "tests"
+      instructions: "Apply when files under tests/ are changed."
+    - label: "spec"
+      instructions: "Apply when files under spec/ are changed."
+    - label: "ci"
+      instructions: "Apply when files under scripts/ or .github/ are changed."
+    - label: "docs"
+      instructions: "Apply when CHANGELOG.md, README.md, ROADMAP.md, CONTRIBUTING.md, FAQ.md, SKILL.md, or CLAUDE.md are changed."
+
+  # ── Static analysis tools ─────────────────────────────────────────
+  #
+  # Enable Python tools, disable everything irrelevant to this project.
+
+  tools:
+    # Python
+    ruff:
+      enabled: true
+    pylint:
+      enabled: false
+    flake8:
+      enabled: false
+
+    # Markdown / prose — disabled for spec, but useful for project docs
+    markdownlint:
+      enabled: true
+    languagetool:
+      enabled: false      # too many false positives on technical prose
+
+    # YAML / config
+    yamllint:
+      enabled: true
+
+    # Shell scripts (if any)
+    shellcheck:
+      enabled: true
+
+    # Security
+    gitleaks:
+      enabled: true
+
+    # Not applicable to this project
+    eslint:
+      enabled: false
+    biome:
+      enabled: false
+    oxlint:
+      enabled: false
+    hadolint:
+      enabled: false
+    clippy:
+      enabled: false
+    golangci-lint:
+      enabled: false
+    rubocop:
+      enabled: false
+    phpstan:
+      enabled: false
+    swiftlint:
+      enabled: false
+    detekt:
+      enabled: false
+    cppcheck:
+      enabled: false
+    sqlfluff:
+      enabled: false
+    buf:
+      enabled: false
+    checkov:
+      enabled: false
+
+  # ── Finishing touches ──────────────────────────────────────────────
+
+  finishing_touches:
+    docstrings:
+      enabled: true
+    unit_tests:
+      enabled: true
+    simplify:
+      enabled: false
