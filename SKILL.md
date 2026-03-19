@@ -435,6 +435,19 @@ For pure recursive functions that need termination proofs, add a `decreases` cla
 
 ## Built-in Functions
 
+### Naming convention
+
+All built-in functions follow predictable naming patterns. When guessing a function name you haven't seen, apply these rules:
+
+| Pattern | When | Examples |
+|---------|------|----------|
+| `domain_verb` | Most functions | `string_length`, `array_append`, `regex_match`, `md_parse` |
+| `source_to_target` | Type conversions | `int_to_float`, `float_to_int`, `nat_to_int` |
+| `domain_is_predicate` | Boolean predicates | `float_is_nan`, `float_is_infinite` |
+| Prefix-less | Math universals only | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow` |
+
+**String operations always use `string_` prefix** — `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`. **Float64 predicates use `float_` prefix** — `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`** — `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) are the **only** exception — they need no prefix because they are universally understood.
+
 ### Option and Result Combinators
 
 When a program defines `Option<T>` or `Result<T, E>`, combinator functions are automatically available:
@@ -496,8 +509,8 @@ array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @In
 string_length(@String.0)                -- returns Nat
 string_concat(@String.0, @String.1)     -- returns String
 string_slice(@String.0, @Nat.0, @Nat.1) -- returns String (start, end)
-char_code(@String.0, @Int.0)            -- returns Nat (ASCII code at index)
-from_char_code(@Nat.0)                  -- returns String (single char from code point)
+string_char_code(@String.0, @Int.0)     -- returns Nat (ASCII code at index)
+string_from_char_code(@Nat.0)           -- returns String (single char from code point)
 string_repeat(@String.0, @Nat.0)        -- returns String (repeated N times)
 parse_nat(@String.0)                    -- returns Result<Nat, String>
 parse_int(@String.0)                    -- returns Result<Int, String>
@@ -526,7 +539,7 @@ bool_to_string(@Bool.0)                 -- returns String ("true" or "false")
 nat_to_string(@Nat.0)                   -- returns String (natural to decimal)
 byte_to_string(@Byte.0)                 -- returns String (single character)
 float_to_string(@Float64.0)             -- returns String (decimal representation)
-strip(@String.0)                        -- returns String (trim whitespace)
+string_strip(@String.0)                 -- returns String (trim whitespace)
 ```
 
 #### String interpolation
@@ -545,24 +558,24 @@ Expressions inside `\(...)` are auto-converted to String for types: Int, Nat, Bo
 
 ```vera
 string_contains(@String.0, @String.1)  -- returns Bool (substring test)
-starts_with(@String.0, @String.1)      -- returns Bool (prefix test)
-ends_with(@String.0, @String.1)        -- returns Bool (suffix test)
-index_of(@String.0, @String.1)         -- returns Option<Nat> (first occurrence)
+string_starts_with(@String.0, @String.1) -- returns Bool (prefix test)
+string_ends_with(@String.0, @String.1)   -- returns Bool (suffix test)
+string_index_of(@String.0, @String.1)    -- returns Option<Nat> (first occurrence)
 ```
 
-`string_contains` checks whether the needle appears anywhere in the haystack. `starts_with` and `ends_with` test prefix and suffix matches. `index_of` returns `Some(i)` with the byte offset of the first match, or `None` if not found. An empty needle always matches (returns `true` or `Some(0)`).
+`string_contains` checks whether the needle appears anywhere in the haystack. `string_starts_with` and `string_ends_with` test prefix and suffix matches. `string_index_of` returns `Some(i)` with the byte offset of the first match, or `None` if not found. An empty needle always matches (returns `true` or `Some(0)`).
 
 #### String transformation
 
 ```vera
-to_upper(@String.0)                             -- returns String (ASCII uppercase)
-to_lower(@String.0)                             -- returns String (ASCII lowercase)
-replace(@String.0, @String.1, @String.2)        -- returns String (replace all)
-split(@String.0, @String.1)                     -- returns Array<String> (split by delimiter)
-join(@Array<String>.0, @String.0)               -- returns String (join with separator)
+string_upper(@String.0)                         -- returns String (ASCII uppercase)
+string_lower(@String.0)                         -- returns String (ASCII lowercase)
+string_replace(@String.0, @String.1, @String.2) -- returns String (replace all)
+string_split(@String.0, @String.1)              -- returns Array<String> (split by delimiter)
+string_join(@Array<String>.0, @String.0)        -- returns String (join with separator)
 ```
 
-`to_upper` and `to_lower` convert ASCII letters only (a-z ↔ A-Z). `replace` substitutes all non-overlapping occurrences; an empty needle returns the original string unchanged. `split` returns an array of segments; an empty delimiter returns a single-element array. `join` concatenates array elements with the separator between each pair.
+`string_upper` and `string_lower` convert ASCII letters only (a-z ↔ A-Z). `string_replace` substitutes all non-overlapping occurrences; an empty needle returns the original string unchanged. `string_split` returns an array of segments; an empty delimiter returns a single-element array. `string_join` concatenates array elements with the separator between each pair.
 
 String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. All four parse functions return `Result<T, String>`: `parse_nat`, `parse_int`, `parse_float64`, and `parse_bool`. They return `Ok(value)` on valid input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated. `parse_int` accepts an optional `+` or `-` sign. `parse_bool` is strict: only `"true"` and `"false"` (lowercase) are valid. `base64_encode` encodes a string to standard Base64 (RFC 4648); `base64_decode` returns `Result<String, String>`, failing on invalid length or characters. `url_encode` percent-encodes a string for use in URLs (RFC 3986), leaving unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`) unchanged; `url_decode` returns `Result<String, String>`, failing on invalid `%XX` sequences. `url_parse` decomposes a URL into its RFC 3986 components, returning `Result<UrlParts, String>` where `UrlParts(scheme, authority, path, query, fragment)` is a built-in ADT with five String fields; it returns `Err("missing scheme")` if no `:` is found. `url_join` reassembles a `UrlParts` value into a URL string. Programs must redefine `UrlParts` locally (like `Result`) to use it in match expressions.
 
@@ -641,7 +654,7 @@ pow(@Float64.0, @Int.0)             -- returns Float64 (exponentiation)
 ### Type conversions
 
 ```vera
-to_float(@Int.0)                    -- returns Float64 (int to float)
+int_to_float(@Int.0)                -- returns Float64 (int to float)
 float_to_int(@Float64.0)           -- returns Int (truncation toward zero)
 nat_to_int(@Nat.0)                 -- returns Int (identity, both i64)
 int_to_nat(@Int.0)                 -- returns Option<Nat> (None if negative)
@@ -649,18 +662,18 @@ byte_to_int(@Byte.0)              -- returns Int (zero-extension)
 int_to_byte(@Int.0)               -- returns Option<Byte> (None if out of 0..255)
 ```
 
-Vera has no implicit numeric conversions — use these functions to convert between numeric types. `to_float`, `nat_to_int`, and `byte_to_int` are widening conversions that always succeed. `float_to_int` truncates toward zero and traps on NaN/Infinity. `int_to_nat` and `int_to_byte` are checked narrowing conversions that return `Option` — pattern match on the result to handle the failure case. `nat_to_int` and `byte_to_int` are SMT-verifiable (Tier 1); the rest are Tier 3 (runtime).
+Vera has no implicit numeric conversions — use these functions to convert between numeric types. `int_to_float`, `nat_to_int`, and `byte_to_int` are widening conversions that always succeed. `float_to_int` truncates toward zero and traps on NaN/Infinity. `int_to_nat` and `int_to_byte` are checked narrowing conversions that return `Option` — pattern match on the result to handle the failure case. `nat_to_int` and `byte_to_int` are SMT-verifiable (Tier 1); the rest are Tier 3 (runtime).
 
 ### Float64 predicates
 
 ```vera
-is_nan(@Float64.0)                 -- returns Bool (true if NaN)
-is_infinite(@Float64.0)            -- returns Bool (true if ±infinity)
+float_is_nan(@Float64.0)           -- returns Bool (true if NaN)
+float_is_infinite(@Float64.0)      -- returns Bool (true if ±infinity)
 nan()                              -- returns Float64 (quiet NaN)
 infinity()                         -- returns Float64 (positive infinity)
 ```
 
-`is_nan` and `is_infinite` test for IEEE 754 special values. `nan()` and `infinity()` construct them — use `0.0 - infinity()` for negative infinity. All four are Tier 3 (runtime-tested, not SMT-verifiable).
+`float_is_nan` and `float_is_infinite` test for IEEE 754 special values. `nan()` and `infinity()` construct them — use `0.0 - infinity()` for negative infinity. All four are Tier 3 (runtime-tested, not SMT-verifiable).
 
 **Shadowing**: If you define a function with the same name as a built-in (e.g. `array_length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
 

@@ -19,8 +19,8 @@ public fn main(@Unit -> @Unit)
   IO.print(string_concat("hello", " world"));
   -- string_slice
   IO.print(string_slice("MPCORB", 0, 3));
-  -- char_code: 'A' = 65
-  let @Nat = char_code("A", 0);
+  -- string_char_code: 'A' = 65
+  let @Nat = string_char_code("A", 0);
   -- parse_nat (returns Result<Nat, String>)
   let @Nat = match parse_nat("42") { Ok(@Nat) -> @Nat.0, Err(_) -> 0 };
   -- parse_float64 (returns Result<Float64, String>)
@@ -31,8 +31,8 @@ public fn main(@Unit -> @Unit)
   let @Bool = match parse_bool("true") { Ok(@Bool) -> @Bool.0, Err(_) -> false };
   -- to_string
   IO.print(to_string(2025));
-  -- strip
-  IO.print(strip("  hello  "));
+  -- string_strip
+  IO.print(string_strip("  hello  "));
   -- compose: parse then convert back
   IO.print(match parse_nat("99") { Ok(@Nat) -> to_string(@Nat.0), Err(_) -> "error" });
   -- bool_to_string

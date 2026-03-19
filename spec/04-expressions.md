@@ -56,7 +56,7 @@ Unary negation:
 **No implicit conversions.** `Int` and `Float64` cannot be mixed in arithmetic. Use explicit conversion functions:
 
 ```
-to_float(@Int.0) + @Float64.0
+int_to_float(@Int.0) + @Float64.0
 ```
 
 **No operator overloading.** Arithmetic operators work only on built-in numeric types.
@@ -324,7 +324,7 @@ String operations are provided as built-in functions:
 string_length(@String.0)                -- returns Nat
 string_concat(@String.0, @String.1)     -- returns String
 string_slice(@String.0, @Nat.0, @Nat.1) -- returns String
-char_code(@String.0, @Int.0)            -- returns Nat (ASCII code at index)
+string_char_code(@String.0, @Int.0)     -- returns Nat (ASCII code at index)
 parse_nat(@String.0)                    -- returns Result<Nat, String>
 parse_int(@String.0)                    -- returns Result<Int, String>
 parse_float64(@String.0)                -- returns Result<Float64, String>
@@ -344,7 +344,7 @@ bool_to_string(@Bool.0)                 -- returns String ("true" or "false")
 nat_to_string(@Nat.0)                   -- returns String
 byte_to_string(@Byte.0)                 -- returns String (single character)
 float_to_string(@Float64.0)             -- returns String
-strip(@String.0)                        -- returns String (trim whitespace)
+string_strip(@String.0)                 -- returns String (trim whitespace)
 ```
 
 String concatenation uses a function, not an operator. There is no `+` on strings.

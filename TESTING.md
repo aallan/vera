@@ -241,8 +241,8 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker | ch07_pure, ch07_io, ch07_state_handler | hello_world, increment, io_operations, file_io |
 | Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen, test_checker | ch07_state_handler, ch07_exn_handler | effect_handler |
 | Ch 9: Stdlib | Numeric builtins (abs, min, max, floor, ceil, round, sqrt, pow) | test_codegen, test_checker | ch09_numeric_builtins | — |
-| Ch 9: Stdlib | Type conversions (to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen, test_checker | ch09_type_conversions | — |
-| Ch 9: Stdlib | Float64 predicates (is_nan, is_infinite, nan, infinity) | test_codegen, test_checker | ch10_float_predicates | — |
+| Ch 9: Stdlib | Type conversions (int_to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen, test_checker | ch09_type_conversions | — |
+| Ch 9: Stdlib | Float64 predicates (float_is_nan, float_is_infinite, nan, infinity) | test_codegen, test_checker | ch10_float_predicates | — |
 | Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker | — | — |
 | Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — | — |
 | Ch 4: Expressions | Nested constructor patterns in match | test_codegen | ch04_match_nested | pattern_matching |

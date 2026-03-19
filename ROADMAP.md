@@ -33,7 +33,7 @@ Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave
 ─────────────────           ──────────────────                ──────────────────
 ✓ #211 Combinators          ✓ #60 Abilities                    #289 Prelude
 ✓ #133 Array ops            ✓ #133 map/fold ─┐                 #226 Typed holes
-#288 Naming audit                #62 Map ←───┘─┐              #233 DateTime
+✓ #288 Naming audit              #62 Map ←───┘─┐              #233 DateTime
                                  #58 JSON ←────┘─┐            #235 Crypto
                                  #57 HTTP ←──────┘─┐          #59 Async ──┐
                                  #305 Server ←─────┘─┐   #237 WASI 0.3 ←─┘
@@ -48,7 +48,7 @@ No blocking dependencies. Highest value-per-effort.
 
 - <del>[#211](https://github.com/aallan/vera/issues/211) **Option/Result combinators** — pure Vera functions, no compiler changes. Eliminates 5-line match blocks for every fallible operation. Fundamental enough for a standard prelude.</del> ([v0.0.89](https://github.com/aallan/vera/releases/tag/v0.0.89))
 - <del>[#133](https://github.com/aallan/vera/issues/133) **Array operations** — `array_slice`, `array_map`, `array_filter`, `array_fold`. Includes six compiler bug fixes for monomorphization and WASM inference.</del> ([v0.0.91](https://github.com/aallan/vera/releases/tag/v0.0.91))
-- [#288](https://github.com/aallan/vera/issues/288) **Built-in function naming audit** — four naming patterns where there should be one or two. Must happen before new functions ship to establish the convention they follow. Breaking change — do it early.
+- <del>[#288](https://github.com/aallan/vera/issues/288) **Built-in function naming audit** — four naming patterns where there should be one or two. Must happen before new functions ship to establish the convention they follow. Breaking change — do it early.</del> ([v0.0.92](https://github.com/aallan/vera/releases/tag/v0.0.92))
 
 ### Tier 1 — Critical path
 

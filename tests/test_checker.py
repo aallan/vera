@@ -2657,11 +2657,11 @@ private fn f(@String, @Int -> @String)
 { string_concat(@String.0, @Int.0) }
 """, "type")
 
-    def test_char_code_ok(self) -> None:
+    def test_string_char_code_ok(self) -> None:
         _check_ok("""
 private fn f(@String, @Int -> @Nat)
   requires(true) ensures(true) effects(pure)
-{ char_code(@String.0, @Int.0) }
+{ string_char_code(@String.0, @Int.0) }
 """)
 
     def test_parse_nat_ok(self) -> None:
@@ -2819,11 +2819,11 @@ private fn f(@Int -> @String)
 { to_string(@Int.0) }
 """)
 
-    def test_strip_ok(self) -> None:
+    def test_string_strip_ok(self) -> None:
         _check_ok("""
 private fn f(@String -> @String)
   requires(true) ensures(true) effects(pure)
-{ strip(@String.0) }
+{ string_strip(@String.0) }
 """)
 
     def test_bool_to_string_ok(self) -> None:
@@ -3003,18 +3003,18 @@ private fn f(@Float64, @Float64 -> @Float64)
 class TestTypeConversionBuiltins:
     """Type-checking for numeric type conversion builtins."""
 
-    def test_to_float_ok(self) -> None:
+    def test_int_to_float_ok(self) -> None:
         _check_ok("""
 private fn f(@Int -> @Float64)
   requires(true) ensures(true) effects(pure)
-{ to_float(@Int.0) }
+{ int_to_float(@Int.0) }
 """)
 
-    def test_to_float_wrong_arg(self) -> None:
+    def test_int_to_float_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@String -> @Float64)
   requires(true) ensures(true) effects(pure)
-{ to_float(@String.0) }
+{ int_to_float(@String.0) }
 """, "type")
 
     def test_float_to_int_ok(self) -> None:
@@ -3105,32 +3105,32 @@ private fn f(@Float64 -> @Option<Byte>)
 class TestFloatPredicateBuiltins:
     """Type-checking for Float64 predicate and constant builtins."""
 
-    def test_is_nan_ok(self) -> None:
+    def test_float_is_nan_ok(self) -> None:
         _check_ok("""
 private fn f(@Float64 -> @Bool)
   requires(true) ensures(true) effects(pure)
-{ is_nan(@Float64.0) }
+{ float_is_nan(@Float64.0) }
 """)
 
-    def test_is_nan_wrong_arg(self) -> None:
+    def test_float_is_nan_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@Int -> @Bool)
   requires(true) ensures(true) effects(pure)
-{ is_nan(@Int.0) }
+{ float_is_nan(@Int.0) }
 """, "type")
 
-    def test_is_infinite_ok(self) -> None:
+    def test_float_is_infinite_ok(self) -> None:
         _check_ok("""
 private fn f(@Float64 -> @Bool)
   requires(true) ensures(true) effects(pure)
-{ is_infinite(@Float64.0) }
+{ float_is_infinite(@Float64.0) }
 """)
 
-    def test_is_infinite_wrong_arg(self) -> None:
+    def test_float_is_infinite_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@String -> @Bool)
   requires(true) ensures(true) effects(pure)
-{ is_infinite(@String.0) }
+{ float_is_infinite(@String.0) }
 """, "type")
 
     def test_nan_ok(self) -> None:
@@ -3185,149 +3185,149 @@ private fn f(@Int, @String -> @Bool)
 { string_contains(@Int.0, @String.0) }
 """, "type")
 
-    # -- starts_with --
+    # -- string_starts_with --
 
-    def test_starts_with_ok(self) -> None:
+    def test_string_starts_with_ok(self) -> None:
         _check_ok("""
 private fn f(@String, @String -> @Bool)
   requires(true) ensures(true) effects(pure)
-{ starts_with(@String.0, @String.1) }
+{ string_starts_with(@String.0, @String.1) }
 """)
 
-    def test_starts_with_wrong_arg(self) -> None:
+    def test_string_starts_with_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@Int, @String -> @Bool)
   requires(true) ensures(true) effects(pure)
-{ starts_with(@Int.0, @String.0) }
+{ string_starts_with(@Int.0, @String.0) }
 """, "type")
 
-    # -- ends_with --
+    # -- string_ends_with --
 
-    def test_ends_with_ok(self) -> None:
+    def test_string_ends_with_ok(self) -> None:
         _check_ok("""
 private fn f(@String, @String -> @Bool)
   requires(true) ensures(true) effects(pure)
-{ ends_with(@String.0, @String.1) }
+{ string_ends_with(@String.0, @String.1) }
 """)
 
-    def test_ends_with_wrong_arg(self) -> None:
+    def test_string_ends_with_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@Int, @String -> @Bool)
   requires(true) ensures(true) effects(pure)
-{ ends_with(@Int.0, @String.0) }
+{ string_ends_with(@Int.0, @String.0) }
 """, "type")
 
-    # -- index_of --
+    # -- string_index_of --
 
-    def test_index_of_ok(self) -> None:
+    def test_string_index_of_ok(self) -> None:
         _check_ok("""
 private data Option<T> { Some(T), None }
 private fn f(@String, @String -> @Option<Nat>)
   requires(true) ensures(true) effects(pure)
-{ index_of(@String.0, @String.1) }
+{ string_index_of(@String.0, @String.1) }
 """)
 
-    def test_index_of_wrong_arg(self) -> None:
+    def test_string_index_of_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@Int, @String -> @Bool)
   requires(true) ensures(true) effects(pure)
-{ index_of(@Int.0, @String.0) }
+{ string_index_of(@Int.0, @String.0) }
 """, "type")
 
-    # -- to_upper --
+    # -- string_upper --
 
-    def test_to_upper_ok(self) -> None:
+    def test_string_upper_ok(self) -> None:
         _check_ok("""
 private fn f(@String -> @String)
   requires(true) ensures(true) effects(pure)
-{ to_upper(@String.0) }
+{ string_upper(@String.0) }
 """)
 
-    def test_to_upper_wrong_arg(self) -> None:
+    def test_string_upper_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@Int -> @String)
   requires(true) ensures(true) effects(pure)
-{ to_upper(@Int.0) }
+{ string_upper(@Int.0) }
 """, "type")
 
-    # -- to_lower --
+    # -- string_lower --
 
-    def test_to_lower_ok(self) -> None:
+    def test_string_lower_ok(self) -> None:
         _check_ok("""
 private fn f(@String -> @String)
   requires(true) ensures(true) effects(pure)
-{ to_lower(@String.0) }
+{ string_lower(@String.0) }
 """)
 
-    def test_to_lower_wrong_arg(self) -> None:
+    def test_string_lower_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@Int -> @String)
   requires(true) ensures(true) effects(pure)
-{ to_lower(@Int.0) }
+{ string_lower(@Int.0) }
 """, "type")
 
-    # -- replace --
+    # -- string_replace --
 
-    def test_replace_ok(self) -> None:
+    def test_string_replace_ok(self) -> None:
         _check_ok("""
 private fn f(@String, @String, @String -> @String)
   requires(true) ensures(true) effects(pure)
-{ replace(@String.0, @String.1, @String.2) }
+{ string_replace(@String.0, @String.1, @String.2) }
 """)
 
-    def test_replace_wrong_arg(self) -> None:
+    def test_string_replace_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@Int, @String, @String -> @String)
   requires(true) ensures(true) effects(pure)
-{ replace(@Int.0, @String.0, @String.1) }
+{ string_replace(@Int.0, @String.0, @String.1) }
 """, "type")
 
-    # -- split --
+    # -- string_split --
 
-    def test_split_ok(self) -> None:
+    def test_string_split_ok(self) -> None:
         _check_ok("""
 private fn f(@String, @String -> @Array<String>)
   requires(true) ensures(true) effects(pure)
-{ split(@String.0, @String.1) }
+{ string_split(@String.0, @String.1) }
 """)
 
-    def test_split_wrong_arg(self) -> None:
+    def test_string_split_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@Int, @String -> @Array<String>)
   requires(true) ensures(true) effects(pure)
-{ split(@Int.0, @String.0) }
+{ string_split(@Int.0, @String.0) }
 """, "type")
 
-    # -- join --
+    # -- string_join --
 
-    def test_join_ok(self) -> None:
+    def test_string_join_ok(self) -> None:
         _check_ok("""
 private fn f(@Array<String>, @String -> @String)
   requires(true) ensures(true) effects(pure)
-{ join(@Array<String>.0, @String.0) }
+{ string_join(@Array<String>.0, @String.0) }
 """)
 
-    def test_join_wrong_arg(self) -> None:
+    def test_string_join_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@Array<Int>, @String -> @String)
   requires(true) ensures(true) effects(pure)
-{ join(@Array<Int>.0, @String.0) }
+{ string_join(@Array<Int>.0, @String.0) }
 """, "type")
 
-    # -- from_char_code --
+    # -- string_from_char_code --
 
-    def test_from_char_code_ok(self) -> None:
+    def test_string_from_char_code_ok(self) -> None:
         _check_ok("""
 private fn f(@Nat -> @String)
   requires(true) ensures(true) effects(pure)
-{ from_char_code(@Nat.0) }
+{ string_from_char_code(@Nat.0) }
 """)
 
-    def test_from_char_code_wrong_arg(self) -> None:
+    def test_string_from_char_code_wrong_arg(self) -> None:
         _check_err("""
 private fn f(@String -> @String)
   requires(true) ensures(true) effects(pure)
-{ from_char_code(@String.0) }
+{ string_from_char_code(@String.0) }
 """, "type")
 
     # -- string_repeat --

@@ -40,11 +40,11 @@ class CallsMixin:
                 return self._translate_string_slice(
                     call.args[0], call.args[1], call.args[2], env,
                 )
-            if call.name == "char_code" and len(call.args) == 2:
+            if call.name == "string_char_code" and len(call.args) == 2:
                 return self._translate_char_code(
                     call.args[0], call.args[1], env,
                 )
-            if call.name == "from_char_code" and len(call.args) == 1:
+            if call.name == "string_from_char_code" and len(call.args) == 1:
                 return self._translate_from_char_code(call.args[0], env)
             if call.name == "string_repeat" and len(call.args) == 2:
                 return self._translate_string_repeat(
@@ -122,39 +122,39 @@ class CallsMixin:
                 return self._translate_byte_to_string(call.args[0], env)
             if call.name == "float_to_string" and len(call.args) == 1:
                 return self._translate_float_to_string(call.args[0], env)
-            if call.name == "strip" and len(call.args) == 1:
+            if call.name == "string_strip" and len(call.args) == 1:
                 return self._translate_strip(call.args[0], env)
             # String search builtins
             if call.name == "string_contains" and len(call.args) == 2:
                 return self._translate_string_contains(
                     call.args[0], call.args[1], env,
                 )
-            if call.name == "starts_with" and len(call.args) == 2:
+            if call.name == "string_starts_with" and len(call.args) == 2:
                 return self._translate_starts_with(
                     call.args[0], call.args[1], env,
                 )
-            if call.name == "ends_with" and len(call.args) == 2:
+            if call.name == "string_ends_with" and len(call.args) == 2:
                 return self._translate_ends_with(
                     call.args[0], call.args[1], env,
                 )
-            if call.name == "index_of" and len(call.args) == 2:
+            if call.name == "string_index_of" and len(call.args) == 2:
                 return self._translate_index_of(
                     call.args[0], call.args[1], env,
                 )
             # String transformation builtins
-            if call.name == "to_upper" and len(call.args) == 1:
+            if call.name == "string_upper" and len(call.args) == 1:
                 return self._translate_to_upper(call.args[0], env)
-            if call.name == "to_lower" and len(call.args) == 1:
+            if call.name == "string_lower" and len(call.args) == 1:
                 return self._translate_to_lower(call.args[0], env)
-            if call.name == "replace" and len(call.args) == 3:
+            if call.name == "string_replace" and len(call.args) == 3:
                 return self._translate_replace(
                     call.args[0], call.args[1], call.args[2], env,
                 )
-            if call.name == "split" and len(call.args) == 2:
+            if call.name == "string_split" and len(call.args) == 2:
                 return self._translate_split(
                     call.args[0], call.args[1], env,
                 )
-            if call.name == "join" and len(call.args) == 2:
+            if call.name == "string_join" and len(call.args) == 2:
                 return self._translate_join(
                     call.args[0], call.args[1], env,
                 )
@@ -198,7 +198,7 @@ class CallsMixin:
                     call.args[0], call.args[1], env,
                 )
             # Numeric type conversions
-            if call.name == "to_float" and len(call.args) == 1:
+            if call.name == "int_to_float" and len(call.args) == 1:
                 return self._translate_to_float(call.args[0], env)
             if call.name == "float_to_int" and len(call.args) == 1:
                 return self._translate_float_to_int(call.args[0], env)
@@ -211,9 +211,9 @@ class CallsMixin:
             if call.name == "int_to_byte" and len(call.args) == 1:
                 return self._translate_int_to_byte(call.args[0], env)
             # Float64 predicates and constants
-            if call.name == "is_nan" and len(call.args) == 1:
+            if call.name == "float_is_nan" and len(call.args) == 1:
                 return self._translate_is_nan(call.args[0], env)
-            if call.name == "is_infinite" and len(call.args) == 1:
+            if call.name == "float_is_infinite" and len(call.args) == 1:
                 return self._translate_is_infinite(call.args[0], env)
             if call.name == "nan" and len(call.args) == 0:
                 return self._translate_nan()

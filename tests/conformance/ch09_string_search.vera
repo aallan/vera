@@ -1,6 +1,6 @@
 -- Conformance: string search and transformation builtins (Chapter 9)
--- Tests: string_contains, starts_with, ends_with, index_of,
---        to_upper, to_lower, replace, split, join
+-- Tests: string_contains, string_starts_with, string_ends_with, string_index_of,
+--        string_upper, string_lower, string_replace, string_split, string_join
 public fn test_string_contains(@Unit -> @Bool)
   requires(true)
   ensures(@Bool.result == true)
@@ -14,7 +14,7 @@ public fn test_starts_with(@Unit -> @Bool)
   ensures(@Bool.result == true)
   effects(pure)
 {
-  starts_with("hello world", "hello")
+  string_starts_with("hello world", "hello")
 }
 
 public fn test_ends_with(@Unit -> @Bool)
@@ -22,7 +22,7 @@ public fn test_ends_with(@Unit -> @Bool)
   ensures(@Bool.result == true)
   effects(pure)
 {
-  ends_with("hello world", "world")
+  string_ends_with("hello world", "world")
 }
 
 public fn test_index_of(@Unit -> @Int)
@@ -30,7 +30,7 @@ public fn test_index_of(@Unit -> @Int)
   ensures(@Int.result == 6)
   effects(pure)
 {
-  match index_of("hello world", "world") {
+  match string_index_of("hello world", "world") {
     Some(@Nat) -> nat_to_int(@Nat.0),
     None -> 0 - 1
   }
@@ -41,7 +41,7 @@ public fn test_to_upper(@Unit -> @String)
   ensures(true)
   effects(pure)
 {
-  to_upper("hello")
+  string_upper("hello")
 }
 
 public fn test_to_lower(@Unit -> @String)
@@ -49,7 +49,7 @@ public fn test_to_lower(@Unit -> @String)
   ensures(true)
   effects(pure)
 {
-  to_lower("HELLO")
+  string_lower("HELLO")
 }
 
 public fn test_replace(@Unit -> @String)
@@ -57,7 +57,7 @@ public fn test_replace(@Unit -> @String)
   ensures(true)
   effects(pure)
 {
-  replace("hello world", "world", "vera")
+  string_replace("hello world", "world", "vera")
 }
 
 public fn test_split_join(@Unit -> @String)
@@ -65,7 +65,7 @@ public fn test_split_join(@Unit -> @String)
   ensures(true)
   effects(pure)
 {
-  join(split("a,b,c", ","), "-")
+  string_join(string_split("a,b,c", ","), "-")
 }
 
 public fn main(@Unit -> @Int)
