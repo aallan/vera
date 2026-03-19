@@ -54,7 +54,11 @@ class TestPreludeDetection:
         assert "option_map" not in fn_names
 
     def test_no_injection_without_adt(self) -> None:
-        """No injection when neither Option nor Result defined."""
+        """No Option/Result injection when neither defined.
+
+        Array operations (map, filter, fold) are always injected
+        regardless of Option/Result declarations.
+        """
         prog = _make_program(
             "public fn main(@Unit -> @Int)\n"
             "  requires(true) ensures(true) effects(pure)\n"
@@ -62,10 +66,14 @@ class TestPreludeDetection:
         )
         orig_len = len(prog.declarations)
         inject_prelude(prog)
-        assert len(prog.declarations) == orig_len
+        # 9 array declarations: 3 type aliases + 6 functions
+        assert len(prog.declarations) == orig_len + 9
 
     def test_non_standard_option_ignored(self) -> None:
-        """Non-standard Option (missing Some) not detected."""
+        """Non-standard Option (missing Some) not detected.
+
+        Array operations are still injected (always available).
+        """
         prog = _make_program(
             "public data Option<T> { None, Just(T) }\n"
             "public fn main(@Unit -> @Int)\n"
@@ -74,7 +82,8 @@ class TestPreludeDetection:
         )
         orig_len = len(prog.declarations)
         inject_prelude(prog)
-        assert len(prog.declarations) == orig_len
+        # Only array declarations injected (9), not Option combinators
+        assert len(prog.declarations) == orig_len + 9
 
 
 class TestPreludeShadowing:

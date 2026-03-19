@@ -314,7 +314,7 @@ The built-in `array_concat` function merges two arrays (see Chapter 9, Section 9
 array_concat(@Array<Int>.0, @Array<Int>.1)  -- returns Array<Int>
 ```
 
-Future array operations (`map`, `fold`, `slice`) will be added alongside the module system and abilities (see Chapter 9, Section 9.4.1).
+Higher-order array operations (`array_map`, `array_filter`, `array_fold`, `array_slice`) are built-in functions documented in Chapter 9, Sections 9.6.5–9.6.8.
 
 ## 4.13 String Operations
 

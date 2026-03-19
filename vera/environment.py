@@ -427,6 +427,60 @@ class TypeEnv:
             return_type=AdtType("Array", (TypeVar("T"),)),
             effect=PureEffectRow(),
         )
+        self.functions["array_slice"] = FunctionInfo(
+            name="array_slice",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Array", (TypeVar("T"),)),
+                INT,
+                INT,
+            ),
+            return_type=AdtType("Array", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+        )
+        self.functions["array_map"] = FunctionInfo(
+            name="array_map",
+            forall_vars=("A", "B"),
+            param_types=(
+                AdtType("Array", (TypeVar("A"),)),
+                FunctionType(
+                    params=(TypeVar("A"),),
+                    return_type=TypeVar("B"),
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=AdtType("Array", (TypeVar("B"),)),
+            effect=PureEffectRow(),
+        )
+        self.functions["array_filter"] = FunctionInfo(
+            name="array_filter",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Array", (TypeVar("T"),)),
+                FunctionType(
+                    params=(TypeVar("T"),),
+                    return_type=BOOL,
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=AdtType("Array", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+        )
+        self.functions["array_fold"] = FunctionInfo(
+            name="array_fold",
+            forall_vars=("T", "U"),
+            param_types=(
+                AdtType("Array", (TypeVar("T"),)),
+                TypeVar("U"),
+                FunctionType(
+                    params=(TypeVar("U"), TypeVar("T")),
+                    return_type=TypeVar("U"),
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=TypeVar("U"),
+            effect=PureEffectRow(),
+        )
 
         # Option / Result combinators
         # Implementations are injected as Vera source AST during codegen

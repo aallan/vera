@@ -500,7 +500,73 @@ array_concat([1, 2], [])               -- [1, 2]
 array_concat([], [])                   -- [] (empty)
 ```
 
-### 9.6.5 Numeric Operations
+### 9.6.5 array\_slice
+
+```vera
+public forall<T> fn array_slice(@Array<T>, @Int, @Int -> @Array<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns a new array containing elements from index `start` (inclusive) to `end` (exclusive). Indices are clamped to `[0, array_length(input)]`, so out-of-range values produce shorter slices rather than traps. If `start >= end` after clamping, returns an empty array. The original array is unchanged.
+
+```vera
+array_slice([10, 20, 30, 40, 50], 1, 4)  -- [20, 30, 40]
+array_slice([10, 20, 30], 0, 2)          -- [10, 20]
+array_slice([10, 20, 30], 5, 10)         -- [] (clamped, empty)
+array_slice([10, 20, 30], 2, 1)          -- [] (start >= end)
+```
+
+### 9.6.6 array\_map
+
+```vera
+public forall<A, B> fn array_map(@Array<A>, fn(A -> B) effects(pure) -> @Array<B>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Applies a function to each element of the array and returns a new array of the results. The result has the same length as the input. The element type may change (e.g. mapping `Int` to `String`).
+
+```vera
+array_map([1, 2, 3], fn(@Int -> @Int) effects(pure) { @Int.0 * 10 })
+-- [10, 20, 30]
+```
+
+### 9.6.7 array\_filter
+
+```vera
+public forall<T> fn array_filter(@Array<T>, fn(T -> Bool) effects(pure) -> @Array<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns a new array containing only the elements for which the predicate returns `true`. The result length is between 0 and the input length. Element order is preserved.
+
+```vera
+array_filter([1, 2, 3, 4, 5, 6], fn(@Int -> @Bool) effects(pure) { @Int.0 > 3 })
+-- [4, 5, 6]
+```
+
+### 9.6.8 array\_fold
+
+```vera
+public forall<T, U> fn array_fold(@Array<T>, @U, fn(U, T -> U) effects(pure) -> @U)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Reduces an array to a single value by applying a function to an accumulator and each element, left to right. The second argument is the initial accumulator value. The accumulator type may differ from the element type.
+
+```vera
+array_fold([1, 2, 3, 4], 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 })
+-- 10 (0 + 1 + 2 + 3 + 4)
+```
+
+### 9.6.9 Numeric Operations
 
 Vera provides eight built-in numeric functions for common mathematical operations. The integer functions (`abs`, `min`, `max`) operate on `Int` values and are pure — they perform no effects and are fully verifiable by the SMT solver (Tier 1). The floating-point functions (`floor`, `ceil`, `round`, `sqrt`, `pow`) use IEEE 754 semantics via WebAssembly's native instructions.
 
@@ -640,7 +706,7 @@ pow(2.0, 10)
 
 This expression evaluates to `1024.0`.
 
-### 9.6.6 Type Conversions
+### 9.6.10 Type Conversions
 
 Vera has no implicit numeric conversions. The following built-in functions provide explicit conversions between numeric types.
 
@@ -742,7 +808,7 @@ match int_to_byte(65) {
 
 This expression evaluates to `65`.
 
-### 9.6.7 Float64 Predicates
+### 9.6.11 Float64 Predicates
 
 Vera provides built-in functions for testing and constructing IEEE 754 special float values (NaN and infinity).
 
@@ -814,7 +880,7 @@ public fn test_infinity(@Unit -> @Float64)
 { infinity() }
 ```
 
-### 9.6.8 String Search
+### 9.6.12 String Search
 
 String search functions test for the presence or position of substrings. All are pure, take `String` arguments, and operate on raw bytes (ASCII). All are Tier 3 for verification (String is not modeled in Z3).
 
@@ -880,7 +946,7 @@ match index_of("hello world", "world") {
 -- evaluates to 6
 ```
 
-### 9.6.9 String Transformation
+### 9.6.13 String Transformation
 
 String transformation functions produce new strings by modifying characters or structure. All allocate heap memory for the result and register it with the GC shadow stack. All are pure and Tier 3.
 
@@ -990,7 +1056,7 @@ string_repeat("hello", 0)                -- "" (empty)
 string_repeat("", 100)                   -- "" (empty)
 ```
 
-### 9.6.10 Parsing Functions
+### 9.6.14 Parsing Functions
 
 Parsing functions convert strings to typed values, returning `Result<T, String>` to represent success or failure. All strip leading and trailing ASCII whitespace (spaces, tabs, `\r`, `\n`) before parsing. All are pure and Tier 3 for verification.
 
@@ -1090,7 +1156,7 @@ parse_bool("yes")          -- Err("expected true or false")
 parse_bool("")             -- Err("expected true or false")
 ```
 
-### 9.6.11 Base64
+### 9.6.15 Base64
 
 #### base64\_encode
 
@@ -1136,7 +1202,7 @@ base64_decode("ABC")                   -- Err("invalid base64 length")
 base64_decode("QQ!!")                  -- Err("invalid base64")
 ```
 
-### 9.6.12 URL Encoding
+### 9.6.16 URL Encoding
 
 #### url\_encode
 
@@ -1181,7 +1247,7 @@ url_decode("%ZZ")                  -- Err("invalid percent-encoding")
 url_decode("%4")                   -- Err("invalid percent-encoding")
 ```
 
-### 9.6.13 URL Parsing
+### 9.6.17 URL Parsing
 
 The `UrlParts` ADT is defined in §9.3.3. Programs must redefine `UrlParts` locally (like `Result` and `Option`) to use it in match expressions.
 
@@ -1221,7 +1287,7 @@ url_join(UrlParts("", "", "", "", ""))
   -- ""
 ```
 
-### 9.6.14 similarity (Future)
+### 9.6.18 similarity (Future)
 
 > **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
 
@@ -1236,7 +1302,7 @@ Computes the cosine similarity between two vectors (embeddings). The arrays must
 
 This function is pure — it performs no effects. It is intended for use with the `Inference.embed` operation to compare semantic similarity of text.
 
-### 9.6.15 Regular Expressions
+### 9.6.19 Regular Expressions
 
 Four pure functions for pattern matching on strings using regular expressions. All accept patterns in standard regex syntax and return `Result` types to safely handle invalid patterns.
 

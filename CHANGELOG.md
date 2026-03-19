@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.91] - 2026-03-19
+
+### Added
+- **Array operations** ([#133](https://github.com/aallan/vera/issues/133)) — four new built-in array functions: `array_slice` (WASM intrinsic with index clamping), `array_map` (generic, element type can change), `array_filter` (predicate-based selection), and `array_fold` (left fold with arbitrary accumulator type). Higher-order operations implemented via prelude source injection with recursive helpers. 15 unit tests. Closes #133.
+
+### Fixed
+- **De Bruijn reindexing during monomorphization** ([#316](https://github.com/aallan/vera/issues/316)) — when distinct type variables collapse to the same concrete type, slot reference indices are now correctly adjusted
+- **Transitive monomorphization** ([#317](https://github.com/aallan/vera/issues/317)) — generic functions calling other generic functions now correctly generate all required specializations via worklist-based closure
+- **WASM type inference gaps** ([#313](https://github.com/aallan/vera/issues/313), [#314](https://github.com/aallan/vera/issues/314), [#315](https://github.com/aallan/vera/issues/315), [#318](https://github.com/aallan/vera/issues/318)) — `_is_pair_type_name` now matches bare `Array`, `_infer_vera_type` handles `IndexExpr` and `IfExpr`, `_infer_fncall_vera_type` handles `apply_fn`, `_get_arg_type_info` handles `ArrayLit` and `FnCall`
+
 ## [0.0.90] - 2026-03-13
 
 ### Added
@@ -1363,7 +1373,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.90...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.91...HEAD
+[0.0.91]: https://github.com/aallan/vera/compare/v0.0.90...v0.0.91
 [0.0.90]: https://github.com/aallan/vera/compare/v0.0.89...v0.0.90
 [0.0.89]: https://github.com/aallan/vera/compare/v0.0.88...v0.0.89
 [0.0.88]: https://github.com/aallan/vera/compare/v0.0.87...v0.0.88

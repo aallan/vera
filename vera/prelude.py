@@ -34,6 +34,114 @@ _RESULT_TYPE_ALIASES = """\
 type ResultMapFn<A, B> = fn(A -> B) effects(pure);
 """
 
+_ARRAY_TYPE_ALIASES = """\
+type ArrayMapFn<A, B> = fn(A -> B) effects(pure);
+type ArrayFilterFn<T> = fn(T -> Bool) effects(pure);
+type ArrayFoldFn<T, U> = fn(U, T -> U) effects(pure);
+"""
+
+# Array higher-order operations.
+# These use recursive helpers with an index parameter to walk the array.
+# De Bruijn slot references are commented for clarity.
+_ARRAY_COMBINATORS = """\
+private forall<A, B> fn array_map_go(@Array<A>, @ArrayMapFn<A, B>, @Int, @Array<B> -> @Array<B>)
+  requires(true)
+  ensures(true)
+  decreases(array_length(@Array<A>.0) - @Int.0)
+  effects(pure)
+{
+  -- @Array<B>.0 = acc (most recent), @Int.0 = index,
+  -- @ArrayMapFn<A, B>.0 = fn, @Array<A>.0 = input
+  if @Int.0 >= array_length(@Array<A>.0) then {
+    @Array<B>.0
+  } else {
+    array_map_go(
+      @Array<A>.0,
+      @ArrayMapFn<A, B>.0,
+      @Int.0 + 1,
+      array_append(@Array<B>.0, apply_fn(@ArrayMapFn<A, B>.0, @Array<A>.0[@Int.0]))
+    )
+  }
+}
+
+private forall<A, B> fn array_map(@Array<A>, @ArrayMapFn<A, B> -> @Array<B>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- @ArrayMapFn<A, B>.0 = fn (most recent), @Array<A>.0 = input
+  array_map_go(@Array<A>.0, @ArrayMapFn<A, B>.0, 0, [])
+}
+
+private forall<T> fn array_filter_go(@Array<T>, @ArrayFilterFn<T>, @Int, @Array<T> -> @Array<T>)
+  requires(true)
+  ensures(true)
+  decreases(array_length(@Array<T>.1) - @Int.0)
+  effects(pure)
+{
+  -- @Array<T>.0 = acc (most recent), @Int.0 = index,
+  -- @ArrayFilterFn<T>.0 = predicate, @Array<T>.1 = input
+  if @Int.0 >= array_length(@Array<T>.1) then {
+    @Array<T>.0
+  } else {
+    if apply_fn(@ArrayFilterFn<T>.0, @Array<T>.1[@Int.0]) then {
+      array_filter_go(
+        @Array<T>.1,
+        @ArrayFilterFn<T>.0,
+        @Int.0 + 1,
+        array_append(@Array<T>.0, @Array<T>.1[@Int.0])
+      )
+    } else {
+      array_filter_go(
+        @Array<T>.1,
+        @ArrayFilterFn<T>.0,
+        @Int.0 + 1,
+        @Array<T>.0
+      )
+    }
+  }
+}
+
+private forall<T> fn array_filter(@Array<T>, @ArrayFilterFn<T> -> @Array<T>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- @ArrayFilterFn<T>.0 = predicate (most recent), @Array<T>.0 = input
+  array_filter_go(@Array<T>.0, @ArrayFilterFn<T>.0, 0, [])
+}
+
+private forall<T, U> fn array_fold_go(@Array<T>, @U, @ArrayFoldFn<T, U>, @Int -> @U)
+  requires(true)
+  ensures(true)
+  decreases(array_length(@Array<T>.0) - @Int.0)
+  effects(pure)
+{
+  -- @Int.0 = index (most recent), @ArrayFoldFn<T, U>.0 = fn,
+  -- @U.0 = accumulator, @Array<T>.0 = input
+  if @Int.0 >= array_length(@Array<T>.0) then {
+    @U.0
+  } else {
+    array_fold_go(
+      @Array<T>.0,
+      apply_fn(@ArrayFoldFn<T, U>.0, @U.0, @Array<T>.0[@Int.0]),
+      @ArrayFoldFn<T, U>.0,
+      @Int.0 + 1
+    )
+  }
+}
+
+private forall<T, U> fn array_fold(@Array<T>, @U, @ArrayFoldFn<T, U> -> @U)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- @ArrayFoldFn<T, U>.0 = fn (most recent), @U.0 = init,
+  -- @Array<T>.0 = input
+  array_fold_go(@Array<T>.0, @U.0, @ArrayFoldFn<T, U>.0, 0)
+}
+"""
+
 _OPTION_COMBINATORS = """\
 private forall<T> fn option_unwrap_or(@Option<T>, @T -> @T)
   requires(true)
@@ -152,19 +260,19 @@ def _parse_source(source: str) -> ast.Program:
 # =====================================================================
 
 def inject_prelude(program: ast.Program) -> None:
-    """Inject Option/Result combinator declarations into a program.
+    """Inject combinator and array operation declarations into a program.
 
     Mutates ``program.declarations`` by prepending combinator
     function declarations and their type aliases.  Only injects
     combinators whose ADT prerequisites are met and whose names
     don't collide with user definitions.
+
+    Array operations (array_map, array_filter, array_fold) are
+    always injected (they have no ADT prerequisites).
     """
     user_names = _user_defined_names(program)
     inject_option = _has_standard_option(program)
     inject_result = _has_standard_result(program)
-
-    if not inject_option and not inject_result:
-        return
 
     # Build source for what we need to inject
     source_parts: list[str] = []
@@ -173,6 +281,12 @@ def inject_prelude(program: ast.Program) -> None:
     option_alias_names = {"OptionMapFn", "OptionBindFn"}
     result_fn_names = {"result_unwrap_or", "result_map"}
     result_alias_names = {"ResultMapFn"}
+    array_fn_names = {
+        "array_map", "array_map_go",
+        "array_filter", "array_filter_go",
+        "array_fold", "array_fold_go",
+    }
+    array_alias_names = {"ArrayMapFn", "ArrayFilterFn", "ArrayFoldFn"}
 
     if inject_option and not option_fn_names.issubset(user_names):
         # Check which aliases are needed (only if closure fns are not shadowed)
@@ -188,6 +302,12 @@ def inject_prelude(program: ast.Program) -> None:
         if need_aliases and not result_alias_names.issubset(user_names):
             source_parts.append(_RESULT_TYPE_ALIASES)
         source_parts.append(_RESULT_COMBINATORS)
+
+    # Array operations — always inject (no ADT prerequisites)
+    if not array_fn_names.issubset(user_names):
+        if not array_alias_names.issubset(user_names):
+            source_parts.append(_ARRAY_TYPE_ALIASES)
+        source_parts.append(_ARRAY_COMBINATORS)
 
     if not source_parts:
         return

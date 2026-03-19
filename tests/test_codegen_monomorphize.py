@@ -694,3 +694,204 @@ public fn main(-> @Int)
         assert any(d.error_code == "E613" for d in errors), (
             f"Expected E613, got: {[d.error_code for d in errors]}"
         )
+
+
+# =====================================================================
+# Array operations: array_slice, array_map, array_filter, array_fold
+# =====================================================================
+
+
+class TestArrayOperations:
+    """Tests for array_slice, array_map, array_filter, and array_fold."""
+
+    # ----------------------------------------------------------------
+    # array_slice
+    # ----------------------------------------------------------------
+
+    def test_array_slice_basic(self) -> None:
+        """Slice [10,20,30,40,50] from index 1 to 4, expect length 3."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_slice([10, 20, 30, 40, 50], 1, 4))
+}
+"""
+        assert _run(source, fn="main") == 3
+
+    def test_array_slice_empty(self) -> None:
+        """Slice with start >= end returns empty array."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_slice([1, 2, 3], 2, 2))
+}
+"""
+        assert _run(source, fn="main") == 0
+
+    def test_array_slice_clamped(self) -> None:
+        """Out-of-range indices are clamped to array bounds."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_slice([1, 2, 3], 0, 100))
+}
+"""
+        assert _run(source, fn="main") == 3
+
+    # ----------------------------------------------------------------
+    # array_map
+    # ----------------------------------------------------------------
+
+    def test_array_map_int(self) -> None:
+        """Map *10 over [1,2,3], check first element is 10."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_map([1, 2, 3], fn(@Int -> @Int) effects(pure) { @Int.0 * 10 });
+  @Array<Int>.0[0]
+}
+"""
+        assert _run(source, fn="main") == 10
+
+    def test_array_map_identity(self) -> None:
+        """Map identity function, result matches input length."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_map([5, 10, 15], fn(@Int -> @Int) effects(pure) { @Int.0 });
+  @Array<Int>.0[1]
+}
+"""
+        assert _run(source, fn="main") == 10
+
+    # ----------------------------------------------------------------
+    # array_filter
+    # ----------------------------------------------------------------
+
+    def test_array_filter_basic(self) -> None:
+        """Filter [1,2,3,4,5,6] where > 3, expect length 3."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_filter([1, 2, 3, 4, 5, 6], fn(@Int -> @Bool) effects(pure) { @Int.0 > 3 }))
+}
+"""
+        assert _run(source, fn="main") == 3
+
+    def test_array_filter_none(self) -> None:
+        """Filter where always false returns empty array."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_filter([1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 100 }))
+}
+"""
+        assert _run(source, fn="main") == 0
+
+    def test_array_filter_all(self) -> None:
+        """Filter where always true returns same length."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_filter([1, 2, 3, 4], fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 }))
+}
+"""
+        assert _run(source, fn="main") == 4
+
+    # ----------------------------------------------------------------
+    # array_fold
+    # ----------------------------------------------------------------
+
+    def test_array_fold_sum(self) -> None:
+        """Fold + over [1,2,3,4] with init 0, expect 10."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold([1, 2, 3, 4], 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 })
+}
+"""
+        assert _run(source, fn="main") == 10
+
+    def test_array_fold_product(self) -> None:
+        """Fold * over [1,2,3,4] with init 1, expect 24."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold([1, 2, 3, 4], 1, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 * @Int.0 })
+}
+"""
+        assert _run(source, fn="main") == 24
+
+    # ----------------------------------------------------------------
+    # Chained operations
+    # ----------------------------------------------------------------
+
+    def test_array_map_filter_chain(self) -> None:
+        """Map *2 then filter > 5: [1,2,3,4,5] -> [2,4,6,8,10] -> [6,8,10]."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_map([1, 2, 3, 4, 5], fn(@Int -> @Int) effects(pure) { @Int.0 * 2 });
+  array_length(array_filter(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { @Int.0 > 5 }))
+}
+"""
+        assert _run(source, fn="main") == 3
+
+    # ----------------------------------------------------------------
+    # Type-check tests (compile without errors)
+    # ----------------------------------------------------------------
+
+    def test_array_slice_type_check(self) -> None:
+        """array_slice type-checks successfully."""
+        source = """\
+public fn main(-> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  array_slice([1, 2, 3], 0, 2)
+}
+"""
+        _compile_ok(source)
+
+    def test_array_map_type_check(self) -> None:
+        """array_map type-checks successfully."""
+        source = """\
+public fn main(-> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  array_map([1, 2, 3], fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
+}
+"""
+        _compile_ok(source)
+
+    def test_array_filter_type_check(self) -> None:
+        """array_filter type-checks successfully."""
+        source = """\
+public fn main(-> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  array_filter([1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 1 })
+}
+"""
+        _compile_ok(source)
+
+    def test_array_fold_type_check(self) -> None:
+        """array_fold type-checks successfully."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold([1, 2, 3], 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 })
+}
+"""
+        _compile_ok(source)

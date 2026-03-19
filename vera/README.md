@@ -613,11 +613,17 @@ Methods in `transform.py` are named after grammar rules and receive already-tran
 
 The type system includes open effect rows (`row_var` field in `ConcreteEffectRow`) for row polymorphism (`forall<E> fn(...) effects(<E>)`). Effect checking enforces subeffecting (Spec Section 7.8): `effects(pure) <: effects(<IO>) <: effects(<IO, State<Int>>)`. A function can only be called from a context whose effect row contains all of the callee's effects (`is_effect_subtype` in `types.py`, call-site check in `checker/calls.py`, error code E125). Handlers discharge their declared effect by temporarily adding it to the context. Row variable unification for `forall<E>` polymorphism is permissive pending bidirectional type checking (#55).
 
-### 7. LLM-oriented diagnostics
+### 7. De Bruijn indices and monomorphization
+
+De Bruijn slot references and generic monomorphization interact non-trivially. When distinct type variables collapse to the same concrete type (e.g. `A→Int, B→Int`), formerly separate slot namespaces (`@Array<A>` and `@Array<B>`) merge into one (`@Array<Int>`), and De Bruijn indices must be recomputed. The `_build_reindex_map` method in `monomorphize.py` detects these collisions during substitution and adjusts indices so that `@Array<A>.0` (the only `Array<A>` binding) correctly becomes `@Array<Int>.1` (the second `Array<Int>` binding). Without this, the monomorphized function silently reads the wrong parameter values — a correctness bug that compiles and runs but produces wrong results.
+
+The WASM type inference system (`inference.py`) must also handle all expression types that can appear as arguments to builtins. Missing cases (e.g. `IndexExpr`, `IfExpr`, `apply_fn` calls) return `None`, which cascades to E602 (unsupported expressions) or incorrect type inference. When adding new builtins or inference paths, check `_infer_vera_type`, `_infer_fncall_vera_type`, and `_infer_expr_wasm_type` for completeness.
+
+### 8. LLM-oriented diagnostics
 
 Every diagnostic includes a description (what went wrong), rationale (which language rule), fix (corrected code), spec reference, and a stable error code (`E001`–`E610`). The compiler's output is designed to be fed directly back to the model as corrective context. See spec Chapter 0, Section 0.5 "Diagnostics as Instructions" for the philosophy.
 
-### 8. Stable error code taxonomy
+### 9. Stable error code taxonomy
 
 Every diagnostic has a unique code grouped by compiler phase:
 

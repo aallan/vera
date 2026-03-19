@@ -73,15 +73,41 @@ class MonomorphizationMixin:
                     decl.body, generic_decls, ctor_to_adt, instances,
                 )
 
-        # Generate monomorphized FnDecls
+        # Generate monomorphized FnDecls with transitive closure.
+        # After generating the first round, scan the monomorphized bodies
+        # for further generic calls and generate those too.  This handles
+        # cases like array_map calling array_map_go (both generic).
+        seen: set[tuple[str, tuple[str, ...]]] = set()
         mono_decls: list[ast.FnDecl] = []
-        for fn_name, type_arg_set in instances.items():
-            for concrete_types in type_arg_set:
-                decl = generic_decls[fn_name]
-                if not self._check_constraints(decl, concrete_types):
-                    continue  # constraint violation — error emitted
-                mono = self._monomorphize_fn(decl, concrete_types)
-                mono_decls.append(mono)
+        worklist: list[tuple[str, tuple[str, ...]]] = [
+            (fn_name, ct)
+            for fn_name, type_arg_set in instances.items()
+            for ct in type_arg_set
+        ]
+        while worklist:
+            fn_name, concrete_types = worklist.pop()
+            key = (fn_name, concrete_types)
+            if key in seen:
+                continue
+            seen.add(key)
+            if fn_name not in generic_decls:
+                continue
+            decl = generic_decls[fn_name]
+            if not self._check_constraints(decl, concrete_types):
+                continue  # constraint violation — error emitted
+            mono = self._monomorphize_fn(decl, concrete_types)
+            mono_decls.append(mono)
+            # Scan the monomorphized body for further generic calls
+            transitive: dict[str, set[tuple[str, ...]]] = {
+                name: set() for name in generic_decls
+            }
+            self._collect_calls_in_expr(
+                mono.body, generic_decls, ctor_to_adt, transitive,
+            )
+            for t_name, t_types in transitive.items():
+                for t_ct in t_types:
+                    if (t_name, t_ct) not in seen:
+                        worklist.append((t_name, t_ct))
 
         # Store generic fn info for call rewriting in wasm.py
         self._generic_fn_info: dict[
@@ -371,6 +397,23 @@ class MonomorphizationMixin:
                     else:
                         return None
                 return (adt_name, tuple(arg_types))
+        if isinstance(expr, ast.ArrayLit):
+            # Infer element type from first element
+            if expr.elements:
+                elem_type = self._infer_vera_type_name(
+                    expr.elements[0], ctor_to_adt,
+                )
+                if elem_type:
+                    return ("Array", (elem_type,))
+            return ("Array", ())
+        if isinstance(expr, ast.FnCall):
+            # Infer from known return types (e.g. array_range → Array<Int>)
+            if expr.name == "array_range":
+                return ("Array", ("Int",))
+            if expr.name in ("array_concat", "array_append",
+                             "array_slice", "array_filter"):
+                if expr.args:
+                    return self._get_arg_type_info(expr.args[0], ctor_to_adt)
         return None
 
     def _infer_fn_alias_type_args(
@@ -478,13 +521,22 @@ class MonomorphizationMixin:
 
         Replaces type variables with concrete types throughout the AST
         and mangles the function name.
+
+        When distinct type variables map to the same concrete type
+        (e.g. A→Int, B→Int), De Bruijn indices in slot references
+        must be adjusted because formerly separate namespaces merge.
         """
         assert decl.forall_vars is not None
         mapping = dict(zip(decl.forall_vars, concrete_types))
         mangled = self._mangle_fn_name(decl.name, concrete_types)
 
+        # Build slot reindex map for De Bruijn index adjustment.
+        # Compute each parameter's slot name before and after substitution,
+        # then build a mapping from (old_slot_name, old_index) to new_index.
+        reindex = self._build_reindex_map(decl.params, mapping)
+
         # Substitute type variables in the entire FnDecl
-        substituted = self._substitute_in_ast(decl, mapping)
+        substituted = self._substitute_in_ast(decl, mapping, reindex)
         assert isinstance(substituted, ast.FnDecl)
 
         # Override name and clear forall_vars/constraints
@@ -493,14 +545,106 @@ class MonomorphizationMixin:
             forall_vars=None, forall_constraints=None,
         )
 
+    @staticmethod
+    def _slot_name_for_param(param_te: ast.TypeExpr,
+                             mapping: dict[str, str] | None = None,
+                             ) -> str:
+        """Compute the slot name for a parameter TypeExpr.
+
+        Optionally substitutes type variables via mapping first.
+        """
+        if isinstance(param_te, ast.RefinementType):
+            param_te = param_te.base_type
+        if not isinstance(param_te, ast.NamedType):
+            return ""
+        name = param_te.name
+        if mapping:
+            name = mapping.get(name, name)
+        if not param_te.type_args:
+            return name
+        arg_names = []
+        for ta in param_te.type_args:
+            if isinstance(ta, ast.NamedType):
+                an = ta.name
+                if mapping:
+                    an = mapping.get(an, an)
+                arg_names.append(an)
+            else:
+                return name
+        return f"{name}<{', '.join(arg_names)}>"
+
+    def _build_reindex_map(
+        self,
+        params: tuple[ast.TypeExpr, ...],
+        mapping: dict[str, str],
+    ) -> dict[tuple[str, int], int]:
+        """Build De Bruijn reindex map for monomorphization.
+
+        When type variables A and B both map to Int, parameters with
+        slot name Array<A> and Array<B> both become Array<Int>.
+        Their De Bruijn indices must be adjusted accordingly.
+
+        Returns: {(old_slot_name, old_index): new_index}
+        """
+        # Compute old and new slot names for each parameter
+        old_names = [self._slot_name_for_param(p) for p in params]
+        new_names = [self._slot_name_for_param(p, mapping) for p in params]
+
+        # Check if any reindexing is needed
+        if old_names == new_names:
+            return {}
+
+        # For each old slot name, compute the De Bruijn index mapping.
+        # De Bruijn: index 0 = most recent (last parameter) with that name.
+        reindex: dict[tuple[str, int], int] = {}
+
+        # Group parameters by old slot name (in order)
+        old_groups: dict[str, list[int]] = {}
+        for i, name in enumerate(old_names):
+            if name:
+                old_groups.setdefault(name, []).append(i)
+
+        # Group parameters by new slot name (in order)
+        new_groups: dict[str, list[int]] = {}
+        for i, name in enumerate(new_names):
+            if name:
+                new_groups.setdefault(name, []).append(i)
+
+        for old_slot_name, param_indices in old_groups.items():
+            # New slot name for these parameters
+            new_slot_name = new_names[param_indices[0]]
+            if old_slot_name == new_slot_name:
+                # No name change, no reindexing needed
+                continue
+
+            # For each parameter in the old group, find its new De Bruijn index
+            new_group = new_groups.get(new_slot_name, [])
+            for old_db_index, param_idx in enumerate(reversed(param_indices)):
+                # old_db_index: De Bruijn index in the old namespace
+                # param_idx: position in the parameter list
+                # Find param_idx's position in the new group
+                if param_idx in new_group:
+                    new_pos_in_group = new_group.index(param_idx)
+                    # De Bruijn: reversed — last in group = index 0
+                    new_db_index = len(new_group) - 1 - new_pos_in_group
+                    if old_db_index != new_db_index:
+                        reindex[(old_slot_name, old_db_index)] = new_db_index
+
+        return reindex
+
     def _substitute_in_ast(
         self, node: ast.Node, mapping: dict[str, str],
+        reindex: dict[tuple[str, int], int] | None = None,
     ) -> ast.Node:
         """Recursively substitute type variable names in an AST subtree.
 
         Handles NamedType (type expressions) and SlotRef (slot references)
         as special cases; all other nodes are walked generically via
         dataclass fields.
+
+        When reindex is provided, De Bruijn indices on SlotRef nodes are
+        adjusted to account for namespace collisions (e.g. A→Int, B→Int
+        causing Array<A> and Array<B> to merge into Array<Int>).
         """
         # Special case: NamedType — substitute type variable names
         if isinstance(node, ast.NamedType):
@@ -515,8 +659,20 @@ class MonomorphizationMixin:
                 return replace(node, name=new_name, type_args=new_args)
             return node
 
-        # Special case: SlotRef — substitute type_name and type_args
+        # Special case: SlotRef — substitute type_name and type_args,
+        # and adjust De Bruijn index if namespace collision occurred.
         if isinstance(node, ast.SlotRef):
+            # Compute old slot name for reindexing lookup
+            old_slot_name = node.type_name
+            if node.type_args:
+                ta_names = []
+                for ta in node.type_args:
+                    if isinstance(ta, ast.NamedType):
+                        ta_names.append(ta.name)
+                old_slot_name = (f"{node.type_name}"
+                                 f"<{', '.join(ta_names)}>"
+                                 if ta_names else node.type_name)
+
             new_type_name = mapping.get(node.type_name, node.type_name)
             new_slot_args: tuple[ast.TypeExpr, ...] | None = node.type_args
             if node.type_args:
@@ -524,10 +680,21 @@ class MonomorphizationMixin:
                     self._substitute_type_expr(ta, mapping)
                     for ta in node.type_args
                 )
+
+            # Adjust De Bruijn index if needed
+            new_index = node.index
+            if reindex:
+                key = (old_slot_name, node.index)
+                if key in reindex:
+                    new_index = reindex[key]
+
             if (new_type_name != node.type_name
-                    or new_slot_args is not node.type_args):
+                    or new_slot_args is not node.type_args
+                    or new_index != node.index):
                 return replace(
-                    node, type_name=new_type_name, type_args=new_slot_args,
+                    node, type_name=new_type_name,
+                    type_args=new_slot_args,
+                    index=new_index,
                 )
             return node
 
@@ -553,7 +720,7 @@ class MonomorphizationMixin:
             if f.name == "span":
                 continue
             val = getattr(node, f.name)
-            new_val = self._substitute_value(val, mapping)
+            new_val = self._substitute_value(val, mapping, reindex)
             if new_val is not val:
                 changes[f.name] = new_val
 
@@ -563,13 +730,14 @@ class MonomorphizationMixin:
 
     def _substitute_value(
         self, val: Any, mapping: dict[str, str],
+        reindex: dict[tuple[str, int], int] | None = None,
     ) -> Any:
         """Recursively substitute type variables in a field value."""
         if isinstance(val, ast.Node):
-            return self._substitute_in_ast(val, mapping)
+            return self._substitute_in_ast(val, mapping, reindex)
         if isinstance(val, tuple):
             new_items = tuple(
-                self._substitute_value(v, mapping) for v in val
+                self._substitute_value(v, mapping, reindex) for v in val
             )
             if any(n is not o for n, o in zip(new_items, val)):
                 return new_items
