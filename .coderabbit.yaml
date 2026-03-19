@@ -64,9 +64,6 @@ reviews:
     # Vera source files — CodeRabbit cannot parse these
     - "!**/*.vera"
 
-    # Language specification — technical prose with mathematical notation
-    - "!spec/**"
-
     # Website / static assets
     - "!docs/**"
 
@@ -153,6 +150,14 @@ reviews:
         path_filters. If any Python support files appear here, review
         them lightly — they exist to demonstrate usage, not to be
         production code.
+
+    - path: "spec/**/*.md"
+      instructions: |
+        Language specification. Review for factual accuracy and broken
+        code examples. Do NOT review for prose style, grammar, or
+        formatting — the spec uses precise technical language with
+        mathematical notation that is intentional. Vera code blocks
+        are validated by scripts/check_spec_examples.py in CI.
 
     - path: "**/*.md"
       instructions: |
