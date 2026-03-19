@@ -27,12 +27,14 @@ knowledge_base:
 
 chat:
   auto_reply: true
+  art: false
 
 reviews:
   profile: "assertive"
   high_level_summary: true
   high_level_summary_placeholder: "@coderabbitai summary"
   poem: false
+  in_progress_fortune: false
   collapse_walkthrough: true
   sequence_diagrams: true
   assess_linked_issues: true
