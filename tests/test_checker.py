@@ -3163,6 +3163,94 @@ private fn f(@Float64 -> @Float64)
 
 
 # =====================================================================
+# Removed legacy names (must fail after #288 naming audit)
+# =====================================================================
+
+
+class TestRemovedLegacyNames:
+    """Assert that pre-#288 function names are no longer resolvable."""
+
+    @pytest.mark.parametrize("src, match", [
+        ("""
+private fn f(@Int -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ to_float(@Int.0) }
+""", "Unresolved"),
+        ("""
+private fn f(@Float64 -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ is_nan(@Float64.0) }
+""", "Unresolved"),
+        ("""
+private fn f(@Float64 -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ is_infinite(@Float64.0) }
+""", "Unresolved"),
+        ("""
+private fn f(@String, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ starts_with(@String.0, @String.1) }
+""", "Unresolved"),
+        ("""
+private fn f(@String, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ ends_with(@String.0, @String.1) }
+""", "Unresolved"),
+        ("""
+private fn f(@String, @String -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ contains(@String.0, @String.1) }
+""", "Unresolved"),
+        ("""
+private fn f(@String, @String -> @Option<Nat>)
+  requires(true) ensures(true) effects(pure)
+{ index_of(@String.0, @String.1) }
+""", "Unresolved"),
+        ("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ strip(@String.0) }
+""", "Unresolved"),
+        ("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ upper(@String.0) }
+""", "Unresolved"),
+        ("""
+private fn f(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ lower(@String.0) }
+""", "Unresolved"),
+        ("""
+private fn f(@String, @String, @String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ replace(@String.0, @String.1, @String.2) }
+""", "Unresolved"),
+        ("""
+private fn f(@String, @String -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+{ split(@String.0, @String.1) }
+""", "Unresolved"),
+        ("""
+private fn f(@Array<String>, @String -> @String)
+  requires(true) ensures(true) effects(pure)
+{ join(@Array<String>.0, @String.0) }
+""", "Unresolved"),
+        ("""
+private fn f(@String, @Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ char_code(@String.0, @Int.0) }
+""", "Unresolved"),
+    ])
+    def test_removed_builtin_names_fail(self, src: str, match: str) -> None:
+        """Pre-#288 names must not resolve after the naming audit."""
+        warns = _warnings(src)
+        assert any(match.lower() in w.description.lower() for w in warns), \
+            f"Expected warning matching '{match}', got: " \
+            f"{[w.description for w in warns]}"
+
+
+# =====================================================================
 # String search and transformation builtins
 # =====================================================================
 
