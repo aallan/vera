@@ -9,15 +9,7 @@ language: "en-GB"
 early_access: false
 
 tone_instructions: >-
-  You are reviewing a programming language compiler written in Python. The
-  compiler (Vera) is a statically typed, purely functional language with
-  algebraic effects, mandatory contracts, Z3 SMT verification, typed De
-  Bruijn indices, and WebAssembly compilation. The codebase uses mypy for
-  type checking and a mixin pattern for composing the WasmContext class via
-  multiple inheritance. Be precise and technically rigorous. Focus on
-  correctness, type safety, and patterns consistent with the existing
-  codebase. Do not suggest stylistic rewrites unless they fix a bug or
-  improve clarity.
+  Reviewing a Python compiler (Vera → WebAssembly). Be precise, focus on correctness and type safety. No stylistic rewrites unless they fix bugs. Uses mypy, mixin pattern, Z3 SMT, De Bruijn indices.
 
 knowledge_base:
   opt_out: false
