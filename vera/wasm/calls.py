@@ -170,6 +170,10 @@ class CallsMixin:
                 return self._translate_array_concat(
                     call.args[0], call.args[1], env,
                 )
+            if call.name == "array_slice" and len(call.args) == 3:
+                return self._translate_array_slice(
+                    call.args[0], call.args[1], call.args[2], env,
+                )
             # Numeric math builtins
             if call.name == "abs" and len(call.args) == 1:
                 return self._translate_abs(call.args[0], env)
@@ -819,6 +823,167 @@ class CallsMixin:
         instructions.append("end")
         return instructions
 
+    def _translate_array_slice(
+        self,
+        arr_arg: ast.Expr,
+        start_arg: ast.Expr,
+        end_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate array_slice(array, start, end) → Array<T>.
+
+        Returns a new array containing elements from index start (inclusive)
+        to end (exclusive).  Clamps indices to [0, len] so out-of-range
+        values produce shorter slices rather than traps.
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        start_instrs = self.translate_expr(start_arg, env)
+        end_instrs = self.translate_expr(end_arg, env)
+        if arr_instrs is None or start_instrs is None or end_instrs is None:
+            return None
+
+        elem_type = self._infer_concat_elem_type(arr_arg)
+        if elem_type is None:
+            # Only safe for provably empty arrays; otherwise bail
+            if isinstance(arr_arg, ast.ArrayLit) and not arr_arg.elements:
+                elem_size = 8
+            else:
+                return None
+        else:
+            size = _element_mem_size(elem_type)
+            if size is None:
+                return None
+            elem_size = size
+
+        self.needs_alloc = True
+
+        ptr = self.alloc_local("i32")
+        arr_len = self.alloc_local("i32")
+        s = self.alloc_local("i32")
+        e = self.alloc_local("i32")
+        slice_len = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        total_bytes = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+
+        instructions: list[str] = []
+
+        # Evaluate array → (ptr, len)
+        instructions.extend(arr_instrs)
+        instructions.append(f"local.set {arr_len}")
+        instructions.append(f"local.set {ptr}")
+
+        # Evaluate start → i64, wrap to i32
+        instructions.extend(start_instrs)
+        instructions.append("i32.wrap_i64")
+        instructions.append(f"local.set {s}")
+
+        # Evaluate end → i64, wrap to i32
+        instructions.extend(end_instrs)
+        instructions.append("i32.wrap_i64")
+        instructions.append(f"local.set {e}")
+
+        # Clamp start: s = max(0, min(s, arr_len))
+        instructions.append(f"local.get {s}")
+        instructions.append("i32.const 0")
+        instructions.append("i32.lt_s")
+        instructions.append("if (result i32)")
+        instructions.append("  i32.const 0")
+        instructions.append("else")
+        instructions.append(f"  local.get {s}")
+        instructions.append(f"  local.get {arr_len}")
+        instructions.append("  i32.gt_s")
+        instructions.append("  if (result i32)")
+        instructions.append(f"    local.get {arr_len}")
+        instructions.append("  else")
+        instructions.append(f"    local.get {s}")
+        instructions.append("  end")
+        instructions.append("end")
+        instructions.append(f"local.set {s}")
+
+        # Clamp end: e = max(s, min(e, arr_len))
+        instructions.append(f"local.get {e}")
+        instructions.append(f"local.get {arr_len}")
+        instructions.append("i32.gt_s")
+        instructions.append("if (result i32)")
+        instructions.append(f"  local.get {arr_len}")
+        instructions.append("else")
+        instructions.append(f"  local.get {e}")
+        instructions.append("end")
+        instructions.append(f"local.set {e}")
+        # Ensure e >= s
+        instructions.append(f"local.get {e}")
+        instructions.append(f"local.get {s}")
+        instructions.append("i32.lt_s")
+        instructions.append("if")
+        instructions.append(f"  local.get {s}")
+        instructions.append(f"  local.set {e}")
+        instructions.append("end")
+
+        # slice_len = e - s
+        instructions.append(f"local.get {e}")
+        instructions.append(f"local.get {s}")
+        instructions.append("i32.sub")
+        instructions.append(f"local.set {slice_len}")
+
+        # Empty check
+        instructions.append(f"local.get {slice_len}")
+        instructions.append("i32.eqz")
+        instructions.append("if (result i32 i32)")
+        instructions.append("  i32.const 0")
+        instructions.append("  i32.const 0")
+        instructions.append("else")
+
+        # total_bytes = slice_len * elem_size
+        instructions.append(f"  local.get {slice_len}")
+        instructions.append(f"  i32.const {elem_size}")
+        instructions.append("  i32.mul")
+        instructions.append(f"  local.set {total_bytes}")
+
+        # Allocate
+        instructions.append(f"  local.get {total_bytes}")
+        instructions.append("  call $alloc")
+        instructions.append(f"  local.set {dst}")
+        instructions.extend(f"  {line}" for line in gc_shadow_push(dst))
+
+        # Copy bytes: dst[i] = src[s * elem_size + i] for i in [0, total_bytes)
+        instructions.append("  i32.const 0")
+        instructions.append(f"  local.set {idx}")
+        instructions.append("  block $brk")
+        instructions.append("    loop $lp")
+        instructions.append(f"      local.get {idx}")
+        instructions.append(f"      local.get {total_bytes}")
+        instructions.append("      i32.ge_u")
+        instructions.append("      br_if $brk")
+        # dst[idx]
+        instructions.append(f"      local.get {dst}")
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.add")
+        # src[s * elem_size + idx]
+        instructions.append(f"      local.get {ptr}")
+        instructions.append(f"      local.get {s}")
+        instructions.append(f"      i32.const {elem_size}")
+        instructions.append("      i32.mul")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.add")
+        instructions.append("      i32.load8_u offset=0")
+        instructions.append("      i32.store8 offset=0")
+        # idx++
+        instructions.append(f"      local.get {idx}")
+        instructions.append("      i32.const 1")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.set {idx}")
+        instructions.append("      br $lp")
+        instructions.append("    end")
+        instructions.append("  end")
+
+        # Push result: (dst, slice_len)
+        instructions.append(f"  local.get {dst}")
+        instructions.append(f"  local.get {slice_len}")
+        instructions.append("end")
+        return instructions
+
     def _infer_concat_elem_type(self, expr: ast.Expr) -> str | None:
         """Infer the element type name from an array-typed expression."""
         if isinstance(expr, ast.SlotRef):
@@ -833,7 +998,10 @@ class CallsMixin:
         if isinstance(expr, ast.FnCall):
             if expr.name == "array_range":
                 return "Int"
-            if expr.name in ("array_concat", "array_append") and expr.args:
+            if expr.name in (
+                "array_concat", "array_append", "array_slice",
+                "array_filter",
+            ) and expr.args:
                 return self._infer_concat_elem_type(expr.args[0])
         return None
 

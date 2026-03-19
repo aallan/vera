@@ -195,7 +195,7 @@ class InferenceMixin:
         if expr.name == "array_length":
             return "i64"
         # array_range(start, end) → Array<Int> (i32_pair)
-        if expr.name == "array_range":
+        if expr.name in ("array_range", "array_slice"):
             return "i32_pair"
         # string_length(string) → Int (i64)
         if expr.name == "string_length":
@@ -389,6 +389,13 @@ class InferenceMixin:
             return "String"
         if isinstance(expr, ast.ArrayLit):
             return "Array"
+        if isinstance(expr, ast.IndexExpr):
+            elem = self._infer_index_element_type(expr)
+            return elem
+        if isinstance(expr, ast.IfExpr):
+            if expr.then_branch.expr is not None:
+                return self._infer_vera_type(expr.then_branch.expr)
+            return None
         return None
 
     def _infer_fncall_vera_type(self, call: ast.FnCall) -> str | None:
@@ -400,7 +407,7 @@ class InferenceMixin:
         """
         if call.name == "array_length":
             return "Int"
-        if call.name == "array_range":
+        if call.name in ("array_range", "array_slice"):
             return "Array"
         if call.name == "string_length":
             return "Int"
@@ -449,6 +456,29 @@ class InferenceMixin:
             "regex_replace",
         ):
             return "Result"
+        # apply_fn(closure, args...) — infer from closure's return type
+        if call.name == "apply_fn" and call.args:
+            closure_arg = call.args[0]
+            if isinstance(closure_arg, ast.SlotRef):
+                alias_te = self._type_aliases.get(closure_arg.type_name)
+                if isinstance(alias_te, ast.FnType):
+                    alias_params = self._type_alias_params.get(
+                        closure_arg.type_name)
+                    if (alias_params and closure_arg.type_args
+                            and len(alias_params)
+                            == len(closure_arg.type_args)):
+                        # Substitute type args into the return type
+                        alias_map = dict(zip(alias_params,
+                                             closure_arg.type_args))
+                        ret = alias_te.return_type
+                        if isinstance(ret, ast.NamedType):
+                            if ret.name in alias_map:
+                                ta = alias_map[ret.name]
+                                if isinstance(ta, ast.NamedType):
+                                    return ta.name
+                            return ret.name
+                    elif isinstance(alias_te.return_type, ast.NamedType):
+                        return alias_te.return_type.name
         # Ability operations: show → String, hash → Int
         if call.name == "show":
             return "String"
@@ -536,8 +566,12 @@ class InferenceMixin:
         """Check if a slot type name is a pair type (ptr, len).
 
         String and Array<T> are represented as two consecutive i32 locals.
+        Bare "Array" also matches — monomorphization may produce slot
+        references with type_name="Array" (no type args in the name).
         """
-        return type_name == "String" or type_name.startswith("Array<")
+        return (type_name == "String"
+                or type_name == "Array"
+                or type_name.startswith("Array<"))
 
     def _infer_array_element_type(self, expr: ast.ArrayLit) -> str | None:
         """Infer the Vera element type name from an array literal."""

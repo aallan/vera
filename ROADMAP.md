@@ -18,7 +18,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 ## Where we are
 
-**v0.0.90** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 68 built-in functions plus 5 Option/Result combinators, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 55-program conformance suite, a canonical formatter, and contract-driven testing. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
+**v0.0.91** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 72 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 55-program conformance suite, a canonical formatter, and contract-driven testing. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
 
 Most remaining features are gated by a single dependency chain:
 
@@ -32,12 +32,12 @@ Abilities are complete — `Eq`, `Ord`, `Hash`, `Show` are built-in with ADT aut
 Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave)
 ─────────────────           ──────────────────                ──────────────────
 ✓ #211 Combinators          ✓ #60 Abilities                    #289 Prelude
-#133 Array slice            #133 map/fold ─┐                   #226 Typed holes
-#288 Naming audit                #62 Map ←─┘─┐                #233 DateTime
-                                 #58 JSON ←──┘─┐              #235 Crypto
-                                 #57 HTTP ←────┘─┐            #59 Async ──┐
-                                 #305 Server ←───┘─┐     #237 WASI 0.3 ←─┘
-                                 #306 MCP ←────────┘     #229 DB (←─ #62, #58)
+✓ #133 Array ops            ✓ #133 map/fold ─┐                 #226 Typed holes
+#288 Naming audit                #62 Map ←───┘─┐              #233 DateTime
+                                 #58 JSON ←────┘─┐            #235 Crypto
+                                 #57 HTTP ←──────┘─┐          #59 Async ──┐
+                                 #305 Server ←─────┘─┐   #237 WASI 0.3 ←─┘
+                                 #306 MCP ←──────────┘   #229 DB (←─ #62, #58)
                                                          #311 HTML (←─ #58)
                                                               #61 Inference
 ```
@@ -47,7 +47,7 @@ Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave
 No blocking dependencies. Highest value-per-effort.
 
 - <del>[#211](https://github.com/aallan/vera/issues/211) **Option/Result combinators** — pure Vera functions, no compiler changes. Eliminates 5-line match blocks for every fallible operation. Fundamental enough for a standard prelude.</del> ([v0.0.89](https://github.com/aallan/vera/releases/tag/v0.0.89))
-- [#133](https://github.com/aallan/vera/issues/133) **Array `slice`** — the `slice` operation has no abilities dependency and can ship independently of `map`/`fold`/`filter`. Unblocks basic array manipulation.
+- <del>[#133](https://github.com/aallan/vera/issues/133) **Array operations** — `array_slice`, `array_map`, `array_filter`, `array_fold`. Includes six compiler bug fixes for monomorphization and WASM inference.</del> ([v0.0.91](https://github.com/aallan/vera/releases/tag/v0.0.91))
 - [#288](https://github.com/aallan/vera/issues/288) **Built-in function naming audit** — four naming patterns where there should be one or two. Must happen before new functions ship to establish the convention they follow. Breaking change — do it early.
 
 ### Tier 1 — Critical path
@@ -55,7 +55,7 @@ No blocking dependencies. Highest value-per-effort.
 The chain that unlocks agent-viable data processing. Each item depends on the previous.
 
 1. <del>[#60](https://github.com/aallan/vera/issues/60) **Abilities and type constraints** — highest-leverage foundation work. Every item below is transitively blocked by this.</del> ([v0.0.90](https://github.com/aallan/vera/releases/tag/v0.0.90))
-2. [#133](https://github.com/aallan/vera/issues/133) **Array `map`/`fold`/`filter`** (remainder) — requires abilities for generic iteration. The iteration verbosity tax — 12-line recursive loop vs 1-line `map`, multiplied across every data transformation — is the single biggest usability gap for agent workloads.
+2. <del>[#133](https://github.com/aallan/vera/issues/133) **Array `map`/`fold`/`filter`** — `array_slice`, `array_map`, `array_filter`, `array_fold` with full generic codegen support.</del> ([v0.0.91](https://github.com/aallan/vera/releases/tag/v0.0.91))
 3. [#62](https://github.com/aallan/vera/issues/62) **Map and Set collections** — requires abilities for key constraints (`Eq + Hash`). Unlocks structured data handling.
 4. [#58](https://github.com/aallan/vera/issues/58) **JSON type** — requires Map for `JObject`. Without JSON parsing and serialisation, Vera cannot participate in any API integration workflow.
 5. [#57](https://github.com/aallan/vera/issues/57) **HTTP effect** — requires JSON for request/response bodies. Completes the client chain: a Vera program can make an HTTP call, parse the JSON response, and return typed, verified data.

@@ -481,7 +481,14 @@ array_length(@Array<Int>.0)             -- returns Int (always >= 0)
 array_append(@Array<Int>.0, @Int.0)     -- returns Array<Int> (new array with element appended)
 array_range(@Int.0, @Int.1)             -- returns Array<Int> (integers [start, end))
 array_concat(@Array<Int>.0, @Array<Int>.1)  -- returns Array<Int> (merge two arrays)
+array_slice(@Array<Int>.0, @Int.0, @Int.1)  -- returns Array<Int> (elements [start, end))
+array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { ... })     -- returns Array<Int>
+array_filter(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { ... }) -- returns Array<Int>
+array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 }) -- returns Int
 ```
+
+`array_map` is generic: the element type can change (e.g. `array_map(@Array<Int>.0, fn(@Int -> @String) ...)`).
+`array_fold` is generic: the accumulator type can differ from the element type.
 
 ### String operations
 

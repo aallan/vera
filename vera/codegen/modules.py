@@ -237,6 +237,7 @@ class CrossModuleMixin:
         # Built-in names handled specially in _translate_call
         known.update({
             "array_length", "array_append", "array_range", "array_concat",
+            "array_slice",
             "apply_fn", "get", "put", "throw", "resume",
             "string_length", "string_concat", "string_slice",
             "char_code", "from_char_code", "string_repeat",
