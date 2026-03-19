@@ -80,8 +80,8 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 660): "FRAGMENT",  # round signature (no body)
     ("09-standard-library.md", 677): "FRAGMENT",  # sqrt signature (no body)
     ("09-standard-library.md", 694): "FRAGMENT",  # pow signature (no body)
-    # (byte_to_int moved to line 679, now in the type conversion group below)
-    ("09-standard-library.md", 853): "FRAGMENT",  # ends_with signature (no body)
+    ("09-standard-library.md", 853): "FRAGMENT",  # nan signature (no body)
+    ("09-standard-library.md", 1228): "FRAGMENT",  # similarity signature (no body)
     ("09-standard-library.md", 1182): "FRAGMENT",  # base64_decode signature (no body)
     ("09-standard-library.md", 1311): "FRAGMENT",  # regex_match signature (no body)
     ("09-standard-library.md", 1327): "FRAGMENT",  # regex_find signature (no body)
@@ -149,22 +149,18 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 715): "FRAGMENT",  # to_float signature (no body)
     ("09-standard-library.md", 730): "FRAGMENT",  # nat_to_int signature (no body)
     ("09-standard-library.md", 745): "FRAGMENT",  # byte_to_int signature (no body)
-    ("09-standard-library.md", 694): "FRAGMENT",  # float_to_int signature (no body)
     ("09-standard-library.md", 775): "FRAGMENT",  # int_to_nat signature (no body)
     ("09-standard-library.md", 793): "FRAGMENT",  # int_to_byte signature (no body)
 
     # Chapter 9 — Float64 predicates (signatures, no body)
     ("09-standard-library.md", 817): "FRAGMENT",  # is_nan signature (no body)
     ("09-standard-library.md", 834): "FRAGMENT",  # is_infinite signature (no body)
-    ("09-standard-library.md", 853): "FRAGMENT",  # nan signature (no body)
     # Chapter 9 — String search signatures (no body)
     ("09-standard-library.md", 889): "FRAGMENT",  # string_contains signature (no body)
     ("09-standard-library.md", 904): "FRAGMENT",  # starts_with signature (no body)
     ("09-standard-library.md", 868): "FRAGMENT",  # index_of signature (no body)
 
     # Chapter 9 — String transformation signatures (no body)
-    ("09-standard-library.md", 889): "FRAGMENT",  # to_upper signature (no body)
-    ("09-standard-library.md", 904): "FRAGMENT",  # to_lower signature (no body)
     ("09-standard-library.md", 919): "FRAGMENT",  # replace signature (no body)
     ("09-standard-library.md", 1001): "FRAGMENT",  # split signature (no body)
     ("09-standard-library.md", 1016): "FRAGMENT",  # join signature (no body)
@@ -181,14 +177,10 @@ ALLOWLIST: dict[tuple[str, int], str] = {
 
     # Chapter 9 — URL encoding builtin signatures (no body)
     ("09-standard-library.md", 1209): "FRAGMENT",  # url_encode signature (no body)
-    ("09-standard-library.md", 1228): "FRAGMENT",  # url_decode signature (no body)
 
     # Chapter 9 — URL parsing builtin signatures (no body)
     ("09-standard-library.md", 1254): "FRAGMENT",  # url_parse signature (no body)
     ("09-standard-library.md", 1274): "FRAGMENT",  # url_join signature (no body)
-
-    # Chapter 9 — ML/vector builtin signatures (no body)
-    ("09-standard-library.md", 1228): "FRAGMENT",  # similarity signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
     ("09-standard-library.md", 1466): "FUTURE",   # md_parse
