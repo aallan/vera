@@ -3241,6 +3241,11 @@ private fn f(@String, @Int -> @Nat)
   requires(true) ensures(true) effects(pure)
 { char_code(@String.0, @Int.0) }
 """, "Unresolved"),
+        ("""
+private fn f(@Nat -> @String)
+  requires(true) ensures(true) effects(pure)
+{ from_char_code(@Nat.0) }
+""", "Unresolved"),
     ])
     def test_removed_builtin_names_fail(self, src: str, match: str) -> None:
         """Pre-#288 names must not resolve after the naming audit."""
