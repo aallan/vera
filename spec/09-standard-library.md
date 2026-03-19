@@ -865,7 +865,7 @@ public fn test_nan(@Unit -> @Float64)
 { nan() }
 ```
 
-```
+```vera
 public fn infinity(-> @Float64)
   requires(true)
   ensures(true)

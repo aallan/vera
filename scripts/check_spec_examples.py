@@ -157,8 +157,6 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 817): "FRAGMENT",  # is_nan signature (no body)
     ("09-standard-library.md", 834): "FRAGMENT",  # is_infinite signature (no body)
     ("09-standard-library.md", 853): "FRAGMENT",  # nan signature (no body)
-    ("09-standard-library.md", 802): "FRAGMENT",  # infinity signature (no body)
-
     # Chapter 9 — String search signatures (no body)
     ("09-standard-library.md", 889): "FRAGMENT",  # string_contains signature (no body)
     ("09-standard-library.md", 904): "FRAGMENT",  # starts_with signature (no body)
@@ -176,7 +174,6 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     # Chapter 9 — Parsing function signatures (no body)
     ("09-standard-library.md", 1073): "FRAGMENT",  # parse_nat signature (no body)
     ("09-standard-library.md", 1095): "FRAGMENT",  # parse_int signature (no body)
-    ("09-standard-library.md", 1052): "FRAGMENT",  # parse_float64 signature (no body)
     ("09-standard-library.md", 1140): "FRAGMENT",  # parse_bool signature (no body)
 
     # Chapter 9 — Base64 builtin signatures (no body)
