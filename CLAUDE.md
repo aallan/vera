@@ -151,6 +151,14 @@ Do NOT use `noreply@anthropic.com` — that email resolves to an unrelated GitHu
 - **CHANGELOG link references**: Keep a Changelog format requires `[version]: compare-url` link references at the bottom of CHANGELOG.md. These must be added for every new version. The `[Unreleased]` link must point to `latest-tag...HEAD`.
 - **Roadmap is in ROADMAP.md**: The project roadmap (phase table, priority tiers, completed-phase details, issue strikethroughs) lives in `ROADMAP.md`, not README.md. README.md links to it.
 
+## CodeRabbit
+
+This repo uses [CodeRabbit](https://coderabbit.ai) for AI code review on pull requests. Configuration is in `.coderabbit.yaml`.
+
+- **Reply with `@coderabbitai`**: When responding to CodeRabbit review comments on a PR, prefix your reply with `@coderabbitai` so the bot registers the interaction. You can discuss, argue against, or ask for clarification on any suggestion.
+- **Commands**: Use `@coderabbitai pause`, `@coderabbitai review`, `@coderabbitai full review`, `@coderabbitai generate unit tests` in PR comments to control the bot.
+- **Learning**: Tell CodeRabbit about project-specific rules and it will update its knowledge base for future reviews.
+
 ## Shell pitfalls
 
 - **Heredocs with single quotes in `gh` commands**: `gh issue create --body "$(cat <<'EOF' ... EOF)"` breaks if the body contains single quotes (apostrophes, contractions). Use plain double-quoted `--body "..."` instead.
