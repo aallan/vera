@@ -31,7 +31,14 @@ jobs:
 
       - name: Run tests with coverage
         if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
-        run: pytest --cov=vera --cov-report=term-missing --cov-fail-under=80
+        run: pytest --cov=vera --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+
+      - name: Upload coverage to Codecov
+        if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
 
   typecheck:
     runs-on: ubuntu-latest

@@ -3,6 +3,7 @@
 [![Vera — A language designed for machines to write](assets/vera-social-preview.jpg)](https://veralang.dev)
 
 [![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/aallan/vera?utm_source=oss&utm_medium=github&utm_campaign=aallan%2Fvera&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
+[![codecov](https://codecov.io/gh/aallan/vera/graph/badge.svg)](https://codecov.io/gh/aallan/vera)
 
 **Vera** (v-EER-a) is a programming language designed for large language models to write. The name comes from the Latin *veritas* (truth). Programs compile to WebAssembly and run at the command line or in the browser.
 

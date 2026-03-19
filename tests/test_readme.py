@@ -19,7 +19,7 @@ README = Path(__file__).parent.parent / "README.md"
 # Each key is the 1-based line number of the opening ```vera fence.
 ALLOWLIST: dict[int, str] = {
     # "Project Roadmap" — depends on #57 (Http), #61 (Inference)
-    619: "Vision example uses Http, Inference effects (issues #57, #61)",
+    620: "Vision example uses Http, Inference effects (issues #57, #61)",
 }
 
 

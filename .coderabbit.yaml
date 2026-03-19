@@ -52,6 +52,8 @@ reviews:
     ignore_title_keywords:
       - "WIP"
       - "DO NOT MERGE"
+    ignore_usernames:
+      - "dependabot[bot]"
 
   # ── Path-based review exclusions ──────────────────────────────────
   #
