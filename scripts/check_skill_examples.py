@@ -99,13 +99,13 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     1132: ("FRAGMENT", "Wrong: missing contracts"),
     1152: ("FRAGMENT", "Wrong: missing effects clause"),
     1186: ("FRAGMENT", "Wrong: bare expression without indices"),
-    1132: ("FRAGMENT", "Wrong: bare expression no indices"),
+    1139: ("FRAGMENT", "Wrong: bare expression no indices"),
     1199: ("FRAGMENT", "Wrong: missing index on slot reference"),
     1204: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
     1270: ("FRAGMENT", "Wrong: match arm with incorrect return"),
     1294: ("FRAGMENT", "Wrong: non-exhaustive match"),
     1226: ("FRAGMENT", "Correct: match arm example"),
-    1294: ("FRAGMENT", "Correct: match expression (bare expression)"),
+    # 1294 duplicate removed — was 1301, now handled below
     1311: ("FRAGMENT", "Wrong: if/else without braces (bare expression)"),
     1316: ("FRAGMENT", "Correct: if/else with braces"),
 

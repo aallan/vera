@@ -393,7 +393,9 @@ class InferenceMixin:
             elem = self._infer_index_element_type(expr)
             return elem
         if isinstance(expr, ast.IfExpr):
-            return self._infer_vera_type(expr.then_branch.expr)
+            if expr.then_branch.expr is not None:
+                return self._infer_vera_type(expr.then_branch.expr)
+            return None
         return None
 
     def _infer_fncall_vera_type(self, call: ast.FnCall) -> str | None:

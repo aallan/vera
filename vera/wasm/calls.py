@@ -844,7 +844,11 @@ class CallsMixin:
 
         elem_type = self._infer_concat_elem_type(arr_arg)
         if elem_type is None:
-            elem_size = 8
+            # Only safe for provably empty arrays; otherwise bail
+            if isinstance(arr_arg, ast.ArrayLit) and not arr_arg.elements:
+                elem_size = 8
+            else:
+                return None
         else:
             size = _element_mem_size(elem_type)
             if size is None:
