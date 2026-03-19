@@ -969,6 +969,37 @@ match string_index_of("hello world", "world") {
 
 String transformation functions produce new strings by modifying characters or structure. All allocate heap memory for the result and register it with the GC shadow stack. All are pure and Tier 3.
 
+#### string\_strip
+
+```
+public fn string_strip(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+Returns a new string with leading and trailing ASCII whitespace removed. Whitespace bytes are: space (32), tab (9), carriage return (13), and newline (10). Interior whitespace is preserved.
+
+```vera
+string_strip("  hello  ")   -- "hello"
+string_strip("\thello\n")    -- "hello"
+string_strip("hello")        -- "hello" (no change)
+string_strip("  ")           -- "" (empty)
+```
+
+#### string\_char\_code
+
+```
+public fn string_char_code(@String, @Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+```
+
+Returns the ASCII code point (as a `Nat`) of the byte at the given index in the string. The index is zero-based. Traps if the index is out of bounds.
+
+```vera
+string_char_code("A", 0)     -- 65
+string_char_code("hello", 1) -- 101 (ASCII 'e')
+string_char_code("ABC", 2)   -- 67 (ASCII 'C')
+```
+
 #### string_upper
 
 ```vera

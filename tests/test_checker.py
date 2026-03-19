@@ -2664,6 +2664,13 @@ private fn f(@String, @Int -> @Nat)
 { string_char_code(@String.0, @Int.0) }
 """)
 
+    def test_string_char_code_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@String, @Bool -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ string_char_code(@String.0, @Bool.0) }
+""", "type")
+
     def test_parse_nat_ok(self) -> None:
         _check_ok("""
 private fn f(@String -> @Result<Nat, String>)
@@ -2825,6 +2832,13 @@ private fn f(@String -> @String)
   requires(true) ensures(true) effects(pure)
 { string_strip(@String.0) }
 """)
+
+    def test_string_strip_wrong_arg(self) -> None:
+        _check_err("""
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ string_strip(@Int.0) }
+""", "type")
 
     def test_bool_to_string_ok(self) -> None:
         _check_ok("""
