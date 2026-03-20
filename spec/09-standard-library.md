@@ -199,7 +199,7 @@ See §9.7.3 for the Markdown function specifications.
 
 ### 9.3.7 Option and Result Combinators
 
-The standard prelude provides combinator functions that eliminate common match boilerplate for `Option<T>` and `Result<T, E>`. These are always available via the standard prelude (see §9.1.2) — no explicit `data` declaration is required.
+The standard prelude (§9.1.2) provides combinator functions that eliminate common match boilerplate for `Option<T>` and `Result<T, E>`. These are injected automatically unless the user defines a non-standard variant (different constructors or arities) or shadows the function names.
 
 **Option combinators:**
 

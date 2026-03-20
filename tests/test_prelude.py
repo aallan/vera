@@ -154,6 +154,46 @@ class TestPreludeCombinators:
         assert _ARRAY_FN_NAMES.issubset(names)
 
 
+    def test_non_standard_result_skips_combinators(self) -> None:
+        """Non-standard Result (Fail instead of Err) skips combinators."""
+        prog = _make_program(
+            "public data Result<T, E> { Ok(T), Fail(E) }\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ 0 }\n"
+        )
+        inject_prelude(prog)
+        names = _fn_names(prog)
+        assert not _RESULT_FN_NAMES.intersection(names)
+        # Option combinators and array ops still injected
+        assert _OPTION_FN_NAMES.issubset(names)
+        assert _ARRAY_FN_NAMES.issubset(names)
+
+    def test_extra_constructor_option_skips_combinators(self) -> None:
+        """Option with extra constructor skips combinators."""
+        prog = _make_program(
+            "public data Option<T> { None, Some(T), Unknown }\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ 0 }\n"
+        )
+        inject_prelude(prog)
+        names = _fn_names(prog)
+        assert not _OPTION_FN_NAMES.intersection(names)
+
+    def test_extra_constructor_result_skips_combinators(self) -> None:
+        """Result with extra constructor skips combinators."""
+        prog = _make_program(
+            "public data Result<T, E> { Ok(T), Err(E), Retry }\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ 0 }\n"
+        )
+        inject_prelude(prog)
+        names = _fn_names(prog)
+        assert not _RESULT_FN_NAMES.intersection(names)
+
+
 class TestPreludeShadowing:
     """Tests for user-defined function shadowing."""
 

@@ -214,36 +214,46 @@ private forall<A, B, E> fn result_map(@Result<A, E>, @ResultMapFn<A, B> -> @Resu
 # =====================================================================
 
 def _has_standard_option(program: ast.Program) -> bool:
-    """Check if the program defines Option<T> with None and Some(T)."""
+    """Check if the program defines Option<T> with exactly {None, Some(T)}.
+
+    Requires exactly 2 constructors, None with 0 fields and Some with 1.
+    Extra constructors (e.g. ``Extra``) would make the prelude's
+    exhaustive ``match`` arms incomplete, so we reject them.
+    """
     for tld in program.declarations:
         decl = tld.decl
         if isinstance(decl, ast.DataDecl) and decl.name == "Option":
             if decl.type_params and len(decl.type_params) == 1:
-                ctor_names = {c.name for c in decl.constructors}
-                if "None" in ctor_names and "Some" in ctor_names:
+                if len(decl.constructors) != 2:
+                    return False
+                ctor_map = {
+                    c.name: (len(c.fields) if c.fields is not None else 0)
+                    for c in decl.constructors
+                }
+                if (ctor_map.get("None") == 0
+                        and ctor_map.get("Some") == 1):
                     return True
     return False
 
 
 def _has_standard_result(program: ast.Program) -> bool:
-    """Check if the program defines Result<T, E> with Ok(T) and Err(E)."""
+    """Check if the program defines Result<T, E> with exactly {Ok(T), Err(E)}.
+
+    Requires exactly 2 constructors, Ok with 1 field and Err with 1.
+    """
     for tld in program.declarations:
         decl = tld.decl
         if isinstance(decl, ast.DataDecl) and decl.name == "Result":
             if decl.type_params and len(decl.type_params) == 2:
-                ctor_names = {c.name for c in decl.constructors}
-                if "Ok" in ctor_names and "Err" in ctor_names:
+                if len(decl.constructors) != 2:
+                    return False
+                ctor_map = {
+                    c.name: (len(c.fields) if c.fields is not None else 0)
+                    for c in decl.constructors
+                }
+                if (ctor_map.get("Ok") == 1
+                        and ctor_map.get("Err") == 1):
                     return True
-    return False
-
-
-def _has_nonstandard_data(program: ast.Program, name: str) -> bool:
-    """Check if the program defines a data type with the given name
-    that does NOT match the standard prelude shape."""
-    for tld in program.declarations:
-        decl = tld.decl
-        if isinstance(decl, ast.DataDecl) and decl.name == name:
-            return True
     return False
 
 
