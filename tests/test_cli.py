@@ -1769,7 +1769,8 @@ public fn clamp(@Int -> @Int)
         rc = cmd_test(SAFE_DIVIDE, fn_name="safe_divide")
         assert rc == 0
         out = capsys.readouterr().out
-        assert "Testing:" in out
+        # Must mention the filtered function by name
+        assert "safe_divide" in out
 
     def test_trials_display(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
@@ -1791,8 +1792,9 @@ public fn clamp(@Int -> @Int)
         rc = cmd_test(str(path), trials=5)
         assert rc == 0
         out = capsys.readouterr().out
-        # Should show trial stats if any trials ran
         assert "Results:" in out
+        # Must show the function was actually processed
+        assert "clamp" in out
 
 
 # =====================================================================

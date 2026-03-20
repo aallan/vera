@@ -562,11 +562,11 @@ private fn wrap(@Int -> @Maybe)
 # Pipe operator with ModuleCall
 # =====================================================================
 
-class TestSmtPipeModuleCall:
-    """Exercise pipe operator with module-qualified calls."""
+class TestSmtModuleCall:
+    """Exercise verifier with module-qualified calls."""
 
-    def test_pipe_to_module_call(self) -> None:
-        """Pipe to module call desugars correctly."""
+    def test_module_call_verified(self) -> None:
+        """Module-qualified call resolves and verifies correctly."""
         from vera.resolver import ResolvedModule as RM
 
         mod_src = """\
@@ -590,24 +590,13 @@ private fn f(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
-{ @Int.0 |> util::inc() }
-"""
-        prog = parse_to_ast(src)
-        # Use direct module call instead of pipe — pipe desugaring with
-        # module-qualified calls produces a spurious E201 arity error.
-        src_direct = """\
-import util;
-private fn f(@Int -> @Int)
-  requires(true)
-  ensures(true)
-  effects(pure)
 { util::inc(@Int.0) }
 """
-        prog = parse_to_ast(src_direct)
-        tc_diags = typecheck(prog, src_direct, resolved_modules=[mod])
+        prog = parse_to_ast(src)
+        tc_diags = typecheck(prog, src, resolved_modules=[mod])
         tc_errors = [d for d in tc_diags if d.severity == "error"]
         assert tc_errors == [], [d.description for d in tc_errors]
-        result = verify(prog, src_direct, resolved_modules=[mod])
+        result = verify(prog, src, resolved_modules=[mod])
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.description for e in errors]
 

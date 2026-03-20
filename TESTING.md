@@ -7,7 +7,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | Metric | Value |
 |--------|-------|
 | **Tests** | 2,749 across 26 files (~31,900 lines of test code) |
-| **Compiler code coverage** | 96% of 15,150 statements (CI minimum: 80%) |
+| **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 56 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 25, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 148 parseable blocks from 13 spec chapters: 81 parse, 67 type-check, 66 verify |
@@ -60,11 +60,11 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 104 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
-| `test_cli.py` | 177 | 2,360 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
+| `test_cli.py` | 177 | 2,362 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
-| `test_verifier_coverage.py` | 78 | 1,264 | Verifier/SMT coverage gaps: SMT encoding paths, verifier edge cases, defensive branches |
+| `test_verifier_coverage.py` | 78 | 1,253 | Verifier/SMT coverage gaps: SMT encoding paths, verifier edge cases, defensive branches |
 | `test_wasm_coverage.py` | 225 | 3,903 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
 | `test_tester.py` | 13 | 345 | Contract-driven testing: tier classification, input generation, test execution |
 | `test_tester_coverage.py` | 30 | 789 | Tester coverage gaps: Float/String/ADT parameters, Bool/Byte parameters, unsatisfiable preconditions, type expression edge cases |
@@ -190,7 +190,7 @@ Coverage by module, measured by `pytest --cov=vera`:
 | `tester.py` | 312 | 0 | 100% |
 | `prelude.py` | 106 | 0 | 100% |
 | `registration.py` | 18 | 0 | 100% |
-| **Total** | **15,150** | **612** | **96%** |
+| **Total** | **15,149** | **612** | **96%** |
 
 The lowest-coverage module is `markdown.py` at 87%, reflecting Markdown AST traversal edge cases. The `wasm/` subsystem was improved from 79% to 96% by [#156](https://github.com/aallan/vera/issues/156) and [#324](https://github.com/aallan/vera/issues/324); the remaining gaps are mostly in `wasm/inference.py` (85%) deep type-dispatch branches for specific builtin functions.
 
