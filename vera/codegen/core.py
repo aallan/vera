@@ -146,18 +146,22 @@ class CodeGenerator(
         # Pass 1: register local function signatures (shadows imports)
         self._register_all(program)
 
-        # Pass 1.2: inject prelude combinator implementations
+        # Pass 1.2: inject prelude ADTs and combinator implementations
         # Prelude functions are registered as builtins in the type checker
         # (environment.py) but need compilable AST bodies for codegen.
-        # inject_prelude prepends FnDecl + TypeAliasDecl nodes to
-        # program.declarations; we register them here.
+        # inject_prelude prepends DataDecl, FnDecl, and TypeAliasDecl
+        # nodes to program.declarations; we register them here.
         existing_fns = set(self._fn_sigs.keys())
+        existing_adts = set(self._adt_layouts.keys())
         from vera.prelude import inject_prelude
         inject_prelude(program)
         for tld in program.declarations:
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and decl.name not in existing_fns:
                 self._register_fn(decl)
+            elif isinstance(decl, ast.DataDecl):
+                if decl.name not in existing_adts:  # pragma: no cover
+                    self._register_data(decl)
             elif isinstance(decl, ast.TypeAliasDecl):
                 if decl.name not in self._type_aliases:
                     self._type_aliases[decl.name] = decl.type_expr

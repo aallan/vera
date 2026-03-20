@@ -18,7 +18,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 ## Where we are
 
-**v0.0.91** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 72 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 55-program conformance suite, a canonical formatter, and contract-driven testing. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
+**v0.0.93** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 72 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 56-program conformance suite, a canonical formatter, and contract-driven testing. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
 
 Most remaining features are gated by a single dependency chain:
 
@@ -31,7 +31,7 @@ Abilities are complete — `Eq`, `Ord`, `Hash`, `Show` are built-in with ADT aut
 ```
 Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave)
 ─────────────────           ──────────────────                ──────────────────
-✓ #211 Combinators          ✓ #60 Abilities                    #289 Prelude
+✓ #211 Combinators          ✓ #60 Abilities                  ✓ #289 Prelude
 ✓ #133 Array ops            ✓ #133 map/fold ─┐                 #226 Typed holes
 ✓ #288 Naming audit              #62 Map ←───┘─┐              #233 DateTime
                                  #58 JSON ←────┘─┐            #235 Crypto
@@ -66,7 +66,7 @@ The chain that unlocks agent-viable data processing. Each item depends on the pr
 
 Independent of the Tier 1 chain. Can be scheduled between Tier 1 items or in parallel.
 
-- [#289](https://github.com/aallan/vera/issues/289) **Standard prelude** — eliminates 2–6 lines of identical boilerplate in every program that uses `Result` or `Option`
+- <del>[#289](https://github.com/aallan/vera/issues/289) **Standard prelude** — eliminates 2–6 lines of identical boilerplate in every program that uses `Result` or `Option`</del> ([v0.0.93](https://github.com/aallan/vera/releases/tag/v0.0.93))
 - [#226](https://github.com/aallan/vera/issues/226) **Typed holes** — partial program generation; type context at hole sites improves LLM completion quality
 - [#233](https://github.com/aallan/vera/issues/233) **Date and time** (ISO 8601) — agent workloads frequently need timestamps
 - [#235](https://github.com/aallan/vera/issues/235) **Cryptographic hashing** (SHA-256, HMAC) — needed for API authentication (webhook signatures, OAuth)

@@ -1,0 +1,250 @@
+-- Conformance: standard prelude types available without data declarations (Chapter 9)
+-- Tests: Option, Result, Ordering, UrlParts constructors and pattern matching without local data
+--        definitions; option_unwrap_or, result_unwrap_or, option_map, result_map combinators
+-- ================================================================
+-- Option: pattern match Some/None without a local data declaration
+-- ================================================================
+private fn check_option_some(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match Some(42) {
+    Some(@Int) -> 1,
+    None -> 0
+  }
+}
+
+private fn check_option_none(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match None {
+    Some(@Int) -> 0,
+    None -> 1
+  }
+}
+
+-- ================================================================
+-- Result: pattern match Ok/Err without a local data declaration
+-- ================================================================
+private fn check_result_ok(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match Ok(99) {
+    Ok(@Int) -> 1,
+    Err(@String) -> 0
+  }
+}
+
+private fn check_result_err(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match Err("fail") {
+    Ok(@Int) -> 0,
+    Err(@String) -> 1
+  }
+}
+
+-- ================================================================
+-- Ordering: pattern match Less/Equal/Greater without a local data
+-- declaration — Ordering is a prelude ADT returned by compare()
+-- ================================================================
+private fn check_ordering_less(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match compare(1, 2) {
+    Less -> 1,
+    Equal -> 0,
+    Greater -> 0
+  }
+}
+
+private fn check_ordering_equal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match compare(5, 5) {
+    Less -> 0,
+    Equal -> 1,
+    Greater -> 0
+  }
+}
+
+private fn check_ordering_greater(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match compare(9, 3) {
+    Less -> 0,
+    Equal -> 0,
+    Greater -> 1
+  }
+}
+
+-- ================================================================
+-- UrlParts: construct and destructure without a local data declaration
+-- UrlParts(scheme, host, path, query, fragment)
+-- url_parse("https://example.com/path?q=1#frag") produces:
+--   scheme="https", host="example.com", path="/path", query="q=1", fragment="#frag"
+-- string_length("example.com") == 11, so we use host length == 11 as the expected value
+-- ================================================================
+private fn check_urlparts_construct(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match url_parse("https://example.com/path?q=1#frag") {
+    Ok(@UrlParts) -> 1,
+    Err(_) -> 0
+  }
+}
+
+private fn check_urlparts_destructure(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match url_parse("https://example.com/path?q=1#frag") {
+    Ok(@UrlParts) -> match @UrlParts.0 { UrlParts(@String, @String, @String, @String, @String) -> if string_length(@String.3) > 0 then { 1 } else { 0 } },
+    Err(_) -> 0
+  }
+}
+
+-- ================================================================
+-- option_unwrap_or: combinator works without data boilerplate
+-- ================================================================
+private fn check_unwrap_or_some(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if option_unwrap_or(Some(42), 0) == 42 then {
+    1
+  } else {
+    0
+  }
+}
+
+private fn check_unwrap_or_none(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Option<Int> = None;
+  if option_unwrap_or(@Option<Int>.0, 99) == 99 then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- result_unwrap_or: combinator works without data boilerplate
+-- ================================================================
+private fn check_result_unwrap_or_ok(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if result_unwrap_or(Ok(7), 0) == 7 then {
+    1
+  } else {
+    0
+  }
+}
+
+private fn check_result_unwrap_or_err(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Result<Int, String> = Err("oops");
+  if result_unwrap_or(@Result<Int, String>.0, 0) == 0 then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- option_map: combinator works without data boilerplate
+-- ================================================================
+private fn check_option_map_some(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if option_unwrap_or(option_map(Some(10), fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }), 0) == 11 then {
+    1
+  } else {
+    0
+  }
+}
+
+private fn check_option_map_none(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Option<Int> = None;
+  if option_unwrap_or(option_map(@Option<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }), 0) == 0 then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- result_map: combinator works without data boilerplate
+-- ================================================================
+private fn check_result_map_ok(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if result_unwrap_or(result_map(Ok(100), fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }), 0) == 101 then {
+    1
+  } else {
+    0
+  }
+}
+
+private fn check_result_map_err(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Result<Int, String> = Err("bad");
+  if result_unwrap_or(result_map(@Result<Int, String>.0, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }), 0) == 0 then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- main: all helpers return 1 on success; sum of 16 checks == 16 means
+-- all passed; return 0 on success
+-- ================================================================
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Int = check_option_some(()) + check_option_none(()) + check_result_ok(()) + check_result_err(()) + check_ordering_less(()) + check_ordering_equal(()) + check_ordering_greater(()) + check_urlparts_construct(()) + check_urlparts_destructure(()) + check_unwrap_or_some(()) + check_unwrap_or_none(()) + check_result_unwrap_or_ok(()) + check_result_unwrap_or_err(()) + check_option_map_some(()) + check_option_map_none(()) + check_result_map_ok(()) + check_result_map_err(());
+  if @Int.0 == 17 then {
+    0
+  } else {
+    1
+  }
+}

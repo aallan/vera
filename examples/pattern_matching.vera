@@ -1,9 +1,4 @@
 -- Pattern matching — nested patterns, wildcards, multiple variants
-private data Option<T> {
-  None,
-  Some(T)
-}
-
 private data List<T> {
   Nil,
   Cons(T, List<T>)

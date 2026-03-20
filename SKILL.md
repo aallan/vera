@@ -338,6 +338,8 @@ private data Option<T> {
 }
 ```
 
+> **Note:** `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are provided by the standard prelude and available in every program without explicit `data` declarations. You only need to define them locally if you want to shadow the prelude definition.
+
 With an invariant:
 
 ```vera
@@ -450,7 +452,7 @@ All built-in functions follow predictable naming patterns. When guessing a funct
 
 ### Option and Result Combinators
 
-When a program defines `Option<T>` or `Result<T, E>`, combinator functions are automatically available:
+The standard prelude provides `Option<T>` and `Result<T, E>` along with combinator functions that are always available:
 
 ```vera
 -- Option: unwrap with default

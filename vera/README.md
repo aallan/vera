@@ -291,6 +291,8 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 
 `TypeEnv._register_builtins()` registers the built-in types and operations. Function names follow the `domain_verb` convention (see spec §9.1.1): `string_` prefix for string ops, `float_` prefix for float predicates, `source_to_target` for conversions, prefix-less for math universals only (`abs`, `min`, `max`, etc.). New built-in functions must follow these patterns.
 
+The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` in every program without explicit `data` declarations, along with Option/Result combinators and array operations (`array_slice`, `array_map`, `array_filter`, `array_fold`). User-defined `data` declarations with the same name shadow the prelude.
+
 | Built-in | Kind | Details |
 |----------|------|---------|
 | `Option<T>` | ADT | `None`, `Some(T)` constructors |
