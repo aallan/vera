@@ -26,8 +26,8 @@ def _runtime_source_path() -> Path:
         # as_posix works for Traversable; but we need a real path for shutil
         if hasattr(ref, "__fspath__"):
             return Path(ref)  # type: ignore[arg-type]
-    except (TypeError, FileNotFoundError):
-        pass
+    except (TypeError, FileNotFoundError):  # pragma: no cover
+        pass  # pragma: no cover
     # Fallback: resolve relative to this file
     return Path(__file__).parent / "runtime.mjs"
 

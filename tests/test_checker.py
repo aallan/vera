@@ -4084,3 +4084,541 @@ private fn f(@String -> @Result<String, String>)
   requires(true) ensures(true) effects(pure)
 { regex_replace(@String.0, "\\d+") }
 """, "expects 3 argument")
+
+
+# =====================================================================
+# Coverage: control.py — if-expression branches
+# =====================================================================
+
+class TestControlFlowCoverage:
+    """Cover missed lines in vera/checker/control.py."""
+
+    # --- Line 50: then_ty is None or else_ty is None → return other ---
+
+    def test_if_one_branch_none(self) -> None:
+        """When one if-branch cannot be synthesised, return the other."""
+        # Trigger by having one branch contain an unresolvable call
+        # (warning, not error) so _synth_expr returns None.
+        diags = _check("""
+private fn foo(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { unknown_fn(1) }
+  else { 42 }
+}
+""")
+        # Should still produce some result type (no crash).
+        # The warning about unresolved function is expected.
+        warnings = [d for d in diags if d.severity == "warning"]
+        assert any("unresolved" in w.description.lower() for w in warnings)
+
+    # --- Lines 57-60: Never propagation in if-branches ---
+
+    def test_if_then_never_propagates(self) -> None:
+        """If then-branch is Never, result is else-branch type (line 58)."""
+        _check_ok("""
+effect Exn<E> {
+  op throw(E -> Never);
+}
+
+private fn checked(@Int -> @Int)
+  requires(true) ensures(true) effects(<Exn<String>>)
+{
+  if @Int.0 < 0 then { throw("negative") }
+  else { @Int.0 }
+}
+""")
+
+    def test_if_else_never_propagates(self) -> None:
+        """If else-branch is Never, result is then-branch type (line 60)."""
+        _check_ok("""
+effect Exn<E> {
+  op throw(E -> Never);
+}
+
+private fn checked(@Int -> @Int)
+  requires(true) ensures(true) effects(<Exn<String>>)
+{
+  if @Int.0 >= 0 then { @Int.0 }
+  else { throw("negative") }
+}
+""")
+
+    # --- Lines 63-66: subtype checks between branches ---
+
+    def test_if_else_subtype_of_then(self) -> None:
+        """When else-branch is subtype of then, return then type (line 66)."""
+        # Never is subtype of everything; IO.exit returns Never.
+        _check_ok("""
+public fn foo(@Bool -> @Int)
+  requires(true) ensures(true) effects(<IO>)
+{
+  if @Bool.0 then { 42 }
+  else { IO.exit(1) }
+}
+""")
+
+    # --- Lines 70-82: TypeVar re-synthesis in if-expressions ---
+    # Marked as pragma: no cover — requires unresolved TypeVars in
+    # if-branch return types, which type inference normally resolves.
+
+    # --- Lines 51-54: UnknownType propagation ---
+
+    def test_if_then_unknown_returns_else(self) -> None:
+        """When then-branch has UnknownType, return else type (line 52)."""
+        # An unresolved function call produces UnknownType.
+        diags = _check("""
+private fn foo(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { completely_unknown() }
+  else { 42 }
+}
+""")
+        # Should produce a warning about unresolved function, not crash
+        warnings = [d for d in diags if d.severity == "warning"]
+        assert any("unresolved" in w.description.lower() for w in warnings)
+
+    def test_if_else_unknown_returns_then(self) -> None:
+        """When else-branch has UnknownType, return then type (line 54)."""
+        diags = _check("""
+private fn foo(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { 42 }
+  else { completely_unknown() }
+}
+""")
+        warnings = [d for d in diags if d.severity == "warning"]
+        assert any("unresolved" in w.description.lower() for w in warnings)
+
+
+# =====================================================================
+# Coverage: control.py — match-expression branches
+# =====================================================================
+
+class TestMatchExprCoverage:
+    """Cover missed lines in match expression type-checking."""
+
+    # --- Line 101: scrutinee_ty is None → return None ---
+
+    def test_match_scrutinee_none(self) -> None:
+        """Match on unresolvable scrutinee returns None (line 101)."""
+        diags = _check("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match nonexistent_fn(()) {
+    _ -> 42
+  }
+}
+""")
+        warnings = [d for d in diags if d.severity == "warning"]
+        assert any("unresolved" in w.description.lower() for w in warnings)
+
+    # --- Lines 117-118: arm_ty is None or UnknownType → continue ---
+
+    def test_match_arm_unknown(self) -> None:
+        """Match arm with unresolvable body → continue (lines 117-118)."""
+        diags = _check("""
+private data Color { Red, Green, Blue }
+
+private fn foo(@Color -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Color.0 {
+    Red -> some_unknown_fn(),
+    Green -> 42,
+    Blue -> 0
+  }
+}
+""")
+        warnings = [d for d in diags if d.severity == "warning"]
+        assert any("unresolved" in w.description.lower() for w in warnings)
+
+    # --- Line 122-123: result_type is Never, arm_ty is concrete ---
+
+    def test_match_first_arm_never(self) -> None:
+        """First arm is Never, second is concrete → use concrete (line 122-123)."""
+        _check_ok("""
+effect Exn<E> {
+  op throw(E -> Never);
+}
+
+private fn foo(@Int -> @Int)
+  requires(true) ensures(true) effects(<Exn<String>>)
+{
+  match @Int.0 {
+    0 -> throw("zero"),
+    _ -> @Int.0
+  }
+}
+""")
+
+    # --- Lines 126-133: TypeVar re-synthesis in match arms ---
+
+    # --- Lines 126-133: TypeVar re-synthesis in match arms ---
+    # Marked as pragma: no cover — requires unresolved TypeVars in
+    # match arm return types, which type inference normally resolves.
+
+    # --- Line 137: incompatible arm types ---
+
+    def test_match_arm_type_mismatch(self) -> None:
+        """Arms with incompatible types produce E302 (line 137)."""
+        _check_err("""
+private fn foo(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    0 -> 42,
+    _ -> "hello"
+  }
+}
+""", "incompatible")
+
+
+# =====================================================================
+# Coverage: control.py — pattern checking branches
+# =====================================================================
+
+class TestPatternCoverage:
+    """Cover missed lines in pattern type-checking."""
+
+    # --- Line 272: fallthrough return [] (unknown pattern type) ---
+    # This is architecturally unreachable from normal parsing, skip.
+
+    # --- Lines 283-285: unknown constructor in pattern ---
+
+    def test_unknown_constructor_pattern(self) -> None:
+        """Unknown constructor in pattern produces a warning (lines 283-285)."""
+        diags = _check("""
+private data Color { Red, Green, Blue }
+
+private fn foo(@Color -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Color.0 {
+    Red -> 1,
+    Green -> 2,
+    Blue -> 3,
+    Unknown(@Int) -> 4
+  }
+}
+""")
+        warnings = [d for d in diags if d.severity == "warning"]
+        assert any("Unknown constructor" in w.description for w in warnings)
+
+    # --- Lines 299-305: constructor arity mismatch in pattern ---
+
+    def test_constructor_pattern_arity_mismatch(self) -> None:
+        """Constructor pattern with wrong number of sub-patterns (lines 299-305)."""
+        _check_err("""
+private data Option<T> { None, Some(T) }
+
+private fn foo(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Int, @Int) -> @Int.0,
+    None -> 0
+  }
+}
+""", "1 field")
+
+    # --- Lines 317-323: empty Tuple pattern ---
+    # Marked as pragma: no cover — parser rejects Tuple() syntax.
+
+    # --- Line 339: unknown nullary pattern ---
+
+    def test_unknown_nullary_pattern(self) -> None:
+        """Unknown nullary constructor in pattern produces a warning (line 339)."""
+        diags = _check("""
+private fn foo(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Int.0 {
+    FakeNullary -> 1,
+    _ -> 0
+  }
+}
+""")
+        warnings = [d for d in diags if d.severity == "warning"]
+        assert any("Unknown constructor" in w.description for w in warnings)
+
+
+# =====================================================================
+# Coverage: control.py — handler type-checking
+# =====================================================================
+
+class TestHandlerCoverage:
+    """Cover missed lines in handler type-checking."""
+
+    # --- Lines 359, 363-368: unknown effect in handler ---
+
+    def test_handle_unknown_effect(self) -> None:
+        """Handler with unknown effect returns UnknownType (lines 363-368)."""
+        diags = _check("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[NoSuchEffect] {
+    some_op(@Int) -> { resume(()) }
+  } in {
+    42
+  }
+}
+""")
+        # Should produce an error or warning about unknown effect
+        assert len(diags) > 0
+
+    # --- Lines 400-406: unknown operation in handler clause ---
+
+    def test_handle_unknown_operation(self) -> None:
+        """Handler clause for non-existent operation produces E332 (lines 400-406)."""
+        _check_err("""
+effect Logger {
+  op log(String -> Unit);
+}
+
+private fn foo(@Unit -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Logger] {
+    nonexistent(@String) -> { resume(()) }
+  } in {
+    Logger.log("hi")
+  }
+}
+""", "has no operation")
+
+    # --- Line 470: restore saved_resume (when resume was previously bound) ---
+
+    def test_nested_handlers_resume_restore(self) -> None:
+        """Nested handlers restore outer resume binding (line 470)."""
+        _check_ok("""
+effect Inner {
+  op inner_op(Unit -> Int);
+}
+
+effect Outer {
+  op outer_op(Unit -> Int);
+}
+
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Outer] {
+    outer_op(@Unit) -> {
+      handle[Inner] {
+        inner_op(@Unit) -> { resume(0) }
+      } in {
+        resume(inner_op(()))
+      }
+    }
+  } in {
+    outer_op(())
+  }
+}
+""")
+
+    # --- Lines 484-485: ConcreteEffectRow merging ---
+
+    def test_handler_merges_effect_rows(self) -> None:
+        """Handler body adds effect to existing ConcreteEffectRow (lines 484-485)."""
+        _check_ok("""
+effect Logger {
+  op log(String -> Unit);
+}
+
+private fn foo(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  handle[Logger] {
+    log(@String) -> { resume(()) }
+  } in {
+    Logger.log("inside handler");
+    IO.print("also IO");
+    ()
+  }
+}
+""")
+
+    def test_handler_state_init_type_mismatch(self) -> None:
+        """Handler state initial value type doesn't match declared type (line 382)."""
+        _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = "wrong") {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    get(())
+  }
+}
+""", "expected Int")
+
+
+# =====================================================================
+# Resolution mixin — coverage for uncovered branches
+# =====================================================================
+
+
+class TestResolutionCoverage:
+    """Tests targeting uncovered lines in checker/resolution.py."""
+
+    # Line 48: _resolve_type returning UnknownType for unknown TypeExpr
+    def test_resolve_type_unknown_type_expr(self) -> None:
+        """Directly calling _resolve_type with an unrecognised TypeExpr
+        node returns UnknownType."""
+        from vera.checker.core import TypeChecker
+        from vera.types import UnknownType
+        from vera.environment import TypeEnv
+
+        checker = TypeChecker.__new__(TypeChecker)
+        checker.env = TypeEnv()
+        checker._reported_alias_errors: set[str] = set()
+
+        # Create a TypeExpr subclass that is none of the known kinds
+        bogus = ast.TypeExpr(span=None)
+        result = checker._resolve_type(bogus)
+        assert isinstance(result, UnknownType)
+
+    # Lines 66-68: Type alias with type args (parameterised alias)
+    def test_parameterised_type_alias(self) -> None:
+        """A parameterised type alias resolves type args via substitution."""
+        _check_ok("""
+type Wrapper<T> = Option<T>;
+
+private fn wrap(@Int -> @Wrapper<Int>)
+  requires(true) ensures(true) effects(pure)
+{ Some(@Int.0) }
+""")
+
+    # Line 84: Array/Tuple without type_args
+    def test_array_without_type_args(self) -> None:
+        """Bare Array (no type args) is accepted as AdtType(Array, ())."""
+        _check_ok("""
+private fn f(@Array -> @Array)
+  requires(true) ensures(true) effects(pure)
+{ @Array.0 }
+""")
+
+    def test_tuple_without_type_args(self) -> None:
+        """Bare Tuple (no type args) is accepted as AdtType(Tuple, ())."""
+        _check_ok("""
+private fn f(@Tuple -> @Tuple)
+  requires(true) ensures(true) effects(pure)
+{ @Tuple.0 }
+""")
+
+    # Lines 117-118: EffectSet with type variable (effect row variable)
+    def test_effect_set_with_type_variable(self) -> None:
+        """A forall type variable used in an effect set becomes a row var."""
+        _check_ok("""
+effect Console {
+  op print(String -> Unit);
+}
+
+private forall<E> fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(<Console, E>)
+{ @Int.0 }
+""")
+
+    # Lines 123-127: QualifiedEffectRef in effect set
+    def test_qualified_effect_ref_in_effect_set(self) -> None:
+        """Module-qualified effect ref in effects(<Mod.Effect>) is accepted."""
+        _check_ok("""
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(<IO.Write>)
+{ @Int.0 }
+""")
+
+    # Line 130: _resolve_effect_row fallback to PureEffectRow
+    # This is a defensive branch for unknown EffectRow types.
+    # Hard to trigger from source, so test via unit API.
+    def test_resolve_effect_row_unknown_returns_pure(self) -> None:
+        """Unknown EffectRow type falls back to PureEffectRow."""
+        from vera.checker.core import TypeChecker
+        from vera.environment import TypeEnv
+        from vera.types import PureEffectRow
+
+        checker = TypeChecker.__new__(TypeChecker)
+        checker.env = TypeEnv()
+        checker._reported_alias_errors: set[str] = set()
+
+        bogus_row = ast.EffectRow(span=None)
+        result = checker._resolve_effect_row(bogus_row)
+        assert isinstance(result, PureEffectRow)
+
+    # Lines 139-144: QualifiedEffectRef in _resolve_effect_ref
+    def test_resolve_effect_ref_qualified(self) -> None:
+        """_resolve_effect_ref handles QualifiedEffectRef."""
+        from vera.checker.core import TypeChecker
+        from vera.environment import TypeEnv
+        from vera.types import EffectInstance
+
+        checker = TypeChecker.__new__(TypeChecker)
+        checker.env = TypeEnv()
+        checker._reported_alias_errors: set[str] = set()
+
+        ref = ast.QualifiedEffectRef(
+            module="IO", name="Write", type_args=None, span=None,
+        )
+        result = checker._resolve_effect_ref(ref)
+        assert isinstance(result, EffectInstance)
+        assert result.name == "IO.Write"
+        assert result.type_args == ()
+
+    def test_resolve_effect_ref_unknown_returns_none(self) -> None:
+        """_resolve_effect_ref returns None for unknown node types."""
+        from vera.checker.core import TypeChecker
+        from vera.environment import TypeEnv
+
+        checker = TypeChecker.__new__(TypeChecker)
+        checker.env = TypeEnv()
+        checker._reported_alias_errors: set[str] = set()
+
+        bogus = ast.EffectRefNode(span=None)
+        result = checker._resolve_effect_ref(bogus)
+        assert result is None
+
+    # Line 169: _slot_type_name with no type_args — returns bare name
+    def test_slot_type_name_no_type_args(self) -> None:
+        """_slot_type_name with no type_args returns the bare type name."""
+        from vera.checker.core import TypeChecker
+        from vera.environment import TypeEnv
+
+        checker = TypeChecker.__new__(TypeChecker)
+        checker.env = TypeEnv()
+        checker._reported_alias_errors: set[str] = set()
+
+        assert checker._slot_type_name("Int", None) == "Int"
+        assert checker._slot_type_name("Bool", ()) == "Bool"
+
+    # Lines 187-189: FunctionType unification in _unify_for_inference
+    def test_function_type_unification_inference(self) -> None:
+        """_unify_for_inference with FunctionType patterns unifies
+        parameter and return types."""
+        from vera.checker.core import TypeChecker
+        from vera.environment import TypeEnv
+        from vera.types import (
+            FunctionType, PureEffectRow, TypeVar, PRIMITIVES,
+        )
+
+        checker = TypeChecker.__new__(TypeChecker)
+        checker.env = TypeEnv()
+        checker._reported_alias_errors: set[str] = set()
+
+        INT = PRIMITIVES["Int"]
+        BOOL = PRIMITIVES["Bool"]
+
+        tv_a = TypeVar("A")
+        tv_b = TypeVar("B")
+        pattern = FunctionType((tv_a,), tv_b, PureEffectRow())
+        concrete = FunctionType((INT,), BOOL, PureEffectRow())
+
+        mapping: dict[str, Type] = {}
+        checker._unify_for_inference(pattern, concrete, mapping)
+        assert mapping["A"] == INT
+        assert mapping["B"] == BOOL

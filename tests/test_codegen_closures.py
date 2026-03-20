@@ -414,3 +414,60 @@ public fn test(@Unit -> @Int)
 }
 """
         assert _run(src, "test") == 101  # 1 + 100
+
+
+# =====================================================================
+# Coverage: closures.py — additional closure compilation paths
+# =====================================================================
+
+class TestClosureCoveragePaths:
+    """Cover missed lines in vera/codegen/closures.py."""
+
+    def test_closure_bool_param_not_gc_tracked(self) -> None:
+        """Closure with Bool param: not tracked as GC pointer (line 124-125)."""
+        src = """\
+type BoolFn = fn(Bool -> Int) effects(pure);
+
+public fn make_fn(@Int -> @BoolFn)
+  requires(true) ensures(true) effects(pure)
+{
+  fn(@Bool -> @Int) effects(pure) {
+    if @Bool.0 then { @Int.0 } else { 0 }
+  }
+}
+
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @BoolFn = make_fn(42);
+  apply_fn(@BoolFn.0, true)
+}
+"""
+        assert _run(src, "test") == 42
+
+    def test_closure_with_adt_capture_gc(self) -> None:
+        """Closure capturing ADT value exercises GC pointer tracking
+        for captured i32 locals that are not Bool/Byte (line 190-191)."""
+        src = """\
+private data Option<T> { None, Some(T) }
+type IntFn = fn(Int -> Int) effects(pure);
+
+public fn make_fn(@Option<Int> -> @IntFn)
+  requires(true) ensures(true) effects(pure)
+{
+  fn(@Int -> @Int) effects(pure) {
+    match @Option<Int>.0 {
+      None -> @Int.0,
+      Some(@Int) -> @Int.0 + @Int.1
+    }
+  }
+}
+
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @IntFn = make_fn(Some(10));
+  apply_fn(@IntFn.0, 5)
+}
+"""
+        assert _run(src, "test") == 15

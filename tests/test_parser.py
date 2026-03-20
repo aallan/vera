@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from vera.parser import parse, parse_file
+from vera.parser import parse, parse_file, typecheck_file, verify_file
 from vera.errors import ParseError
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
@@ -886,3 +886,80 @@ class TestParseErrors:
     def test_invalid_token(self) -> None:
         with pytest.raises(ParseError):
             parse("private fn f(@Int -> @Int) requires(true) ensures(true) effects(pure) { $ }")
+
+
+# =====================================================================
+# typecheck_file tests
+# =====================================================================
+
+
+class TestTypecheckFile:
+    """Tests for the typecheck_file convenience function."""
+
+    def test_typecheck_file_valid(self, tmp_path: Path) -> None:
+        """typecheck_file returns empty diagnostics for valid code."""
+        src = tmp_path / "ok.vera"
+        src.write_text(
+            "private fn f(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @Int.0 }\n"
+        )
+        diags = typecheck_file(src)
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == []
+
+    def test_typecheck_file_with_error(self, tmp_path: Path) -> None:
+        """typecheck_file reports type errors in the file."""
+        src = tmp_path / "bad.vera"
+        src.write_text(
+            "private fn f(@Int -> @Bool)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @Int.0 }\n"
+        )
+        diags = typecheck_file(src)
+        errors = [d for d in diags if d.severity == "error"]
+        assert len(errors) >= 1
+
+    def test_typecheck_file_accepts_str_path(self, tmp_path: Path) -> None:
+        """typecheck_file also accepts a plain string path."""
+        src = tmp_path / "str_path.vera"
+        src.write_text(
+            "private fn f(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ 42 }\n"
+        )
+        diags = typecheck_file(str(src))
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == []
+
+
+# =====================================================================
+# verify_file tests
+# =====================================================================
+
+
+class TestVerifyFile:
+    """Tests for the verify_file convenience function."""
+
+    def test_verify_file_valid(self, tmp_path: Path) -> None:
+        """verify_file returns a VerifyResult for valid code."""
+        src = tmp_path / "ok.vera"
+        src.write_text(
+            "private fn f(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @Int.0 }\n"
+        )
+        result = verify_file(src)
+        assert result.diagnostics is not None
+        assert result.summary is not None
+
+    def test_verify_file_accepts_str_path(self, tmp_path: Path) -> None:
+        """verify_file also accepts a plain string path."""
+        src = tmp_path / "str_path.vera"
+        src.write_text(
+            "private fn f(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ 42 }\n"
+        )
+        result = verify_file(str(src))
+        assert result.summary is not None

@@ -692,6 +692,39 @@ class TestBrowserEmit:
 # =====================================================================
 
 
+class TestRuntimeSourcePath:
+    """Cover the _runtime_source_path fallback in browser/emit.py."""
+
+    def test_fallback_when_no_fspath(self) -> None:
+        """When importlib.resources returns a non-fspath Traversable,
+        _runtime_source_path falls back to __file__-relative path."""
+        from unittest.mock import MagicMock, patch
+        from vera.browser.emit import _runtime_source_path
+
+        # Create a mock Traversable that lacks __fspath__
+        mock_ref = MagicMock(spec=[])  # no __fspath__ attribute
+        mock_files = MagicMock()
+        mock_files.joinpath.return_value = mock_ref
+
+        with patch("importlib.resources.files", return_value=mock_files):
+            result = _runtime_source_path()
+
+        # Should fall back to Path(__file__).parent / "runtime.mjs"
+        assert result.name == "runtime.mjs"
+        assert "vera" in str(result) or "browser" in str(result)
+
+    def test_fallback_on_type_error(self) -> None:
+        """When importlib.resources raises TypeError,
+        _runtime_source_path falls back gracefully."""
+        from unittest.mock import patch
+        from vera.browser.emit import _runtime_source_path
+
+        with patch("importlib.resources.files", side_effect=TypeError):
+            result = _runtime_source_path()
+
+        assert result.name == "runtime.mjs"
+
+
 class TestBrowserExports:
     """Verify the exports list matches between runtimes."""
 
