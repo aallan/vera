@@ -44,7 +44,7 @@ def _verify_err(source: str, match: str) -> list:
     """Assert source produces at least one verification error matching *match*."""
     result = _verify(source)
     errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert errors, f"Expected at least one error, got none"
+    assert errors, "Expected at least one error, got none"
     matched = [e for e in errors if match.lower() in e.description.lower()]
     assert matched, (
         f"No error matched '{match}'. Errors: {[e.description for e in errors]}"

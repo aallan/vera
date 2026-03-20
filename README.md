@@ -592,7 +592,9 @@ Testing is organized in three layers: **unit tests** (2,749 tests across 26 file
 
 #### Bugs
 
-No open issues.
+| Bug | Issue |
+|-----|-------|
+| Pipe operator with module-qualified calls produces spurious E201 | [#326](https://github.com/aallan/vera/issues/326) |
 
 #### Limitations
 
