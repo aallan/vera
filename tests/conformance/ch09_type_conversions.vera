@@ -1,11 +1,11 @@
 -- Conformance: numeric type conversion functions (Chapter 9)
--- Tests: to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte
-public fn test_to_float(@Unit -> @Float64)
+-- Tests: int_to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte
+public fn test_int_to_float(@Unit -> @Float64)
   requires(true)
   ensures(@Float64.result == 42.0)
   effects(pure)
 {
-  to_float(42)
+  int_to_float(42)
 }
 
 public fn test_to_float_negative(@Unit -> @Float64)
@@ -13,7 +13,7 @@ public fn test_to_float_negative(@Unit -> @Float64)
   ensures(@Float64.result == -7.0)
   effects(pure)
 {
-  to_float(0 - 7)
+  int_to_float(0 - 7)
 }
 
 public fn test_float_to_int(@Unit -> @Int)
@@ -97,5 +97,5 @@ public fn main(@Unit -> @Int)
   ensures(@Int.result == 42)
   effects(pure)
 {
-  float_to_int(to_float(42))
+  float_to_int(int_to_float(42))
 }

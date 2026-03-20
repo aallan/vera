@@ -289,7 +289,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 
 ### Built-ins
 
-`TypeEnv._register_builtins()` registers the built-in types and operations:
+`TypeEnv._register_builtins()` registers the built-in types and operations. Function names follow the `domain_verb` convention (see spec §9.1.1): `string_` prefix for string ops, `float_` prefix for float predicates, `source_to_target` for conversions, prefix-less for math universals only (`abs`, `min`, `max`, etc.). New built-in functions must follow these patterns.
 
 | Built-in | Kind | Details |
 |----------|------|---------|
@@ -309,8 +309,8 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `string_length` | Function | `String → Nat`, pure |
 | `string_concat` | Function | `String, String → String`, pure |
 | `string_slice` | Function | `String, Nat, Nat → String`, pure |
-| `char_code` | Function | `String, Int → Nat`, pure |
-| `from_char_code` | Function | `Nat → String`, pure |
+| `string_char_code` | Function | `String, Int → Nat`, pure |
+| `string_from_char_code` | Function | `Nat → String`, pure |
 | `string_repeat` | Function | `String, Nat → String`, pure |
 | `parse_nat` | Function | `String → Result<Nat, String>`, pure |
 | `parse_int` | Function | `String → Result<Int, String>`, pure |
@@ -335,7 +335,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `nat_to_string` | Function | `Nat → String`, pure |
 | `byte_to_string` | Function | `Byte → String`, pure |
 | `float_to_string` | Function | `Float64 → String`, pure |
-| `strip` | Function | `String → String`, pure (zero-copy) |
+| `string_strip` | Function | `String → String`, pure (zero-copy) |
 | `abs` | Function | `Int → Nat`, pure |
 | `min` | Function | `Int, Int → Int`, pure |
 | `max` | Function | `Int, Int → Int`, pure |
@@ -344,25 +344,25 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 | `round` | Function | `Float64 → Int`, pure |
 | `sqrt` | Function | `Float64 → Float64`, pure |
 | `pow` | Function | `Float64, Int → Float64`, pure |
-| `to_float` | Function | `Int → Float64`, pure |
+| `int_to_float` | Function | `Int → Float64`, pure |
 | `float_to_int` | Function | `Float64 → Int`, pure |
 | `nat_to_int` | Function | `Nat → Int`, pure |
 | `int_to_nat` | Function | `Int → Option<Nat>`, pure |
 | `byte_to_int` | Function | `Byte → Int`, pure |
 | `int_to_byte` | Function | `Int → Option<Byte>`, pure |
-| `is_nan` | Function | `Float64 → Bool`, pure |
-| `is_infinite` | Function | `Float64 → Bool`, pure |
+| `float_is_nan` | Function | `Float64 → Bool`, pure |
+| `float_is_infinite` | Function | `Float64 → Bool`, pure |
 | `nan` | Function | `→ Float64`, pure |
 | `infinity` | Function | `→ Float64`, pure |
 | `string_contains` | Function | `String, String → Bool`, pure |
-| `starts_with` | Function | `String, String → Bool`, pure |
-| `ends_with` | Function | `String, String → Bool`, pure |
-| `index_of` | Function | `String, String → Option<Nat>`, pure |
-| `to_upper` | Function | `String → String`, pure |
-| `to_lower` | Function | `String → String`, pure |
-| `replace` | Function | `String, String, String → String`, pure |
-| `split` | Function | `String, String → Array<String>`, pure |
-| `join` | Function | `Array<String>, String → String`, pure |
+| `string_starts_with` | Function | `String, String → Bool`, pure |
+| `string_ends_with` | Function | `String, String → Bool`, pure |
+| `string_index_of` | Function | `String, String → Option<Nat>`, pure |
+| `string_upper` | Function | `String → String`, pure |
+| `string_lower` | Function | `String → String`, pure |
+| `string_replace` | Function | `String, String, String → String`, pure |
+| `string_split` | Function | `String, String → Array<String>`, pure |
+| `string_join` | Function | `Array<String>, String → String`, pure |
 
 Additionally, `resume` is bound as a temporary function inside handler clause bodies (in `_check_handle()`). Its type is derived from the operation: for `op(params) → ReturnType`, `resume` has type `fn(ReturnType) → Unit effects(pure)`. The binding is added to `env.functions` before checking the clause body and removed afterward.
 

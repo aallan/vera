@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 2,390 across 24 files (~24,500 lines of test code) |
+| **Tests** | 2,407 across 24 files (~24,600 lines of test code) |
 | **Compiler code coverage** | 91% of 14,298 statements (CI minimum: 80%) |
 | **Conformance programs** | 55 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 25, all validated through `vera check` + `vera verify` |
@@ -50,7 +50,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 |------|------:|------:|----------------|
 | `test_parser.py` | 114 | 888 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 118 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
-| `test_checker.py` | 351 | 3,978 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities |
+| `test_checker.py` | 368 | 4,086 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, removed legacy name regression |
 | `test_verifier.py` | 116 | 1,709 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
 | `test_codegen.py` | 654 | 7,609 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
@@ -143,7 +143,7 @@ The manifest is the machine-readable feature inventory — agents can query it t
 ### Running the conformance suite
 
 ```bash
-# Via pytest (parametrized — 260 tests)
+# Via pytest (parametrized — 275 tests)
 pytest tests/test_conformance.py -v
 
 # Via standalone script (used in CI and pre-commit)
@@ -241,8 +241,8 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 7: Effects | Pure, IO, State\<T\> | test_codegen, test_checker | ch07_pure, ch07_io, ch07_state_handler | hello_world, increment, io_operations, file_io |
 | Ch 7: Effects | Effect handlers (State\<T\>, Exn\<E\>) | test_codegen, test_checker | ch07_state_handler, ch07_exn_handler | effect_handler |
 | Ch 9: Stdlib | Numeric builtins (abs, min, max, floor, ceil, round, sqrt, pow) | test_codegen, test_checker | ch09_numeric_builtins | — |
-| Ch 9: Stdlib | Type conversions (to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen, test_checker | ch09_type_conversions | — |
-| Ch 9: Stdlib | Float64 predicates (is_nan, is_infinite, nan, infinity) | test_codegen, test_checker | ch10_float_predicates | — |
+| Ch 9: Stdlib | Type conversions (int_to_float, float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte) | test_codegen, test_checker | ch09_type_conversions | — |
+| Ch 9: Stdlib | Float64 predicates (float_is_nan, float_is_infinite, nan, infinity) | test_codegen, test_checker | ch10_float_predicates | — |
 | Ch 7: Effects | Effect subtyping (§7.8), call-site checking | test_types, test_checker | — | — |
 | Ch 2: Types | Bidirectional type checking (local inference) | test_checker | — | — |
 | Ch 4: Expressions | Nested constructor patterns in match | test_codegen | ch04_match_nested | pattern_matching |

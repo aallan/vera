@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.92] - 2026-03-19
+
+### Changed
+- **BREAKING: Built-in function naming audit** ([#288](https://github.com/aallan/vera/issues/288)) — renamed 14 inconsistently-named built-in functions to follow the dominant `domain_verb` convention. String operations gain `string_` prefix (`strip` → `string_strip`, `upper` → `string_upper`, etc.), float predicates gain `float_` prefix (`is_nan` → `float_is_nan`, `is_infinite` → `float_is_infinite`), and `to_float` becomes `int_to_float`. Closes #288.
+
+### Added
+- **Naming convention documentation** — formal naming rules added to spec §9.1.1, SKILL.md, vera/README.md, and CONTRIBUTING.md. Four patterns: `domain_verb` (dominant), `source_to_target` (conversions), `domain_is_predicate` (boolean tests), prefix-less (math universals only).
+
 ## [0.0.91] - 2026-03-19
 
 ### Added
@@ -1373,7 +1381,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.91...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.92...HEAD
+[0.0.92]: https://github.com/aallan/vera/compare/v0.0.91...v0.0.92
 [0.0.91]: https://github.com/aallan/vera/compare/v0.0.90...v0.0.91
 [0.0.90]: https://github.com/aallan/vera/compare/v0.0.89...v0.0.90
 [0.0.89]: https://github.com/aallan/vera/compare/v0.0.88...v0.0.89

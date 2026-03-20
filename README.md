@@ -511,7 +511,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project Status
 
-Vera is in **active development** at v0.0.85. The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. Programs compile to WebAssembly and execute via wasmtime or in the browser.
+Vera is in **active development** at v0.0.92. The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. Programs compile to WebAssembly and execute via wasmtime or in the browser.
 
 The language specification is in draft across 13 chapters:
 
@@ -585,7 +585,7 @@ For compiler architecture, pipeline internals, and how to extend the compiler, s
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (2,390 tests across 24 files, testing compiler internals and browser parity), a **conformance suite** (55 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (25 end-to-end demos). The compiler has 91% code coverage, enforced by pre-commit hooks and [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
+Testing is organized in three layers: **unit tests** (2,407 tests across 24 files, testing compiler internals and browser parity), a **conformance suite** (55 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (25 end-to-end demos). The compiler has 91% code coverage, enforced by [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
 
 ### Known Bugs and Limitations
 

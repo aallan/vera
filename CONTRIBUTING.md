@@ -43,6 +43,7 @@ For contributions to the reference compiler:
 
 When adding or modifying built-in functions (registered in `vera/environment.py`):
 
+- **Follow the naming convention** (spec §9.1.1): `domain_verb` for most functions (e.g. `string_length`, `array_append`), `source_to_target` for conversions (e.g. `int_to_float`), `domain_is_predicate` for boolean tests (e.g. `float_is_nan`). Only math universals (`abs`, `min`, `max`, etc.) are prefix-less.
 - **Match the spec.** Type signatures should use the types specified in the language specification (e.g. `NAT` where the spec says `Nat`, not `INT`). Reference the relevant spec chapter and section in your PR description.
 - **Add type checker tests** in `tests/test_checker.py` — at minimum, one test with correct types and one with a wrong argument type.
 - **Add codegen/runtime tests** in `tests/test_codegen.py` — cover normal cases, edge cases (empty inputs, zero values), and composition with other built-ins.

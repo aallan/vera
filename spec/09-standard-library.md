@@ -9,11 +9,30 @@ The standard library comprises:
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, plus future collections (`Set<T>`, `Map<K, V>`).
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
-- **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`is_nan`, `is_infinite`, `nan`, `infinity`), string search (`string_contains`, `starts_with`, `ends_with`, `index_of`), string transformation (`to_upper`, `to_lower`, `replace`, `split`, `join`, `from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
+- **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
 - **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
 - **Built-in abilities**: `Eq`, `Ord`, `Hash`, `Show` — type constraints for generic programming. The `Ordering` ADT (`Less`, `Equal`, `Greater`) supports `Ord`'s `compare` operation.
 
 All built-in types participate fully in the type system: they can appear in contracts, be verified by the SMT solver, and be used with refinement types and pattern matching. Built-in effects follow the same algebraic effect semantics as user-defined effects (see Chapter 7).
+
+### 9.1.1 Naming Convention
+
+Built-in function names follow a consistent `domain_verb` convention to make names predictable and reduce LLM hallucination errors:
+
+| Pattern | When to use | Examples |
+|---------|-------------|----------|
+| `domain_verb` | Most functions — domain prefix identifies the type or module | `string_length`, `array_append`, `regex_match`, `md_parse` |
+| `source_to_target` | Type conversions — source and target types in the name | `int_to_float`, `float_to_int`, `nat_to_int`, `int_to_byte` |
+| `domain_is_predicate` | Boolean predicates — domain prefix + `is_` + property | `float_is_nan`, `float_is_infinite` |
+| Prefix-less | Math universals only — names understood across all languages | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow` |
+
+**Key rules:**
+
+1. **String operations always use `string_` prefix**: `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`.
+2. **Float64 predicates use `float_` prefix**: `float_is_nan`, `float_is_infinite`.
+3. **Type conversions use `source_to_target`**: `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`.
+4. **Math functions and float constants are the only exceptions** to domain prefixing — `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, and `infinity` need no prefix because they are universally understood mathematical names.
+5. **New functions MUST follow these patterns.** When adding a function, choose the pattern that matches its category. If uncertain, use `domain_verb`.
 
 ## 9.2 Primitive Types
 
@@ -713,7 +732,7 @@ Vera has no implicit numeric conversions. The following built-in functions provi
 #### Widening conversions (always succeed)
 
 ```
-public fn to_float(@Int -> @Float64)
+public fn int_to_float(@Int -> @Float64)
   requires(true)
   ensures(true)
   effects(pure)
@@ -722,7 +741,7 @@ public fn to_float(@Int -> @Float64)
 Converts an integer to a floating-point number. Compiled to `f64.convert_i64_s`.
 
 ```
-to_float(42)
+int_to_float(42)
 ```
 
 This expression evaluates to `42.0`.
@@ -815,7 +834,7 @@ Vera provides built-in functions for testing and constructing IEEE 754 special f
 #### Predicates
 
 ```
-public fn is_nan(@Float64 -> @Bool)
+public fn float_is_nan(@Float64 -> @Bool)
   requires(true)
   ensures(true)
   effects(pure)
@@ -826,13 +845,13 @@ Tests whether a Float64 value is NaN (not a number). NaN is the only value that 
 ```vera
 public fn test_is_nan(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{ if is_nan(nan()) then { 1 } else { 0 } }
+{ if float_is_nan(nan()) then { 1 } else { 0 } }
 ```
 
 This expression evaluates to `1`.
 
 ```
-public fn is_infinite(@Float64 -> @Bool)
+public fn float_is_infinite(@Float64 -> @Bool)
   requires(true)
   ensures(true)
   effects(pure)
@@ -843,7 +862,7 @@ Tests whether a Float64 value is positive or negative infinity. Compiled to `f64
 ```vera
 public fn test_is_infinite(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{ if is_infinite(infinity()) then { 1 } else { 0 } }
+{ if float_is_infinite(infinity()) then { 1 } else { 0 } }
 ```
 
 This expression evaluates to `1`.
@@ -899,47 +918,47 @@ string_contains("hello", "xyz")          -- false
 string_contains("hello", "")             -- true
 ```
 
-#### starts_with
+#### string_starts_with
 
 ```vera
-public fn starts_with(@String, @String -> @Bool)
+public fn string_starts_with(@String, @String -> @Bool)
   requires(true) ensures(true) effects(pure)
 ```
 
 Returns `true` if the haystack begins with the given prefix. An empty prefix always matches. If the prefix is longer than the haystack, returns `false`.
 
 ```vera
-starts_with("hello world", "hello")  -- true
-starts_with("hello", "world")        -- false
-starts_with("hello", "")             -- true
+string_starts_with("hello world", "hello")  -- true
+string_starts_with("hello", "world")        -- false
+string_starts_with("hello", "")             -- true
 ```
 
-#### ends_with
+#### string_ends_with
 
 ```vera
-public fn ends_with(@String, @String -> @Bool)
+public fn string_ends_with(@String, @String -> @Bool)
   requires(true) ensures(true) effects(pure)
 ```
 
 Returns `true` if the haystack ends with the given suffix. An empty suffix always matches. If the suffix is longer than the haystack, returns `false`.
 
 ```vera
-ends_with("hello world", "world")  -- true
-ends_with("hello", "world")        -- false
-ends_with("hello", "")             -- true
+string_ends_with("hello world", "world")  -- true
+string_ends_with("hello", "world")        -- false
+string_ends_with("hello", "")             -- true
 ```
 
-#### index_of
+#### string_index_of
 
 ```vera
-public fn index_of(@String, @String -> @Option<Nat>)
+public fn string_index_of(@String, @String -> @Option<Nat>)
   requires(true) ensures(true) effects(pure)
 ```
 
 Returns `Some(i)` where `i` is the byte offset of the first occurrence of the needle in the haystack, or `None` if not found. An empty needle matches at position 0. The returned index is a `Nat` (natural number).
 
 ```vera
-match index_of("hello world", "world") {
+match string_index_of("hello world", "world") {
   Some(@Nat) -> nat_to_int(@Nat.0),
   None -> 0 - 1
 }
@@ -950,94 +969,125 @@ match index_of("hello world", "world") {
 
 String transformation functions produce new strings by modifying characters or structure. All allocate heap memory for the result and register it with the GC shadow stack. All are pure and Tier 3.
 
-#### to_upper
+#### string\_strip
+
+```
+public fn string_strip(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+Returns a new string with leading and trailing ASCII whitespace removed. Whitespace bytes are: space (32), tab (9), carriage return (13), and newline (10). Interior whitespace is preserved.
 
 ```vera
-public fn to_upper(@String -> @String)
+string_strip("  hello  ")   -- "hello"
+string_strip("\thello\n")    -- "hello"
+string_strip("hello")        -- "hello" (no change)
+string_strip("  ")           -- "" (empty)
+```
+
+#### string\_char\_code
+
+```
+public fn string_char_code(@String, @Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+```
+
+Returns the ASCII code point (as a `Nat`) of the byte at the given index in the string. The index is zero-based. Traps if the index is out of bounds.
+
+```vera
+string_char_code("A", 0)     -- 65
+string_char_code("hello", 1) -- 101 (ASCII 'e')
+string_char_code("ABC", 2)   -- 67 (ASCII 'C')
+```
+
+#### string_upper
+
+```vera
+public fn string_upper(@String -> @String)
   requires(true) ensures(true) effects(pure)
 ```
 
 Returns a new string with all ASCII lowercase letters (a–z, bytes 97–122) converted to uppercase (A–Z, bytes 65–90). Non-ASCII bytes and non-letter bytes are unchanged.
 
 ```vera
-to_upper("hello")   -- "HELLO"
-to_upper("Hello!")   -- "HELLO!"
-to_upper("123")      -- "123"
+string_upper("hello")   -- "HELLO"
+string_upper("Hello!")   -- "HELLO!"
+string_upper("123")      -- "123"
 ```
 
-#### to_lower
+#### string_lower
 
 ```vera
-public fn to_lower(@String -> @String)
+public fn string_lower(@String -> @String)
   requires(true) ensures(true) effects(pure)
 ```
 
 Returns a new string with all ASCII uppercase letters (A–Z, bytes 65–90) converted to lowercase (a–z, bytes 97–122). Non-ASCII bytes and non-letter bytes are unchanged.
 
 ```vera
-to_lower("HELLO")   -- "hello"
-to_lower("Hello!")   -- "hello!"
-to_lower("123")      -- "123"
+string_lower("HELLO")   -- "hello"
+string_lower("Hello!")   -- "hello!"
+string_lower("123")      -- "123"
 ```
 
-#### replace
+#### string_replace
 
 ```vera
-public fn replace(@String, @String, @String -> @String)
+public fn string_replace(@String, @String, @String -> @String)
   requires(true) ensures(true) effects(pure)
 ```
 
 Replaces all non-overlapping occurrences of the needle (second argument) in the haystack (first argument) with the replacement (third argument). If the needle is empty, returns a copy of the haystack. Uses a two-pass algorithm: pass 1 counts occurrences, then allocates the output buffer; pass 2 copies bytes with substitutions.
 
 ```vera
-replace("hello world", "world", "vera")  -- "hello vera"
-replace("aaa", "a", "bb")                -- "bbbbbb"
-replace("hello", "xyz", "abc")           -- "hello"
-replace("hello", "", "x")                -- "hello"
+string_replace("hello world", "world", "vera")  -- "hello vera"
+string_replace("aaa", "a", "bb")                -- "bbbbbb"
+string_replace("hello", "xyz", "abc")           -- "hello"
+string_replace("hello", "", "x")                -- "hello"
 ```
 
-#### split
+#### string_split
 
 ```vera
-public fn split(@String, @String -> @Array<String>)
+public fn string_split(@String, @String -> @Array<String>)
   requires(true) ensures(true) effects(pure)
 ```
 
 Splits the string at each non-overlapping occurrence of the delimiter, returning an `Array<String>`. If the delimiter is empty, returns a single-element array containing the original string. Consecutive delimiters produce empty string segments. Uses a two-pass algorithm: pass 1 counts delimiters, then allocates the array and segment buffers in pass 2.
 
 ```vera
-split("a,b,c", ",")     -- Array with 3 elements: "a", "b", "c"
-split("hello", ",")     -- Array with 1 element: "hello"
-split("a,,b", ",")      -- Array with 3 elements: "a", "", "b"
+string_split("a,b,c", ",")     -- Array with 3 elements: "a", "b", "c"
+string_split("hello", ",")     -- Array with 1 element: "hello"
+string_split("a,,b", ",")      -- Array with 3 elements: "a", "", "b"
 ```
 
-#### join
+#### string_join
 
 ```vera
-public fn join(@Array<String>, @String -> @String)
+public fn string_join(@Array<String>, @String -> @String)
   requires(true) ensures(true) effects(pure)
 ```
 
 Joins an array of strings with the given separator between each pair of elements. An empty array produces an empty string. Uses a two-pass algorithm: pass 1 sums the total length, pass 2 copies bytes.
 
 ```vera
-join(split("a,b,c", ","), "-")  -- "a-b-c"
-join(split("hello", ","), "-")  -- "hello"
+string_join(string_split("a,b,c", ","), "-")  -- "a-b-c"
+string_join(string_split("hello", ","), "-")  -- "hello"
 ```
 
-#### from_char_code
+#### string_from_char_code
 
 ```vera
-public fn from_char_code(@Nat -> @String)
+public fn string_from_char_code(@Nat -> @String)
   requires(true) ensures(true) effects(pure)
 ```
 
-Creates a single-character (1-byte) string from an ASCII code point. Inverse of `char_code`. Allocates 1 byte of heap memory for the result.
+Creates a single-character (1-byte) string from an ASCII code point. Inverse of `string_char_code`. Allocates 1 byte of heap memory for the result.
 
 ```vera
-from_char_code(65)                        -- "A"
-char_code(from_char_code(65), 0)          -- 65 (roundtrip)
-string_concat(from_char_code(72), from_char_code(105))  -- "Hi"
+string_from_char_code(65)                        -- "A"
+string_char_code(string_from_char_code(65), 0)          -- 65 (roundtrip)
+string_concat(string_from_char_code(72), string_from_char_code(105))  -- "Hi"
 ```
 
 #### string_repeat

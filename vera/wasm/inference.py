@@ -200,30 +200,32 @@ class InferenceMixin:
         # string_length(string) → Int (i64)
         if expr.name == "string_length":
             return "i64"
-        # string_concat / string_slice / strip → String (i32_pair)
-        if expr.name in ("string_concat", "string_slice", "strip",
+        # string_concat / string_slice / string_strip → String (i32_pair)
+        if expr.name in ("string_concat", "string_slice", "string_strip",
                           "to_string", "int_to_string",
                           "bool_to_string", "nat_to_string",
                           "byte_to_string", "float_to_string"):
             return "i32_pair"
-        # char_code → Nat (i64)
-        if expr.name == "char_code":
+        # string_char_code → Nat (i64)
+        if expr.name == "string_char_code":
             return "i64"
-        # from_char_code → String (i32_pair)
-        if expr.name == "from_char_code":
+        # string_from_char_code → String (i32_pair)
+        if expr.name == "string_from_char_code":
             return "i32_pair"
         # string_repeat → String (i32_pair)
         if expr.name == "string_repeat":
             return "i32_pair"
         # String search builtins
-        if expr.name in ("string_contains", "starts_with", "ends_with"):
+        if expr.name in ("string_contains", "string_starts_with",
+                          "string_ends_with"):
             return "i32"
-        if expr.name == "index_of":
+        if expr.name == "string_index_of":
             return "i32"
         # String transformation builtins
-        if expr.name in ("to_upper", "to_lower", "replace", "join"):
+        if expr.name in ("string_upper", "string_lower", "string_replace",
+                          "string_join"):
             return "i32_pair"
-        if expr.name == "split":
+        if expr.name == "string_split":
             return "i32_pair"
         # parse/decode builtins → Result<T, String> (i32 heap pointer)
         if expr.name in (
@@ -260,14 +262,14 @@ class InferenceMixin:
         if expr.name in ("sqrt", "pow"):
             return "f64"
         # Numeric type conversions
-        if expr.name == "to_float":
+        if expr.name == "int_to_float":
             return "f64"
         if expr.name in ("float_to_int", "nat_to_int", "byte_to_int"):
             return "i64"
         if expr.name in ("int_to_nat", "int_to_byte"):
             return "i32"
         # Float64 predicates and constants
-        if expr.name in ("is_nan", "is_infinite"):
+        if expr.name in ("float_is_nan", "float_is_infinite"):
             return "i32"
         if expr.name in ("nan", "infinity"):
             return "f64"
@@ -411,26 +413,28 @@ class InferenceMixin:
             return "Array"
         if call.name == "string_length":
             return "Int"
-        if call.name in ("string_concat", "string_slice", "strip",
+        if call.name in ("string_concat", "string_slice", "string_strip",
                           "to_string", "int_to_string",
                           "bool_to_string", "nat_to_string",
                           "byte_to_string", "float_to_string"):
             return "String"
-        if call.name == "char_code":
+        if call.name == "string_char_code":
             return "Nat"
-        if call.name == "from_char_code":
+        if call.name == "string_from_char_code":
             return "String"
         if call.name == "string_repeat":
             return "String"
         # String search builtins
-        if call.name in ("string_contains", "starts_with", "ends_with"):
+        if call.name in ("string_contains", "string_starts_with",
+                          "string_ends_with"):
             return "Bool"
-        if call.name == "index_of":
+        if call.name == "string_index_of":
             return "Option"
         # String transformation builtins
-        if call.name in ("to_upper", "to_lower", "replace", "join"):
+        if call.name in ("string_upper", "string_lower", "string_replace",
+                          "string_join"):
             return "String"
-        if call.name == "split":
+        if call.name == "string_split":
             return "Array"
         if call.name in (
             "parse_nat", "parse_int", "parse_float64", "parse_bool",
@@ -507,14 +511,14 @@ class InferenceMixin:
         if call.name in ("sqrt", "pow"):
             return "Float64"
         # Numeric type conversions
-        if call.name == "to_float":
+        if call.name == "int_to_float":
             return "Float64"
         if call.name in ("float_to_int", "nat_to_int", "byte_to_int"):
             return "Int"
         if call.name in ("int_to_nat", "int_to_byte"):
             return "Option"
         # Float64 predicates and constants
-        if call.name in ("is_nan", "is_infinite"):
+        if call.name in ("float_is_nan", "float_is_infinite"):
             return "Bool"
         if call.name in ("nan", "infinity"):
             return "Float64"

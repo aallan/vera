@@ -4245,11 +4245,11 @@ public fn main(@Unit -> @Unit)
         assert _run_io(src) == "abcdef"
 
 
-class TestCharCode:
+class TestStringCharCode:
     def test_uppercase_a(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Nat = char_code("A", 0);
+  let @Nat = string_char_code("A", 0);
   @Nat.0
 }
 """
@@ -4258,7 +4258,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_digit_zero(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Nat = char_code("0", 0);
+  let @Nat = string_char_code("0", 0);
   @Nat.0
 }
 """
@@ -4267,7 +4267,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_second_char(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Nat = char_code("AB", 1);
+  let @Nat = string_char_code("AB", 1);
   @Nat.0
 }
 """
@@ -4276,20 +4276,20 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_space(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Nat = char_code(" ", 0);
+  let @Nat = string_char_code(" ", 0);
   @Nat.0
 }
 """
         assert _run(src) == 32
 
 
-class TestFromCharCode:
-    """from_char_code creates a single-character string from a code point."""
+class TestStringFromCharCode:
+    """string_from_char_code creates a single-character string from a code point."""
 
     def test_uppercase_a(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Nat = char_code(from_char_code(65), 0);
+  let @Nat = string_char_code(string_from_char_code(65), 0);
   @Nat.0
 }
 """
@@ -4298,7 +4298,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_digit(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Nat = char_code(from_char_code(48), 0);
+  let @Nat = string_char_code(string_from_char_code(48), 0);
   @Nat.0
 }
 """
@@ -4307,7 +4307,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_space(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Nat = char_code(from_char_code(32), 0);
+  let @Nat = string_char_code(string_from_char_code(32), 0);
   @Nat.0
 }
 """
@@ -4316,7 +4316,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_length_is_one(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  let @Nat = string_length(from_char_code(65));
+  let @Nat = string_length(string_from_char_code(65));
   @Nat.0
 }
 """
@@ -4325,8 +4325,8 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_concat_builds_string(self) -> None:
         src = """
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
-  let @String = string_concat(from_char_code(65), from_char_code(66));
-  starts_with(@String.0, "AB")
+  let @String = string_concat(string_from_char_code(65), string_from_char_code(66));
+  string_starts_with(@String.0, "AB")
 }
 """
         assert _run(src) == 1
@@ -4347,7 +4347,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_single_char(self) -> None:
         src = """
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
-  starts_with(string_repeat("x", 5), "xxxxx")
+  string_starts_with(string_repeat("x", 5), "xxxxx")
 }
 """
         assert _run(src) == 1
@@ -4364,7 +4364,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_one_count(self) -> None:
         src = """
 public fn f(-> @Bool) requires(true) ensures(true) effects(pure) {
-  starts_with(string_repeat("hello", 1), "hello")
+  string_starts_with(string_repeat("hello", 1), "hello")
 }
 """
         assert _run(src) == 1
@@ -5207,14 +5207,14 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         assert _run(src) == 123
 
 
-class TestStrip:
+class TestStringStrip:
     def test_both_sides(self) -> None:
         src = """
 effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(strip("  hello  "))
+  IO.print(string_strip("  hello  "))
 }
 """
         assert _run_io(src) == "hello"
@@ -5225,7 +5225,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(strip("   world"))
+  IO.print(string_strip("   world"))
 }
 """
         assert _run_io(src) == "world"
@@ -5236,7 +5236,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(strip("test   "))
+  IO.print(string_strip("test   "))
 }
 """
         assert _run_io(src) == "test"
@@ -5247,7 +5247,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(strip("abc"))
+  IO.print(string_strip("abc"))
 }
 """
         assert _run_io(src) == "abc"
@@ -5255,17 +5255,17 @@ public fn main(@Unit -> @Unit)
     def test_all_whitespace(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  string_length(strip("   "))
+  string_length(string_strip("   "))
 }
 """
         assert _run(src) == 0
 
-    def test_strip_then_parse(self) -> None:
+    def test_string_strip_then_parse(self) -> None:
         src = """
 private data Result<T, E> { Ok(T), Err(E) }
 
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  match parse_nat(strip("  42  ")) {
+  match parse_nat(string_strip("  42  ")) {
     Ok(@Nat) -> @Nat.0,
     Err(_) -> 0 - 1
   }
@@ -5321,11 +5321,11 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         assert _run(src) == 1
 
 
-class TestStartsWith:
+class TestStringStartsWith:
     def test_basic_true(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if starts_with("hello", "hel") then { 1 } else { 0 }
+  if string_starts_with("hello", "hel") then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1
@@ -5333,7 +5333,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_basic_false(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if starts_with("hello", "xyz") then { 1 } else { 0 }
+  if string_starts_with("hello", "xyz") then { 1 } else { 0 }
 }
 """
         assert _run(src) == 0
@@ -5341,7 +5341,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_empty_prefix(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if starts_with("hello", "") then { 1 } else { 0 }
+  if string_starts_with("hello", "") then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1
@@ -5349,17 +5349,17 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_longer_needle(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if starts_with("hi", "hello") then { 1 } else { 0 }
+  if string_starts_with("hi", "hello") then { 1 } else { 0 }
 }
 """
         assert _run(src) == 0
 
 
-class TestEndsWith:
+class TestStringEndsWith:
     def test_basic_true(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if ends_with("hello", "llo") then { 1 } else { 0 }
+  if string_ends_with("hello", "llo") then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1
@@ -5367,7 +5367,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_basic_false(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if ends_with("hello", "xyz") then { 1 } else { 0 }
+  if string_ends_with("hello", "xyz") then { 1 } else { 0 }
 }
 """
         assert _run(src) == 0
@@ -5375,7 +5375,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_empty_suffix(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if ends_with("hello", "") then { 1 } else { 0 }
+  if string_ends_with("hello", "") then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1
@@ -5383,17 +5383,17 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_longer_needle(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if ends_with("hi", "hello") then { 1 } else { 0 }
+  if string_ends_with("hi", "hello") then { 1 } else { 0 }
 }
 """
         assert _run(src) == 0
 
 
-class TestIndexOf:
+class TestStringIndexOf:
     def test_found(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  match index_of("hello world", "world") {
+  match string_index_of("hello world", "world") {
     Some(@Nat) -> nat_to_int(@Nat.0),
     None -> 0 - 1
   }
@@ -5404,7 +5404,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_not_found(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  match index_of("hello", "xyz") {
+  match string_index_of("hello", "xyz") {
     Some(@Nat) -> nat_to_int(@Nat.0),
     None -> 0 - 1
   }
@@ -5415,7 +5415,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_at_start(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  match index_of("hello", "hel") {
+  match string_index_of("hello", "hel") {
     Some(@Nat) -> nat_to_int(@Nat.0),
     None -> 0 - 1
   }
@@ -5426,7 +5426,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_empty_needle(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  match index_of("hello", "") {
+  match string_index_of("hello", "") {
     Some(@Nat) -> nat_to_int(@Nat.0),
     None -> 0 - 1
   }
@@ -5435,14 +5435,14 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         assert _run(src) == 0
 
 
-class TestToUpper:
+class TestStringUpper:
     def test_basic(self) -> None:
         src = """
 effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(to_upper("hello"))
+  IO.print(string_upper("hello"))
 }
 """
         assert _run_io(src) == "HELLO"
@@ -5453,7 +5453,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(to_upper("Hello World"))
+  IO.print(string_upper("Hello World"))
 }
 """
         assert _run_io(src) == "HELLO WORLD"
@@ -5464,7 +5464,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(to_upper("123"))
+  IO.print(string_upper("123"))
 }
 """
         assert _run_io(src) == "123"
@@ -5472,20 +5472,20 @@ public fn main(@Unit -> @Unit)
     def test_empty(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  string_length(to_upper(""))
+  string_length(string_upper(""))
 }
 """
         assert _run(src) == 0
 
 
-class TestToLower:
+class TestStringLower:
     def test_basic(self) -> None:
         src = """
 effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(to_lower("HELLO"))
+  IO.print(string_lower("HELLO"))
 }
 """
         assert _run_io(src) == "hello"
@@ -5496,7 +5496,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(to_lower("Hello World"))
+  IO.print(string_lower("Hello World"))
 }
 """
         assert _run_io(src) == "hello world"
@@ -5507,7 +5507,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(to_lower("123"))
+  IO.print(string_lower("123"))
 }
 """
         assert _run_io(src) == "123"
@@ -5515,20 +5515,20 @@ public fn main(@Unit -> @Unit)
     def test_empty(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  string_length(to_lower(""))
+  string_length(string_lower(""))
 }
 """
         assert _run(src) == 0
 
 
-class TestReplace:
+class TestStringReplace:
     def test_basic(self) -> None:
         src = """
 effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(replace("hello world", "world", "vera"))
+  IO.print(string_replace("hello world", "world", "vera"))
 }
 """
         assert _run_io(src) == "hello vera"
@@ -5539,7 +5539,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(replace("hello", "xyz", "abc"))
+  IO.print(string_replace("hello", "xyz", "abc"))
 }
 """
         assert _run_io(src) == "hello"
@@ -5550,7 +5550,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(replace("hello", "", "x"))
+  IO.print(string_replace("hello", "", "x"))
 }
 """
         assert _run_io(src) == "hello"
@@ -5561,20 +5561,20 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(replace("aabaa", "a", "x"))
+  IO.print(string_replace("aabaa", "a", "x"))
 }
 """
         assert _run_io(src) == "xxbxx"
 
 
-class TestSplit:
+class TestStringSplit:
     def test_basic(self) -> None:
         src = """
 effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(join(split("a,b,c", ","), "-"))
+  IO.print(string_join(string_split("a,b,c", ","), "-"))
 }
 """
         assert _run_io(src) == "a-b-c"
@@ -5585,7 +5585,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(join(split("hello", ","), "-"))
+  IO.print(string_join(string_split("hello", ","), "-"))
 }
 """
         assert _run_io(src) == "hello"
@@ -5593,7 +5593,7 @@ public fn main(@Unit -> @Unit)
     def test_count(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  array_length(split("a,b,c", ","))
+  array_length(string_split("a,b,c", ","))
 }
 """
         assert _run(src) == 3
@@ -5601,20 +5601,20 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_consecutive_delimiters(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  array_length(split("a,,b", ","))
+  array_length(string_split("a,,b", ","))
 }
 """
         assert _run(src) == 3
 
 
-class TestJoin:
+class TestStringJoin:
     def test_basic(self) -> None:
         src = """
 effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(join(split("a,b,c", ","), "-"))
+  IO.print(string_join(string_split("a,b,c", ","), "-"))
 }
 """
         assert _run_io(src) == "a-b-c"
@@ -5625,7 +5625,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(join(split("hello", ","), "-"))
+  IO.print(string_join(string_split("hello", ","), "-"))
 }
 """
         assert _run_io(src) == "hello"
@@ -5636,7 +5636,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(join(split("a,b", ","), ""))
+  IO.print(string_join(string_split("a,b", ","), ""))
 }
 """
         assert _run_io(src) == "ab"
@@ -5647,7 +5647,7 @@ effect IO { op print(String -> Unit); }
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(join(split("hello world", " "), " "))
+  IO.print(string_join(string_split("hello world", " "), " "))
 }
 """
         assert _run_io(src) == "hello world"
@@ -6059,13 +6059,13 @@ public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
 # =====================================================================
 
 
-class TestToFloat:
-    """to_float(@Int -> @Float64)."""
+class TestIntToFloat:
+    """int_to_float(@Int -> @Float64)."""
 
     def test_positive(self) -> None:
         src = """
 public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
-  to_float(42)
+  int_to_float(42)
 }
 """
         assert _run_float(src) == 42.0
@@ -6073,7 +6073,7 @@ public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
     def test_negative(self) -> None:
         src = """
 public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
-  to_float(0 - 7)
+  int_to_float(0 - 7)
 }
 """
         assert _run_float(src) == -7.0
@@ -6081,7 +6081,7 @@ public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
     def test_zero(self) -> None:
         src = """
 public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
-  to_float(0)
+  int_to_float(0)
 }
 """
         assert _run_float(src) == 0.0
@@ -6292,7 +6292,7 @@ class TestTypeConversionRoundTrip:
     def test_int_float_roundtrip(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  float_to_int(to_float(42))
+  float_to_int(int_to_float(42))
 }
 """
         assert _run(src) == 42
@@ -6320,10 +6320,10 @@ public fn f(@Byte -> @Int) requires(true) ensures(true) effects(pure) {
         assert _run(src, fn="f", args=[100]) == 100
 
     def test_nat_to_float(self) -> None:
-        """Chain nat_to_int then to_float."""
+        """Chain nat_to_int then int_to_float."""
         src = """
 public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
-  to_float(nat_to_int(abs(10)))
+  int_to_float(nat_to_int(abs(10)))
 }
 """
         assert _run_float(src) == 10.0
@@ -6334,13 +6334,13 @@ public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
 # =====================================================================
 
 
-class TestIsNan:
-    """End-to-end tests for is_nan builtin."""
+class TestFloatIsNan:
+    """End-to-end tests for float_is_nan builtin."""
 
     def test_regular_float_not_nan(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_nan(1.5) then { 1 } else { 0 }
+  if float_is_nan(1.5) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 0
@@ -6348,7 +6348,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_nan_is_nan(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_nan(nan()) then { 1 } else { 0 }
+  if float_is_nan(nan()) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1
@@ -6356,7 +6356,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_infinity_not_nan(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_nan(infinity()) then { 1 } else { 0 }
+  if float_is_nan(infinity()) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 0
@@ -6364,19 +6364,19 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_zero_not_nan(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_nan(0.0) then { 1 } else { 0 }
+  if float_is_nan(0.0) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 0
 
 
-class TestIsInfinite:
-    """End-to-end tests for is_infinite builtin."""
+class TestFloatIsInfinite:
+    """End-to-end tests for float_is_infinite builtin."""
 
     def test_regular_float_not_infinite(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_infinite(1.5) then { 1 } else { 0 }
+  if float_is_infinite(1.5) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 0
@@ -6384,7 +6384,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_positive_infinity(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_infinite(infinity()) then { 1 } else { 0 }
+  if float_is_infinite(infinity()) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1
@@ -6393,7 +6393,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
         """Negate infinity to get -inf, still infinite."""
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_infinite(0.0 - infinity()) then { 1 } else { 0 }
+  if float_is_infinite(0.0 - infinity()) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1
@@ -6401,7 +6401,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_nan_not_infinite(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_infinite(nan()) then { 1 } else { 0 }
+  if float_is_infinite(nan()) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 0
@@ -6409,7 +6409,7 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
     def test_zero_not_infinite(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_infinite(0.0) then { 1 } else { 0 }
+  if float_is_infinite(0.0) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 0
@@ -6465,36 +6465,36 @@ public fn f(-> @Float64) requires(true) ensures(true) effects(pure) {
 class TestFloatPredicateRoundTrips:
     """Composition and round-trip tests for float predicates."""
 
-    def test_is_nan_of_nan(self) -> None:
+    def test_float_is_nan_of_nan(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_nan(nan()) then { 1 } else { 0 }
+  if float_is_nan(nan()) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1
 
-    def test_is_infinite_of_infinity(self) -> None:
+    def test_float_is_infinite_of_infinity(self) -> None:
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_infinite(infinity()) then { 1 } else { 0 }
+  if float_is_infinite(infinity()) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1
 
-    def test_is_nan_after_arithmetic(self) -> None:
+    def test_float_is_nan_after_arithmetic(self) -> None:
         """nan + anything = nan."""
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_nan(nan() + 1.0) then { 1 } else { 0 }
+  if float_is_nan(nan() + 1.0) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1
 
-    def test_is_infinite_after_arithmetic(self) -> None:
+    def test_float_is_infinite_after_arithmetic(self) -> None:
         """infinity + 1 = infinity."""
         src = """
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
-  if is_infinite(infinity() + 1.0) then { 1 } else { 0 }
+  if float_is_infinite(infinity() + 1.0) then { 1 } else { 0 }
 }
 """
         assert _run(src) == 1

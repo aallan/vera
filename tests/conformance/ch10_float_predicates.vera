@@ -1,5 +1,5 @@
 -- Conformance: Float64 special value operations (Chapter 9)
--- Tests: is_nan, is_infinite, nan, infinity
+-- Tests: float_is_nan, float_is_infinite, nan, infinity
 public fn test_nan_constant(@Unit -> @Float64)
   requires(true)
   ensures(true)
@@ -21,7 +21,7 @@ public fn test_is_nan_true(@Unit -> @Int)
   ensures(@Int.result == 1)
   effects(pure)
 {
-  if is_nan(nan()) then {
+  if float_is_nan(nan()) then {
     1
   } else {
     0
@@ -33,7 +33,7 @@ public fn test_is_nan_false(@Unit -> @Int)
   ensures(@Int.result == 0)
   effects(pure)
 {
-  if is_nan(1.5) then {
+  if float_is_nan(1.5) then {
     1
   } else {
     0
@@ -45,7 +45,7 @@ public fn test_is_nan_infinity(@Unit -> @Int)
   ensures(@Int.result == 0)
   effects(pure)
 {
-  if is_nan(infinity()) then {
+  if float_is_nan(infinity()) then {
     1
   } else {
     0
@@ -57,7 +57,7 @@ public fn test_is_infinite_true(@Unit -> @Int)
   ensures(@Int.result == 1)
   effects(pure)
 {
-  if is_infinite(infinity()) then {
+  if float_is_infinite(infinity()) then {
     1
   } else {
     0
@@ -69,7 +69,7 @@ public fn test_is_infinite_negative(@Unit -> @Int)
   ensures(@Int.result == 1)
   effects(pure)
 {
-  if is_infinite(0.0 - infinity()) then {
+  if float_is_infinite(0.0 - infinity()) then {
     1
   } else {
     0
@@ -81,7 +81,7 @@ public fn test_is_infinite_false(@Unit -> @Int)
   ensures(@Int.result == 0)
   effects(pure)
 {
-  if is_infinite(2.5) then {
+  if float_is_infinite(2.5) then {
     1
   } else {
     0
@@ -93,7 +93,7 @@ public fn test_is_infinite_nan(@Unit -> @Int)
   ensures(@Int.result == 0)
   effects(pure)
 {
-  if is_infinite(nan()) then {
+  if float_is_infinite(nan()) then {
     1
   } else {
     0
@@ -105,7 +105,7 @@ public fn main(@Unit -> @Int)
   ensures(@Int.result == 1)
   effects(pure)
 {
-  if is_nan(nan()) then {
+  if float_is_nan(nan()) then {
     1
   } else {
     0

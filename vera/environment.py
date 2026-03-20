@@ -572,15 +572,15 @@ class TypeEnv:
         )
 
         # String/number conversion and inspection
-        self.functions["char_code"] = FunctionInfo(
-            name="char_code",
+        self.functions["string_char_code"] = FunctionInfo(
+            name="string_char_code",
             forall_vars=None,
             param_types=(STRING, INT),
             return_type=NAT,
             effect=PureEffectRow(),
         )
-        self.functions["from_char_code"] = FunctionInfo(
-            name="from_char_code",
+        self.functions["string_from_char_code"] = FunctionInfo(
+            name="string_from_char_code",
             forall_vars=None,
             param_types=(NAT,),
             return_type=STRING,
@@ -797,8 +797,8 @@ class TypeEnv:
             return_type=STRING,
             effect=PureEffectRow(),
         )
-        self.functions["strip"] = FunctionInfo(
-            name="strip",
+        self.functions["string_strip"] = FunctionInfo(
+            name="string_strip",
             forall_vars=None,
             param_types=(STRING,),
             return_type=STRING,
@@ -813,57 +813,57 @@ class TypeEnv:
             return_type=BOOL,
             effect=PureEffectRow(),
         )
-        self.functions["starts_with"] = FunctionInfo(
-            name="starts_with",
+        self.functions["string_starts_with"] = FunctionInfo(
+            name="string_starts_with",
             forall_vars=None,
             param_types=(STRING, STRING),
             return_type=BOOL,
             effect=PureEffectRow(),
         )
-        self.functions["ends_with"] = FunctionInfo(
-            name="ends_with",
+        self.functions["string_ends_with"] = FunctionInfo(
+            name="string_ends_with",
             forall_vars=None,
             param_types=(STRING, STRING),
             return_type=BOOL,
             effect=PureEffectRow(),
         )
-        self.functions["index_of"] = FunctionInfo(
-            name="index_of",
+        self.functions["string_index_of"] = FunctionInfo(
+            name="string_index_of",
             forall_vars=None,
             param_types=(STRING, STRING),
             return_type=AdtType("Option", (NAT,)),
             effect=PureEffectRow(),
         )
-        self.functions["to_upper"] = FunctionInfo(
-            name="to_upper",
+        self.functions["string_upper"] = FunctionInfo(
+            name="string_upper",
             forall_vars=None,
             param_types=(STRING,),
             return_type=STRING,
             effect=PureEffectRow(),
         )
-        self.functions["to_lower"] = FunctionInfo(
-            name="to_lower",
+        self.functions["string_lower"] = FunctionInfo(
+            name="string_lower",
             forall_vars=None,
             param_types=(STRING,),
             return_type=STRING,
             effect=PureEffectRow(),
         )
-        self.functions["replace"] = FunctionInfo(
-            name="replace",
+        self.functions["string_replace"] = FunctionInfo(
+            name="string_replace",
             forall_vars=None,
             param_types=(STRING, STRING, STRING),
             return_type=STRING,
             effect=PureEffectRow(),
         )
-        self.functions["split"] = FunctionInfo(
-            name="split",
+        self.functions["string_split"] = FunctionInfo(
+            name="string_split",
             forall_vars=None,
             param_types=(STRING, STRING),
             return_type=AdtType("Array", (STRING,)),
             effect=PureEffectRow(),
         )
-        self.functions["join"] = FunctionInfo(
-            name="join",
+        self.functions["string_join"] = FunctionInfo(
+            name="string_join",
             forall_vars=None,
             param_types=(AdtType("Array", (STRING,)), STRING),
             return_type=STRING,
@@ -929,8 +929,8 @@ class TypeEnv:
         )
 
         # Numeric type conversions
-        self.functions["to_float"] = FunctionInfo(
-            name="to_float",
+        self.functions["int_to_float"] = FunctionInfo(
+            name="int_to_float",
             forall_vars=None,
             param_types=(INT,),
             return_type=FLOAT64,
@@ -973,15 +973,15 @@ class TypeEnv:
         )
 
         # Float64 special value operations
-        self.functions["is_nan"] = FunctionInfo(
-            name="is_nan",
+        self.functions["float_is_nan"] = FunctionInfo(
+            name="float_is_nan",
             forall_vars=None,
             param_types=(FLOAT64,),
             return_type=BOOL,
             effect=PureEffectRow(),
         )
-        self.functions["is_infinite"] = FunctionInfo(
-            name="is_infinite",
+        self.functions["float_is_infinite"] = FunctionInfo(
+            name="float_is_infinite",
             forall_vars=None,
             param_types=(FLOAT64,),
             return_type=BOOL,
