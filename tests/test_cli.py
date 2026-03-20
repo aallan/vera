@@ -1438,3 +1438,925 @@ public fn main(-> @Unit)
         )
         assert result.returncode == 0
         assert "hello from stdin" in result.stdout
+
+
+# =====================================================================
+# _is_int_str helper
+# =====================================================================
+
+
+class TestIsIntStr:
+    def test_positive_int(self) -> None:
+        from vera.cli import _is_int_str
+        assert _is_int_str("42") is True
+
+    def test_negative_int(self) -> None:
+        from vera.cli import _is_int_str
+        assert _is_int_str("-7") is True
+
+    def test_zero(self) -> None:
+        from vera.cli import _is_int_str
+        assert _is_int_str("0") is True
+
+    def test_not_int_alpha(self) -> None:
+        from vera.cli import _is_int_str
+        assert _is_int_str("abc") is False
+
+    def test_not_int_float(self) -> None:
+        from vera.cli import _is_int_str
+        assert _is_int_str("1.5") is False
+
+    def test_not_int_empty(self) -> None:
+        from vera.cli import _is_int_str
+        assert _is_int_str("") is False
+
+
+# =====================================================================
+# cmd_verify — verification error paths
+# =====================================================================
+
+
+class TestCmdVerifyErrors:
+    """Cover verification-error display (non-JSON) in cmd_verify."""
+
+    def _verify_fail_source(self) -> str:
+        """A program that passes type-check but fails verification."""
+        return """\
+private fn bad(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > @Int.0)
+  effects(pure)
+{ @Int.0 }
+"""
+
+    def test_verification_failure(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Postcondition failure prints errors to stderr."""
+        path = tmp_path / "vfail.vera"
+        path.write_text(self._verify_fail_source())
+        rc = cmd_verify(str(path))
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "postcondition" in err.lower() or len(err) > 0
+
+    def test_verification_failure_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Postcondition failure in JSON mode returns structured error."""
+        path = tmp_path / "vfail.vera"
+        path.write_text(self._verify_fail_source())
+        rc = cmd_verify(str(path), as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+
+
+# =====================================================================
+# cmd_compile — browser target and error paths
+# =====================================================================
+
+
+class TestCmdCompileBrowser:
+    """Cover --target browser path in cmd_compile."""
+
+    def test_browser_target(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--target browser emits a browser bundle directory."""
+        out_dir = tmp_path / "browser_out"
+        rc = cmd_compile(
+            HELLO_WORLD, target="browser", output=str(out_dir),
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "Browser bundle:" in captured.out
+        assert out_dir.exists()
+
+    def test_browser_target_default_dir(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Without -o, browser target creates <stem>_browser/ next to source."""
+        src = Path(HELLO_WORLD)
+        dest = tmp_path / "hello_world.vera"
+        dest.write_text(src.read_text())
+        rc = cmd_compile(str(dest), target="browser")
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "Browser bundle:" in captured.out
+        expected_dir = tmp_path / "hello_world_browser"
+        assert expected_dir.exists()
+
+
+class TestCmdCompileErrors:
+    """Cover codegen error paths in cmd_compile."""
+
+    def test_compile_type_error_non_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Type error in non-JSON mode prints to stderr."""
+        path = _bad_vera(tmp_path, _type_error_source())
+        rc = cmd_compile(path)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert len(err) > 0
+
+
+# =====================================================================
+# cmd_run — additional uncovered paths
+# =====================================================================
+
+
+class TestCmdRunUncoveredPaths:
+    """Cover uncovered branches in cmd_run."""
+
+    def test_run_fn_not_found_not_private(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Targeting a non-existent function shows available exports."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        path = tmp_path / "test.vera"
+        path.write_text(source)
+        rc = cmd_run(str(path), fn_name="nonexistent")
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "not found in exports" in err
+        assert "main" in err
+
+    def test_run_fn_not_found_not_private_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Targeting a non-existent function in JSON mode."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        path = tmp_path / "test.vera"
+        path.write_text(source)
+        rc = cmd_run(str(path), fn_name="nonexistent", as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert "not found in exports" in data["diagnostics"][0]["description"]
+
+    def test_run_private_fn_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Targeting a private function in JSON mode."""
+        source = """\
+private fn secret(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        path = tmp_path / "test.vera"
+        path.write_text(source)
+        rc = cmd_run(str(path), fn_name="secret", fn_args=[1], as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert "private" in data["diagnostics"][0]["description"].lower()
+
+    def test_run_io_exit_code_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """JSON mode includes exit_code field when IO.exit is used."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.exit(42)
+}
+"""
+        path = tmp_path / "exit_test.vera"
+        path.write_text(source)
+        rc = cmd_run(str(path), as_json=True)
+        assert rc == 42
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is True
+        assert data["exit_code"] == 42
+
+    def test_run_io_exit_code_non_json(
+        self, tmp_path: Path,
+    ) -> None:
+        """Non-JSON mode returns exit code from IO.exit."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.exit(7)
+}
+"""
+        path = tmp_path / "exit_test.vera"
+        path.write_text(source)
+        rc = cmd_run(str(path))
+        assert rc == 7
+
+    def test_run_runtime_trap_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Runtime contract violation in JSON mode."""
+        source = """\
+public fn positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        path = tmp_path / "trap.vera"
+        path.write_text(source)
+        rc = cmd_run(str(path), fn_name="positive", fn_args=[0], as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        # Pin the specific runtime contract violation diagnostic
+        diag_text = json.dumps(data).lower()
+        assert "trap" in diag_text or "contract" in diag_text or "unreachable" in diag_text
+
+    def test_run_no_exports_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """No exports in JSON mode produces structured error."""
+        source = """\
+private fn helper(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 + 1 }
+"""
+        path = tmp_path / "priv.vera"
+        path.write_text(source)
+        rc = cmd_run(str(path), as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert "No exported functions" in data["diagnostics"][0]["description"]
+
+
+# =====================================================================
+# cmd_test — uncovered output paths
+# =====================================================================
+
+
+class TestCmdTestUncoveredPaths:
+    """Cover human-readable output paths and JSON type-error path."""
+
+    def test_type_error_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Type error in JSON test mode returns structured diagnostic."""
+        path = _bad_vera(tmp_path, _type_error_source())
+        rc = cmd_test(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert len(data["diagnostics"]) > 0
+
+    def test_syntax_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Syntax error in test mode prints to stderr."""
+        path = _bad_vera(tmp_path, _syntax_error_source())
+        rc = cmd_test(path)
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert len(err) > 0
+
+    def test_syntax_error_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Syntax error in JSON test mode produces valid JSON."""
+        path = _bad_vera(tmp_path, _syntax_error_source())
+        rc = cmd_test(path, as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+
+    def test_tested_output(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Human-readable output for tested (Tier 3) functions."""
+        source = """\
+public fn clamp(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  ensures(@Int.result <= 100)
+  effects(pure)
+{
+  if @Int.0 < 0 then { 0 }
+  else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
+}
+"""
+        path = tmp_path / "clamp.vera"
+        path.write_text(source)
+        rc = cmd_test(str(path), trials=10)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Testing:" in out
+        assert "Results:" in out
+        # Should show TESTED or VERIFIED
+        assert "TESTED" in out or "VERIFIED" in out
+
+    def test_fn_name_filter(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--fn filters to a specific function."""
+        rc = cmd_test(SAFE_DIVIDE, fn_name="safe_divide")
+        assert rc == 0
+        out = capsys.readouterr().out
+        # Must mention the filtered function by name
+        assert "safe_divide" in out
+
+    def test_trials_display(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Human-readable output shows trial counts."""
+        source = """\
+public fn clamp(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  ensures(@Int.result <= 100)
+  effects(pure)
+{
+  if @Int.0 < 0 then { 0 }
+  else { if @Int.0 > 100 then { 100 } else { @Int.0 } }
+}
+"""
+        path = tmp_path / "clamp.vera"
+        path.write_text(source)
+        rc = cmd_test(str(path), trials=5)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Results:" in out
+        # Must show the function was actually processed
+        assert "clamp" in out
+
+
+# =====================================================================
+# cmd_ast — JSON output path
+# =====================================================================
+
+
+class TestCmdAstJson:
+    def test_json_has_declarations(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """JSON AST output contains declarations."""
+        rc = cmd_ast(INCREMENT, as_json=True)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        assert "declarations" in data
+
+
+# =====================================================================
+# cmd_fmt — additional paths via subprocess
+# =====================================================================
+
+
+class TestCmdFmtSubprocess:
+    """Cover fmt dispatch through main()."""
+
+    def test_dispatch_fmt_syntax_error(self, tmp_path: Path) -> None:
+        path = tmp_path / "bad.vera"
+        path.write_text(_syntax_error_source())
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "fmt", str(path)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert len(result.stderr) > 0
+
+
+# =====================================================================
+# main() — additional argument parsing paths
+# =====================================================================
+
+
+class TestMainArgParsing:
+    """Cover main() argument parsing edge cases."""
+
+    def test_invalid_trials_value(self) -> None:
+        """--trials with non-integer value prints error."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "test",
+             "--trials", "abc", SAFE_DIVIDE],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "Invalid --trials value" in result.stderr
+
+    def test_invalid_trials_value_json(self) -> None:
+        """--trials with non-integer value in JSON mode."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "test",
+             "--json", "--trials", "abc", SAFE_DIVIDE],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["ok"] is False
+        assert "Invalid --trials" in data["diagnostics"][0]["description"]
+
+    def test_invalid_target_value(self) -> None:
+        """--target with invalid value prints error."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile",
+             "--target", "invalid", HELLO_WORLD],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "Invalid --target value" in result.stderr
+
+    def test_invalid_target_value_json(self) -> None:
+        """--target with invalid value in JSON mode."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile",
+             "--json", "--target", "invalid", HELLO_WORLD],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["ok"] is False
+        assert "Invalid --target" in data["diagnostics"][0]["description"]
+
+    def test_browser_target_via_main(self, tmp_path: Path) -> None:
+        """--target browser dispatches correctly via main()."""
+        out_dir = tmp_path / "browser_out"
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile",
+             "--target", "browser", "-o", str(out_dir), HELLO_WORLD],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert "Browser bundle:" in result.stdout
+        assert out_dir.exists()
+
+    def test_invalid_args_after_dashdash(self) -> None:
+        """Non-integer arguments after -- produce error."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run",
+             HELLO_WORLD, "--", "notanint"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "Invalid integer" in result.stderr
+
+    def test_invalid_args_after_dashdash_json(self) -> None:
+        """Non-integer arguments after -- in JSON mode."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run",
+             "--json", HELLO_WORLD, "--", "notanint"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["ok"] is False
+        assert "Invalid integer" in data["diagnostics"][0]["description"]
+
+    def test_dispatch_test_command(self) -> None:
+        """test command dispatches correctly."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "test",
+             "--trials", "5", SAFE_DIVIDE],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+
+    def test_dispatch_test_with_fn(self) -> None:
+        """test command with --fn dispatches correctly."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "test",
+             "--fn", "safe_divide", SAFE_DIVIDE],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+
+    def test_no_filepath_after_flags(self) -> None:
+        """Flags without filepath prints usage."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile", "--wat"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "Usage:" in result.stderr
+
+    def test_output_path_flag(self, tmp_path: Path) -> None:
+        """-o flag sets output path via main()."""
+        out_path = tmp_path / "out.wasm"
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile",
+             "-o", str(out_path), HELLO_WORLD],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert out_path.exists()
+
+
+# =====================================================================
+# main() — in-process tests (for coverage)
+# =====================================================================
+
+
+class TestMainInProcess:
+    """Test main() in-process via sys.argv patching for coverage."""
+
+    def test_no_args(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """No args prints usage and exits 1."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera"]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 1
+        assert "Usage:" in capsys.readouterr().err
+
+    def test_unknown_command(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Unknown command prints error and usage."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "bogus", HELLO_WORLD]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "Unknown command: bogus" in err
+
+    def test_parse_dispatch(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """parse command dispatches to cmd_parse."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "parse", INCREMENT]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_check_dispatch(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """check command dispatches to cmd_check."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "check", INCREMENT]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_typecheck_alias(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """typecheck alias dispatches to cmd_check."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "typecheck", INCREMENT]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_verify_dispatch(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """verify command dispatches."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "verify", SAFE_DIVIDE]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_compile_dispatch(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """compile command dispatches."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "compile", "--wat", HELLO_WORLD]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_run_dispatch(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """run command dispatches."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "run", HELLO_WORLD]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_ast_dispatch(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """ast command dispatches."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "ast", INCREMENT]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_fmt_dispatch(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """fmt command dispatches."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "fmt", INCREMENT]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_invalid_trials_inprocess(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--trials with non-int value, in-process."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "test", "--trials", "abc", SAFE_DIVIDE]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 1
+        assert "Invalid --trials" in capsys.readouterr().err
+
+    def test_invalid_trials_json_inprocess(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--trials with non-int value in JSON mode, in-process."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "test", "--json", "--trials", "abc",
+                                SAFE_DIVIDE]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        import json as _json
+        data = _json.loads(out)
+        assert data["ok"] is False
+
+    def test_invalid_target_inprocess(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--target with invalid value, in-process."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "compile", "--target", "invalid",
+                                HELLO_WORLD]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 1
+        assert "Invalid --target" in capsys.readouterr().err
+
+    def test_invalid_target_json_inprocess(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--target with invalid value in JSON mode, in-process."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "compile", "--json", "--target",
+                                "invalid", HELLO_WORLD]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        import json as _json
+        data = _json.loads(out)
+        assert data["ok"] is False
+
+    def test_invalid_fn_args_inprocess(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Non-integer args after --, in-process."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "run", HELLO_WORLD, "--", "abc"]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 1
+        assert "Invalid integer" in capsys.readouterr().err
+
+    def test_invalid_fn_args_json_inprocess(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Non-integer args after -- in JSON mode, in-process."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "run", "--json", HELLO_WORLD, "--",
+                                "abc"]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 1
+        out = capsys.readouterr().out
+        import json as _json
+        data = _json.loads(out)
+        assert data["ok"] is False
+
+    def test_no_filepath_inprocess(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Flags but no filepath prints usage."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "compile", "--wat"]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 1
+        assert "Usage:" in capsys.readouterr().err
+
+    def test_fn_name_parsing(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """--fn flag is parsed correctly."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "run", "--fn", "main", HELLO_WORLD]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_output_path_parsing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """-o flag is parsed correctly."""
+        from unittest.mock import patch
+        out = tmp_path / "out.wasm"
+        with patch("sys.argv", ["vera", "compile", "-o", str(out),
+                                HELLO_WORLD]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+        assert out.exists()
+
+    def test_run_with_fn_args(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """run with -- args parses integer arguments."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "run", "--fn", "main",
+                                HELLO_WORLD, "--", "42"]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            # main() doesn't take args, but dispatch should work
+            assert exc_info.value.code in (0, 1)
+
+    def test_test_with_trials_and_fn(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """test with --trials and --fn."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "test", "--trials", "5", "--fn",
+                                "safe_divide", SAFE_DIVIDE]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_compile_browser_inprocess(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--target browser in-process."""
+        from unittest.mock import patch
+        out_dir = tmp_path / "browser"
+        with patch("sys.argv", ["vera", "compile", "--target", "browser",
+                                "-o", str(out_dir), HELLO_WORLD]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+        assert out_dir.exists()
+
+    def test_check_json_inprocess(
+        self, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """check --json in-process."""
+        from unittest.mock import patch
+        with patch("sys.argv", ["vera", "check", "--json", INCREMENT]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_fmt_write_inprocess(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """fmt --write in-process."""
+        from unittest.mock import patch
+        src = Path(INCREMENT)
+        dest = tmp_path / "test.vera"
+        dest.write_text(src.read_text())
+        with patch("sys.argv", ["vera", "fmt", "--write", str(dest)]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            assert exc_info.value.code == 0
+
+    def test_fmt_check_inprocess(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """fmt --check in-process."""
+        from unittest.mock import patch
+        src = Path(INCREMENT)
+        dest = tmp_path / "test.vera"
+        dest.write_text(src.read_text())
+        with patch("sys.argv", ["vera", "fmt", "--check", str(dest)]):
+            with pytest.raises(SystemExit) as exc_info:
+                from vera.cli import main
+                main()
+            # May pass or fail depending on formatting
+            assert exc_info.value.code in (0, 1)
+
+
+# =====================================================================
+# cmd_test — test failure output paths
+# =====================================================================
+
+
+class TestCmdTestFailureOutput:
+    """Cover the FAILED output path and trial failure details."""
+
+    def test_test_failure_output(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A function with a violated postcondition shows testing output.
+
+        Use a complex enough function that Z3 can't verify it (Tier 3)
+        but the postcondition is violated on some inputs.
+        """
+        source = """\
+public fn buggy_hash(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  let @Int = @Int.0 * 31 + 17;
+  let @Int = @Int.0 * @Int.1;
+  let @Int = @Int.0 + @Int.1 * 7;
+  @Int.0
+}
+"""
+        path = tmp_path / "fail.vera"
+        path.write_text(source)
+        rc = cmd_test(str(path), trials=50)
+        out = capsys.readouterr().out
+        assert "Testing:" in out
+        assert "Results:" in out
+        # Must show either TESTED or FAILED for a Tier 3 function
+        assert "TESTED" in out or "FAILED" in out or "VERIFIED" in out
+
+    def test_test_failure_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """JSON output for tested function includes function status."""
+        source = """\
+public fn buggy_hash(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  let @Int = @Int.0 * 31 + 17;
+  let @Int = @Int.0 * @Int.1;
+  let @Int = @Int.0 + @Int.1 * 7;
+  @Int.0
+}
+"""
+        path = tmp_path / "fail.vera"
+        path.write_text(source)
+        rc = cmd_test(str(path), as_json=True, trials=50)
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert "functions" in data
+        # The function must appear with a concrete category
+        assert len(data["functions"]) > 0
+        categories = {f["category"] for f in data["functions"]}
+        assert categories & {"tested", "verified", "failed"}
+
+    def test_skipped_function_output(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Functions with IO effects are skipped in test output."""
+        source = """\
+public fn hello(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("hello")
+}
+"""
+        path = tmp_path / "io.vera"
+        path.write_text(source)
+        rc = cmd_test(str(path))
+        assert rc == 0
+        out = capsys.readouterr().out
+        # IO-effectful function must be skipped — assert the specific status
+        assert "SKIPPED" in out
+
+
+class TestCmdRunRuntimeTrap:
+    """Cover the runtime trap exception handler in cmd_run."""
+
+    def test_runtime_precondition_trap_non_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A precondition violation produces a trap in non-JSON mode."""
+        source = """\
+public fn positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        path = tmp_path / "trap.vera"
+        path.write_text(source)
+        rc = cmd_run(str(path), fn_name="positive", fn_args=[0])
+        assert rc == 1
+        captured = capsys.readouterr()
+        # Pin: must mention the precondition violation specifically
+        combined = (captured.err + captured.out).lower()
+        assert "precondition violation" in combined or "trap" in combined

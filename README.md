@@ -2,6 +2,7 @@
 
 [![Vera — A language designed for machines to write](assets/vera-social-preview.jpg)](https://veralang.dev)
 
+[![CI](https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg)](https://github.com/aallan/vera/actions/workflows/ci.yml)
 [![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/aallan/vera?utm_source=oss&utm_medium=github&utm_campaign=aallan%2Fvera&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 [![codecov](https://codecov.io/gh/aallan/vera/graph/badge.svg)](https://codecov.io/gh/aallan/vera)
 
@@ -585,13 +586,15 @@ For compiler architecture, pipeline internals, and how to extend the compiler, s
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (2,424 tests across 24 files, testing compiler internals and browser parity), a **conformance suite** (56 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (25 end-to-end demos). The compiler has 91% code coverage, enforced by [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
+Testing is organized in three layers: **unit tests** (2,749 tests across 26 files, testing compiler internals and browser parity), a **conformance suite** (56 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (25 end-to-end demos). The compiler has 96% code coverage, enforced by [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
 
 ### Known Bugs and Limitations
 
 #### Bugs
 
-No open issues.
+| Bug | Issue |
+|-----|-------|
+| Pipe operator with module-qualified calls produces spurious E201 | [#326](https://github.com/aallan/vera/issues/326) |
 
 #### Limitations
 

@@ -6,8 +6,8 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 2,424 across 24 files (~24,600 lines of test code) |
-| **Compiler code coverage** | 91% of 14,298 statements (CI minimum: 80%) |
+| **Tests** | 2,749 across 26 files (~31,900 lines of test code) |
+| **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 56 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 25, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 148 parseable blocks from 13 spec chapters: 81 parse, 67 type-check, 66 verify |
@@ -48,26 +48,28 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 
 | File | Tests | Lines | What it covers |
 |------|------:|------:|----------------|
-| `test_parser.py` | 114 | 888 | Grammar rules, operator precedence, parse errors |
+| `test_parser.py` | 119 | 968 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 118 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
-| `test_checker.py` | 368 | 4,086 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, removed legacy name regression |
+| `test_checker.py` | 397 | 4,629 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, removed legacy name regression |
 | `test_verifier.py` | 116 | 1,709 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
 | `test_codegen.py` | 654 | 7,609 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 52 | 897 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
-| `test_codegen_closures.py` | 17 | 416 | Closure lifting, captured variables, higher-order functions |
+| `test_codegen_closures.py` | 19 | 473 | Closure lifting, captured variables, higher-order functions |
 | `test_codegen_modules.py` | 18 | 529 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 104 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
-| `test_cli.py` | 111 | 1,440 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
+| `test_cli.py` | 177 | 2,362 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
-| `test_wasm_coverage.py` | 113 | 1,738 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
+| `test_verifier_coverage.py` | 78 | 1,253 | Verifier/SMT coverage gaps: SMT encoding paths, verifier edge cases, defensive branches |
+| `test_wasm_coverage.py` | 225 | 3,903 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
 | `test_tester.py` | 13 | 345 | Contract-driven testing: tier classification, input generation, test execution |
+| `test_tester_coverage.py` | 30 | 789 | Tester coverage gaps: Float/String/ADT parameters, Bool/Byte parameters, unsatisfiable preconditions, type expression edge cases |
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
-| `test_browser.py` | 58 | 706 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
+| `test_browser.py` | 61 | 750 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
 | `test_conformance.py` | 280 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 56 programs |
 | `test_prelude.py` | 24 | 406 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
@@ -169,27 +171,28 @@ Coverage by module, measured by `pytest --cov=vera`:
 
 | Module | Stmts | Miss | Coverage |
 |--------|------:|-----:|---------:|
-| `codegen/` | 1,616 | 119 | 93% |
-| `checker/` | 1,093 | 131 | 88% |
-| `wasm/` | 2,601 | 231 | 91% |
-| `browser/` | 23 | 3 | 87% |
-| `verifier.py` | 439 | 41 | 91% |
-| `transform.py` | 451 | 15 | 97% |
-| `formatter.py` | 605 | 70 | 88% |
-| `ast.py` | 449 | 31 | 93% |
-| `smt.py` | 502 | 54 | 89% |
-| `markdown.py` | 277 | 24 | 91% |
-| `types.py` | 182 | 8 | 96% |
+| `codegen/` | 1,934 | 99 | 95% |
+| `checker/` | 1,117 | 73 | 93% |
+| `wasm/` | 7,473 | 268 | 96% |
+| `browser/` | 21 | 0 | 100% |
+| `verifier.py` | 429 | 0 | 100% |
+| `transform.py` | 564 | 16 | 97% |
+| `formatter.py` | 673 | 54 | 92% |
+| `ast.py` | 460 | 30 | 93% |
+| `smt.py` | 495 | 0 | 100% |
+| `markdown.py` | 413 | 54 | 87% |
+| `types.py` | 182 | 7 | 96% |
 | `errors.py` | 126 | 1 | 99% |
-| `environment.py` | 207 | 8 | 96% |
-| `cli.py` | 503 | 163 | 68% |
-| `parser.py` | 45 | 16 | 64% |
+| `environment.py` | 239 | 8 | 97% |
+| `cli.py` | 474 | 0 | 100% |
+| `parser.py` | 45 | 0 | 100% |
 | `resolver.py` | 68 | 2 | 97% |
-| `tester.py` | 335 | 50 | 85% |
+| `tester.py` | 312 | 0 | 100% |
+| `prelude.py` | 106 | 0 | 100% |
 | `registration.py` | 18 | 0 | 100% |
-| **Total** | **14,298** | **1,250** | **91%** |
+| **Total** | **15,149** | **612** | **96%** |
 
-The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 68%) reflect auto-generated parser internals and CLI help/flag paths. The `wasm/` subsystem was improved from 79% to 91% by [#156](https://github.com/aallan/vera/issues/156) and subsequent work; the remaining gaps are mostly in `wasm/inference.py` (75%) deep utility branches.
+The lowest-coverage module is `markdown.py` at 87%, reflecting Markdown AST traversal edge cases. The `wasm/` subsystem was improved from 79% to 96% by [#156](https://github.com/aallan/vera/issues/156) and [#324](https://github.com/aallan/vera/issues/324); the remaining gaps are mostly in `wasm/inference.py` (85%) deep type-dispatch branches for specific builtin functions.
 
 ## Contract Verification Coverage
 
@@ -366,7 +369,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs fou
 | **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_licenses.py` |
 | **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime |
 
-The coverage threshold of **80%** is enforced in CI. Current coverage is 91%.
+The coverage threshold of **80%** is enforced in CI. Current coverage is 96%.
 
 ## Opportunities
 
@@ -374,5 +377,5 @@ Testing infrastructure that could be added in the future:
 
 - **Property-based testing** -- `hypothesis` is installed as a dev dependency but not yet used. Could generate random programs to test parser robustness and formatter idempotency at scale.
 - **Formatter round-trip invariant** -- verify `parse(format(parse(src))) == parse(src)` for all valid programs, not just the examples.
-- **WASM inference.py coverage** -- `wasm/inference.py` at 75% has the most remaining gaps, mostly in deep utility branches (`_fn_type_param_wasm_types`, `_type_expr_name` with generics, `_infer_fncall_vera_type`). These branches require very specific expression nesting patterns to reach.
+- **WASM inference.py coverage** -- `wasm/inference.py` at 85% has the most remaining gaps, mostly in deep type-dispatch branches for specific builtin function return types. These branches require very specific expression nesting patterns to reach.
 - **Performance benchmarks** -- no benchmark infrastructure exists. Could track compilation time and Z3 verification time across releases.

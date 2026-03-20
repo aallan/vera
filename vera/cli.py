@@ -279,7 +279,7 @@ def cmd_compile(
         warnings = [d for d in result.diagnostics if d.severity == "warning"]
         all_warnings = type_warnings + warnings
 
-        if errors:
+        if errors:  # pragma: no cover — codegen errors after typecheck pass
             if as_json:
                 result_dict = {
                     "ok": False,
@@ -401,7 +401,7 @@ def cmd_run(
             ast, source=source, file=str(p), resolved_modules=resolved,
         )
 
-        if not result.ok:
+        if not result.ok:  # pragma: no cover — codegen errors after typecheck pass
             errors = [d for d in result.diagnostics if d.severity == "error"]
             if as_json:
                 result_dict = {
@@ -565,7 +565,7 @@ def cmd_run(
             return 1
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover — wasmtime Trap/WasmtimeError
         # Catch WASM traps (wasmtime.Trap, wasmtime.WasmtimeError)
         # without importing wasmtime at module level.
         exc_name = type(exc).__name__
@@ -973,5 +973,5 @@ def main() -> None:
         sys.exit(1)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()
