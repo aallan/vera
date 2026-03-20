@@ -171,27 +171,28 @@ Coverage by module, measured by `pytest --cov=vera`:
 
 | Module | Stmts | Miss | Coverage |
 |--------|------:|-----:|---------:|
-| `codegen/` | 1,616 | 119 | 93% |
-| `checker/` | 1,093 | 131 | 88% |
-| `wasm/` | 2,601 | 231 | 91% |
-| `browser/` | 23 | 3 | 87% |
-| `verifier.py` | 439 | 41 | 91% |
-| `transform.py` | 451 | 15 | 97% |
-| `formatter.py` | 605 | 70 | 88% |
-| `ast.py` | 449 | 31 | 93% |
-| `smt.py` | 502 | 54 | 89% |
-| `markdown.py` | 277 | 24 | 91% |
-| `types.py` | 182 | 8 | 96% |
+| `codegen/` | 1,934 | 99 | 95% |
+| `checker/` | 1,117 | 73 | 93% |
+| `wasm/` | 7,473 | 268 | 96% |
+| `browser/` | 21 | 0 | 100% |
+| `verifier.py` | 429 | 0 | 100% |
+| `transform.py` | 564 | 16 | 97% |
+| `formatter.py` | 673 | 54 | 92% |
+| `ast.py` | 460 | 30 | 93% |
+| `smt.py` | 495 | 0 | 100% |
+| `markdown.py` | 413 | 54 | 87% |
+| `types.py` | 182 | 7 | 96% |
 | `errors.py` | 126 | 1 | 99% |
-| `environment.py` | 207 | 8 | 96% |
-| `cli.py` | 503 | 163 | 68% |
-| `parser.py` | 45 | 16 | 64% |
+| `environment.py` | 239 | 8 | 97% |
+| `cli.py` | 474 | 0 | 100% |
+| `parser.py` | 45 | 0 | 100% |
 | `resolver.py` | 68 | 2 | 97% |
-| `tester.py` | 335 | 50 | 85% |
+| `tester.py` | 312 | 0 | 100% |
+| `prelude.py` | 106 | 0 | 100% |
 | `registration.py` | 18 | 0 | 100% |
-| **Total** | **14,298** | **1,250** | **91%** |
+| **Total** | **15,149** | **612** | **96%** |
 
-The lowest-coverage modules (`parser.py` at 64%, `cli.py` at 68%) reflect auto-generated parser internals and CLI help/flag paths. The `wasm/` subsystem was improved from 79% to 91% by [#156](https://github.com/aallan/vera/issues/156) and subsequent work; the remaining gaps are mostly in `wasm/inference.py` (75%) deep utility branches.
+The lowest-coverage module is `markdown.py` at 87%, reflecting Markdown AST traversal edge cases. The `wasm/` subsystem was improved from 79% to 96% by [#156](https://github.com/aallan/vera/issues/156) and [#324](https://github.com/aallan/vera/issues/324); the remaining gaps are mostly in `wasm/inference.py` (85%) deep type-dispatch branches for specific builtin functions.
 
 ## Contract Verification Coverage
 
@@ -368,7 +369,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs fou
 | **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_licenses.py` |
 | **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime |
 
-The coverage threshold of **80%** is enforced in CI. Current coverage is 91%.
+The coverage threshold of **80%** is enforced in CI. Current coverage is 96%.
 
 ## Opportunities
 
@@ -376,5 +377,5 @@ Testing infrastructure that could be added in the future:
 
 - **Property-based testing** -- `hypothesis` is installed as a dev dependency but not yet used. Could generate random programs to test parser robustness and formatter idempotency at scale.
 - **Formatter round-trip invariant** -- verify `parse(format(parse(src))) == parse(src)` for all valid programs, not just the examples.
-- **WASM inference.py coverage** -- `wasm/inference.py` at 75% has the most remaining gaps, mostly in deep utility branches (`_fn_type_param_wasm_types`, `_type_expr_name` with generics, `_infer_fncall_vera_type`). These branches require very specific expression nesting patterns to reach.
+- **WASM inference.py coverage** -- `wasm/inference.py` at 85% has the most remaining gaps, mostly in deep type-dispatch branches for specific builtin function return types. These branches require very specific expression nesting patterns to reach.
 - **Performance benchmarks** -- no benchmark infrastructure exists. Could track compilation time and Z3 verification time across releases.
