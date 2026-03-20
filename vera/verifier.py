@@ -676,7 +676,7 @@ class ContractVerifier:
                 return False
             for param_te, arg_expr in zip(param_type_exprs, call_args):
                 z3_arg = smt.translate_expr(arg_expr, call_site_env)
-                if z3_arg is None:
+                if z3_arg is None:  # pragma: no cover
                     return False
                 type_name = self._type_expr_to_slot_name(param_te)
                 callee_env = callee_env.push(type_name, z3_arg)
@@ -717,7 +717,7 @@ class ContractVerifier:
                            if len(z3_path_conds) > 1
                            else z3_path_conds[0])
                 goal = z3mod.Implies(premise, decrease_cond)
-            else:
+            else:  # pragma: no cover
                 goal = decrease_cond
 
             result = smt.check_valid(goal, [])

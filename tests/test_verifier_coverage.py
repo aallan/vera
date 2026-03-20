@@ -815,7 +815,7 @@ private fn f(@Nat -> @Int)
   effects(pure)
 {
   if nat_to_int(@Nat.0) == 0 then { 0 }
-  else { -(f(nat_sub(@Nat.0, 1))) }
+  else { -(f(@Nat.0 - 1)) }
 }
 """)
 
@@ -829,7 +829,7 @@ private fn f(@Nat -> @Int)
   effects(pure)
 {
   if nat_to_int(@Nat.0) == 0 then { 0 }
-  else { 1 + f(nat_sub(@Nat.0, 1)) }
+  else { 1 + f(@Nat.0 - 1) }
 }
 """)
 
@@ -844,7 +844,7 @@ private fn f(@Nat -> @Int)
 {
   if nat_to_int(@Nat.0) == 0 then { 0 }
   else {
-    let @Int = f(nat_sub(@Nat.0, 1));
+    let @Int = f(@Nat.0 - 1);
     @Int.0 + 1
   }
 }
@@ -863,7 +863,7 @@ private fn len(@NatList -> @Nat)
 {
   match @NatList.0 {
     NNil -> 0,
-    NCons(@Nat, @NatList) -> nat_add(1, len(@NatList.0))
+    NCons(@Nat, @NatList) -> 1 + len(@NatList.0)
   }
 }
 """)
@@ -882,7 +882,7 @@ private fn f(@Nat -> @Nat)
 {
   match nat_to_int(@Nat.0) {
     @Int -> if @Int.0 == 0 then { @Nat.0 }
-            else { f(nat_sub(@Nat.0, 1)) }
+            else { f(@Nat.0 - 1) }
   }
 }
 """)
@@ -927,7 +927,7 @@ private fn f(@Nat -> @Nat)
   effects(pure)
 {
   if nat_to_int(@Nat.0) == 0 then { @Nat.0 }
-  else { f(nat_sub(@Nat.0, 1)) }
+  else { f(@Nat.0 - 1) }
 }
 """)
         # decreases should count in total
