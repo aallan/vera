@@ -237,8 +237,11 @@ class TestPreludeShadowing:
             and tld.decl.name == "option_map"
         ]
         assert len(user_fns) >= 1
-        # The user-defined one has no forall_vars
-        assert any(fn.forall_vars is None for fn in user_fns)
+        # Exactly one user-defined (no forall_vars), rest are prelude
+        assert sum(1 for fn in user_fns if fn.forall_vars is None) == 1
+        for fn in user_fns:
+            if fn.forall_vars is not None:
+                assert fn.forall_vars  # prelude version has forall_vars
 
 
 class TestPreludeTypeAliases:
