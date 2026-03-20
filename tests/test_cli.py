@@ -1676,6 +1676,9 @@ public fn positive(@Int -> @Int)
         assert rc == 1
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is False
+        # Pin the specific runtime contract violation diagnostic
+        diag_text = json.dumps(data).lower()
+        assert "trap" in diag_text or "contract" in diag_text or "unreachable" in diag_text
 
     def test_run_no_exports_json(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
@@ -2262,7 +2265,7 @@ class TestCmdTestFailureOutput:
     def test_test_failure_output(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A function with a violated postcondition shows FAILED output.
+        """A function with a violated postcondition shows testing output.
 
         Use a complex enough function that Z3 can't verify it (Tier 3)
         but the postcondition is violated on some inputs.
@@ -2282,15 +2285,16 @@ public fn buggy_hash(@Int -> @Int)
         path = tmp_path / "fail.vera"
         path.write_text(source)
         rc = cmd_test(str(path), trials=50)
-        # May or may not fail depending on generated inputs
         out = capsys.readouterr().out
         assert "Testing:" in out
         assert "Results:" in out
+        # Must show either TESTED or FAILED for a Tier 3 function
+        assert "TESTED" in out or "FAILED" in out or "VERIFIED" in out
 
     def test_test_failure_json(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """JSON output for tested function."""
+        """JSON output for tested function includes function status."""
         source = """\
 public fn buggy_hash(@Int -> @Int)
   requires(true)
@@ -2309,11 +2313,15 @@ public fn buggy_hash(@Int -> @Int)
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "functions" in data
+        # The function must appear with a concrete category
+        assert len(data["functions"]) > 0
+        categories = {f["category"] for f in data["functions"]}
+        assert categories & {"tested", "verified", "failed"}
 
     def test_skipped_function_output(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Functions with effects are skipped in test output."""
+        """Functions with IO effects are skipped in test output."""
         source = """\
 public fn hello(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -2326,7 +2334,8 @@ public fn hello(-> @Unit)
         rc = cmd_test(str(path))
         assert rc == 0
         out = capsys.readouterr().out
-        assert "SKIPPED" in out or "Results:" in out
+        # IO-effectful function must be skipped — assert the specific status
+        assert "SKIPPED" in out
 
 
 class TestCmdRunRuntimeTrap:
@@ -2345,5 +2354,7 @@ public fn positive(@Int -> @Int)
         path.write_text(source)
         rc = cmd_run(str(path), fn_name="positive", fn_args=[0])
         assert rc == 1
-        err = capsys.readouterr().err
-        assert "contract" in err.lower() or "trap" in err.lower() or len(err) > 0
+        captured = capsys.readouterr()
+        # Pin: must mention the precondition violation specifically
+        combined = (captured.err + captured.out).lower()
+        assert "precondition violation" in combined or "trap" in combined

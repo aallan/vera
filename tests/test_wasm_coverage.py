@@ -3785,7 +3785,10 @@ public fn apply_color(@Unit -> @Int)
         """A closure that captures an ADT value triggers the captured
         pointer GC shadow push (line 191).
 
-        The closure body must allocate to trigger GC prologue/epilogue."""
+        The closure body must read the captured @Box (at @Box.1 after
+        the local let pushes a fresh @Box.0) so the captured ADT
+        pointer actually enters the closure environment. The body also
+        allocates to trigger GC prologue/epilogue."""
         source = """\
 private data Box { MkBox(Int) }
 type IntFn = fn(Int -> Int) effects(pure);
@@ -3795,8 +3798,10 @@ private fn make_box_fn(@Box -> @IntFn)
 {
   fn(@Int -> @Int) effects(pure) {
     let @Box = MkBox(@Int.0);
-    match @Box.0 {
-      MkBox(@Int) -> @Int.0
+    match @Box.1 {
+      MkBox(@Int) -> match @Box.0 {
+        MkBox(@Int) -> @Int.0 + @Int.1
+      }
     }
   }
 }

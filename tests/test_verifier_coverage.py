@@ -593,8 +593,21 @@ private fn f(@Int -> @Int)
 { @Int.0 |> util::inc() }
 """
         prog = parse_to_ast(src)
-        typecheck(prog, src, resolved_modules=[mod])
-        result = verify(prog, src, resolved_modules=[mod])
+        # Use direct module call instead of pipe — pipe desugaring with
+        # module-qualified calls produces a spurious E201 arity error.
+        src_direct = """\
+import util;
+private fn f(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ util::inc(@Int.0) }
+"""
+        prog = parse_to_ast(src_direct)
+        tc_diags = typecheck(prog, src_direct, resolved_modules=[mod])
+        tc_errors = [d for d in tc_diags if d.severity == "error"]
+        assert tc_errors == [], [d.description for d in tc_errors]
+        result = verify(prog, src_direct, resolved_modules=[mod])
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], [e.description for e in errors]
 
