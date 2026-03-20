@@ -178,14 +178,6 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1158): "FRAGMENT",  # parse_int signature (no body)
     ("09-standard-library.md", 1203): "FRAGMENT",  # parse_bool signature (no body)
 
-    # Chapter 9 — Base64 builtin signatures (no body)
-    ("09-standard-library.md", 1213): "FRAGMENT",  # base64_encode signature (no body)
-
-    # Chapter 9 — URL encoding builtin signatures (no body)
-    ("09-standard-library.md", 1259): "FRAGMENT",  # url_encode signature (no body)
-
-    # Chapter 9 — URL parsing builtin signatures (no body)
-    ("09-standard-library.md", 1304): "FRAGMENT",  # url_parse signature (no body)
     ("09-standard-library.md", 1337): "FRAGMENT",  # url_join signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
