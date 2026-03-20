@@ -4176,6 +4176,8 @@ private fn foo(@Bool -> @Int)
 }
 """)
         # Should produce a warning about unresolved function, not crash
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == []
         warnings = [d for d in diags if d.severity == "warning"]
         assert any("unresolved" in w.description.lower() for w in warnings)
 
@@ -4189,6 +4191,8 @@ private fn foo(@Bool -> @Int)
   else { completely_unknown() }
 }
 """)
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == []
         warnings = [d for d in diags if d.severity == "warning"]
         assert any("unresolved" in w.description.lower() for w in warnings)
 
@@ -4368,8 +4372,10 @@ private fn foo(@Unit -> @Int)
   }
 }
 """)
-        # Should produce an error or warning about unknown effect
-        assert len(diags) > 0
+        # Should produce a diagnostic mentioning the unknown effect
+        assert any(
+            "NoSuchEffect" in d.description for d in diags
+        ), f"Expected diagnostic mentioning 'NoSuchEffect', got: {[d.description for d in diags]}"
 
     # --- Lines 400-406: unknown operation in handler clause ---
 
@@ -4603,7 +4609,7 @@ private fn f(@Int -> @Int)
         from vera.checker.core import TypeChecker
         from vera.environment import TypeEnv
         from vera.types import (
-            FunctionType, PureEffectRow, TypeVar, PRIMITIVES,
+            FunctionType, PureEffectRow, Type, TypeVar, PRIMITIVES,
         )
 
         checker = TypeChecker.__new__(TypeChecker)
@@ -4620,5 +4626,4 @@ private fn f(@Int -> @Int)
 
         mapping: dict[str, Type] = {}
         checker._unify_for_inference(pattern, concrete, mapping)
-        assert mapping["A"] == INT
-        assert mapping["B"] == BOOL
+        assert mapping == {"A": INT, "B": BOOL}

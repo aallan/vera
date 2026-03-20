@@ -950,8 +950,10 @@ class TestVerifyFile:
             "{ @Int.0 }\n"
         )
         result = verify_file(src)
-        assert result.diagnostics is not None
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {[e.description for e in errors]}"
         assert result.summary is not None
+        assert result.summary.total > 0
 
     def test_verify_file_accepts_str_path(self, tmp_path: Path) -> None:
         """verify_file also accepts a plain string path."""
@@ -963,3 +965,4 @@ class TestVerifyFile:
         )
         result = verify_file(str(src))
         assert result.summary is not None
+        assert result.summary.total > 0

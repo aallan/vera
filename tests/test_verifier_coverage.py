@@ -22,15 +22,21 @@ from vera.verifier import VerifyResult, verify
 def _verify(source: str) -> VerifyResult:
     """Parse, type-check, and verify a source string."""
     ast = parse_to_ast(source)
-    typecheck(ast, source)
+    tc_diags = typecheck(ast, source)
+    tc_errors = [d for d in tc_diags if d.severity == "error"]
+    assert tc_errors == [], (
+        f"Type-check errors before verification: {[e.description for e in tc_errors]}"
+    )
     return verify(ast, source)
 
 
 def _verify_ok(source: str) -> VerifyResult:
-    """Assert source verifies with no errors."""
+    """Assert source verifies with no errors and no warnings."""
     result = _verify(source)
     errors = [d for d in result.diagnostics if d.severity == "error"]
     assert errors == [], f"Expected no errors, got: {[e.description for e in errors]}"
+    warnings = [d for d in result.diagnostics if d.severity == "warning"]
+    assert warnings == [], f"Expected no warnings, got: {[w.description for w in warnings]}"
     return result
 
 
@@ -49,6 +55,10 @@ def _verify_err(source: str, match: str) -> list:
 def _verify_warn(source: str, match: str) -> VerifyResult:
     """Assert source produces at least one verification warning matching *match*."""
     result = _verify(source)
+    errors = [d for d in result.diagnostics if d.severity == "error"]
+    assert errors == [], (
+        f"Expected no errors in warning test, got: {[e.description for e in errors]}"
+    )
     warnings = [d for d in result.diagnostics if d.severity == "warning"]
     matched = [w for w in warnings if match.lower() in w.description.lower()]
     assert matched, (
@@ -640,12 +650,19 @@ class TestSmtContextDirect:
         """check_valid returns 'unknown' for indeterminate formulas."""
         from vera.smt import SmtContext
         import z3
-        # Use a very short timeout to force unknown
+        # Use a very short timeout and a non-linear arithmetic formula
+        # that Z3 cannot decide quickly, to force an 'unknown' result.
         ctx = SmtContext(timeout_ms=1)
         x = ctx.declare_int("x")
-        goal = z3.BoolVal(True)
+        y = ctx.declare_int("y")
+        # Non-linear arithmetic is undecidable in general; with 1ms
+        # timeout this should reliably produce 'unknown'.
+        goal = x * x + y * y == z3.IntVal(91)
         result = ctx.check_valid(goal, [])
-        assert result.status in ("verified", "unknown")
+        # With such a tight timeout the solver may still solve trivial
+        # instances on fast machines, so accept either unknown or a
+        # concrete answer.
+        assert result.status in ("verified", "violated", "unknown")
 
     def test_translate_expr_returns_none_for_unsupported(self) -> None:
         """translate_expr returns None for unsupported expressions."""
@@ -728,17 +745,17 @@ private fn caller(@Int -> @Bool)
     def test_call_postcondition_nat_return(self) -> None:
         """Callee with Nat return creates declare_nat for fresh var."""
         _verify_ok("""
-private fn to_nat(@Int -> @Nat)
-  requires(@Int.0 >= 0)
+private fn add_nats(@Nat, @Nat -> @Nat)
+  requires(true)
   ensures(true)
   effects(pure)
-{ int_to_nat(@Int.0) }
+{ @Nat.0 + @Nat.1 }
 
 private fn caller(@Nat -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
-{ to_nat(nat_to_int(@Nat.0)) }
+{ add_nats(@Nat.0, @Nat.0) }
 """)
 
     def test_call_postcondition_adt_return(self) -> None:

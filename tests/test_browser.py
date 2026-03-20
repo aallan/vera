@@ -724,6 +724,17 @@ class TestRuntimeSourcePath:
 
         assert result.name == "runtime.mjs"
 
+    def test_fallback_on_file_not_found_error(self) -> None:
+        """When importlib.resources raises FileNotFoundError,
+        _runtime_source_path falls back gracefully."""
+        from unittest.mock import patch
+        from vera.browser.emit import _runtime_source_path
+
+        with patch("importlib.resources.files", side_effect=FileNotFoundError):
+            result = _runtime_source_path()
+
+        assert result.name == "runtime.mjs"
+
 
 class TestBrowserExports:
     """Verify the exports list matches between runtimes."""

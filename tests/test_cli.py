@@ -1646,7 +1646,7 @@ public fn main(-> @Unit)
         assert data["exit_code"] == 42
 
     def test_run_io_exit_code_non_json(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+        self, tmp_path: Path,
     ) -> None:
         """Non-JSON mode returns exit code from IO.exit."""
         source = """\

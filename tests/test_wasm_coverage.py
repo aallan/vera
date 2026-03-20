@@ -3742,7 +3742,7 @@ public fn bit_opt(@Bit -> @Int)
 # =====================================================================
 
 
-class TestClosureCoverage:
+class TestClosureCoverageGCPaths:
     """Cover uncovered lines in vera/codegen/closures.py.
 
     Targets:
