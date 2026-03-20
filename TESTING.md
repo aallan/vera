@@ -331,7 +331,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-After running `pre-commit install`, every commit is checked by 20 hooks:
+After running `pre-commit install`, every commit is checked by 21 hooks:
 
 | Hook | What it does |
 |------|-------------|
@@ -353,6 +353,7 @@ After running `pre-commit install`, every commit is checked by 20 hooks:
 | `check_doc_counts.py` | Counts in docs match live codebase |
 | `check_limitations_sync.py` | Limitation tables consistent across README, vera/README, and spec |
 | `check_licenses.py` | All package licenses are MIT-compatible |
+| `build_site.py` | Regenerate AI-readable site assets (llms.txt, llms-full.txt, robots.txt, sitemap.xml, index.md) |
 | `browser parity` | Browser runtime produces identical output to Python runtime |
 
 The validation hooks are smart about triggers -- they only run when relevant files change (`.vera`, `vera/**/*.py`, `grammar.lark`, the corresponding Markdown file, or `vera/browser/*` for browser parity).
@@ -366,7 +367,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs fou
 | **test** | Python 3.11, 3.12, 3.13 x Ubuntu, macOS (6 combos) | `pytest -v` passes on all combinations |
 | **test** (coverage) | Python 3.12 x Ubuntu only | `pytest --cov=vera --cov-fail-under=80` |
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
-| **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_licenses.py` |
+| **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_site_assets.py`, `check_licenses.py` |
 | **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime |
 
 The coverage threshold of **80%** is enforced in CI. Current coverage is 96%.

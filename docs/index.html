@@ -478,6 +478,44 @@
       .features-grid { grid-template-columns: 1fr; }
     }
   </style>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "name": "Vera",
+        "url": "https://veralang.dev",
+        "description": "A programming language designed for large language models to write.",
+        "publisher": {
+          "@type": "Person",
+          "name": "Alasdair Allan"
+        }
+      },
+      {
+        "@type": "ComputerLanguage",
+        "name": "Vera",
+        "url": "https://veralang.dev",
+        "alternateName": "veralang",
+        "description": "A statically typed, purely functional programming language with algebraic effects, mandatory contracts, and typed slot references. Designed for LLMs to write. Compiles to WebAssembly."
+      },
+      {
+        "@type": "SoftwareSourceCode",
+        "name": "Vera Reference Compiler",
+        "codeRepository": "https://github.com/aallan/vera",
+        "programmingLanguage": "Python",
+        "runtimePlatform": "WebAssembly",
+        "license": "https://github.com/aallan/vera/blob/main/LICENSE",
+        "targetProduct": {
+          "@type": "SoftwareApplication",
+          "name": "vera",
+          "applicationCategory": "DeveloperApplication",
+          "operatingSystem": "Linux, macOS, Windows"
+        }
+      }
+    ]
+  }
+  </script>
 </head>
 <body>
 

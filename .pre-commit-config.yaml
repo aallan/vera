@@ -105,6 +105,13 @@ repos:
         pass_filenames: false
         files: 'pyproject\.toml$'
 
+      - id: site-assets
+        name: site assets
+        entry: .venv/bin/python scripts/build_site.py
+        language: system
+        pass_filenames: false
+        files: '(SKILL\.md$|AGENTS\.md$|FAQ\.md$|vera/__init__\.py$|vera/errors\.py$|vera/grammar\.lark$|docs/index\.html$|scripts/build_site\.py$)'
+
       - id: browser-parity
         name: browser parity
         entry: .venv/bin/pytest tests/test_browser.py -q

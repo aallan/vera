@@ -573,6 +573,16 @@ vera/
 │   ├── formatter.py               # Canonical code formatter
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
+├── docs/                          # GitHub Pages site (veralang.dev)
+│   ├── index.html                 #   Landing page
+│   ├── llms.txt                   #   AI-readable documentation index (generated)
+│   ├── llms-full.txt              #   Complete documentation for LLMs (generated)
+│   ├── robots.txt                 #   Crawler directives (generated)
+│   ├── sitemap.xml                #   Sitemap (generated)
+│   ├── index.md                   #   Markdown companion page (generated)
+│   ├── .well-known/               #   Well-known directory
+│   │   └── ai-plugin.json         #     OpenAI plugin manifest
+│   └── .nojekyll                  #   Disable Jekyll processing
 ├── examples/                      # 25 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
