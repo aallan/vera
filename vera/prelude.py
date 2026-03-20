@@ -213,12 +213,23 @@ private forall<A, B, E> fn result_map(@Result<A, E>, @ResultMapFn<A, B> -> @Resu
 # Detection helpers
 # =====================================================================
 
+def _is_type_param_ref(field_type: ast.TypeExpr, param_name: str) -> bool:
+    """Check if a constructor field type is a bare reference to a type param."""
+    return (isinstance(field_type, ast.NamedType)
+            and field_type.name == param_name
+            and not field_type.type_args)
+
+
 def _has_standard_option(program: ast.Program) -> bool:
     """Check if the program defines Option<T> with exactly {None, Some(T)}.
 
-    Requires exactly 2 constructors, None with 0 fields and Some with 1.
-    Extra constructors (e.g. ``Extra``) would make the prelude's
-    exhaustive ``match`` arms incomplete, so we reject them.
+    Requires exactly 2 constructors with the standard shape:
+    - None: nullary (no fields)
+    - Some: one field that references the type parameter T
+
+    Rejects extra constructors, wrong arities, and concrete field types
+    like ``Some(Int)`` — the prelude combinators are generic and would
+    fail to type-check against a monomorphic variant.
     """
     for tld in program.declarations:
         decl = tld.decl
@@ -226,20 +237,32 @@ def _has_standard_option(program: ast.Program) -> bool:
             if decl.type_params and len(decl.type_params) == 1:
                 if len(decl.constructors) != 2:
                     return False
-                ctor_map = {
-                    c.name: (len(c.fields) if c.fields is not None else 0)
-                    for c in decl.constructors
-                }
-                if (ctor_map.get("None") == 0
-                        and ctor_map.get("Some") == 1):
-                    return True
+                ctors = {c.name: c for c in decl.constructors}
+                if "None" not in ctors or "Some" not in ctors:
+                    return False
+                none_ctor = ctors["None"]
+                some_ctor = ctors["Some"]
+                if none_ctor.fields is not None:
+                    return False
+                if (some_ctor.fields is None
+                        or len(some_ctor.fields) != 1):
+                    return False
+                if not _is_type_param_ref(
+                    some_ctor.fields[0], decl.type_params[0],
+                ):
+                    return False
+                return True
     return False
 
 
 def _has_standard_result(program: ast.Program) -> bool:
     """Check if the program defines Result<T, E> with exactly {Ok(T), Err(E)}.
 
-    Requires exactly 2 constructors, Ok with 1 field and Err with 1.
+    Requires exactly 2 constructors with the standard shape:
+    - Ok: one field referencing the first type parameter T
+    - Err: one field referencing the second type parameter E
+
+    Rejects concrete field types like ``Ok(Int)`` or ``Err(String)``.
     """
     for tld in program.declarations:
         decl = tld.decl
@@ -247,13 +270,26 @@ def _has_standard_result(program: ast.Program) -> bool:
             if decl.type_params and len(decl.type_params) == 2:
                 if len(decl.constructors) != 2:
                     return False
-                ctor_map = {
-                    c.name: (len(c.fields) if c.fields is not None else 0)
-                    for c in decl.constructors
-                }
-                if (ctor_map.get("Ok") == 1
-                        and ctor_map.get("Err") == 1):
-                    return True
+                ctors = {c.name: c for c in decl.constructors}
+                if "Ok" not in ctors or "Err" not in ctors:
+                    return False
+                ok_ctor = ctors["Ok"]
+                err_ctor = ctors["Err"]
+                if (ok_ctor.fields is None
+                        or len(ok_ctor.fields) != 1):
+                    return False
+                if (err_ctor.fields is None
+                        or len(err_ctor.fields) != 1):
+                    return False
+                if not _is_type_param_ref(
+                    ok_ctor.fields[0], decl.type_params[0],
+                ):
+                    return False
+                if not _is_type_param_ref(
+                    err_ctor.fields[0], decl.type_params[1],
+                ):
+                    return False
+                return True
     return False
 
 

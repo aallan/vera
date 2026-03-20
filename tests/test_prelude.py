@@ -193,6 +193,30 @@ class TestPreludeCombinators:
         names = _fn_names(prog)
         assert not _RESULT_FN_NAMES.intersection(names)
 
+    def test_concrete_option_skips_combinators(self) -> None:
+        """Option with concrete field type (Some(Int)) skips combinators."""
+        prog = _make_program(
+            "public data Option<T> { None, Some(Int) }\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ 0 }\n"
+        )
+        inject_prelude(prog)
+        names = _fn_names(prog)
+        assert not _OPTION_FN_NAMES.intersection(names)
+
+    def test_concrete_result_skips_combinators(self) -> None:
+        """Result with concrete field types (Ok(Int), Err(String)) skips."""
+        prog = _make_program(
+            "public data Result<T, E> { Ok(Int), Err(String) }\n"
+            "public fn main(@Unit -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ 0 }\n"
+        )
+        inject_prelude(prog)
+        names = _fn_names(prog)
+        assert not _RESULT_FN_NAMES.intersection(names)
+
 
 class TestPreludeShadowing:
     """Tests for user-defined function shadowing."""

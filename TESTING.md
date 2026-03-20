@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 2,422 across 24 files (~24,600 lines of test code) |
+| **Tests** | 2,424 across 24 files (~24,600 lines of test code) |
 | **Compiler code coverage** | 91% of 14,298 statements (CI minimum: 80%) |
 | **Conformance programs** | 56 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 25, all validated through `vera check` + `vera verify` |
@@ -69,7 +69,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_browser.py` | 58 | 706 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
 | `test_conformance.py` | 280 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 56 programs |
-| `test_prelude.py` | 22 | 379 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
+| `test_prelude.py` | 24 | 403 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
 
@@ -301,7 +301,7 @@ Eleven scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 | Script | What it validates |
 |--------|-------------------|
 | `check_conformance.py` | All 56 conformance programs pass their declared level (parse/check/verify/run) |
-| `check_examples.py` | All 23 `.vera` examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 25 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 148 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_skill_examples.py` | All Vera code blocks in SKILL.md parse correctly |
