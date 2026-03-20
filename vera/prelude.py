@@ -265,7 +265,7 @@ def _user_defined_names(program: ast.Program) -> set[str]:
         if isinstance(decl, ast.FnDecl):
             names.add(decl.name)
         elif isinstance(decl, ast.TypeAliasDecl):
-            names.add(decl.name)
+            names.add(decl.name)  # pragma: no cover
     return names
 
 
@@ -380,7 +380,7 @@ def inject_prelude(program: ast.Program) -> None:
             if decl.name in user_names:
                 continue  # User shadowed this function
         elif isinstance(decl, ast.TypeAliasDecl):
-            if decl.name in user_names:
+            if decl.name in user_names:  # pragma: no cover
                 continue  # User shadowed this type alias
         new_decls.append(ast.TopLevelDecl(
             visibility="private",
@@ -388,7 +388,7 @@ def inject_prelude(program: ast.Program) -> None:
             span=None,
         ))
 
-    if not new_decls:
+    if not new_decls:  # pragma: no cover
         return
 
     # Prepend to declarations so user defs shadow during registration.

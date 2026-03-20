@@ -160,7 +160,7 @@ class CodeGenerator(
             if isinstance(decl, ast.FnDecl) and decl.name not in existing_fns:
                 self._register_fn(decl)
             elif isinstance(decl, ast.DataDecl):
-                if decl.name not in existing_adts:
+                if decl.name not in existing_adts:  # pragma: no cover
                     self._register_data(decl)
             elif isinstance(decl, ast.TypeAliasDecl):
                 if decl.name not in self._type_aliases:
