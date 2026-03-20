@@ -444,9 +444,9 @@ All built-in functions follow predictable naming patterns. When guessing a funct
 | `domain_verb` | Most functions | `string_length`, `array_append`, `regex_match`, `md_parse` |
 | `source_to_target` | Type conversions | `int_to_float`, `float_to_int`, `nat_to_int` |
 | `domain_is_predicate` | Boolean predicates | `float_is_nan`, `float_is_infinite` |
-| Prefix-less | Math universals only | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow` |
+| Prefix-less | Math universals and float constants only | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, `infinity` |
 
-**String operations always use `string_` prefix** — `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`. **Float64 predicates use `float_` prefix** — `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`** — `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) are the **only** exception — they need no prefix because they are universally understood.
+**String operations always use `string_` prefix** — `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`. **Float64 predicates use `float_` prefix** — `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`** — `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) and float constants (`nan`, `infinity`) are the **only** exceptions — they need no prefix because they are universally understood mathematical names.
 
 ### Option and Result Combinators
 

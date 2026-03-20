@@ -3263,6 +3263,7 @@ private fn f(@Nat -> @String)
     ])
     def test_removed_builtin_names_fail(self, src: str, match: str) -> None:
         """Pre-#288 names must not resolve after the naming audit."""
+        _check_ok(src)  # must produce no errors (warning-only)
         warns = _warnings(src)
         assert any(match.lower() in w.description.lower() for w in warns), \
             f"Expected warning matching '{match}', got: " \

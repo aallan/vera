@@ -31,7 +31,7 @@ Built-in function names follow a consistent `domain_verb` convention to make nam
 1. **String operations always use `string_` prefix**: `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`.
 2. **Float64 predicates use `float_` prefix**: `float_is_nan`, `float_is_infinite`.
 3. **Type conversions use `source_to_target`**: `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`.
-4. **Math functions are the only exception** to domain prefixing — `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow` need no prefix because they are universally understood.
+4. **Math functions and float constants are the only exceptions** to domain prefixing — `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, and `infinity` need no prefix because they are universally understood mathematical names.
 5. **New functions MUST follow these patterns.** When adding a function, choose the pattern that matches its category. If uncertain, use `domain_verb`.
 
 ## 9.2 Primitive Types
