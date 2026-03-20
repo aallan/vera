@@ -71,18 +71,17 @@ effect Exn<E> {
   op throw(E -> Never);
 }
 
-private data Option<T> {
-  None,
-  Some(T)
-}
-
 -- A function that may throw an Int exception
 private fn checked_div(@Int, @Int -> @Int)
   requires(true)
   ensures(true)
   effects(<Exn<Int>>)
 {
-  if @Int.1 == 0 then { throw(0 - 1) } else { @Int.0 / @Int.1 }
+  if @Int.1 == 0 then {
+    throw(0 - 1)
+  } else {
+    @Int.0 / @Int.1
+  }
 }
 
 -- Handle the exception: return -1 on division by zero

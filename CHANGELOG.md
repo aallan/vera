@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.93] - 2026-03-20
+
+### Changed
+- **Standard prelude — eliminate boilerplate** ([#289](https://github.com/aallan/vera/issues/289)) — `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are now unconditionally injected by the prelude, eliminating 2–6 lines of identical `data` declarations from every program that uses these types. Option/Result combinators and array operations are also always available. User-defined `data` declarations with the same name shadow the prelude versions. Non-standard variants (e.g. `data Option<T> { None, Just(T) }`) correctly suppress combinator injection. New conformance test `ch09_prelude` (conformance suite: 55→56 programs). Boilerplate removed from 8 conformance programs and 8 examples. Closes #289.
+
 ## [0.0.92] - 2026-03-19
 
 ### Changed
@@ -1381,7 +1386,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.92...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.93...HEAD
+[0.0.93]: https://github.com/aallan/vera/compare/v0.0.92...v0.0.93
 [0.0.92]: https://github.com/aallan/vera/compare/v0.0.91...v0.0.92
 [0.0.91]: https://github.com/aallan/vera/compare/v0.0.90...v0.0.91
 [0.0.90]: https://github.com/aallan/vera/compare/v0.0.89...v0.0.90

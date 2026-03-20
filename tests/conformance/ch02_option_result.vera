@@ -1,15 +1,5 @@
 -- Conformance: Option and Result types (Chapter 2)
--- Tests: Option<T> construction, matching; Result<T,E> construction, matching
-private data Option<T> {
-  None,
-  Some(T)
-}
-
-private data Result<T, E> {
-  Ok(T),
-  Err(E)
-}
-
+-- Tests: Option<T> matching; Result<T,E> matching (types from prelude)
 private fn unwrap_or(@Option<Int>, @Int -> @Int)
   requires(true)
   ensures(true)

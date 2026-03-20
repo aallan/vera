@@ -676,6 +676,22 @@
     ]
   },
   {
+    "id": "ch09_prelude",
+    "file": "ch09_prelude.vera",
+    "chapter": 9,
+    "title": "Standard prelude types available without data declarations",
+    "level": "run",
+    "spec_ref": "Section 9.3.7",
+    "features": [
+      "prelude",
+      "option",
+      "result",
+      "ordering",
+      "url_parts",
+      "combinators"
+    ]
+  },
+  {
     "id": "ch09_async",
     "file": "ch09_async.vera",
     "chapter": 9,

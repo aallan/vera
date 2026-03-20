@@ -77,6 +77,19 @@ class RegistrationMixin:
                 tag=2, field_offsets=(), total_size=8,
             ),
         }
+        # UrlParts — URL components (§9.6.5)
+        # 5 String fields (i32_pair: 8 bytes each, 4-byte align)
+        self._adt_layouts["UrlParts"] = {
+            "UrlParts": ConstructorLayout(
+                tag=0,
+                field_offsets=(
+                    (4, "i32_pair"), (12, "i32_pair"),
+                    (20, "i32_pair"), (28, "i32_pair"),
+                    (36, "i32_pair"),
+                ),
+                total_size=48,
+            ),
+        }
         # Tuple — variadic product type (tag=0, layout recomputed per-call)
         self._adt_layouts["Tuple"] = {
             "Tuple": ConstructorLayout(

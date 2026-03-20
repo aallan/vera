@@ -21,11 +21,6 @@ private fn apply(@IntToInt, @Int -> @Int)
 }
 
 -- Map a function over an optional value
-private data Option<T> {
-  None,
-  Some(T)
-}
-
 type IntMapper = fn(Int -> Int) effects(pure);
 
 private fn option_map(@Option<Int>, @IntMapper -> @Option<Int>)

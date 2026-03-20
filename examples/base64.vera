@@ -3,11 +3,6 @@ effect IO {
   op print(String -> Unit);
 }
 
-private data Result<T, E> {
-  Ok(T),
-  Err(E)
-}
-
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)

@@ -17,12 +17,6 @@ private forall<A, B> fn const(@A, @B -> @A)
   @A.0
 }
 
--- Generic option type
-private data Option<T> {
-  None,
-  Some(T)
-}
-
 -- Check if an option contains a value
 private forall<T> fn is_some(@Option<T> -> @Bool)
   requires(true)

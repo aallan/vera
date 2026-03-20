@@ -34,6 +34,19 @@ Built-in function names follow a consistent `domain_verb` convention to make nam
 4. **Math functions and float constants are the only exceptions** to domain prefixing — `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, and `infinity` need no prefix because they are universally understood mathematical names.
 5. **New functions MUST follow these patterns.** When adding a function, choose the pattern that matches its category. If uncertain, use `domain_verb`.
 
+### 9.1.2 Standard Prelude
+
+Every Vera program implicitly has access to a **standard prelude** that provides commonly used ADTs and their associated operations without requiring explicit `data` declarations:
+
+- **`Option<T>`** — `Some(T)`, `None` constructors.
+- **`Result<T, E>`** — `Ok(T)`, `Err(E)` constructors.
+- **`Ordering`** — `Less`, `Equal`, `Greater` constructors (for `Ord`'s `compare` operation).
+- **`UrlParts`** — `UrlParts(String, String, String, String, String)` constructor (RFC 3986 decomposition).
+
+In addition, Option/Result combinators (`option_unwrap_or`, `option_map`, `option_and_then`, `result_unwrap_or`, `result_map`) and array operations (`array_slice`, `array_map`, `array_filter`, `array_fold`) are automatically available.
+
+User-defined `data` declarations with the same name **shadow** the prelude definition. If a user defines a non-standard variant (e.g. `data Option<T> { None, Just(T) }` instead of the standard `None, Some(T)`), the related combinators are suppressed — they rely on the standard constructor names.
+
 ## 9.2 Primitive Types
 
 The primitive types (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`, `Unit`, `Never`) are documented in Chapter 2, Section 2.2. They are not part of the standard library per se — they are built into the language core.
@@ -110,7 +123,7 @@ data UrlParts {
 }
 ```
 
-`UrlParts` is a built-in ADT representing the five components of a URL per RFC 3986: scheme, authority, path, query, and fragment. Programs must redefine `UrlParts` locally (like `Result` and `Option`) to use it in match expressions.
+`UrlParts` is a built-in ADT representing the five components of a URL per RFC 3986: scheme, authority, path, query, and fragment. It is provided by the standard prelude (see §9.1.2) and available in every program without an explicit `data` declaration.
 
 Constructors:
 - `UrlParts(@String, @String, @String, @String, @String)` — scheme, authority, path, query, fragment.
@@ -186,7 +199,7 @@ See §9.7.3 for the Markdown function specifications.
 
 ### 9.3.7 Option and Result Combinators
 
-The standard prelude provides combinator functions that eliminate common match boilerplate for `Option<T>` and `Result<T, E>`. These are automatically available when the corresponding ADT is defined.
+The standard prelude provides combinator functions that eliminate common match boilerplate for `Option<T>` and `Result<T, E>`. These are always available via the standard prelude (see §9.1.2) — no explicit `data` declaration is required.
 
 **Option combinators:**
 
@@ -1299,7 +1312,7 @@ url_decode("%4")                   -- Err("invalid percent-encoding")
 
 ### 9.6.17 URL Parsing
 
-The `UrlParts` ADT is defined in §9.3.3. Programs must redefine `UrlParts` locally (like `Result` and `Option`) to use it in match expressions.
+The `UrlParts` ADT is defined in §9.3.3 and injected by the standard prelude (§9.1.2).
 
 ```
 public fn url_parse(@String -> @Result<UrlParts, String>)

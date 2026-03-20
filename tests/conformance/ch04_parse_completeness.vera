@@ -1,12 +1,7 @@
 -- Conformance: parse_int, parse_bool, and updated parse_float64 (Chapter 4)
--- Tests: parse_int, parse_bool, parse_float64 returning Result<T, String>
+-- Tests: parse_int, parse_bool, parse_float64 returning Result<T, String> (type from prelude)
 effect IO {
   op print(String -> Unit);
-}
-
-private data Result<T, E> {
-  Ok(T),
-  Err(E)
 }
 
 public fn test_parse_int_basic(@Unit -> @Int)

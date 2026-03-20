@@ -1,17 +1,17 @@
-"""Prelude injection for Option/Result combinators.
+"""Standard prelude — built-in ADT and combinator injection.
 
-Defines combinator functions as Vera source text, parses them into
-AST nodes, and injects them into a program's declarations before
-type checking.  The normal pipeline (type checking, monomorphization,
-codegen) then handles them like any user-defined function.
+The prelude makes ``Option<T>``, ``Result<T, E>``, ``Ordering``, and
+``UrlParts`` available in every program without explicit ``data``
+declarations.  It also injects combinator functions for Option/Result
+and higher-order array operations.
 
-Injection is conditional:
-- Option combinators require ``data Option<T> { None, Some(T) }``
-  (or equivalent with swapped constructor order).
-- Result combinators require ``data Result<T, E> { Ok(T), Err(E) }``
-  (or equivalent with swapped constructor order).
-- A combinator is skipped if the user already defined a function
-  with the same name.
+All prelude declarations are prepended to the program's AST.  User-
+defined declarations with the same name shadow the prelude versions:
+
+- A user ``data Option<T>`` replaces the prelude's ``data Option<T>``.
+- A user ``fn option_map`` replaces the prelude's combinator.
+- Option/Result combinators are skipped entirely if the user defines
+  a non-standard variant (e.g. ``data Option<T> { None, Just(T) }``).
 """
 
 from __future__ import annotations
@@ -20,11 +20,18 @@ from vera import ast
 
 
 # =====================================================================
-# Combinator Vera source
+# Prelude Vera source
 # =====================================================================
 
+# Built-in ADTs — always injected (user definitions shadow these).
+_PRELUDE_DATA = """\
+data Option<T> { None, Some(T) }
+data Result<T, E> { Ok(T), Err(E) }
+data Ordering { Less, Equal, Greater }
+data UrlParts { UrlParts(String, String, String, String, String) }
+"""
+
 # Type aliases needed by closure-taking combinators.
-# These are injected alongside the functions that reference them.
 _OPTION_TYPE_ALIASES = """\
 type OptionMapFn<A, B> = fn(A -> B) effects(pure);
 type OptionBindFn<A, B> = fn(A -> Option<B>) effects(pure);
@@ -230,6 +237,16 @@ def _has_standard_result(program: ast.Program) -> bool:
     return False
 
 
+def _has_nonstandard_data(program: ast.Program, name: str) -> bool:
+    """Check if the program defines a data type with the given name
+    that does NOT match the standard prelude shape."""
+    for tld in program.declarations:
+        decl = tld.decl
+        if isinstance(decl, ast.DataDecl) and decl.name == name:
+            return True
+    return False
+
+
 def _user_defined_names(program: ast.Program) -> set[str]:
     """Collect all user-defined function and type alias names."""
     names: set[str] = set()
@@ -238,6 +255,16 @@ def _user_defined_names(program: ast.Program) -> set[str]:
         if isinstance(decl, ast.FnDecl):
             names.add(decl.name)
         elif isinstance(decl, ast.TypeAliasDecl):
+            names.add(decl.name)
+    return names
+
+
+def _user_defined_data_names(program: ast.Program) -> set[str]:
+    """Collect all user-defined data type names."""
+    names: set[str] = set()
+    for tld in program.declarations:
+        decl = tld.decl
+        if isinstance(decl, ast.DataDecl):
             names.add(decl.name)
     return names
 
@@ -260,22 +287,41 @@ def _parse_source(source: str) -> ast.Program:
 # =====================================================================
 
 def inject_prelude(program: ast.Program) -> None:
-    """Inject combinator and array operation declarations into a program.
+    """Inject prelude ADTs, combinators, and array operations.
 
-    Mutates ``program.declarations`` by prepending combinator
-    function declarations and their type aliases.  Only injects
-    combinators whose ADT prerequisites are met and whose names
-    don't collide with user definitions.
+    Mutates ``program.declarations`` by prepending prelude declarations.
+    The prelude provides:
 
-    Array operations (array_map, array_filter, array_fold) are
-    always injected (they have no ADT prerequisites).
+    - ``data Option<T>``, ``data Result<T, E>``, ``data Ordering``,
+      ``data UrlParts`` — always injected unless the user defines a
+      type with the same name (user definitions shadow the prelude).
+    - Option combinators (``option_unwrap_or``, ``option_map``,
+      ``option_and_then``) — injected unless the user defines a
+      non-standard ``Option<T>`` or shadows the function names.
+    - Result combinators (``result_unwrap_or``, ``result_map``) —
+      injected unless the user defines a non-standard ``Result<T, E>``
+      or shadows the function names.
+    - Array operations (``array_map``, ``array_filter``,
+      ``array_fold``) — always injected.
     """
     user_names = _user_defined_names(program)
-    inject_option = _has_standard_option(program)
-    inject_result = _has_standard_result(program)
+    user_data_names = _user_defined_data_names(program)
 
-    # Build source for what we need to inject
-    source_parts: list[str] = []
+    # Determine whether to inject Option/Result combinators.
+    # If the user defines a standard Option/Result, combinators work.
+    # If the user defines a non-standard variant, skip combinators.
+    # If the user doesn't define them at all, the prelude provides both.
+    user_has_option = "Option" in user_data_names
+    user_has_result = "Result" in user_data_names
+    inject_option_combinators = (
+        not user_has_option or _has_standard_option(program)
+    )
+    inject_result_combinators = (
+        not user_has_result or _has_standard_result(program)
+    )
+
+    # Build source text for all prelude declarations
+    source_parts: list[str] = [_PRELUDE_DATA]
 
     option_fn_names = {"option_unwrap_or", "option_map", "option_and_then"}
     option_alias_names = {"OptionMapFn", "OptionBindFn"}
@@ -288,8 +334,8 @@ def inject_prelude(program: ast.Program) -> None:
     }
     array_alias_names = {"ArrayMapFn", "ArrayFilterFn", "ArrayFoldFn"}
 
-    if inject_option and not option_fn_names.issubset(user_names):
-        # Check which aliases are needed (only if closure fns are not shadowed)
+    if (inject_option_combinators
+            and not option_fn_names.issubset(user_names)):
         need_aliases = not (
             {"option_map", "option_and_then"}.issubset(user_names)
         )
@@ -297,7 +343,8 @@ def inject_prelude(program: ast.Program) -> None:
             source_parts.append(_OPTION_TYPE_ALIASES)
         source_parts.append(_OPTION_COMBINATORS)
 
-    if inject_result and not result_fn_names.issubset(user_names):
+    if (inject_result_combinators
+            and not result_fn_names.issubset(user_names)):
         need_aliases = "result_map" not in user_names
         if need_aliases and not result_alias_names.issubset(user_names):
             source_parts.append(_RESULT_TYPE_ALIASES)
@@ -309,33 +356,22 @@ def inject_prelude(program: ast.Program) -> None:
             source_parts.append(_ARRAY_TYPE_ALIASES)
         source_parts.append(_ARRAY_COMBINATORS)
 
-    if not source_parts:
-        return
-
-    # We need a minimal program wrapper with the data declarations
-    # so the parser can resolve constructor references in the combinator
-    # source.  Build a full source with data defs + combinators.
-    data_defs: list[str] = []
-    if inject_option:
-        data_defs.append("data Option<T> { None, Some(T) }")
-    if inject_result:
-        data_defs.append("data Result<T, E> { Ok(T), Err(E) }")
-
-    full_source = "\n".join(data_defs) + "\n" + "\n".join(source_parts)
+    full_source = "\n".join(source_parts)
     parsed = _parse_source(full_source)
 
-    # Extract the FnDecl and TypeAliasDecl nodes (skip the data defs
-    # since those are already in the user's program)
+    # Extract declarations, skipping those the user already defined.
     new_decls: list[ast.TopLevelDecl] = []
     for tld in parsed.declarations:
         decl = tld.decl
         if isinstance(decl, ast.DataDecl):
-            continue  # Skip — user already has these
-        if isinstance(decl, ast.FnDecl) and decl.name in user_names:
-            continue  # User shadowed this function
-        if isinstance(decl, ast.TypeAliasDecl) and decl.name in user_names:
-            continue  # User shadowed this type alias
-        # Mark as private (defensive — source already says private)
+            if decl.name in user_data_names:
+                continue  # User's data type shadows the prelude's
+        elif isinstance(decl, ast.FnDecl):
+            if decl.name in user_names:
+                continue  # User shadowed this function
+        elif isinstance(decl, ast.TypeAliasDecl):
+            if decl.name in user_names:
+                continue  # User shadowed this type alias
         new_decls.append(ast.TopLevelDecl(
             visibility="private",
             decl=decl,

@@ -43,6 +43,7 @@ For contributions to the reference compiler:
 
 When adding or modifying built-in functions (registered in `vera/environment.py`):
 
+- **Prelude types are automatic.** `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are provided by the standard prelude in every program — no explicit `data` declaration is required. User-defined types with the same name shadow the prelude.
 - **Follow the naming convention** (spec §9.1.1): `domain_verb` for most functions (e.g. `string_length`, `array_append`), `source_to_target` for conversions (e.g. `int_to_float`), `domain_is_predicate` for boolean tests (e.g. `float_is_nan`). Only math universals (`abs`, `min`, `max`, etc.) are prefix-less.
 - **Match the spec.** Type signatures should use the types specified in the language specification (e.g. `NAT` where the spec says `Nat`, not `INT`). Reference the relevant spec chapter and section in your PR description.
 - **Add type checker tests** in `tests/test_checker.py` — at minimum, one test with correct types and one with a wrong argument type.
@@ -78,7 +79,7 @@ After running `pre-commit install`, every commit is automatically checked by 20 
 - Python debug statements
 - mypy type checking
 - pytest test suite
-- All 55 conformance programs pass their declared level
+- All 56 conformance programs pass their declared level
 - All 25 `.vera` examples type-check and verify cleanly
 - README, SKILL.md, HTML, and spec code blocks parse correctly
 - Documentation counts match live codebase
@@ -105,7 +106,7 @@ mypy vera/
 ### Validation Scripts
 
 ```bash
-python scripts/check_conformance.py      # verify all 55 conformance programs
+python scripts/check_conformance.py      # verify all 56 conformance programs
 python scripts/check_examples.py         # verify all 25 .vera examples
 python scripts/check_spec_examples.py    # verify spec code blocks parse
 python scripts/check_readme_examples.py  # verify README code blocks parse

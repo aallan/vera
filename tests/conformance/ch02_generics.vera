@@ -1,16 +1,11 @@
 -- Conformance: generics (Chapter 2)
--- Tests: forall<T> polymorphism, monomorphization
+-- Tests: forall<T> polymorphism, monomorphization (Option<T> from prelude)
 private forall<T> fn identity(@T -> @T)
   requires(true)
   ensures(true)
   effects(pure)
 {
   @T.0
-}
-
-private data Option<T> {
-  None,
-  Some(T)
 }
 
 private forall<T> fn is_some(@Option<T> -> @Bool)

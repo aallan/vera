@@ -1,12 +1,7 @@
 -- Conformance: url_encode, url_decode (Chapter 9)
--- Tests: url_encode, url_decode returning Result<String, String>
+-- Tests: url_encode, url_decode returning Result<String, String> (type from prelude)
 effect IO {
   op print(String -> Unit);
-}
-
-private data Result<T, E> {
-  Ok(T),
-  Err(E)
 }
 
 public fn test_encode_empty(@Unit -> @Int)

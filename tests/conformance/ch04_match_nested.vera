@@ -1,10 +1,5 @@
 -- Conformance: nested match patterns (Chapter 4)
--- Tests: nested constructor patterns, multi-level destructuring
-private data Option<T> {
-  None,
-  Some(T)
-}
-
+-- Tests: nested constructor patterns, multi-level destructuring (Option<T> from prelude)
 private data List<T> {
   Nil,
   Cons(T, List<T>)

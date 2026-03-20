@@ -1,16 +1,7 @@
 -- Conformance: url_parse, url_join (Chapter 9)
--- Tests: url_parse returning Result<UrlParts, String>, url_join
+-- Tests: url_parse returning Result<UrlParts, String>, url_join (types from prelude)
 effect IO {
   op print(String -> Unit);
-}
-
-private data UrlParts {
-  UrlParts(String, String, String, String, String)
-}
-
-private data Result<T, E> {
-  Ok(T),
-  Err(E)
 }
 
 public fn test_parse_full(@Unit -> @Int)

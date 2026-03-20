@@ -1,15 +1,5 @@
 -- Conformance: Option and Result Combinators (Chapter 9, Section 9.3.7)
--- Tests: option_unwrap_or, option_map, option_and_then, result_unwrap_or, result_map
-public data Option<T> {
-  None,
-  Some(T)
-}
-
-public data Result<T, E> {
-  Ok(T),
-  Err(E)
-}
-
+-- Tests: option_unwrap_or, option_map, option_and_then, result_unwrap_or, result_map (types from prelude)
 -- option_unwrap_or: Some returns inner value
 public fn test_unwrap_some(@Unit -> @Int)
   requires(true)
