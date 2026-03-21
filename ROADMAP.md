@@ -97,7 +97,7 @@ Lower priority than data-format support but important for adoption.
 - [#238](https://github.com/aallan/vera/issues/238) Component Model (WIT) interop
 - [#239](https://github.com/aallan/vera/issues/239) Resource limit configuration (fuel, memory, timeout)
 - [#163](https://github.com/aallan/vera/issues/163) Standalone WASM runtime package
-- [#329](https://github.com/aallan/vera/issues/329) **Plumbing integration** — Vera WASM modules as verified tool calls in [Plumbing](https://www.plumbing.dev/) agent graphs. Typed port interface maps Plumbing stream types (`!A`) to Vera ADTs at the JSON serialization boundary. Second pathway via MCP in the standalone runtime (#163).
+- [#329](https://github.com/aallan/vera/issues/329) **Plumbing integration** — Vera WASM modules as verified tool calls in [Plumbing](https://arxiv.org/abs/2602.13275) agent graphs. Typed port interface maps Plumbing stream types (`!A`) to Vera ADTs at the JSON serialization boundary. Second pathway via MCP in the standalone runtime (#163).
 - [#130](https://github.com/aallan/vera/issues/130) Package system and registry
 - [#143](https://github.com/aallan/vera/issues/143) Comprehensive example programs
 - [#181](https://github.com/aallan/vera/issues/181) Signature refactoring (mechanical slot index rewriting)
