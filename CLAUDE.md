@@ -48,6 +48,8 @@ python scripts/check_readme_examples.py # Verify README code blocks parse
 python scripts/check_skill_examples.py # Verify SKILL.md code blocks parse
 python scripts/check_faq_examples.py  # Verify FAQ code blocks parse
 python scripts/check_html_examples.py # Verify HTML code blocks parse + check + verify
+python scripts/build_site.py          # Regenerate AI-readable site assets (llms.txt, etc.)
+python scripts/check_site_assets.py   # Verify site assets are up-to-date
 python scripts/check_version_sync.py  # Verify version consistency
 python scripts/check_doc_counts.py    # Verify documentation counts match codebase
 python scripts/check_licenses.py      # Verify all package licenses are MIT-compatible

@@ -1,0 +1,7 @@
+# veralang.dev — AI agents welcome
+User-agent: *
+Allow: /
+
+# AI-readable documentation
+# See https://llmstxt.org for the llms.txt specification
+Sitemap: https://veralang.dev/sitemap.xml

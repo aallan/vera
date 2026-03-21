@@ -1,0 +1,2424 @@
+# Vera — Complete Language Documentation
+
+> Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
+
+This file contains the complete Vera documentation compiled into a single document. Version 0.0.93.
+
+
+========================================================================
+# Language Reference (SKILL.md)
+========================================================================
+
+# Vera Language Reference
+
+Vera is a programming language designed for LLMs to write. It uses typed slot references instead of variable names, requires contracts on every function, and makes all effects explicit.
+
+## Installation
+
+Vera requires Python 3.11 or later. Node.js 22+ is optional (only needed for `vera compile --target browser` and browser parity tests). Install from the repository:
+
+```bash
+git clone https://github.com/aallan/vera.git && cd vera
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+```
+
+This installs the `vera` command and all runtime dependencies (Lark parser, Z3 solver, wasmtime). After installation, verify it works:
+
+```bash
+vera check examples/hello_world.vera    # should print "OK: examples/hello_world.vera"
+vera run examples/hello_world.vera      # should print "Hello, World!"
+```
+
+If you are working on the compiler itself, install development dependencies too:
+
+```bash
+pip install -e ".[dev]"
+```
+
+## Toolchain
+
+```bash
+vera check file.vera              # Parse and type-check (or "OK")
+vera check --json file.vera       # Type-check with JSON diagnostics
+vera typecheck file.vera          # Same as check (explicit alias)
+vera verify file.vera             # Type-check and verify contracts via Z3
+vera verify --json file.vera      # Verify with JSON diagnostics
+vera compile file.vera                    # Compile to .wasm binary
+vera compile --wat file.vera              # Print WAT text (human-readable WASM)
+vera compile --json file.vera             # Compile with JSON diagnostics
+vera compile --target browser file.vera   # Compile + emit browser bundle (wasm + JS + html)
+vera run file.vera                # Compile and execute (calls main)
+vera run file.vera --fn f -- 42   # Call function f with argument 42
+vera run --json file.vera         # Run with JSON output
+vera test file.vera               # Contract-driven testing via Z3 + WASM
+vera test --json file.vera        # Test with JSON output
+vera test --trials 50 file.vera   # Limit trials per function (default 100)
+vera test file.vera --fn f        # Test a single function
+vera parse file.vera              # Print the parse tree
+vera ast file.vera                # Print the typed AST
+vera ast --json file.vera         # Print the AST as JSON
+vera fmt file.vera                # Format to canonical form (stdout)
+vera fmt --write file.vera        # Format in place
+vera fmt --check file.vera        # Check if already canonical
+pytest tests/ -v                  # Run the test suite
+```
+
+Errors are natural language instructions explaining what went wrong and how to fix it. Feed them back into your context to correct the code.
+
+### Browser compilation
+
+`vera compile --target browser` produces a ready-to-serve browser bundle:
+
+```bash
+vera compile --target browser file.vera            # Output to file_browser/
+vera compile --target browser file.vera -o dist/   # Output to dist/
+```
+
+This generates three files: `module.wasm` (the compiled binary), `vera-runtime.mjs` (self-contained JavaScript runtime with all host bindings), and `index.html` (loads and runs the program). Serve the output directory with any HTTP server (`python -m http.server`) and open `index.html` — ES module imports require HTTP, not `file://`.
+
+The JavaScript runtime provides browser-appropriate implementations: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, file IO returns `Result.Err`, and all other operations (State, contracts, Markdown) work identically to the Python runtime.
+
+To run the WASM directly in Node.js:
+
+```bash
+node --experimental-wasm-exnref vera/browser/harness.mjs module.wasm
+```
+
+### JSON diagnostics
+
+Use `--json` on `check` or `verify` for machine-readable output:
+
+```json
+{"ok": true, "file": "...", "diagnostics": [], "warnings": []}
+```
+
+On error, each diagnostic includes `severity`, `description`, `location` (`file`, `line`, `column`), `source_line`, `rationale`, `fix`, `spec_ref`, and `error_code`. The `verify --json` output also includes a `verification` summary with `tier1_verified`, `tier3_runtime`, and `total` counts.
+
+### Error codes
+
+Every diagnostic has a stable error code (`E001`–`E702`) grouped by compiler phase:
+
+- **E001–E007** — Parse errors (missing contracts, unexpected tokens)
+- **E010** — Transform errors (internal)
+- **E120–E176** — Type check: core + expressions (type mismatches, slot resolution, operators)
+- **E200–E233** — Type check: calls (unresolved functions, argument mismatches, module calls)
+- **E300–E335** — Type check: control flow (if/match, patterns, effect handlers)
+- **E500–E525** — Verification (contract violations, undecidable fallbacks)
+- **E600–E607** — Codegen (unsupported features)
+- **E700–E702** — Testing (contract violations, input generation, execution errors)
+
+Common codes you'll encounter:
+- **E130** — Unresolved slot reference (`@T.n` has no matching binding)
+- **E121** — Function body type doesn't match return type
+- **E200** — Unresolved function call
+- **E300** — If condition is not Bool
+- **E001** — Missing contract block (requires/ensures/effects)
+
+## Function Structure
+
+Every function has this exact structure. No part is optional except `decreases` and `where`. Visibility (`public` or `private`) is mandatory on every top-level `fn` and `data` declaration.
+
+```vera
+private fn function_name(@ParamType1, @ParamType2 -> @ReturnType)
+  requires(precondition_expression)
+  ensures(postcondition_expression)
+  effects(effect_row)
+{
+  body_expression
+}
+```
+
+Complete example:
+
+```vera
+public fn safe_divide(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(@Int.result == @Int.0 / @Int.1)
+  effects(pure)
+{
+  @Int.0 / @Int.1
+}
+```
+
+## Function Visibility
+
+Every top-level `fn` and `data` declaration **must** have an explicit visibility modifier. There is no default visibility -- omitting it is an error.
+
+- `public` -- the declaration is visible to other modules that import this one. Only `public` functions are exported as WASM entry points (callable via `vera run`). Use for library APIs, exported functions, and program entry points.
+- `private` -- the declaration is only visible within the current file/module. Private functions compile but are not WASM exports. Use for internal helpers.
+
+```vera
+public fn exported_api(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+private fn internal_helper(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + 1
+}
+
+public data Color {
+  Red,
+  Green,
+  Blue
+}
+
+private data InternalState {
+  Ready,
+  Done(Int)
+}
+```
+
+For generic functions, visibility comes before `forall`:
+
+```vera
+private forall<T> fn identity(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+```
+
+Visibility does **not** apply to: type aliases (`type Foo = ...`), effect declarations (`effect E { ... }`), module declarations, or import statements. Functions inside `where` blocks also do not take visibility.
+
+Multiple `requires` and `ensures` clauses are allowed. They are conjunctive (AND'd together):
+
+```vera
+private fn clamp(@Int, @Int, @Int -> @Int)
+  requires(@Int.1 <= @Int.2)
+  ensures(@Int.result >= @Int.1)
+  ensures(@Int.result <= @Int.2)
+  effects(pure)
+{
+  if @Int.0 < @Int.1 then {
+    @Int.1
+  } else {
+    if @Int.0 > @Int.2 then {
+      @Int.2
+    } else {
+      @Int.0
+    }
+  }
+}
+```
+
+## Slot References (@T.n)
+
+Vera has no variable names. Every binding is referenced by type and index:
+
+```
+@Type.index
+```
+
+- `@` is the slot reference prefix (mandatory)
+- `Type` is the exact type of the binding, starting with uppercase
+- `.index` is the zero-based De Bruijn index (0 = most recent binding of that type)
+
+### Parameter ordering
+
+Parameters bind left-to-right. The **rightmost** parameter of a given type is `@T.0`:
+
+```vera
+private fn add(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.1)
+  effects(pure)
+{
+  @Int.0 + @Int.1
+}
+-- @Int.0 = second parameter (rightmost Int)
+-- @Int.1 = first parameter (leftmost Int)
+```
+
+### Mixed types
+
+Each type has its own index counter:
+
+```vera
+private fn repeat(@String, @Int -> @String)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  string_repeat(@String.0, @Int.0)
+}
+-- @String.0 = first parameter (only String)
+-- @Int.0 = second parameter (only Int)
+```
+
+### Let bindings push new slots
+
+```vera
+private fn example(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = @Int.0 * 2;     -- @Int.0 here refers to the parameter
+  let @Int = @Int.0 + 1;     -- @Int.0 here refers to the first let (param * 2)
+  @Int.0                      -- refers to the second let (param * 2 + 1)
+}
+```
+
+### @T.result
+
+Only valid inside `ensures` clauses. Refers to the function's return value:
+
+```vera
+private fn abs(@Int -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  effects(pure)
+{
+  if @Int.0 >= 0 then {
+    @Int.0
+  } else {
+    -@Int.0
+  }
+}
+```
+
+### Index is mandatory
+
+`@Int` alone is not a valid reference. Always write `@Int.0`, `@Int.1`, etc.
+
+## Types
+
+### Primitive types
+
+- `Bool` — `true`, `false`
+- `Int` — signed integers (arbitrary precision)
+- `Nat` — natural numbers (non-negative)
+- `Float64` — 64-bit IEEE 754 floating-point
+- `Byte` — unsigned 8-bit integer (0–255)
+- `String` — text
+- `Unit` — singleton type, value is `()`
+- `Never` — bottom type (used for non-terminating expressions like `throw`)
+
+### Composite types
+
+```vera
+@Array<Int>                              -- array of ints
+@Array<Option<Int>>                      -- array of ADT (compound element type)
+@Array<String>                           -- array of strings
+@Tuple<Int, String>                      -- tuple
+@Option<Int>                             -- Option type (Some/None)
+Fn(Int -> Int) effects(pure)              -- function type
+{ @Int | @Int.0 > 0 }                   -- refinement type
+```
+
+### Type aliases
+
+```vera
+type PosInt = { @Int | @Int.0 > 0 };
+type Name = String;
+```
+
+## Data Types (ADTs)
+
+```vera
+private data Color {
+  Red,
+  Green,
+  Blue
+}
+
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+private data Option<T> {
+  None,
+  Some(T)
+}
+```
+
+> **Note:** `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are provided by the standard prelude and available in every program without explicit `data` declarations. You only need to define them locally if you want to shadow the prelude definition.
+
+With an invariant:
+
+```vera
+private data Positive invariant(@Int.0 > 0) {
+  MkPositive(Int)
+}
+```
+
+## Pattern Matching
+
+```vera
+private fn to_int(@Color -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Color.0 {
+    Red -> 0,
+    Green -> 1,
+    Blue -> 2
+  }
+}
+```
+
+Patterns can bind values:
+
+```vera
+private fn unwrap_or(@Option<Int>, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    None -> @Int.0,
+    Some(@Int) -> @Int.0
+  }
+}
+```
+
+Available patterns: constructors (`Some(@Int)`), nullary constructors (`None`, `Red`), literals (`0`, `"x"`, `true`), wildcard (`_`).
+
+Match must be exhaustive.
+
+## Conditional Expressions
+
+```vera
+if @Bool.0 then {
+  expr1
+} else {
+  expr2
+}
+```
+
+Both branches are mandatory. Braces are mandatory. Each branch is always multi-line (closing brace on its own line).
+
+## Block Expressions
+
+Blocks contain statements followed by a final expression:
+
+```vera
+{
+  let @Int = @Int.0 + 1;
+  let @String = to_string(@Int.0);
+  IO.print(@String.0);
+  @Int.0
+}
+```
+
+Statements end with `;`. The final expression (no `;`) is the block's value.
+
+## Iteration
+
+Vera has no `for` or `while` loops. Iteration is always expressed as tail-recursive functions. The standard pattern for counted iteration:
+
+```vera
+private fn loop(@Nat, @Nat -> @Unit)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(string_concat(fizzbuzz(@Nat.0), "\n"));
+  if @Nat.0 < @Nat.1 then {
+    loop(@Nat.1, @Nat.0 + 1)
+  } else {
+    ()
+  }
+}
+```
+
+Here `@Nat.0` is the counter (De Bruijn index 0 = most recent, i.e. the second parameter) and `@Nat.1` is the limit (the first parameter). The contract `requires(@Nat.0 <= @Nat.1)` ensures the counter never exceeds the limit — and since the recursive call passes `@Nat.0 + 1` where `@Nat.0 < @Nat.1`, the precondition is maintained at every step. The function prints, then either recurses with an incremented counter or returns `()`.
+
+Call with the limit first and counter second: `loop(100, 1)`.
+
+For pure recursive functions that need termination proofs, add a `decreases` clause (see [Recursion](#recursion)). Effectful recursive functions like the loop above do not require `decreases`.
+
+## Built-in Functions
+
+### Naming convention
+
+All built-in functions follow predictable naming patterns. When guessing a function name you haven't seen, apply these rules:
+
+| Pattern | When | Examples |
+|---------|------|----------|
+| `domain_verb` | Most functions | `string_length`, `array_append`, `regex_match`, `md_parse` |
+| `source_to_target` | Type conversions | `int_to_float`, `float_to_int`, `nat_to_int` |
+| `domain_is_predicate` | Boolean predicates | `float_is_nan`, `float_is_infinite` |
+| Prefix-less | Math universals and float constants only | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, `infinity` |
+
+**String operations always use `string_` prefix** — `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`. **Float64 predicates use `float_` prefix** — `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`** — `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) and float constants (`nan`, `infinity`) are the **only** exceptions — they need no prefix because they are universally understood mathematical names.
+
+### Option and Result Combinators
+
+The standard prelude provides `Option<T>` and `Result<T, E>` along with combinator functions that are always available:
+
+```vera
+-- Option: unwrap with default
+option_unwrap_or(Some(42), 0)           -- returns 42
+option_unwrap_or(None, 0)               -- returns 0
+
+-- Option: transform the value inside Some
+option_map(Some(10), fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
+-- returns Some(11)
+
+-- Option: chain fallible operations (flatmap)
+option_and_then(Some(5), fn(@Int -> @Option<Int>) effects(pure) {
+  if @Int.0 > 0 then { Some(@Int.0 * 2) } else { None }
+})
+-- returns Some(10)
+
+-- Result: unwrap with default
+result_unwrap_or(Ok(42), 0)             -- returns 42
+result_unwrap_or(Err("oops"), 0)        -- returns 0
+
+-- Result: transform the Ok value
+result_map(Ok(10), fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
+-- returns Ok(11)
+```
+
+These are generic functions that follow the `domain_verb` naming convention. They are automatically injected and undergo normal monomorphization. If you define a function with the same name, your definition takes precedence.
+
+> **Limitation ([#293](https://github.com/aallan/vera/issues/293)):** When a combinator's type variable appears only in a return position (not in any argument), the type checker cannot infer it from a bare constructor like `None` or `Err("msg")`. Use a typed binding instead:
+>
+> ```vera
+> -- Won't type-check: option_map(None, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
+> -- Use a typed binding:
+> let @Option<Int> = None;
+> option_map(@Option<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
+> ```
+
+### Array operations
+
+```vera
+array_length(@Array<Int>.0)             -- returns Int (always >= 0)
+array_append(@Array<Int>.0, @Int.0)     -- returns Array<Int> (new array with element appended)
+array_range(@Int.0, @Int.1)             -- returns Array<Int> (integers [start, end))
+array_concat(@Array<Int>.0, @Array<Int>.1)  -- returns Array<Int> (merge two arrays)
+array_slice(@Array<Int>.0, @Int.0, @Int.1)  -- returns Array<Int> (elements [start, end))
+array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { ... })     -- returns Array<Int>
+array_filter(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { ... }) -- returns Array<Int>
+array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 }) -- returns Int
+```
+
+`array_map` is generic: the element type can change (e.g. `array_map(@Array<Int>.0, fn(@Int -> @String) ...)`).
+`array_fold` is generic: the accumulator type can differ from the element type.
+
+### String operations
+
+```vera
+string_length(@String.0)                -- returns Nat
+string_concat(@String.0, @String.1)     -- returns String
+string_slice(@String.0, @Nat.0, @Nat.1) -- returns String (start, end)
+string_char_code(@String.0, @Int.0)     -- returns Nat (ASCII code at index)
+string_from_char_code(@Nat.0)           -- returns String (single char from code point)
+string_repeat(@String.0, @Nat.0)        -- returns String (repeated N times)
+parse_nat(@String.0)                    -- returns Result<Nat, String>
+parse_int(@String.0)                    -- returns Result<Int, String>
+parse_float64(@String.0)                -- returns Result<Float64, String>
+parse_bool(@String.0)                   -- returns Result<Bool, String>
+base64_encode(@String.0)                -- returns String (RFC 4648)
+base64_decode(@String.0)                -- returns Result<String, String>
+url_encode(@String.0)                   -- returns String (RFC 3986 percent-encoding)
+url_decode(@String.0)                   -- returns Result<String, String>
+url_parse(@String.0)                    -- returns Result<UrlParts, String> (RFC 3986 decomposition)
+url_join(@UrlParts.0)                   -- returns String (reassemble URL from UrlParts)
+md_parse(@String.0)                     -- returns Result<MdBlock, String> (parse Markdown)
+md_render(@MdBlock.0)                   -- returns String (render to canonical Markdown)
+md_has_heading(@MdBlock.0, @Nat.0)      -- returns Bool (check if heading of level exists)
+md_has_code_block(@MdBlock.0, @String.0) -- returns Bool (check if code block of language exists)
+md_extract_code_blocks(@MdBlock.0, @String.0) -- returns Array<String> (extract code by language)
+regex_match(@String.0, @String.1)      -- returns Result<Bool, String> (test if pattern matches)
+regex_find(@String.0, @String.1)       -- returns Result<Option<String>, String> (first match)
+regex_find_all(@String.0, @String.1)   -- returns Result<Array<String>, String> (all matches)
+regex_replace(@String.0, @String.1, @String.2) -- returns Result<String, String> (replace first match)
+async(@T.0)                            -- returns Future<T> (requires effects(<Async>))
+await(@Future<T>.0)                    -- returns T (requires effects(<Async>))
+to_string(@Int.0)                       -- returns String (integer to decimal)
+int_to_string(@Int.0)                   -- returns String (alias for to_string)
+bool_to_string(@Bool.0)                 -- returns String ("true" or "false")
+nat_to_string(@Nat.0)                   -- returns String (natural to decimal)
+byte_to_string(@Byte.0)                 -- returns String (single character)
+float_to_string(@Float64.0)             -- returns String (decimal representation)
+string_strip(@String.0)                 -- returns String (trim whitespace)
+```
+
+#### String interpolation
+
+```vera
+"hello \(@String.0)"               -- embeds a String value
+"x = \(@Int.0)"                    -- auto-converts Int to String
+"a=\(@Int.1), b=\(@Int.0)"        -- multiple interpolations
+"\(@String.0)"                     -- interpolation-only (no literal text)
+"len=\(string_length(@String.0))"  -- function call inside interpolation
+```
+
+Expressions inside `\(...)` are auto-converted to String for types: Int, Nat, Bool, Byte, Float64. Other types produce error E148. Expressions cannot contain string literals (use `let` bindings instead).
+
+#### String search
+
+```vera
+string_contains(@String.0, @String.1)  -- returns Bool (substring test)
+string_starts_with(@String.0, @String.1) -- returns Bool (prefix test)
+string_ends_with(@String.0, @String.1)   -- returns Bool (suffix test)
+string_index_of(@String.0, @String.1)    -- returns Option<Nat> (first occurrence)
+```
+
+`string_contains` checks whether the needle appears anywhere in the haystack. `string_starts_with` and `string_ends_with` test prefix and suffix matches. `string_index_of` returns `Some(i)` with the byte offset of the first match, or `None` if not found. An empty needle always matches (returns `true` or `Some(0)`).
+
+#### String transformation
+
+```vera
+string_upper(@String.0)                         -- returns String (ASCII uppercase)
+string_lower(@String.0)                         -- returns String (ASCII lowercase)
+string_replace(@String.0, @String.1, @String.2) -- returns String (replace all)
+string_split(@String.0, @String.1)              -- returns Array<String> (split by delimiter)
+string_join(@Array<String>.0, @String.0)        -- returns String (join with separator)
+```
+
+`string_upper` and `string_lower` convert ASCII letters only (a-z ↔ A-Z). `string_replace` substitutes all non-overlapping occurrences; an empty needle returns the original string unchanged. `string_split` returns an array of segments; an empty delimiter returns a single-element array. `string_join` concatenates array elements with the separator between each pair.
+
+String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. All four parse functions return `Result<T, String>`: `parse_nat`, `parse_int`, `parse_float64`, and `parse_bool`. They return `Ok(value)` on valid input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated. `parse_int` accepts an optional `+` or `-` sign. `parse_bool` is strict: only `"true"` and `"false"` (lowercase) are valid. `base64_encode` encodes a string to standard Base64 (RFC 4648); `base64_decode` returns `Result<String, String>`, failing on invalid length or characters. `url_encode` percent-encodes a string for use in URLs (RFC 3986), leaving unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`) unchanged; `url_decode` returns `Result<String, String>`, failing on invalid `%XX` sequences. `url_parse` decomposes a URL into its RFC 3986 components, returning `Result<UrlParts, String>` where `UrlParts(scheme, authority, path, query, fragment)` is a built-in ADT with five String fields; it returns `Err("missing scheme")` if no `:` is found. `url_join` reassembles a `UrlParts` value into a URL string. Programs must redefine `UrlParts` locally (like `Result`) to use it in match expressions.
+
+### Markdown operations
+
+```vera
+md_parse(@String.0)                     -- returns Result<MdBlock, String>
+md_render(@MdBlock.0)                   -- returns String
+md_has_heading(@MdBlock.0, @Nat.0)      -- returns Bool
+md_has_code_block(@MdBlock.0, @String.0) -- returns Bool
+md_extract_code_blocks(@MdBlock.0, @String.0) -- returns Array<String>
+```
+
+`md_parse` parses a Markdown string into a typed `MdBlock` document tree. Returns `Ok(MdDocument(...))` on success. `md_render` converts an `MdBlock` back to canonical Markdown text. `md_has_heading` checks whether the document contains a heading at the given level (1–6). `md_has_code_block` checks for a fenced code block with the given language tag (use `""` for untagged blocks). `md_extract_code_blocks` returns an array of code content strings for all blocks matching the language.
+
+Two built-in ADTs represent the Markdown document structure:
+
+**MdInline** — inline content within blocks:
+- `MdText(String)` — plain text
+- `MdCode(String)` — inline code
+- `MdEmph(Array<MdInline>)` — emphasis (*italic*)
+- `MdStrong(Array<MdInline>)` — strong (**bold**)
+- `MdLink(Array<MdInline>, String)` — link with text and URL
+- `MdImage(String, String)` — image with alt text and source
+
+**MdBlock** — block-level content:
+- `MdParagraph(Array<MdInline>)` — paragraph
+- `MdHeading(Nat, Array<MdInline>)` — heading with level (1–6)
+- `MdCodeBlock(String, String)` — fenced code block (language, code)
+- `MdBlockQuote(Array<MdBlock>)` — block quote
+- `MdList(Bool, Array<Array<MdBlock>>)` — list (ordered?, items)
+- `MdThematicBreak` — horizontal rule
+- `MdTable(Array<Array<Array<MdInline>>>)` — table (rows of cells)
+- `MdDocument(Array<MdBlock>)` — top-level document
+
+All Markdown functions are pure and available without imports. Pattern match on `MdBlock` and `MdInline` constructors to traverse the document tree.
+
+### Regular expressions
+
+```vera
+regex_match(@String.0, @String.1)                -- returns Result<Bool, String>
+regex_find(@String.0, @String.1)                 -- returns Result<Option<String>, String>
+regex_find_all(@String.0, @String.1)             -- returns Result<Array<String>, String>
+regex_replace(@String.0, @String.1, @String.2)   -- returns Result<String, String>
+```
+
+All four regex functions take the input string as the first argument and the regex pattern as the second. `regex_replace` takes a third argument for the replacement string. All return `Result` types — `Err(msg)` for invalid patterns, `Ok(value)` on success.
+
+`regex_match` tests whether the pattern matches anywhere in the input (substring match, not full-string). `regex_find` returns the first matching substring wrapped in `Option`. `regex_find_all` returns all non-overlapping matches as an `Array<String>` — always returns full match strings (group 0), even when the pattern contains capture groups. `regex_replace` replaces only the **first** match.
+
+```vera
+let @Result<Bool, String> = regex_match("hello123", "\\d+");
+match @Result<Bool, String>.0 {
+  Ok(@Bool) -> if @Bool.0 then { IO.print("found digits") } else { IO.print("no digits") },
+  Err(@String) -> IO.print(string_concat("Error: ", @String.0))
+}
+```
+
+All regex functions are pure and implemented as host imports (Python `re` / JavaScript `RegExp`).
+
+### Numeric operations
+
+```vera
+abs(@Int.0)                         -- returns Nat (absolute value)
+min(@Int.0, @Int.1)                 -- returns Int (smaller of two)
+max(@Int.0, @Int.1)                 -- returns Int (larger of two)
+floor(@Float64.0)                   -- returns Int (round down)
+ceil(@Float64.0)                    -- returns Int (round up)
+round(@Float64.0)                   -- returns Int (banker's rounding)
+sqrt(@Float64.0)                    -- returns Float64 (square root)
+pow(@Float64.0, @Int.0)             -- returns Float64 (exponentiation)
+```
+
+`abs` returns `Nat` because absolute values are non-negative. `floor`, `ceil`, and `round` convert `Float64` to `Int`; they trap on NaN or out-of-range values (WASM semantics). `round` uses IEEE 754 roundTiesToEven (banker's rounding): `round(2.5)` is `2`, not `3`. `pow` takes an `Int` exponent — negative exponents produce reciprocals (`pow(2.0, -1)` is `0.5`). The integer builtins (`abs`, `min`, `max`) are fully verifiable by the SMT solver (Tier 1). The float builtins fall to Tier 3 (runtime).
+
+### Type conversions
+
+```vera
+int_to_float(@Int.0)                -- returns Float64 (int to float)
+float_to_int(@Float64.0)           -- returns Int (truncation toward zero)
+nat_to_int(@Nat.0)                 -- returns Int (identity, both i64)
+int_to_nat(@Int.0)                 -- returns Option<Nat> (None if negative)
+byte_to_int(@Byte.0)              -- returns Int (zero-extension)
+int_to_byte(@Int.0)               -- returns Option<Byte> (None if out of 0..255)
+```
+
+Vera has no implicit numeric conversions — use these functions to convert between numeric types. `int_to_float`, `nat_to_int`, and `byte_to_int` are widening conversions that always succeed. `float_to_int` truncates toward zero and traps on NaN/Infinity. `int_to_nat` and `int_to_byte` are checked narrowing conversions that return `Option` — pattern match on the result to handle the failure case. `nat_to_int` and `byte_to_int` are SMT-verifiable (Tier 1); the rest are Tier 3 (runtime).
+
+### Float64 predicates
+
+```vera
+float_is_nan(@Float64.0)           -- returns Bool (true if NaN)
+float_is_infinite(@Float64.0)      -- returns Bool (true if ±infinity)
+nan()                              -- returns Float64 (quiet NaN)
+infinity()                         -- returns Float64 (positive infinity)
+```
+
+`float_is_nan` and `float_is_infinite` test for IEEE 754 special values. `nan()` and `infinity()` construct them — use `0.0 - infinity()` for negative infinity. All four are Tier 3 (runtime-tested, not SMT-verifiable).
+
+**Shadowing**: If you define a function with the same name as a built-in (e.g. `array_length` for a custom list type), your definition takes priority. The built-in is only used when no user-defined function with that name exists.
+
+Example:
+
+```vera
+private fn greet(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_concat("Hello, ", @String.0)
+}
+```
+
+## Contracts
+
+### requires (preconditions)
+
+Conditions that must hold when the function is called:
+
+```vera
+private fn safe_divide(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+```
+
+### ensures (postconditions)
+
+Conditions guaranteed when the function returns. Use `@T.result` to refer to the return value:
+
+```vera
+  ensures(@Int.result == @Int.0 / @Int.1)
+```
+
+### decreases (termination)
+
+Required on recursive functions. The expression must decrease on each recursive call:
+
+```vera
+private fn factorial(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 1)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    1
+  } else {
+    @Nat.0 * factorial(@Nat.0 - 1)
+  }
+}
+```
+
+For nested recursion, use lexicographic ordering: `decreases(@Nat.0, @Nat.1)`.
+
+### Quantified expressions
+
+```vera
+-- For all indices in [0, bound):
+forall(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
+  @Array<Int>.0[@Nat.0] > 0
+})
+
+-- There exists an index in [0, bound):
+exists(@Nat, array_length(@Array<Int>.0), fn(@Nat -> @Bool) effects(pure) {
+  @Array<Int>.0[@Nat.0] == 0
+})
+```
+
+## Effects
+
+Vera is pure by default. All side effects must be declared.
+
+### Declaring effects on functions
+
+```vera
+effects(pure)                    -- no effects
+effects(<IO>)                    -- performs IO
+effects(<State<Int>>)            -- uses integer state
+effects(<State<Int>, IO>)        -- multiple effects
+effects(<Async>)                 -- async computation
+effects(<Diverge>)               -- may not terminate
+effects(<Diverge, IO>)           -- divergent with IO
+```
+
+`Diverge` is a built-in marker effect with no operations. Its presence in the
+effect row signals that the function may not terminate. Functions without
+`Diverge` must be proven total (via `decreases` clauses on recursion).
+
+### Effect declarations
+
+The IO effect is built-in — no declaration is needed. It provides seven operations:
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `IO.print` | `String -> Unit` | Print a string to stdout |
+| `IO.read_line` | `Unit -> String` | Read a line from stdin |
+| `IO.read_file` | `String -> Result<String, String>` | Read file contents |
+| `IO.write_file` | `String, String -> Result<Unit, String>` | Write string to file |
+| `IO.args` | `Unit -> Array<String>` | Get command-line arguments |
+| `IO.exit` | `Int -> Never` | Exit with status code |
+| `IO.get_env` | `String -> Option<String>` | Read environment variable |
+
+If you declare `effect IO { op print(String -> Unit); }` explicitly, that overrides the built-in and only the declared operations are available. Most examples do this — declaring only `print` — because it follows the principle of least privilege: a program that only declares `op print` cannot accidentally perform file I/O or call `exit`.
+
+**Why IO works differently from State and Async:** IO has 7 operations and programs choose which ones they need. State and Async have fixed, minimal operation sets (State: `get`/`put`; Async: no operations, it is a marker effect), so there is nothing to restrict.
+
+### Performing effects
+
+Call the effect operations directly:
+
+```vera
+private fn greet(@String -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(@String.0);
+  ()
+}
+
+public fn main(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match IO.read_file("data.txt") {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  };
+  ()
+}
+```
+
+### State effects
+
+```vera
+private fn increment(@Unit -> @Unit)
+  requires(true)
+  ensures(new(State<Int>) == old(State<Int>) + 1)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+  put(@Int.0 + 1);
+  ()
+}
+```
+
+In `ensures` clauses, `old(State<T>)` is the state before the call and `new(State<T>)` is the state after.
+
+### Exception effects
+
+The `Exn<E>` effect models exceptions with error type `E`:
+
+```vera
+effect Exn<E> {
+  op throw(E -> Never);
+}
+```
+
+Throw exceptions using the qualified call syntax:
+
+```vera
+private fn safe_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{
+  if @Int.1 == 0 then {
+    Exn.throw("division by zero")
+  } else {
+    @Int.0 / @Int.1
+  }
+}
+```
+
+Handle exceptions with `handle[Exn<E>]`:
+
+```vera
+private fn try_div(@Int, @Int -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> None
+  } in {
+    Some(safe_div(@Int.0, @Int.1))
+  }
+}
+```
+
+The handler catches the exception and returns a fallback value. The `throw` handler clause receives the error value and must return the same type as the overall `handle` expression. Exception handlers do not use `resume` — throwing is non-resumable.
+
+### Async effect
+
+The `Async` effect enables asynchronous computation with `Future<T>`:
+
+```vera
+effects(<Async>)                 -- async computation
+effects(<IO, Async>)             -- async with IO
+```
+
+`async` and `await` are built-in generic functions:
+
+```vera
+private fn compute(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Async>)
+{
+  let @Future<Int> = async(@Int.1 * 2);
+  let @Future<Int> = async(@Int.0 * 3);
+  await(@Future<Int>.0) + await(@Future<Int>.1)
+}
+```
+
+`async(expr)` evaluates `expr` and wraps the result in `Future<T>`. `await(@Future<T>.n)` unwraps it. In the reference implementation, evaluation is eager/sequential — `Future<T>` has the same WASM representation as `T` with no runtime overhead.
+
+### Effect handlers
+
+Handlers eliminate an effect, converting effectful code to pure code:
+
+```vera
+private fn run_counter(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(42);
+    get(())
+  }
+}
+```
+
+Handler syntax:
+```vera
+handle[EffectName<TypeArgs>](@StateType = initial_value) {
+  operation(@ParamType) -> { handler_body },
+  operation(@ParamType) -> { handler_body } with @StateType = new_value,
+  ...
+} in {
+  handled_body
+}
+```
+
+Use `resume(value)` in a handler clause to continue the handled computation with the given return value. Optionally update handler state with a `with` clause:
+
+```vera
+put(@Int) -> { resume(()) } with @Int = @Int.0
+```
+
+The `with @T = expr` clause updates the handler's state when resuming. The type must match the handler's state type declaration.
+
+### Qualified operation calls
+
+When two effects have operations with the same name, qualify the call:
+
+```vera
+State.put(42);
+Logger.put("message");
+```
+
+## Where Blocks (Mutual Recursion)
+
+```vera
+private fn is_even(@Nat -> @Bool)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    true
+  } else {
+    is_odd(@Nat.0 - 1)
+  }
+}
+where {
+  fn is_odd(@Nat -> @Bool)
+    requires(true)
+    ensures(true)
+    decreases(@Nat.0)
+    effects(pure)
+  {
+    if @Nat.0 == 0 then {
+      false
+    } else {
+      is_even(@Nat.0 - 1)
+    }
+  }
+}
+```
+
+## Generic Functions
+
+```vera
+private forall<T> fn identity(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @T.0
+}
+```
+
+## Abilities (Type Constraints)
+
+Abilities constrain type variables in generic functions. An ability declares operations that a type must support:
+
+```vera
+ability Eq<T> {
+  op eq(T, T -> Bool);
+}
+```
+
+Use `where` in the `forall` clause to constrain type parameters:
+
+```vera
+private forall<T where Eq<T>> fn are_equal(@T, @T -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  eq(@T.1, @T.0)
+}
+```
+
+Four built-in abilities are available — no declarations needed:
+
+- **`Eq<T>`** — `eq(x, y)` returns `@Bool`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit, and simple enum ADTs.
+- **`Ord<T>`** — `compare(x, y)` returns `@Ordering` (`Less`, `Equal`, `Greater`). Satisfied by: Int, Nat, Bool, Float64, String, Byte.
+- **`Hash<T>`** — `hash(x)` returns `@Int`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit.
+- **`Show<T>`** — `show(x)` returns `@String`. Satisfied by: Int, Nat, Bool, Float64, String, Byte, Unit.
+
+The `Ordering` type is a built-in ADT with three constructors: `Less`, `Equal`, `Greater`. Use it with pattern matching:
+
+```vera
+public fn sign(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match compare(@Int.1, @Int.0) {
+    Less -> 0 - 1,
+    Equal -> 0,
+    Greater -> 1
+  }
+}
+```
+
+Key rules:
+- Abilities are first-order only: `Eq<T>`, not `Mappable<F>` where `F` is a type constructor
+- Constraint syntax: `forall<T where Eq<T>>` — constraints go inside the angle brackets
+- Multiple constraints: `forall<T where Eq<T>, Ord<T>>`
+- Ability declarations mirror effect declarations (both use `op`)
+- User-defined abilities are supported with the same syntax
+- ADT auto-derivation: Simple enums automatically satisfy `Eq` — the compiler generates structural equality (tag comparison)
+- Unsatisfied constraints produce error E613
+
+## Modules
+
+```vera
+module vera.math;
+
+import vera.collections;
+import vera.collections(List, Option);
+
+public fn exported(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+```
+
+Every top-level `fn` and `data` must have explicit `public` or `private` visibility. Use `public` for functions that other modules should be able to import.
+
+Import paths resolve to files on disk: `import vera.math;` looks for `vera/math.vera` relative to the importing file's directory (or the project root). Imported files are parsed and cached automatically. Circular imports are detected and reported as errors.
+
+Imported functions can be called by name (bare calls): `import vera.math(abs); abs(-5)` resolves `abs` from the imported module. Selective imports restrict available names; wildcard imports (`import m;`) make all declarations available. Local definitions shadow imported names. Imported ADT constructors are also available: `import col(List); Cons(1, Nil)`.
+
+Imported function contracts are verified at call sites by the SMT solver. Preconditions of imported functions are checked at each call site; postconditions are assumed. This means `abs(x)` with `ensures(@Int.result >= 0)` lets the caller rely on the result being non-negative.
+
+Cross-module compilation uses a flattening strategy: imported function bodies are compiled into the same WASM module as the importing program. The result is a single self-contained `.wasm` binary. Imported functions are internal (not exported); only the importing program's `public` functions are WASM exports.
+
+If two imported modules define a function, data type, or constructor with the same name, the compiler reports an error (E608/E609/E610) listing both conflicting modules. Rename one of the conflicting declarations in the source module to resolve the collision. Local definitions shadow imported names without error.
+
+Type aliases and effect declarations are module-local and cannot be imported. If another module needs the same alias or effect, it must declare its own copy.
+
+Module-qualified calls use `::` between the module path and the function name: `vera.math::abs(42)`. The dot-separated path identifies the module and `::` separates it from the function name. This syntax can be used anywhere a function call is valid, and always resolves against the specific module's public declarations — it is not affected by local shadowing. Note: module-qualified calls (`math::abs(42)`) are available for readability but do not yet resolve name collisions in flat compilation — the compiler will still report a collision error. A future version will support qualified-call disambiguation via name mangling.
+
+There is no import aliasing (`import m(abs as math_abs)`) and no wildcard exclusion (`import m hiding(x)`). These are intentional design decisions, not limitations. When names clash across modules, rename the conflicting declaration in one of the source modules. This preserves the one-canonical-form principle — every function has exactly one name.
+
+There are no raw strings (`r"..."`) or multi-line string literals. Use escape sequences (`\\`, `\n`, `\t`, `\"`) for special characters. This is by design — alternative string syntaxes would create two representations for the same value.
+
+See: spec Chapter 8 for the full module system specification.
+
+## Comments
+
+```vera
+-- line comment
+
+{- block comment -}
+
+{- block comments {- can nest -} -}
+```
+
+## Operators (by precedence, loosest to tightest)
+
+| Precedence | Operators | Associativity |
+|------------|-----------|---------------|
+| 1 | `\|>` (pipe) | left |
+| 2 | `==>` (implies, contracts only) | right |
+| 3 | `\|\|` | left |
+| 4 | `&&` | left |
+| 5 | `==` `!=` | none |
+| 6 | `<` `>` `<=` `>=` | none |
+| 7 | `+` `-` | left |
+| 8 | `*` `/` `%` | left |
+| 9 | `!` `-` (unary) | prefix |
+| 10 | `[]` (index) `()` (call) | postfix |
+
+## Best Practices
+
+### Keep functions small
+
+Vera's De Bruijn slot references (`@T.n`) are clear when functions have 2–3 parameters of different types. They become harder to track with 4+ parameters of the same type or long let-chains where indices shift with each binding.
+
+**Guidelines:**
+- Keep functions under ~5 parameters total
+- When multiple parameters share a type, prefer breaking into smaller helper functions or where-functions
+- Break long let-chains (4+ bindings of the same type) into where-functions — they create fresh scopes with reset slot indices
+- Commutative operations (`+`, `*`) mask index errors; be especially careful with non-commutative operations (`-`, `/`, `<`, `>`) and recursive calls
+
+### Use where-functions for complex logic
+
+Where-functions are private helpers scoped to their parent function. They reset the slot index namespace, making code easier to reason about:
+
+```vera
+public fn process(@Int, @Int, @String -> @Int)
+  requires(@Int.1 > 0)
+  ensures(true)
+  effects(pure)
+{
+  compute(@Int.1, @Int.0, string_length(@String.0))
+}
+where {
+  fn compute(@Int, @Int, @Int -> @Int)
+    requires(true)
+    ensures(true)
+    effects(pure)
+  {
+    (@Int.2 + @Int.1) * @Int.0
+  }
+}
+```
+
+## Common Mistakes
+
+### Missing contract block
+
+WRONG:
+```vera
+private fn add(@Int, @Int -> @Int) {
+  @Int.0 + @Int.1
+}
+```
+
+CORRECT:
+```vera
+private fn add(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.1)
+  effects(pure)
+{
+  @Int.0 + @Int.1
+}
+```
+
+### Missing effects clause
+
+WRONG:
+```vera
+private fn add(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+{
+  @Int.0 + @Int.1
+}
+```
+
+CORRECT — add `effects(pure)` (or the appropriate effect row):
+```vera
+private fn add(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + @Int.1
+}
+```
+
+### Wrong slot index
+
+WRONG — both `@Int.0` refer to the same binding (the second parameter):
+```vera
+private fn add(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + @Int.0
+}
+```
+
+CORRECT — `@Int.1` is the first parameter, `@Int.0` is the second:
+```vera
+private fn add(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 + @Int.1
+}
+```
+
+### Missing index on slot reference
+
+WRONG:
+```vera
+@Int + @Int
+```
+
+CORRECT:
+```vera
+@Int.0 + @Int.1
+```
+
+### Missing decreases on recursive function
+
+WRONG:
+```vera
+private fn factorial(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    1
+  } else {
+    @Nat.0 * factorial(@Nat.0 - 1)
+  }
+}
+```
+
+CORRECT:
+```vera
+private fn factorial(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    1
+  } else {
+    @Nat.0 * factorial(@Nat.0 - 1)
+  }
+}
+```
+
+### Undeclared effects
+
+WRONG — `IO.print` performs IO but function declares `pure`:
+```vera
+private fn greet(@String -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  IO.print(@String.0);
+  ()
+}
+```
+
+CORRECT:
+```vera
+private fn greet(@String -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(@String.0);
+  ()
+}
+```
+
+### Using @T.result outside ensures
+
+WRONG:
+```vera
+private fn f(@Int -> @Int)
+  requires(@Int.result > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+```
+
+CORRECT — `@T.result` is only valid in `ensures`:
+```vera
+private fn f(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  @Int.0
+}
+```
+
+### Non-exhaustive match
+
+WRONG:
+```vera
+match @Option<Int>.0 {
+  Some(@Int) -> @Int.0
+}
+```
+
+CORRECT:
+```vera
+match @Option<Int>.0 {
+  Some(@Int) -> @Int.0,
+  None -> 0
+}
+```
+
+### Missing braces on if/else branches
+
+WRONG:
+```vera
+if @Bool.0 then 1 else 0
+```
+
+CORRECT:
+```vera
+if @Bool.0 then {
+  1
+} else {
+  0
+}
+```
+
+### Trying to use import aliasing
+
+WRONG — Vera does not support renaming imports:
+```vera
+import vera.math(abs as math_abs);
+```
+
+CORRECT — use selective import and qualified calls for readability:
+```vera
+import vera.math(abs);
+vera.math::abs(-5)
+```
+
+Note: if two imported modules define the same name, the compiler reports a collision error (E608/E609/E610). Rename the conflicting declaration in one of the source modules.
+
+### Trying to use wildcard exclusion
+
+WRONG — Vera does not support `hiding` syntax:
+```vera
+import vera.math hiding(max);
+```
+
+CORRECT — use selective import to list the names you need:
+```vera
+import vera.math(abs, min);
+```
+
+### Trying to use raw or multi-line strings
+
+WRONG — Vera does not support raw strings or multi-line literals:
+```
+r"path\to\file"
+"""multi-line
+string"""
+```
+
+CORRECT — use escape sequences:
+```vera
+"path\\to\\file"
+"line one\nline two"
+```
+
+## Complete Program Examples
+
+### Pure function with postconditions
+
+```vera
+public fn absolute_value(@Int -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  ensures(@Nat.result == @Int.0 || @Nat.result == -@Int.0)
+  effects(pure)
+{
+  if @Int.0 >= 0 then {
+    @Int.0
+  } else {
+    -@Int.0
+  }
+}
+```
+
+### Recursive function with termination proof
+
+```vera
+public fn factorial(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 1)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    1
+  } else {
+    @Nat.0 * factorial(@Nat.0 - 1)
+  }
+}
+```
+
+### Stateful effects with old/new
+
+```vera
+public fn increment(@Unit -> @Unit)
+  requires(true)
+  ensures(new(State<Int>) == old(State<Int>) + 1)
+  effects(<State<Int>>)
+{
+  let @Int = get(());
+  put(@Int.0 + 1);
+  ()
+}
+```
+
+### ADT with pattern matching
+
+```vera
+private data List<T> {
+  Nil,
+  Cons(T, List<T>)
+}
+
+public fn length(@List<Int> -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@List<Int>.0)
+  effects(pure)
+{
+  match @List<Int>.0 {
+    Nil -> 0,
+    Cons(@Int, @List<Int>) -> 1 + length(@List<Int>.0)
+  }
+}
+```
+
+### Iteration with IO
+
+FizzBuzz with a recursive loop and IO effects. `fizzbuzz` is pure; `loop` and `main` have `effects(<IO>)`. Run with `vera run examples/fizzbuzz.vera`.
+
+```vera
+effect IO {
+  op print(String -> Unit);
+}
+
+public fn fizzbuzz(@Nat -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Nat.0 % 15 == 0 then {
+    "FizzBuzz"
+  } else {
+    if @Nat.0 % 3 == 0 then {
+      "Fizz"
+    } else {
+      if @Nat.0 % 5 == 0 then {
+        "Buzz"
+      } else {
+        "\(@Nat.0)"
+      }
+    }
+  }
+}
+
+private fn loop(@Nat, @Nat -> @Unit)
+  requires(@Nat.0 <= @Nat.1)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print(string_concat(fizzbuzz(@Nat.0), "\n"));
+  if @Nat.0 < @Nat.1 then {
+    loop(@Nat.1, @Nat.0 + 1)
+  } else {
+    ()
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  loop(100, 1)
+}
+```
+
+## Conformance Suite
+
+The `tests/conformance/` directory contains 39 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+
+Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
+
+Key conformance programs by feature:
+
+| Feature | Program |
+|---------|---------|
+| Slot references (`@T.n`) | `ch03_slot_basic.vera`, `ch03_slot_indexing.vera` |
+| Match expressions | `ch04_match_basic.vera`, `ch04_match_nested.vera` |
+| Contracts (requires/ensures) | `ch06_requires.vera`, `ch06_ensures.vera` |
+| Effect handlers | `ch07_state_handler.vera`, `ch07_exn_handler.vera` |
+| Closures | `ch05_closures.vera` |
+| Generics | `ch02_generics.vera` |
+| Recursive ADTs | `ch02_adt_recursive.vera` |
+
+## Specification Reference
+
+The full language specification is in the [`spec/`](https://github.com/aallan/vera/tree/main/spec) directory of the repository:
+
+| Chapter | Spec | Topic |
+|---------|------|-------|
+| 0 | [Introduction](https://github.com/aallan/vera/blob/main/spec/00-introduction.md) | Design goals, diagnostics philosophy |
+| 1 | [Lexical Structure](https://github.com/aallan/vera/blob/main/spec/01-lexical-structure.md) | Tokens, operators, formatting |
+| 2 | [Types](https://github.com/aallan/vera/blob/main/spec/02-types.md) | Type system, refinement types |
+| 3 | [Slot References](https://github.com/aallan/vera/blob/main/spec/03-slot-references.md) | The @T.n reference system |
+| 4 | [Expressions](https://github.com/aallan/vera/blob/main/spec/04-expressions.md) | Expressions and statements |
+| 5 | [Functions](https://github.com/aallan/vera/blob/main/spec/05-functions.md) | Functions and contracts |
+| 6 | [Contracts](https://github.com/aallan/vera/blob/main/spec/06-contracts.md) | Verification system |
+| 7 | [Effects](https://github.com/aallan/vera/blob/main/spec/07-effects.md) | Algebraic effect system |
+| 9 | [Standard Library](https://github.com/aallan/vera/blob/main/spec/09-standard-library.md) | Built-in types, effects, functions |
+| 10 | [Grammar](https://github.com/aallan/vera/blob/main/spec/10-grammar.md) | Formal EBNF grammar |
+| 11 | [Compilation](https://github.com/aallan/vera/blob/main/spec/11-compilation.md) | Compilation model and WASM target |
+| 12 | [Runtime](https://github.com/aallan/vera/blob/main/spec/12-runtime.md) | Runtime execution, host bindings, memory model |
+
+
+========================================================================
+# Agent Instructions (AGENTS.md)
+========================================================================
+
+# AGENTS.md — Instructions for AI agents
+
+This document is for AI agents working with the Vera codebase. There are two audiences: agents writing Vera code, and agents working on the compiler.
+
+## For agents writing Vera code
+
+Read `SKILL.md` for the full language reference. It covers syntax, slot references, contracts, effects, common mistakes, and working examples that all parse correctly.
+
+### Conformance programs as reference
+
+The conformance suite in `tests/conformance/` contains 52 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
+
+### Workflow
+
+```
+write .vera file -> vera check -> fix errors -> vera verify -> fix errors -> done
+```
+
+### Commands
+
+```bash
+vera check file.vera              # Parse and type-check
+vera check --json file.vera       # Type-check with JSON output (for parsing)
+vera verify file.vera             # Type-check + verify contracts via Z3
+vera verify --json file.vera      # Verify with JSON output (for parsing)
+vera compile file.vera                    # Compile to .wasm binary
+vera compile --wat file.vera              # Print WAT text (human-readable WASM)
+vera compile --target browser file.vera   # Compile + emit browser bundle
+vera run file.vera                # Compile and execute (calls main)
+vera run file.vera --fn f -- 42   # Call function f with argument 42
+vera test file.vera               # Contract-driven testing via Z3 + WASM
+vera test --json file.vera        # Test with JSON output
+vera test --trials 50 file.vera   # Limit trials per function (default 100)
+vera fmt file.vera                # Format to canonical form (stdout)
+vera fmt --write file.vera        # Format in place
+vera fmt --check file.vera        # Check if already canonical
+```
+
+### Error handling
+
+Error messages are natural language instructions explaining what went wrong and how to fix it. They include the offending source line, a rationale, a concrete code fix, a spec reference, and a stable error code. Feed the full error back into your context to correct the code.
+
+For machine-parseable errors, use the `--json` flag:
+
+```json
+{
+  "ok": false,
+  "file": "example.vera",
+  "diagnostics": [
+    {
+      "severity": "error",
+      "description": "Function is missing its contract block...",
+      "location": {"file": "example.vera", "line": 12, "column": 1},
+      "source_line": "private fn add(@Int, @Int -> @Int)",
+      "rationale": "Vera requires all functions to have explicit contracts...",
+      "fix": "Add a contract block after the signature:\n\n  private fn example(@Int -> @Int)\n    requires(true)\n    ensures(@Int.result >= 0)\n    effects(pure)\n  {\n    ...\n  }",
+      "spec_ref": "Chapter 5, Section 5.1 \"Function Structure\"",
+      "error_code": "E001"
+    }
+  ],
+  "warnings": []
+}
+```
+
+### Error codes
+
+Every diagnostic has a stable error code. Common codes:
+
+| Code | Meaning |
+|------|---------|
+| E001 | Missing contract block (requires/ensures/effects) |
+| E121 | Function body type doesn't match return type |
+| E130 | Unresolved slot reference (@T.n has no matching binding) |
+| E140 | Arithmetic requires numeric operands |
+| E170 | Let binding type mismatch |
+| E200 | Unresolved function call |
+| E300 | If condition is not Bool |
+| E311 | Non-exhaustive match |
+
+Full code ranges: E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing). See `vera/errors.py` `ERROR_CODES` for the complete registry.
+
+The `verify --json` output includes a verification summary:
+
+```json
+{
+  "ok": true,
+  "file": "example.vera",
+  "diagnostics": [],
+  "warnings": [],
+  "verification": {
+    "tier1_verified": 2,
+    "tier3_runtime": 0,
+    "total": 2
+  }
+}
+```
+
+### Essential rules
+
+1. Every function needs `requires()`, `ensures()`, and `effects()` between the signature and body
+2. Use `@Type.index` to reference bindings (`@Int.0` = most recent Int, `@Int.1` = one before)
+3. Declare all effects: `effects(pure)` for pure functions, `effects(<IO>)` for IO
+4. Recursive functions need a `decreases()` clause
+5. Match expressions must be exhaustive
+
+## For agents working on the compiler
+
+Read `vera/README.md` for architecture docs, module map, and design patterns.
+
+### Pipeline
+
+```
+source -> parse (parser.py) -> transform (transform.py) -> typecheck (checker.py) -> verify (verifier.py) -> compile (codegen/ + wasm/) -> execute (wasmtime or browser/runtime.mjs)
+```
+
+Each stage is a module with a single public API function (`parse_file`, `transform`, `typecheck`, `verify`, `compile`, `execute`, `test`) and is independently testable.
+
+### Key modules
+
+| Module | Purpose |
+|--------|---------|
+| `vera/grammar.lark` | Lark LALR(1) grammar |
+| `vera/parser.py` | Parser: source text to Lark parse tree |
+| `vera/transform.py` | Lark tree to typed AST |
+| `vera/ast.py` | AST node definitions |
+| `vera/types.py` | Internal type representation |
+| `vera/environment.py` | Type environment and slot resolution |
+| `vera/checker/` | Type checker (mixin package) |
+| `vera/smt.py` | Z3 SMT translation layer |
+| `vera/verifier.py` | Contract verifier |
+| `vera/registration.py` | Shared function registration for checker and verifier |
+| `vera/errors.py` | LLM-oriented diagnostics |
+| `vera/wasm/` | WASM translation layer (mixin package) |
+| `vera/codegen/` | Code generation orchestrator (mixin package) |
+| `vera/tester.py` | Contract-driven testing engine |
+| `vera/cli.py` | Command-line interface |
+| `vera/markdown.py` | Markdown parser (host-side implementation) |
+| `vera/browser/` | Browser runtime: JS host bindings, Node.js harness, bundle emission |
+
+### Testing
+
+```bash
+pytest tests/ -v                       # Run all tests (see TESTING.md)
+pytest tests/test_conformance.py -v    # Conformance suite only
+mypy vera/                             # Type-check the compiler
+python scripts/check_conformance.py    # All 53 conformance programs must pass
+python scripts/check_examples.py       # All 25 examples must pass
+```
+
+Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)` / `_verify_ok(source)` / `_verify_err(source, match)`. See existing tests for examples.
+
+When implementing a new language feature, write the conformance program *first* — add a `.vera` file and manifest entry in `tests/conformance/`, then implement the feature until the conformance test passes.
+
+### Invariants
+
+- All 53 conformance programs in `tests/conformance/` must pass their declared level
+- All 25 examples in `examples/` must pass `vera check` and `vera verify`
+- `mypy vera/` must be clean
+- `pytest tests/ -v` must pass
+- Version must be in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
+
+### Contributing
+
+See `CONTRIBUTING.md` for guidelines. Pre-commit hooks run mypy, pytest, trailing whitespace checks, and validate all examples on every commit.
+
+
+========================================================================
+# Frequently Asked Questions (FAQ.md)
+========================================================================
+
+# Frequently Asked Questions
+
+## Why no variable names?
+
+The short answer is that variable names are one of the things that confuses LLMs rather than helps them. Unlike with humans, names undermine a model's efforts to keep track of state over larger scales. Models confuse similarly named variables in different parts of the codebase easily. Names help us; they don't help them.
+
+The longer answer is more interesting. Wang et al. ("How Does Naming Affect LLMs on Code Analysis Tasks?", [arXiv:2307.12488](https://arxiv.org/abs/2307.12488)) systematically replaced variable and function names with nonsense or shuffled strings and measured the impact on CodeBERT across code analysis tasks. Good names do help LLM performance — but shuffled names (where a variable named `count` gets swapped with one named `result`) perform *worse* than random gibberish. The model actively gets misled by plausible-but-wrong names. Python, being dynamically typed, is hit harder than Java, because models compensate for lost names using type declarations in statically typed languages.
+
+That last point is the Vera thesis in miniature. In a language with strong types, explicit contracts, and no variable names, the model can't fall back on the naming crutch, but it also can't be misled by it. It has to use the structural information.
+
+Le et al. ("When Names Disappear", [arXiv:2510.03178](https://arxiv.org/abs/2510.03178)) make this sharper still: LLMs exploit statistical correlations between identifiers and functionality even on execution prediction tasks that should depend only on program structure. They call this "identifier leakage." The model *appears* to understand code when it's actually pattern-matching on familiar tokens.
+
+So the problem isn't that variable names are useless to LLMs. It's that they're a crutch that lets the model appear to understand code when it's actually not reasoning about the code. Vera's bet is that if you remove the crutch and give the model verified structural information instead — contracts, types, effect declarations — you force it onto firmer ground.
+
+
+## Why not keep variable names and strip them with tooling?
+
+You could absolutely build a bidirectional transform: names in, indices out for the model, indices back to names for humans. The tooling for that would be straightforward.
+
+The reason Vera doesn't do this is that the canonical form *is* the language. If names exist in the source, they're part of the program, which means they can diverge from intent, be inconsistent, or be misleading — and now you have two representations to keep in sync. Vera sidesteps that by having one representation that's unambiguous by construction. The model writes exactly what the compiler sees. No translation layer, no sync problem.
+
+That said, a visualiser that infers human-readable names from types and usage for display purposes is interesting tooling *on top* of Vera. The canonical form stays clean for the model, but humans get an annotated view when they need one.
+
+
+## But don't variable names help the LLM relate implementation to requirements?
+
+This is a fair point. The contracts can say what the output *cannot* be, but if the constraints fully determine the output then the function body is superfluous. So the implementation matters, and shouldn't the implementation be tied to the human's requirements?
+
+Vera's answer is that the contracts *are* the link between implementation and requirements. The human writes (or reviews) the contracts — preconditions, postconditions, effect declarations — and those are small, declarative, and human-readable. The compiler then proves the implementation satisfies them. The human audits the specification, not the code.
+
+The bet is that contracts are a better surface for capturing intent than variable names scattered through an implementation. A function signature with `requires(@Int.1 != 0)` and `ensures(@Int.result == @Int.0 / @Int.1)` communicates what the function does more precisely than any variable name could.
+
+
+## What actually gets verified?
+
+There are three layers, and they cover different things.
+
+**Layer 1: Type system (mechanical, complete).** Every binding uses typed De Bruijn indices (`@Int.0`, `@String.1`, etc.), so the type checker can verify that every reference resolves to a binding of the correct type, every function call matches its signature, every pattern match is exhaustive, and generics monomorphise correctly. This is the "components slot together" layer. Nothing novel here beyond the index scheme, but it's total — if it type-checks, the pieces fit.
+
+**Layer 2: Z3 contract verification (mechanical, bounded).** Every function has mandatory preconditions, postconditions, and effect declarations. The compiler translates these into a decidable SMT fragment and hands them to Z3. Currently that fragment covers linear arithmetic over integers and booleans, array lengths, ADT constructor discrimination and field access (via Z3 datatype sorts), and termination measures for structural recursion. Across the current example programs, the vast majority of contracts verify statically — the compiler can prove the implementation satisfies the spec without running the code. The remainder are contracts involving generic type parameters (a fundamental SMT limitation) or symbolic effect state modelling across handlers. These fall back to runtime contract checking: the assertions still execute, they just aren't proven at compile time.
+
+This layer does cover actual correctness properties, not just interface compatibility. If you write `ensures(@Nat.result >= 0)` on an absolute value function, the compiler will either prove it holds for all inputs or give you a counterexample.
+
+**Layer 3: Agent documentation and human intent (expressive, unverified).** The contracts themselves are unverified with respect to user intent. Nothing in the pipeline checks whether `ensures(@Int.result >= 0)` is actually what you wanted the function to do. The contract could be a perfectly verified implementation of the wrong specification. This is where SKILL.md lives — it steers the model toward writing contracts that capture reasonable intent, but "reasonable" has no formal backing.
+
+So: provably correct relative to stated requirements, yes. Provably correct relative to unstated intent, no — but the auditable surface is deliberately as small as possible. The human reviews contracts, not implementations.
+
+
+## How can we verify if the written code is safe and follows compliance?
+
+Every function in Vera must declare what it requires, what it guarantees, and what side effects it performs. The compiler proves the implementation satisfies those contracts via Z3 — it either verifies statically or gives you a counterexample. So a compliance reviewer can audit the contracts (which are small and declarative) without reading the implementation, and the compiler proves the code matches them.
+
+The effect system adds another dimension: a function that declares `effects(pure)` is proven to have no side effects. A function that declares `effects(<IO>)` can only perform IO operations. A caller that only permits `<Http>` cannot invoke a function that also performs `<IO>`. This makes it possible to enforce security boundaries at the type level — a sandboxed module literally cannot perform operations outside its declared effect set.
+
+
+## What are abilities?
+
+Abilities are Vera's mechanism for constrained generics — type constraints that restrict what types a generic function can accept. They're inspired by Roc's ability system and serve a similar role to Haskell's type classes or Rust's traits, but with a fixed set of built-in abilities rather than user-defined ones.
+
+Vera has four built-in abilities:
+
+- **`Eq<T>`** — equality comparison via `eq(a, b)`, satisfied by all primitive types and ADTs whose fields are themselves `Eq`
+- **`Ord<T>`** — ordering via `compare(a, b)`, which returns the built-in `Ordering` ADT (`Less`, `Equal`, `Greater`), satisfied by `Int`, `Nat`, `Bool`, `Float64`, `String`, and `Byte`
+- **`Hash<T>`** — hashing via `hash(x)`, which returns an `Int`, satisfied by `Int`, `Nat`, `Bool`, `Float64`, `String`, and `Byte`
+- **`Show<T>`** — string conversion via `show(x)`, satisfied by `Int`, `Nat`, `Bool`, `Float64`, `String`, and `Byte`
+
+You use them in generic signatures with `where` clauses:
+
+```vera
+public forall<T where Eq<T>> fn contains(@Array<T>, @T -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  ...
+}
+```
+
+The compiler checks at every call site that the concrete type satisfies the required ability. ADTs can auto-derive `Eq` if all their constructor fields are themselves `Eq`-satisfying types — simple enums satisfy `Eq` automatically.
+
+The design choice to fix the ability set (rather than allowing user-defined abilities) is deliberate: it keeps the language simpler for models and avoids the coherence problems that plague open type class systems.
+
+
+## Can I run Vera programs in the browser?
+
+Yes. `vera compile --target browser` produces a self-contained directory with a `.wasm` binary, a JavaScript runtime (`runtime.mjs`), and an `index.html`:
+
+```bash
+vera compile --target browser examples/hello_world.vera
+# produces examples/hello_world_browser/
+#   module.wasm
+#   runtime.mjs
+#   index.html
+```
+
+Serve it with any HTTP server and open `index.html` — no build step, no bundler, no dependencies. The JavaScript runtime provides browser-appropriate implementations of all Vera host bindings: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, and all other operations (State, contracts, Markdown) work identically to the wasmtime runtime.
+
+The runtime also works in Node.js:
+
+```bash
+node --experimental-wasm-exnref vera/browser/harness.mjs module.wasm
+```
+
+Mandatory parity tests enforce that the browser runtime produces identical results to the wasmtime runtime on every PR.
+
+
+## How does contract-driven testing work?
+
+`vera test` is Vera's built-in testing command. It generates test inputs automatically from function contracts — you don't write test cases manually.
+
+The process works in three steps:
+
+1. **Input generation**: The compiler reads each function's `requires()` clause and uses Z3 to generate concrete values that satisfy the precondition. For example, if a function requires `@Int.1 != 0`, Z3 produces pairs of integers where the second is non-zero. It generates up to 100 trials per function by default (configurable with `--trials`).
+
+2. **Execution**: Each generated input is compiled to WASM and executed via wasmtime. The function runs with real values, not symbolic ones.
+
+3. **Contract checking**: The `ensures()` postcondition is checked against the actual output. If any trial produces a result that violates the postcondition, the test fails with the concrete input that triggered it.
+
+```bash
+vera test examples/safe_divide.vera          # test all functions
+vera test --trials 50 examples/safe_divide.vera  # limit trials
+vera test --json examples/safe_divide.vera   # JSON output for agents
+```
+
+This combines the best of property-based testing (generated inputs, no manual cases) with the best of formal verification (inputs derived from specifications, not random). The contracts serve double duty: they're both the specification the compiler proves and the test oracle that validates runtime behaviour.
+
+
+## What are the intended applications? Who are the end users?
+
+The reference compiler targets WebAssembly, so the initial applications are web-based. The `.wasm` binary runs at the command line via wasmtime or in any browser with the self-contained JavaScript runtime.
+
+But the deeper answer is that the end users aren't humans directly — they're AI coding agents. The intended workflow is: a human (or an orchestrating agent) describes what they want; a model generates Vera code; the compiler verifies it; the WASM binary runs. The human's job is to review contracts, not implementations.
+
+The roadmap includes native HTTP, JSON, and Markdown support, which points toward agent workloads: API integration, data processing, and structured document generation. A research function that searches the web, processes results via LLM inference, and returns typed, contract-checked Markdown output is the kind of program Vera is designed for.
+
+
+## Is there evidence this actually works?
+
+Vera-specific data doesn't exist yet. Nobody has run a controlled comparison measuring whether models produce more reliable code in Vera than in existing languages. That's the experiment that needs to happen.
+
+However, the recent literature is encouraging. The type-constrained decoding paper (Mündler, He, Wang et al., "Type-Constrained Code Generation with Language Models", PLDI 2025, [ACM DL](https://dl.acm.org/doi/10.1145/3729274)) found that enforcing type constraints during LLM code generation cut compilation errors by more than half and improved functional correctness by 3.5–4.5%. Syntax constraints alone provided limited improvement — it was the *type* constraints that made the difference. The same paper found that 94% of LLM-generated compilation errors are type-check failures — exactly the class of error that a strong static type system catches at compile time.
+
+The Vericoding benchmark (Sun et al., "A Benchmark for Vericoding", [arXiv:2509.22908](https://arxiv.org/abs/2509.22908)) shows LLMs achieving 82% verification success on Dafny versus 27% on Lean, which suggests SMT-automated verification (Vera's approach) is significantly more LLM-tractable than explicit proof construction.
+
+Blinn et al. ("Statically Contextualizing Large Language Models with Typed Holes", OOPSLA 2024, [ACM DL](https://doi.org/10.1145/3689728)) demonstrated that providing type context at incomplete program locations significantly improves LLM completion quality — a result that directly motivates Vera's planned typed holes feature ([#226](https://github.com/aallan/vera/issues/226)).
+
+None of this is Vera-specific, but it validates the design choices. The thesis is plausible, the tooling exists. What's missing is someone running the experiment.
+
+
+## What about the training data problem? LLMs have never seen Vera code.
+
+This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
+
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (55 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
+
+
+## How does Vera compare to Dafny / Lean / Koka / F*?
+
+**Dafny** shares Vera's Z3/SMT verification approach and is used in production at AWS (Cedar authorisation). But it's imperative, lacks algebraic effects, and has optional (not mandatory) annotations. The 2025 paper proposing Dafny as a verification intermediate language for LLM-generated code validates Vera's core thesis — but Dafny wasn't purpose-built for it.
+
+**Lean 4** has the richest LLM integration ecosystem (LeanDojo, Lean Copilot) and significant investment. But it's primarily a theorem prover with monadic effects. LLMs achieve only 27% success rate on Lean versus 82% on Dafny, suggesting explicit proof construction is harder for models than SMT-automated verification.
+
+**Koka** pioneered the row-polymorphic algebraic effect type system that Vera draws from. But it has no verification, no contracts, and isn't production-ready.
+
+**F*** combines refinement types, algebraic effects, and SMT-based verification. It's the closest to Vera's feature set, but targets human programmers, not models. It also has a steep learning curve.
+
+No production language today combines mandatory contracts, algebraic effects, refinement types, constrained generics with built-in abilities, De Bruijn indices, Z3 verification, and WebAssembly compilation into a single design optimised for LLM code generation.
+
+
+## Why WebAssembly?
+
+Three reasons. First, portability — the same `.wasm` binary runs at the command line or in any browser. Second, sandboxing — WebAssembly has no ambient capabilities, so a Vera program cannot do anything its effect declarations don't permit. Third, the WASM Component Model (W3C, production-ready in Wasmtime) will enable Vera components to interoperate with Rust, Go, and Python components via WIT interfaces, providing ecosystem access without requiring a massive native package system.
+
+
+## Why Python for the compiler?
+
+Correctness over performance. The reference compiler is a specification-faithful implementation, not a production compiler. Python makes the compiler readable, testable, and easy to modify during rapid language evolution. The seven-stage pipeline (parse → transform → resolve → typecheck → verify → compile → execute) is independently testable at each stage.
+
+If Vera reaches the point where compiler performance matters, a production compiler in Rust or OCaml would be a separate project. The Python reference compiler would remain as the specification oracle.
+
+
+## Why are contracts mandatory?
+
+Because the whole point is that code should be checkable. If contracts are optional, models won't write them — and then you're back to unverifiable code. Making contracts mandatory means every function is a specification that the compiler can verify against its implementation. The model doesn't need to be right; it needs to be checkable.
+
+This is a deliberate trade-off. Mandatory contracts add friction. But the friction is the feature — it forces the model (and any human) to state what the function requires, what it guarantees, and what effects it performs. That statement is the auditable surface.
+
+
+## What does the project status look like?
+
+The reference compiler is at v0.0.90. It includes:
+
+- A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
+- Around 28,500 lines of Python compiler code
+- A 13-chapter formal specification
+- 2,375 unit tests plus a 55-program conformance suite
+- 25 working example programs
+- 70 built-in functions plus 5 Option/Result combinators
+- Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
+- Full IO operations (print, read_line, read_file, write_file, args, exit, get_env)
+- Algebraic data types, pattern matching, closures, generics with monomorphisation
+- Algebraic effect handlers with resume and state
+- Async/await with `Future<T>` and the `<Async>` effect
+- Typed Markdown (`MdBlock`/`MdInline` ADTs) for structured document processing
+- String interpolation with auto-conversion for primitive types
+- Cross-module imports with contract verification at call sites
+- Contract-driven testing via Z3 and WASM
+- A canonical code formatter
+- WebAssembly compilation and execution via wasmtime
+- Browser runtime with mandatory parity tests
+
+The language is under active development. See the [Roadmap](ROADMAP.md) and [Changelog](CHANGELOG.md) for current status and planned features.
+
+
+## How do I try it?
+
+```bash
+git clone https://github.com/aallan/vera.git && cd vera
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
+vera run examples/hello_world.vera
+```
+
+For agents, point your model at [SKILL.md](https://raw.githubusercontent.com/aallan/vera/main/SKILL.md). It's the complete language reference, designed to be dropped into a context window.
+
+
+## References
+
+- Wang et al., "How Does Naming Affect LLMs on Code Analysis Tasks?", [arXiv:2307.12488](https://arxiv.org/abs/2307.12488)
+- Le et al., "When Names Disappear: Revealing What LLMs Actually Understand About Code", [arXiv:2510.03178](https://arxiv.org/abs/2510.03178)
+- Mündler, He, Wang et al., "Type-Constrained Code Generation with Language Models", PLDI 2025, [ACM DL](https://dl.acm.org/doi/10.1145/3729274)
+- Blinn et al., "Statically Contextualizing Large Language Models with Typed Holes", OOPSLA 2024, [ACM DL](https://doi.org/10.1145/3689728)
+- Sun et al., "A Benchmark for Vericoding: Formally Verified Program Synthesis", [arXiv:2509.22908](https://arxiv.org/abs/2509.22908)
+
+
+========================================================================
+# Error Codes (vera/errors.py)
+========================================================================
+
+## Error Code Reference
+
+Every diagnostic has a stable error code. Codes are grouped by compiler phase:
+
+| Range | Phase |
+|-------|-------|
+| E001-E009 | Parse errors |
+| E010 | Transform errors |
+| E1xx | Type check: core + expressions |
+| E2xx | Type check: calls |
+| E3xx | Type check: control flow |
+| E5xx | Verification |
+| E6xx | Code generation |
+| E7xx | Testing |
+
+- **E001**: Missing contract block
+- **E002**: Missing effect clause
+- **E003**: Malformed slot reference
+- **E004**: Missing closing brace
+- **E005**: Unexpected token
+- **E006**: Unexpected character
+- **E007**: Internal parser error
+- **E008**: Module-qualified call uses dot instead of ::
+- **E009**: Invalid string escape sequence
+- **E010**: Unhandled grammar rule
+- **E120**: Data invariant not Bool
+- **E121**: Function body type mismatch
+- **E122**: Pure function performs effects
+- **E123**: Precondition predicate not Bool
+- **E124**: Postcondition predicate not Bool
+- **E125**: Call-site effect mismatch
+- **E130**: Unresolved slot reference
+- **E131**: Result ref outside ensures
+- **E140**: Arithmetic requires numeric operands
+- **E141**: Arithmetic requires matching numeric types
+- **E142**: Cannot compare incompatible types
+- **E143**: Ordering requires orderable operands
+- **E144**: Logical operand not Bool (left)
+- **E145**: Logical operand not Bool (right)
+- **E146**: Unary not requires Bool
+- **E147**: Unary negate requires numeric
+- **E148**: Non-convertible type in string interpolation
+- **E160**: Array index must be Int or Nat
+- **E161**: Cannot index non-array type
+- **E170**: Let binding type mismatch
+- **E171**: Anonymous function body type mismatch
+- **E172**: Assert requires Bool
+- **E173**: Assume requires Bool
+- **E174**: old() outside ensures
+- **E175**: new() outside ensures
+- **E176**: Unknown expression type
+- **E180**: Unknown ability in constraint
+- **E181**: Constraint references undeclared type variable
+- **E200**: Unresolved function
+- **E201**: Wrong argument count
+- **E202**: Argument type mismatch
+- **E203**: Effect operation wrong argument count
+- **E204**: Effect operation argument type mismatch
+- **E210**: Unknown constructor
+- **E211**: Constructor is nullary
+- **E212**: Constructor wrong field count
+- **E213**: Constructor field type mismatch
+- **E214**: Unknown nullary constructor
+- **E215**: Constructor requires arguments
+- **E220**: Unresolved qualified call
+- **E230**: Module not found
+- **E231**: Function not imported from module
+- **E232**: Function is private in module
+- **E233**: Function not found in module
+- **E240**: Ability operation wrong argument count
+- **E241**: Ability operation argument type mismatch
+- **E300**: If condition not Bool
+- **E301**: If branches incompatible types
+- **E302**: Match arm type mismatch
+- **E310**: Unreachable match arm
+- **E311**: Non-exhaustive match (ADT)
+- **E312**: Non-exhaustive match (Bool)
+- **E313**: Non-exhaustive match (infinite type)
+- **E320**: Unknown constructor in pattern
+- **E321**: Pattern constructor wrong arity
+- **E322**: Unknown nullary constructor in pattern
+- **E330**: Unknown effect in handler
+- **E331**: Handler state type mismatch
+- **E332**: Effect has no such operation
+- **E333**: Handler with-state but no state declaration
+- **E334**: State update type name mismatch
+- **E335**: State update expression type mismatch
+- **E500**: Postcondition verified false
+- **E501**: Call-site precondition violation
+- **E520**: Cannot verify contract (generic function)
+- **E521**: Cannot verify precondition (undecidable)
+- **E522**: Cannot verify postcondition (body undecidable)
+- **E523**: Cannot verify postcondition (expression undecidable)
+- **E524**: Cannot verify postcondition (timeout)
+- **E525**: Cannot verify termination metric
+- **E600**: Unsupported parameter type
+- **E601**: Unsupported return type
+- **E602**: Unsupported body expression type
+- **E603**: Unsupported closure
+- **E604**: Unsupported state effect type
+- **E605**: Unsupported state type parameter
+- **E606**: State without proper effect declaration
+- **E607**: State with unsupported operations
+- **E608**: Name collision: function
+- **E609**: Name collision: ADT type
+- **E610**: Name collision: constructor
+- **E611**: Exn without type argument
+- **E612**: Exn with unsupported type
+- **E613**: Type does not satisfy ability constraint
+- **E700**: Contract violation during testing
+- **E701**: Cannot generate test inputs
+- **E702**: Test execution error
+
+
+========================================================================
+# Grammar (vera/grammar.lark)
+========================================================================
+
+## Formal Grammar (Lark LALR(1))
+
+```lark
+// Vera Language Grammar
+// Lark LALR(1) parser — translated from spec/10-grammar.md
+//
+// Conventions:
+//   - String literals ("fn", "let", etc.) for keywords and operators
+//   - Named terminals (UPPER_CASE) for identifiers and literals
+//   - ?rule prefix = inline single-child nodes (cleaner parse trees)
+
+// =====================================================================
+// Program Structure
+// =====================================================================
+
+start: module_decl? import_decl* top_level_decl*
+
+module_decl: "module" module_path ";"
+
+module_path: LOWER_IDENT ("." LOWER_IDENT)*
+
+import_decl: "import" module_path import_list? ";"
+
+import_list: "(" import_name ("," import_name)* ")"
+
+import_name: LOWER_IDENT | UPPER_IDENT
+
+top_level_decl: visibility? fn_decl     -> fn_top_level
+              | visibility? data_decl   -> data_top_level
+              | type_alias_decl
+              | effect_decl
+              | ability_decl
+
+visibility: "public" | "private"
+
+// =====================================================================
+// Function Declarations
+// =====================================================================
+
+fn_decl: forall_clause? "fn" LOWER_IDENT fn_signature contract_block effect_clause fn_body where_block?
+
+forall_clause: "forall" "<" type_var_list ">"
+             | "forall" "<" type_var_list "where" ability_constraint_list ">"
+
+type_var_list: UPPER_IDENT ("," UPPER_IDENT)*
+
+// Function signatures use @Type for params and return (binding sites)
+fn_signature: "(" fn_params? "->" "@" type_expr ")"
+
+fn_params: "@" type_expr ("," "@" type_expr)*
+
+// Plain type lists (no @) for type-level signatures: fn_type, op_decl
+param_types: type_expr ("," type_expr)*
+
+contract_block: contract_clause+
+
+?contract_clause: requires_clause
+                | ensures_clause
+                | decreases_clause
+
+requires_clause: "requires" "(" expr ")"
+
+ensures_clause: "ensures" "(" expr ")"
+
+decreases_clause: "decreases" "(" expr ("," expr)* ")"
+
+effect_clause: "effects" "(" effect_row ")"
+
+?effect_row: pure_effect
+           | effect_set
+
+pure_effect: "pure"
+
+effect_set: "<" effect_list ">"
+
+effect_list: effect_ref ("," effect_ref)*
+
+effect_ref: UPPER_IDENT type_args?
+          | UPPER_IDENT "." UPPER_IDENT type_args?  -> qualified_effect_ref
+
+fn_body: "{" block_contents "}"
+
+where_block: "where" "{" fn_decl+ "}"
+
+// =====================================================================
+// Data Type Declarations
+// =====================================================================
+
+data_decl: "data" UPPER_IDENT type_params? invariant_clause? "{" constructor_list "}"
+
+type_params: "<" type_var_list ">"
+
+invariant_clause: "invariant" "(" expr ")"
+
+constructor_list: constructor ("," constructor)*
+
+constructor: UPPER_IDENT "(" type_expr ("," type_expr)* ")"  -> fields_constructor
+           | UPPER_IDENT                                      -> nullary_constructor
+
+// =====================================================================
+// Type Aliases
+// =====================================================================
+
+type_alias_decl: "type" UPPER_IDENT type_params? "=" type_expr ";"
+
+// =====================================================================
+// Effect Declarations
+// =====================================================================
+
+effect_decl: "effect" UPPER_IDENT type_params? "{" op_decl+ "}"
+
+op_decl: "op" LOWER_IDENT "(" param_types? "->" type_expr ")" ";"
+
+// =====================================================================
+// Ability Declarations
+// =====================================================================
+
+ability_decl: "ability" UPPER_IDENT type_params? "{" op_decl+ "}"
+
+ability_constraint_list: ability_constraint ("," ability_constraint)*
+
+ability_constraint: UPPER_IDENT "<" UPPER_IDENT ">"
+
+// =====================================================================
+// Type Expressions
+// =====================================================================
+
+type_expr: UPPER_IDENT type_args?  -> named_type
+         | fn_type
+         | refinement_type
+
+type_args: "<" type_expr ("," type_expr)* ">"
+
+fn_type: "fn" "(" param_types? "->" type_expr ")" effect_clause
+
+refinement_type: "{" "@" type_expr "|" expr "}"
+
+// =====================================================================
+// Expressions — precedence climbing, loosest to tightest
+//
+//   1    |>    left     pipe_expr
+//   1.5  ==>   right    implies_expr
+//   2    ||    left     or_expr
+//   3    &&    left     and_expr
+//   4    == != none     eq_expr
+//   5    comparisons    cmp_expr
+//   6    + -   left     add_expr
+//   7    * / % left     mul_expr
+//   9    ! -   prefix   unary_expr
+//   10   [] call        postfix_expr
+// =====================================================================
+
+?expr: pipe_expr
+
+?pipe_expr: implies_expr
+          | pipe_expr "|>" implies_expr  -> pipe
+
+// right-associative: a ==> b ==> c  parses as  a ==> (b ==> c)
+?implies_expr: or_expr
+             | or_expr "==>" implies_expr  -> implies
+
+?or_expr: and_expr
+        | or_expr "||" and_expr  -> or_op
+
+?and_expr: eq_expr
+         | and_expr "&&" eq_expr  -> and_op
+
+// non-associative: a == b == c is a parse error
+?eq_expr: cmp_expr
+        | cmp_expr "==" cmp_expr  -> eq_op
+        | cmp_expr "!=" cmp_expr  -> neq_op
+
+// non-associative
+?cmp_expr: add_expr
+         | add_expr "<" add_expr   -> lt_op
+         | add_expr ">" add_expr   -> gt_op
+         | add_expr "<=" add_expr  -> le_op
+         | add_expr ">=" add_expr  -> ge_op
+
+?add_expr: mul_expr
+         | add_expr "+" mul_expr  -> add_op
+         | add_expr "-" mul_expr  -> sub_op
+
+?mul_expr: unary_expr
+         | mul_expr "*" unary_expr  -> mul_op
+         | mul_expr "/" unary_expr  -> div_op
+         | mul_expr "%" unary_expr  -> mod_op
+
+?unary_expr: "!" unary_expr   -> not_op
+           | "-" unary_expr   -> neg_op
+           | postfix_expr
+
+?postfix_expr: primary_expr
+             | postfix_expr "[" expr "]"  -> index_op
+
+?primary_expr: INT_LIT                       -> int_lit
+             | FLOAT_LIT                     -> float_lit
+             | STRING_LIT                    -> string_lit
+             | "true"                        -> true_lit
+             | "false"                       -> false_lit
+             | "(" ")"                       -> unit_lit
+             | slot_ref
+             | result_ref
+             | fn_call
+             | anonymous_fn
+             | if_expr
+             | match_expr
+             | block_expr
+             | handle_expr
+             | array_literal
+             | old_expr
+             | new_expr
+             | assert_expr
+             | assume_expr
+             | forall_expr
+             | exists_expr
+             | "(" expr ")"                  -> paren_expr
+
+// =====================================================================
+// Slot References
+// =====================================================================
+
+slot_ref: "@" UPPER_IDENT type_args? "." INT_LIT
+
+result_ref: "@" UPPER_IDENT type_args? "." "result"
+
+// =====================================================================
+// Function Calls and Constructors
+// =====================================================================
+
+fn_call: LOWER_IDENT "(" arg_list? ")"                         -> func_call
+       | UPPER_IDENT "(" arg_list? ")"                         -> constructor_call
+       | UPPER_IDENT                                            -> nullary_constructor_expr
+       | UPPER_IDENT "." LOWER_IDENT "(" arg_list? ")"         -> qualified_call
+       | module_path "::" LOWER_IDENT "(" arg_list? ")"        -> module_call
+
+arg_list: expr ("," expr)*
+
+// =====================================================================
+// Anonymous Functions
+// =====================================================================
+
+anonymous_fn: "fn" "(" fn_params? "->" "@" type_expr ")" effect_clause fn_body
+
+// =====================================================================
+// Conditional Expressions
+// =====================================================================
+
+if_expr: "if" expr "then" block_expr "else" block_expr
+
+// =====================================================================
+// Match Expressions
+// =====================================================================
+
+match_expr: "match" expr "{" match_arm ("," match_arm)* "}"
+
+match_arm: pattern "->" expr
+
+?pattern: UPPER_IDENT "(" pattern ("," pattern)* ")"  -> constructor_pattern
+        | UPPER_IDENT                                   -> nullary_pattern
+        | "_"                                           -> wildcard_pattern
+        | INT_LIT                                       -> int_pattern
+        | STRING_LIT                                    -> string_pattern
+        | "true"                                        -> true_pattern
+        | "false"                                       -> false_pattern
+        | "@" type_expr                                 -> binding_pattern
+
+// =====================================================================
+// Block Expressions
+// =====================================================================
+
+block_expr: "{" block_contents "}"
+
+block_contents: statement* expr
+
+statement: let_stmt
+         | expr ";"  -> expr_stmt
+
+let_stmt: "let" "@" type_expr "=" expr ";"
+        | "let" tuple_destruct "=" expr ";"  -> let_destruct
+
+tuple_destruct: UPPER_IDENT "<" "@" type_expr ("," "@" type_expr)* ">"
+
+// =====================================================================
+// Effect Handlers
+// =====================================================================
+
+handle_expr: "handle" "[" effect_ref "]" handler_state? "{" handler_clause ("," handler_clause)* "}" "in" block_expr
+
+handler_state: "(" "@" type_expr "=" expr ")"
+
+handler_clause: LOWER_IDENT "(" handler_params? ")" "->" handler_body with_clause?
+
+handler_params: "@" type_expr ("," "@" type_expr)*
+
+// handler_body is just an expr — block_expr is already reachable via expr
+?handler_body: expr
+
+with_clause: "with" "@" type_expr "=" expr
+
+// =====================================================================
+// Array Literals
+// =====================================================================
+
+array_literal: "[" arg_list? "]"
+
+// =====================================================================
+// Contract-Only Expressions
+// =====================================================================
+
+old_expr: "old" "(" effect_ref ")"
+
+new_expr: "new" "(" effect_ref ")"
+
+assert_expr: "assert" "(" expr ")"
+
+assume_expr: "assume" "(" expr ")"
+
+forall_expr: "forall" "(" "@" type_expr "," expr "," anonymous_fn ")"
+
+exists_expr: "exists" "(" "@" type_expr "," expr "," anonymous_fn ")"
+
+// =====================================================================
+// Terminals
+// =====================================================================
+
+// Identifiers — lower priority than keywords (Lark string literals win)
+UPPER_IDENT: /[A-Z][A-Za-z0-9_]*/
+LOWER_IDENT: /[a-z][A-Za-z0-9_]*/
+
+// Numeric literals
+FLOAT_LIT: /[0-9]+\.[0-9]+/
+INT_LIT: /0|[1-9][0-9]*/
+
+// String literals
+STRING_LIT: /\"([^\"\\]|\\.)*\"/
+
+// =====================================================================
+// Whitespace and Comments (ignored)
+// =====================================================================
+
+%ignore /\s+/
+%ignore /--[^\n]*/
+%ignore /\{-[\s\S]*?-\}/
+%ignore /\/\*[^*]*\*+([^\/*][^*]*\*+)*\//
+
+```

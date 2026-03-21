@@ -1,0 +1,17 @@
+{
+  "schema_version": "v1",
+  "name_for_human": "Vera Programming Language",
+  "name_for_model": "vera",
+  "description_for_human": "A statically typed, purely functional programming language designed for LLMs to write. Mandatory contracts, algebraic effects, typed slot references, compilation to WebAssembly.",
+  "description_for_model": "Vera is a programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts (requires, ensures, effects) on every function, and compiles to WebAssembly. See /llms.txt for documentation index and /llms-full.txt for complete documentation.",
+  "auth": {
+    "type": "none"
+  },
+  "api": {
+    "type": "none",
+    "url": "https://veralang.dev/llms.txt"
+  },
+  "logo_url": "https://veralang.dev/favicon-192.png",
+  "contact_email": "alasdair@babilim.co.uk",
+  "legal_info_url": "https://github.com/aallan/vera/blob/main/LICENSE"
+}

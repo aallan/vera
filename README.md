@@ -3,10 +3,10 @@
 [![Vera — A language designed for machines to write](assets/vera-social-preview.jpg)](https://veralang.dev)
 
 [![CI](https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg)](https://github.com/aallan/vera/actions/workflows/ci.yml)
-[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/aallan/vera?utm_source=oss&utm_medium=github&utm_campaign=aallan%2Fvera&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 [![codecov](https://codecov.io/gh/aallan/vera/graph/badge.svg)](https://codecov.io/gh/aallan/vera)
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/aallan/vera?utm_source=oss&utm_medium=github&utm_campaign=aallan%2Fvera&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 
-**Vera** (v-EER-a) is a programming language designed for large language models to write. The name comes from the Latin *veritas* (truth). Programs compile to WebAssembly and run at the command line or in the browser.
+**Vera** (v-ERR-a) is a programming language designed for large language models to write. The name comes from the Latin *veritas* (truth). Programs compile to WebAssembly and run at the command line or in the browser.
 
 ```vera
 public fn clamp(@Int, @Int, @Int -> @Int)
@@ -573,6 +573,16 @@ vera/
 │   ├── formatter.py               # Canonical code formatter
 │   ├── errors.py                  # LLM-oriented diagnostics
 │   └── cli.py                     # Command-line interface
+├── docs/                          # GitHub Pages site (veralang.dev)
+│   ├── index.html                 #   Landing page
+│   ├── llms.txt                   #   AI-readable documentation index (generated)
+│   ├── llms-full.txt              #   Complete documentation for LLMs (generated)
+│   ├── robots.txt                 #   Crawler directives (generated)
+│   ├── sitemap.xml                #   Sitemap (generated)
+│   ├── index.md                   #   Markdown companion page (generated)
+│   ├── .well-known/               #   Well-known directory
+│   │   └── ai-plugin.json         #     OpenAI plugin manifest
+│   └── .nojekyll                  #   Disable Jekyll processing
 ├── examples/                      # 25 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
