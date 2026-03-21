@@ -83,8 +83,11 @@ After running `pre-commit install`, every commit is automatically checked by 21 
 - All 25 `.vera` examples type-check and verify cleanly
 - README, SKILL.md, HTML, and spec code blocks parse correctly
 - Documentation counts match live codebase
+- Site assets (`docs/llms.txt`, `docs/llms-full.txt`, etc.) regenerated and up-to-date
 - License compliance (all dependencies MIT-compatible)
 - Browser parity (JS runtime matches Python runtime)
+
+If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
 
 ### Running Tests
 

@@ -27,7 +27,6 @@ from build_site import (  # noqa: E402
     build_llms_full_txt,
     build_llms_txt,
     build_robots_txt,
-    build_sitemap_xml,
     _version,
 )
 
@@ -47,7 +46,7 @@ def main() -> int:
         path = DOCS / name
         if not path.exists():
             stale.append(f"  {name}: missing (run: python scripts/build_site.py)")
-        elif path.read_text() != content:
+        elif path.read_text(encoding="utf-8") != content:
             stale.append(f"  {name}: stale (run: python scripts/build_site.py)")
 
     # For sitemap.xml, just check it exists (date changes daily)

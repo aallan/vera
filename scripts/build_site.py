@@ -30,7 +30,7 @@ RAW = "https://raw.githubusercontent.com/aallan/vera/main"
 
 def _version() -> str:
     """Read the current version from vera/__init__.py."""
-    init = (ROOT / "vera" / "__init__.py").read_text()
+    init = (ROOT / "vera" / "__init__.py").read_text(encoding="utf-8")
     m = re.search(r'__version__\s*=\s*"([^"]+)"', init)
     if not m:
         raise RuntimeError("Cannot find __version__ in vera/__init__.py")
@@ -161,16 +161,16 @@ def build_llms_full_txt(version: str) -> str:
     parts.append("")
 
     # SKILL.md (strip YAML frontmatter)
-    skill = (ROOT / "SKILL.md").read_text()
+    skill = (ROOT / "SKILL.md").read_text(encoding="utf-8")
     skill = re.sub(r"^---\n.*?\n---\n", "", skill, flags=re.DOTALL)
     section("Language Reference (SKILL.md)", skill)
 
     # AGENTS.md
-    section("Agent Instructions (AGENTS.md)", (ROOT / "AGENTS.md").read_text())
+    section("Agent Instructions (AGENTS.md)", (ROOT / "AGENTS.md").read_text(encoding="utf-8"))
 
     # FAQ.md
     section(
-        "Frequently Asked Questions (FAQ.md)", (ROOT / "FAQ.md").read_text()
+        "Frequently Asked Questions (FAQ.md)", (ROOT / "FAQ.md").read_text(encoding="utf-8")
     )
 
     # Error codes
@@ -190,14 +190,14 @@ def build_llms_full_txt(version: str) -> str:
         "| E7xx | Testing |",
         "",
     ]
-    for line in (ROOT / "vera" / "errors.py").read_text().splitlines():
+    for line in (ROOT / "vera" / "errors.py").read_text(encoding="utf-8").splitlines():
         m = re.match(r'\s+"(E\d+)":\s+"(.+)"', line)
         if m:
             error_lines.append(f"- **{m.group(1)}**: {m.group(2)}")
     section("Error Codes (vera/errors.py)", "\n".join(error_lines))
 
     # Grammar
-    grammar = (ROOT / "vera" / "grammar.lark").read_text()
+    grammar = (ROOT / "vera" / "grammar.lark").read_text(encoding="utf-8")
     section(
         "Grammar (vera/grammar.lark)",
         f"## Formal Grammar (Lark LALR(1))\n\n```lark\n{grammar}\n```",
@@ -347,9 +347,10 @@ def main() -> int:
         "sitemap.xml": build_sitemap_xml(),
         "index.md": build_index_md(version),
     }
+    DOCS.mkdir(parents=True, exist_ok=True)
     for name, content in files.items():
         path = DOCS / name
-        path.write_text(content)
+        path.write_text(content, encoding="utf-8")
         chars = len(content)
         print(f"  {name:20s}  {chars:>8,} chars  (~{chars // 4:,} tokens)")
     print(f"\nGenerated {len(files)} files in docs/")

@@ -299,7 +299,7 @@ When extending the compiler, add tests following the existing patterns:
 
 ## Validation Scripts
 
-Eleven scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
+Twelve scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
@@ -310,6 +310,7 @@ Eleven scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 | `check_skill_examples.py` | All Vera code blocks in SKILL.md parse correctly |
 | `check_faq_examples.py` | All Vera code blocks in FAQ.md parse correctly |
 | `check_html_examples.py` | All Vera code blocks in docs/index.html pass parse + check + verify |
+| `check_site_assets.py` | Generated site assets under `docs/` are up-to-date |
 | `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
 | `check_doc_counts.py` | Counts cited in TESTING.md, CONTRIBUTING.md, and CLAUDE.md match live codebase |
 | `check_licenses.py` | All installed packages have MIT-compatible licenses |
