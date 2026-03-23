@@ -57,7 +57,19 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("02-types.md", 250): "FUTURE",          # forall<T where Ord<T>> fn sort
 
     # Chapter 9 — future stdlib features and signature-only blocks
-    ("09-standard-library.md", 449): "FUTURE",   # fn classify — uses ++ (string concat)
+    ("09-standard-library.md", 449): "FUTURE",   # effect Inference declaration
+    ("09-standard-library.md", 464): "FUTURE",   # fn classify — uses ++ (string concat)
+
+    # Chapter 9 — numeric conversion/predicate signatures (no body)
+    ("09-standard-library.md", 822): "FRAGMENT",  # int_to_nat signature (no body)
+    ("09-standard-library.md", 864): "FRAGMENT",  # float_is_nan signature (no body)
+    ("09-standard-library.md", 915): "FRAGMENT",  # infinity signature (no body)
+
+    # Chapter 9 — string operation signatures (no body)
+    ("09-standard-library.md", 981): "FRAGMENT",   # string_index_of signature (no body)
+    ("09-standard-library.md", 1063): "FRAGMENT",  # string_replace signature (no body)
+    ("09-standard-library.md", 1094): "FRAGMENT",  # string_join signature (no body)
+    ("09-standard-library.md", 1123): "FRAGMENT",  # string_repeat signature (no body)
 
     # Chapter 9 — Array builtin signatures (no body)
     ("09-standard-library.md", 478): "FRAGMENT",  # array_length signature (no body)
