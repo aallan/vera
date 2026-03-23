@@ -1611,6 +1611,17 @@ private fn foo(@Unit -> @Int)
 }
 """)
 
+    def test_map_insert_wrong_value_type(self) -> None:
+        """map_insert rejects a value whose type does not match V."""
+        _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Nat> = map_new();
+  map_size(map_insert(@Map<String, Nat>.0, "k", "oops"))
+}
+""", "type")
+
 
 # =====================================================================
 # Return type checking
