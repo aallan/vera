@@ -60,31 +60,31 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 449): "FUTURE",   # fn classify — uses ++ (string concat)
 
     # Chapter 9 — Array builtin signatures (no body)
-    ("09-standard-library.md", 463): "FRAGMENT",  # array_length signature (no body)
-    ("09-standard-library.md", 483): "FRAGMENT",  # array_append signature (no body)
-    ("09-standard-library.md", 501): "FRAGMENT",  # array_range signature (no body)
-    ("09-standard-library.md", 519): "FRAGMENT",  # array_concat signature (no body)
-    ("09-standard-library.md", 537): "FRAGMENT",  # array_slice signature (no body)
-    ("09-standard-library.md", 555): "FRAGMENT",  # array_map signature (no body)
-    ("09-standard-library.md", 571): "FRAGMENT",  # array_filter signature (no body)
-    ("09-standard-library.md", 587): "FRAGMENT",  # array_fold signature (no body)
+    ("09-standard-library.md", 478): "FRAGMENT",  # array_length signature (no body)
+    ("09-standard-library.md", 498): "FRAGMENT",  # array_append signature (no body)
+    ("09-standard-library.md", 516): "FRAGMENT",  # array_range signature (no body)
+    ("09-standard-library.md", 534): "FRAGMENT",  # array_concat signature (no body)
+    ("09-standard-library.md", 552): "FRAGMENT",  # array_slice signature (no body)
+    ("09-standard-library.md", 570): "FRAGMENT",  # array_map signature (no body)
+    ("09-standard-library.md", 586): "FRAGMENT",  # array_filter signature (no body)
+    ("09-standard-library.md", 602): "FRAGMENT",  # array_fold signature (no body)
     ("09-standard-library.md", 792): "FRAGMENT",  # float_to_int signature (no body)
-    ("09-standard-library.md", 1181): "FRAGMENT",  # parse_float64 signature (no body)
-    ("09-standard-library.md", 1357): "FRAGMENT",  # similarity signature (no body)
+    ("09-standard-library.md", 1196): "FRAGMENT",  # parse_float64 signature (no body)
+    ("09-standard-library.md", 1372): "FRAGMENT",  # similarity signature (no body)
 
     # Chapter 9 — Numeric/string/encoding builtin signatures (no body)
-    ("09-standard-library.md", 692): "FRAGMENT",  # round signature (no body)
-    ("09-standard-library.md", 709): "FRAGMENT",  # sqrt signature (no body)
-    ("09-standard-library.md", 726): "FRAGMENT",  # pow signature (no body)
-    ("09-standard-library.md", 1226): "FRAGMENT",  # base64_encode signature (no body)
-    ("09-standard-library.md", 1245): "FRAGMENT",  # base64_decode signature (no body)
-    ("09-standard-library.md", 1272): "FRAGMENT",  # url_encode signature (no body)
-    ("09-standard-library.md", 1291): "FRAGMENT",  # url_decode signature (no body)
-    ("09-standard-library.md", 1317): "FRAGMENT",  # url_parse signature (no body)
-    ("09-standard-library.md", 1374): "FRAGMENT",  # regex_match signature (no body)
-    ("09-standard-library.md", 1390): "FRAGMENT",  # regex_find signature (no body)
-    ("09-standard-library.md", 1406): "FRAGMENT",  # regex_find_all signature (no body)
-    ("09-standard-library.md", 1422): "FRAGMENT",  # regex_replace signature (no body)
+    ("09-standard-library.md", 707): "FRAGMENT",  # round signature (no body)
+    ("09-standard-library.md", 724): "FRAGMENT",  # sqrt signature (no body)
+    ("09-standard-library.md", 741): "FRAGMENT",  # pow signature (no body)
+    ("09-standard-library.md", 1241): "FRAGMENT",  # base64_encode signature (no body)
+    ("09-standard-library.md", 1260): "FRAGMENT",  # base64_decode signature (no body)
+    ("09-standard-library.md", 1287): "FRAGMENT",  # url_encode signature (no body)
+    ("09-standard-library.md", 1306): "FRAGMENT",  # url_decode signature (no body)
+    ("09-standard-library.md", 1332): "FRAGMENT",  # url_parse signature (no body)
+    ("09-standard-library.md", 1389): "FRAGMENT",  # regex_match signature (no body)
+    ("09-standard-library.md", 1405): "FRAGMENT",  # regex_find signature (no body)
+    ("09-standard-library.md", 1421): "FRAGMENT",  # regex_find_all signature (no body)
+    ("09-standard-library.md", 1437): "FRAGMENT",  # regex_replace signature (no body)
 
     # =================================================================
     # FRAGMENT — heuristic false positives (look like declarations but
@@ -134,59 +134,59 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("07-effects.md", 315): "FRAGMENT",     # effect Diverge {} — no operations
 
     # Chapter 9 — Async builtin signatures (no body)
-    ("09-standard-library.md", 399): "FRAGMENT",  # async/await signatures (no body)
+    ("09-standard-library.md", 414): "FRAGMENT",  # async/await signatures (no body)
 
     # Chapter 9 — Numeric builtin signatures (no body)
-    ("09-standard-library.md", 607): "FRAGMENT",  # abs signature (no body)
-    ("09-standard-library.md", 624): "FRAGMENT",  # min signature (no body)
-    ("09-standard-library.md", 641): "FRAGMENT",  # max signature (no body)
-    ("09-standard-library.md", 658): "FRAGMENT",  # floor signature (no body)
-    ("09-standard-library.md", 675): "FRAGMENT",  # ceil signature (no body)
+    ("09-standard-library.md", 622): "FRAGMENT",  # abs signature (no body)
+    ("09-standard-library.md", 639): "FRAGMENT",  # min signature (no body)
+    ("09-standard-library.md", 656): "FRAGMENT",  # max signature (no body)
+    ("09-standard-library.md", 673): "FRAGMENT",  # floor signature (no body)
+    ("09-standard-library.md", 690): "FRAGMENT",  # ceil signature (no body)
 
     # Chapter 9 — Numeric type conversion signatures (no body)
-    ("09-standard-library.md", 747): "FRAGMENT",  # int_to_float signature (no body)
+    ("09-standard-library.md", 762): "FRAGMENT",  # int_to_float signature (no body)
     ("09-standard-library.md", 762): "FRAGMENT",  # nat_to_int signature (no body)
     ("09-standard-library.md", 777): "FRAGMENT",  # byte_to_int signature (no body)
     ("09-standard-library.md", 807): "FRAGMENT",  # int_to_nat signature (no body)
-    ("09-standard-library.md", 825): "FRAGMENT",  # int_to_byte signature (no body)
+    ("09-standard-library.md", 840): "FRAGMENT",  # int_to_byte signature (no body)
 
     # Chapter 9 — Float64 predicates (signatures, no body)
     ("09-standard-library.md", 849): "FRAGMENT",  # float_is_nan signature (no body)
-    ("09-standard-library.md", 866): "FRAGMENT",  # float_is_infinite signature (no body)
-    ("09-standard-library.md", 885): "FRAGMENT",  # nan signature (no body)
+    ("09-standard-library.md", 881): "FRAGMENT",  # float_is_infinite signature (no body)
+    ("09-standard-library.md", 900): "FRAGMENT",  # nan signature (no body)
     ("09-standard-library.md", 900): "FRAGMENT",  # infinity signature (no body)
 
     # Chapter 9 — String search signatures (no body)
-    ("09-standard-library.md", 921): "FRAGMENT",  # string_contains signature (no body)
+    ("09-standard-library.md", 936): "FRAGMENT",  # string_contains signature (no body)
     ("09-standard-library.md", 936): "FRAGMENT",  # string_starts_with signature (no body)
     ("09-standard-library.md", 951): "FRAGMENT",  # string_ends_with signature (no body)
     ("09-standard-library.md", 966): "FRAGMENT",  # string_index_of signature (no body)
 
     # Chapter 9 — String transformation signatures (no body)
-    ("09-standard-library.md", 987): "FRAGMENT",  # string_strip signature (no body)
-    ("09-standard-library.md", 1003): "FRAGMENT",  # string_char_code signature (no body)
+    ("09-standard-library.md", 1002): "FRAGMENT",  # string_strip signature (no body)
+    ("09-standard-library.md", 1018): "FRAGMENT",  # string_char_code signature (no body)
     ("09-standard-library.md", 1018): "FRAGMENT",  # string_upper signature (no body)
     ("09-standard-library.md", 1033): "FRAGMENT",  # string_lower signature (no body)
     ("09-standard-library.md", 1048): "FRAGMENT",  # string_replace signature (no body)
-    ("09-standard-library.md", 1064): "FRAGMENT",  # string_split signature (no body)
+    ("09-standard-library.md", 1079): "FRAGMENT",  # string_split signature (no body)
     ("09-standard-library.md", 1079): "FRAGMENT",  # string_join signature (no body)
-    ("09-standard-library.md", 1093): "FRAGMENT",  # string_from_char_code signature (no body)
+    ("09-standard-library.md", 1108): "FRAGMENT",  # string_from_char_code signature (no body)
     ("09-standard-library.md", 1108): "FRAGMENT",  # string_repeat signature (no body)
 
     # Chapter 9 — Parsing function signatures (no body)
-    ("09-standard-library.md", 1136): "FRAGMENT",  # parse_nat signature (no body)
-    ("09-standard-library.md", 1158): "FRAGMENT",  # parse_int signature (no body)
-    ("09-standard-library.md", 1203): "FRAGMENT",  # parse_bool signature (no body)
+    ("09-standard-library.md", 1151): "FRAGMENT",  # parse_nat signature (no body)
+    ("09-standard-library.md", 1173): "FRAGMENT",  # parse_int signature (no body)
+    ("09-standard-library.md", 1218): "FRAGMENT",  # parse_bool signature (no body)
 
-    ("09-standard-library.md", 1337): "FRAGMENT",  # url_join signature (no body)
+    ("09-standard-library.md", 1352): "FRAGMENT",  # url_join signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 1529): "FUTURE",   # md_parse
-    ("09-standard-library.md", 1538): "FUTURE",   # md_render
-    ("09-standard-library.md", 1549): "FUTURE",   # md_has_heading
-    ("09-standard-library.md", 1558): "FUTURE",   # md_has_code_block
-    ("09-standard-library.md", 1567): "FUTURE",   # md_extract_code_blocks
-    ("09-standard-library.md", 1591): "FUTURE",   # convert_to_markdown
+    ("09-standard-library.md", 1544): "FUTURE",   # md_parse
+    ("09-standard-library.md", 1553): "FUTURE",   # md_render
+    ("09-standard-library.md", 1564): "FUTURE",   # md_has_heading
+    ("09-standard-library.md", 1573): "FUTURE",   # md_has_code_block
+    ("09-standard-library.md", 1582): "FUTURE",   # md_extract_code_blocks
+    ("09-standard-library.md", 1606): "FUTURE",   # convert_to_markdown
 }
 
 
@@ -237,7 +237,7 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
     ("07-effects.md", 202): "INCOMPLETE",    # handle[Exn<String>] + parse_int
 
     # Chapter 9 — Http + Async composition example (Http not yet implemented)
-    ("09-standard-library.md", 379): "INCOMPLETE",  # fetch_both uses Http.get (future)
+    ("09-standard-library.md", 394): "INCOMPLETE",  # fetch_both uses Http.get (future)
 
     # Chapter 9 — Future<T> type definition (standalone, no visibility)
     ("09-standard-library.md", 135): "INCOMPLETE",  # data Future<T> (no visibility keyword)

@@ -75,6 +75,8 @@ class CodeGenerator(
         self._exn_types: list[tuple[str, str]] = []  # (type_name, wasm_type)
         self._md_ops_used: set[str] = set()  # Markdown host-import builtins
         self._regex_ops_used: set[str] = set()  # Regex host-import builtins
+        self._map_ops_used: set[str] = set()  # Map host-import builtins
+        self._map_imports: set[str] = set()  # Map WAT import declarations
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
@@ -187,6 +189,7 @@ class CodeGenerator(
                 state_types=list(self._state_types),
                 md_ops_used=set(self._md_ops_used),
                 regex_ops_used=set(self._regex_ops_used),
+                map_ops_used=set(self._map_ops_used),
             )
 
         # Pass 2: compile function bodies
@@ -258,6 +261,7 @@ class CodeGenerator(
                 state_types=list(self._state_types),
                 md_ops_used=set(self._md_ops_used),
                 regex_ops_used=set(self._regex_ops_used),
+                map_ops_used=set(self._map_ops_used),
             )
 
         return CompileResult(
@@ -268,6 +272,7 @@ class CodeGenerator(
             state_types=list(self._state_types),
             md_ops_used=set(self._md_ops_used),
             regex_ops_used=set(self._regex_ops_used),
+            map_ops_used=set(self._map_ops_used),
         )
 
     # -----------------------------------------------------------------
@@ -292,6 +297,8 @@ class CodeGenerator(
                 return None
             if name in ("String", "Array"):
                 return "i32_pair"
+            if name in ("Map", "Set"):
+                return "i32"  # opaque host handle
             # ADT types compile to i32 (heap pointer)
             if name in self._adt_layouts:
                 return "i32"

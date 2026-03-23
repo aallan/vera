@@ -1076,6 +1076,170 @@ function buildImportObject(module) {
     if (needed.has(name)) imports.vera[name] = fn;
   }
 
+  // Map<K, V> bindings — host-side dictionary via opaque i32 handles.
+  // Import names are type-specific: map_insert$ks_vi, map_get$ki_vb, etc.
+  const mapStore = new Map();   // handle → JS Map
+  let mapNextHandle = 1;
+  function mapAlloc(d) {
+    const h = mapNextHandle++;
+    mapStore.set(h, d);
+    return h;
+  }
+
+  // Helper: allocate Option.None on heap (tag=0, 4 bytes)
+  function mapAllocOptionNone() {
+    const p = alloc(4);
+    writeI32(p, 0);
+    return p;
+  }
+
+  // Helper: allocate Option.Some with typed payload
+  function mapAllocOption(val, vt) {
+    if (val === undefined) return mapAllocOptionNone();
+    if (vt === 'i') {
+      const p = alloc(16); // tag(4) + padding(4) + i64(8)
+      writeI32(p, 1);
+      writeI64(p + 8, val);
+      return p;
+    }
+    if (vt === 'f') {
+      const p = alloc(16); // tag(4) + padding(4) + f64(8)
+      writeI32(p, 1);
+      new DataView(mem().buffer).setFloat64(p + 8, Number(val), true);
+      return p;
+    }
+    if (vt === 's') {
+      const [sp, sl] = allocString(String(val));
+      const p = alloc(12); // tag(4) + ptr(4) + len(4)
+      writeI32(p, 1);
+      writeI32(p + 4, sp);
+      writeI32(p + 8, sl);
+      return p;
+    }
+    // i32 (Bool, Byte, ADT, Map handle)
+    const p = alloc(8); // tag(4) + i32(4)
+    writeI32(p, 1);
+    writeI32(p + 4, Number(val));
+    return p;
+  }
+
+  // Helper: allocate Array of strings
+  function mapAllocArrayOfStrings(strings) {
+    const count = strings.length;
+    if (count === 0) return [0, 0];
+    const ptr = alloc(count * 8); // each string is (i32 ptr, i32 len)
+    for (let i = 0; i < count; i++) {
+      const [sp, sl] = allocString(strings[i]);
+      writeI32(ptr + i * 8, sp);
+      writeI32(ptr + i * 8 + 4, sl);
+    }
+    return [ptr, count];
+  }
+
+  if (needed.has('map_new')) {
+    imports.vera.map_new = () => mapAlloc(new Map());
+  }
+  if (needed.has('map_size')) {
+    imports.vera.map_size = (h) => BigInt(mapStore.get(h)?.size ?? 0);
+  }
+
+  for (const name of needed) {
+    // map_insert$k<kt>_v<vt>
+    let m = name.match(/^map_insert\$k(.)_v(.)$/);
+    if (m) {
+      const [, kt, vt] = m;
+      imports.vera[name] = (h, ...args) => {
+        const d = new Map(mapStore.get(h) || []);
+        let idx = 0;
+        const k = kt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
+        const v = vt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
+        d.set(k, v);
+        return mapAlloc(d);
+      };
+      continue;
+    }
+    // map_get$k<kt>_v<vt>
+    m = name.match(/^map_get\$k(.)_v(.)$/);
+    if (m) {
+      const [, kt, vt] = m;
+      imports.vera[name] = (h, ...args) => {
+        let idx = 0;
+        const k = kt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
+        const d = mapStore.get(h) || new Map();
+        return mapAllocOption(d.get(k), vt);
+      };
+      continue;
+    }
+    // map_contains$k<kt>
+    m = name.match(/^map_contains\$k(.)$/);
+    if (m) {
+      const [, kt] = m;
+      imports.vera[name] = (h, ...args) => {
+        let idx = 0;
+        const k = kt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
+        return (mapStore.get(h) || new Map()).has(k) ? 1 : 0;
+      };
+      continue;
+    }
+    // map_remove$k<kt>
+    m = name.match(/^map_remove\$k(.)$/);
+    if (m) {
+      const [, kt] = m;
+      imports.vera[name] = (h, ...args) => {
+        let idx = 0;
+        const k = kt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
+        const d = new Map(mapStore.get(h) || []);
+        d.delete(k);
+        return mapAlloc(d);
+      };
+      continue;
+    }
+    // map_keys$k<kt>
+    m = name.match(/^map_keys\$k(.)$/);
+    if (m) {
+      const [, kt] = m;
+      imports.vera[name] = (h) => {
+        const d = mapStore.get(h) || new Map();
+        const keys = [...d.keys()];
+        if (kt === 's') return mapAllocArrayOfStrings(keys);
+        const elemSize = kt === 'i' || kt === 'f' ? 8 : 4;
+        const count = keys.length;
+        if (count === 0) return [0, 0];
+        const ptr = alloc(count * elemSize);
+        const view = new DataView(mem().buffer);
+        for (let i = 0; i < count; i++) {
+          if (kt === 'i') view.setBigInt64(ptr + i * 8, BigInt(keys[i]), true);
+          else if (kt === 'f') view.setFloat64(ptr + i * 8, Number(keys[i]), true);
+          else view.setInt32(ptr + i * 4, Number(keys[i]), true);
+        }
+        return [ptr, count];
+      };
+      continue;
+    }
+    // map_values$v<vt>
+    m = name.match(/^map_values\$v(.)$/);
+    if (m) {
+      const [, vt] = m;
+      imports.vera[name] = (h) => {
+        const d = mapStore.get(h) || new Map();
+        const vals = [...d.values()];
+        if (vt === 's') return mapAllocArrayOfStrings(vals);
+        const elemSize = vt === 'i' || vt === 'f' ? 8 : 4;
+        const count = vals.length;
+        if (count === 0) return [0, 0];
+        const ptr = alloc(count * elemSize);
+        const view = new DataView(mem().buffer);
+        for (let i = 0; i < count; i++) {
+          if (vt === 'i') view.setBigInt64(ptr + i * 8, BigInt(vals[i]), true);
+          else if (vt === 'f') view.setFloat64(ptr + i * 8, Number(vals[i]), true);
+          else view.setInt32(ptr + i * 4, Number(vals[i]), true);
+        }
+        return [ptr, count];
+      };
+      continue;
+    }
+  }
+
   return imports;
 }
 

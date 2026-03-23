@@ -483,6 +483,17 @@ class InferenceMixin:
                             return ret.name
                     elif isinstance(alias_te.return_type, ast.NamedType):
                         return alias_te.return_type.name
+        # Map builtins
+        if call.name in ("map_new", "map_insert", "map_remove"):
+            return "Map"
+        if call.name == "map_get":
+            return "Option"
+        if call.name == "map_contains":
+            return "Bool"
+        if call.name == "map_size":
+            return "Int"
+        if call.name in ("map_keys", "map_values"):
+            return "Array"
         # Ability operations: show → String, hash → Int
         if call.name == "show":
             return "String"

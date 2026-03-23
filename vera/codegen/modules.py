@@ -262,6 +262,9 @@ class CrossModuleMixin:
             "regex_replace",
             # Ability operations (§9.8) — rewritten or dispatched by codegen
             "eq", "compare", "show", "hash",
+            # Map operations (§9.4.3) — host-import builtins
+            "map_new", "map_insert", "map_get", "map_contains",
+            "map_remove", "map_size", "map_keys", "map_values",
         })
 
         seen: set[str] = set()  # deduplicate by function name

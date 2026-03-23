@@ -93,6 +93,9 @@ class WasmContext(
         self._ctor_to_adt: dict[str, str] = ctor_to_adt or {}
         # Known locally-defined function names (for cross-module guard rail)
         self._known_fns: set[str] = known_fns or set()
+        # Map host-import tracking (propagated to codegen core)
+        self._map_imports: set[str] = set()
+        self._map_ops_used: set[str] = set()
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}

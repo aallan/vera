@@ -482,6 +482,97 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # Map<K, V> operations (host-import builtins)
+        # Require Eq<K> + Hash<K> ability constraints.
+        from vera.ast import AbilityConstraint
+        _map_kv_constraints = (
+            AbilityConstraint(ability_name="Eq", type_var="K"),
+            AbilityConstraint(ability_name="Hash", type_var="K"),
+        )
+        self.functions["map_new"] = FunctionInfo(
+            name="map_new",
+            forall_vars=("K", "V"),
+            param_types=(),
+            return_type=AdtType("Map", (TypeVar("K"), TypeVar("V"))),
+            effect=PureEffectRow(),
+            forall_constraints=_map_kv_constraints,
+        )
+        self.functions["map_insert"] = FunctionInfo(
+            name="map_insert",
+            forall_vars=("K", "V"),
+            param_types=(
+                AdtType("Map", (TypeVar("K"), TypeVar("V"))),
+                TypeVar("K"),
+                TypeVar("V"),
+            ),
+            return_type=AdtType("Map", (TypeVar("K"), TypeVar("V"))),
+            effect=PureEffectRow(),
+            forall_constraints=_map_kv_constraints,
+        )
+        self.functions["map_get"] = FunctionInfo(
+            name="map_get",
+            forall_vars=("K", "V"),
+            param_types=(
+                AdtType("Map", (TypeVar("K"), TypeVar("V"))),
+                TypeVar("K"),
+            ),
+            return_type=AdtType("Option", (TypeVar("V"),)),
+            effect=PureEffectRow(),
+            forall_constraints=_map_kv_constraints,
+        )
+        self.functions["map_contains"] = FunctionInfo(
+            name="map_contains",
+            forall_vars=("K", "V"),
+            param_types=(
+                AdtType("Map", (TypeVar("K"), TypeVar("V"))),
+                TypeVar("K"),
+            ),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+            forall_constraints=_map_kv_constraints,
+        )
+        self.functions["map_remove"] = FunctionInfo(
+            name="map_remove",
+            forall_vars=("K", "V"),
+            param_types=(
+                AdtType("Map", (TypeVar("K"), TypeVar("V"))),
+                TypeVar("K"),
+            ),
+            return_type=AdtType("Map", (TypeVar("K"), TypeVar("V"))),
+            effect=PureEffectRow(),
+            forall_constraints=_map_kv_constraints,
+        )
+        self.functions["map_size"] = FunctionInfo(
+            name="map_size",
+            forall_vars=("K", "V"),
+            param_types=(
+                AdtType("Map", (TypeVar("K"), TypeVar("V"))),
+            ),
+            return_type=INT,
+            effect=PureEffectRow(),
+            forall_constraints=_map_kv_constraints,
+        )
+        self.functions["map_keys"] = FunctionInfo(
+            name="map_keys",
+            forall_vars=("K", "V"),
+            param_types=(
+                AdtType("Map", (TypeVar("K"), TypeVar("V"))),
+            ),
+            return_type=AdtType("Array", (TypeVar("K"),)),
+            effect=PureEffectRow(),
+            forall_constraints=_map_kv_constraints,
+        )
+        self.functions["map_values"] = FunctionInfo(
+            name="map_values",
+            forall_vars=("K", "V"),
+            param_types=(
+                AdtType("Map", (TypeVar("K"), TypeVar("V"))),
+            ),
+            return_type=AdtType("Array", (TypeVar("V"),)),
+            effect=PureEffectRow(),
+            forall_constraints=_map_kv_constraints,
+        )
+
         # Option / Result combinators
         # Implementations are injected as Vera source AST during codegen
         # (see vera.prelude); these signatures enable type checking.

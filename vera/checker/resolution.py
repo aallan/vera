@@ -22,6 +22,7 @@ from vera.types import (
     TypeVar,
     UnknownType,
     canonical_type_name,
+    contains_typevar,
     substitute,
 )
 
@@ -76,8 +77,8 @@ class ResolutionMixin:
                 return AdtType(name, args)
             return AdtType(name, ())
 
-        # Array, Tuple (always parameterised)
-        if name in ("Array", "Tuple"):
+        # Array, Tuple, Map, Set (always parameterised)
+        if name in ("Array", "Tuple", "Map", "Set"):
             if te.type_args:
                 args = tuple(self._resolve_type(a) for a in te.type_args)
                 return AdtType(name, args)
@@ -164,15 +165,29 @@ class ResolutionMixin:
                          arg_types: list[Type | None]) -> dict[str, Type]:
         """Infer type variable bindings by matching args against params."""
         mapping: dict[str, Type] = {}
+        forall_set = set(forall_vars)
         for param_ty, arg_ty in zip(param_types, arg_types):
             if arg_ty is None or isinstance(arg_ty, UnknownType):
                 continue
-            self._unify_for_inference(param_ty, arg_ty, mapping)
+            self._unify_for_inference(param_ty, arg_ty, mapping, forall_set)
         return mapping
 
     def _unify_for_inference(self, pattern: Type, concrete: Type,
-                             mapping: dict[str, Type]) -> None:
+                             mapping: dict[str, Type],
+                             forall_vars: set[str] | None = None,
+                             ) -> None:
         """Simple unification for type argument inference."""
+        # Skip when the concrete type has TypeVars matching the callee's
+        # own forall vars (e.g. map_new() returns Map<K, V> where K, V
+        # are the callee's forall vars — not yet resolved from args).
+        # Other TypeVars (e.g. E$6 from constructor inference, or U from
+        # an enclosing forall scope) are fine to unify with.
+        if (forall_vars
+                and isinstance(concrete, AdtType)
+                and concrete.type_args
+                and any(isinstance(a, TypeVar) and a.name in forall_vars
+                        for a in concrete.type_args)):
+            return
         if isinstance(pattern, TypeVar):
             if pattern.name not in mapping:
                 mapping[pattern.name] = concrete
@@ -181,10 +196,13 @@ class ResolutionMixin:
         if isinstance(pattern, AdtType) and isinstance(concrete, AdtType):
             if pattern.name == concrete.name:
                 for p_arg, c_arg in zip(pattern.type_args, concrete.type_args):
-                    self._unify_for_inference(p_arg, c_arg, mapping)
+                    self._unify_for_inference(
+                        p_arg, c_arg, mapping, forall_vars)
 
         if isinstance(pattern, FunctionType) and isinstance(concrete, FunctionType):
             for p_param, c_param in zip(pattern.params, concrete.params):
-                self._unify_for_inference(p_param, c_param, mapping)
+                self._unify_for_inference(
+                    p_param, c_param, mapping, forall_vars)
             self._unify_for_inference(
-                pattern.return_type, concrete.return_type, mapping)
+                pattern.return_type, concrete.return_type,
+                mapping, forall_vars)

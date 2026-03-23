@@ -81,6 +81,7 @@ class CompileResult:
     state_types: list[tuple[str, str]] = field(default_factory=list)
     md_ops_used: set[str] = field(default_factory=set)
     regex_ops_used: set[str] = field(default_factory=set)
+    map_ops_used: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -741,6 +742,379 @@ def execute(
             "vera", "regex_replace", regex_replace_type,
             host_regex_replace, access_caller=True,
         )
+
+    # -----------------------------------------------------------------
+    # Map<K, V> host functions
+    # -----------------------------------------------------------------
+
+    if result.map_ops_used:
+        # Handle table: maps i32 handles to Python dicts.
+        # Keys are Python values (int, float, str, bool).
+        # Values are tuples of WASM-level ints/floats.
+        _map_store: dict[int, dict[object, object]] = {}
+        _map_next_handle = [1]  # mutable counter in list for closure access
+
+        def _map_alloc(d: dict[object, object]) -> int:
+            h = _map_next_handle[0]
+            _map_next_handle[0] = h + 1
+            _map_store[h] = d
+            return h
+
+        def _write_i64(
+            caller: wasmtime.Caller, offset: int, value: int,
+        ) -> None:
+            _write_bytes(
+                caller, offset,
+                struct.pack("<q", value),
+            )
+
+        def _write_f64(
+            caller: wasmtime.Caller, offset: int, value: float,
+        ) -> None:
+            _write_bytes(
+                caller, offset,
+                struct.pack("<d", value),
+            )
+
+        def _alloc_option_some_i64(
+            caller: wasmtime.Caller, value: int,
+        ) -> int:
+            """Option.Some wrapping an i64 value.
+
+            Layout: tag(i32) at +0, padding at +4, payload(i64) at +8.
+            Total 16 bytes (i64 aligned to 8-byte boundary).
+            """
+            adt_ptr = _call_alloc(caller, 16)
+            _write_i32(caller, adt_ptr, 1)  # tag = Some
+            _write_i64(caller, adt_ptr + 8, value)
+            return adt_ptr
+
+        def _alloc_option_some_i32(
+            caller: wasmtime.Caller, value: int,
+        ) -> int:
+            """Option.Some wrapping an i32 value."""
+            adt_ptr = _call_alloc(caller, 8)
+            _write_i32(caller, adt_ptr, 1)  # tag = Some
+            _write_i32(caller, adt_ptr + 4, value)
+            return adt_ptr
+
+        def _alloc_option_some_f64(
+            caller: wasmtime.Caller, value: float,
+        ) -> int:
+            """Option.Some wrapping an f64 value.
+
+            Layout: tag(i32) at +0, padding at +4, payload(f64) at +8.
+            Total 16 bytes (f64 aligned to 8-byte boundary).
+            """
+            adt_ptr = _call_alloc(caller, 16)
+            _write_i32(caller, adt_ptr, 1)  # tag = Some
+            _write_f64(caller, adt_ptr + 8, value)
+            return adt_ptr
+
+        def _alloc_array_of_i64(
+            caller: wasmtime.Caller, values: list[int],
+        ) -> tuple[int, int]:
+            """Allocate Array<Int/Nat> — each element is 8 bytes."""
+            count = len(values)
+            if count == 0:
+                return (0, 0)
+            ptr = _call_alloc(caller, count * 8)
+            for i, v in enumerate(values):
+                _write_i64(caller, ptr + i * 8, v)
+            return (ptr, count)
+
+        def _alloc_array_of_i32(
+            caller: wasmtime.Caller, values: list[int],
+        ) -> tuple[int, int]:
+            """Allocate Array<Bool/Byte/ADT> — each element is 4 bytes."""
+            count = len(values)
+            if count == 0:
+                return (0, 0)
+            ptr = _call_alloc(caller, count * 4)
+            for i, v in enumerate(values):
+                _write_i32(caller, ptr + i * 4, v)
+            return (ptr, count)
+
+        def _alloc_array_of_f64(
+            caller: wasmtime.Caller, values: list[float],
+        ) -> tuple[int, int]:
+            """Allocate Array<Float64> — each element is 8 bytes."""
+            count = len(values)
+            if count == 0:
+                return (0, 0)
+            ptr = _call_alloc(caller, count * 8)
+            for i, v in enumerate(values):
+                _write_f64(caller, ptr + i * 8, v)
+            return (ptr, count)
+
+        # map_new() → i32 handle
+        def host_map_new(_caller: wasmtime.Caller) -> int:
+            return _map_alloc({})
+
+        linker.define_func(
+            "vera", "map_new",
+            wasmtime.FuncType([], [wasmtime.ValType.i32()]),
+            host_map_new, access_caller=True,
+        )
+
+        # Dynamically define type-specific Map host imports based on
+        # what the compiled program actually uses.
+        _KEY_READERS = {
+            "i": lambda _c, k: k,            # i64 key as-is
+            "f": lambda _c, k: k,            # f64 key as-is
+            "b": lambda _c, k: k,            # i32 key as-is
+            "s": lambda c, p, l: _read_wasm_string(c, p, l),  # String
+        }
+
+        _VAL_WASM_TYPES = {
+            "i": [wasmtime.ValType.i64()],
+            "f": [wasmtime.ValType.f64()],
+            "b": [wasmtime.ValType.i32()],
+            "s": [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+        }
+
+        def _define_map_insert(kt: str, vt: str) -> None:
+            name = f"map_insert$k{kt}_v{vt}"
+            key_types = _VAL_WASM_TYPES[kt]
+            val_types = _VAL_WASM_TYPES[vt]
+            param_types = (
+                [wasmtime.ValType.i32()]  # handle
+                + key_types + val_types
+            )
+            ftype = wasmtime.FuncType(param_types, [wasmtime.ValType.i32()])
+
+            if kt == "s" and vt == "s":
+                def host_fn(
+                    caller: wasmtime.Caller,
+                    h: int, kp: int, kl: int, vp: int, vl: int,
+                ) -> int:
+                    k = _read_wasm_string(caller, kp, kl)
+                    v = _read_wasm_string(caller, vp, vl)
+                    new_d = dict(_map_store.get(h, {}))
+                    new_d[k] = v
+                    return _map_alloc(new_d)
+            elif kt == "s":
+                def host_fn(  # type: ignore[misc]
+                    caller: wasmtime.Caller,
+                    h: int, kp: int, kl: int, v: int | float,
+                ) -> int:
+                    k = _read_wasm_string(caller, kp, kl)
+                    new_d = dict(_map_store.get(h, {}))
+                    new_d[k] = v
+                    return _map_alloc(new_d)
+            elif vt == "s":
+                def host_fn(  # type: ignore[misc]
+                    caller: wasmtime.Caller,
+                    h: int, k: int | float, vp: int, vl: int,
+                ) -> int:
+                    v = _read_wasm_string(caller, vp, vl)
+                    new_d = dict(_map_store.get(h, {}))
+                    new_d[k] = v
+                    return _map_alloc(new_d)
+            else:
+                def host_fn(  # type: ignore[misc]
+                    _caller: wasmtime.Caller,
+                    h: int, k: int | float, v: int | float,
+                ) -> int:
+                    new_d = dict(_map_store.get(h, {}))
+                    new_d[k] = v
+                    return _map_alloc(new_d)
+
+            linker.define_func(
+                "vera", name, ftype, host_fn, access_caller=True,
+            )
+
+        def _define_map_get(kt: str, vt: str) -> None:
+            name = f"map_get$k{kt}_v{vt}"
+            key_types = _VAL_WASM_TYPES[kt]
+            param_types = [wasmtime.ValType.i32()] + key_types
+            ftype = wasmtime.FuncType(
+                param_types, [wasmtime.ValType.i32()],
+            )
+
+            def _make_option(
+                caller: wasmtime.Caller, val: object,
+            ) -> int:
+                """Construct Option<V> on the WASM heap."""
+                if val is None:
+                    return _alloc_option_none(caller)
+                if vt == "i":
+                    assert isinstance(val, int)
+                    return _alloc_option_some_i64(caller, val)
+                if vt == "f":
+                    assert isinstance(val, (int, float))
+                    return _alloc_option_some_f64(caller, float(val))
+                if vt == "s":
+                    assert isinstance(val, str)
+                    return _alloc_option_some_string(caller, val)
+                # i32 (Bool, Byte, ADT, Map handle)
+                assert isinstance(val, int)
+                return _alloc_option_some_i32(caller, val)
+
+            if kt == "s":
+                def host_fn(
+                    caller: wasmtime.Caller,
+                    h: int, kp: int, kl: int,
+                ) -> int:
+                    k = _read_wasm_string(caller, kp, kl)
+                    d = _map_store.get(h, {})
+                    return _make_option(caller, d.get(k))
+            else:
+                def host_fn(  # type: ignore[misc]
+                    caller: wasmtime.Caller,
+                    h: int, k: int | float,
+                ) -> int:
+                    d = _map_store.get(h, {})
+                    return _make_option(caller, d.get(k))
+
+            linker.define_func(
+                "vera", name, ftype, host_fn, access_caller=True,
+            )
+
+        def _define_map_contains(kt: str) -> None:
+            name = f"map_contains$k{kt}"
+            key_types = _VAL_WASM_TYPES[kt]
+            param_types = [wasmtime.ValType.i32()] + key_types
+            ftype = wasmtime.FuncType(param_types, [wasmtime.ValType.i32()])
+
+            if kt == "s":
+                def host_fn(
+                    caller: wasmtime.Caller,
+                    h: int, kp: int, kl: int,
+                ) -> int:
+                    k = _read_wasm_string(caller, kp, kl)
+                    return 1 if k in _map_store.get(h, {}) else 0
+            else:
+                def host_fn(  # type: ignore[misc]
+                    _caller: wasmtime.Caller,
+                    h: int, k: int | float,
+                ) -> int:
+                    return 1 if k in _map_store.get(h, {}) else 0
+
+            linker.define_func(
+                "vera", name, ftype, host_fn, access_caller=True,
+            )
+
+        def _define_map_remove(kt: str) -> None:
+            name = f"map_remove$k{kt}"
+            key_types = _VAL_WASM_TYPES[kt]
+            param_types = [wasmtime.ValType.i32()] + key_types
+            ftype = wasmtime.FuncType(param_types, [wasmtime.ValType.i32()])
+
+            if kt == "s":
+                def host_fn(
+                    caller: wasmtime.Caller,
+                    h: int, kp: int, kl: int,
+                ) -> int:
+                    k = _read_wasm_string(caller, kp, kl)
+                    new_d = dict(_map_store.get(h, {}))
+                    new_d.pop(k, None)
+                    return _map_alloc(new_d)
+            else:
+                def host_fn(  # type: ignore[misc]
+                    _caller: wasmtime.Caller,
+                    h: int, k: int | float,
+                ) -> int:
+                    new_d = dict(_map_store.get(h, {}))
+                    new_d.pop(k, None)
+                    return _map_alloc(new_d)
+
+            linker.define_func(
+                "vera", name, ftype, host_fn, access_caller=True,
+            )
+
+        # map_size(h) → i64
+        def host_map_size(
+            _caller: wasmtime.Caller, h: int,
+        ) -> int:
+            return len(_map_store.get(h, {}))
+
+        linker.define_func(
+            "vera", "map_size",
+            wasmtime.FuncType(
+                [wasmtime.ValType.i32()], [wasmtime.ValType.i64()],
+            ),
+            host_map_size, access_caller=True,
+        )
+
+        def _define_map_keys(kt: str) -> None:
+            name = f"map_keys$k{kt}"
+            ftype = wasmtime.FuncType(
+                [wasmtime.ValType.i32()],
+                [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+            )
+
+            def host_fn(
+                caller: wasmtime.Caller, h: int,
+            ) -> tuple[int, int]:
+                d = _map_store.get(h, {})
+                keys = list(d.keys())
+                if kt == "s":
+                    return _alloc_array_of_strings(caller, keys)  # type: ignore[arg-type]
+                if kt == "i":
+                    return _alloc_array_of_i64(caller, keys)  # type: ignore[arg-type]
+                if kt == "f":
+                    return _alloc_array_of_f64(caller, keys)  # type: ignore[arg-type]
+                return _alloc_array_of_i32(caller, keys)  # type: ignore[arg-type]
+
+            linker.define_func(
+                "vera", name, ftype, host_fn, access_caller=True,
+            )
+
+        def _define_map_values(vt: str) -> None:
+            name = f"map_values$k{vt}"
+            ftype = wasmtime.FuncType(
+                [wasmtime.ValType.i32()],
+                [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+            )
+
+            def host_fn(
+                caller: wasmtime.Caller, h: int,
+            ) -> tuple[int, int]:
+                d = _map_store.get(h, {})
+                vals = list(d.values())
+                if vt == "s":
+                    return _alloc_array_of_strings(caller, vals)  # type: ignore[arg-type]
+                if vt == "i":
+                    return _alloc_array_of_i64(caller, vals)  # type: ignore[arg-type]
+                if vt == "f":
+                    return _alloc_array_of_f64(caller, vals)  # type: ignore[arg-type]
+                return _alloc_array_of_i32(caller, vals)  # type: ignore[arg-type]
+
+            linker.define_func(
+                "vera", name, ftype, host_fn, access_caller=True,
+            )
+
+        # Register type-specific imports based on what the WAT uses.
+        # Parse the import names from map_ops_used to determine types.
+        for op_name in result.map_ops_used:
+            if op_name.startswith("map_insert$"):
+                # e.g. "map_insert$ki_vi"
+                suffix = op_name[len("map_insert$"):]
+                kt = suffix[1]  # after 'k'
+                vt = suffix[4]  # after '_v'
+                _define_map_insert(kt, vt)
+            elif op_name.startswith("map_get$"):
+                suffix = op_name[len("map_get$"):]
+                kt = suffix[1]
+                vt = suffix[4]
+                _define_map_get(kt, vt)
+            elif op_name.startswith("map_contains$"):
+                suffix = op_name[len("map_contains$"):]
+                kt = suffix[1]
+                _define_map_contains(kt)
+            elif op_name.startswith("map_remove$"):
+                suffix = op_name[len("map_remove$"):]
+                kt = suffix[1]
+                _define_map_remove(kt)
+            elif op_name.startswith("map_keys$"):
+                suffix = op_name[len("map_keys$"):]
+                kt = suffix[1]
+                _define_map_keys(kt)
+            elif op_name.startswith("map_values$"):
+                suffix = op_name[len("map_values$"):]
+                vt = suffix[1]
+                _define_map_values(vt)
 
     instance = linker.instantiate(store, module)
 

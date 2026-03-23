@@ -596,7 +596,7 @@ For compiler architecture, pipeline internals, and how to extend the compiler, s
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (2,749 tests across 26 files, testing compiler internals and browser parity), a **conformance suite** (56 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (25 end-to-end demos). The compiler has 96% code coverage, enforced by [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
+Testing is organized in three layers: **unit tests** (2,754 tests across 26 files, testing compiler internals and browser parity), a **conformance suite** (57 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (25 end-to-end demos). The compiler has 96% code coverage, enforced by [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
 
 ### Known Bugs and Limitations
 
@@ -666,7 +666,7 @@ This is what "designed for LLMs to write" means in practice: the language makes 
 | Formatting | Canonical formatter (`vera fmt`) | One canonical form, enforced by tooling |
 | Data types | Algebraic data types + exhaustive `match` | No classes, no inheritance; compiler enforces every case is handled |
 | Polymorphism | Monomorphized generics (`forall<T where Eq<T>>`) | No runtime dispatch; four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`); types fully specialized at compile time |
-| Collections | `Array<T>` with `map`, `filter`, `fold`, `slice` | Functional iteration — no mutation, no loop constructs |
+| Collections | `Array<T>` with `map`, `filter`, `fold`, `slice`; `Map<K, V>` key-value maps | Functional collections — no mutation, no loop constructs |
 | Error handling | `Result<T, E>` ADTs, no exceptions | Errors are values; models handle every case via `match` |
 | Recursion | Explicit termination measures (`decreases`) | Compiler verifies termination via Z3; no unbounded loops |
 | Naming | No user-chosen variable names | `@T.n` indices are the only binding mechanism |
