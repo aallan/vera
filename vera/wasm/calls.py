@@ -7427,12 +7427,13 @@ class CallsMixin:
                     if isinstance(val_te, ast.NamedType):
                         return val_te.name
             # Fallback: parse from composite type_name string
+            # Uses depth-aware split to handle nested generics
+            # like Map<Result<Int, Bool>, String>
             name = expr.type_name
-            if name.startswith("Map<") and ", " in name:
-                inner = name[4:-1]
-                parts = inner.split(", ", 1)
-                if len(parts) == 2:
-                    return parts[1]
+            if name.startswith("Map<") and name.endswith(">"):
+                v = self._split_map_type_args(name)
+                if v is not None:
+                    return v[1]
         # If it's a function call that returns Map, try to infer
         if isinstance(expr, ast.FnCall):
             if expr.name in ("map_new", "map_insert", "map_remove"):
@@ -7541,6 +7542,27 @@ class CallsMixin:
         ins.append(f"call {wasm_name}")
         return ins
 
+    @staticmethod
+    def _split_map_type_args(name: str) -> tuple[str, str] | None:
+        """Split 'Map<K, V>' into (K, V) with nesting-aware comma split.
+
+        Handles nested generics like Map<Result<Int, Bool>, String>
+        by tracking angle-bracket depth.
+        """
+        inner = name[4:-1]  # strip "Map<" and ">"
+        depth = 0
+        for i, ch in enumerate(inner):
+            if ch == "<":
+                depth += 1
+            elif ch == ">":
+                depth -= 1
+            elif ch == "," and depth == 0:
+                k = inner[:i].strip()
+                v = inner[i + 1:].strip()
+                if k and v:
+                    return (k, v)
+        return None
+
     def _infer_map_key_from_map_arg(
         self, expr: "ast.Expr",
     ) -> str | None:
@@ -7552,11 +7574,10 @@ class CallsMixin:
                     if isinstance(key_te, ast.NamedType):
                         return key_te.name
             name = expr.type_name
-            if name.startswith("Map<") and ", " in name:
-                inner = name[4:-1]
-                parts = inner.split(", ", 1)
-                if parts:
-                    return parts[0]
+            if name.startswith("Map<") and name.endswith(">"):
+                v = self._split_map_type_args(name)
+                if v is not None:
+                    return v[0]
         if isinstance(expr, ast.FnCall):
             if expr.name == "map_insert" and len(expr.args) >= 2:
                 return self._infer_vera_type(expr.args[1])
