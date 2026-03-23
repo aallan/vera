@@ -7745,3 +7745,33 @@ public fn main(-> @Int)
 { map_size(map_insert(map_new(), "k", 1)) }
 """
         _compile_ok(source)
+
+    def test_map_empty_keys(self) -> None:
+        """map_keys on an empty map returns empty array."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_keys(map_remove(map_insert(map_new(), "x", 0), "x"))) }
+"""
+        assert _run(source) == 0
+
+    def test_map_empty_values(self) -> None:
+        """map_values on an empty map returns empty array."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_values(map_remove(map_insert(map_new(), "x", 0), "x"))) }
+"""
+        assert _run(source) == 0
+
+    def test_map_get_after_remove(self) -> None:
+        """map_get after map_remove returns None."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Nat> = map_remove(map_insert(map_new(), "k", 42), "k");
+  option_unwrap_or(map_get(@Map<String, Nat>.0, "k"), -1)
+}
+"""
+        assert _run(source) == -1

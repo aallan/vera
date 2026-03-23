@@ -253,7 +253,7 @@ Operations will include union, intersection, difference, membership testing, and
 
 ### 9.4.3 Map\<K, V\>
 
-`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, or `Unit`. Values must be types with a WASM representation — primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADTs (heap-pointer types like `Option<T>`, `Result<T, E>`), or other `Map` handles.
+`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, or `Unit`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` handles. `Array<T>` values are not yet supported as Map values (tracked as a future enhancement).
 
 Map is an opaque built-in type implemented via host imports. The runtime maintains the underlying hash table; WASM code interacts with maps through `i32` handles. All operations are pure — `map_insert` and `map_remove` return new maps (functional semantics).
 

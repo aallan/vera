@@ -1600,6 +1600,17 @@ private fn foo(@Unit -> @Int)
 { map_size(map_insert(map_new(), "k")) }
 """, "expects")
 
+    def test_map_new_infers_from_let(self) -> None:
+        """Bare map_new() resolves type vars from let binding context."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Nat> = map_new();
+  map_size(@Map<String, Nat>.0)
+}
+""")
+
 
 # =====================================================================
 # Return type checking

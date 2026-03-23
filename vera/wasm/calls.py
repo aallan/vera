@@ -7271,10 +7271,7 @@ class CallsMixin:
             return "i"   # i64
         if vera_type == "Float64":
             return "f"   # f64
-        if vera_type is not None and (
-            vera_type == "String"
-            or vera_type.startswith("Array")
-        ):
+        if vera_type == "String":
             return "s"   # i32_pair
         # Bool, Byte, ADTs, Map handles → i32
         return "b"
