@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.94] - 2026-03-23
+
+### Added
+- **Map\<K, V\> collection type** ([#62](https://github.com/aallan/vera/issues/62), PR 1/3) — eight built-in operations (`map_new`, `map_insert`, `map_get`, `map_contains`, `map_remove`, `map_size`, `map_keys`, `map_values`) with `Eq<K> + Hash<K>` ability constraints. Implemented via host imports (Python dicts / JS Maps behind opaque i32 handles). Pure functional semantics — `map_insert` and `map_remove` return new maps. New conformance test `ch09_map` (57 programs, was 56). 40 new unit tests. Browser runtime support.
+- **Decimal type issue** ([#333](https://github.com/aallan/vera/issues/333)) — split from #62 as independent future work.
+
+### Fixed
+- **Type inference for zero-argument generic functions** — `map_new()` and similar zero-arg generic calls now resolve type variables from expected type context (bidirectional coercion). Fixed unification to skip ADT args whose TypeVars match the callee's own forall vars.
+
 ## [0.0.93] - 2026-03-20
 
 ### Changed
@@ -1386,7 +1395,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.93...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.94...HEAD
+[0.0.94]: https://github.com/aallan/vera/compare/v0.0.93...v0.0.94
 [0.0.93]: https://github.com/aallan/vera/compare/v0.0.92...v0.0.93
 [0.0.92]: https://github.com/aallan/vera/compare/v0.0.91...v0.0.92
 [0.0.91]: https://github.com/aallan/vera/compare/v0.0.90...v0.0.91

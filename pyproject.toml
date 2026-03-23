@@ -1,6 +1,6 @@
 [project]
 name = "vera"
-version = "0.0.93"
+version = "0.0.94"
 description = "Vera: a programming language designed for LLMs, with full contracts, algebraic effects, and typed slot references"
 readme = "README.md"
 license = "MIT"

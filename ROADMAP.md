@@ -18,7 +18,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 ## Where we are
 
-**v0.0.93** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 72 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 56-program conformance suite, a canonical formatter, and contract-driven testing. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
+**v0.0.94** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 80 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 57-program conformance suite, a canonical formatter, and contract-driven testing. `Map<K, V>` provides key-value collections with ability-constrained keys. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
 
 Most remaining features are gated by a single dependency chain:
 
