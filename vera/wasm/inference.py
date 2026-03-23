@@ -828,6 +828,9 @@ class InferenceMixin:
         if name.startswith("Future<") and name.endswith(">"):
             inner = name[7:-1]
             return self._slot_name_to_wasm_type(inner)
+        # Map/Set are opaque host-import handles (i32)
+        if name.startswith("Map<") or name.startswith("Set<"):
+            return "i32"
         # ADT types are heap pointers
         base = name.split("<")[0] if "<" in name else name
         if base in self._adt_type_names:

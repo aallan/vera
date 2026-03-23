@@ -116,7 +116,7 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     1326: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
     1258: ("FRAGMENT", "Correct: match arm example"),
     # 1294 duplicate removed — was 1301, now handled below
-    1326: ("FRAGMENT", "Wrong: if/else without braces (bare expression)"),
+    # 1326 duplicate removed — if/else entry moved to 1343 below
     1348: ("FRAGMENT", "Correct: if/else with braces"),
 
     # Import syntax — intentionally unsupported

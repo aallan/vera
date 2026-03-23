@@ -1520,6 +1520,88 @@ private fn foo(@Unit -> @Int)
 
 
 # =====================================================================
+# Map collection (#62)
+# =====================================================================
+
+class TestMapCollection:
+
+    def test_map_insert_and_size(self) -> None:
+        """map_insert + map_size type-check cleanly."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_new(), "hello", 42)) }
+""")
+
+    def test_map_get_returns_option(self) -> None:
+        """map_get returns Option<V>."""
+        _check_ok("""
+private fn foo(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ option_unwrap_or(map_get(map_insert(map_new(), "k", 7), "k"), 0) }
+""")
+
+    def test_map_contains_returns_bool(self) -> None:
+        """map_contains returns Bool."""
+        _check_ok("""
+private fn foo(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ map_contains(map_insert(map_new(), "k", 1), "k") }
+""")
+
+    def test_map_remove_returns_map(self) -> None:
+        """map_remove returns Map<K, V>."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_remove(map_insert(map_new(), "k", 1), "k")) }
+""")
+
+    def test_map_keys_returns_array(self) -> None:
+        """map_keys returns Array<K>."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_keys(map_insert(map_new(), "k", 1))) }
+""")
+
+    def test_map_values_returns_array(self) -> None:
+        """map_values returns Array<V>."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_values(map_insert(map_new(), "k", 1))) }
+""")
+
+    def test_map_int_keys(self) -> None:
+        """Map with Int keys type-checks cleanly."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_new(), 1, "hello")) }
+""")
+
+    def test_map_let_binding(self) -> None:
+        """Map can be bound with let @Map<K, V>."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Nat> = map_insert(map_new(), "k", 42);
+  map_size(@Map<String, Nat>.0)
+}
+""")
+
+    def test_map_wrong_arity(self) -> None:
+        """map_insert with wrong number of args produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_new(), "k")) }
+""", "expects")
+
+
+# =====================================================================
 # Return type checking
 # =====================================================================
 

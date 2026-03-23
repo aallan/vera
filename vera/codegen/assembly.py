@@ -88,6 +88,7 @@ class AssemblyMixin:
             parts.append(import_line)
         if self._map_ops_used:
             self._needs_alloc = True
+            self._needs_memory = True
 
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:

@@ -7271,7 +7271,10 @@ class CallsMixin:
             return "i"   # i64
         if vera_type == "Float64":
             return "f"   # f64
-        if vera_type in ("String",):
+        if vera_type is not None and (
+            vera_type == "String"
+            or vera_type.startswith("Array")
+        ):
             return "s"   # i32_pair
         # Bool, Byte, ADTs, Map handles → i32
         return "b"
@@ -7287,19 +7290,24 @@ class CallsMixin:
             return ["i32", "i32"]
         return ["i32"]
 
-    def _map_import_name(self, op: str, key_tag: str,
+    def _map_import_name(self, op: str, key_tag: str | None = None,
                          val_tag: str | None = None) -> str:
         """Build a mangled Map host import name and register it."""
-        if val_tag is not None:
+        if key_tag is not None and val_tag is not None:
             suffix = f"$k{key_tag}_v{val_tag}"
-        else:
+        elif key_tag is not None:
             suffix = f"$k{key_tag}"
+        elif val_tag is not None:
+            suffix = f"$v{val_tag}"
+        else:
+            suffix = ""
         name = f"{op}{suffix}"
         self._map_ops_used.add(name)
         return name
 
     def _register_map_import(
-        self, op: str, key_tag: str, val_tag: str | None,
+        self, op: str, key_tag: str | None = None,
+        val_tag: str | None = None,
         extra_params: list[str] | None = None,
         results: list[str] | None = None,
     ) -> str:
@@ -7414,12 +7422,17 @@ class CallsMixin:
     ) -> str | None:
         """Infer the value type V from a Map<K, V> expression."""
         # If the map arg is a slot ref like @Map<String, Int>.0,
-        # the type name encodes V.
+        # extract V from the type_args (not the type_name string).
         if isinstance(expr, ast.SlotRef):
+            if expr.type_name == "Map" and expr.type_args:
+                if len(expr.type_args) == 2:
+                    val_te = expr.type_args[1]
+                    if isinstance(val_te, ast.NamedType):
+                        return val_te.name
+            # Fallback: parse from composite type_name string
             name = expr.type_name
             if name.startswith("Map<") and ", " in name:
-                # Extract V from "Map<K, V>"
-                inner = name[4:-1]  # strip "Map<" and ">"
+                inner = name[4:-1]
                 parts = inner.split(", ", 1)
                 if len(parts) == 2:
                     return parts[1]
@@ -7520,7 +7533,7 @@ class CallsMixin:
         vt = self._map_wasm_tag(val_type)
 
         wasm_name = self._register_map_import(
-            "map_values", vt, None,
+            "map_values", val_tag=vt,
             extra_params=["i32"], results=["i32", "i32"],
         )
         self.needs_alloc = True
@@ -7536,6 +7549,11 @@ class CallsMixin:
     ) -> str | None:
         """Infer the key type K from a Map<K, V> expression."""
         if isinstance(expr, ast.SlotRef):
+            if expr.type_name == "Map" and expr.type_args:
+                if len(expr.type_args) >= 1:
+                    key_te = expr.type_args[0]
+                    if isinstance(key_te, ast.NamedType):
+                        return key_te.name
             name = expr.type_name
             if name.startswith("Map<") and ", " in name:
                 inner = name[4:-1]

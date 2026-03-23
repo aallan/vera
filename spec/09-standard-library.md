@@ -253,7 +253,7 @@ Operations will include union, intersection, difference, membership testing, and
 
 ### 9.4.3 Map\<K, V\>
 
-`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, or `Unit`. Values may be any type.
+`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, or `Unit`. Values must be types with a WASM representation — primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADTs (heap-pointer types like `Option<T>`, `Result<T, E>`), or other `Map` handles.
 
 Map is an opaque built-in type implemented via host imports. The runtime maintains the underlying hash table; WASM code interacts with maps through `i32` handles. All operations are pure — `map_insert` and `map_remove` return new maps (functional semantics).
 
@@ -271,6 +271,18 @@ Map is an opaque built-in type implemented via host imports. The runtime maintai
 | `map_values(m)` | `forall<K, V> (Map<K, V>) -> Array<V>` | All values as an array |
 
 All Map operations require `Eq<K>` and `Hash<K>` ability constraints.
+
+**Example:**
+
+```vera
+private fn map_demo(-> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  option_unwrap_or(map_get(map_insert(map_new(), "answer", 42), "answer"), 0)
+}
+```
 
 `Map` is needed by the proposed `Json` ADT (Section 9.7.1), where `JObject` wraps a `Map<String, Json>`.
 

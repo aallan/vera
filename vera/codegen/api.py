@@ -1062,7 +1062,7 @@ def execute(
             )
 
         def _define_map_values(vt: str) -> None:
-            name = f"map_values$k{vt}"
+            name = f"map_values$v{vt}"
             ftype = wasmtime.FuncType(
                 [wasmtime.ValType.i32()],
                 [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
