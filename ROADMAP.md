@@ -40,6 +40,7 @@ Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave
                                  #306 MCP ←──────────┘   #229 DB (←─ #62, #58)
                                                          #311 HTML (←─ #58)
                                                               #61 Inference
+                                                             #333 Decimal
 ```
 
 ### Tier 0 — Ship now
@@ -74,6 +75,7 @@ Independent of the Tier 1 chain. Can be scheduled between Tier 1 items or in par
 - [#229](https://github.com/aallan/vera/issues/229) **Database access effect** — `<DB>` with `query`/`execute` operations, parameterised queries only. Phase 1 (positional rows, SQLite) has no blocking dependencies. Phase 2 (named columns) needs Map (#62). Phase 3 (JSON columns) needs JSON (#58). See #309 for contract-verified SQL injection prevention.
 - [#311](https://github.com/aallan/vera/issues/311) **HTML standard library type** — parse and generate HTML documents, CSS selector queries, text extraction. Natural pairing with the browser target. Shares recursive ADT infrastructure with Markdown (#147) and JSON (#58). Schedule after JSON lands.
 - [#61](https://github.com/aallan/vera/issues/61) **Inference effect** — `effects(<Inference>)` in a signature means "this function calls an LLM, and you can mock it for testing." The feature that most differentiates Vera from Dafny as a verification target, and the one that positions it as the natural language for verified LLM orchestration.
+- [#333](https://github.com/aallan/vera/issues/333) **Decimal type** — exact decimal arithmetic for financial and precision-sensitive applications. Software implementation in the runtime (no native WASM decimal). Split from #62.
 
 ### Remaining completeness
 

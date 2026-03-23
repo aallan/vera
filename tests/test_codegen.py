@@ -7775,3 +7775,81 @@ public fn main(-> @Int)
 }
 """
         assert _run(source) == -1
+
+    def test_map_string_values(self) -> None:
+        """Map with String values (pair-ABI value type)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_new(), 1, "hello")) }
+"""
+        assert _run(source) == 1
+
+    def test_map_get_string_value(self) -> None:
+        """map_get with String values returns correct Option<String>."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<String> = map_get(map_insert(map_new(), 1, "hello"), 1);
+  match @Option<String>.0 {
+    None -> 0,
+    Some(@String) -> string_length(@String.0)
+  }
+}
+"""
+        assert _run(source) == 5
+
+    def test_map_bool_keys(self) -> None:
+        """Map with Bool keys (i32 key type)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_insert(map_new(), true, 1), false, 2)) }
+"""
+        assert _run(source) == 2
+
+    def test_map_contains_int_key(self) -> None:
+        """map_contains with Int keys."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if map_contains(map_insert(map_new(), 42, "x"), 42) then { 1 } else { 0 } }
+"""
+        assert _run(source) == 1
+
+    def test_map_remove_int_key(self) -> None:
+        """map_remove with Int keys."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_remove(map_insert(map_new(), 42, "x"), 42)) }
+"""
+        assert _run(source) == 0
+
+    def test_map_string_key_string_value(self) -> None:
+        """Map<String, String> — both key and value are pair-ABI."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_new(), "key", "value")) }
+"""
+        assert _run(source) == 1
+
+    def test_map_keys_string(self) -> None:
+        """map_keys with String keys returns correct array."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_keys(map_insert(map_new(), "only", 1))) }
+"""
+        assert _run(source) == 1
+
+    def test_map_values_int(self) -> None:
+        """map_values with Int values returns correct array."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_values(map_insert(map_new(), "k", 99))) }
+"""
+        assert _run(source) == 1
