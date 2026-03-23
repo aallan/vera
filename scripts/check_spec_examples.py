@@ -156,14 +156,14 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 702): "FRAGMENT",  # ceil signature (no body)
 
     # Chapter 9 — Numeric type conversion signatures (no body)
-    ("09-standard-library.md", 762): "FRAGMENT",  # int_to_float signature (no body)
+    # 773 removed — no language tag, heuristic skips it
     ("09-standard-library.md", 774): "FRAGMENT",  # nat_to_int signature (no body)
     ("09-standard-library.md", 789): "FRAGMENT",  # byte_to_int signature (no body)
     ("09-standard-library.md", 819): "FRAGMENT",  # int_to_nat signature (no body)
     ("09-standard-library.md", 852): "FRAGMENT",  # int_to_byte signature (no body)
 
     # Chapter 9 — Float64 predicates (signatures, no body)
-    ("09-standard-library.md", 861): "FRAGMENT",  # float_is_nan signature (no body)
+    ("09-standard-library.md", 876): "FRAGMENT",  # float_is_nan signature (no body)
     ("09-standard-library.md", 893): "FRAGMENT",  # float_is_infinite signature (no body)
     ("09-standard-library.md", 912): "FRAGMENT",  # nan signature (no body)
     # 927 handled in main section above (infinity)
