@@ -483,6 +483,17 @@ class InferenceMixin:
                             return ret.name
                     elif isinstance(alias_te.return_type, ast.NamedType):
                         return alias_te.return_type.name
+        # Map builtins
+        if call.name in ("map_new", "map_insert", "map_remove"):
+            return "Map"
+        if call.name == "map_get":
+            return "Option"
+        if call.name == "map_contains":
+            return "Bool"
+        if call.name == "map_size":
+            return "Int"
+        if call.name in ("map_keys", "map_values"):
+            return "Array"
         # Ability operations: show → String, hash → Int
         if call.name == "show":
             return "String"
@@ -817,6 +828,9 @@ class InferenceMixin:
         if name.startswith("Future<") and name.endswith(">"):
             inner = name[7:-1]
             return self._slot_name_to_wasm_type(inner)
+        # Map/Set are opaque host-import handles (i32)
+        if name.startswith("Map<") or name.startswith("Set<"):
+            return "i32"
         # ADT types are heap pointers
         base = name.split("<")[0] if "<" in name else name
         if base in self._adt_type_names:

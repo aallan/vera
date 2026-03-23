@@ -7607,3 +7607,249 @@ public fn main(@Unit -> @Unit)
 }
 """
         assert _run_io(source, fn="main") == "hello"
+
+
+# =====================================================================
+# Map<K, V> collection (#62)
+# =====================================================================
+
+class TestMapCollection:
+    """Map built-in operations: map_new, map_insert, map_get, map_contains,
+    map_remove, map_size, map_keys, map_values."""
+
+    def test_map_empty_size(self) -> None:
+        """Empty map (via insert + remove) has size 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_remove(map_insert(map_new(), "x", 0), "x")) }
+"""
+        assert _run(source) == 0
+
+    def test_map_insert_size(self) -> None:
+        """Insert two entries, size is 2."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_insert(map_new(), "a", 1), "b", 2)) }
+"""
+        assert _run(source) == 2
+
+    def test_map_contains_present(self) -> None:
+        """map_contains returns true for inserted key."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if map_contains(map_insert(map_new(), "hello", 42), "hello") then { 1 } else { 0 } }
+"""
+        assert _run(source) == 1
+
+    def test_map_contains_absent(self) -> None:
+        """map_contains returns false for missing key."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if map_contains(map_insert(map_new(), "hello", 42), "world") then { 1 } else { 0 } }
+"""
+        assert _run(source) == 0
+
+    def test_map_get_present(self) -> None:
+        """map_get returns Some(value) for inserted key."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ option_unwrap_or(map_get(map_insert(map_new(), "hello", 42), "hello"), 0) }
+"""
+        assert _run(source) == 42
+
+    def test_map_get_absent(self) -> None:
+        """map_get returns None for missing key."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ option_unwrap_or(map_get(map_insert(map_new(), "hello", 42), "world"), -1) }
+"""
+        assert _run(source) == -1
+
+    def test_map_remove(self) -> None:
+        """map_remove removes the key."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Nat> = map_remove(map_insert(map_insert(map_new(), "a", 1), "b", 2), "a");
+  map_size(@Map<String, Nat>.0)
+}
+"""
+        assert _run(source) == 1
+
+    def test_map_insert_overwrites(self) -> None:
+        """Inserting same key twice overwrites the value."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Nat> = map_insert(map_insert(map_new(), "k", 10), "k", 20);
+  option_unwrap_or(map_get(@Map<String, Nat>.0, "k"), 0)
+}
+"""
+        assert _run(source) == 20
+
+    def test_map_int_keys(self) -> None:
+        """Map with Int keys works."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_new(), 1, 100)) }
+"""
+        assert _run(source) == 1
+
+    def test_map_keys_length(self) -> None:
+        """map_keys returns an array with the right length."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_keys(map_insert(map_insert(map_new(), "a", 1), "b", 2))) }
+"""
+        assert _run(source) == 2
+
+    def test_map_values_length(self) -> None:
+        """map_values returns an array with the right length."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_values(map_insert(map_insert(map_new(), "a", 1), "b", 2))) }
+"""
+        assert _run(source) == 2
+
+    def test_map_functional_semantics(self) -> None:
+        """map_insert does not mutate the original map."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Nat> = map_insert(map_new(), "a", 1);
+  let @Map<String, Nat> = map_insert(@Map<String, Nat>.0, "b", 2);
+  map_size(@Map<String, Nat>.1)
+}
+"""
+        assert _run(source) == 1  # original map still has size 1
+
+    def test_map_size_verifier(self) -> None:
+        """map_size >= 0 is verifiable (uninterpreted function)."""
+        source = """
+public fn main(-> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{ map_size(map_insert(map_new(), "k", 1)) }
+"""
+        _compile_ok(source)
+
+    def test_map_empty_keys(self) -> None:
+        """map_keys on an empty map returns empty array."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_keys(map_remove(map_insert(map_new(), "x", 0), "x"))) }
+"""
+        assert _run(source) == 0
+
+    def test_map_empty_values(self) -> None:
+        """map_values on an empty map returns empty array."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_values(map_remove(map_insert(map_new(), "x", 0), "x"))) }
+"""
+        assert _run(source) == 0
+
+    def test_map_get_after_remove(self) -> None:
+        """map_get after map_remove returns None."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Nat> = map_remove(map_insert(map_new(), "k", 42), "k");
+  option_unwrap_or(map_get(@Map<String, Nat>.0, "k"), -1)
+}
+"""
+        assert _run(source) == -1
+
+    def test_map_string_values(self) -> None:
+        """Map with String values (pair-ABI value type)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_new(), 1, "hello")) }
+"""
+        assert _run(source) == 1
+
+    def test_map_get_string_value(self) -> None:
+        """map_get with String values returns correct Option<String>."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<String> = map_get(map_insert(map_new(), 1, "hello"), 1);
+  match @Option<String>.0 {
+    None -> 0,
+    Some(@String) -> string_length(@String.0)
+  }
+}
+"""
+        assert _run(source) == 5
+
+    def test_map_bool_keys(self) -> None:
+        """Map with Bool keys (i32 key type)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_insert(map_new(), true, 1), false, 2)) }
+"""
+        assert _run(source) == 2
+
+    def test_map_contains_int_key(self) -> None:
+        """map_contains with Int keys."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if map_contains(map_insert(map_new(), 42, "x"), 42) then { 1 } else { 0 } }
+"""
+        assert _run(source) == 1
+
+    def test_map_remove_int_key(self) -> None:
+        """map_remove with Int keys."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_remove(map_insert(map_new(), 42, "x"), 42)) }
+"""
+        assert _run(source) == 0
+
+    def test_map_string_key_string_value(self) -> None:
+        """Map<String, String> — both key and value are pair-ABI."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ map_size(map_insert(map_new(), "key", "value")) }
+"""
+        assert _run(source) == 1
+
+    def test_map_keys_string(self) -> None:
+        """map_keys with String keys returns correct array."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_keys(map_insert(map_new(), "only", 1))) }
+"""
+        assert _run(source) == 1
+
+    def test_map_values_int(self) -> None:
+        """map_values with Int values returns correct array."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(map_values(map_insert(map_new(), "k", 99))) }
+"""
+        assert _run(source) == 1

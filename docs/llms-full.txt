@@ -511,6 +511,23 @@ array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @In
 `array_map` is generic: the element type can change (e.g. `array_map(@Array<Int>.0, fn(@Int -> @String) ...)`).
 `array_fold` is generic: the accumulator type can differ from the element type.
 
+### Map operations
+
+`Map<K, V>` is a key-value collection. Keys must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, `Unit`). Values can be any type. All operations are pure — insert and remove return new maps.
+
+```vera
+map_insert(map_new(), "hello", 42)                  -- returns Map<String, Nat>
+map_insert(@Map<String, Nat>.0, "world", 7)         -- returns Map<String, Nat> (new map with entry added)
+map_get(@Map<String, Nat>.0, "hello")               -- returns Option<Nat> (Some(42) or None)
+map_contains(@Map<String, Nat>.0, "hello")          -- returns Bool
+map_remove(@Map<String, Nat>.0, "hello")            -- returns Map<String, Nat> (new map without key)
+map_size(@Map<String, Nat>.0)                       -- returns Int (number of entries)
+map_keys(@Map<String, Nat>.0)                       -- returns Array<String>
+map_values(@Map<String, Nat>.0)                     -- returns Array<Nat>
+```
+
+> `map_new()` is a zero-argument generic function. Nest it inside `map_insert(map_new(), k, v)` so that type inference can resolve the key and value types from the arguments. Using `option_unwrap_or(map_get(...), default)` is the idiomatic way to extract values with a fallback.
+
 ### String operations
 
 ```vera

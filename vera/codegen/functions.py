@@ -168,6 +168,9 @@ class FunctionCompilationMixin:
         if ctx.needs_alloc:
             self._needs_alloc = True
             self._needs_memory = True
+        # Propagate Map host-import tracking
+        self._map_imports.update(ctx._map_imports)
+        self._map_ops_used.update(ctx._map_ops_used)
 
         # Coerce body result if return type is i32 but body produces i64
         # (e.g. IntLit in a Byte-returning function)

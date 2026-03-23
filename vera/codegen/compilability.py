@@ -153,6 +153,11 @@ class CompilabilityMixin:
         "regex_match", "regex_find", "regex_find_all", "regex_replace",
     })
 
+    _MAP_BUILTINS = frozenset({
+        "map_new", "map_insert", "map_get", "map_contains",
+        "map_remove", "map_size", "map_keys", "map_values",
+    })
+
     def _scan_io_ops(self, node: ast.Node) -> None:
         """Walk a function body looking for IO, Markdown, and Regex builtins.
 
@@ -179,6 +184,8 @@ class CompilabilityMixin:
                 self._md_ops_used.add(node.name)
             if node.name in self._REGEX_BUILTINS:
                 self._regex_ops_used.add(node.name)
+            if node.name in self._MAP_BUILTINS:
+                self._map_ops_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
         elif isinstance(node, ast.ConstructorCall):

@@ -551,6 +551,22 @@ class SmtContext:
                 return result
             return None  # pragma: no cover
 
+        # Built-in: map_size() — uninterpreted, result >= 0
+        if call.name == "map_size" and len(call.args) == 1:
+            arg = self.translate_expr(call.args[0], env)
+            if arg is not None:
+                size_fn = z3.Function(
+                    "map_size", arg.sort(), z3.IntSort(),
+                )
+                result = size_fn(arg)
+                self.solver.add(result >= 0)
+                return result
+            return None  # pragma: no cover
+
+        # Built-in: map_contains() — returns Bool (uninterpreted)
+        if call.name == "map_contains" and len(call.args) == 2:
+            return None  # opaque to verifier
+
         # Built-in: abs()
         if call.name == "abs" and len(call.args) == 1:
             arg = self.translate_expr(call.args[0], env)

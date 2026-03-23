@@ -251,13 +251,40 @@ For the compilation model of arrays, see Chapter 11, Section 11.12.
 
 Operations will include union, intersection, difference, membership testing, and size.
 
-### 9.4.3 Map\<K, V\> (Future)
+### 9.4.3 Map\<K, V\>
 
-> **Status: Not yet implemented.** Tracked in [#62](https://github.com/aallan/vera/issues/62). Depends on Abilities ([#60](https://github.com/aallan/vera/issues/60)).
+`Map<K, V>` is a key-value mapping. It requires the `Eq` and `Hash` abilities on `K` (see Section 9.8). Keys must be hashable primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, or `Unit`. Values must be primitives (`Int`, `Nat`, `Bool`, `Byte`, `Float64`, `String`), ADT heap-pointer types (`Option<T>`, `Result<T, E>`), or other `Map` handles. `Array<T>` values are not yet supported as Map values (tracked as a future enhancement).
 
-`Map<K, V>` will be a key-value mapping. It will require the `Eq` and `Hash` abilities on `K`.
+Map is an opaque built-in type implemented via host imports. The runtime maintains the underlying hash table; WASM code interacts with maps through `i32` handles. All operations are pure — `map_insert` and `map_remove` return new maps (functional semantics).
 
-`Map` is already implicitly needed by the proposed `Json` ADT (Section 9.7.1), where `JObject` wraps a `Map<String, Json>`.
+**Operations:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `map_new()` | `forall<K, V> () -> Map<K, V>` | Create an empty map |
+| `map_insert(m, k, v)` | `forall<K, V> (Map<K, V>, K, V) -> Map<K, V>` | Return a new map with the entry added |
+| `map_get(m, k)` | `forall<K, V> (Map<K, V>, K) -> Option<V>` | Look up a key; `Some(v)` if present, `None` if absent |
+| `map_contains(m, k)` | `forall<K, V> (Map<K, V>, K) -> Bool` | Test whether a key is present |
+| `map_remove(m, k)` | `forall<K, V> (Map<K, V>, K) -> Map<K, V>` | Return a new map without the key |
+| `map_size(m)` | `forall<K, V> (Map<K, V>) -> Int` | Number of entries |
+| `map_keys(m)` | `forall<K, V> (Map<K, V>) -> Array<K>` | All keys as an array |
+| `map_values(m)` | `forall<K, V> (Map<K, V>) -> Array<V>` | All values as an array |
+
+All Map operations require `Eq<K>` and `Hash<K>` ability constraints.
+
+**Example:**
+
+```vera
+private fn map_demo(-> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  option_unwrap_or(map_get(map_insert(map_new(), "answer", 42), "answer"), 0)
+}
+```
+
+`Map` is needed by the proposed `Json` ADT (Section 9.7.1), where `JObject` wraps a `Map<String, Json>`.
 
 ## 9.5 Built-in Effects
 

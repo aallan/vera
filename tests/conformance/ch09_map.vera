@@ -1,0 +1,164 @@
+-- Conformance: Map<K, V> collection operations (Chapter 9)
+-- Tests: map_new, map_insert, map_get, map_contains, map_remove, map_size, map_keys, map_values
+-- ================================================================
+-- test_map_empty_size
+-- An empty map is obtained by inserting a key then removing it.
+-- map_size should return 0.
+-- ================================================================
+public fn test_map_empty_size(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  map_size(map_remove(map_insert(map_new(), "x", 0), "x"))
+}
+
+-- ================================================================
+-- test_map_insert_size
+-- Insert 2 distinct string-keyed entries; map_size returns 2.
+-- ================================================================
+public fn test_map_insert_size(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  map_size(map_insert(map_insert(map_new(), "a", 1), "b", 2))
+}
+
+-- ================================================================
+-- test_map_contains_present
+-- Insert "hello"; map_contains returns true (1).
+-- ================================================================
+public fn test_map_contains_present(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if map_contains(map_insert(map_new(), "hello", 42), "hello") then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_map_contains_absent
+-- Insert "hello"; checking "world" returns false (0).
+-- ================================================================
+public fn test_map_contains_absent(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  if map_contains(map_insert(map_new(), "hello", 42), "world") then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_map_get_present
+-- Insert "hello"->42; map_get "hello" returns Some(42).
+-- option_unwrap_or with fallback 0 yields 42; check == 42 -> 1.
+-- ================================================================
+public fn test_map_get_present(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Nat = option_unwrap_or(map_get(map_insert(map_new(), "hello", 42), "hello"), 0);
+  if @Nat.0 == 42 then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_map_get_absent
+-- Insert "hello"->42; map_get "world" returns None.
+-- option_unwrap_or with fallback 0 yields 0; check == 0 -> 1.
+-- ================================================================
+public fn test_map_get_absent(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Nat = option_unwrap_or(map_get(map_insert(map_new(), "hello", 42), "world"), 0);
+  if @Nat.0 == 0 then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_map_remove_size
+-- Insert 2 entries, remove 1; map_size returns 1.
+-- ================================================================
+public fn test_map_remove_size(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  map_size(map_remove(map_insert(map_insert(map_new(), "a", 1), "b", 2), "a"))
+}
+
+-- ================================================================
+-- test_map_int_keys
+-- Use Int keys (not String) to verify non-string key types work.
+-- Insert two Int->Nat entries; check map_contains for a present key.
+-- ================================================================
+public fn test_map_int_keys(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if map_contains(map_insert(map_insert(map_new(), 1, 10), 2, 20), 2) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_map_keys_length
+-- Insert 2 entries; map_keys returns an array of length 2.
+-- ================================================================
+public fn test_map_keys_length(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  array_length(map_keys(map_insert(map_insert(map_new(), "x", 1), "y", 2)))
+}
+
+-- ================================================================
+-- test_map_values_length
+-- Insert 2 entries; map_values returns an array of length 2.
+-- ================================================================
+public fn test_map_values_length(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  array_length(map_values(map_insert(map_insert(map_new(), "x", 1), "y", 2)))
+}
+
+-- ================================================================
+-- main — run all tests and return 0 on success
+-- Sum: 0+2+1+0+1+1+1+1+2+2 = 11
+-- ================================================================
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = test_map_empty_size(()) + test_map_insert_size(()) + test_map_contains_present(()) + test_map_contains_absent(()) + test_map_get_present(()) + test_map_get_absent(()) + test_map_remove_size(()) + test_map_int_keys(()) + test_map_keys_length(()) + test_map_values_length(());
+  if @Int.0 == 11 then {
+    0
+  } else {
+    1
+  }
+}

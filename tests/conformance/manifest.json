@@ -538,6 +538,24 @@
     ]
   },
   {
+    "id": "ch09_map",
+    "file": "ch09_map.vera",
+    "chapter": 9,
+    "title": "Map<K, V> collection operations",
+    "level": "run",
+    "spec_ref": "Section 9.4.3",
+    "features": [
+      "map_new",
+      "map_insert",
+      "map_get",
+      "map_contains",
+      "map_remove",
+      "map_size",
+      "map_keys",
+      "map_values"
+    ]
+  },
+  {
     "id": "ch09_numeric_builtins",
     "file": "ch09_numeric_builtins.vera",
     "chapter": 9,

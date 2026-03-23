@@ -83,6 +83,13 @@ class AssemblyMixin:
         if self._regex_ops_used:
             self._needs_alloc = True
 
+        # Import Map host-import builtins (per-type-instantiation)
+        for import_line in sorted(self._map_imports):
+            parts.append(import_line)
+        if self._map_ops_used:
+            self._needs_alloc = True
+            self._needs_memory = True
+
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:
             parts.append(
@@ -149,6 +156,7 @@ class AssemblyMixin:
             (self._io_ops_used & _IO_OPS_NEEDING_ALLOC)
             or self._md_ops_used
             or self._regex_ops_used
+            or self._map_ops_used
         ):
             parts.append('  (export "alloc" (func $alloc))')
 

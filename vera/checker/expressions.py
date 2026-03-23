@@ -25,6 +25,7 @@ from vera.types import (
     FunctionType,
     Type,
     UnknownType,
+    contains_typevar,
     base_type,
     is_subtype,
     pretty_type,
@@ -80,7 +81,21 @@ class ExpressionsMixin:
         if isinstance(expr, ast.IndexExpr):
             return self._check_index(expr)
         if isinstance(expr, ast.FnCall):
-            return self._check_fn_call(expr)
+            result = self._check_fn_call(expr)
+            # Bidirectional coercion: when a generic call returns a type
+            # with unresolved TypeVars (e.g. map_new() → Map<K, V>) and
+            # we have an expected concrete type (e.g. Map<String, Int>),
+            # use the expected type if structurally compatible.
+            if (result is not None
+                    and expected is not None
+                    and contains_typevar(result)
+                    and not contains_typevar(expected)
+                    and isinstance(result, AdtType)
+                    and isinstance(expected, AdtType)
+                    and result.name == expected.name
+                    and len(result.type_args) == len(expected.type_args)):
+                return expected
+            return result
         if isinstance(expr, ast.ConstructorCall):
             return self._check_constructor_call(expr, expected=expected)
         if isinstance(expr, ast.NullaryConstructor):
