@@ -29,6 +29,9 @@ pytest tests/test_codegen.py::TestArithmetic          # single class
 pytest tests/test_conformance.py -v                  # conformance suite only
 pytest tests/ --cov=vera --cov-report=term-missing   # with coverage
 
+# JavaScript coverage (browser runtime)
+VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # V8 coverage via c8
+
 # Type checking
 mypy vera/                                           # strict mode
 
@@ -371,9 +374,9 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs fiv
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
 | **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_site_assets.py`, `check_licenses.py` |
 | **security** | Ubuntu | [Gitleaks](https://github.com/gitleaks/gitleaks-action) secret scanning on full history |
-| **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime |
+| **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime; collects V8 coverage via `NODE_V8_COVERAGE` and uploads to Codecov |
 
-The coverage threshold of **80%** is enforced in CI. Current coverage is 96%.
+The coverage threshold of **80%** is enforced in CI. Current coverage is 96%. JavaScript coverage for `vera/browser/runtime.mjs` is collected separately using V8's built-in coverage and uploaded to Codecov with the `javascript` flag.
 
 ## Opportunities
 

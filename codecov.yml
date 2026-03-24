@@ -1,0 +1,32 @@
+coverage:
+  status:
+    project:
+      python:
+        target: auto
+        flags:
+          - python
+      javascript:
+        target: auto
+        flags:
+          - javascript
+        informational: true
+    patch:
+      python:
+        target: auto
+        flags:
+          - python
+      javascript:
+        target: auto
+        flags:
+          - javascript
+        informational: true
+
+flags:
+  python:
+    paths:
+      - vera/
+    carryforward: true
+  javascript:
+    paths:
+      - vera/browser/
+    carryforward: true

@@ -35,6 +35,10 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 
+# Node.js (c8 JS coverage)
+node_modules/
+.c8_output/
+
 # Z3
 *.smt2
 

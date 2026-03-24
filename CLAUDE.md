@@ -39,6 +39,7 @@ vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
 
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
+VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS coverage
 mypy vera/                        # Type-check the compiler itself
 
 python scripts/check_conformance.py    # Verify all 59 conformance programs pass their declared level
