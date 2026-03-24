@@ -309,6 +309,7 @@ private fn abs(@Int -> @Nat)
 @Option<Int>                             -- Option type (Some/None)
 @Map<String, Int>                        -- key-value map (keys: Eq + Hash)
 @Set<Int>                                -- unordered unique elements (Eq + Hash)
+@Decimal                                 -- exact decimal arithmetic
 Fn(Int -> Int) effects(pure)              -- function type
 { @Int | @Int.0 > 0 }                   -- refinement type
 ```
@@ -537,6 +538,27 @@ set_to_array(@Set<String>.0)                        -- returns Array<String>
 ```
 
 > `set_new()` is a zero-argument generic function. Nest it inside `set_add(set_new(), elem)` so that type inference can resolve the element type. Adding a duplicate element is a no-op (sets enforce uniqueness).
+
+### Decimal operations
+
+`Decimal` provides exact decimal arithmetic for financial and precision-sensitive applications. It is an opaque type (i32 handle) backed by the runtime's decimal implementation. All operations are pure.
+
+```vera
+decimal_from_int(42)                                -- returns Decimal (exact conversion)
+decimal_from_float(3.14)                            -- returns Decimal (via str conversion)
+decimal_add(@Decimal.0, @Decimal.1)                 -- returns Decimal (addition)
+decimal_sub(@Decimal.0, @Decimal.1)                 -- returns Decimal (subtraction)
+decimal_mul(@Decimal.0, @Decimal.1)                 -- returns Decimal (multiplication)
+decimal_neg(@Decimal.0)                             -- returns Decimal (negation)
+decimal_abs(@Decimal.0)                             -- returns Decimal (absolute value)
+decimal_round(@Decimal.0, 2)                        -- returns Decimal (round to N places)
+decimal_eq(@Decimal.0, @Decimal.1)                  -- returns Bool (equality)
+decimal_compare(@Decimal.0, @Decimal.1)             -- returns Ordering (Less/Equal/Greater)
+decimal_to_string(@Decimal.0)                       -- returns String
+decimal_to_float(@Decimal.0)                        -- returns Float64 (potentially lossy)
+```
+
+> `decimal_from_string` and `decimal_div` return `Option<Decimal>`, but `Option<Decimal>` cannot yet be used with `option_unwrap_or` or `match` due to a monomorphization limitation. Avoid these two operations for now.
 
 ### String operations
 

@@ -191,12 +191,12 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1385): "FRAGMENT",  # url_join signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 1577): "FUTURE",   # md_parse
-    ("09-standard-library.md", 1586): "FUTURE",   # md_render
-    ("09-standard-library.md", 1597): "FUTURE",   # md_has_heading
-    ("09-standard-library.md", 1606): "FUTURE",   # md_has_code_block
-    ("09-standard-library.md", 1615): "FUTURE",   # md_extract_code_blocks
-    ("09-standard-library.md", 1639): "FUTURE",   # convert_to_markdown
+    ("09-standard-library.md", 1621): "FUTURE",   # md_parse
+    ("09-standard-library.md", 1630): "FUTURE",   # md_render
+    ("09-standard-library.md", 1641): "FUTURE",   # md_has_heading
+    ("09-standard-library.md", 1650): "FUTURE",   # md_has_code_block
+    ("09-standard-library.md", 1659): "FUTURE",   # md_extract_code_blocks
+    ("09-standard-library.md", 1683): "FUTURE",   # convert_to_markdown
 }
 
 

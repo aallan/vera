@@ -572,6 +572,29 @@
     ]
   },
   {
+    "id": "ch09_decimal",
+    "file": "ch09_decimal.vera",
+    "chapter": 9,
+    "title": "Decimal type operations",
+    "level": "run",
+    "spec_ref": "Section 9.7.2",
+    "features": [
+      "decimal",
+      "decimal_from_int",
+      "decimal_from_float",
+      "decimal_add",
+      "decimal_sub",
+      "decimal_mul",
+      "decimal_neg",
+      "decimal_abs",
+      "decimal_eq",
+      "decimal_round",
+      "decimal_to_float",
+      "decimal_to_string",
+      "arithmetic"
+    ]
+  },
+  {
     "id": "ch09_numeric_builtins",
     "file": "ch09_numeric_builtins.vera",
     "chapter": 9,

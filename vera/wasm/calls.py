@@ -254,6 +254,43 @@ class CallsMixin:
                 return self._translate_set_size(call.args[0], env)
             if call.name == "set_to_array" and len(call.args) == 1:
                 return self._translate_set_to_array(call, env)
+            # Decimal builtins
+            if call.name == "decimal_from_int" and len(call.args) == 1:
+                return self._translate_decimal_unary(
+                    call, env, "decimal_from_int", "i64", "i32")
+            if call.name == "decimal_from_float" and len(call.args) == 1:
+                return self._translate_decimal_unary(
+                    call, env, "decimal_from_float", "f64", "i32")
+            if call.name == "decimal_from_string" and len(call.args) == 1:
+                return self._translate_decimal_from_string(call, env)
+            if call.name == "decimal_to_string" and len(call.args) == 1:
+                return self._translate_decimal_to_string(call, env)
+            if call.name == "decimal_to_float" and len(call.args) == 1:
+                return self._translate_decimal_unary(
+                    call, env, "decimal_to_float", "i32", "f64")
+            if call.name == "decimal_add" and len(call.args) == 2:
+                return self._translate_decimal_binary(
+                    call, env, "decimal_add")
+            if call.name == "decimal_sub" and len(call.args) == 2:
+                return self._translate_decimal_binary(
+                    call, env, "decimal_sub")
+            if call.name == "decimal_mul" and len(call.args) == 2:
+                return self._translate_decimal_binary(
+                    call, env, "decimal_mul")
+            if call.name == "decimal_div" and len(call.args) == 2:
+                return self._translate_decimal_div(call, env)
+            if call.name == "decimal_neg" and len(call.args) == 1:
+                return self._translate_decimal_unary(
+                    call, env, "decimal_neg", "i32", "i32")
+            if call.name == "decimal_compare" and len(call.args) == 2:
+                return self._translate_decimal_compare(call, env)
+            if call.name == "decimal_eq" and len(call.args) == 2:
+                return self._translate_decimal_eq(call, env)
+            if call.name == "decimal_round" and len(call.args) == 2:
+                return self._translate_decimal_round(call, env)
+            if call.name == "decimal_abs" and len(call.args) == 1:
+                return self._translate_decimal_unary(
+                    call, env, "decimal_abs", "i32", "i32")
 
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:
@@ -7225,6 +7262,117 @@ class CallsMixin:
         return ["f64.const inf"]
 
     # -----------------------------------------------------------------
+    # Decimal built-in operations (§9.7.2)
+    # -----------------------------------------------------------------
+
+    def _register_decimal_import(
+        self, op: str, params: list[str], results: list[str],
+    ) -> str:
+        """Register a Decimal host import and return the WASM call name."""
+        wasm_name = f"$vera.{op}"
+        param_str = " ".join(f"(param {p})" for p in params)
+        result_str = " ".join(f"(result {r})" for r in results)
+        sig = f"(func {wasm_name} {param_str} {result_str})"
+        self._decimal_imports.add(f'  (import "vera" "{op}" {sig})')
+        self._decimal_ops_used.add(op)
+        return wasm_name
+
+    def _translate_decimal_unary(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+        op: str, param_type: str, result_type: str,
+    ) -> list[str] | None:
+        """Translate a unary Decimal operation (one param, one result)."""
+        arg_instrs = self.translate_expr(call.args[0], env)
+        if arg_instrs is None:
+            return None
+        wasm_name = self._register_decimal_import(
+            op, [param_type], [result_type])
+        return arg_instrs + [f"call {wasm_name}"]
+
+    def _translate_decimal_binary(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+        op: str,
+    ) -> list[str] | None:
+        """Translate a binary Decimal operation (two handles → handle)."""
+        a_instrs = self.translate_expr(call.args[0], env)
+        b_instrs = self.translate_expr(call.args[1], env)
+        if a_instrs is None or b_instrs is None:
+            return None
+        wasm_name = self._register_decimal_import(
+            op, ["i32", "i32"], ["i32"])
+        return a_instrs + b_instrs + [f"call {wasm_name}"]
+
+    def _translate_decimal_from_string(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """decimal_from_string(s) → Option<Decimal> (i32 heap ptr)."""
+        arg_instrs = self.translate_expr(call.args[0], env)
+        if arg_instrs is None:
+            return None
+        wasm_name = self._register_decimal_import(
+            "decimal_from_string", ["i32", "i32"], ["i32"])
+        return arg_instrs + [f"call {wasm_name}"]
+
+    def _translate_decimal_to_string(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """decimal_to_string(d) → String (i32_pair)."""
+        arg_instrs = self.translate_expr(call.args[0], env)
+        if arg_instrs is None:
+            return None
+        wasm_name = self._register_decimal_import(
+            "decimal_to_string", ["i32"], ["i32", "i32"])
+        return arg_instrs + [f"call {wasm_name}"]
+
+    def _translate_decimal_div(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """decimal_div(a, b) → Option<Decimal> (i32 heap ptr)."""
+        a_instrs = self.translate_expr(call.args[0], env)
+        b_instrs = self.translate_expr(call.args[1], env)
+        if a_instrs is None or b_instrs is None:
+            return None
+        wasm_name = self._register_decimal_import(
+            "decimal_div", ["i32", "i32"], ["i32"])
+        return a_instrs + b_instrs + [f"call {wasm_name}"]
+
+    def _translate_decimal_compare(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """decimal_compare(a, b) → Ordering (i32 heap ptr)."""
+        a_instrs = self.translate_expr(call.args[0], env)
+        b_instrs = self.translate_expr(call.args[1], env)
+        if a_instrs is None or b_instrs is None:
+            return None
+        wasm_name = self._register_decimal_import(
+            "decimal_compare", ["i32", "i32"], ["i32"])
+        return a_instrs + b_instrs + [f"call {wasm_name}"]
+
+    def _translate_decimal_eq(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """decimal_eq(a, b) → Bool (i32)."""
+        a_instrs = self.translate_expr(call.args[0], env)
+        b_instrs = self.translate_expr(call.args[1], env)
+        if a_instrs is None or b_instrs is None:
+            return None
+        wasm_name = self._register_decimal_import(
+            "decimal_eq", ["i32", "i32"], ["i32"])
+        return a_instrs + b_instrs + [f"call {wasm_name}"]
+
+    def _translate_decimal_round(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """decimal_round(d, places) → Decimal handle (i32)."""
+        d_instrs = self.translate_expr(call.args[0], env)
+        p_instrs = self.translate_expr(call.args[1], env)
+        if d_instrs is None or p_instrs is None:
+            return None
+        wasm_name = self._register_decimal_import(
+            "decimal_round", ["i32", "i64"], ["i32"])
+        return d_instrs + p_instrs + [f"call {wasm_name}"]
+
+    # -----------------------------------------------------------------
     # Ability operation dispatch: show and hash (§9.8)
     # -----------------------------------------------------------------
 
@@ -7259,6 +7407,13 @@ class CallsMixin:
         if vera_type == "Unit":
             offset, length = self.string_pool.intern("unit")
             return [f"i32.const {offset}", f"i32.const {length}"]
+
+        # Decimal → decimal_to_string host import
+        if vera_type == "Decimal":
+            desugared = ast.FnCall(
+                name="decimal_to_string", args=(arg,), span=arg.span,
+            )
+            return self._translate_call(desugared, env)
 
         # Dispatch to existing to_string builtins
         builtin = self._SHOW_DISPATCH.get(vera_type)

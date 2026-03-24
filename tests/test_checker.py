@@ -1707,6 +1707,65 @@ private fn foo(@Unit -> @Int)
 """, "expected Nat")
 
 
+class TestDecimalChecker:
+
+    def test_decimal_from_int(self) -> None:
+        """decimal_from_int(@Int -> @Decimal) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_from_int(42) }
+""")
+
+    def test_decimal_add(self) -> None:
+        """decimal_add(@Decimal, @Decimal -> @Decimal) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_add(decimal_from_int(1), decimal_from_int(2)) }
+""")
+
+    def test_decimal_eq(self) -> None:
+        """decimal_eq(@Decimal, @Decimal -> @Bool) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ decimal_eq(decimal_from_int(1), decimal_from_int(1)) }
+""")
+
+    def test_decimal_to_string(self) -> None:
+        """decimal_to_string(@Decimal -> @String) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ decimal_to_string(decimal_from_int(42)) }
+""")
+
+    def test_decimal_to_float(self) -> None:
+        """decimal_to_float(@Decimal -> @Float64) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ decimal_to_float(decimal_from_int(42)) }
+""")
+
+    def test_decimal_wrong_arity(self) -> None:
+        """decimal_add with 1 arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_add(decimal_from_int(1)) }
+""", "expects")
+
+    def test_decimal_wrong_type(self) -> None:
+        """decimal_add with Int args produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_add(1, 2) }
+""", "type")
+
+
 # =====================================================================
 # Return type checking
 # =====================================================================

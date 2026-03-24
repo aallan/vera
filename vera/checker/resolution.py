@@ -77,8 +77,8 @@ class ResolutionMixin:
                 return AdtType(name, args)
             return AdtType(name, ())
 
-        # Array, Tuple, Map, Set (always parameterised)
-        if name in ("Array", "Tuple", "Map", "Set"):
+        # Array, Tuple, Map, Set, Decimal (built-in non-primitive types)
+        if name in ("Array", "Tuple", "Map", "Set", "Decimal"):
             if te.type_args:
                 args = tuple(self._resolve_type(a) for a in te.type_args)
                 return AdtType(name, args)

@@ -8122,3 +8122,118 @@ public fn main(-> @Int)
 """
         # contains(0)=true, size=1, after remove size=0 → 1+0=1
         assert _run(source) == 1
+
+
+class TestDecimalCollection:
+    """Decimal built-in operations: decimal_from_int, decimal_add, decimal_sub,
+    decimal_mul, decimal_neg, decimal_abs, decimal_eq, decimal_compare,
+    decimal_round, decimal_to_float, decimal_to_string."""
+
+    def test_decimal_from_int_eq(self) -> None:
+        """decimal_from_int(42) equals itself."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if decimal_eq(decimal_from_int(42), decimal_from_int(42)) then { 1 } else { 0 } }
+"""
+        assert _run(source) == 1
+
+    def test_decimal_add(self) -> None:
+        """100 + 3 = 103, check via decimal_eq."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_add(decimal_from_int(100), decimal_from_int(3));
+  if decimal_eq(@Decimal.0, decimal_from_int(103)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_sub(self) -> None:
+        """100 - 30 = 70."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_sub(decimal_from_int(100), decimal_from_int(30));
+  if decimal_eq(@Decimal.0, decimal_from_int(70)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_mul(self) -> None:
+        """7 * 6 = 42."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_mul(decimal_from_int(7), decimal_from_int(6));
+  if decimal_eq(@Decimal.0, decimal_from_int(42)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_neg(self) -> None:
+        """neg(42) + 42 = 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_add(decimal_neg(decimal_from_int(42)), decimal_from_int(42));
+  if decimal_eq(@Decimal.0, decimal_from_int(0)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_round(self) -> None:
+        """Round a decimal to 0 decimal places."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_from_float(3.7);
+  let @Decimal = decimal_round(@Decimal.0, 0);
+  if decimal_eq(@Decimal.0, decimal_from_int(4)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_abs(self) -> None:
+        """abs(neg(42)) = 42."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_abs(decimal_neg(decimal_from_int(42)));
+  if decimal_eq(@Decimal.0, decimal_from_int(42)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_to_float(self) -> None:
+        """Convert decimal 42 to float and check via floor."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ floor(decimal_to_float(decimal_from_int(42))) }
+"""
+        assert _run(source) == 42
+
+    def test_decimal_eq_different(self) -> None:
+        """1 != 2 via decimal_eq returns 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if decimal_eq(decimal_from_int(1), decimal_from_int(2)) then { 1 } else { 0 } }
+"""
+        assert _run(source) == 0
+
+    def test_decimal_to_string_length(self) -> None:
+        """string_length(decimal_to_string(decimal_from_int(42))) > 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(decimal_to_string(decimal_from_int(42))) }
+"""
+        assert _run(source) == 2

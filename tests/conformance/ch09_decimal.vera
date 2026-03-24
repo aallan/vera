@@ -1,0 +1,181 @@
+-- Conformance: Decimal type operations (Chapter 9, Section 9.7.2)
+-- Tests: decimal_from_int, decimal_from_float, decimal_add, decimal_sub,
+--        decimal_mul, decimal_neg, decimal_abs, decimal_eq, decimal_round,
+--        decimal_to_float, decimal_to_string
+-- Note: decimal_compare returns Ordering but match on Ordering from
+--       decimal_compare is not yet supported in codegen. Tests use
+--       decimal_eq instead.
+-- ================================================================
+-- test_decimal_from_int
+-- Construct a Decimal from an Int and check equality.
+-- ================================================================
+public fn test_decimal_from_int(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if decimal_eq(decimal_from_int(42), decimal_from_int(42)) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_decimal_add
+-- 100 + 3 = 103
+-- ================================================================
+public fn test_decimal_add(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Decimal = decimal_add(decimal_from_int(100), decimal_from_int(3));
+  if decimal_eq(@Decimal.0, decimal_from_int(103)) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_decimal_sub
+-- 100 - 30 = 70
+-- ================================================================
+public fn test_decimal_sub(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Decimal = decimal_sub(decimal_from_int(100), decimal_from_int(30));
+  if decimal_eq(@Decimal.0, decimal_from_int(70)) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_decimal_mul
+-- 7 * 6 = 42
+-- ================================================================
+public fn test_decimal_mul(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Decimal = decimal_mul(decimal_from_int(7), decimal_from_int(6));
+  if decimal_eq(@Decimal.0, decimal_from_int(42)) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_decimal_neg_add
+-- neg(42) + 42 = 0
+-- ================================================================
+public fn test_decimal_neg_add(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Decimal = decimal_add(decimal_neg(decimal_from_int(42)), decimal_from_int(42));
+  if decimal_eq(@Decimal.0, decimal_from_int(0)) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_decimal_abs
+-- abs(neg(42)) = 42
+-- ================================================================
+public fn test_decimal_abs(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Decimal = decimal_abs(decimal_neg(decimal_from_int(42)));
+  if decimal_eq(@Decimal.0, decimal_from_int(42)) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_decimal_eq_different
+-- 1 != 2 -> 0
+-- ================================================================
+public fn test_decimal_eq_different(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  if decimal_eq(decimal_from_int(1), decimal_from_int(2)) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_decimal_round
+-- round(3.7, 0) = 4 (via decimal_from_float)
+-- ================================================================
+public fn test_decimal_round(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Decimal = decimal_round(decimal_from_float(3.7), 0);
+  if decimal_eq(@Decimal.0, decimal_from_int(4)) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_decimal_to_float
+-- decimal_to_float(decimal_from_int(42)) -> floor -> 42
+-- ================================================================
+public fn test_decimal_to_float(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  floor(decimal_to_float(decimal_from_int(42)))
+}
+
+-- ================================================================
+-- test_decimal_to_string
+-- decimal_to_string(decimal_from_int(42)) has length > 0
+-- ================================================================
+public fn test_decimal_to_string(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  string_length(decimal_to_string(decimal_from_int(42)))
+}
+
+-- ================================================================
+-- main — run all tests and return 0 on success
+-- Sum: 1+1+1+1+1+1+0+1+42+2 = 51
+-- ================================================================
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = test_decimal_from_int(()) + test_decimal_add(()) + test_decimal_sub(()) + test_decimal_mul(()) + test_decimal_neg_add(()) + test_decimal_abs(()) + test_decimal_eq_different(()) + test_decimal_round(()) + test_decimal_to_float(()) + test_decimal_to_string(());
+  if @Int.0 == 51 then {
+    0
+  } else {
+    1
+  }
+}

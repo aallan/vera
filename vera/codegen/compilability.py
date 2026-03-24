@@ -163,6 +163,14 @@ class CompilabilityMixin:
         "set_remove", "set_size", "set_to_array",
     })
 
+    _DECIMAL_BUILTINS = frozenset({
+        "decimal_from_int", "decimal_from_float", "decimal_from_string",
+        "decimal_to_string", "decimal_to_float",
+        "decimal_add", "decimal_sub", "decimal_mul", "decimal_div",
+        "decimal_neg", "decimal_compare", "decimal_eq",
+        "decimal_round", "decimal_abs",
+    })
+
     def _scan_io_ops(self, node: ast.Node) -> None:
         """Walk a function body looking for IO, Markdown, and Regex builtins.
 
@@ -193,6 +201,8 @@ class CompilabilityMixin:
                 self._map_ops_used.add(node.name)
             if node.name in self._SET_BUILTINS:
                 self._set_ops_used.add(node.name)
+            if node.name in self._DECIMAL_BUILTINS:
+                self._decimal_ops_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
         elif isinstance(node, ast.ConstructorCall):

@@ -18,7 +18,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 ## Where we are
 
-**v0.0.96** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 86 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 58-program conformance suite, a canonical formatter, and contract-driven testing. `Map<K, V>` and `Set<T>` provide collection types with ability-constrained keys/elements. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
+**v0.0.97** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 100 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 59-program conformance suite, a canonical formatter, and contract-driven testing. `Map<K, V>`, `Set<T>`, and `Decimal` provide collections and exact arithmetic with ability constraints. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
 
 Most remaining features are gated by a single dependency chain:
 
@@ -33,7 +33,7 @@ Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave
 ─────────────────           ──────────────────                ──────────────────
 ✓ #211 Combinators          ✓ #60 Abilities                  ✓ #289 Prelude
 ✓ #133 Array ops            ✓ #133 map/fold ─┐                 #226 Typed holes
-✓ #288 Naming audit              #62 Map ←───┘─┐              #233 DateTime
+✓ #288 Naming audit            ✓ #62 Map ←───┘─┐              #233 DateTime
                                  #58 JSON ←────┘─┐            #235 Crypto
                                  #57 HTTP ←──────┘─┐          #59 Async ──┐
                                  #305 Server ←─────┘─┐   #237 WASI 0.3 ←─┘
@@ -75,7 +75,7 @@ Independent of the Tier 1 chain. Can be scheduled between Tier 1 items or in par
 - [#229](https://github.com/aallan/vera/issues/229) **Database access effect** — `<DB>` with `query`/`execute` operations, parameterised queries only. Phase 1 (positional rows, SQLite) has no blocking dependencies. Phase 2 (named columns) needs Map (#62). Phase 3 (JSON columns) needs JSON (#58). See #309 for contract-verified SQL injection prevention.
 - [#311](https://github.com/aallan/vera/issues/311) **HTML standard library type** — parse and generate HTML documents, CSS selector queries, text extraction. Natural pairing with the browser target. Shares recursive ADT infrastructure with Markdown (#147) and JSON (#58). Schedule after JSON lands.
 - [#61](https://github.com/aallan/vera/issues/61) **Inference effect** — `effects(<Inference>)` in a signature means "this function calls an LLM, and you can mock it for testing." The feature that most differentiates Vera from Dafny as a verification target, and the one that positions it as the natural language for verified LLM orchestration.
-- [#333](https://github.com/aallan/vera/issues/333) **Decimal type** — exact decimal arithmetic for financial and precision-sensitive applications. Software implementation in the runtime (no native WASM decimal). Split from #62.
+- [#333](https://github.com/aallan/vera/issues/333) **Decimal type** — exact decimal arithmetic for financial and precision-sensitive applications. 14 built-in operations (construction, arithmetic, comparison, rounding, conversion) via host imports, following the Map/Set pattern. Software implementation in the runtime (Python `decimal.Decimal` / JS string-based decimal). Known limitation: `Option<Decimal>` from `decimal_div`/`decimal_from_string` and `Ordering` from `decimal_compare` cannot yet be used with `match` due to monomorphization gaps.
 
 ### Remaining completeness
 

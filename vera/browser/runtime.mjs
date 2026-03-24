@@ -151,6 +151,21 @@ function allocOptionNone() {
   return ptr;
 }
 
+/** Allocate Option.Some(i32_value) on the WASM heap. */
+function allocOptionSomeI32(val) {
+  const ptr = alloc(8);
+  writeI32(ptr, 1);              // tag = Some
+  writeI32(ptr + 4, val);        // payload
+  return ptr;
+}
+
+/** Allocate an Ordering value: 0=Less, 1=Equal, 2=Greater. */
+function allocOrdering(tag) {
+  const ptr = alloc(4);
+  writeI32(ptr, tag);
+  return ptr;
+}
+
 /** Allocate Array<String> → [backingPtr, count]. Each element is 8 bytes. */
 function allocArrayOfStrings(strings) {
   const count = strings.length;
@@ -1353,6 +1368,98 @@ function buildImportObject(module) {
       };
       continue;
     }
+  }
+
+  // ── Decimal host imports ──────────────────────────────────────
+  // JS lacks native Decimal — use string-based arithmetic via a
+  // minimal implementation that wraps string representations.
+  const decimalStore = new Map();
+  let decimalNextHandle = 1;
+  function decimalAlloc(s) {
+    const h = decimalNextHandle++;
+    decimalStore.set(h, s);
+    return h;
+  }
+
+  // String-based decimal arithmetic helpers
+  function decStrAdd(a, b) { return String(Number(a) + Number(b)); }
+  function decStrSub(a, b) { return String(Number(a) - Number(b)); }
+  function decStrMul(a, b) { return String(Number(a) * Number(b)); }
+  function decStrDiv(a, b) { return String(Number(a) / Number(b)); }
+
+  if (needed.has("decimal_from_int")) {
+    imports.vera.decimal_from_int = (v) => decimalAlloc(String(v));
+  }
+  if (needed.has("decimal_from_float")) {
+    imports.vera.decimal_from_float = (v) => decimalAlloc(String(v));
+  }
+  if (needed.has("decimal_from_string")) {
+    imports.vera.decimal_from_string = (ptr, len) => {
+      const s = readString(ptr, len);
+      if (/^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s.trim())) {
+        const h = decimalAlloc(s.trim());
+        return allocOptionSomeI32(h);
+      }
+      return allocOptionNone();
+    };
+  }
+  if (needed.has("decimal_to_string")) {
+    imports.vera.decimal_to_string = (h) => allocString(decimalStore.get(h));
+  }
+  if (needed.has("decimal_to_float")) {
+    imports.vera.decimal_to_float = (h) => Number(decimalStore.get(h));
+  }
+  if (needed.has("decimal_add")) {
+    imports.vera.decimal_add = (a, b) =>
+      decimalAlloc(decStrAdd(decimalStore.get(a), decimalStore.get(b)));
+  }
+  if (needed.has("decimal_sub")) {
+    imports.vera.decimal_sub = (a, b) =>
+      decimalAlloc(decStrSub(decimalStore.get(a), decimalStore.get(b)));
+  }
+  if (needed.has("decimal_mul")) {
+    imports.vera.decimal_mul = (a, b) =>
+      decimalAlloc(decStrMul(decimalStore.get(a), decimalStore.get(b)));
+  }
+  if (needed.has("decimal_div")) {
+    imports.vera.decimal_div = (a, b) => {
+      const bVal = Number(decimalStore.get(b));
+      if (bVal === 0) return allocOptionNone();
+      const h = decimalAlloc(decStrDiv(decimalStore.get(a), decimalStore.get(b)));
+      return allocOptionSomeI32(h);
+    };
+  }
+  if (needed.has("decimal_neg")) {
+    imports.vera.decimal_neg = (h) => {
+      const s = decimalStore.get(h);
+      return decimalAlloc(s.startsWith("-") ? s.slice(1) : "-" + s);
+    };
+  }
+  if (needed.has("decimal_compare")) {
+    imports.vera.decimal_compare = (a, b) => {
+      const na = Number(decimalStore.get(a));
+      const nb = Number(decimalStore.get(b));
+      const tag = na < nb ? 0 : na === nb ? 1 : 2;
+      return allocOrdering(tag);
+    };
+  }
+  if (needed.has("decimal_eq")) {
+    imports.vera.decimal_eq = (a, b) =>
+      decimalStore.get(a) === decimalStore.get(b) ? 1 : 0;
+  }
+  if (needed.has("decimal_round")) {
+    imports.vera.decimal_round = (h, places) => {
+      const n = Number(decimalStore.get(h));
+      const p = Number(places);
+      const factor = 10 ** p;
+      return decimalAlloc(String(Math.round(n * factor) / factor));
+    };
+  }
+  if (needed.has("decimal_abs")) {
+    imports.vera.decimal_abs = (h) => {
+      const s = decimalStore.get(h);
+      return decimalAlloc(s.startsWith("-") ? s.slice(1) : s);
+    };
   }
 
   return imports;
