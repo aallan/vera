@@ -79,8 +79,8 @@ After running `pre-commit install`, every commit is automatically checked by 21 
 - Python debug statements
 - mypy type checking
 - pytest test suite
-- All 58 conformance programs pass their declared level
-- All 25 `.vera` examples type-check and verify cleanly
+- All conformance programs pass their declared level
+- All `.vera` examples type-check and verify cleanly
 - README, SKILL.md, HTML, and spec code blocks parse correctly
 - Documentation counts match live codebase
 - Site assets (`docs/llms.txt`, `docs/llms-full.txt`, etc.) regenerated and up-to-date
@@ -109,8 +109,8 @@ mypy vera/
 ### Validation Scripts
 
 ```bash
-python scripts/check_conformance.py      # verify all 58 conformance programs
-python scripts/check_examples.py         # verify all 25 .vera examples
+python scripts/check_conformance.py      # verify all conformance programs
+python scripts/check_examples.py         # verify all .vera examples
 python scripts/check_spec_examples.py    # verify spec code blocks parse
 python scripts/check_readme_examples.py  # verify README code blocks parse
 python scripts/check_skill_examples.py   # verify SKILL.md code blocks parse

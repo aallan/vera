@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.96] - 2026-03-24
+
+### Changed
+- **Documentation sweep for collections** ([#62](https://github.com/aallan/vera/issues/62), PR 3/3) — fix stale "future collections" language in spec, update README version and Ch 9 description, add Map/Set to SKILL.md composite types and common mistakes, update example counts across all docs (25→28). New `examples/collections.vera` showcasing word-frequency analysis with Map and Set operations. Closes #62.
+
 ## [0.0.95] - 2026-03-24
 
 ### Added
@@ -1405,7 +1410,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.95...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.96...HEAD
+[0.0.96]: https://github.com/aallan/vera/compare/v0.0.95...v0.0.96
 [0.0.95]: https://github.com/aallan/vera/compare/v0.0.94...v0.0.95
 [0.0.94]: https://github.com/aallan/vera/compare/v0.0.93...v0.0.94
 [0.0.93]: https://github.com/aallan/vera/compare/v0.0.92...v0.0.93
