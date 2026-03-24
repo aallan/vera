@@ -1,11 +1,25 @@
 coverage:
   status:
     project:
-      default:
+      python:
         target: auto
+        flags:
+          - python
+      javascript:
+        target: auto
+        flags:
+          - javascript
+        informational: true
     patch:
-      default:
+      python:
         target: auto
+        flags:
+          - python
+      javascript:
+        target: auto
+        flags:
+          - javascript
+        informational: true
 
 flags:
   python:
