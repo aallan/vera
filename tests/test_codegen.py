@@ -8002,3 +8002,74 @@ public fn main(-> @Int)
 { array_length(set_to_array(set_new())) }
 """
         assert _run(source) == 0
+
+    def test_set_bool_elements(self) -> None:
+        """Set<Bool> exercises the 'b' (i32) type tag branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Bool> = set_add(set_add(set_new(), true), false);
+  let @Int = set_size(@Set<Bool>.0);
+  let @Bool = set_contains(@Set<Bool>.0, true);
+  let @Set<Bool> = set_remove(@Set<Bool>.0, true);
+  if @Bool.0 then { @Int.0 + set_size(@Set<Bool>.0) } else { -1 }
+}
+"""
+        # size=2, contains=true, after remove size=1 → 2+1=3
+        assert _run(source) == 3
+
+    def test_set_float64_elements(self) -> None:
+        """Set<Float64> exercises the 'f' (f64) type tag branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Float64> = set_add(set_add(set_new(), 1.5), 2.5);
+  let @Int = set_size(@Set<Float64>.0);
+  let @Bool = set_contains(@Set<Float64>.0, 1.5);
+  let @Set<Float64> = set_remove(@Set<Float64>.0, 1.5);
+  if @Bool.0 then { @Int.0 + set_size(@Set<Float64>.0) } else { -1 }
+}
+"""
+        # size=2, contains=true, after remove size=1 → 2+1=3
+        assert _run(source) == 3
+
+    def test_set_to_array_int(self) -> None:
+        """set_to_array with Int elements exercises the 'i' to_array branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_add(set_new(), 10), 20);
+  array_length(set_to_array(@Set<Int>.0))
+}
+"""
+        assert _run(source) == 2
+
+    def test_set_string_contains_and_remove(self) -> None:
+        """set_contains and set_remove with String elements."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<String> = set_add(set_add(set_new(), "a"), "b");
+  let @Bool = set_contains(@Set<String>.0, "a");
+  let @Set<String> = set_remove(@Set<String>.0, "a");
+  if @Bool.0 then { set_size(@Set<String>.0) } else { -1 }
+}
+"""
+        # contains "a" = true, after remove size = 1
+        assert _run(source) == 1
+
+    def test_set_to_array_string(self) -> None:
+        """set_to_array with String elements exercises the 's' to_array branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<String> = set_add(set_add(set_new(), "a"), "b");
+  array_length(set_to_array(@Set<String>.0))
+}
+"""
+        assert _run(source) == 2
