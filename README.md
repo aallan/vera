@@ -512,7 +512,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project Status
 
-Vera is in **active development** at v0.0.93. The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. Programs compile to WebAssembly and execute via wasmtime or in the browser.
+Vera is in **active development** at v0.0.96. The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. Programs compile to WebAssembly and execute via wasmtime or in the browser.
 
 The language specification is in draft across 13 chapters:
 
@@ -525,7 +525,7 @@ The language specification is in draft across 13 chapters:
 - **[Ch 6: Contracts](spec/06-contracts.md)** — Preconditions, postconditions, and `decreases` clauses as executable specifications that the implementation must satisfy.
 - **[Ch 7: Effects](spec/07-effects.md)** — Pure-by-default semantics with algebraic effects for state, I/O, and exceptions, inspired by Koka.
 - **[Ch 8: Modules](spec/08-modules.md)** — File-based module system with dotted paths, selective and wildcard imports, public/private visibility, and cross-module verification.
-- **[Ch 9: Standard Library](spec/09-standard-library.md)** — Built-in types (Option, Result, Array), effects (IO, State), and functions that cannot be expressed purely in user code.
+- **[Ch 9: Standard Library](spec/09-standard-library.md)** — Built-in types (Option, Result, Array, Map, Set), effects (IO, State), and functions that cannot be expressed purely in user code.
 - **[Ch 10: Formal Grammar](spec/10-grammar.md)** — Complete EBNF grammar compatible with the Lark LALR(1) parser generator.
 - **[Ch 11: Compilation Model](spec/11-compilation.md)** — The pipeline from source to WAT/WASM, including Tier 1 (static) and Tier 3 (runtime) contract classification.
 - **[Ch 12: Runtime and Execution](spec/12-runtime.md)** — The wasmtime-based runtime providing effect implementations, linear memory management, and trap handling.

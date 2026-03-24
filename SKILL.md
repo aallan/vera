@@ -307,6 +307,8 @@ private fn abs(@Int -> @Nat)
 @Array<String>                           -- array of strings
 @Tuple<Int, String>                      -- tuple
 @Option<Int>                             -- Option type (Some/None)
+@Map<String, Int>                        -- key-value map (keys: Eq + Hash)
+@Set<Int>                                -- unordered unique elements (Eq + Hash)
 Fn(Int -> Int) effects(pure)              -- function type
 { @Int | @Int.0 > 0 }                   -- refinement type
 ```
@@ -1407,6 +1409,22 @@ CORRECT — use escape sequences:
 ```vera
 "path\\to\\file"
 "line one\nline two"
+```
+
+### Standalone `map_new()` / `set_new()` without type context
+
+WRONG — type inference cannot resolve the key/value or element types:
+```vera
+let @Map = map_new();
+let @Set = set_new();
+```
+
+CORRECT — nest inside an operation so types can be inferred, or provide explicit type annotation:
+```vera
+let @Map<String, Int> = map_new();
+map_insert(map_new(), "key", 42)
+let @Set<Int> = set_new();
+set_add(set_new(), 1)
 ```
 
 ## Complete Program Examples

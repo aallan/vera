@@ -1,0 +1,128 @@
+-- Collections: demonstrates Map<K, V> and Set<T> operations.
+-- Scenario: tracking word frequencies in a document and a unique word vocabulary.
+-- Look up a word count, returning 0 if the word is absent.
+private fn word_count(@Map<String, Int>, @String -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  option_unwrap_or(map_get(@Map<String, Int>.0, @String.0), 0)
+}
+
+-- Build a frequency map for a small corpus of words.
+private fn build_frequency_map(@Unit -> @Map<String, Int>)
+  requires(true)
+  ensures(map_size(@Map<String, Int>.result) == 4)
+  effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "the", 5);
+  let @Map<String, Int> = map_insert(@Map<String, Int>.0, "cat", 3);
+  let @Map<String, Int> = map_insert(@Map<String, Int>.0, "sat", 2);
+  let @Map<String, Int> = map_insert(@Map<String, Int>.0, "mat", 1);
+  @Map<String, Int>.0
+}
+
+-- Update a word's count (replace existing entry).
+-- @Map<String, Int>.0 = the map, @String.0 = the word
+private fn increment_word(@Map<String, Int>, @String -> @Map<String, Int>)
+  requires(true)
+  ensures(map_size(@Map<String, Int>.result) >= map_size(@Map<String, Int>.0))
+  effects(pure)
+{
+  let @Int = word_count(@Map<String, Int>.0, @String.0);
+  map_insert(@Map<String, Int>.0, @String.0, @Int.0 + 1)
+}
+
+-- Build a set of unique stop words.
+private fn build_stop_words(@Unit -> @Set<String>)
+  requires(true)
+  ensures(set_size(@Set<String>.result) == 3)
+  effects(pure)
+{
+  let @Set<String> = set_add(set_new(), "the");
+  let @Set<String> = set_add(@Set<String>.0, "a");
+  let @Set<String> = set_add(@Set<String>.0, "an");
+  @Set<String>.0
+}
+
+-- Remove stop words from the frequency map and return the cleaned map.
+-- @Map<String, Int>.0 = the map, @Set<String>.0 = stop words
+private fn remove_stop_words(@Map<String, Int>, @Set<String> -> @Map<String, Int>)
+  requires(true)
+  ensures(map_size(@Map<String, Int>.result) <= map_size(@Map<String, Int>.0))
+  effects(pure)
+{
+  let @Array<String> = set_to_array(@Set<String>.0);
+  array_fold(@Array<String>.0, @Map<String, Int>.0, fn(@Map<String, Int>, @String -> @Map<String, Int>) effects(pure) { map_remove(@Map<String, Int>.0, @String.0) })
+}
+
+-- Exercise Map: insert, get, contains, remove, size, keys, values.
+public fn demo_map(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  -- Build initial frequency map: {the->5, cat->3, sat->2, mat->1}
+  let @Map<String, Int> = build_frequency_map(());
+  -- Check "cat" is present (map_contains)
+  let @Bool = map_contains(@Map<String, Int>.0, "cat");
+  -- Look up "the" frequency via map_get
+  let @Int = word_count(@Map<String, Int>.0, "the");
+  -- Increment "the" (map_insert over existing key)
+  -- @Map<String, Int>.0 = the original map (only one Map so far)
+  let @Map<String, Int> = increment_word(@Map<String, Int>.0, "the");
+  -- Remove "mat" (map_remove)
+  -- @Map<String, Int>.0 = post-increment map
+  let @Map<String, Int> = map_remove(@Map<String, Int>.0, "mat");
+  -- Size after removal: 3 (the, cat, sat remain)
+  let @Int = map_size(@Map<String, Int>.0);
+  -- Collect keys and values (map_keys, map_values)
+  let @Array<String> = map_keys(@Map<String, Int>.0);
+  let @Array<Int> = map_values(@Map<String, Int>.0);
+  -- Return: key count (3) + value count (3) = 6
+  array_length(@Array<String>.0) + array_length(@Array<Int>.0)
+}
+
+-- Exercise Set: add, contains, remove, size, to_array, uniqueness.
+public fn demo_set(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  -- Build stop words set: {the, a, an}
+  let @Set<String> = build_stop_words(());
+  -- Duplicate add is a no-op — size stays at 3 (set_add, set_size)
+  let @Set<String> = set_add(@Set<String>.0, "the");
+  let @Int = set_size(@Set<String>.0);
+  -- "a" is a stop word; "cat" is not (set_contains)
+  -- @Set<String>.0 = post-duplicate-add set (same elements as original)
+  let @Bool = set_contains(@Set<String>.0, "a");
+  let @Bool = set_contains(@Set<String>.0, "cat");
+  -- Remove "an" from stop words (set_remove)
+  let @Set<String> = set_remove(@Set<String>.0, "an");
+  -- Size after removal: 2 (set_size)
+  let @Int = set_size(@Set<String>.0);
+  -- Convert remaining set to array (set_to_array)
+  let @Array<String> = set_to_array(@Set<String>.0);
+  -- Return: size of set after removal (2)
+  @Int.0
+}
+
+-- Entry point: exercise Map and Set together via stop-word filtering.
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  -- Build corpus frequency map and stop-word set
+  let @Map<String, Int> = build_frequency_map(());
+  let @Set<String> = build_stop_words(());
+  -- Remove stop words from frequency map (only "the" overlaps)
+  let @Map<String, Int> = remove_stop_words(@Map<String, Int>.0, @Set<String>.0);
+  -- Three words remain: cat, sat, mat
+  let @Int = map_size(@Map<String, Int>.0);
+  -- Look up "cat" in the filtered map
+  let @Int = word_count(@Map<String, Int>.0, "cat");
+  -- Return: map size (3) + cat count (3) = 6
+  @Int.1 + @Int.0
+}
