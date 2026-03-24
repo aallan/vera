@@ -96,9 +96,10 @@ pytest                    # run all tests
 pytest tests/test_parser.py  # run specific test file
 pytest -v                 # verbose output
 pytest --cov=vera         # with coverage
+VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 ```
 
-See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.
+PRs touching `vera/browser/runtime.mjs` have JavaScript coverage tracked by Codecov (via V8's built-in coverage). See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.
 
 ### Type Checking
 

@@ -40,6 +40,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.xml
+          flags: python
           fail_ci_if_error: false
 
   typecheck:
@@ -133,3 +134,18 @@ jobs:
 
       - name: Run browser parity tests
         run: pytest tests/test_browser.py -v
+        env:
+          NODE_V8_COVERAGE: ${{ runner.temp }}/v8-coverage
+
+      - name: Generate JS coverage report
+        if: always()
+        run: npx c8 report --temp-directory="${{ runner.temp }}/v8-coverage" --reporter=lcov --report-dir=./js-coverage --src=vera/browser/
+
+      - name: Upload JS coverage to Codecov
+        if: always()
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: js-coverage/lcov.info
+          flags: javascript
+          fail_ci_if_error: false

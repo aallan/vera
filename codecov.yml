@@ -1,0 +1,18 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+    patch:
+      default:
+        target: auto
+
+flags:
+  python:
+    paths:
+      - vera/
+    carryforward: true
+  javascript:
+    paths:
+      - vera/browser/
+    carryforward: true
