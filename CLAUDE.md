@@ -63,7 +63,7 @@ python scripts/fix_allowlists.py --fix # Auto-fix stale allowlist line numbers
 
 - `spec/` — Language specification (Chapters 0-12)
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
-- `examples/` — 25 example Vera programs (all must pass `vera check` and `vera verify`)
+- `examples/` — 26 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite (unit tests + conformance suite)
 - `tests/conformance/` — 58 conformance programs validating every language feature against the spec
 - `scripts/` — CI and validation scripts
