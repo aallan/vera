@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (`@T.n`) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-**Current version:** [0.0.94](https://github.com/aallan/vera/releases/tag/v0.0.94)
+**Current version:** [0.0.95](https://github.com/aallan/vera/releases/tag/v0.0.95)
 
 ## Why?
 
