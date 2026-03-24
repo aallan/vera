@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.95] - 2026-03-24
+
+### Added
+- **Set\<T\> collection type** ([#62](https://github.com/aallan/vera/issues/62), PR 2/3) — six built-in operations (`set_new`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_to_array`) with `Eq<T> + Hash<T>` ability constraints. Host-import pattern (Python sets / JS Sets behind opaque i32 handles). Pure functional semantics. New conformance test `ch09_set` (58 programs, was 57). 25 unit tests.
+- **Native JS coverage issue** ([#337](https://github.com/aallan/vera/issues/337)) — tracked for future c8 integration.
+- **Stdin compilation bug** ([#335](https://github.com/aallan/vera/issues/335)) — filed and added to Known Bugs.
+
+### Changed
+- **README test counts** — removed hardcoded counts, TESTING.md is now the single source of truth.
+
 ## [0.0.94] - 2026-03-23
 
 ### Added
@@ -1395,7 +1405,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.94...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.95...HEAD
+[0.0.95]: https://github.com/aallan/vera/compare/v0.0.94...v0.0.95
 [0.0.94]: https://github.com/aallan/vera/compare/v0.0.93...v0.0.94
 [0.0.93]: https://github.com/aallan/vera/compare/v0.0.92...v0.0.93
 [0.0.92]: https://github.com/aallan/vera/compare/v0.0.91...v0.0.92
