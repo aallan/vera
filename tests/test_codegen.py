@@ -8097,3 +8097,28 @@ public fn main(-> @Int)
 }
 """
         assert _run(source) == 2
+
+    def test_set_remove_from_empty(self) -> None:
+        """Removing from an empty set leaves size 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_remove(set_new(), 5)) }
+"""
+        assert _run(source) == 0
+
+    def test_set_zero_value_element(self) -> None:
+        """Zero (0) is a valid element, not confused with empty/absent."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_new(), 0);
+  let @Bool = set_contains(@Set<Int>.0, 0);
+  let @Int = set_size(@Set<Int>.0);
+  let @Set<Int> = set_remove(@Set<Int>.0, 0);
+  if @Bool.0 then { @Int.0 + set_size(@Set<Int>.0) } else { -1 }
+}
+"""
+        # contains(0)=true, size=1, after remove size=0 → 1+0=1
+        assert _run(source) == 1
