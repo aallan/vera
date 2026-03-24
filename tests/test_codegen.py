@@ -8122,3 +8122,313 @@ public fn main(-> @Int)
 """
         # contains(0)=true, size=1, after remove size=0 → 1+0=1
         assert _run(source) == 1
+
+
+class TestDecimalCollection:
+    """Decimal built-in operations: decimal_from_int, decimal_add, decimal_sub,
+    decimal_mul, decimal_neg, decimal_abs, decimal_eq, decimal_compare,
+    decimal_round, decimal_to_float, decimal_to_string."""
+
+    def test_decimal_from_int_eq(self) -> None:
+        """decimal_from_int(42) equals itself."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if decimal_eq(decimal_from_int(42), decimal_from_int(42)) then { 1 } else { 0 } }
+"""
+        assert _run(source) == 1
+
+    def test_decimal_add(self) -> None:
+        """100 + 3 = 103, check via decimal_eq."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_add(decimal_from_int(100), decimal_from_int(3));
+  if decimal_eq(@Decimal.0, decimal_from_int(103)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_sub(self) -> None:
+        """100 - 30 = 70."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_sub(decimal_from_int(100), decimal_from_int(30));
+  if decimal_eq(@Decimal.0, decimal_from_int(70)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_mul(self) -> None:
+        """7 * 6 = 42."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_mul(decimal_from_int(7), decimal_from_int(6));
+  if decimal_eq(@Decimal.0, decimal_from_int(42)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_neg(self) -> None:
+        """neg(42) + 42 = 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_add(decimal_neg(decimal_from_int(42)), decimal_from_int(42));
+  if decimal_eq(@Decimal.0, decimal_from_int(0)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_neg_zero(self) -> None:
+        """neg(0) should equal 0, not -0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_neg(decimal_from_int(0));
+  if decimal_eq(@Decimal.0, decimal_from_int(0)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_round(self) -> None:
+        """Round a decimal to 0 decimal places."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_from_float(3.7);
+  let @Decimal = decimal_round(@Decimal.0, 0);
+  if decimal_eq(@Decimal.0, decimal_from_int(4)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_abs(self) -> None:
+        """abs(neg(42)) = 42."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_abs(decimal_neg(decimal_from_int(42)));
+  if decimal_eq(@Decimal.0, decimal_from_int(42)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_to_float(self) -> None:
+        """decimal_to_float(decimal_from_float(3.5)) round-trips exactly."""
+        source = """
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ decimal_to_float(decimal_from_float(3.5)) }
+"""
+        assert _run_float(source) == 3.5
+
+    def test_decimal_to_string_exact(self) -> None:
+        """decimal_to_string renders the correct string."""
+        source = _IO_PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(decimal_to_string(decimal_from_int(42))) }
+"""
+        assert _run_io(source, fn="main") == "42"
+
+    def test_decimal_eq_different(self) -> None:
+        """1 != 2 via decimal_eq returns 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if decimal_eq(decimal_from_int(1), decimal_from_int(2)) then { 1 } else { 0 } }
+"""
+        assert _run(source) == 0
+
+    def test_decimal_to_string_length(self) -> None:
+        """string_length(decimal_to_string(decimal_from_int(42))) > 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(decimal_to_string(decimal_from_int(42))) }
+"""
+        assert _run(source) == 2
+
+    def test_decimal_from_float(self) -> None:
+        """decimal_from_float round-trips through decimal_to_float."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ floor(decimal_to_float(decimal_from_float(3.14))) }
+"""
+        assert _run(source) == 3
+
+    def test_decimal_from_int_different_values(self) -> None:
+        """Two different decimal_from_int values are not equal."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_from_int(0);
+  let @Decimal = decimal_from_int(42);
+  if decimal_eq(@Decimal.1, @Decimal.0) then { 0 } else { 1 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_add_and_round(self) -> None:
+        """decimal_add + decimal_round round-trip."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_from_int(10);
+  let @Decimal = decimal_from_int(2);
+  let @Decimal = decimal_add(@Decimal.1, @Decimal.0);
+  if decimal_eq(decimal_round(@Decimal.0, 0), decimal_from_int(12)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_neg_large_value(self) -> None:
+        """decimal_neg on a large value: neg(1000000) + 1000000 = 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_from_int(1000000);
+  let @Decimal = decimal_add(decimal_neg(@Decimal.0), @Decimal.0);
+  if decimal_eq(@Decimal.0, decimal_from_int(0)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_div_host_called(self) -> None:
+        """decimal_div host import is wired and invoked."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_from_int(10);
+  let @Decimal = decimal_from_int(2);
+  let @Option<Decimal> = decimal_div(@Decimal.1, @Decimal.0);
+  floor(decimal_to_float(@Decimal.1))
+}
+"""
+        result = _compile_ok(source)
+        assert '"decimal_div"' in result.wat
+        assert _run(source) == 10
+
+    def test_decimal_from_string_host_called(self) -> None:
+        """decimal_from_string host import is wired and invoked."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Decimal> = decimal_from_string("42");
+  42
+}
+"""
+        result = _compile_ok(source)
+        assert '"decimal_from_string"' in result.wat
+        assert _run(source) == 42
+
+    def test_decimal_compare_host_called(self) -> None:
+        """decimal_compare host import is wired and invoked."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Ordering = decimal_compare(decimal_from_int(1), decimal_from_int(2));
+  1
+}
+"""
+        result = _compile_ok(source)
+        assert '"decimal_compare"' in result.wat
+        assert _run(source) == 1
+
+    def test_decimal_compare_equal_and_greater(self) -> None:
+        """decimal_compare equal and greater branches (coverage)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Ordering = decimal_compare(decimal_from_int(5), decimal_from_int(5));
+  let @Ordering = decimal_compare(decimal_from_int(10), decimal_from_int(3));
+  1
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_div_by_zero(self) -> None:
+        """decimal_div by zero returns None (coverage)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Decimal> = decimal_div(decimal_from_int(10), decimal_from_int(0));
+  1
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_from_string_invalid(self) -> None:
+        """decimal_from_string with invalid input returns None (coverage)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Decimal> = decimal_from_string("not_a_number");
+  1
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_chained_arithmetic(self) -> None:
+        """Chained decimal ops exercise WASM type inference paths."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if decimal_eq(
+    decimal_add(decimal_from_int(1), decimal_from_int(2)),
+    decimal_from_int(3))
+  then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_to_float_chained(self) -> None:
+        """decimal_to_float result feeds into floor (f64 inference)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ floor(decimal_to_float(decimal_add(decimal_from_int(3), decimal_from_int(4)))) }
+"""
+        assert _run(source) == 7
+
+    def test_decimal_to_string_chained(self) -> None:
+        """decimal_to_string result feeds into string_length (i32_pair inference)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(decimal_to_string(decimal_add(decimal_from_int(1), decimal_from_int(2)))) }
+"""
+        assert _run(source) == 1
+
+    def test_decimal_eq_chained(self) -> None:
+        """decimal_eq result feeds into if (Bool/i32 inference)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Bool = decimal_eq(decimal_from_int(5), decimal_from_int(5));
+  if @Bool.0 then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1

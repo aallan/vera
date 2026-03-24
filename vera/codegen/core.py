@@ -79,6 +79,8 @@ class CodeGenerator(
         self._map_imports: set[str] = set()  # Map WAT import declarations
         self._set_ops_used: set[str] = set()  # Set host-import builtins
         self._set_imports: set[str] = set()  # Set WAT import declarations
+        self._decimal_ops_used: set[str] = set()  # Decimal host-import builtins
+        self._decimal_imports: set[str] = set()  # Decimal WAT import declarations
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
@@ -193,6 +195,7 @@ class CodeGenerator(
                 regex_ops_used=set(self._regex_ops_used),
                 map_ops_used=set(self._map_ops_used),
                 set_ops_used=set(self._set_ops_used),
+                decimal_ops_used=set(self._decimal_ops_used),
             )
 
         # Pass 2: compile function bodies
@@ -266,6 +269,7 @@ class CodeGenerator(
                 regex_ops_used=set(self._regex_ops_used),
                 map_ops_used=set(self._map_ops_used),
                 set_ops_used=set(self._set_ops_used),
+                decimal_ops_used=set(self._decimal_ops_used),
             )
 
         return CompileResult(
@@ -278,6 +282,7 @@ class CodeGenerator(
             regex_ops_used=set(self._regex_ops_used),
             map_ops_used=set(self._map_ops_used),
             set_ops_used=set(self._set_ops_used),
+            decimal_ops_used=set(self._decimal_ops_used),
         )
 
     # -----------------------------------------------------------------
@@ -302,7 +307,7 @@ class CodeGenerator(
                 return None
             if name in ("String", "Array"):
                 return "i32_pair"
-            if name in ("Map", "Set"):
+            if name in ("Map", "Set", "Decimal"):
                 return "i32"  # opaque host handle
             # ADT types compile to i32 (heap pointer)
             if name in self._adt_layouts:

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.97] - 2026-03-24
+
+### Added
+- **Decimal type for exact arithmetic** ([#333](https://github.com/aallan/vera/issues/333)) — 14 built-in operations (`decimal_from_int`, `decimal_from_float`, `decimal_from_string`, `decimal_to_string`, `decimal_to_float`, `decimal_add`, `decimal_sub`, `decimal_mul`, `decimal_div`, `decimal_neg`, `decimal_compare`, `decimal_eq`, `decimal_round`, `decimal_abs`) via host imports (Python `decimal.Decimal` / JS string-based decimal). New conformance test `ch09_decimal` (59 programs, was 58). Browser runtime support. Closes #333.
+
 ## [0.0.96] - 2026-03-24
 
 ### Changed
@@ -1410,7 +1415,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.96...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.97...HEAD
+[0.0.97]: https://github.com/aallan/vera/compare/v0.0.96...v0.0.97
 [0.0.96]: https://github.com/aallan/vera/compare/v0.0.95...v0.0.96
 [0.0.95]: https://github.com/aallan/vera/compare/v0.0.94...v0.0.95
 [0.0.94]: https://github.com/aallan/vera/compare/v0.0.93...v0.0.94

@@ -641,6 +641,117 @@ class TypeEnv:
             forall_constraints=_set_constraints,
         )
 
+        # ── Decimal built-in functions ──────────────────────────────
+        DECIMAL = AdtType("Decimal", ())
+        OPTION_DECIMAL = AdtType("Option", (DECIMAL,))
+        ORDERING = AdtType("Ordering", ())
+
+        # Construction / conversion
+        self.functions["decimal_from_int"] = FunctionInfo(
+            name="decimal_from_int",
+            forall_vars=None,
+            param_types=(INT,),
+            return_type=DECIMAL,
+            effect=PureEffectRow(),
+        )
+        self.functions["decimal_from_float"] = FunctionInfo(
+            name="decimal_from_float",
+            forall_vars=None,
+            param_types=(FLOAT64,),
+            return_type=DECIMAL,
+            effect=PureEffectRow(),
+        )
+        self.functions["decimal_from_string"] = FunctionInfo(
+            name="decimal_from_string",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=OPTION_DECIMAL,
+            effect=PureEffectRow(),
+        )
+        self.functions["decimal_to_string"] = FunctionInfo(
+            name="decimal_to_string",
+            forall_vars=None,
+            param_types=(DECIMAL,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["decimal_to_float"] = FunctionInfo(
+            name="decimal_to_float",
+            forall_vars=None,
+            param_types=(DECIMAL,),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+
+        # Arithmetic
+        self.functions["decimal_add"] = FunctionInfo(
+            name="decimal_add",
+            forall_vars=None,
+            param_types=(DECIMAL, DECIMAL),
+            return_type=DECIMAL,
+            effect=PureEffectRow(),
+        )
+        self.functions["decimal_sub"] = FunctionInfo(
+            name="decimal_sub",
+            forall_vars=None,
+            param_types=(DECIMAL, DECIMAL),
+            return_type=DECIMAL,
+            effect=PureEffectRow(),
+        )
+        self.functions["decimal_mul"] = FunctionInfo(
+            name="decimal_mul",
+            forall_vars=None,
+            param_types=(DECIMAL, DECIMAL),
+            return_type=DECIMAL,
+            effect=PureEffectRow(),
+        )
+        self.functions["decimal_div"] = FunctionInfo(
+            name="decimal_div",
+            forall_vars=None,
+            param_types=(DECIMAL, DECIMAL),
+            return_type=OPTION_DECIMAL,
+            effect=PureEffectRow(),
+        )
+        self.functions["decimal_neg"] = FunctionInfo(
+            name="decimal_neg",
+            forall_vars=None,
+            param_types=(DECIMAL,),
+            return_type=DECIMAL,
+            effect=PureEffectRow(),
+        )
+
+        # Comparison
+        self.functions["decimal_compare"] = FunctionInfo(
+            name="decimal_compare",
+            forall_vars=None,
+            param_types=(DECIMAL, DECIMAL),
+            return_type=ORDERING,
+            effect=PureEffectRow(),
+        )
+        self.functions["decimal_eq"] = FunctionInfo(
+            name="decimal_eq",
+            forall_vars=None,
+            param_types=(DECIMAL, DECIMAL),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+
+        # Rounding
+        self.functions["decimal_round"] = FunctionInfo(
+            name="decimal_round",
+            forall_vars=None,
+            param_types=(DECIMAL, INT),
+            return_type=DECIMAL,
+            effect=PureEffectRow(),
+        )
+        self.functions["decimal_abs"] = FunctionInfo(
+            name="decimal_abs",
+            forall_vars=None,
+            param_types=(DECIMAL,),
+            return_type=DECIMAL,
+            effect=PureEffectRow(),
+        )
+
         # Option / Result combinators
         # Implementations are injected as Vera source AST during codegen
         # (see vera.prelude); these signatures enable type checking.

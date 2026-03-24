@@ -10,7 +10,8 @@ The standard library comprises:
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, `Set<T>` for unordered unique elements, and `Map<K, V>` for key-value mappings.
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
 - **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
-- **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure, `Decimal` for exact arithmetic.
+- **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in the Python runtime; browser runtime uses IEEE 754 approximation.
+- **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure.
 - **Built-in abilities**: `Eq`, `Ord`, `Hash`, `Show` — type constraints for generic programming. The `Ordering` ADT (`Less`, `Equal`, `Greater`) supports `Ord`'s `compare` operation.
 
 All built-in types participate fully in the type system: they can appear in contracts, be verified by the SMT solver, and be used with refinement types and pattern matching. Built-in effects follow the same algebraic effect semantics as user-defined effects (see Chapter 7).
@@ -1483,7 +1484,7 @@ let @Result<String, String> = regex_replace("hello world", "world", "vera");
 
 **Implementation note:** These functions are implemented as host imports — they delegate to the runtime's native regex engine (Python's `re` module for wasmtime, JavaScript's `RegExp` for the browser runtime). This avoids embedding a regex engine in WASM while providing access to mature, well-tested implementations.
 
-## 9.7 Built-in Types (Future)
+## 9.7 Built-in Types
 
 ### 9.7.1 Json (Future)
 
@@ -1510,11 +1511,59 @@ type ApiResponse = { @Json | has_field(@Json.0, "status") };
 
 This approach keeps the core language small while providing ergonomic JSON support.
 
-### 9.7.2 Decimal (Future)
+### 9.7.2 Decimal
 
-> **Status: Not yet implemented.** Tracked in [#62](https://github.com/aallan/vera/issues/62).
+`Decimal` provides exact decimal arithmetic for financial and precision-sensitive applications. Tracked in [#333](https://github.com/aallan/vera/issues/333).
 
-`Decimal` will provide exact decimal arithmetic for financial and precision-sensitive applications. It will be implemented as a library type (not a primitive) since WebAssembly does not have native decimal floating-point. The runtime will provide a software implementation.
+Decimal is an opaque built-in type implemented via host imports, following the same pattern as `Map<K, V>` and `Set<T>`. The runtime maintains `decimal.Decimal` values (Python) or string-based decimal values (JavaScript); WASM code interacts with decimals through `i32` handles. All operations are pure.
+
+**Construction and conversion:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `decimal_from_int(n)` | `(Int) → Decimal` | Exact conversion from integer |
+| `decimal_from_float(f)` | `(Float64) → Decimal` | Conversion via `str(v)` (may not be exact) |
+| `decimal_from_string(s)` | `(String) → Option<Decimal>` | Parse a decimal string; `None` on failure |
+| `decimal_to_string(d)` | `(Decimal) → String` | String representation |
+| `decimal_to_float(d)` | `(Decimal) → Float64` | Potentially lossy conversion to float |
+
+**Arithmetic:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `decimal_add(a, b)` | `(Decimal, Decimal) → Decimal` | Addition |
+| `decimal_sub(a, b)` | `(Decimal, Decimal) → Decimal` | Subtraction |
+| `decimal_mul(a, b)` | `(Decimal, Decimal) → Decimal` | Multiplication |
+| `decimal_div(a, b)` | `(Decimal, Decimal) → Option<Decimal>` | Division; `None` on division by zero |
+| `decimal_neg(d)` | `(Decimal) → Decimal` | Negation |
+| `decimal_abs(d)` | `(Decimal) → Decimal` | Absolute value |
+| `decimal_round(d, n)` | `(Decimal, Int) → Decimal` | Round to `n` decimal places |
+
+**Comparison:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `decimal_compare(a, b)` | `(Decimal, Decimal) → Ordering` | Returns `Less`, `Equal`, or `Greater` |
+| `decimal_eq(a, b)` | `(Decimal, Decimal) → Bool` | Equality test |
+
+**Example:**
+
+```vera
+private fn decimal_demo(-> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Decimal = decimal_add(decimal_from_int(100), decimal_from_int(3));
+  if decimal_eq(@Decimal.0, decimal_from_int(103)) then { 1 } else { 0 }
+}
+```
+
+**Known limitations:**
+
+1. **Monomorphization gap:** `Option<Decimal>` values returned by `decimal_div` and `decimal_from_string` cannot currently be used with `option_unwrap_or` or `match` because the monomorphizer does not produce `option_unwrap_or$Decimal`. Similarly, `Ordering` returned by `decimal_compare` cannot yet be used with `match` in codegen. This affects all new opaque types and will be resolved in a future release ([#341](https://github.com/aallan/vera/issues/341)).
+
+2. **Browser runtime precision:** The Python runtime uses `decimal.Decimal` and provides exact numeric arithmetic and comparison. The browser runtime MVP uses JavaScript `Number` (IEEE 754 double-precision float) for arithmetic operations (`decimal_add`, `decimal_sub`, `decimal_mul`, `decimal_div`, `decimal_round`, `decimal_compare`), which loses precision for values that are not exactly representable in binary floating-point. Note that `decimal_eq` in the browser performs strict string-representation equality (not numeric equivalence), so `decimal_from_string("1.0")` ≠ `decimal_from_string("1")` even though they are numerically equal — the Python runtime uses numeric `==` and considers them equal. A future browser runtime version will use an arbitrary-precision decimal library to match the Python runtime's exact semantics.
 
 ### 9.7.3 Markdown
 

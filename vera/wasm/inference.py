@@ -256,6 +256,21 @@ class InferenceMixin:
         # Async builtins — identity operations (Future<T> is transparent)
         if expr.name in ("async", "await") and expr.args:
             return self._infer_expr_wasm_type(expr.args[0])
+        # Decimal builtins
+        if expr.name in ("decimal_from_int", "decimal_from_float",
+                          "decimal_add", "decimal_sub", "decimal_mul",
+                          "decimal_neg", "decimal_round", "decimal_abs"):
+            return "i32"  # opaque handle
+        if expr.name in ("decimal_from_string", "decimal_div"):
+            return "i32"  # Option<Decimal> heap pointer
+        if expr.name == "decimal_compare":
+            return "i32"  # Ordering heap pointer
+        if expr.name == "decimal_eq":
+            return "i32"  # Bool
+        if expr.name == "decimal_to_float":
+            return "f64"
+        if expr.name == "decimal_to_string":
+            return "i32_pair"  # String (ptr, len)
         # Numeric math builtins
         if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
             return "i64"
@@ -503,6 +518,23 @@ class InferenceMixin:
             return "Int"
         if call.name == "set_to_array":
             return "Array"
+        # Decimal builtins
+        if call.name in ("decimal_from_int", "decimal_from_float",
+                          "decimal_add", "decimal_sub", "decimal_mul",
+                          "decimal_neg", "decimal_round", "decimal_abs"):
+            return "Decimal"
+        if call.name == "decimal_from_string":
+            return "Option"
+        if call.name == "decimal_div":
+            return "Option"
+        if call.name == "decimal_to_string":
+            return "String"
+        if call.name == "decimal_to_float":
+            return "Float64"
+        if call.name == "decimal_compare":
+            return "Ordering"
+        if call.name == "decimal_eq":
+            return "Bool"
         # Ability operations: show → String, hash → Int
         if call.name == "show":
             return "String"
@@ -837,8 +869,8 @@ class InferenceMixin:
         if name.startswith("Future<") and name.endswith(">"):
             inner = name[7:-1]
             return self._slot_name_to_wasm_type(inner)
-        # Map/Set are opaque host-import handles (i32)
-        if name.startswith("Map<") or name.startswith("Set<"):
+        # Map/Set/Decimal are opaque host-import handles (i32)
+        if name.startswith("Map<") or name.startswith("Set<") or name == "Decimal":
             return "i32"
         # ADT types are heap pointers
         base = name.split("<")[0] if "<" in name else name

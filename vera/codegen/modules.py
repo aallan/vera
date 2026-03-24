@@ -268,6 +268,13 @@ class CrossModuleMixin:
             # Set operations (§9.4.2) — host-import builtins
             "set_new", "set_add", "set_contains",
             "set_remove", "set_size", "set_to_array",
+            # Decimal operations (§9.7.2) — host-import builtins
+            "decimal_from_int", "decimal_from_float",
+            "decimal_from_string", "decimal_to_string",
+            "decimal_to_float", "decimal_add", "decimal_sub",
+            "decimal_mul", "decimal_div", "decimal_neg",
+            "decimal_compare", "decimal_eq",
+            "decimal_round", "decimal_abs",
         })
 
         seen: set[str] = set()  # deduplicate by function name

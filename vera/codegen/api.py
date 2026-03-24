@@ -83,6 +83,7 @@ class CompileResult:
     regex_ops_used: set[str] = field(default_factory=set)
     map_ops_used: set[str] = field(default_factory=set)
     set_ops_used: set[str] = field(default_factory=set)
+    decimal_ops_used: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -270,6 +271,15 @@ def execute(
         # Layout: tag(i32)=0 at +0, no payload
         adt_ptr = _call_alloc(caller, 4)
         _write_i32(caller, adt_ptr, 0)       # tag = None
+        return adt_ptr
+
+    def _alloc_ordering(caller: wasmtime.Caller, tag: int) -> int:
+        """Allocate an Ordering value on the WASM heap.
+
+        Tags: 0 = Less, 1 = Equal, 2 = Greater.
+        """
+        adt_ptr = _call_alloc(caller, 4)
+        _write_i32(caller, adt_ptr, tag)
         return adt_ptr
 
     def _alloc_array_of_strings(
@@ -750,7 +760,7 @@ def execute(
 
     # Shared helpers for collection host functions (Map and Set).
     # Defined once, used by both Map and Set sections below.
-    if result.map_ops_used or result.set_ops_used:
+    if result.map_ops_used or result.set_ops_used or result.decimal_ops_used:
         def _write_i64(
             caller: wasmtime.Caller, offset: int, value: int,
         ) -> None:
@@ -1296,6 +1306,222 @@ def execute(
             elif op_name.startswith("set_to_array$"):
                 et = op_name[len("set_to_array$e"):]
                 _define_set_to_array(et)
+
+    # ── Decimal host functions ───────────────────────────────────
+    if result.decimal_ops_used:
+        from decimal import Decimal as PyDecimal, InvalidOperation
+
+        _decimal_store: dict[int, PyDecimal] = {}
+        _decimal_next_handle = [1]
+
+        def _decimal_alloc(d: PyDecimal) -> int:
+            h = _decimal_next_handle[0]
+            _decimal_next_handle[0] = h + 1
+            _decimal_store[h] = d
+            return h
+
+        if "decimal_from_int" in result.decimal_ops_used:
+            def host_decimal_from_int(
+                _caller: wasmtime.Caller, v: int,
+            ) -> int:
+                return _decimal_alloc(PyDecimal(v))
+            linker.define_func(
+                "vera", "decimal_from_int",
+                wasmtime.FuncType([wasmtime.ValType.i64()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_from_int, access_caller=True,
+            )
+
+        if "decimal_from_float" in result.decimal_ops_used:
+            def host_decimal_from_float(
+                _caller: wasmtime.Caller, v: float,
+            ) -> int:
+                return _decimal_alloc(PyDecimal(str(v)))
+            linker.define_func(
+                "vera", "decimal_from_float",
+                wasmtime.FuncType([wasmtime.ValType.f64()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_from_float, access_caller=True,
+            )
+
+        if "decimal_from_string" in result.decimal_ops_used:
+            def host_decimal_from_string(
+                caller: wasmtime.Caller, ptr: int, length: int,
+            ) -> int:
+                s = _read_wasm_string(caller, ptr, length)
+                try:
+                    d = PyDecimal(s)
+                    # Allocate Some(handle)
+                    handle = _decimal_alloc(d)
+                    return _alloc_option_some_i32(caller, handle)
+                except InvalidOperation:
+                    return _alloc_option_none(caller)
+            linker.define_func(
+                "vera", "decimal_from_string",
+                wasmtime.FuncType([wasmtime.ValType.i32(),
+                                   wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_from_string, access_caller=True,
+            )
+
+        if "decimal_to_string" in result.decimal_ops_used:
+            def host_decimal_to_string(
+                caller: wasmtime.Caller, h: int,
+            ) -> tuple[int, int]:
+                s = str(_decimal_store[h])
+                return _alloc_string(caller, s)
+            linker.define_func(
+                "vera", "decimal_to_string",
+                wasmtime.FuncType([wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.i32(),
+                                   wasmtime.ValType.i32()]),
+                host_decimal_to_string, access_caller=True,
+            )
+
+        if "decimal_to_float" in result.decimal_ops_used:
+            def host_decimal_to_float(
+                _caller: wasmtime.Caller, h: int,
+            ) -> float:
+                return float(_decimal_store[h])
+            linker.define_func(
+                "vera", "decimal_to_float",
+                wasmtime.FuncType([wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.f64()]),
+                host_decimal_to_float, access_caller=True,
+            )
+
+        if "decimal_add" in result.decimal_ops_used:
+            def host_decimal_add(
+                _caller: wasmtime.Caller, a: int, b: int,
+            ) -> int:
+                return _decimal_alloc(_decimal_store[a] + _decimal_store[b])
+            linker.define_func(
+                "vera", "decimal_add",
+                wasmtime.FuncType([wasmtime.ValType.i32(),
+                                   wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_add, access_caller=True,
+            )
+
+        if "decimal_sub" in result.decimal_ops_used:
+            def host_decimal_sub(
+                _caller: wasmtime.Caller, a: int, b: int,
+            ) -> int:
+                return _decimal_alloc(_decimal_store[a] - _decimal_store[b])
+            linker.define_func(
+                "vera", "decimal_sub",
+                wasmtime.FuncType([wasmtime.ValType.i32(),
+                                   wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_sub, access_caller=True,
+            )
+
+        if "decimal_mul" in result.decimal_ops_used:
+            def host_decimal_mul(
+                _caller: wasmtime.Caller, a: int, b: int,
+            ) -> int:
+                return _decimal_alloc(_decimal_store[a] * _decimal_store[b])
+            linker.define_func(
+                "vera", "decimal_mul",
+                wasmtime.FuncType([wasmtime.ValType.i32(),
+                                   wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_mul, access_caller=True,
+            )
+
+        if "decimal_div" in result.decimal_ops_used:
+            def host_decimal_div(
+                caller: wasmtime.Caller, a: int, b: int,
+            ) -> int:
+                divisor = _decimal_store[b]
+                if divisor == 0:
+                    return _alloc_option_none(caller)
+                handle = _decimal_alloc(_decimal_store[a] / divisor)
+                return _alloc_option_some_i32(caller, handle)
+            linker.define_func(
+                "vera", "decimal_div",
+                wasmtime.FuncType([wasmtime.ValType.i32(),
+                                   wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_div, access_caller=True,
+            )
+
+        if "decimal_neg" in result.decimal_ops_used:
+            def host_decimal_neg(
+                _caller: wasmtime.Caller, h: int,
+            ) -> int:
+                return _decimal_alloc(-_decimal_store[h])
+            linker.define_func(
+                "vera", "decimal_neg",
+                wasmtime.FuncType([wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_neg, access_caller=True,
+            )
+
+        if "decimal_compare" in result.decimal_ops_used:
+            def host_decimal_compare(
+                caller: wasmtime.Caller, a: int, b: int,
+            ) -> int:
+                da, db = _decimal_store[a], _decimal_store[b]
+                if da < db:
+                    tag = 0  # Less
+                elif da == db:
+                    tag = 1  # Equal
+                else:
+                    tag = 2  # Greater
+                return _alloc_ordering(caller, tag)
+            linker.define_func(
+                "vera", "decimal_compare",
+                wasmtime.FuncType([wasmtime.ValType.i32(),
+                                   wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_compare, access_caller=True,
+            )
+
+        if "decimal_eq" in result.decimal_ops_used:
+            def host_decimal_eq(
+                _caller: wasmtime.Caller, a: int, b: int,
+            ) -> int:
+                return 1 if _decimal_store[a] == _decimal_store[b] else 0
+            linker.define_func(
+                "vera", "decimal_eq",
+                wasmtime.FuncType([wasmtime.ValType.i32(),
+                                   wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_eq, access_caller=True,
+            )
+
+        if "decimal_round" in result.decimal_ops_used:
+            def host_decimal_round(
+                _caller: wasmtime.Caller, h: int, places: int,
+            ) -> int:
+                d = _decimal_store[h]
+                # Use quantize for precise rounding
+                q = PyDecimal(10) ** -places
+                try:
+                    return _decimal_alloc(d.quantize(q))
+                except InvalidOperation:
+                    # Extreme exponent — return original value unchanged
+                    return _decimal_alloc(d)
+            linker.define_func(
+                "vera", "decimal_round",
+                wasmtime.FuncType([wasmtime.ValType.i32(),
+                                   wasmtime.ValType.i64()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_round, access_caller=True,
+            )
+
+        if "decimal_abs" in result.decimal_ops_used:
+            def host_decimal_abs(
+                _caller: wasmtime.Caller, h: int,
+            ) -> int:
+                return _decimal_alloc(abs(_decimal_store[h]))
+            linker.define_func(
+                "vera", "decimal_abs",
+                wasmtime.FuncType([wasmtime.ValType.i32()],
+                                  [wasmtime.ValType.i32()]),
+                host_decimal_abs, access_caller=True,
+            )
 
     instance = linker.instantiate(store, module)
 

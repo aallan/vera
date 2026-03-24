@@ -309,6 +309,7 @@ private fn abs(@Int -> @Nat)
 @Option<Int>                             -- Option type (Some/None)
 @Map<String, Int>                        -- key-value map (keys: Eq + Hash)
 @Set<Int>                                -- unordered unique elements (Eq + Hash)
+@Decimal                                 -- exact decimal arithmetic
 Fn(Int -> Int) effects(pure)              -- function type
 { @Int | @Int.0 > 0 }                   -- refinement type
 ```
@@ -537,6 +538,27 @@ set_to_array(@Set<String>.0)                        -- returns Array<String>
 ```
 
 > `set_new()` is a zero-argument generic function. Nest it inside `set_add(set_new(), elem)` so that type inference can resolve the element type. Adding a duplicate element is a no-op (sets enforce uniqueness).
+
+### Decimal operations
+
+`Decimal` provides exact decimal arithmetic for financial and precision-sensitive applications. It is an opaque type (i32 handle) backed by the runtime's decimal implementation. All operations are pure.
+
+```vera
+decimal_from_int(42)                                -- returns Decimal (exact conversion)
+decimal_from_float(3.14)                            -- returns Decimal (via str conversion)
+decimal_add(@Decimal.0, @Decimal.1)                 -- returns Decimal (addition)
+decimal_sub(@Decimal.0, @Decimal.1)                 -- returns Decimal (subtraction)
+decimal_mul(@Decimal.0, @Decimal.1)                 -- returns Decimal (multiplication)
+decimal_neg(@Decimal.0)                             -- returns Decimal (negation)
+decimal_abs(@Decimal.0)                             -- returns Decimal (absolute value)
+decimal_round(@Decimal.0, 2)                        -- returns Decimal (round to N places)
+decimal_eq(@Decimal.0, @Decimal.1)                  -- returns Bool (equality)
+decimal_compare(@Decimal.0, @Decimal.1)             -- returns Ordering (Less/Equal/Greater)
+decimal_to_string(@Decimal.0)                       -- returns String
+decimal_to_float(@Decimal.0)                        -- returns Float64 (potentially lossy)
+```
+
+> `decimal_from_string` and `decimal_div` return `Option<Decimal>`, but `Option<Decimal>` cannot yet be used with `option_unwrap_or` or `match` due to a monomorphization limitation. Similarly, `decimal_compare` returns `Ordering`, but `match` on `Ordering` is not yet supported by codegen. Avoid these three operations for now.
 
 ### String operations
 
@@ -1551,7 +1573,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 39 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 59 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
