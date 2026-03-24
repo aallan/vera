@@ -8073,3 +8073,27 @@ public fn main(-> @Int)
 }
 """
         assert _run(source) == 2
+
+    def test_set_to_array_float64(self) -> None:
+        """set_to_array with Float64 elements exercises the 'f' to_array branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Float64> = set_add(set_add(set_new(), 1.0), 2.0);
+  array_length(set_to_array(@Set<Float64>.0))
+}
+"""
+        assert _run(source) == 2
+
+    def test_set_to_array_bool(self) -> None:
+        """set_to_array with Bool elements exercises the 'b' to_array branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Bool> = set_add(set_add(set_new(), true), false);
+  array_length(set_to_array(@Set<Bool>.0))
+}
+"""
+        assert _run(source) == 2
