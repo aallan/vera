@@ -1813,6 +1813,104 @@ private fn foo(@Unit -> @Decimal)
 { decimal_abs(decimal_from_int(42)) }
 """)
 
+    # Happy-path tests for remaining operations
+    def test_decimal_from_float(self) -> None:
+        """decimal_from_float(@Float64 -> @Decimal) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_from_float(3.14) }
+""")
+
+    def test_decimal_sub(self) -> None:
+        """decimal_sub(@Decimal, @Decimal -> @Decimal) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_sub(decimal_from_int(5), decimal_from_int(3)) }
+""")
+
+    def test_decimal_mul(self) -> None:
+        """decimal_mul(@Decimal, @Decimal -> @Decimal) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_mul(decimal_from_int(2), decimal_from_int(3)) }
+""")
+
+    # Wrong-type tests
+    def test_decimal_from_float_wrong_type(self) -> None:
+        """decimal_from_float with Int arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_from_float(42) }
+""", "type")
+
+    def test_decimal_sub_wrong_type(self) -> None:
+        """decimal_sub with Int args produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_sub(1, 2) }
+""", "type")
+
+    def test_decimal_mul_wrong_type(self) -> None:
+        """decimal_mul with Int args produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_mul(1, 2) }
+""", "type")
+
+    def test_decimal_neg_wrong_type(self) -> None:
+        """decimal_neg with Int arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_neg(42) }
+""", "type")
+
+    def test_decimal_abs_wrong_type(self) -> None:
+        """decimal_abs with Int arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_abs(42) }
+""", "type")
+
+    def test_decimal_round_wrong_type(self) -> None:
+        """decimal_round with wrong arg types produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_round("2", 2) }
+""", "type")
+
+    def test_decimal_compare_wrong_type(self) -> None:
+        """decimal_compare with Int args produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Ordering)
+  requires(true) ensures(true) effects(pure)
+{ decimal_compare(1, 2) }
+""", "type")
+
+    def test_decimal_div_wrong_type(self) -> None:
+        """decimal_div with Int args produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Option<Decimal>)
+  requires(true) ensures(true) effects(pure)
+{ decimal_div(1, 2) }
+""", "type")
+
+    def test_decimal_from_string_wrong_type(self) -> None:
+        """decimal_from_string with Int arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Option<Decimal>)
+  requires(true) ensures(true) effects(pure)
+{ decimal_from_string(42) }
+""", "type")
+
 
 # =====================================================================
 # Return type checking

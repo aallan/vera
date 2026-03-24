@@ -8224,27 +8224,22 @@ public fn main(-> @Int)
         assert _run(source) == 1
 
     def test_decimal_to_float(self) -> None:
-        """Convert decimal 42 to float and check via floor."""
+        """decimal_to_float(decimal_from_float(3.5)) round-trips exactly."""
         source = """
-public fn main(-> @Int)
+public fn main(-> @Float64)
   requires(true) ensures(true) effects(pure)
-{ floor(decimal_to_float(decimal_from_int(42))) }
+{ decimal_to_float(decimal_from_float(3.5)) }
 """
-        assert _run(source) == 42
+        assert _run_float(source) == 3.5
 
-    def test_decimal_to_float_non_integer(self) -> None:
-        """decimal_to_float(decimal_from_float(3.14)) round-trips correctly."""
-        source = """
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
-{
-  let @Float64 = decimal_to_float(decimal_from_float(3.14));
-  if @Float64.0 > 3.0 then {
-    if @Float64.0 < 4.0 then { 1 } else { 0 }
-  } else { 0 }
-}
+    def test_decimal_to_string_exact(self) -> None:
+        """decimal_to_string renders the correct string."""
+        source = _IO_PRELUDE + """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(decimal_to_string(decimal_from_int(42))) }
 """
-        assert _run(source) == 1
+        assert _run_io(source, fn="main") == "42"
 
     def test_decimal_eq_different(self) -> None:
         """1 != 2 via decimal_eq returns 0."""
@@ -8273,8 +8268,8 @@ public fn main(-> @Int)
 """
         assert _run(source) == 3
 
-    def test_decimal_from_string_valid(self) -> None:
-        """decimal_from_string with valid input returns Some (tag=1)."""
+    def test_decimal_from_int_different_values(self) -> None:
+        """Two different decimal_from_int values are not equal."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
@@ -8286,8 +8281,8 @@ public fn main(-> @Int)
 """
         assert _run(source) == 1
 
-    def test_decimal_div_nonzero(self) -> None:
-        """decimal_div by nonzero works (test via decimal_eq on result)."""
+    def test_decimal_add_and_round(self) -> None:
+        """decimal_add + decimal_round round-trip."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
@@ -8300,8 +8295,8 @@ public fn main(-> @Int)
 """
         assert _run(source) == 1
 
-    def test_decimal_compare_less(self) -> None:
-        """decimal_compare(1, 2) — test indirectly via decimal_eq."""
+    def test_decimal_inequality(self) -> None:
+        """Two different Decimal values are not equal."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
