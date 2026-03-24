@@ -623,6 +623,7 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 | WASI 0.2 compliance | [#237](https://github.com/aallan/vera/issues/237) |
 | Resource limits (fuel, memory, timeout) | [#239](https://github.com/aallan/vera/issues/239) |
 | Combinator bare-constructor type inference | [#293](https://github.com/aallan/vera/issues/293) |
+| Monomorphization of opaque handle types (Decimal, Map, Set) | [#341](https://github.com/aallan/vera/issues/341) |
 | Effect row variable unification | [#294](https://github.com/aallan/vera/issues/294) |
 
 ## Project Roadmap
