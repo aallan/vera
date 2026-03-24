@@ -7651,8 +7651,10 @@ class CallsMixin:
         if isinstance(expr, ast.FnCall):
             if expr.name == "set_add" and len(expr.args) >= 2:
                 return self._infer_vera_type(expr.args[1])
-            if expr.args:
-                return self._infer_set_elem_from_set_arg(expr.args[0])
+            # Only recurse into set-returning functions
+            if expr.name in ("set_new", "set_add", "set_remove"):
+                if expr.args:
+                    return self._infer_set_elem_from_set_arg(expr.args[0])
         return None
 
     def _translate_set_new(

@@ -1268,7 +1268,7 @@ function buildImportObject(module) {
       const et = m[1];
       if (et === "s") {
         imports.vera[name] = (h, ptr, len) => {
-          const e = readStr(ptr, len);
+          const e = readString(ptr, len);
           const ns = new Set(setStore.get(h));
           ns.add(e);
           return setAlloc(ns);
@@ -1289,7 +1289,7 @@ function buildImportObject(module) {
       const et = m[1];
       if (et === "s") {
         imports.vera[name] = (h, ptr, len) => {
-          const e = readStr(ptr, len);
+          const e = readString(ptr, len);
           return setStore.get(h)?.has(e) ? 1 : 0;
         };
       } else {
@@ -1307,7 +1307,7 @@ function buildImportObject(module) {
       const et = m[1];
       if (et === "s") {
         imports.vera[name] = (h, ptr, len) => {
-          const e = readStr(ptr, len);
+          const e = readString(ptr, len);
           const ns = new Set(setStore.get(h));
           ns.delete(e);
           return setAlloc(ns);
@@ -1331,7 +1331,7 @@ function buildImportObject(module) {
         const count = elems.length;
         if (count === 0) return [0, 0];
         if (et === "s") {
-          return allocArrayOfStrings(mem, alloc, elems, count);
+          return allocArrayOfStrings(elems);
         }
         if (et === "i") {
           const ptr = alloc(count * 8);

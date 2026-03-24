@@ -1695,6 +1695,17 @@ private fn foo(@Unit -> @Int)
 }
 """)
 
+    def test_set_add_wrong_element_type(self) -> None:
+        """set_add rejects an element whose type does not match T."""
+        _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Nat> = set_new();
+  set_size(set_add(@Set<Nat>.0, "oops"))
+}
+""", "expected Nat")
+
 
 # =====================================================================
 # Return type checking

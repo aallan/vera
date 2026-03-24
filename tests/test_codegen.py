@@ -7942,3 +7942,63 @@ public fn main(-> @Int)
 { set_size(set_add(set_new(), 99)) }
 """
         assert _run(source) == 1
+
+    def test_set_add_immutability(self) -> None:
+        """set_add returns a new set; the original is unchanged."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_new(), 1);
+  let @Set<Int> = set_add(@Set<Int>.0, 2);
+  set_size(@Set<Int>.1) + set_size(@Set<Int>.0)
+}
+"""
+        # @Set<Int>.1 = original (size 1), @Set<Int>.0 = new (size 2)
+        assert _run(source) == 3
+
+    def test_set_remove_immutability(self) -> None:
+        """set_remove returns a new set; the original is unchanged."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_add(set_new(), 1), 2);
+  let @Set<Int> = set_remove(@Set<Int>.0, 1);
+  set_size(@Set<Int>.1) + set_size(@Set<Int>.0)
+}
+"""
+        # @Set<Int>.1 = original (size 2), @Set<Int>.0 = after remove (size 1)
+        assert _run(source) == 3
+
+    def test_set_remove_absent_element(self) -> None:
+        """Removing a non-member doesn't change the set."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_new(), 42);
+  set_size(set_remove(@Set<Int>.0, 999))
+}
+"""
+        assert _run(source) == 1
+
+    def test_set_empty_contains(self) -> None:
+        """Contains on empty set returns false."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if set_contains(set_new(), 1) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 0
+
+    def test_set_empty_to_array(self) -> None:
+        """set_to_array on empty set returns empty array."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(set_to_array(set_new())) }
+"""
+        assert _run(source) == 0
