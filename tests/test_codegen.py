@@ -8295,23 +8295,21 @@ public fn main(-> @Int)
 """
         assert _run(source) == 1
 
-    def test_decimal_inequality(self) -> None:
-        """Two different Decimal values are not equal."""
+    def test_decimal_neg_large_value(self) -> None:
+        """decimal_neg on a large value: neg(1000000) + 1000000 = 0."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  let @Decimal = decimal_from_int(1);
-  let @Decimal = decimal_from_int(2);
-  if decimal_eq(@Decimal.1, @Decimal.0) then { 0 } else { 1 }
+  let @Decimal = decimal_from_int(1000000);
+  let @Decimal = decimal_add(decimal_neg(@Decimal.0), @Decimal.0);
+  if decimal_eq(@Decimal.0, decimal_from_int(0)) then { 1 } else { 0 }
 }
 """
         assert _run(source) == 1
 
     def test_decimal_div_host_called(self) -> None:
-        """decimal_div host function is invoked (coverage)."""
-        # We can't unwrap Option<Decimal> but the host function runs.
-        # Use the dividend as the result instead.
+        """decimal_div host import is wired and invoked."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
@@ -8322,10 +8320,12 @@ public fn main(-> @Int)
   floor(decimal_to_float(@Decimal.1))
 }
 """
+        result = _compile_ok(source)
+        assert '"decimal_div"' in result.wat
         assert _run(source) == 10
 
     def test_decimal_from_string_host_called(self) -> None:
-        """decimal_from_string host function is invoked (coverage)."""
+        """decimal_from_string host import is wired and invoked."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
@@ -8334,10 +8334,12 @@ public fn main(-> @Int)
   42
 }
 """
+        result = _compile_ok(source)
+        assert '"decimal_from_string"' in result.wat
         assert _run(source) == 42
 
     def test_decimal_compare_host_called(self) -> None:
-        """decimal_compare host function is invoked (coverage)."""
+        """decimal_compare host import is wired and invoked."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
@@ -8346,6 +8348,8 @@ public fn main(-> @Int)
   1
 }
 """
+        result = _compile_ok(source)
+        assert '"decimal_compare"' in result.wat
         assert _run(source) == 1
 
     def test_decimal_compare_equal_and_greater(self) -> None:
