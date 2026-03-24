@@ -31,14 +31,18 @@ def _js_coverage_dir(tmp_path_factory: pytest.TempPathFactory):  # type: ignore[
 
     # Generate text report at session end.
     if any(cov_dir.iterdir()):
-        subprocess.run(
-            [
-                "npx",
-                "c8",
-                "report",
-                f"--temp-directory={cov_dir}",
-                "--reporter=text",
-                "--src=vera/browser/",
-            ],
-            check=False,
-        )
+        try:
+            subprocess.run(
+                [
+                    "npx",
+                    "c8",
+                    "report",
+                    f"--temp-directory={cov_dir}",
+                    "--reporter=text",
+                    "--src=vera/browser/",
+                ],
+                check=False,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            print("WARNING: JS coverage report timed out after 120s")
