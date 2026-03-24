@@ -663,6 +663,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **No typed holes** | Partial programs cannot type-check; no placeholder expressions | [#226](https://github.com/aallan/vera/issues/226) |
 | **No resource limits** | No built-in fuel, memory, or timeout controls for untrusted code | [#239](https://github.com/aallan/vera/issues/239) |
 | **Combinator bare-constructor inference** | `option_map(None, f)` cannot infer type variable from bare `None`/`Err`; use typed binding | [#293](https://github.com/aallan/vera/issues/293) |
+| **Opaque handle monomorphization** | Generic functions like `option_unwrap_or<T>` cannot be specialised with `T=Decimal`/`Map`/`Set`; `match` on `Option<Decimal>` or `Ordering` from `decimal_compare` fails | [#341](https://github.com/aallan/vera/issues/341) |
 
 ## Extending the Compiler
 
