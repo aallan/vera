@@ -1,0 +1,140 @@
+-- Conformance: Set<T> collection operations (Chapter 9)
+-- Tests: set_new, set_add, set_contains, set_remove, set_size, set_to_array
+-- ================================================================
+-- test_set_empty_size
+-- An empty set is obtained by adding an element then removing it.
+-- set_size should return 0.
+-- ================================================================
+public fn test_set_empty_size(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  set_size(set_remove(set_add(set_new(), "x"), "x"))
+}
+
+-- ================================================================
+-- test_set_add_size
+-- Add 2 distinct String elements; set_size returns 2.
+-- ================================================================
+public fn test_set_add_size(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  set_size(set_add(set_add(set_new(), "a"), "b"))
+}
+
+-- ================================================================
+-- test_set_add_duplicate
+-- Add the same String element twice; set_size returns 1.
+-- ================================================================
+public fn test_set_add_duplicate(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  set_size(set_add(set_add(set_new(), "hello"), "hello"))
+}
+
+-- ================================================================
+-- test_set_contains_present
+-- Add "hello"; set_contains returns true (1).
+-- ================================================================
+public fn test_set_contains_present(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if set_contains(set_add(set_new(), "hello"), "hello") then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_set_contains_absent
+-- Add "hello"; checking "world" returns false (0).
+-- ================================================================
+public fn test_set_contains_absent(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  if set_contains(set_add(set_new(), "hello"), "world") then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_set_remove
+-- Add 2 elements, remove 1; set_size returns 1.
+-- ================================================================
+public fn test_set_remove(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  set_size(set_remove(set_add(set_add(set_new(), "a"), "b"), "a"))
+}
+
+-- ================================================================
+-- test_set_remove_absent
+-- Remove a non-member from a 2-element set; set_size stays 2.
+-- ================================================================
+public fn test_set_remove_absent(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  set_size(set_remove(set_add(set_add(set_new(), "a"), "b"), "c"))
+}
+
+-- ================================================================
+-- test_set_int_elements
+-- Use Int elements (not String) to verify non-string element types work.
+-- Add two Int entries; check set_contains for a present element.
+-- ================================================================
+public fn test_set_int_elements(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  if set_contains(set_add(set_add(set_new(), 1), 2), 2) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_set_to_array
+-- Add 2 elements; set_to_array returns an array of length 2.
+-- ================================================================
+public fn test_set_to_array(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  array_length(set_to_array(set_add(set_add(set_new(), "x"), "y")))
+}
+
+-- ================================================================
+-- main — run all tests and return 0 on success
+-- Sum: 0+2+1+1+0+1+2+1+2 = 10
+-- ================================================================
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = test_set_empty_size(()) + test_set_add_size(()) + test_set_add_duplicate(()) + test_set_contains_present(()) + test_set_contains_absent(()) + test_set_remove(()) + test_set_remove_absent(()) + test_set_int_elements(()) + test_set_to_array(());
+  if @Int.0 == 10 then {
+    0
+  } else {
+    1
+  }
+}

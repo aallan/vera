@@ -243,13 +243,34 @@ let @Array<Int> = [1, 2, 3];
 
 For the compilation model of arrays, see Chapter 11, Section 11.12.
 
-### 9.4.2 Set\<T\> (Future)
+### 9.4.2 Set\<T\>
 
-> **Status: Not yet implemented.** Tracked in [#62](https://github.com/aallan/vera/issues/62). Depends on Abilities ([#60](https://github.com/aallan/vera/issues/60)).
+`Set<T>` is an unordered collection of unique elements. It requires the `Eq` and `Hash` abilities on `T` (see Section 9.8). Element types must be hashable primitives: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, or `Unit`.
 
-`Set<T>` will be an unordered collection of unique elements. It will require the `Eq` and `Hash` abilities on `T` (see Section 9.8).
+Set is an opaque built-in type implemented via host imports. The runtime maintains the underlying set; WASM code interacts with sets through `i32` handles. All operations are pure — `set_add` and `set_remove` return new sets (functional semantics).
 
-Operations will include union, intersection, difference, membership testing, and size.
+**Operations:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `set_new()` | `forall<T> () → Set<T>` | Create an empty set |
+| `set_add(s, t)` | `forall<T> (Set<T>, T) → Set<T>` | Return a new set with the element added |
+| `set_contains(s, t)` | `forall<T> (Set<T>, T) → Bool` | Test whether an element is present |
+| `set_remove(s, t)` | `forall<T> (Set<T>, T) → Set<T>` | Return a new set without the element |
+| `set_size(s)` | `forall<T> (Set<T>) → Int` | Number of elements |
+| `set_to_array(s)` | `forall<T> (Set<T>) → Array<T>` | All elements as an array |
+
+```
+private fn set_demo(-> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  set_size(set_add(set_add(set_new(), "hello"), "world"))
+}
+```
+
+`Set` and `Map` (Section 9.4.3) together provide the standard collection types needed for structured data handling.
 
 ### 9.4.3 Map\<K, V\>
 

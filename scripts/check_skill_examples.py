@@ -43,93 +43,96 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     512: ("FRAGMENT", "Map built-in examples, bare calls"),
 
     # Handler syntax — pseudocode template
-    936: ("FRAGMENT", "Effect handler syntax template"),
+    950: ("FRAGMENT", "Effect handler syntax template"),
 
     # Common mistake: bare if/else expression
-    1343: ("FRAGMENT", "Common mistake example, bare if/else"),
+    1357: ("FRAGMENT", "Common mistake example, bare if/else"),
 
     # String operations — bare function calls
-    527: ("FRAGMENT", "String built-in examples, bare calls"),
+    541: ("FRAGMENT", "String built-in examples, bare calls"),
+
+    # Set operations — bare function calls
+    529: ("FRAGMENT", "Set built-in examples, bare calls"),
 
     # Markdown operations — bare function calls
-    603: ("FRAGMENT", "Markdown built-in examples, bare calls"),
+    617: ("FRAGMENT", "Markdown built-in examples, bare calls"),
 
     # Regex operations — bare function calls
-    637: ("FRAGMENT", "Regex built-in examples, bare calls"),
-    648: ("FRAGMENT", "Regex Result matching example, bare expression"),
+    651: ("FRAGMENT", "Regex built-in examples, bare calls"),
+    662: ("FRAGMENT", "Regex Result matching example, bare expression"),
 
     # String interpolation — bare expressions
-    566: ("FRAGMENT", "String interpolation examples, bare expressions"),
+    580: ("FRAGMENT", "String interpolation examples, bare expressions"),
 
     # String search — bare function calls
-    578: ("FRAGMENT", "String search built-in examples, bare calls"),
+    592: ("FRAGMENT", "String search built-in examples, bare calls"),
 
     # String transformation — bare function calls
-    589: ("FRAGMENT", "String transformation built-in examples, bare calls"),
+    603: ("FRAGMENT", "String transformation built-in examples, bare calls"),
 
     # Numeric operations — bare function calls
-    660: ("FRAGMENT", "Numeric built-in examples, bare calls"),
+    674: ("FRAGMENT", "Numeric built-in examples, bare calls"),
 
     # Contracts section — requires/ensures fragments
-    717: ("FRAGMENT", "Requires clause example, not full function"),
-    726: ("FRAGMENT", "Ensures clause example, not full function"),
+    731: ("FRAGMENT", "Requires clause example, not full function"),
+    740: ("FRAGMENT", "Ensures clause example, not full function"),
 
     # Quantified expressions — bare forall/exists calls
-    753: ("FRAGMENT", "Quantified expression examples, bare calls"),
+    767: ("FRAGMENT", "Quantified expression examples, bare calls"),
 
     # Effects section — bare effect rows
     # (old entry at 580 removed — block shifted to 582 with Async addition)
 
     # Effect handler syntax template
-    919: ("FRAGMENT", "Handler syntax template, not real code"),
+    933: ("FRAGMENT", "Handler syntax template, not real code"),
 
     # Effect declarations — bare effects(...) clauses
-    771: ("FRAGMENT", "Effect declarations list"),
-    874: ("FRAGMENT", "Async effect declarations list"),
-    894: ("FRAGMENT", "Async effect declarations, bare clauses"),
+    785: ("FRAGMENT", "Effect declarations list"),
+    888: ("FRAGMENT", "Async effect declarations list"),
+    908: ("FRAGMENT", "Async effect declarations, bare clauses"),
 
     # Qualified calls and handler fragments — bare expressions
-    948: ("FRAGMENT", "Handler with clause, bare expression"),
-    958: ("FRAGMENT", "Qualified call examples, bare expressions"),
+    962: ("FRAGMENT", "Handler with clause, bare expression"),
+    972: ("FRAGMENT", "Qualified call examples, bare expressions"),
 
     # Module declaration and import syntax
-    996: ("FRAGMENT", "Module declaration and import example"),
+    1010: ("FRAGMENT", "Module declaration and import example"),
 
     # Line comments — bare comments
-    1101: ("FRAGMENT", "Comment syntax example"),
+    1115: ("FRAGMENT", "Comment syntax example"),
 
     # Type conversions — bare function calls
-    688: ("FRAGMENT", "Float64 predicate and constant examples, bare calls"),
+    702: ("FRAGMENT", "Float64 predicate and constant examples, bare calls"),
 
     # Float64 predicates — bare function calls
-    675: ("FRAGMENT", "Float64 predicate examples, bare calls"),
+    689: ("FRAGMENT", "Float64 predicate examples, bare calls"),
 
     # Common mistakes section — intentionally wrong code
-    1164: ("FRAGMENT", "Wrong: missing contracts"),
-    1171: ("FRAGMENT", "Wrong: missing effects clause"),
-    1184: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
-    1218: ("FRAGMENT", "Wrong: bare expression without indices"),
-    1231: ("FRAGMENT", "Wrong: missing index on slot reference"),
-    1236: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
+    1178: ("FRAGMENT", "Wrong: missing contracts"),
+    1185: ("FRAGMENT", "Wrong: missing effects clause"),
+    1198: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
+    1232: ("FRAGMENT", "Wrong: bare expression without indices"),
+    1245: ("FRAGMENT", "Wrong: missing index on slot reference"),
+    1250: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
     1302: ("FRAGMENT", "Wrong: match arm with incorrect return"),
-    1313: ("FRAGMENT", "Wrong: non-exhaustive match (missing None)"),
-    1326: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
-    1258: ("FRAGMENT", "Correct: match arm example"),
+    1327: ("FRAGMENT", "Wrong: non-exhaustive match (missing None)"),
+    1340: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
+    1272: ("FRAGMENT", "Correct: match arm example"),
     # 1294 duplicate removed — was 1301, now handled below
     # 1326 duplicate removed — if/else entry moved to 1343 below
-    1348: ("FRAGMENT", "Correct: if/else with braces"),
+    1362: ("FRAGMENT", "Correct: if/else with braces"),
 
     # Import syntax — intentionally unsupported
-    1359: ("FRAGMENT", "Wrong: import aliasing not supported"),
-    1364: ("FRAGMENT", "Correct: import syntax example"),
-    1374: ("FRAGMENT", "Wrong: import hiding not supported"),
-    1379: ("FRAGMENT", "Correct: multi-import syntax"),
+    1373: ("FRAGMENT", "Wrong: import aliasing not supported"),
+    1378: ("FRAGMENT", "Correct: import syntax example"),
+    1388: ("FRAGMENT", "Wrong: import hiding not supported"),
+    1393: ("FRAGMENT", "Correct: multi-import syntax"),
 
     # Match arm fragment — bare match body
-    1333: ("FRAGMENT", "Match arm bare expression"),
+    1347: ("FRAGMENT", "Match arm bare expression"),
 
     # String escapes — bare expression
-    1393: ("FRAGMENT", "String escape backslash examples"),
+    1407: ("FRAGMENT", "String escape backslash examples"),
 
     # =================================================================
     # MISMATCH — uses syntax the parser doesn't handle in isolation.

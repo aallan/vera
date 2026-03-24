@@ -1623,6 +1623,90 @@ private fn foo(@Unit -> @Int)
 """, "type")
 
 
+class TestSetChecker:
+
+    def test_set_new_type_checks(self) -> None:
+        """set_new() in a let binding with Set<Int> type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_new();
+  set_size(@Set<Int>.0)
+}
+""")
+
+    def test_set_add_type_checks(self) -> None:
+        """set_add(set_new(), 1) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_new(), 1)) }
+""")
+
+    def test_set_contains_type_checks(self) -> None:
+        """set_contains returns Bool."""
+        _check_ok("""
+private fn foo(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ set_contains(set_add(set_new(), 1), 1) }
+""")
+
+    def test_set_remove_type_checks(self) -> None:
+        """set_remove type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_remove(set_add(set_new(), 1), 1)) }
+""")
+
+    def test_set_size_type_checks(self) -> None:
+        """set_size returns Int."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_new(), 42)) }
+""")
+
+    def test_set_to_array_type_checks(self) -> None:
+        """set_to_array type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(set_to_array(set_add(set_new(), 1))) }
+""")
+
+    def test_set_wrong_arity(self) -> None:
+        """set_add with wrong number of args produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_new())) }
+""", "expects")
+
+    def test_set_new_infers_from_let(self) -> None:
+        """let @Set<String> = set_new() infers correctly."""
+        _check_ok("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<String> = set_new();
+  set_size(@Set<String>.0)
+}
+""")
+
+    def test_set_add_wrong_element_type(self) -> None:
+        """set_add rejects an element whose type does not match T."""
+        _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Nat> = set_new();
+  set_size(set_add(@Set<Nat>.0, "oops"))
+}
+""", "expected Nat")
+
+
 # =====================================================================
 # Return type checking
 # =====================================================================

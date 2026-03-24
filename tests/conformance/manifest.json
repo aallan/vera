@@ -556,6 +556,22 @@
     ]
   },
   {
+    "id": "ch09_set",
+    "file": "ch09_set.vera",
+    "chapter": 9,
+    "title": "Set<T> collection operations",
+    "level": "run",
+    "spec_ref": "Section 9.4.2",
+    "features": [
+      "set_new",
+      "set_add",
+      "set_contains",
+      "set_remove",
+      "set_size",
+      "set_to_array"
+    ]
+  },
+  {
     "id": "ch09_numeric_builtins",
     "file": "ch09_numeric_builtins.vera",
     "chapter": 9,

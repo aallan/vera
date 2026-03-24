@@ -7853,3 +7853,272 @@ public fn main(-> @Int)
 { array_length(map_values(map_insert(map_new(), "k", 99))) }
 """
         assert _run(source) == 1
+
+
+class TestSetCollection:
+    """Set built-in operations: set_new, set_add, set_contains,
+    set_remove, set_size, set_to_array."""
+
+    def test_set_empty_size(self) -> None:
+        """set_size(set_new()) returns 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_remove(set_add(set_new(), 1), 1)) }
+"""
+        assert _run(source) == 0
+
+    def test_set_add_and_size(self) -> None:
+        """Adding 2 elements gives size 2."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_add(set_new(), 1), 2)) }
+"""
+        assert _run(source) == 2
+
+    def test_set_add_duplicate(self) -> None:
+        """Adding same element twice gives size 1."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_add(set_new(), 42), 42)) }
+"""
+        assert _run(source) == 1
+
+    def test_set_contains_present(self) -> None:
+        """Returns 1 for present element."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if set_contains(set_add(set_new(), 7), 7) then { 1 } else { 0 } }
+"""
+        assert _run(source) == 1
+
+    def test_set_contains_absent(self) -> None:
+        """Returns 0 for absent element."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if set_contains(set_add(set_new(), 7), 99) then { 1 } else { 0 } }
+"""
+        assert _run(source) == 0
+
+    def test_set_remove(self) -> None:
+        """Removing element reduces size."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_add(set_new(), 1), 2);
+  set_size(set_remove(@Set<Int>.0, 1))
+}
+"""
+        assert _run(source) == 1
+
+    def test_set_to_array_length(self) -> None:
+        """set_to_array returns array with correct length."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(set_to_array(set_add(set_add(set_new(), 10), 20))) }
+"""
+        assert _run(source) == 2
+
+    def test_set_string_elements(self) -> None:
+        """Set<String> works."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_add(set_new(), "hello"), "world")) }
+"""
+        assert _run(source) == 2
+
+    def test_set_int_elements(self) -> None:
+        """Set<Int> works."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_new(), 99)) }
+"""
+        assert _run(source) == 1
+
+    def test_set_add_immutability(self) -> None:
+        """set_add returns a new set; the original is unchanged."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_new(), 1);
+  let @Set<Int> = set_add(@Set<Int>.0, 2);
+  set_size(@Set<Int>.1) + set_size(@Set<Int>.0)
+}
+"""
+        # @Set<Int>.1 = original (size 1), @Set<Int>.0 = new (size 2)
+        assert _run(source) == 3
+
+    def test_set_remove_immutability(self) -> None:
+        """set_remove returns a new set; the original is unchanged."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_add(set_new(), 1), 2);
+  let @Set<Int> = set_remove(@Set<Int>.0, 1);
+  set_size(@Set<Int>.1) + set_size(@Set<Int>.0)
+}
+"""
+        # @Set<Int>.1 = original (size 2), @Set<Int>.0 = after remove (size 1)
+        assert _run(source) == 3
+
+    def test_set_remove_absent_element(self) -> None:
+        """Removing a non-member doesn't change the set."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_new(), 42);
+  set_size(set_remove(@Set<Int>.0, 999))
+}
+"""
+        assert _run(source) == 1
+
+    def test_set_empty_contains(self) -> None:
+        """Contains on empty set returns false."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if set_contains(set_new(), 1) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 0
+
+    def test_set_empty_to_array(self) -> None:
+        """set_to_array on empty set returns empty array."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(set_to_array(set_new())) }
+"""
+        assert _run(source) == 0
+
+    def test_set_bool_elements(self) -> None:
+        """Set<Bool> exercises the 'b' (i32) type tag branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Bool> = set_add(set_add(set_new(), true), false);
+  let @Int = set_size(@Set<Bool>.0);
+  let @Bool = set_contains(@Set<Bool>.0, true);
+  let @Set<Bool> = set_remove(@Set<Bool>.0, true);
+  if @Bool.0 then { @Int.0 + set_size(@Set<Bool>.0) } else { -1 }
+}
+"""
+        # size=2, contains=true, after remove size=1 → 2+1=3
+        assert _run(source) == 3
+
+    def test_set_float64_elements(self) -> None:
+        """Set<Float64> exercises the 'f' (f64) type tag branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Float64> = set_add(set_add(set_new(), 1.5), 2.5);
+  let @Int = set_size(@Set<Float64>.0);
+  let @Bool = set_contains(@Set<Float64>.0, 1.5);
+  let @Set<Float64> = set_remove(@Set<Float64>.0, 1.5);
+  if @Bool.0 then { @Int.0 + set_size(@Set<Float64>.0) } else { -1 }
+}
+"""
+        # size=2, contains=true, after remove size=1 → 2+1=3
+        assert _run(source) == 3
+
+    def test_set_to_array_int(self) -> None:
+        """set_to_array with Int elements exercises the 'i' to_array branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_add(set_new(), 10), 20);
+  array_length(set_to_array(@Set<Int>.0))
+}
+"""
+        assert _run(source) == 2
+
+    def test_set_string_contains_and_remove(self) -> None:
+        """set_contains and set_remove with String elements."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<String> = set_add(set_add(set_new(), "a"), "b");
+  let @Bool = set_contains(@Set<String>.0, "a");
+  let @Set<String> = set_remove(@Set<String>.0, "a");
+  if @Bool.0 then { set_size(@Set<String>.0) } else { -1 }
+}
+"""
+        # contains "a" = true, after remove size = 1
+        assert _run(source) == 1
+
+    def test_set_to_array_string(self) -> None:
+        """set_to_array with String elements exercises the 's' to_array branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<String> = set_add(set_add(set_new(), "a"), "b");
+  array_length(set_to_array(@Set<String>.0))
+}
+"""
+        assert _run(source) == 2
+
+    def test_set_to_array_float64(self) -> None:
+        """set_to_array with Float64 elements exercises the 'f' to_array branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Float64> = set_add(set_add(set_new(), 1.0), 2.0);
+  array_length(set_to_array(@Set<Float64>.0))
+}
+"""
+        assert _run(source) == 2
+
+    def test_set_to_array_bool(self) -> None:
+        """set_to_array with Bool elements exercises the 'b' to_array branch."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Bool> = set_add(set_add(set_new(), true), false);
+  array_length(set_to_array(@Set<Bool>.0))
+}
+"""
+        assert _run(source) == 2
+
+    def test_set_remove_from_empty(self) -> None:
+        """Removing from an empty set leaves size 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_remove(set_new(), 5)) }
+"""
+        assert _run(source) == 0
+
+    def test_set_zero_value_element(self) -> None:
+        """Zero (0) is a valid element, not confused with empty/absent."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_new(), 0);
+  let @Bool = set_contains(@Set<Int>.0, 0);
+  let @Int = set_size(@Set<Int>.0);
+  let @Set<Int> = set_remove(@Set<Int>.0, 0);
+  if @Bool.0 then { @Int.0 + set_size(@Set<Int>.0) } else { -1 }
+}
+"""
+        # contains(0)=true, size=1, after remove size=0 → 1+0=1
+        assert _run(source) == 1

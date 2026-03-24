@@ -1240,6 +1240,121 @@ function buildImportObject(module) {
     }
   }
 
+  // Set<T> bindings — host-side Set via opaque i32 handles.
+  // Import names are type-specific: set_add$ei, set_contains$es, etc.
+  const setStore = new Map();   // handle → JS Set
+  let setNextHandle = 1;
+  function setAlloc(s) {
+    const h = setNextHandle++;
+    setStore.set(h, s);
+    return h;
+  }
+
+  // set_new — always needed if any set op is used
+  if (needed.has("set_new")) {
+    imports.vera["set_new"] = () => setAlloc(new Set());
+  }
+
+  // set_size — unparameterised
+  if (needed.has("set_size")) {
+    imports.vera["set_size"] = (h) => BigInt(setStore.get(h)?.size ?? 0);
+  }
+
+  for (const name of needed) {
+    let m;
+    // set_add$e(.)
+    m = name.match(/^set_add\$e(.)$/);
+    if (m) {
+      const et = m[1];
+      if (et === "s") {
+        imports.vera[name] = (h, ptr, len) => {
+          const e = readString(ptr, len);
+          const ns = new Set(setStore.get(h));
+          ns.add(e);
+          return setAlloc(ns);
+        };
+      } else {
+        imports.vera[name] = (h, e) => {
+          const ns = new Set(setStore.get(h));
+          ns.add(et === "i" ? Number(e) : e);
+          return setAlloc(ns);
+        };
+      }
+      continue;
+    }
+
+    // set_contains$e(.)
+    m = name.match(/^set_contains\$e(.)$/);
+    if (m) {
+      const et = m[1];
+      if (et === "s") {
+        imports.vera[name] = (h, ptr, len) => {
+          const e = readString(ptr, len);
+          return setStore.get(h)?.has(e) ? 1 : 0;
+        };
+      } else {
+        imports.vera[name] = (h, e) => {
+          const val = et === "i" ? Number(e) : e;
+          return setStore.get(h)?.has(val) ? 1 : 0;
+        };
+      }
+      continue;
+    }
+
+    // set_remove$e(.)
+    m = name.match(/^set_remove\$e(.)$/);
+    if (m) {
+      const et = m[1];
+      if (et === "s") {
+        imports.vera[name] = (h, ptr, len) => {
+          const e = readString(ptr, len);
+          const ns = new Set(setStore.get(h));
+          ns.delete(e);
+          return setAlloc(ns);
+        };
+      } else {
+        imports.vera[name] = (h, e) => {
+          const ns = new Set(setStore.get(h));
+          ns.delete(et === "i" ? Number(e) : e);
+          return setAlloc(ns);
+        };
+      }
+      continue;
+    }
+
+    // set_to_array$e(.)
+    m = name.match(/^set_to_array\$e(.)$/);
+    if (m) {
+      const et = m[1];
+      imports.vera[name] = (h) => {
+        const elems = [...(setStore.get(h) ?? [])];
+        const count = elems.length;
+        if (count === 0) return [0, 0];
+        if (et === "s") {
+          return allocArrayOfStrings(elems);
+        }
+        if (et === "i") {
+          const ptr = alloc(count * 8);
+          const dv = new DataView(mem().buffer);
+          for (let i = 0; i < count; i++) dv.setBigInt64(ptr + i * 8, BigInt(elems[i]), true);
+          return [ptr, count];
+        }
+        if (et === "f") {
+          const ptr = alloc(count * 8);
+          const dv = new DataView(mem().buffer);
+          for (let i = 0; i < count; i++) dv.setFloat64(ptr + i * 8, elems[i], true);
+          return [ptr, count];
+        }
+        // "b" — i32 elements
+        const ptr = alloc(count * 4);
+        const dv = new DataView(mem().buffer);
+        for (let i = 0; i < count; i++) dv.setInt32(ptr + i * 4, elems[i], true);
+        return [ptr, count];
+      };
+      continue;
+    }
+  }
+
   return imports;
 }
 
