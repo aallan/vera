@@ -94,6 +94,7 @@ Lower priority than data-format support but important for adoption.
 - [#222](https://github.com/aallan/vera/issues/222) **LSP server** — the standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf); the existing `--json` infrastructure is a solid foundation to build on
 - [#224](https://github.com/aallan/vera/issues/224) REPL
 - [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — a HumanEval/MBPP-style benchmark adapted for Vera would quantify LLM code generation progress and attract research attention. DafnyBench demonstrated that verification success rates can improve from 68% to 96% over one year of tracking.
+- [#337](https://github.com/aallan/vera/issues/337) Native JavaScript coverage for browser runtime (c8 + codecov)
 - [#56](https://github.com/aallan/vera/issues/56) Incremental compilation
 - [#237](https://github.com/aallan/vera/issues/237) WASI 0.2 compliance
 - [#238](https://github.com/aallan/vera/issues/238) Component Model (WIT) interop
