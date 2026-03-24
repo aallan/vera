@@ -18,7 +18,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 ## Where we are
 
-**v0.0.94** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 80 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 57-program conformance suite, a canonical formatter, and contract-driven testing. `Map<K, V>` provides key-value collections with ability-constrained keys. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
+**v0.0.94** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 86 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 58-program conformance suite, a canonical formatter, and contract-driven testing. `Map<K, V>` and `Set<T>` provide collection types with ability-constrained keys/elements. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
 
 Most remaining features are gated by a single dependency chain:
 
@@ -57,7 +57,7 @@ The chain that unlocks agent-viable data processing. Each item depends on the pr
 
 1. <del>[#60](https://github.com/aallan/vera/issues/60) **Abilities and type constraints** — highest-leverage foundation work. Every item below is transitively blocked by this.</del> ([v0.0.90](https://github.com/aallan/vera/releases/tag/v0.0.90))
 2. <del>[#133](https://github.com/aallan/vera/issues/133) **Array `map`/`fold`/`filter`** — `array_slice`, `array_map`, `array_filter`, `array_fold` with full generic codegen support.</del> ([v0.0.91](https://github.com/aallan/vera/releases/tag/v0.0.91))
-3. [#62](https://github.com/aallan/vera/issues/62) **Map and Set collections** — requires abilities for key constraints (`Eq + Hash`). Unlocks structured data handling.
+3. [#62](https://github.com/aallan/vera/issues/62) **Map and Set collections** — requires abilities for key constraints (`Eq + Hash`). Unlocks structured data handling. ([PR 1](https://github.com/aallan/vera/pull/332))
 4. [#58](https://github.com/aallan/vera/issues/58) **JSON type** — requires Map for `JObject`. Without JSON parsing and serialisation, Vera cannot participate in any API integration workflow.
 5. [#57](https://github.com/aallan/vera/issues/57) **HTTP effect** — requires JSON for request/response bodies. Completes the client chain: a Vera program can make an HTTP call, parse the JSON response, and return typed, verified data.
 6. [#305](https://github.com/aallan/vera/issues/305) **HTTP Server effect** — requires HTTP (#57) + WASI 0.2 (#237). Incoming requests map to effect operations via `handle[HttpServer]`, with contracts verifying response schemas.

@@ -96,6 +96,9 @@ class WasmContext(
         # Map host-import tracking (propagated to codegen core)
         self._map_imports: set[str] = set()
         self._map_ops_used: set[str] = set()
+        # Set host-import tracking (propagated to codegen core)
+        self._set_imports: set[str] = set()
+        self._set_ops_used: set[str] = set()
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}

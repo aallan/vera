@@ -573,6 +573,74 @@ class TypeEnv:
             forall_constraints=_map_kv_constraints,
         )
 
+        # Set<T> operations (host-import builtins)
+        # Require Eq<T> + Hash<T> ability constraints.
+        _set_constraints = (
+            AbilityConstraint(ability_name="Eq", type_var="T"),
+            AbilityConstraint(ability_name="Hash", type_var="T"),
+        )
+        self.functions["set_new"] = FunctionInfo(
+            name="set_new",
+            forall_vars=("T",),
+            param_types=(),
+            return_type=AdtType("Set", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+            forall_constraints=_set_constraints,
+        )
+        self.functions["set_add"] = FunctionInfo(
+            name="set_add",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Set", (TypeVar("T"),)),
+                TypeVar("T"),
+            ),
+            return_type=AdtType("Set", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+            forall_constraints=_set_constraints,
+        )
+        self.functions["set_contains"] = FunctionInfo(
+            name="set_contains",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Set", (TypeVar("T"),)),
+                TypeVar("T"),
+            ),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+            forall_constraints=_set_constraints,
+        )
+        self.functions["set_remove"] = FunctionInfo(
+            name="set_remove",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Set", (TypeVar("T"),)),
+                TypeVar("T"),
+            ),
+            return_type=AdtType("Set", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+            forall_constraints=_set_constraints,
+        )
+        self.functions["set_size"] = FunctionInfo(
+            name="set_size",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Set", (TypeVar("T"),)),
+            ),
+            return_type=INT,
+            effect=PureEffectRow(),
+            forall_constraints=_set_constraints,
+        )
+        self.functions["set_to_array"] = FunctionInfo(
+            name="set_to_array",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Set", (TypeVar("T"),)),
+            ),
+            return_type=AdtType("Array", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+            forall_constraints=_set_constraints,
+        )
+
         # Option / Result combinators
         # Implementations are injected as Vera source AST during codegen
         # (see vera.prelude); these signatures enable type checking.

@@ -7853,3 +7853,92 @@ public fn main(-> @Int)
 { array_length(map_values(map_insert(map_new(), "k", 99))) }
 """
         assert _run(source) == 1
+
+
+class TestSetCollection:
+    """Set built-in operations: set_new, set_add, set_contains,
+    set_remove, set_size, set_to_array."""
+
+    def test_set_empty_size(self) -> None:
+        """set_size(set_new()) returns 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_remove(set_add(set_new(), 1), 1)) }
+"""
+        assert _run(source) == 0
+
+    def test_set_add_and_size(self) -> None:
+        """Adding 2 elements gives size 2."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_add(set_new(), 1), 2)) }
+"""
+        assert _run(source) == 2
+
+    def test_set_add_duplicate(self) -> None:
+        """Adding same element twice gives size 1."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_add(set_new(), 42), 42)) }
+"""
+        assert _run(source) == 1
+
+    def test_set_contains_present(self) -> None:
+        """Returns 1 for present element."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if set_contains(set_add(set_new(), 7), 7) then { 1 } else { 0 } }
+"""
+        assert _run(source) == 1
+
+    def test_set_contains_absent(self) -> None:
+        """Returns 0 for absent element."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if set_contains(set_add(set_new(), 7), 99) then { 1 } else { 0 } }
+"""
+        assert _run(source) == 0
+
+    def test_set_remove(self) -> None:
+        """Removing element reduces size."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_add(set_new(), 1), 2);
+  set_size(set_remove(@Set<Int>.0, 1))
+}
+"""
+        assert _run(source) == 1
+
+    def test_set_to_array_length(self) -> None:
+        """set_to_array returns array with correct length."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(set_to_array(set_add(set_add(set_new(), 10), 20))) }
+"""
+        assert _run(source) == 2
+
+    def test_set_string_elements(self) -> None:
+        """Set<String> works."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_add(set_new(), "hello"), "world")) }
+"""
+        assert _run(source) == 2
+
+    def test_set_int_elements(self) -> None:
+        """Set<Int> works."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ set_size(set_add(set_new(), 99)) }
+"""
+        assert _run(source) == 1

@@ -171,6 +171,9 @@ class FunctionCompilationMixin:
         # Propagate Map host-import tracking
         self._map_imports.update(ctx._map_imports)
         self._map_ops_used.update(ctx._map_ops_used)
+        # Propagate Set host-import tracking
+        self._set_imports.update(ctx._set_imports)
+        self._set_ops_used.update(ctx._set_ops_used)
 
         # Coerce body result if return type is i32 but body produces i64
         # (e.g. IntLit in a Byte-returning function)

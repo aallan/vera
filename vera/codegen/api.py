@@ -82,6 +82,7 @@ class CompileResult:
     md_ops_used: set[str] = field(default_factory=set)
     regex_ops_used: set[str] = field(default_factory=set)
     map_ops_used: set[str] = field(default_factory=set)
+    set_ops_used: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -744,22 +745,12 @@ def execute(
         )
 
     # -----------------------------------------------------------------
-    # Map<K, V> host functions
+    # Shared helpers for Map<K, V> and Set<T> host functions
     # -----------------------------------------------------------------
 
-    if result.map_ops_used:
-        # Handle table: maps i32 handles to Python dicts.
-        # Keys are Python values (int, float, str, bool).
-        # Values are tuples of WASM-level ints/floats.
-        _map_store: dict[int, dict[object, object]] = {}
-        _map_next_handle = [1]  # mutable counter in list for closure access
-
-        def _map_alloc(d: dict[object, object]) -> int:
-            h = _map_next_handle[0]
-            _map_next_handle[0] = h + 1
-            _map_store[h] = d
-            return h
-
+    # Shared helpers for collection host functions (Map and Set).
+    # Defined once, used by both Map and Set sections below.
+    if result.map_ops_used or result.set_ops_used:
         def _write_i64(
             caller: wasmtime.Caller, offset: int, value: int,
         ) -> None:
@@ -847,6 +838,28 @@ def execute(
                 _write_f64(caller, ptr + i * 8, v)
             return (ptr, count)
 
+        _VAL_WASM_TYPES = {
+            "i": [wasmtime.ValType.i64()],
+            "f": [wasmtime.ValType.f64()],
+            "b": [wasmtime.ValType.i32()],
+            "s": [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+        }
+
+    # -----------------------------------------------------------------
+    # Map<K, V> host functions
+    # -----------------------------------------------------------------
+
+    if result.map_ops_used:
+        # Handle table: maps i32 handles to Python dicts.
+        _map_store: dict[int, dict[object, object]] = {}
+        _map_next_handle = [1]
+
+        def _map_alloc(d: dict[object, object]) -> int:
+            h = _map_next_handle[0]
+            _map_next_handle[0] = h + 1
+            _map_store[h] = d
+            return h
+
         # map_new() → i32 handle
         def host_map_new(_caller: wasmtime.Caller) -> int:
             return _map_alloc({})
@@ -864,13 +877,6 @@ def execute(
             "f": lambda _c, k: k,            # f64 key as-is
             "b": lambda _c, k: k,            # i32 key as-is
             "s": lambda c, p, l: _read_wasm_string(c, p, l),  # String
-        }
-
-        _VAL_WASM_TYPES = {
-            "i": [wasmtime.ValType.i64()],
-            "f": [wasmtime.ValType.f64()],
-            "b": [wasmtime.ValType.i32()],
-            "s": [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
         }
 
         def _define_map_insert(kt: str, vt: str) -> None:
@@ -1115,6 +1121,181 @@ def execute(
                 suffix = op_name[len("map_values$"):]
                 vt = suffix[1]
                 _define_map_values(vt)
+
+    # -----------------------------------------------------------------
+    # Set<T> host functions
+    # -----------------------------------------------------------------
+
+    if result.set_ops_used:
+        _set_store: dict[int, set[object]] = {}
+        _set_next_handle = [1]
+
+        def _set_alloc(s: set[object]) -> int:
+            h = _set_next_handle[0]
+            _set_next_handle[0] = h + 1
+            _set_store[h] = s
+            return h
+
+        # set_new() → i32 handle
+        def host_set_new(_caller: wasmtime.Caller) -> int:
+            return _set_alloc(set())
+
+        linker.define_func(
+            "vera", "set_new",
+            wasmtime.FuncType([], [wasmtime.ValType.i32()]),
+            host_set_new, access_caller=True,
+        )
+
+        def _define_set_add(et: str) -> None:
+            name = f"set_add$e{et}"
+            elem_types = _VAL_WASM_TYPES[et]
+            param_types = [wasmtime.ValType.i32()] + elem_types
+            ftype = wasmtime.FuncType(param_types, [wasmtime.ValType.i32()])
+
+            if et == "s":
+                def host_fn(
+                    caller: wasmtime.Caller, h: int, ep: int, el: int,
+                ) -> int:
+                    e = _read_wasm_string(caller, ep, el)
+                    new_s = set(_set_store.get(h, set()))
+                    new_s.add(e)
+                    return _set_alloc(new_s)
+            elif et == "i":
+                def host_fn(  # type: ignore[misc]
+                    _caller: wasmtime.Caller, h: int, e: int,
+                ) -> int:
+                    new_s = set(_set_store.get(h, set()))
+                    new_s.add(e)
+                    return _set_alloc(new_s)
+            elif et == "f":
+                def host_fn(  # type: ignore[misc]
+                    _caller: wasmtime.Caller, h: int, e: float,
+                ) -> int:
+                    new_s = set(_set_store.get(h, set()))
+                    new_s.add(e)
+                    return _set_alloc(new_s)
+            else:  # "b" — Bool/Byte/ADT handle
+                def host_fn(  # type: ignore[misc]
+                    _caller: wasmtime.Caller, h: int, e: int,
+                ) -> int:
+                    new_s = set(_set_store.get(h, set()))
+                    new_s.add(e)
+                    return _set_alloc(new_s)
+
+            linker.define_func(
+                "vera", name, ftype, host_fn, access_caller=True,
+            )
+
+        def _define_set_contains(et: str) -> None:
+            name = f"set_contains$e{et}"
+            elem_types = _VAL_WASM_TYPES[et]
+            param_types = [wasmtime.ValType.i32()] + elem_types
+            ftype = wasmtime.FuncType(param_types, [wasmtime.ValType.i32()])
+
+            if et == "s":
+                def host_fn(
+                    caller: wasmtime.Caller, h: int, ep: int, el: int,
+                ) -> int:
+                    e = _read_wasm_string(caller, ep, el)
+                    return 1 if e in _set_store.get(h, set()) else 0
+            elif et == "f":
+                def host_fn(  # type: ignore[misc]
+                    _caller: wasmtime.Caller, h: int, e: float,
+                ) -> int:
+                    return 1 if e in _set_store.get(h, set()) else 0
+            else:  # "i" or "b"
+                def host_fn(  # type: ignore[misc]
+                    _caller: wasmtime.Caller, h: int, e: int,
+                ) -> int:
+                    return 1 if e in _set_store.get(h, set()) else 0
+
+            linker.define_func(
+                "vera", name, ftype, host_fn, access_caller=True,
+            )
+
+        def _define_set_remove(et: str) -> None:
+            name = f"set_remove$e{et}"
+            elem_types = _VAL_WASM_TYPES[et]
+            param_types = [wasmtime.ValType.i32()] + elem_types
+            ftype = wasmtime.FuncType(param_types, [wasmtime.ValType.i32()])
+
+            if et == "s":
+                def host_fn(
+                    caller: wasmtime.Caller, h: int, ep: int, el: int,
+                ) -> int:
+                    e = _read_wasm_string(caller, ep, el)
+                    new_s = set(_set_store.get(h, set()))
+                    new_s.discard(e)
+                    return _set_alloc(new_s)
+            elif et == "f":
+                def host_fn(  # type: ignore[misc]
+                    _caller: wasmtime.Caller, h: int, e: float,
+                ) -> int:
+                    new_s = set(_set_store.get(h, set()))
+                    new_s.discard(e)
+                    return _set_alloc(new_s)
+            else:  # "i" or "b"
+                def host_fn(  # type: ignore[misc]
+                    _caller: wasmtime.Caller, h: int, e: int,
+                ) -> int:
+                    new_s = set(_set_store.get(h, set()))
+                    new_s.discard(e)
+                    return _set_alloc(new_s)
+
+            linker.define_func(
+                "vera", name, ftype, host_fn, access_caller=True,
+            )
+
+        # set_size() — unparameterised, always i32 → i64
+        def host_set_size(_caller: wasmtime.Caller, h: int) -> int:
+            return len(_set_store.get(h, set()))
+
+        linker.define_func(
+            "vera", "set_size",
+            wasmtime.FuncType(
+                [wasmtime.ValType.i32()],
+                [wasmtime.ValType.i64()],
+            ),
+            host_set_size, access_caller=True,
+        )
+
+        def _define_set_to_array(et: str) -> None:
+            name = f"set_to_array$e{et}"
+            ftype = wasmtime.FuncType(
+                [wasmtime.ValType.i32()],
+                [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+            )
+
+            def host_fn(
+                caller: wasmtime.Caller, h: int,
+            ) -> tuple[int, int]:
+                elems = list(_set_store.get(h, set()))
+                if et == "s":
+                    return _alloc_array_of_strings(caller, elems)  # type: ignore[arg-type]
+                if et == "i":
+                    return _alloc_array_of_i64(caller, elems)  # type: ignore[arg-type]
+                if et == "f":
+                    return _alloc_array_of_f64(caller, elems)  # type: ignore[arg-type]
+                return _alloc_array_of_i32(caller, elems)  # type: ignore[arg-type]
+
+            linker.define_func(
+                "vera", name, ftype, host_fn, access_caller=True,
+            )
+
+        # Register type-specific imports based on what the WAT uses.
+        for op_name in result.set_ops_used:
+            if op_name.startswith("set_add$"):
+                et = op_name[len("set_add$e"):]
+                _define_set_add(et)
+            elif op_name.startswith("set_contains$"):
+                et = op_name[len("set_contains$e"):]
+                _define_set_contains(et)
+            elif op_name.startswith("set_remove$"):
+                et = op_name[len("set_remove$e"):]
+                _define_set_remove(et)
+            elif op_name.startswith("set_to_array$"):
+                et = op_name[len("set_to_array$e"):]
+                _define_set_to_array(et)
 
     instance = linker.instantiate(store, module)
 

@@ -522,6 +522,20 @@ map_values(@Map<String, Nat>.0)                     -- returns Array<Nat>
 
 > `map_new()` is a zero-argument generic function. Nest it inside `map_insert(map_new(), k, v)` so that type inference can resolve the key and value types from the arguments. Using `option_unwrap_or(map_get(...), default)` is the idiomatic way to extract values with a fallback.
 
+### Set operations
+
+`Set<T>` is an unordered collection of unique elements. Elements must satisfy `Eq` and `Hash` abilities (primitive types: `Int`, `Nat`, `Bool`, `Float64`, `String`, `Byte`, `Unit`). All operations are pure — add and remove return new sets.
+
+```vera
+set_add(set_add(set_new(), "hello"), "world")       -- returns Set<String>
+set_contains(@Set<String>.0, "hello")               -- returns Bool (true)
+set_remove(@Set<String>.0, "hello")                 -- returns Set<String> (new set without element)
+set_size(@Set<String>.0)                            -- returns Int
+set_to_array(@Set<String>.0)                        -- returns Array<String>
+```
+
+> `set_new()` is a zero-argument generic function. Nest it inside `set_add(set_new(), elem)` so that type inference can resolve the element type. Adding a duplicate element is a no-op (sets enforce uniqueness).
+
 ### String operations
 
 ```vera

@@ -90,6 +90,13 @@ class AssemblyMixin:
             self._needs_alloc = True
             self._needs_memory = True
 
+        # Import Set host-import builtins (per-type-instantiation)
+        for import_line in sorted(self._set_imports):
+            parts.append(import_line)
+        if self._set_ops_used:
+            self._needs_alloc = True
+            self._needs_memory = True
+
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:
             parts.append(
@@ -157,6 +164,7 @@ class AssemblyMixin:
             or self._md_ops_used
             or self._regex_ops_used
             or self._map_ops_used
+            or self._set_ops_used
         ):
             parts.append('  (export "alloc" (func $alloc))')
 

@@ -77,6 +77,8 @@ class CodeGenerator(
         self._regex_ops_used: set[str] = set()  # Regex host-import builtins
         self._map_ops_used: set[str] = set()  # Map host-import builtins
         self._map_imports: set[str] = set()  # Map WAT import declarations
+        self._set_ops_used: set[str] = set()  # Set host-import builtins
+        self._set_imports: set[str] = set()  # Set WAT import declarations
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
@@ -190,6 +192,7 @@ class CodeGenerator(
                 md_ops_used=set(self._md_ops_used),
                 regex_ops_used=set(self._regex_ops_used),
                 map_ops_used=set(self._map_ops_used),
+                set_ops_used=set(self._set_ops_used),
             )
 
         # Pass 2: compile function bodies
@@ -262,6 +265,7 @@ class CodeGenerator(
                 md_ops_used=set(self._md_ops_used),
                 regex_ops_used=set(self._regex_ops_used),
                 map_ops_used=set(self._map_ops_used),
+                set_ops_used=set(self._set_ops_used),
             )
 
         return CompileResult(
@@ -273,6 +277,7 @@ class CodeGenerator(
             md_ops_used=set(self._md_ops_used),
             regex_ops_used=set(self._regex_ops_used),
             map_ops_used=set(self._map_ops_used),
+            set_ops_used=set(self._set_ops_used),
         )
 
     # -----------------------------------------------------------------

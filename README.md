@@ -596,7 +596,7 @@ For compiler architecture, pipeline internals, and how to extend the compiler, s
 
 ### Testing
 
-Testing is organized in three layers: **unit tests** (2,789 tests across 26 files, testing compiler internals and browser parity), a **conformance suite** (57 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (25 end-to-end demos). The compiler has 96% code coverage, enforced by [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
+Testing is organized in three layers: **unit tests** (2,811 tests across 26 files, testing compiler internals and browser parity), a **conformance suite** (58 programs across 9 spec chapters, systematically validating every language feature against the spec), and **example programs** (25 end-to-end demos). The compiler has 96% code coverage, enforced by [CI](.github/workflows/ci.yml) across 6 Python/OS combinations plus a dedicated browser parity job (Node.js 22). Every commit validates all conformance programs, example programs, and specification code blocks. See **[TESTING.md](TESTING.md)** for the full testing reference.
 
 ### Known Bugs and Limitations
 
@@ -605,6 +605,7 @@ Testing is organized in three layers: **unit tests** (2,789 tests across 26 file
 | Bug | Issue |
 |-----|-------|
 | Pipe operator with module-qualified calls produces spurious E201 | [#326](https://github.com/aallan/vera/issues/326) |
+| `vera run /dev/stdin` fails — stdin consumed before main compilation | [#335](https://github.com/aallan/vera/issues/335) |
 
 #### Limitations
 

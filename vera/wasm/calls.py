@@ -241,6 +241,19 @@ class CallsMixin:
                 return self._translate_map_keys(call, env)
             if call.name == "map_values" and len(call.args) == 1:
                 return self._translate_map_values(call, env)
+            # Set builtins
+            if call.name == "set_new" and len(call.args) == 0:
+                return self._translate_set_new(call, env)
+            if call.name == "set_add" and len(call.args) == 2:
+                return self._translate_set_add(call, env)
+            if call.name == "set_contains" and len(call.args) == 2:
+                return self._translate_set_contains(call, env)
+            if call.name == "set_remove" and len(call.args) == 2:
+                return self._translate_set_remove(call, env)
+            if call.name == "set_size" and len(call.args) == 1:
+                return self._translate_set_size(call.args[0], env)
+            if call.name == "set_to_array" and len(call.args) == 1:
+                return self._translate_set_to_array(call, env)
 
         # Check if this is a closure application: apply_fn(closure, args...)
         if call.name == "apply_fn" and len(call.args) >= 2:
@@ -7584,6 +7597,173 @@ class CallsMixin:
             if expr.args:
                 return self._infer_map_key_from_map_arg(expr.args[0])
         return None
+
+    # ── Set<T> host-import builtins ──────────────────────────────
+
+    def _set_import_name(self, op: str, elem_tag: str | None = None) -> str:
+        """Build a mangled Set host import name."""
+        suffix = f"$e{elem_tag}" if elem_tag is not None else ""
+        name = f"{op}{suffix}"
+        self._set_ops_used.add(name)
+        return name
+
+    def _register_set_import(
+        self, op: str, elem_tag: str | None = None,
+        extra_params: list[str] | None = None,
+        results: list[str] | None = None,
+    ) -> str:
+        """Register a Set host import and return the WASM call name."""
+        name = self._set_import_name(op, elem_tag)
+        wasm_name = f"$vera.{name}"
+        params: list[str] = []
+        if extra_params:
+            params.extend(extra_params)
+        param_str = " ".join(f"(param {p})" for p in params)
+        result_str = ""
+        if results:
+            result_str = " ".join(f"(result {r})" for r in results)
+        sig = f"(func {wasm_name} {param_str} {result_str})".rstrip()
+        import_line = f'  (import "vera" "{name}" {sig})'
+        self._set_imports.add(import_line)
+        return wasm_name
+
+    def _infer_set_elem_type(self, call: "ast.FnCall") -> str | None:
+        """Infer the Vera type of a Set's element from call arguments."""
+        if call.name == "set_new":
+            return None
+        if len(call.args) >= 2:
+            return self._infer_vera_type(call.args[1])
+        return None
+
+    def _infer_set_elem_from_set_arg(
+        self, expr: "ast.Expr",
+    ) -> str | None:
+        """Infer the element type T from a Set<T> expression."""
+        if isinstance(expr, ast.SlotRef):
+            if expr.type_name == "Set" and expr.type_args:
+                if len(expr.type_args) >= 1:
+                    elem_te = expr.type_args[0]
+                    if isinstance(elem_te, ast.NamedType):
+                        return elem_te.name
+            name = expr.type_name
+            if name.startswith("Set<") and name.endswith(">"):
+                return name[4:-1]
+        if isinstance(expr, ast.FnCall):
+            if expr.name == "set_add" and len(expr.args) >= 2:
+                return self._infer_vera_type(expr.args[1])
+            if expr.args:
+                return self._infer_set_elem_from_set_arg(expr.args[0])
+        return None
+
+    def _translate_set_new(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """set_new() → i32 handle via host import."""
+        wasm_name = "$vera.set_new"
+        sig = "(func $vera.set_new (result i32))"
+        self._set_imports.add(f'  (import "vera" "set_new" {sig})')
+        self._set_ops_used.add("set_new")
+        return [f"call {wasm_name}"]
+
+    def _translate_set_add(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """set_add(s, elem) → i32 (new handle) via host import."""
+        elem_type = self._infer_vera_type(call.args[1])
+        et = self._map_wasm_tag(elem_type)
+
+        params = ["i32"]  # set handle
+        params.extend(self._map_wasm_types(et))  # element
+        wasm_name = self._register_set_import(
+            "set_add", et,
+            extra_params=params, results=["i32"],
+        )
+        ins: list[str] = []
+        for arg in call.args:
+            arg_instrs = self.translate_expr(arg, env)
+            if arg_instrs is None:
+                return None
+            ins.extend(arg_instrs)
+        ins.append(f"call {wasm_name}")
+        return ins
+
+    def _translate_set_contains(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """set_contains(s, elem) → i32 (Bool) via host import."""
+        elem_type = self._infer_vera_type(call.args[1])
+        et = self._map_wasm_tag(elem_type)
+
+        params = ["i32"]  # set handle
+        params.extend(self._map_wasm_types(et))  # element
+        wasm_name = self._register_set_import(
+            "set_contains", et,
+            extra_params=params, results=["i32"],
+        )
+        ins: list[str] = []
+        for arg in call.args:
+            arg_instrs = self.translate_expr(arg, env)
+            if arg_instrs is None:
+                return None
+            ins.extend(arg_instrs)
+        ins.append(f"call {wasm_name}")
+        return ins
+
+    def _translate_set_remove(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """set_remove(s, elem) → i32 (new handle) via host import."""
+        elem_type = self._infer_vera_type(call.args[1])
+        et = self._map_wasm_tag(elem_type)
+
+        params = ["i32"]  # set handle
+        params.extend(self._map_wasm_types(et))  # element
+        wasm_name = self._register_set_import(
+            "set_remove", et,
+            extra_params=params, results=["i32"],
+        )
+        ins: list[str] = []
+        for arg in call.args:
+            arg_instrs = self.translate_expr(arg, env)
+            if arg_instrs is None:
+                return None
+            ins.extend(arg_instrs)
+        ins.append(f"call {wasm_name}")
+        return ins
+
+    def _translate_set_size(
+        self, arg: "ast.Expr", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """set_size(s) → i64 (Int) via host import."""
+        wasm_name = "$vera.set_size"
+        sig = "(func $vera.set_size (param i32) (result i64))"
+        self._set_imports.add(f'  (import "vera" "set_size" {sig})')
+        self._set_ops_used.add("set_size")
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        ins: list[str] = list(arg_instrs)
+        ins.append(f"call {wasm_name}")
+        return ins
+
+    def _translate_set_to_array(
+        self, call: "ast.FnCall", env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """set_to_array(s) → (i32, i32) Array<T> via host import."""
+        elem_type = self._infer_set_elem_from_set_arg(call.args[0])
+        et = self._map_wasm_tag(elem_type)
+
+        wasm_name = self._register_set_import(
+            "set_to_array", et,
+            extra_params=["i32"], results=["i32", "i32"],
+        )
+        self.needs_alloc = True
+        arg_instrs = self.translate_expr(call.args[0], env)
+        if arg_instrs is None:
+            return None
+        ins: list[str] = list(arg_instrs)
+        ins.append(f"call {wasm_name}")
+        return ins
 
     def _translate_hash(
         self, arg: ast.Expr, env: WasmSlotEnv,

@@ -265,6 +265,9 @@ class CrossModuleMixin:
             # Map operations (§9.4.3) — host-import builtins
             "map_new", "map_insert", "map_get", "map_contains",
             "map_remove", "map_size", "map_keys", "map_values",
+            # Set operations (§9.4.2) — host-import builtins
+            "set_new", "set_add", "set_contains",
+            "set_remove", "set_size", "set_to_array",
         })
 
         seen: set[str] = set()  # deduplicate by function name

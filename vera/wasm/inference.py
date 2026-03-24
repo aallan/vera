@@ -494,6 +494,15 @@ class InferenceMixin:
             return "Int"
         if call.name in ("map_keys", "map_values"):
             return "Array"
+        # Set builtins
+        if call.name in ("set_new", "set_add", "set_remove"):
+            return "Set"
+        if call.name == "set_contains":
+            return "Bool"
+        if call.name == "set_size":
+            return "Int"
+        if call.name == "set_to_array":
+            return "Array"
         # Ability operations: show → String, hash → Int
         if call.name == "show":
             return "String"
