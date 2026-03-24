@@ -1911,6 +1911,14 @@ private fn foo(@Unit -> @Option<Decimal>)
 { decimal_from_string(42) }
 """, "type")
 
+    def test_decimal_rejects_type_args(self) -> None:
+        """Decimal<Int> is rejected — Decimal is not parameterised."""
+        _check_err("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ let @Decimal<Int> = decimal_from_int(1); @Decimal.0 }
+""", "type arg")
+
 
 # =====================================================================
 # Return type checking

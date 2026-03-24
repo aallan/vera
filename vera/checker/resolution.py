@@ -79,6 +79,11 @@ class ResolutionMixin:
 
         # Decimal is a non-parameterised built-in opaque type
         if name == "Decimal":
+            if te.type_args:
+                self._error(
+                    te, "Decimal does not accept type arguments.",
+                    error_code="E130",
+                )
             return AdtType(name, ())
 
         # Array, Tuple, Map, Set (built-in parameterised types)
