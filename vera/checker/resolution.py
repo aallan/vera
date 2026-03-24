@@ -77,8 +77,12 @@ class ResolutionMixin:
                 return AdtType(name, args)
             return AdtType(name, ())
 
-        # Array, Tuple, Map, Set, Decimal (built-in non-primitive types)
-        if name in ("Array", "Tuple", "Map", "Set", "Decimal"):
+        # Decimal is a non-parameterised built-in opaque type
+        if name == "Decimal":
+            return AdtType(name, ())
+
+        # Array, Tuple, Map, Set (built-in parameterised types)
+        if name in ("Array", "Tuple", "Map", "Set"):
             if te.type_args:
                 args = tuple(self._resolve_type(a) for a in te.type_args)
                 return AdtType(name, args)

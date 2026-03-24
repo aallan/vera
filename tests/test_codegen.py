@@ -8186,6 +8186,18 @@ public fn main(-> @Int)
 """
         assert _run(source) == 1
 
+    def test_decimal_neg_zero(self) -> None:
+        """neg(0) should equal 0, not -0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = decimal_neg(decimal_from_int(0));
+  if decimal_eq(@Decimal.0, decimal_from_int(0)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
     def test_decimal_round(self) -> None:
         """Round a decimal to 0 decimal places."""
         source = """
@@ -8219,6 +8231,20 @@ public fn main(-> @Int)
 { floor(decimal_to_float(decimal_from_int(42))) }
 """
         assert _run(source) == 42
+
+    def test_decimal_to_float_non_integer(self) -> None:
+        """decimal_to_float(decimal_from_float(3.14)) round-trips correctly."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Float64 = decimal_to_float(decimal_from_float(3.14));
+  if @Float64.0 > 3.0 then {
+    if @Float64.0 < 4.0 then { 1 } else { 0 }
+  } else { 0 }
+}
+"""
+        assert _run(source) == 1
 
     def test_decimal_eq_different(self) -> None:
         """1 != 2 via decimal_eq returns 0."""

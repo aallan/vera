@@ -7311,6 +7311,7 @@ class CallsMixin:
             return None
         wasm_name = self._register_decimal_import(
             "decimal_from_string", ["i32", "i32"], ["i32"])
+        self.needs_alloc = True
         return arg_instrs + [f"call {wasm_name}"]
 
     def _translate_decimal_to_string(
@@ -7322,6 +7323,7 @@ class CallsMixin:
             return None
         wasm_name = self._register_decimal_import(
             "decimal_to_string", ["i32"], ["i32", "i32"])
+        self.needs_alloc = True
         return arg_instrs + [f"call {wasm_name}"]
 
     def _translate_decimal_div(
@@ -7334,6 +7336,7 @@ class CallsMixin:
             return None
         wasm_name = self._register_decimal_import(
             "decimal_div", ["i32", "i32"], ["i32"])
+        self.needs_alloc = True
         return a_instrs + b_instrs + [f"call {wasm_name}"]
 
     def _translate_decimal_compare(
@@ -7346,6 +7349,7 @@ class CallsMixin:
             return None
         wasm_name = self._register_decimal_import(
             "decimal_compare", ["i32", "i32"], ["i32"])
+        self.needs_alloc = True
         return a_instrs + b_instrs + [f"call {wasm_name}"]
 
     def _translate_decimal_eq(

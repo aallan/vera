@@ -1558,7 +1558,7 @@ private fn decimal_demo(-> @Int)
 }
 ```
 
-**Known limitation:** `Option<Decimal>` values returned by `decimal_div` and `decimal_from_string` cannot currently be used with `option_unwrap_or` or `match` because the monomorphizer does not produce `option_unwrap_or$Decimal`. This affects all new opaque types and will be resolved in a future release.
+**Known limitation:** `Option<Decimal>` values returned by `decimal_div` and `decimal_from_string` cannot currently be used with `option_unwrap_or` or `match` because the monomorphizer does not produce `option_unwrap_or$Decimal`. Similarly, `Ordering` returned by `decimal_compare` cannot yet be used with `match` in codegen. This affects all new opaque types and will be resolved in a future release.
 
 ### 9.7.3 Markdown
 

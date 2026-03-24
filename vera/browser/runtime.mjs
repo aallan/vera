@@ -1381,7 +1381,10 @@ function buildImportObject(module) {
     return h;
   }
 
-  // String-based decimal arithmetic helpers
+  // String-based decimal arithmetic helpers.
+  // MVP limitation: these use JS Number() which loses precision for values
+  // beyond Number.MAX_SAFE_INTEGER or with many decimal digits.  A future
+  // version should use a proper arbitrary-precision decimal library.
   function decStrAdd(a, b) { return String(Number(a) + Number(b)); }
   function decStrSub(a, b) { return String(Number(a) - Number(b)); }
   function decStrMul(a, b) { return String(Number(a) * Number(b)); }
@@ -1432,7 +1435,10 @@ function buildImportObject(module) {
   if (needed.has("decimal_neg")) {
     imports.vera.decimal_neg = (h) => {
       const s = decimalStore.get(h);
-      return decimalAlloc(s.startsWith("-") ? s.slice(1) : "-" + s);
+      if (s.startsWith("-")) return decimalAlloc(s.slice(1));
+      // Canonical zero: neg("0") → "0", not "-0"
+      if (s === "0" || s === "0.0") return decimalAlloc(s);
+      return decimalAlloc("-" + s);
     };
   }
   if (needed.has("decimal_compare")) {
@@ -1444,6 +1450,8 @@ function buildImportObject(module) {
     };
   }
   if (needed.has("decimal_eq")) {
+    // Compare string representations rather than converting to Number,
+    // which would lose precision for large or high-precision values.
     imports.vera.decimal_eq = (a, b) =>
       decimalStore.get(a) === decimalStore.get(b) ? 1 : 0;
   }

@@ -96,7 +96,6 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
 
     # Qualified calls and handler fragments — bare expressions
     986: ("FRAGMENT", "Handler with clause, bare expression"),
-    974: ("FRAGMENT", "Qualified call examples, bare expressions"),
 
     # Module declaration and import syntax
     1034: ("FRAGMENT", "Module declaration and import example"),
@@ -120,10 +119,6 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     1326: ("FRAGMENT", "Wrong: match arm with incorrect return"),
     1351: ("FRAGMENT", "Wrong: non-exhaustive match (missing None)"),
     1364: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
-    1274: ("FRAGMENT", "Correct: match arm example"),
-    # 1294 duplicate removed — was 1301, now handled below
-    # 1326 duplicate removed — if/else entry moved to 1343 below
-    1364: ("FRAGMENT", "Correct: if/else with braces"),
 
     # Import syntax — intentionally unsupported
     1397: ("FRAGMENT", "Wrong: import aliasing not supported"),

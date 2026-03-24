@@ -1348,10 +1348,7 @@ def execute(
             def host_decimal_from_string(
                 caller: wasmtime.Caller, ptr: int, length: int,
             ) -> int:
-                mem = caller["memory"]
-                assert isinstance(mem, wasmtime.Memory)
-                raw = bytes(mem.data_ptr(caller)[ptr:ptr + length])
-                s = raw.decode("utf-8")
+                s = _read_wasm_string(caller, ptr, length)
                 try:
                     d = PyDecimal(s)
                     # Allocate Some(handle)
@@ -1501,7 +1498,11 @@ def execute(
                 d = _decimal_store[h]
                 # Use quantize for precise rounding
                 q = PyDecimal(10) ** -places
-                return _decimal_alloc(d.quantize(q))
+                try:
+                    return _decimal_alloc(d.quantize(q))
+                except InvalidOperation:
+                    # Extreme exponent — return original value unchanged
+                    return _decimal_alloc(d)
             linker.define_func(
                 "vera", "decimal_round",
                 wasmtime.FuncType([wasmtime.ValType.i32(),

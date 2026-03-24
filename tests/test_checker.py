@@ -1765,6 +1765,54 @@ private fn foo(@Unit -> @Decimal)
 { decimal_add(1, 2) }
 """, "type")
 
+    def test_decimal_from_string(self) -> None:
+        """decimal_from_string(@String -> @Option<Decimal>) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Option<Decimal>)
+  requires(true) ensures(true) effects(pure)
+{ decimal_from_string("3.14") }
+""")
+
+    def test_decimal_div(self) -> None:
+        """decimal_div(@Decimal, @Decimal -> @Option<Decimal>) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Option<Decimal>)
+  requires(true) ensures(true) effects(pure)
+{ decimal_div(decimal_from_int(10), decimal_from_int(3)) }
+""")
+
+    def test_decimal_compare(self) -> None:
+        """decimal_compare(@Decimal, @Decimal -> @Ordering) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Ordering)
+  requires(true) ensures(true) effects(pure)
+{ decimal_compare(decimal_from_int(1), decimal_from_int(2)) }
+""")
+
+    def test_decimal_round(self) -> None:
+        """decimal_round(@Decimal, @Int -> @Decimal) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_round(decimal_from_int(3), 2) }
+""")
+
+    def test_decimal_neg(self) -> None:
+        """decimal_neg(@Decimal -> @Decimal) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_neg(decimal_from_int(42)) }
+""")
+
+    def test_decimal_abs(self) -> None:
+        """decimal_abs(@Decimal -> @Decimal) type checks OK."""
+        _check_ok("""
+private fn foo(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{ decimal_abs(decimal_from_int(42)) }
+""")
+
 
 # =====================================================================
 # Return type checking

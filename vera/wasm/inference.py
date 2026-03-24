@@ -256,6 +256,21 @@ class InferenceMixin:
         # Async builtins — identity operations (Future<T> is transparent)
         if expr.name in ("async", "await") and expr.args:
             return self._infer_expr_wasm_type(expr.args[0])
+        # Decimal builtins
+        if expr.name in ("decimal_from_int", "decimal_from_float",
+                          "decimal_add", "decimal_sub", "decimal_mul",
+                          "decimal_neg", "decimal_round", "decimal_abs"):
+            return "i32"  # opaque handle
+        if expr.name in ("decimal_from_string", "decimal_div"):
+            return "i32"  # Option<Decimal> heap pointer
+        if expr.name == "decimal_compare":
+            return "i32"  # Ordering heap pointer
+        if expr.name == "decimal_eq":
+            return "i32"  # Bool
+        if expr.name == "decimal_to_float":
+            return "f64"
+        if expr.name == "decimal_to_string":
+            return "i32_pair"  # String (ptr, len)
         # Numeric math builtins
         if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
             return "i64"
