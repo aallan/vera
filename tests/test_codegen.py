@@ -8388,3 +8388,47 @@ public fn main(-> @Int)
 }
 """
         assert _run(source) == 1
+
+    def test_decimal_chained_arithmetic(self) -> None:
+        """Chained decimal ops exercise WASM type inference paths."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if decimal_eq(
+    decimal_add(decimal_from_int(1), decimal_from_int(2)),
+    decimal_from_int(3))
+  then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_to_float_chained(self) -> None:
+        """decimal_to_float result feeds into floor (f64 inference)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ floor(decimal_to_float(decimal_add(decimal_from_int(3), decimal_from_int(4)))) }
+"""
+        assert _run(source) == 7
+
+    def test_decimal_to_string_chained(self) -> None:
+        """decimal_to_string result feeds into string_length (i32_pair inference)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(decimal_to_string(decimal_add(decimal_from_int(1), decimal_from_int(2)))) }
+"""
+        assert _run(source) == 1
+
+    def test_decimal_eq_chained(self) -> None:
+        """decimal_eq result feeds into if (Bool/i32 inference)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Bool = decimal_eq(decimal_from_int(5), decimal_from_int(5));
+  if @Bool.0 then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
