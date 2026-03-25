@@ -8491,6 +8491,87 @@ public fn main(-> @Int)
 """
         assert _run(source) == 1
 
+    def test_decimal_if_expr_else_branch(self) -> None:
+        """Decimal if-expr else branch is exercised."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = if 1 == 2
+    then { decimal_from_int(99) }
+    else { decimal_from_int(0) };
+  if decimal_eq(@Decimal.0, decimal_from_int(0)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_map_if_expr_else_branch(self) -> None:
+        """Map if-expr else branch returns empty map."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = if 1 == 2
+    then { map_insert(map_new(), "a", 1) }
+    else { map_new() };
+  map_size(@Map<String, Int>.0)
+}
+"""
+        assert _run(source) == 0
+
+    def test_set_if_expr_else_branch(self) -> None:
+        """Set if-expr else branch returns empty set."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = if 1 == 2
+    then { set_add(set_new(), 42) }
+    else { set_new() };
+  set_size(@Set<Int>.0)
+}
+"""
+        assert _run(source) == 0
+
+    def test_map_get_in_if_expr(self) -> None:
+        """map_get result type inferred in if-expression context."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "k", 42);
+  let @Option<Int> = if 1 == 1
+    then { map_get(@Map<String, Int>.0, "k") }
+    else { None };
+  option_unwrap_or(@Option<Int>.0, 0)
+}
+"""
+        assert _run(source) == 42
+
+    def test_map_size_in_if_expr(self) -> None:
+        """map_size result type (i64) inferred in if-expression."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "k", 1);
+  if map_size(@Map<String, Int>.0) == 1 then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_set_contains_in_if_expr(self) -> None:
+        """set_contains result type (i32) inferred in if-expression."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_new(), 7);
+  if set_contains(@Set<Int>.0, 7) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
 
 class TestDecimalMonomorphization:
     """Monomorphization of generic functions with Decimal type args (#341)."""

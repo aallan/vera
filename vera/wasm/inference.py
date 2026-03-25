@@ -277,8 +277,10 @@ class InferenceMixin:
         # Map builtins
         if expr.name in ("map_new", "map_insert", "map_remove"):
             return "i32"  # opaque handle
-        if expr.name in ("map_get", "map_contains"):
-            return "i32"  # Option/Bool heap pointer
+        if expr.name == "map_get":
+            return "i32"  # Option heap pointer
+        if expr.name == "map_contains":
+            return "i32"  # Bool
         if expr.name == "map_size":
             return "i64"
         if expr.name in ("map_keys", "map_values"):
