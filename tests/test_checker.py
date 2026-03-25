@@ -2075,6 +2075,30 @@ private fn foo(@Json -> @Option<Json>)
 { json_array_get(@Json.0, "0") }
 """, "type")
 
+    def test_json_get_wrong_type(self) -> None:
+        """json_get with non-Json first arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Option<Json>)
+  requires(true) ensures(true) effects(pure)
+{ json_get(42, "key") }
+""", "type")
+
+    def test_json_has_field_wrong_type(self) -> None:
+        """json_has_field with non-Json first arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ json_has_field(42, "key") }
+""", "type")
+
+    def test_json_type_wrong_type(self) -> None:
+        """json_type with non-Json arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ json_type(42) }
+""", "type")
+
     def test_json_custom_data_shadows_prelude(self) -> None:
         """User-defined data Json with non-standard constructors shadows prelude."""
         _check_ok("""

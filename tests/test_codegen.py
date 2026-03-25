@@ -8902,6 +8902,21 @@ public fn main(-> @Int)
 """
         assert _run(source) == 20
 
+    def test_json_custom_data_no_combinators(self) -> None:
+        """User-defined non-standard data Json skips combinator injection."""
+        source = """
+private data Json { MyNode(Int) }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = MyNode(42);
+  match @Json.0 {
+    MyNode(@Int) -> @Int.0
+  }
+}
+"""
+        assert _run(source) == 42
+
     def test_json_array_get_out_of_bounds(self) -> None:
         """json_array_get with out-of-bounds index returns None."""
         source = """
