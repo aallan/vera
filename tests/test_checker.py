@@ -2011,6 +2011,30 @@ private fn foo(@Json -> @String)
 { json_type(@Json.0) }
 """)
 
+    def test_json_array_get(self) -> None:
+        """json_array_get returns Option<Json>."""
+        _check_ok("""
+private fn foo(@Json -> @Option<Json>)
+  requires(true) ensures(true) effects(pure)
+{ json_array_get(@Json.0, 0) }
+""")
+
+    def test_json_array_length(self) -> None:
+        """json_array_length returns Int."""
+        _check_ok("""
+private fn foo(@Json -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ json_array_length(@Json.0) }
+""")
+
+    def test_json_keys(self) -> None:
+        """json_keys returns Array<String>."""
+        _check_ok("""
+private fn foo(@Json -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+{ json_keys(@Json.0) }
+""")
+
     def test_json_parse_wrong_type(self) -> None:
         """json_parse with Int arg produces error."""
         _check_err("""

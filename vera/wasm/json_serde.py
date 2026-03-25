@@ -188,4 +188,11 @@ def read_json(
             )
         return obj
 
+    import warnings
+    warnings.warn(
+        f"read_json: unknown tag {tag} at pointer {ptr}; "
+        "possible memory corruption or unsupported Json layout",
+        RuntimeWarning,
+        stacklevel=2,
+    )
     return None  # Unknown tag — should not happen

@@ -8641,56 +8641,56 @@ public fn main(-> @Int)
         assert _run(source) == 0
 
     def test_json_type_null(self) -> None:
-        """json_type(JNull) returns 'null' (length 4)."""
+        """json_type(JNull) returns 'null'."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
-{ string_length(json_type(JNull)) }
+{ if string_contains(json_type(JNull), "null") then { string_length(json_type(JNull)) } else { 0 } }
 """
         assert _run(source) == 4
 
     def test_json_type_bool(self) -> None:
-        """json_type(JBool(true)) returns 'bool' (length 4)."""
+        """json_type(JBool(true)) returns 'bool'."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
-{ string_length(json_type(JBool(true))) }
+{ if string_contains(json_type(JBool(true)), "bool") then { string_length(json_type(JBool(true))) } else { 0 } }
 """
         assert _run(source) == 4
 
     def test_json_type_number(self) -> None:
-        """json_type(JNumber(0.0)) returns 'number' (length 6)."""
+        """json_type(JNumber(0.0)) returns 'number'."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
-{ string_length(json_type(JNumber(0.0))) }
+{ if string_contains(json_type(JNumber(0.0)), "number") then { string_length(json_type(JNumber(0.0))) } else { 0 } }
 """
         assert _run(source) == 6
 
     def test_json_type_string(self) -> None:
-        """json_type(JString('hi')) returns 'string' (length 6)."""
+        """json_type(JString('hi')) returns 'string'."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
-{ string_length(json_type(JString("hi"))) }
+{ if string_contains(json_type(JString("hi")), "string") then { string_length(json_type(JString("hi"))) } else { 0 } }
 """
         assert _run(source) == 6
 
     def test_json_type_array(self) -> None:
-        """json_type(JArray([])) returns 'array' (length 5)."""
+        """json_type(JArray([])) returns 'array'."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
-{ string_length(json_type(JArray([]))) }
+{ if string_contains(json_type(JArray([])), "array") then { string_length(json_type(JArray([]))) } else { 0 } }
 """
         assert _run(source) == 5
 
     def test_json_type_object(self) -> None:
-        """json_type(JObject(map_new())) returns 'object' (length 6)."""
+        """json_type(JObject(map_new())) returns 'object'."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
-{ string_length(json_type(JObject(map_new()))) }
+{ if string_contains(json_type(JObject(map_new())), "object") then { string_length(json_type(JObject(map_new()))) } else { 0 } }
 """
         assert _run(source) == 6
 
@@ -8876,6 +8876,21 @@ public fn main(-> @Int)
 {
   let @Json = JArray([JNull]);
   match json_array_get(@Json.0, 5) {
+    Some(@Json) -> 0,
+    None -> 1
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_json_array_get_negative_index(self) -> None:
+        """json_array_get with negative index returns None."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = JArray([JNull, JBool(true)]);
+  match json_array_get(@Json.0, 0 - 1) {
     Some(@Json) -> 0,
     None -> 1
   }

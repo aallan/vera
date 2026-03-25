@@ -188,6 +188,7 @@ class AssemblyMixin:
             or self._map_ops_used
             or self._set_ops_used
             or self._decimal_ops_used
+            or self._json_ops_used
         ):
             parts.append('  (export "alloc" (func $alloc))')
 

@@ -12,7 +12,7 @@ The standard library comprises:
 - **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
 - **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in the Python runtime; browser runtime uses IEEE 754 approximation.
 - **Json type**: `Json` ADT for structured data interchange — parse, query, and serialize JSON via 8 built-in functions (see §9.7.1).
-- **Future types**: `Markdown` for agent-oriented document structure.
+- **Markdown type**: `MdBlock` and `MdInline` ADTs for agent-oriented document structure — parse, render, and query Markdown via pure host-import functions (see §9.7.3).
 - **Built-in abilities**: `Eq`, `Ord`, `Hash`, `Show` — type constraints for generic programming. The `Ordering` ADT (`Less`, `Equal`, `Greater`) supports `Ord`'s `compare` operation.
 
 All built-in types participate fully in the type system: they can appear in contracts, be verified by the SMT solver, and be used with refinement types and pattern matching. Built-in effects follow the same algebraic effect semantics as user-defined effects (see Chapter 7).
@@ -1532,7 +1532,7 @@ The `Json` type is provided by the standard prelude — no explicit `data` decla
 |----------|-----------|-------------|
 | `json_type(j)` | `(Json) → String` | Returns `"null"`, `"bool"`, `"number"`, `"string"`, `"array"`, or `"object"` |
 
-All JSON functions are pure and implemented via host imports (Python `json` / JavaScript `JSON`). The `Json` type is opaque at the WASM level — values are `i32` handles into a runtime-managed value store, following the same pattern as `Map<K, V>` and `Set<T>`.
+All JSON functions are pure. The `Json` type is a heap-allocated ADT — values are `i32` pointers into WASM linear memory with a tag + payload layout (like all Vera ADTs). Only `json_parse` and `json_stringify` are host imports (Python `json` / JavaScript `JSON`); the remaining utility functions (`json_get`, `json_has_field`, `json_type`, `json_keys`, `json_array_get`, `json_array_length`) are injected as Vera source from the standard prelude.
 
 **Example:**
 

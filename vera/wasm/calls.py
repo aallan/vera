@@ -4457,6 +4457,7 @@ class CallsMixin:
         if arg_instrs is None:
             return None
         self.needs_alloc = True
+        self._json_ops_used.add("json_parse")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.json_parse")
@@ -4473,6 +4474,7 @@ class CallsMixin:
         if arg_instrs is None:
             return None
         self.needs_alloc = True
+        self._json_ops_used.add("json_stringify")
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.json_stringify")

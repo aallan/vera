@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 2,967 across 26 files (~33,100 lines of test code) |
+| **Tests** | 2,971 across 26 files (~34,000 lines of test code) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 61 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 27, all validated through `vera check` + `vera verify` |
@@ -14,7 +14,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **README code blocks** | 9 Vera blocks (8 validated, 1 allowlisted future syntax) |
 | **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 allowlisted snippet) |
 | **HTML code blocks** | 2 Vera blocks in docs/index.html (2 validated: parse + check + verify) |
-| **Contract verification** | 131 of 138 contracts (94.9%) verified statically (Tier 1) |
+| **Contract verification** | 161 of 177 contracts (91.0%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) + browser parity (Node.js 22) |
 
 ## Running Tests
@@ -53,9 +53,9 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 |------|------:|------:|----------------|
 | `test_parser.py` | 121 | 968 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 120 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
-| `test_checker.py` | 456 | 5,138 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, removed legacy name regression |
+| `test_checker.py` | 459 | 5,162 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, Json type, removed legacy name regression |
 | `test_verifier.py` | 118 | 1,700 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
-| `test_codegen.py` | 778 | 9,148 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, example round-trips |
+| `test_codegen.py` | 779 | 9,163 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 52 | 897 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 19 | 473 | Closure lifting, captured variables, higher-order functions |
@@ -207,18 +207,21 @@ Across all 27 example programs:
 
 | Metric | Value |
 |--------|-------|
-| **Tier 1 (static)** | 139 contracts — proved automatically by Z3 |
-| **Tier 3 (runtime)** | 7 contracts — verified at runtime via assertion checks |
-| **Total** | 146 contracts (95.2% static) |
+| **Tier 1 (static)** | 161 contracts — proved automatically by Z3 |
+| **Tier 3 (runtime)** | 16 contracts — verified at runtime via assertion checks |
+| **Total** | 177 contracts (91.0% static) |
 
-The 4 remaining Tier 3 contracts and why they cannot be promoted:
+The 16 remaining Tier 3 contracts and why they cannot be promoted:
 
 | Example | Contract | Reason |
 |---------|----------|--------|
+| async\_futures.vera | 2 contracts | Async/future combinators not in decidable fragment |
+| collections.vera | 8 contracts | Collection operations (Map/Set) not modeled in Z3 |
 | gc\_pressure.vera | `decreases` in `repeat` | Termination metric not in decidable fragment |
 | generics.vera | `ensures(@T.result == @T.0)` | Generic type parameters have no Z3 sort |
 | generics.vera | `ensures(@A.result == @A.0)` | Generic type parameters have no Z3 sort |
 | increment.vera | `ensures(new(State<Int>) == old(State<Int>) + 1)` | `old`/`new` state modeling not yet implemented |
+| json.vera | 2 contracts | Json ADT operations not modeled in Z3 |
 
 The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `length`, and `decreases` clauses (self-recursive, mutual recursion via where-blocks, Nat and structural ADT measures).
 

@@ -1587,7 +1587,16 @@ def execute(
                     caller, ptr, _read_i32, _read_f64,
                     _read_wasm_string, _map_store,
                 )
-                text = _json.dumps(value, ensure_ascii=False)
+                # Note: json.dumps rejects NaN/Infinity by default
+                # (raises ValueError).  This matches the JSON spec
+                # (RFC 8259) which forbids these values.  The JS
+                # runtime's JSON.stringify outputs "null" for them
+                # instead.  Both behaviours are acceptable: Vera's
+                # JNumber wraps Float64, so users should guard against
+                # NaN/Infinity before serialising.
+                text = _json.dumps(
+                    value, ensure_ascii=False, allow_nan=False,
+                )
                 return _alloc_string(caller, text)
 
             linker.define_func(

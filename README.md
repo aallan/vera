@@ -633,9 +633,9 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 | Pipe operator with module-qualified calls produces spurious E201 | [#326](https://github.com/aallan/vera/issues/326) |
 | `vera run /dev/stdin` fails — stdin consumed before main compilation | [#335](https://github.com/aallan/vera/issues/335) |
 | Combinators cannot infer type variables from bare `None` / `Err` constructors | [#293](https://github.com/aallan/vera/issues/293) |
-| `json_stringify` does not escape special characters in string values | [#346](https://github.com/aallan/vera/issues/346) |
-| `json_parse` rejects top-level arrays and bare values (only objects supported) | [#347](https://github.com/aallan/vera/issues/347) |
-| `json_get` on nested JObject returns opaque handle, not deep copy | [#348](https://github.com/aallan/vera/issues/348) |
+| `json_stringify` does not escape special characters in string values (Python runtime) | [#346](https://github.com/aallan/vera/issues/346) |
+| `json_parse` rejects top-level arrays and bare values — only objects supported (Python runtime) | [#347](https://github.com/aallan/vera/issues/347) |
+| `json_get` on nested JObject returns opaque handle, not deep copy (Python runtime) | [#348](https://github.com/aallan/vera/issues/348) |
 
 #### Limitations
 

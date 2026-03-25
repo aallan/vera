@@ -1596,7 +1596,10 @@ function buildImportObject(module) {
     imports.vera.json_stringify = (ptr) => {
       const value = readJson(ptr);
       const text = JSON.stringify(value);
-      return allocString(text);
+      // JSON.stringify can return undefined for unsupported values
+      // (e.g. bare undefined, symbols, functions).  Fall back to "null"
+      // to match the JSON spec and avoid allocString crashing.
+      return allocString(text !== undefined ? text : "null");
     };
   }
 

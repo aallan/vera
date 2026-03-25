@@ -394,6 +394,23 @@ def _has_standard_result(program: ast.Program) -> bool:
     return False  # pragma: no cover
 
 
+def _has_standard_json(program: ast.Program) -> bool:
+    """Check if user's ``data Json`` has the expected 6 constructors.
+
+    The prelude Json combinators (json_get, json_type, etc.) pattern-match
+    on the standard constructors: JNull, JBool, JNumber, JString, JArray,
+    JObject.  If the user defines ``data Json`` with different constructors,
+    we must skip injecting the combinators to avoid type errors.
+    """
+    _EXPECTED = {"JNull", "JBool", "JNumber", "JString", "JArray", "JObject"}
+    for tld in program.declarations:
+        decl = tld.decl
+        if isinstance(decl, ast.DataDecl) and decl.name == "Json":
+            ctor_names = {c.name for c in decl.constructors}
+            return ctor_names == _EXPECTED
+    return False  # pragma: no cover
+
+
 def _user_defined_names(program: ast.Program) -> set[str]:
     """Collect all user-defined function and type alias names."""
     names: set[str] = set()
@@ -409,18 +426,21 @@ def _user_defined_names(program: ast.Program) -> set[str]:
 def _source_mentions_json(program: ast.Program) -> bool:
     """Check if user code references Json types or constructors.
 
-    Walks function declarations looking for Json-related AST nodes
-    in parameters, return types, and bodies (via recursive field scan).
+    Walks all declarations (not just FnDecl) looking for Json-related
+    AST nodes in parameters, return types, and bodies (via recursive
+    field scan).  This catches modules that use Json values imported
+    from other modules or received as parameters.
     """
     json_names = frozenset({
         "Json", "JNull", "JBool", "JNumber", "JString", "JArray", "JObject",
         "json_parse", "json_stringify",
+        "json_get", "json_has_field", "json_type",
+        "json_keys", "json_array_get", "json_array_length",
     })
     for tld in program.declarations:
         decl = tld.decl
-        if isinstance(decl, ast.FnDecl):
-            if _node_mentions(decl, json_names):
-                return True
+        if _node_mentions(decl, json_names):
+            return True
     return False
 
 
@@ -567,9 +587,16 @@ def inject_prelude(program: ast.Program) -> None:
         or _source_mentions_json(program)
     )
     if user_uses_json:
-        if "Json" not in user_data_names:
+        user_has_json = "Json" in user_data_names
+        if not user_has_json:
             source_parts.append(_JSON_DATA)
-        if not json_fn_names.issubset(user_names):
+        # Only inject combinators when the Json ADT has standard
+        # constructors (JNull, JBool, etc.).  A user-defined
+        # non-standard ``data Json`` would break the match arms.
+        inject_json_combinators = (
+            not user_has_json or _has_standard_json(program)
+        )
+        if inject_json_combinators and not json_fn_names.issubset(user_names):
             source_parts.append(_JSON_COMBINATORS)
 
     full_source = "\n".join(source_parts)
