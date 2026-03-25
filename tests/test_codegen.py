@@ -8774,3 +8774,33 @@ public fn main(-> @Int)
 }
 """
         assert _run(source) == 1
+
+    def test_decimal_div_inline_unwrap(self) -> None:
+        """option_unwrap_or with decimal_div() directly (no let binding).
+
+        Exercises _get_arg_type_info → _BUILTIN_PARAMETERIZED_RETURNS path.
+        """
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = option_unwrap_or(decimal_div(decimal_from_int(10), decimal_from_int(5)), decimal_from_int(0));
+  if decimal_eq(@Decimal.0, decimal_from_int(2)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_from_string_inline_unwrap(self) -> None:
+        """option_unwrap_or with decimal_from_string() directly.
+
+        Exercises _get_arg_type_info → _BUILTIN_PARAMETERIZED_RETURNS path.
+        """
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = option_unwrap_or(decimal_from_string("7"), decimal_from_int(0));
+  if decimal_eq(@Decimal.0, decimal_from_int(7)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
