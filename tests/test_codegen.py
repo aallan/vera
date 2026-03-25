@@ -8804,3 +8804,32 @@ public fn main(-> @Int)
 }
 """
         assert _run(source) == 1
+
+    @pytest.mark.xfail(reason="#341: Map/Set opaque handle monomorphization gap")
+    def test_option_unwrap_or_map(self) -> None:
+        """option_unwrap_or<Map<String, Int>> monomorphization."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Map<String, Int>> = Some(map_insert(map_new(), "a", 1));
+  let @Map<String, Int> = option_unwrap_or(@Option<Map<String, Int>>.0, map_new());
+  map_size(@Map<String, Int>.0)
+}
+"""
+        assert _run(source) == 1
+
+    def test_match_option_set(self) -> None:
+        """match on Option<Set<Int>> — works because match is inline."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Set<Int>> = Some(set_add(set_new(), 42));
+  match @Option<Set<Int>>.0 {
+    None -> 0,
+    Some(@Set<Int>) -> set_size(@Set<Int>.0)
+  }
+}
+"""
+        assert _run(source) == 1
