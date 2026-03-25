@@ -104,6 +104,21 @@ class AssemblyMixin:
             self._needs_alloc = True
             self._needs_memory = True
 
+        # Import Json host-import builtins
+        if "json_parse" in self._json_ops_used:
+            parts.append(
+                '  (import "vera" "json_parse" '
+                "(func $vera.json_parse (param i32 i32) (result i32)))"
+            )
+        if "json_stringify" in self._json_ops_used:
+            parts.append(
+                '  (import "vera" "json_stringify" '
+                "(func $vera.json_stringify (param i32) (result i32 i32)))"
+            )
+        if self._json_ops_used:
+            self._needs_alloc = True
+            self._needs_memory = True
+
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:
             parts.append(
@@ -173,6 +188,7 @@ class AssemblyMixin:
             or self._map_ops_used
             or self._set_ops_used
             or self._decimal_ops_used
+            or self._json_ops_used
         ):
             parts.append('  (export "alloc" (func $alloc))')
 

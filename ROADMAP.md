@@ -18,13 +18,13 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 ## Where we are
 
-**v0.0.98** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 100 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 60-program conformance suite, a canonical formatter, and contract-driven testing. `Map<K, V>`, `Set<T>`, and `Decimal` provide collections and exact arithmetic with ability constraints. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
+**v0.0.98** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 108 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 61-program conformance suite, a canonical formatter, and contract-driven testing. `Map<K, V>`, `Set<T>`, and `Decimal` provide collections and exact arithmetic with ability constraints. `Json` provides structured data interchange with 8 built-in functions for parsing, querying, and serializing JSON. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, `UrlParts`, and `Json` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
 
 Most remaining features are gated by a single dependency chain:
 
-**Map ([#62](https://github.com/aallan/vera/issues/62)) → JSON ([#58](https://github.com/aallan/vera/issues/58)) → HTTP ([#57](https://github.com/aallan/vera/issues/57)) → HTTP Server ([#305](https://github.com/aallan/vera/issues/305)) → MCP Server ([#306](https://github.com/aallan/vera/issues/306))**
+**~~Map ([#62](https://github.com/aallan/vera/issues/62))~~ → ~~JSON ([#58](https://github.com/aallan/vera/issues/58))~~ → HTTP ([#57](https://github.com/aallan/vera/issues/57)) → HTTP Server ([#305](https://github.com/aallan/vera/issues/305)) → MCP Server ([#306](https://github.com/aallan/vera/issues/306))**
 
-Abilities are complete — `Eq`, `Ord`, `Hash`, `Show` are built-in with ADT auto-derivation for `Eq`. Map needs abilities for key constraints (now unblocked). JSON needs Map for `JObject`. HTTP needs JSON for request/response bodies. The chain extends to server-side effects: HTTP Server needs WASI 0.2 (#237) for incoming-handler support, and MCP Server needs JSON + HTTP Server to implement the JSON-RPC protocol.
+Map and JSON are complete. HTTP needs JSON for request/response bodies (now unblocked). The chain extends to server-side effects: HTTP Server needs WASI 0.2 (#237) for incoming-handler support, and MCP Server needs JSON + HTTP Server to implement the JSON-RPC protocol.
 
 ## What's next
 
@@ -34,7 +34,7 @@ Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave
 ✓ #211 Combinators          ✓ #60 Abilities                  ✓ #289 Prelude
 ✓ #133 Array ops            ✓ #133 map/fold ─┐                 #226 Typed holes
 ✓ #288 Naming audit            ✓ #62 Map ←───┘─┐              #233 DateTime
-                                 #58 JSON ←────┘─┐            #235 Crypto
+                               ✓ #58 JSON ←────┘─┐            #235 Crypto
                                  #57 HTTP ←──────┘─┐          #59 Async ──┐
                                  #305 Server ←─────┘─┐   #237 WASI 0.3 ←─┘
                                  #306 MCP ←──────────┘   #229 DB (←─ #62, #58)
@@ -58,7 +58,7 @@ The chain that unlocks agent-viable data processing. Each item depends on the pr
 1. <del>[#60](https://github.com/aallan/vera/issues/60) **Abilities and type constraints** — highest-leverage foundation work. Every item below is transitively blocked by this.</del> ([v0.0.90](https://github.com/aallan/vera/releases/tag/v0.0.90))
 2. <del>[#133](https://github.com/aallan/vera/issues/133) **Array `map`/`fold`/`filter`** — `array_slice`, `array_map`, `array_filter`, `array_fold` with full generic codegen support.</del> ([v0.0.91](https://github.com/aallan/vera/releases/tag/v0.0.91))
 3. <del>[#62](https://github.com/aallan/vera/issues/62) **Map and Set collections** — requires abilities for key/element constraints (`Eq + Hash`). Unlocks structured data handling.</del> ([PR 1](https://github.com/aallan/vera/pull/332), [PR 2](https://github.com/aallan/vera/pull/336), [v0.0.96](https://github.com/aallan/vera/releases/tag/v0.0.96))
-4. [#58](https://github.com/aallan/vera/issues/58) **JSON type** — requires Map for `JObject`. Without JSON parsing and serialisation, Vera cannot participate in any API integration workflow.
+4. <del>[#58](https://github.com/aallan/vera/issues/58) **JSON type** — requires Map for `JObject`. Without JSON parsing and serialisation, Vera cannot participate in any API integration workflow.</del> ([v0.0.98](https://github.com/aallan/vera/releases/tag/v0.0.98))
 5. [#57](https://github.com/aallan/vera/issues/57) **HTTP effect** — requires JSON for request/response bodies. Completes the client chain: a Vera program can make an HTTP call, parse the JSON response, and return typed, verified data.
 6. [#305](https://github.com/aallan/vera/issues/305) **HTTP Server effect** — requires HTTP (#57) + WASI 0.2 (#237). Incoming requests map to effect operations via `handle[HttpServer]`, with contracts verifying response schemas.
 7. [#306](https://github.com/aallan/vera/issues/306) **MCP Server effect** — requires JSON (#58) + HTTP Server (#305). The flagship use case for Vera: verified MCP tool servers where contracts guarantee tool input/output schemas at compile time. Positions Vera as the natural language for verified LLM orchestration.

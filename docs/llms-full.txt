@@ -316,6 +316,7 @@ private fn abs(@Int -> @Nat)
 @Map<String, Int>                        -- key-value map (keys: Eq + Hash)
 @Set<Int>                                -- unordered unique elements (Eq + Hash)
 @Decimal                                 -- exact decimal arithmetic
+@Json                                    -- JSON data (parse/query/serialize)
 Fn(Int -> Int) effects(pure)              -- function type
 { @Int | @Int.0 > 0 }                   -- refinement type
 ```
@@ -565,6 +566,38 @@ decimal_to_float(@Decimal.0)                        -- returns Float64 (potentia
 ```
 
 `decimal_from_string` and `decimal_div` return `Option<Decimal>` — use `option_unwrap_or` or `match` to extract the value. `decimal_compare` returns `Ordering` — use `match` to dispatch on `Less`, `Equal`, `Greater`.
+
+### JSON operations
+
+`Json` is a built-in ADT for structured data interchange. Parse JSON strings, query fields and array elements, and serialize back to strings. All operations are pure.
+
+The `Json` type has six constructors: `JNull`, `JBool(Bool)`, `JNumber(Float64)`, `JString(String)`, `JArray(Array<Json>)`, `JObject(Map<String, Json>)`. It is provided by the standard prelude — no `data` declaration needed.
+
+```vera
+json_parse("{\"name\":\"Vera\"}")               -- returns Result<Json, String>
+json_stringify(@Json.0)                          -- returns String (JSON text)
+json_get(@Json.0, "name")                        -- returns Option<Json> (field lookup)
+json_has_field(@Json.0, "name")                  -- returns Bool
+json_keys(@Json.0)                               -- returns Array<String> (object keys)
+json_array_get(@Json.0, 0)                       -- returns Option<Json> (element at index)
+json_array_length(@Json.0)                       -- returns Int (array length, 0 if not array)
+json_type(@Json.0)                               -- returns String ("null"/"bool"/"number"/"string"/"array"/"object")
+```
+
+Pattern match on `Json` constructors to extract values:
+
+```vera
+match json_parse("{\"x\":42}") {
+  Err(@String) -> Err(@String.0),
+  Ok(@Json) -> match json_get(@Json.0, "x") {
+    None -> Err("missing x"),
+    Some(@Json) -> match @Json.0 {
+      JNumber(@Float64) -> Ok(float_to_int(@Float64.0)),
+      _ -> Err("x is not a number")
+    }
+  }
+}
+```
 
 ### String operations
 

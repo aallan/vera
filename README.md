@@ -61,6 +61,7 @@ Vera has a number of key features:
 - **Refinement types** — types that express constraints like "a list of positive integers of length n"
 - **Async/await** — `Future<T>` with declared `<Async>` effects
 - **Typed Markdown** — built-in `MdBlock`/`MdInline` ADTs for structured document processing
+- **JSON** — built-in `Json` ADT with parse, query, and serialize operations for API integration
 - **String interpolation** — `"value: \(@Int.0)"` with auto-conversion for primitive types
 - **Three-tier verification** — static verification via Z3, guided verification with hints, runtime fallback
 - **Diagnostics as instructions** — every error message is a natural language explanation with a concrete fix
@@ -324,6 +325,31 @@ public fn main(@Unit -> @Unit)
 
 > [`examples/markdown.vera`](examples/markdown.vera) — run with `vera run examples/markdown.vera`
 
+### JSON — structured data interchange
+
+Vera has a built-in `Json` ADT. `json_parse` parses a JSON string into a typed `Json` value; `json_get`, `json_array_get`, and `json_has_field` query its structure. Pattern matching on `JString`, `JNumber`, `JBool`, etc. extracts typed values with compiler-enforced exhaustiveness.
+
+```vera
+private fn get_name(@String -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match json_parse(@String.0) {
+    Err(@String) -> Err(@String.0),
+    Ok(@Json) -> match json_get(@Json.0, "name") {
+      None -> Err("missing name"),
+      Some(@Json) -> match @Json.0 {
+        JString(@String) -> Ok(@String.0),
+        _ -> Err("name is not a string")
+      }
+    }
+  }
+}
+```
+
+> [`examples/json.vera`](examples/json.vera) — run with `vera run examples/json.vera`
+
 ## Runs Everywhere
 
 Vera compiles to WebAssembly. Programs run at the command line via wasmtime, or in the browser with a self-contained JavaScript runtime.
@@ -512,7 +538,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project Status
 
-Vera is in **active development** at v0.0.96. The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. Programs compile to WebAssembly and execute via wasmtime or in the browser.
+Vera is in **active development** at v0.0.98. The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. Programs compile to WebAssembly and execute via wasmtime or in the browser.
 
 The language specification is in draft across 13 chapters:
 
@@ -583,7 +609,7 @@ vera/
 │   ├── .well-known/               #   Well-known directory
 │   │   └── ai-plugin.json         #     OpenAI plugin manifest
 │   └── .nojekyll                  #   Disable Jekyll processing
-├── examples/                      # 25 example Vera programs
+├── examples/                      # 27 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
 ```
@@ -607,6 +633,9 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 | Pipe operator with module-qualified calls produces spurious E201 | [#326](https://github.com/aallan/vera/issues/326) |
 | `vera run /dev/stdin` fails — stdin consumed before main compilation | [#335](https://github.com/aallan/vera/issues/335) |
 | Combinators cannot infer type variables from bare `None` / `Err` constructors | [#293](https://github.com/aallan/vera/issues/293) |
+| `json_stringify` does not escape special characters in string values (Python runtime) | [#346](https://github.com/aallan/vera/issues/346) |
+| `json_parse` rejects top-level arrays and bare values — only objects supported (Python runtime) | [#347](https://github.com/aallan/vera/issues/347) |
+| `json_get` on nested JObject returns opaque handle, not deep copy (Python runtime) | [#348](https://github.com/aallan/vera/issues/348) |
 
 #### Limitations
 
@@ -629,7 +658,7 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 
 Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. See **[ROADMAP.md](ROADMAP.md)** for the full language roadmap.
 
-The features on the roadmap — `<Http>` ([#57](https://github.com/aallan/vera/issues/57)), `<Inference>` ([#61](https://github.com/aallan/vera/issues/61)), and the already-implemented `Markdown` type ([#147](https://github.com/aallan/vera/issues/147)) — converge into a single design goal: an LLM should be able to write a short Vera function that searches the web, feeds the results into another model, and returns typed, contract-checked output. No scaffolding, no untyped string wrangling, no unchecked side effects.
+The features on the roadmap — `<Http>` ([#57](https://github.com/aallan/vera/issues/57)), `<Inference>` ([#61](https://github.com/aallan/vera/issues/61)), the `Json` type ([#58](https://github.com/aallan/vera/issues/58)), and the `Markdown` type ([#147](https://github.com/aallan/vera/issues/147)) — converge into a single design goal: an LLM should be able to write a short Vera function that searches the web, feeds the results into another model, and returns typed, contract-checked output. No scaffolding, no untyped string wrangling, no unchecked side effects.
 
 ```vera
 public fn research_topic(@String -> @MdBlock)

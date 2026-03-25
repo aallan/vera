@@ -1920,6 +1920,195 @@ private fn foo(@Unit -> @Decimal)
 """, "type arg")
 
 
+class TestJsonChecker:
+    """Json ADT and built-in function type checking."""
+
+    def test_json_null(self) -> None:
+        """JNull constructor type-checks as Json."""
+        _check_ok("""
+private fn foo(@Unit -> @Json)
+  requires(true) ensures(true) effects(pure)
+{ JNull }
+""")
+
+    def test_json_bool(self) -> None:
+        """JBool(Bool) type-checks."""
+        _check_ok("""
+private fn foo(@Unit -> @Json)
+  requires(true) ensures(true) effects(pure)
+{ JBool(true) }
+""")
+
+    def test_json_number(self) -> None:
+        """JNumber(Float64) type-checks."""
+        _check_ok("""
+private fn foo(@Unit -> @Json)
+  requires(true) ensures(true) effects(pure)
+{ JNumber(3.14) }
+""")
+
+    def test_json_string(self) -> None:
+        """JString(String) type-checks."""
+        _check_ok("""
+private fn foo(@Unit -> @Json)
+  requires(true) ensures(true) effects(pure)
+{ JString("hello") }
+""")
+
+    def test_json_array(self) -> None:
+        """JArray(Array<Json>) type-checks."""
+        _check_ok("""
+private fn foo(@Unit -> @Json)
+  requires(true) ensures(true) effects(pure)
+{ JArray([JNull, JBool(false)]) }
+""")
+
+    def test_json_object(self) -> None:
+        """JObject(Map<String, Json>) type-checks."""
+        _check_ok("""
+private fn foo(@Unit -> @Json)
+  requires(true) ensures(true) effects(pure)
+{ JObject(map_insert(map_new(), "key", JNull)) }
+""")
+
+    def test_json_parse(self) -> None:
+        """json_parse returns Result<Json, String>."""
+        _check_ok("""
+private fn foo(@Unit -> @Result<Json, String>)
+  requires(true) ensures(true) effects(pure)
+{ json_parse("{}") }
+""")
+
+    def test_json_stringify(self) -> None:
+        """json_stringify returns String."""
+        _check_ok("""
+private fn foo(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ json_stringify(JNull) }
+""")
+
+    def test_json_get(self) -> None:
+        """json_get returns Option<Json>."""
+        _check_ok("""
+private fn foo(@Json -> @Option<Json>)
+  requires(true) ensures(true) effects(pure)
+{ json_get(@Json.0, "key") }
+""")
+
+    def test_json_has_field(self) -> None:
+        """json_has_field returns Bool."""
+        _check_ok("""
+private fn foo(@Json -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ json_has_field(@Json.0, "key") }
+""")
+
+    def test_json_type_fn(self) -> None:
+        """json_type returns String."""
+        _check_ok("""
+private fn foo(@Json -> @String)
+  requires(true) ensures(true) effects(pure)
+{ json_type(@Json.0) }
+""")
+
+    def test_json_array_get(self) -> None:
+        """json_array_get returns Option<Json>."""
+        _check_ok("""
+private fn foo(@Json -> @Option<Json>)
+  requires(true) ensures(true) effects(pure)
+{ json_array_get(@Json.0, 0) }
+""")
+
+    def test_json_array_length(self) -> None:
+        """json_array_length returns Int."""
+        _check_ok("""
+private fn foo(@Json -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ json_array_length(@Json.0) }
+""")
+
+    def test_json_keys(self) -> None:
+        """json_keys returns Array<String>."""
+        _check_ok("""
+private fn foo(@Json -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+{ json_keys(@Json.0) }
+""")
+
+    def test_json_parse_wrong_type(self) -> None:
+        """json_parse with Int arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Result<Json, String>)
+  requires(true) ensures(true) effects(pure)
+{ json_parse(42) }
+""", "type")
+
+    def test_json_stringify_wrong_type(self) -> None:
+        """json_stringify with String arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ json_stringify("not json") }
+""", "type")
+
+    def test_json_array_length_wrong_type(self) -> None:
+        """json_array_length with non-Json arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ json_array_length(42) }
+""", "type")
+
+    def test_json_keys_wrong_type(self) -> None:
+        """json_keys with non-Json arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+{ json_keys(42) }
+""", "type")
+
+    def test_json_array_get_wrong_index_type(self) -> None:
+        """json_array_get with String index produces error."""
+        _check_err("""
+private fn foo(@Json -> @Option<Json>)
+  requires(true) ensures(true) effects(pure)
+{ json_array_get(@Json.0, "0") }
+""", "type")
+
+    def test_json_get_wrong_type(self) -> None:
+        """json_get with non-Json first arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Option<Json>)
+  requires(true) ensures(true) effects(pure)
+{ json_get(42, "key") }
+""", "type")
+
+    def test_json_has_field_wrong_type(self) -> None:
+        """json_has_field with non-Json first arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ json_has_field(42, "key") }
+""", "type")
+
+    def test_json_type_wrong_type(self) -> None:
+        """json_type with non-Json arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ json_type(42) }
+""", "type")
+
+    def test_json_custom_data_shadows_prelude(self) -> None:
+        """User-defined data Json with non-standard constructors shadows prelude."""
+        _check_ok("""
+private data Json { MyNode(Int) }
+private fn foo(@Unit -> @Json)
+  requires(true) ensures(true) effects(pure)
+{ MyNode(42) }
+""")
+
+
 # =====================================================================
 # Return type checking
 # =====================================================================

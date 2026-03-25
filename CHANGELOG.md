@@ -8,12 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [0.0.98] - 2026-03-25
 
-### Fixed
-- **Monomorphization of opaque handle types** ([#341](https://github.com/aallan/vera/issues/341)) — generic prelude functions (`option_unwrap_or`, `match`) now work with all opaque handle types: `Option<Decimal>`, `Option<Map<K,V>>`, `Option<Set<T>>`, `Ordering` from `decimal_compare`. The monomorphizer now preserves full parameterized type names (e.g. `Map<String, Int>`) through type inference, substitution, and name mangling. Previously, type arguments were dropped during inference, causing `option_unwrap_or$Map` to fail codegen. Closes #341.
-
 ### Added
+- **Json standard library type** ([#58](https://github.com/aallan/vera/issues/58)) — built-in `Json` ADT (`JNull`, `JBool`, `JNumber`, `JString`, `JArray`, `JObject`) with 8 built-in functions: `json_parse`, `json_stringify`, `json_get`, `json_array_get`, `json_array_length`, `json_keys`, `json_has_field`, `json_type`. Implemented via host imports (Python `json` / JavaScript `JSON`). Opaque i32 handles following the Map/Set pattern. New conformance test `ch09_json` (61 programs, was 60). New example `json.vera`. Browser runtime support.
 - New conformance test `ch09_decimal_generics` (60 programs, was 59) — exercises `option_unwrap_or`, `match`, and `decimal_compare` with Decimal.
 - 12 new unit tests for opaque handle monomorphization paths (Decimal, Map, Set).
+
+### Fixed
+- **Monomorphization of opaque handle types** ([#341](https://github.com/aallan/vera/issues/341)) — generic prelude functions (`option_unwrap_or`, `match`) now work with all opaque handle types: `Option<Decimal>`, `Option<Map<K,V>>`, `Option<Set<T>>`, `Ordering` from `decimal_compare`. The monomorphizer now preserves full parameterized type names (e.g. `Map<String, Int>`) through type inference, substitution, and name mangling. Previously, type arguments were dropped during inference, causing `option_unwrap_or$Map` to fail codegen. Closes #341.
 
 ## [0.0.97] - 2026-03-24
 

@@ -1,0 +1,441 @@
+-- Conformance: Json ADT and json_* built-in functions (Chapter 9)
+-- Tests: Json constructors, json_type, json_parse, json_stringify,
+--        json_get, json_array_get, json_array_length, json_keys, json_has_field
+-- ================================================================
+-- test_json_type_null
+-- json_type of JNull returns "null" (length 4).
+-- ================================================================
+public fn test_json_type_null(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  string_length(json_type(JNull))
+}
+
+-- ================================================================
+-- test_json_type_bool
+-- json_type of JBool(true) returns "bool" (length 4).
+-- ================================================================
+public fn test_json_type_bool(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  string_length(json_type(JBool(true)))
+}
+
+-- ================================================================
+-- test_json_type_number
+-- json_type of JNumber(3.14) returns "number" (length 6).
+-- ================================================================
+public fn test_json_type_number(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 6)
+  effects(pure)
+{
+  string_length(json_type(JNumber(3.14)))
+}
+
+-- ================================================================
+-- test_json_type_string
+-- json_type of JString("hi") returns "string" (length 6).
+-- ================================================================
+public fn test_json_type_string(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 6)
+  effects(pure)
+{
+  string_length(json_type(JString("hi")))
+}
+
+-- ================================================================
+-- test_json_type_array
+-- json_type of JArray([]) returns "array" (length 5).
+-- ================================================================
+public fn test_json_type_array(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  string_length(json_type(JArray([])))
+}
+
+-- ================================================================
+-- test_json_type_object
+-- json_type of JObject(map_new()) returns "object" (length 6).
+-- ================================================================
+public fn test_json_type_object(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 6)
+  effects(pure)
+{
+  string_length(json_type(JObject(map_new())))
+}
+
+-- ================================================================
+-- test_json_parse_null
+-- json_parse("null") returns Ok(JNull); json_type of result is "null" (length 4).
+-- ================================================================
+public fn test_json_parse_null(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  match json_parse("null") {
+    Ok(@Json) -> string_length(json_type(@Json.0)),
+    Err(_) -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_parse_bool_true
+-- json_parse("true") returns Ok(JBool(true)); json_type is "bool" (length 4).
+-- ================================================================
+public fn test_json_parse_bool_true(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  match json_parse("true") {
+    Ok(@Json) -> string_length(json_type(@Json.0)),
+    Err(_) -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_parse_number
+-- json_parse("42") returns Ok(JNumber(42.0)); json_type is "number" (length 6).
+-- ================================================================
+public fn test_json_parse_number(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 6)
+  effects(pure)
+{
+  match json_parse("42") {
+    Ok(@Json) -> string_length(json_type(@Json.0)),
+    Err(_) -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_parse_string
+-- json_parse("\"hello\"") returns Ok(JString("hello")); json_type is "string" (length 6).
+-- ================================================================
+public fn test_json_parse_string_type(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 6)
+  effects(pure)
+{
+  match json_parse("\"hello\"") {
+    Ok(@Json) -> string_length(json_type(@Json.0)),
+    Err(_) -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_parse_array
+-- json_parse("[]") returns Ok(JArray([])); json_array_length of result is 0.
+-- ================================================================
+public fn test_json_parse_array(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  match json_parse("[]") {
+    Ok(@Json) -> json_array_length(@Json.0),
+    Err(_) -> 0 - 1
+  }
+}
+
+-- ================================================================
+-- test_json_parse_object
+-- json_parse("{}") returns Ok(JObject(map_new())); json_type is "object" (length 6).
+-- ================================================================
+public fn test_json_parse_object(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 6)
+  effects(pure)
+{
+  match json_parse("{}") {
+    Ok(@Json) -> string_length(json_type(@Json.0)),
+    Err(_) -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_parse_invalid
+-- json_parse("not json") returns Err(_); we return 1 to signal error branch.
+-- ================================================================
+public fn test_json_parse_invalid(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match json_parse("not json") {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
+-- ================================================================
+-- test_json_stringify_null
+-- json_stringify(JNull) returns "null" (length 4).
+-- ================================================================
+public fn test_json_stringify_null(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  string_length(json_stringify(JNull))
+}
+
+-- ================================================================
+-- test_json_stringify_bool
+-- json_stringify(JBool(true)) returns "true" (length 4).
+-- ================================================================
+public fn test_json_stringify_bool(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  string_length(json_stringify(JBool(true)))
+}
+
+-- ================================================================
+-- test_json_stringify_roundtrip
+-- json_parse then json_stringify on "null" returns "null" (length 4).
+-- ================================================================
+public fn test_json_stringify_roundtrip(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  match json_parse("null") {
+    Ok(@Json) -> string_length(json_stringify(@Json.0)),
+    Err(_) -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_get_present
+-- Build JObject with one key "x" -> JNull; json_get "x" returns Some(JNull).
+-- Check json_type of the inner value is "null" (length 4).
+-- ================================================================
+public fn test_json_get_present(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  let @Json = JObject(map_insert(map_new(), "x", JNull));
+  match json_get(@Json.0, "x") {
+    Some(@Json) -> string_length(json_type(@Json.0)),
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_get_absent
+-- json_get on a key not present in JObject returns None (0).
+-- ================================================================
+public fn test_json_get_absent(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Json = JObject(map_new());
+  match json_get(@Json.0, "missing") {
+    Some(_) -> 1,
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_get_non_object
+-- json_get on a non-object (JNull) returns None (0).
+-- ================================================================
+public fn test_json_get_non_object(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  match json_get(JNull, "x") {
+    Some(_) -> 1,
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_array_get_valid
+-- JArray([JNull]); json_array_get at index 0 returns Some(JNull).
+-- json_type of inner value is "null" (length 4).
+-- ================================================================
+public fn test_json_array_get_valid(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  let @Json = JArray([JNull]);
+  match json_array_get(@Json.0, 0) {
+    Some(@Json) -> string_length(json_type(@Json.0)),
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_array_get_invalid
+-- JArray([JNull]); json_array_get at index 5 returns None (0).
+-- ================================================================
+public fn test_json_array_get_invalid(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Json = JArray([JNull]);
+  match json_array_get(@Json.0, 5) {
+    Some(_) -> 1,
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_array_length_nonempty
+-- JArray with 3 elements has json_array_length == 3.
+-- ================================================================
+public fn test_json_array_length_nonempty(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  json_array_length(JArray([JNull, JBool(false), JString("x")]))
+}
+
+-- ================================================================
+-- test_json_array_length_empty
+-- JArray([]) has json_array_length == 0.
+-- ================================================================
+public fn test_json_array_length_empty(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  json_array_length(JArray([]))
+}
+
+-- ================================================================
+-- test_json_array_length_non_array
+-- json_array_length of JNull returns 0.
+-- ================================================================
+public fn test_json_array_length_non_array(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  json_array_length(JNull)
+}
+
+-- ================================================================
+-- test_json_keys_nonempty
+-- JObject with 2 keys; json_keys returns an array of length 2.
+-- ================================================================
+public fn test_json_keys_nonempty(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  let @Json = JObject(map_insert(map_insert(map_new(), "a", JNull), "b", JNull));
+  array_length(json_keys(@Json.0))
+}
+
+-- ================================================================
+-- test_json_keys_empty
+-- JObject(map_new()) has no keys; json_keys returns array of length 0.
+-- ================================================================
+public fn test_json_keys_empty(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Json = JObject(map_new());
+  array_length(json_keys(@Json.0))
+}
+
+-- ================================================================
+-- test_json_has_field_present
+-- JObject with key "name"; json_has_field "name" returns true (1).
+-- ================================================================
+public fn test_json_has_field_present(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Json = JObject(map_insert(map_new(), "name", JString("vera")));
+  if json_has_field(@Json.0, "name") then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_json_has_field_absent
+-- JObject with key "name"; json_has_field "age" returns false (0).
+-- ================================================================
+public fn test_json_has_field_absent(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Json = JObject(map_insert(map_new(), "name", JString("vera")));
+  if json_has_field(@Json.0, "age") then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- main — run all tests and return 0 on success
+-- Expected sum:
+--   test_json_type_null            =  4
+--   test_json_type_bool            =  4
+--   test_json_type_number          =  6
+--   test_json_type_string          =  6
+--   test_json_type_array           =  5
+--   test_json_type_object          =  6
+--   test_json_parse_null           =  4
+--   test_json_parse_bool_true      =  4
+--   test_json_parse_number         =  6
+--   test_json_parse_string_type    =  6
+--   test_json_parse_array          =  0
+--   test_json_parse_object         =  6
+--   test_json_parse_invalid        =  1
+--   test_json_stringify_null       =  4
+--   test_json_stringify_bool       =  4
+--   test_json_stringify_roundtrip  =  4
+--   test_json_get_present          =  4
+--   test_json_get_absent           =  0
+--   test_json_get_non_object       =  0
+--   test_json_array_get_valid      =  4
+--   test_json_array_get_invalid    =  0
+--   test_json_array_length_nonempty = 3
+--   test_json_array_length_empty   =  0
+--   test_json_array_length_non_array = 0
+--   test_json_keys_nonempty        =  2
+--   test_json_keys_empty           =  0
+--   test_json_has_field_present    =  1
+--   test_json_has_field_absent     =  0
+-- Total: 4+4+6+6+5+6+4+4+6+6+0+6+1+4+4+4+4+0+0+4+0+3+0+0+2+0+1+0 = 84
+-- ================================================================
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = test_json_type_null(()) + test_json_type_bool(()) + test_json_type_number(()) + test_json_type_string(()) + test_json_type_array(()) + test_json_type_object(()) + test_json_parse_null(()) + test_json_parse_bool_true(()) + test_json_parse_number(()) + test_json_parse_string_type(()) + test_json_parse_array(()) + test_json_parse_object(()) + test_json_parse_invalid(()) + test_json_stringify_null(()) + test_json_stringify_bool(()) + test_json_stringify_roundtrip(()) + test_json_get_present(()) + test_json_get_absent(()) + test_json_get_non_object(()) + test_json_array_get_valid(()) + test_json_array_get_invalid(()) + test_json_array_length_nonempty(()) + test_json_array_length_empty(()) + test_json_array_length_non_array(()) + test_json_keys_nonempty(()) + test_json_keys_empty(()) + test_json_has_field_present(()) + test_json_has_field_absent(());
+  if @Int.0 == 84 then {
+    0
+  } else {
+    1
+  }
+}

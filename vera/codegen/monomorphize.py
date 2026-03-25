@@ -70,6 +70,15 @@ _BUILTIN_VERA_RETURN_TYPES: dict[str, str] = {
     "set_contains": "Bool",
     "set_size": "Int",
     "set_to_array": "Array",
+    # Json builtins
+    "json_parse": "Result",
+    "json_stringify": "String",
+    "json_get": "Option",
+    "json_array_get": "Option",
+    "json_array_length": "Int",
+    "json_keys": "Array",
+    "json_has_field": "Bool",
+    "json_type": "String",
 }
 
 # Builtins returning parameterized types — maps function name to
@@ -77,6 +86,10 @@ _BUILTIN_VERA_RETURN_TYPES: dict[str, str] = {
 _BUILTIN_PARAMETERIZED_RETURNS: dict[str, tuple[str, tuple[str, ...]]] = {
     "decimal_from_string": ("Option", ("Decimal",)),
     "decimal_div": ("Option", ("Decimal",)),
+    "json_parse": ("Result", ("Json", "String")),
+    "json_get": ("Option", ("Json",)),
+    "json_array_get": ("Option", ("Json",)),
+    "json_keys": ("Array", ("String",)),
 }
 
 

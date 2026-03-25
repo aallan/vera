@@ -8627,6 +8627,432 @@ public fn main(-> @Int)
         assert _run(source) == 1
 
 
+class TestJsonCollection:
+    """Json ADT built-in operations: json_parse, json_stringify,
+    json_get, json_has_field, json_array_length, json_keys, json_type."""
+
+    def test_json_parse_wat_import(self) -> None:
+        """json_parse generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("null");
+  1
+}
+"""
+        result = _compile_ok(source)
+        assert '"json_parse"' in result.wat
+
+    def test_json_stringify_wat_import(self) -> None:
+        """json_stringify generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JNull)) }
+"""
+        result = _compile_ok(source)
+        assert '"json_stringify"' in result.wat
+
+    def test_json_no_imports_when_unused(self) -> None:
+        """Programs not using json_parse/json_stringify have no Json imports."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ json_array_length(JNull) }
+"""
+        result = _compile_ok(source)
+        assert '"json_parse"' not in result.wat
+        assert '"json_stringify"' not in result.wat
+
+    def test_json_null_array_length(self) -> None:
+        """json_array_length(JNull) returns 0."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ json_array_length(JNull) }
+"""
+        assert _run(source) == 0
+
+    def test_json_type_null(self) -> None:
+        """json_type(JNull) returns 'null'."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if string_contains(json_type(JNull), "null") then { string_length(json_type(JNull)) } else { 0 } }
+"""
+        assert _run(source) == 4
+
+    def test_json_type_bool(self) -> None:
+        """json_type(JBool(true)) returns 'bool'."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if string_contains(json_type(JBool(true)), "bool") then { string_length(json_type(JBool(true))) } else { 0 } }
+"""
+        assert _run(source) == 4
+
+    def test_json_type_number(self) -> None:
+        """json_type(JNumber(0.0)) returns 'number'."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if string_contains(json_type(JNumber(0.0)), "number") then { string_length(json_type(JNumber(0.0))) } else { 0 } }
+"""
+        assert _run(source) == 6
+
+    def test_json_type_string(self) -> None:
+        """json_type(JString('hi')) returns 'string'."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if string_contains(json_type(JString("hi")), "string") then { string_length(json_type(JString("hi"))) } else { 0 } }
+"""
+        assert _run(source) == 6
+
+    def test_json_type_array(self) -> None:
+        """json_type(JArray([])) returns 'array'."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if string_contains(json_type(JArray([])), "array") then { string_length(json_type(JArray([]))) } else { 0 } }
+"""
+        assert _run(source) == 5
+
+    def test_json_type_object(self) -> None:
+        """json_type(JObject(map_new())) returns 'object'."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if string_contains(json_type(JObject(map_new())), "object") then { string_length(json_type(JObject(map_new()))) } else { 0 } }
+"""
+        assert _run(source) == 6
+
+    def test_json_array_length(self) -> None:
+        """JArray with 3 elements has length 3."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ json_array_length(JArray([JNull, JBool(true), JNumber(1.0)])) }
+"""
+        assert _run(source) == 3
+
+    def test_json_parse_array(self) -> None:
+        """json_parse('[1,2,3]') returns array of length 3."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("[1, 2, 3]");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> json_array_length(@Json.0),
+    Err(@String) -> 0
+  }
+}
+"""
+        assert _run(source) == 3
+
+    def test_json_parse_object(self) -> None:
+        """json_parse('{"a":1}') returns object with field 'a'."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("{\\"a\\": 1}");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> if json_has_field(@Json.0, "a") then { 1 } else { 0 },
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_json_parse_invalid(self) -> None:
+        """json_parse with invalid JSON returns Err."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("not json");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> 0,
+    Err(@String) -> 1
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_json_stringify_null(self) -> None:
+        """json_stringify(JNull) returns 'null' (length 4)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JNull)) }
+"""
+        assert _run(source) == 4
+
+    def test_json_stringify_bool(self) -> None:
+        """json_stringify(JBool(true)) returns 'true' (length 4)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JBool(true))) }
+"""
+        assert _run(source) == 4
+
+    def test_json_stringify_number(self) -> None:
+        """json_stringify(JNumber(42.0)) returns '42.0' (length 4)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JNumber(42.0))) }
+"""
+        assert _run(source) == 4
+
+    def test_json_get_present(self) -> None:
+        """json_get on JObject with present key returns Some."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("{\\"count\\": 42}");
+  match @Result<Json, String>.0 {
+    Ok(@Json) ->
+      match json_get(@Json.0, "count") {
+        Some(@Json) ->
+          match @Json.0 {
+            JNumber(@Float64) -> floor(@Float64.0),
+            JNull -> 0,
+            JBool(@Bool) -> 0,
+            JString(@String) -> 0,
+            JArray(@Array<Json>) -> 0,
+            JObject(@Map<String, Json>) -> 0
+          },
+        None -> 0
+      },
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 42
+
+    def test_json_get_absent(self) -> None:
+        """json_get on JObject with absent key returns None."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("{\\"a\\": 1}");
+  match @Result<Json, String>.0 {
+    Ok(@Json) ->
+      match json_get(@Json.0, "missing") {
+        Some(@Json) -> 0,
+        None -> 1
+      },
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_json_keys(self) -> None:
+        """json_keys on JObject returns array of key strings."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("{\\"a\\": 1, \\"b\\": 2}");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> array_length(json_keys(@Json.0)),
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 2
+
+    def test_json_has_field_false(self) -> None:
+        """json_has_field on JNull returns false."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ if json_has_field(JNull, "x") then { 1 } else { 0 } }
+"""
+        assert _run(source) == 0
+
+    def test_json_array_get_present(self) -> None:
+        """json_array_get on JArray with valid index returns Some."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = JArray([JNumber(10.0), JNumber(20.0)]);
+  match json_array_get(@Json.0, 1) {
+    Some(@Json) ->
+      match @Json.0 {
+        JNumber(@Float64) -> floor(@Float64.0),
+        JNull -> 0,
+        JBool(@Bool) -> 0,
+        JString(@String) -> 0,
+        JArray(@Array<Json>) -> 0,
+        JObject(@Map<String, Json>) -> 0
+      },
+    None -> 0
+  }
+}
+"""
+        assert _run(source) == 20
+
+    def test_json_custom_data_no_combinators(self) -> None:
+        """User-defined non-standard data Json skips combinator injection."""
+        source = """
+private data Json { MyNode(Int) }
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = MyNode(42);
+  match @Json.0 {
+    MyNode(@Int) -> @Int.0
+  }
+}
+"""
+        assert _run(source) == 42
+
+    def test_json_array_get_out_of_bounds(self) -> None:
+        """json_array_get with out-of-bounds index returns None."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = JArray([JNull]);
+  match json_array_get(@Json.0, 5) {
+    Some(@Json) -> 0,
+    None -> 1
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_json_array_get_negative_index(self) -> None:
+        """json_array_get with negative index returns None."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = JArray([JNull, JBool(true)]);
+  match json_array_get(@Json.0, 0 - 1) {
+    Some(@Json) -> 0,
+    None -> 1
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_json_stringify_object(self) -> None:
+        """json_stringify(JObject(...)) round-trips through read_json."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = JObject(map_insert(map_new(), "k", JNumber(1.0)));
+  string_length(json_stringify(@Json.0))
+}
+'''
+        result = _run(source)
+        assert result > 0
+
+    def test_json_stringify_array(self) -> None:
+        """json_stringify(JArray([...])) exercises read_json array path."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = JArray([JNull, JBool(true), JNumber(2.0)]);
+  string_length(json_stringify(@Json.0))
+}
+"""
+        result = _run(source)
+        assert result > 0
+
+    def test_json_stringify_string(self) -> None:
+        """json_stringify(JString(...)) exercises read_json string path."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JString("hello"))) }
+'''
+        result = _run(source)
+        assert result > 0
+
+    def test_json_stringify_bool_false(self) -> None:
+        """json_stringify(JBool(false)) returns 'false' (5 chars)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JBool(false))) }
+"""
+        assert _run(source) == 5
+
+    def test_json_stringify_number_negative(self) -> None:
+        """json_stringify(JNumber(-3.5)) exercises read_json f64 path."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JNumber(0.0 - 3.5))) }
+"""
+        result = _run(source)
+        assert result > 0
+
+    def test_json_parse_with_string_values(self) -> None:
+        """json_parse with string values exercises write_json string path."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("{\\"name\\": \\"Alice\\"}");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> if json_has_field(@Json.0, "name") then { 1 } else { 0 },
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_json_parse_nested_object(self) -> None:
+        """json_parse with nested objects exercises write_json object path."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("{\\"inner\\": {\\"x\\": 1}}");
+  match @Result<Json, String>.0 {
+    Ok(@Json) ->
+      match json_get(@Json.0, "inner") {
+        Some(@Json) -> if json_has_field(@Json.0, "x") then { 1 } else { 0 },
+        None -> 0
+      },
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_json_parse_stringify_roundtrip(self) -> None:
+        """Parse then stringify exercises both write_json and read_json."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("[1, true, null]");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> string_length(json_stringify(@Json.0)),
+    Err(@String) -> 0
+  }
+}
+'''
+        result = _run(source)
+        assert result > 0
+
+
 class TestDecimalMonomorphization:
     """Monomorphization of generic functions with Decimal type args (#341)."""
 

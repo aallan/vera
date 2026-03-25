@@ -177,6 +177,8 @@ class FunctionCompilationMixin:
         # Propagate Decimal host-import tracking
         self._decimal_imports.update(ctx._decimal_imports)
         self._decimal_ops_used.update(ctx._decimal_ops_used)
+        # Propagate Json host-import tracking
+        self._json_ops_used.update(ctx._json_ops_used)
 
         # Coerce body result if return type is i32 but body produces i64
         # (e.g. IntLit in a Byte-returning function)

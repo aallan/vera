@@ -171,6 +171,10 @@ class CompilabilityMixin:
         "decimal_round", "decimal_abs",
     })
 
+    _JSON_BUILTINS = frozenset({
+        "json_parse", "json_stringify",
+    })
+
     def _scan_io_ops(self, node: ast.Node) -> None:
         """Walk a function body looking for IO, Markdown, and Regex builtins.
 
@@ -203,6 +207,8 @@ class CompilabilityMixin:
                 self._set_ops_used.add(node.name)
             if node.name in self._DECIMAL_BUILTINS:
                 self._decimal_ops_used.add(node.name)
+            if node.name in self._JSON_BUILTINS:
+                self._json_ops_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
         elif isinstance(node, ast.ConstructorCall):

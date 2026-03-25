@@ -31,6 +31,10 @@ data Ordering { Less, Equal, Greater }
 data UrlParts { UrlParts(String, String, String, String, String) }
 """
 
+_JSON_DATA = """\
+data Json { JNull, JBool(Bool), JNumber(Float64), JString(String), JArray(Array<Json>), JObject(Map<String, Json>) }
+"""
+
 # Type aliases needed by closure-taking combinators.
 _OPTION_TYPE_ALIASES = """\
 type OptionMapFn<A, B> = fn(A -> B) effects(pure);
@@ -146,6 +150,103 @@ private forall<T, U> fn array_fold(@Array<T>, @U, @ArrayFoldFn<T, U> -> @U)
   -- @ArrayFoldFn<T, U>.0 = fn (most recent), @U.0 = init,
   -- @Array<T>.0 = input
   array_fold_go(@Array<T>.0, @U.0, @ArrayFoldFn<T, U>.0, 0)
+}
+"""
+
+_JSON_COMBINATORS = """\
+private fn json_get(@Json, @String -> @Option<Json>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> None,
+    JBool(@Bool) -> None,
+    JNumber(@Float64) -> None,
+    JString(@String) -> None,
+    JArray(@Array<Json>) -> None,
+    JObject(@Map<String, Json>) -> map_get(@Map<String, Json>.0, @String.0)
+  }
+}
+
+private fn json_array_get(@Json, @Int -> @Option<Json>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> None,
+    JBool(@Bool) -> None,
+    JNumber(@Float64) -> None,
+    JString(@String) -> None,
+    JArray(@Array<Json>) ->
+      if @Int.0 >= 0 && @Int.0 < array_length(@Array<Json>.0) then {
+        Some(@Array<Json>.0[@Int.0])
+      } else {
+        None
+      },
+    JObject(@Map<String, Json>) -> None
+  }
+}
+
+private fn json_array_length(@Json -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> 0,
+    JBool(@Bool) -> 0,
+    JNumber(@Float64) -> 0,
+    JString(@String) -> 0,
+    JArray(@Array<Json>) -> array_length(@Array<Json>.0),
+    JObject(@Map<String, Json>) -> 0
+  }
+}
+
+private fn json_keys(@Json -> @Array<String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> [],
+    JBool(@Bool) -> [],
+    JNumber(@Float64) -> [],
+    JString(@String) -> [],
+    JArray(@Array<Json>) -> [],
+    JObject(@Map<String, Json>) -> map_keys(@Map<String, Json>.0)
+  }
+}
+
+private fn json_has_field(@Json, @String -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> false,
+    JBool(@Bool) -> false,
+    JNumber(@Float64) -> false,
+    JString(@String) -> false,
+    JArray(@Array<Json>) -> false,
+    JObject(@Map<String, Json>) -> map_contains(@Map<String, Json>.0, @String.0)
+  }
+}
+
+private fn json_type(@Json -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> "null",
+    JBool(@Bool) -> "bool",
+    JNumber(@Float64) -> "number",
+    JString(@String) -> "string",
+    JArray(@Array<Json>) -> "array",
+    JObject(@Map<String, Json>) -> "object"
+  }
 }
 """
 
@@ -293,6 +394,23 @@ def _has_standard_result(program: ast.Program) -> bool:
     return False  # pragma: no cover
 
 
+def _has_standard_json(program: ast.Program) -> bool:
+    """Check if user's ``data Json`` has the expected 6 constructors.
+
+    The prelude Json combinators (json_get, json_type, etc.) pattern-match
+    on the standard constructors: JNull, JBool, JNumber, JString, JArray,
+    JObject.  If the user defines ``data Json`` with different constructors,
+    we must skip injecting the combinators to avoid type errors.
+    """
+    _EXPECTED = {"JNull", "JBool", "JNumber", "JString", "JArray", "JObject"}
+    for tld in program.declarations:
+        decl = tld.decl
+        if isinstance(decl, ast.DataDecl) and decl.name == "Json":
+            ctor_names = {c.name for c in decl.constructors}
+            return ctor_names == _EXPECTED
+    return False  # pragma: no cover
+
+
 def _user_defined_names(program: ast.Program) -> set[str]:
     """Collect all user-defined function and type alias names."""
     names: set[str] = set()
@@ -303,6 +421,58 @@ def _user_defined_names(program: ast.Program) -> set[str]:
         elif isinstance(decl, ast.TypeAliasDecl):
             names.add(decl.name)  # pragma: no cover
     return names
+
+
+def _source_mentions_json(program: ast.Program) -> bool:
+    """Check if user code references Json types or constructors.
+
+    Walks all declarations (not just FnDecl) looking for Json-related
+    AST nodes in parameters, return types, and bodies (via recursive
+    field scan).  This catches modules that use Json values imported
+    from other modules or received as parameters.
+    """
+    json_names = frozenset({
+        "Json", "JNull", "JBool", "JNumber", "JString", "JArray", "JObject",
+        "json_parse", "json_stringify",
+        "json_get", "json_has_field", "json_type",
+        "json_keys", "json_array_get", "json_array_length",
+    })
+    for tld in program.declarations:
+        decl = tld.decl
+        if _node_mentions(decl, json_names):
+            return True
+    return False
+
+
+def _node_mentions(node: object, names: frozenset[str]) -> bool:
+    """Recursively check if any AST node references one of the names."""
+    if isinstance(node, ast.NamedType):
+        if node.name in names:
+            return True
+    if isinstance(node, ast.SlotRef):
+        if node.type_name in names:
+            return True
+    if isinstance(node, (ast.FnCall, ast.ConstructorCall)):
+        if node.name in names:
+            return True
+    if isinstance(node, ast.NullaryConstructor):
+        if node.name in names:
+            return True
+    # Recurse into dataclass fields
+    if hasattr(node, "__dataclass_fields__"):
+        for field_name in node.__dataclass_fields__:
+            val = getattr(node, field_name, None)
+            if val is None:
+                continue
+            if isinstance(val, (list, tuple)):
+                for item in val:
+                    if hasattr(item, "__dataclass_fields__"):
+                        if _node_mentions(item, names):
+                            return True
+            elif hasattr(val, "__dataclass_fields__"):
+                if _node_mentions(val, names):
+                    return True
+    return False
 
 
 def _user_defined_data_names(program: ast.Program) -> set[str]:
@@ -401,6 +571,33 @@ def inject_prelude(program: ast.Program) -> None:
         if not array_alias_names.issubset(user_names):
             source_parts.append(_ARRAY_TYPE_ALIASES)
         source_parts.append(_ARRAY_COMBINATORS)
+
+    # Json ADT and utility functions — inject only when Json is referenced
+    # (Json ADT triggers heap allocation; utilities call map_get etc.)
+    json_fn_names = {
+        "json_get", "json_array_get", "json_array_length",
+        "json_keys", "json_has_field", "json_type",
+    }
+    _json_ctors = {"JNull", "JBool", "JNumber", "JString", "JArray", "JObject"}
+    _json_builtins = {"json_parse", "json_stringify"}
+    user_uses_json = bool(
+        (user_names & json_fn_names)
+        or (user_names & _json_ctors)
+        or (user_names & _json_builtins)
+        or _source_mentions_json(program)
+    )
+    if user_uses_json:
+        user_has_json = "Json" in user_data_names
+        if not user_has_json:
+            source_parts.append(_JSON_DATA)
+        # Only inject combinators when the Json ADT has standard
+        # constructors (JNull, JBool, etc.).  A user-defined
+        # non-standard ``data Json`` would break the match arms.
+        inject_json_combinators = (
+            not user_has_json or _has_standard_json(program)
+        )
+        if inject_json_combinators and not json_fn_names.issubset(user_names):
+            source_parts.append(_JSON_COMBINATORS)
 
     full_source = "\n".join(source_parts)
     parsed = _parse_source(full_source)
