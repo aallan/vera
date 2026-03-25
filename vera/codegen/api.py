@@ -84,6 +84,7 @@ class CompileResult:
     map_ops_used: set[str] = field(default_factory=set)
     set_ops_used: set[str] = field(default_factory=set)
     decimal_ops_used: set[str] = field(default_factory=set)
+    json_ops_used: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -760,7 +761,8 @@ def execute(
 
     # Shared helpers for collection host functions (Map and Set).
     # Defined once, used by both Map and Set sections below.
-    if result.map_ops_used or result.set_ops_used or result.decimal_ops_used:
+    if (result.map_ops_used or result.set_ops_used
+            or result.decimal_ops_used or result.json_ops_used):
         def _write_i64(
             caller: wasmtime.Caller, offset: int, value: int,
         ) -> None:
@@ -776,6 +778,26 @@ def execute(
                 caller, offset,
                 struct.pack("<d", value),
             )
+
+        def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
+            """Read a little-endian i32 from WASM memory."""
+            memory = caller["memory"]
+            assert isinstance(memory, wasmtime.Memory)
+            buf = memory.data_ptr(caller)
+            val: int = struct.unpack_from(
+                "<I", bytes(buf[offset:offset + 4]),
+            )[0]
+            return val
+
+        def _read_f64(caller: wasmtime.Caller, offset: int) -> float:
+            """Read a little-endian f64 from WASM memory."""
+            memory = caller["memory"]
+            assert isinstance(memory, wasmtime.Memory)
+            buf = memory.data_ptr(caller)
+            val: float = struct.unpack_from(
+                "<d", bytes(buf[offset:offset + 8]),
+            )[0]
+            return val
 
         def _alloc_option_some_i64(
             caller: wasmtime.Caller, value: int,
@@ -859,7 +881,8 @@ def execute(
     # Map<K, V> host functions
     # -----------------------------------------------------------------
 
-    if result.map_ops_used:
+    # Map store is needed for direct Map ops AND for Json (JObject uses Map).
+    if result.map_ops_used or result.json_ops_used:
         # Handle table: maps i32 handles to Python dicts.
         _map_store: dict[int, dict[object, object]] = {}
         _map_next_handle = [1]
@@ -870,6 +893,7 @@ def execute(
             _map_store[h] = d
             return h
 
+    if result.map_ops_used:
         # map_new() → i32 handle
         def host_map_new(_caller: wasmtime.Caller) -> int:
             return _map_alloc({})
@@ -1521,6 +1545,58 @@ def execute(
                 wasmtime.FuncType([wasmtime.ValType.i32()],
                                   [wasmtime.ValType.i32()]),
                 host_decimal_abs, access_caller=True,
+            )
+
+    # -----------------------------------------------------------------
+    # Json host functions
+    # -----------------------------------------------------------------
+    if result.json_ops_used:
+        import json as _json
+
+        from vera.wasm.json_serde import read_json, write_json
+
+        if "json_parse" in result.json_ops_used:
+            def host_json_parse(
+                caller: wasmtime.Caller, ptr: int, length: int,
+            ) -> int:
+                text = _read_wasm_string(caller, ptr, length)
+                try:
+                    parsed = _json.loads(text)
+                except (ValueError, TypeError) as exc:
+                    return _alloc_result_err_string(caller, str(exc))
+                json_ptr = write_json(
+                    caller, _call_alloc, _write_i32, _write_f64,
+                    _alloc_string, _map_alloc, parsed,
+                )
+                return _alloc_result_ok_i32(caller, json_ptr)
+
+            linker.define_func(
+                "vera", "json_parse",
+                wasmtime.FuncType(
+                    [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                    [wasmtime.ValType.i32()],
+                ),
+                host_json_parse, access_caller=True,
+            )
+
+        if "json_stringify" in result.json_ops_used:
+            def host_json_stringify(
+                caller: wasmtime.Caller, ptr: int,
+            ) -> tuple[int, int]:
+                value = read_json(
+                    caller, ptr, _read_i32, _read_f64,
+                    _read_wasm_string, _map_store,
+                )
+                text = _json.dumps(value, ensure_ascii=False)
+                return _alloc_string(caller, text)
+
+            linker.define_func(
+                "vera", "json_stringify",
+                wasmtime.FuncType(
+                    [wasmtime.ValType.i32()],
+                    [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                ),
+                host_json_stringify, access_caller=True,
             )
 
     instance = linker.instantiate(store, module)

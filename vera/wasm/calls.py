@@ -73,6 +73,11 @@ class CallsMixin:
             # Async builtins — identity (eager evaluation, Future<T>
             # is WASM-transparent)
             # Markdown host-import builtins (pure, implemented in Python)
+            # Json host-import builtins
+            if call.name == "json_parse" and len(call.args) == 1:
+                return self._translate_json_parse(call.args[0], env)
+            if call.name == "json_stringify" and len(call.args) == 1:
+                return self._translate_json_stringify(call.args[0], env)
             if call.name == "md_parse" and len(call.args) == 1:
                 return self._translate_md_parse(call.args[0], env)
             if call.name == "md_render" and len(call.args) == 1:
@@ -4437,6 +4442,40 @@ class CallsMixin:
         # Return (dst, total) as i32_pair
         ins.append(f"local.get {dst}")
         ins.append(f"local.get {total}")
+        return ins
+
+    # ---- Json host-import builtins ------------------------------------
+
+    def _translate_json_parse(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """json_parse(s) → Result<Json, String> via host import.
+
+        String arg is (ptr, len) pair on stack → call $vera.json_parse → i32.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append("call $vera.json_parse")
+        return ins
+
+    def _translate_json_stringify(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """json_stringify(j) → String via host import.
+
+        Json arg is i32 heap pointer → call $vera.json_stringify → (i32, i32).
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append("call $vera.json_stringify")
         return ins
 
     # ---- Markdown host-import builtins ---------------------------------

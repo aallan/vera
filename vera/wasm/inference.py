@@ -294,6 +294,11 @@ class InferenceMixin:
             return "i64"
         if expr.name == "set_to_array":
             return "i32_pair"  # Array (ptr, len)
+        # Json builtins
+        if expr.name == "json_parse":
+            return "i32"  # Result<Json, String> heap pointer
+        if expr.name == "json_stringify":
+            return "i32_pair"  # String (ptr, len)
         # Numeric math builtins
         if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
             return "i64"

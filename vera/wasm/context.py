@@ -102,6 +102,8 @@ class WasmContext(
         # Decimal host-import tracking (propagated to codegen core)
         self._decimal_imports: set[str] = set()
         self._decimal_ops_used: set[str] = set()
+        # Json host-import tracking (propagated to codegen core)
+        self._json_ops_used: set[str] = set()
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}

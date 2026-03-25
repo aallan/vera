@@ -1,0 +1,134 @@
+-- JSON: parse a weather API response, validate structure, and compute statistics.
+--
+-- Scenario: an agent receives a JSON payload from a weather service and needs to
+-- extract the current temperature, validate the response fields are present, and
+-- compute the average temperature across a list of hourly readings.
+--
+-- The response shape expected:
+--   {
+--     "location": "London",
+--     "current": { "temp_c": 18.5, "condition": "Cloudy" },
+--     "hourly": [17.0, 17.5, 18.0, 18.5, 19.0]
+--   }
+-- Extract the "temp_c" field from a "current" object node.
+-- Returns the temperature as a Float64, or 0.0 if the field is absent/wrong type.
+private fn extract_temp(@Json -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match json_get(@Json.0, "temp_c") {
+    None -> 0.0,
+    Some(@Json) -> match @Json.0 { JNumber(@Float64) -> @Float64.0, _ -> 0.0 }
+  }
+}
+
+-- Validate that a parsed JSON object has the required top-level fields:
+-- "location", "current", and "hourly".
+-- Returns true only when all three fields are present.
+private fn has_required_fields(@Json -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if json_has_field(@Json.0, "location") then {
+    if json_has_field(@Json.0, "current") then {
+      json_has_field(@Json.0, "hourly")
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+-- Sum all numeric values from a JSON array of hourly temperatures.
+-- @Json.0 = the array node, @Int.0 = remaining count (counts down), @Float64.0 = accumulator.
+-- Non-number elements are treated as 0.0.
+-- Uses json_array_get with index = (total_length - remaining) to walk forward,
+-- but since we count down we read from index (remaining - 1) toward 0.
+private fn sum_hourly(@Json, @Int, @Float64 -> @Float64)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  decreases(@Int.0)
+  effects(pure)
+{
+  if @Int.0 == 0 then {
+    @Float64.0
+  } else {
+    let @Int = @Int.0 - 1;
+    let @Float64 = match json_array_get(@Json.0, @Int.0) { Some(@Json) -> match @Json.0 { JNumber(@Float64) -> @Float64.0, _ -> 0.0 }, None -> 0.0 };
+    sum_hourly(@Json.0, @Int.0, @Float64.1 + @Float64.0)
+  }
+}
+
+-- Compute the average temperature across the hourly array.
+-- Returns 0.0 if the array is empty or not a JSON array.
+private fn average_hourly(@Json -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = json_array_length(@Json.0);
+  if @Int.0 == 0 then {
+    0.0
+  } else {
+    let @Float64 = sum_hourly(@Json.0, @Int.0, 0.0);
+    @Float64.0 / int_to_float(@Int.0)
+  }
+}
+
+-- Parse the weather response and return the current temperature in Celsius.
+-- Returns Ok(temp) on success, Err(message) if parsing or validation fails.
+private fn parse_current_temp(@String -> @Result<Float64, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match json_parse(@String.0) {
+    Err(@String) -> Err(@String.0),
+    Ok(@Json) -> if has_required_fields(@Json.0) then { match json_get(@Json.0, "current") { None -> Err("missing current block"), Some(@Json) -> Ok(extract_temp(@Json.0)) } } else { Err("response missing required fields") }
+  }
+}
+
+-- Parse the weather response and return the average hourly temperature.
+-- Returns Ok(avg) on success, Err(message) if parsing or validation fails.
+private fn parse_average_temp(@String -> @Result<Float64, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match json_parse(@String.0) {
+    Err(@String) -> Err(@String.0),
+    Ok(@Json) -> if has_required_fields(@Json.0) then { match json_get(@Json.0, "hourly") { None -> Err("missing hourly array"), Some(@Json) -> Ok(average_hourly(@Json.0)) } } else { Err("response missing required fields") }
+  }
+}
+
+-- Round a Float64 to one decimal place (multiply by 10, truncate, divide by 10).
+private fn round1(@Float64 -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  int_to_float(float_to_int(@Float64.0 * 10.0)) / 10.0
+}
+
+-- Entry point: parse a realistic weather JSON payload, validate it, and
+-- return 0 if both the current temperature and average hourly temperature
+-- can be successfully extracted (i.e. the whole pipeline works end-to-end).
+-- current temp = 18.5, average hourly = 18.0 (mean of 17, 17.5, 18, 18.5, 19)
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @String = "{\"location\":\"London\",\"current\":{\"temp_c\":18.5,\"condition\":\"Cloudy\"},\"hourly\":[17.0,17.5,18.0,18.5,19.0]}";
+  -- @Result<Float64, String>.0 = parse_current_temp result (most recent after both lets)
+  let @Result<Float64, String> = parse_current_temp(@String.0);
+  -- @Result<Float64, String>.0 = parse_average_temp, .1 = parse_current_temp
+  let @Result<Float64, String> = parse_average_temp(@String.0);
+  match @Result<Float64, String>.0 {
+    Err(_) -> 1,
+    Ok(@Float64) -> match @Result<Float64, String>.1 { Err(_) -> 1, Ok(@Float64) -> if round1(@Float64.1) == 18.0 then { 0 } else { 1 } }
+  }
+}

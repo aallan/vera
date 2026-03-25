@@ -196,6 +196,37 @@ class TypeEnv:
         for c in self.data_types["UrlParts"].constructors.values():
             self.constructors[c.name] = c
 
+        # Json — structured data interchange (§9.7.1)
+        _JSON_TYPE = AdtType("Json", ())
+        _ARR_JSON = AdtType("Array", (_JSON_TYPE,))
+        _MAP_STR_JSON = AdtType("Map", (STRING, _JSON_TYPE))
+        self.data_types["Json"] = AdtInfo(
+            name="Json",
+            type_params=(),
+            constructors={
+                "JNull": ConstructorInfo(
+                    "JNull", "Json", (), None,
+                ),
+                "JBool": ConstructorInfo(
+                    "JBool", "Json", (), (BOOL,),
+                ),
+                "JNumber": ConstructorInfo(
+                    "JNumber", "Json", (), (FLOAT64,),
+                ),
+                "JString": ConstructorInfo(
+                    "JString", "Json", (), (STRING,),
+                ),
+                "JArray": ConstructorInfo(
+                    "JArray", "Json", (), (_ARR_JSON,),
+                ),
+                "JObject": ConstructorInfo(
+                    "JObject", "Json", (), (_MAP_STR_JSON,),
+                ),
+            },
+        )
+        for c in self.data_types["Json"].constructors.values():
+            self.constructors[c.name] = c
+
         # Future<T> — async computation result (WASM-transparent wrapper)
         self.data_types["Future"] = AdtInfo(
             name="Future",
@@ -974,6 +1005,66 @@ class TypeEnv:
             return_type=AdtType("Array", (STRING,)),
             effect=PureEffectRow(),
         )
+        # Json builtins (§9.7.1) — host-imported parse/stringify
+        _JSON_T = AdtType("Json", ())
+        self.functions["json_parse"] = FunctionInfo(
+            name="json_parse",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType("Result", (_JSON_T, STRING)),
+            effect=PureEffectRow(),
+        )
+        self.functions["json_stringify"] = FunctionInfo(
+            name="json_stringify",
+            forall_vars=None,
+            param_types=(_JSON_T,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        # Json utility functions — pure Vera (prelude-injected bodies)
+        self.functions["json_get"] = FunctionInfo(
+            name="json_get",
+            forall_vars=None,
+            param_types=(_JSON_T, STRING),
+            return_type=AdtType("Option", (_JSON_T,)),
+            effect=PureEffectRow(),
+        )
+        self.functions["json_array_get"] = FunctionInfo(
+            name="json_array_get",
+            forall_vars=None,
+            param_types=(_JSON_T, INT),
+            return_type=AdtType("Option", (_JSON_T,)),
+            effect=PureEffectRow(),
+        )
+        self.functions["json_array_length"] = FunctionInfo(
+            name="json_array_length",
+            forall_vars=None,
+            param_types=(_JSON_T,),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["json_keys"] = FunctionInfo(
+            name="json_keys",
+            forall_vars=None,
+            param_types=(_JSON_T,),
+            return_type=AdtType("Array", (STRING,)),
+            effect=PureEffectRow(),
+        )
+        self.functions["json_has_field"] = FunctionInfo(
+            name="json_has_field",
+            forall_vars=None,
+            param_types=(_JSON_T, STRING),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+        self.functions["json_type"] = FunctionInfo(
+            name="json_type",
+            forall_vars=None,
+            param_types=(_JSON_T,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+
         # Regex builtins (§9.6.15) — host-imported, pure
         self.functions["regex_match"] = FunctionInfo(
             name="regex_match",

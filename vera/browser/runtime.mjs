@@ -81,6 +81,16 @@ function readI64(offset) {
   return new DataView(mem().buffer).getBigInt64(offset, true);
 }
 
+/** Write a little-endian f64 into WASM memory. */
+function writeF64(offset, value) {
+  new DataView(mem().buffer).setFloat64(offset, value, true);
+}
+
+/** Read a little-endian f64 from WASM memory. */
+function readF64(offset) {
+  return new DataView(mem().buffer).getFloat64(offset, true);
+}
+
 /** Call the exported $alloc to allocate WASM heap memory. */
 function alloc(size) {
   return wasm.alloc(size);
@@ -1467,6 +1477,126 @@ function buildImportObject(module) {
     imports.vera.decimal_abs = (h) => {
       const s = decimalStore.get(h);
       return decimalAlloc(s.startsWith("-") ? s.slice(1) : s);
+    };
+  }
+
+  // ── Json host imports ────────────────────────────────────────
+  // Json ADT is heap-allocated in WASM memory. Parse/stringify
+  // are host imports; utility functions are compiled Vera source.
+
+  // Write a JS value into WASM memory as a Json ADT, returns heap pointer.
+  function writeJson(value) {
+    if (value === null || value === undefined) {
+      // JNull — tag=0, total=8
+      const ptr = alloc(8);
+      writeI32(ptr, 0);
+      return ptr;
+    }
+    if (typeof value === "boolean") {
+      // JBool(Bool) — tag=1, i32 at offset 4, total=8
+      const ptr = alloc(8);
+      writeI32(ptr, 1);
+      writeI32(ptr + 4, value ? 1 : 0);
+      return ptr;
+    }
+    if (typeof value === "number") {
+      // JNumber(Float64) — tag=2, f64 at offset 8, total=16
+      const ptr = alloc(16);
+      writeI32(ptr, 2);
+      writeF64(ptr + 8, value);
+      return ptr;
+    }
+    if (typeof value === "string") {
+      // JString(String) — tag=3, i32_pair at offset 4, total=16
+      const ptr = alloc(16);
+      writeI32(ptr, 3);
+      const [sp, sl] = allocString(value);
+      writeI32(ptr + 4, sp);
+      writeI32(ptr + 8, sl);
+      return ptr;
+    }
+    if (Array.isArray(value)) {
+      // JArray(Array<Json>) — tag=4, i32_pair at offset 4, total=16
+      const count = value.length;
+      let arrPtr = 0;
+      if (count > 0) {
+        arrPtr = alloc(count * 4);
+        for (let i = 0; i < count; i++) {
+          const ep = writeJson(value[i]);
+          writeI32(arrPtr + i * 4, ep);
+        }
+      }
+      const ptr = alloc(16);
+      writeI32(ptr, 4);
+      writeI32(ptr + 4, arrPtr);
+      writeI32(ptr + 8, count);
+      return ptr;
+    }
+    if (typeof value === "object") {
+      // JObject(Map<String, Json>) — tag=5, i32 Map handle at offset 4
+      const m = new Map();
+      for (const [k, v] of Object.entries(value)) {
+        m.set(k, writeJson(v));
+      }
+      const h = mapNextHandle++;
+      mapStore.set(h, m);
+      const ptr = alloc(8);
+      writeI32(ptr, 5);
+      writeI32(ptr + 4, h);
+      return ptr;
+    }
+    // Fallback: stringify
+    return writeJson(String(value));
+  }
+
+  // Read a Json ADT from WASM memory back to a JS value.
+  function readJson(ptr) {
+    const tag = readI32(ptr);
+    if (tag === 0) return null;
+    if (tag === 1) return readI32(ptr + 4) !== 0;
+    if (tag === 2) return readF64(ptr + 8);
+    if (tag === 3) return readString(readI32(ptr + 4), readI32(ptr + 8));
+    if (tag === 4) {
+      const arrPtr = readI32(ptr + 4);
+      const arrLen = readI32(ptr + 8);
+      const result = [];
+      for (let i = 0; i < arrLen; i++) {
+        result.push(readJson(readI32(arrPtr + i * 4)));
+      }
+      return result;
+    }
+    if (tag === 5) {
+      const handle = readI32(ptr + 4);
+      const m = mapStore.get(handle);
+      const result = {};
+      if (m) {
+        for (const [k, v] of m.entries()) {
+          result[String(k)] = readJson(v);
+        }
+      }
+      return result;
+    }
+    return null;
+  }
+
+  if (needed.has("json_parse")) {
+    imports.vera.json_parse = (ptr, len) => {
+      const text = readString(ptr, len);
+      try {
+        const parsed = JSON.parse(text);
+        const jsonPtr = writeJson(parsed);
+        return allocResultOkI32(jsonPtr);
+      } catch (e) {
+        return allocResultErrString(String(e.message || e));
+      }
+    };
+  }
+
+  if (needed.has("json_stringify")) {
+    imports.vera.json_stringify = (ptr) => {
+      const value = readJson(ptr);
+      const text = JSON.stringify(value);
+      return allocString(text);
     };
   }
 

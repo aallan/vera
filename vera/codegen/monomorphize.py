@@ -70,6 +70,9 @@ _BUILTIN_VERA_RETURN_TYPES: dict[str, str] = {
     "set_contains": "Bool",
     "set_size": "Int",
     "set_to_array": "Array",
+    # Json builtins
+    "json_parse": "Result",
+    "json_stringify": "String",
 }
 
 # Builtins returning parameterized types — maps function name to

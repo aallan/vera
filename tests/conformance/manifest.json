@@ -572,6 +572,31 @@
     ]
   },
   {
+    "id": "ch09_json",
+    "file": "ch09_json.vera",
+    "chapter": 9,
+    "title": "Json ADT and json_* built-in functions",
+    "level": "run",
+    "spec_ref": "Section 9.4.4",
+    "features": [
+      "Json",
+      "JNull",
+      "JBool",
+      "JNumber",
+      "JString",
+      "JArray",
+      "JObject",
+      "json_parse",
+      "json_stringify",
+      "json_get",
+      "json_array_get",
+      "json_array_length",
+      "json_keys",
+      "json_has_field",
+      "json_type"
+    ]
+  },
+  {
     "id": "ch09_decimal",
     "file": "ch09_decimal.vera",
     "chapter": 9,

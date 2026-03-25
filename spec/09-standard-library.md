@@ -11,7 +11,8 @@ The standard library comprises:
 - **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
 - **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
 - **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in the Python runtime; browser runtime uses IEEE 754 approximation.
-- **Future types**: `Json` for structured data interchange, `Markdown` for agent-oriented document structure.
+- **Json type**: `Json` ADT for structured data interchange — parse, query, and serialize JSON via 8 built-in functions (see §9.7.1).
+- **Future types**: `Markdown` for agent-oriented document structure.
 - **Built-in abilities**: `Eq`, `Ord`, `Hash`, `Show` — type constraints for generic programming. The `Ordering` ADT (`Less`, `Equal`, `Greater`) supports `Ord`'s `compare` operation.
 
 All built-in types participate fully in the type system: they can appear in contracts, be verified by the SMT solver, and be used with refinement types and pattern matching. Built-in effects follow the same algebraic effect semantics as user-defined effects (see Chapter 7).
@@ -1486,13 +1487,11 @@ let @Result<String, String> = regex_replace("hello world", "world", "vera");
 
 ## 9.7 Built-in Types
 
-### 9.7.1 Json (Future)
+### 9.7.1 Json
 
-> **Status: Not yet implemented.** Tracked in [#58](https://github.com/aallan/vera/issues/58). Depends on `Map<K, V>` ([#62](https://github.com/aallan/vera/issues/62)).
+`Json` is a standard library ADT for structured data interchange. Tracked in [#58](https://github.com/aallan/vera/issues/58).
 
-JSON will be a standard library ADT, not a primitive type:
-
-```
+```vera
 public data Json {
   JNull,
   JBool(Bool),
@@ -1503,13 +1502,64 @@ public data Json {
 }
 ```
 
-Parse and serialize operations will belong in the standard library. Refinement types can express JSON schemas:
+The `Json` type is provided by the standard prelude — no explicit `data` declaration is required. JSON values are constructed with the six variant constructors and destructured via `match`.
+
+**Parsing and serialization:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `json_parse(s)` | `(String) → Result<Json, String>` | Parse a JSON string; `Err` on invalid input |
+| `json_stringify(j)` | `(Json) → String` | Serialize a Json value to a JSON string |
+
+**Object access:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `json_get(j, key)` | `(Json, String) → Option<Json>` | Get a field from a JObject; `None` if absent or not an object |
+| `json_has_field(j, key)` | `(Json, String) → Bool` | Check whether a JObject has a field |
+| `json_keys(j)` | `(Json) → Array<String>` | Get all keys from a JObject; empty array if not an object |
+
+**Array access:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `json_array_get(j, i)` | `(Json, Int) → Option<Json>` | Get element at index from a JArray; `None` if out of bounds or not an array |
+| `json_array_length(j)` | `(Json) → Int` | Get length of a JArray; 0 if not an array |
+
+**Type inspection:**
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `json_type(j)` | `(Json) → String` | Returns `"null"`, `"bool"`, `"number"`, `"string"`, `"array"`, or `"object"` |
+
+All JSON functions are pure and implemented via host imports (Python `json` / JavaScript `JSON`). The `Json` type is opaque at the WASM level — values are `i32` handles into a runtime-managed value store, following the same pattern as `Map<K, V>` and `Set<T>`.
+
+**Example:**
+
+```vera
+private fn get_name(@String -> @Result<String, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match json_parse(@String.0) {
+    Err(@String) -> Err(@String.0),
+    Ok(@Json) -> match json_get(@Json.0, "name") {
+      None -> Err("missing name"),
+      Some(@Json) -> match @Json.0 {
+        JString(@String) -> Ok(@String.0),
+        _ -> Err("name is not a string")
+      }
+    }
+  }
+}
+```
+
+Refinement types can express JSON schemas:
 
 ```
-type ApiResponse = { @Json | has_field(@Json.0, "status") };
+type ApiResponse = { @Json | json_has_field(@Json.0, "status") };
 ```
-
-This approach keeps the core language small while providing ergonomic JSON support.
 
 ### 9.7.2 Decimal
 
