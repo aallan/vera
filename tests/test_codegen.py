@@ -8365,15 +8365,21 @@ public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Ordering = decimal_compare(decimal_from_int(5), decimal_from_int(5));
+  let @Int = match @Ordering.0 {
+    Less -> 0,
+    Equal -> 1,
+    Greater -> 0
+  };
   let @Ordering = decimal_compare(decimal_from_int(10), decimal_from_int(3));
-  match @Ordering.0 {
+  let @Int = match @Ordering.0 {
     Less -> 0,
     Equal -> 0,
     Greater -> 1
-  }
+  };
+  @Int.1 + @Int.0
 }
 """
-        assert _run(source) == 1
+        assert _run(source) == 2
 
     def test_decimal_div_by_zero(self) -> None:
         """decimal_div by zero returns None (coverage)."""
@@ -8439,6 +8445,48 @@ public fn main(-> @Int)
 {
   let @Bool = decimal_eq(decimal_from_int(5), decimal_from_int(5));
   if @Bool.0 then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_if_expr_result_type(self) -> None:
+        """Decimal in if-expression exercises _infer_block_result_type."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = if decimal_eq(decimal_from_int(1), decimal_from_int(1))
+    then { decimal_from_int(42) }
+    else { decimal_from_int(0) };
+  if decimal_eq(@Decimal.0, decimal_from_int(42)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_map_if_expr_result_type(self) -> None:
+        """Map handle in if-expression exercises _infer_block_result_type."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = if 1 == 1
+    then { map_insert(map_new(), "a", 1) }
+    else { map_new() };
+  map_size(@Map<String, Int>.0)
+}
+"""
+        assert _run(source) == 1
+
+    def test_set_if_expr_result_type(self) -> None:
+        """Set handle in if-expression exercises _infer_block_result_type."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = if 1 == 1
+    then { set_add(set_new(), 42) }
+    else { set_new() };
+  set_size(@Set<Int>.0)
 }
 """
         assert _run(source) == 1

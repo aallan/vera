@@ -274,6 +274,24 @@ class InferenceMixin:
             return "f64"
         if expr.name == "decimal_to_string":
             return "i32_pair"  # String (ptr, len)
+        # Map builtins
+        if expr.name in ("map_new", "map_insert", "map_remove"):
+            return "i32"  # opaque handle
+        if expr.name in ("map_get", "map_contains"):
+            return "i32"  # Option/Bool heap pointer
+        if expr.name == "map_size":
+            return "i64"
+        if expr.name in ("map_keys", "map_values"):
+            return "i32_pair"  # Array (ptr, len)
+        # Set builtins
+        if expr.name in ("set_new", "set_add", "set_remove"):
+            return "i32"  # opaque handle
+        if expr.name == "set_contains":
+            return "i32"  # Bool
+        if expr.name == "set_size":
+            return "i64"
+        if expr.name == "set_to_array":
+            return "i32_pair"  # Array (ptr, len)
         # Numeric math builtins
         if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
             return "i64"
