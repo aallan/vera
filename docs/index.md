@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (`@T.n`) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-**Current version:** [0.0.98](https://github.com/aallan/vera/releases/tag/v0.0.98)
+**Current version:** [0.0.99](https://github.com/aallan/vera/releases/tag/v0.0.99)
 
 ## Why?
 
@@ -23,7 +23,7 @@ The evidence suggests the biggest problem models face isn't syntax — it's cohe
 
 - **No variable names** — Typed slot references (`@Int.0`, `@String.1`) using De Bruijn indexing
 - **Mandatory contracts** — `requires(...)`, `ensures(...)`, `effects(...)` on every function
-- **Algebraic effects** — IO, State, Exceptions, Async tracked in the type system
+- **Algebraic effects** — IO, Http, State, Exceptions, Async tracked in the type system
 - **Z3 verification** — Contracts proved statically by the Z3 SMT solver
 - **Contract-driven testing** — Z3 generates test inputs from contracts
 - **WebAssembly** — Compiles to WASM, runs via wasmtime or in the browser
@@ -47,7 +47,7 @@ vera run examples/hello_world.vera
 - [AGENTS.md](https://raw.githubusercontent.com/aallan/vera/main/AGENTS.md) — Instructions for AI agents
 - [FAQ](https://raw.githubusercontent.com/aallan/vera/main/FAQ.md) — Design rationale and comparisons
 - [Specification](https://github.com/aallan/vera/tree/main/spec) — 13-chapter formal spec
-- [Examples](https://github.com/aallan/vera/tree/main/examples) — 25 verified programs
+- [Examples](https://github.com/aallan/vera/tree/main/examples) — 28 verified programs
 
 ## Links
 

@@ -1,0 +1,30 @@
+-- Conformance: Http effect (Chapter 9, Section 9.5.3)
+-- Level: check
+-- Tests: Http.get, Http.post, effect declaration, composition with IO and Json
+public fn fetch_page(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Http>)
+{
+  Http.get(@String.0)
+}
+
+public fn post_data(@String, @String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Http>)
+{
+  Http.post(@String.0, @String.1)
+}
+
+public fn fetch_and_parse(@String -> @Result<Json, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Http>)
+{
+  let @Result<String, String> = Http.get(@String.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> json_parse(@String.0),
+    Err(@String) -> Err(@String.0)
+  }
+}

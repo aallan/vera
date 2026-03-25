@@ -4,7 +4,7 @@
 
 Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts statically where possible; remaining contracts become runtime assertions. All side effects (IO, State, Exceptions, Async) are tracked in the type system via algebraic effects.
 
-Current version: 0.0.98. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
+Current version: 0.0.99. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
 
 ## Language Reference
 
@@ -33,7 +33,7 @@ Current version: 0.0.98. The reference compiler is written in Python. Install wi
 
 ## Examples
 
-- [examples/](https://github.com/aallan/vera/tree/main/examples): 25 verified example programs covering closures, generics, effects, pattern matching, string operations, async, markdown, regex, modules, and more.
+- [examples/](https://github.com/aallan/vera/tree/main/examples): 28 verified example programs covering closures, generics, effects, pattern matching, string operations, async, markdown, regex, modules, and more.
 
 ## Compiler and Tooling
 
@@ -44,6 +44,6 @@ Current version: 0.0.98. The reference compiler is written in Python. Install wi
 
 ## Optional
 
-- [TESTING.md](https://raw.githubusercontent.com/aallan/vera/main/TESTING.md): Test suite architecture — 2,749 tests, 96% coverage, conformance suite.
+- [TESTING.md](https://raw.githubusercontent.com/aallan/vera/main/TESTING.md): Test suite architecture — 3,012 tests, 96% coverage, conformance suite.
 - [CONTRIBUTING.md](https://raw.githubusercontent.com/aallan/vera/main/CONTRIBUTING.md): Contribution guidelines.
-- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 56 programs validating every language feature against the spec.
+- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 62 programs validating every language feature against the spec.

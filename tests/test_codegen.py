@@ -9053,6 +9053,114 @@ public fn main(-> @Int)
         assert result > 0
 
 
+class TestHttpCollection:
+    """Http effect: host-import compilation and mocked execution."""
+
+    def test_http_get_compiles(self) -> None:
+        """Http.get generates a WASM host import."""
+        source = """
+public fn fetch(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http>)
+{ Http.get(@String.0) }
+"""
+        result = _compile_ok(source)
+        assert '"http_get"' in result.wat
+
+    def test_http_post_compiles(self) -> None:
+        """Http.post generates a WASM host import."""
+        source = """
+public fn post(@String, @String -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http>)
+{ Http.post(@String.0, @String.1) }
+"""
+        result = _compile_ok(source)
+        assert '"http_post"' in result.wat
+
+    def test_http_no_imports_when_unused(self) -> None:
+        """Program without Http has no http imports."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert '"http_get"' not in result.wat
+        assert '"http_post"' not in result.wat
+
+    def test_http_get_mocked_success(self) -> None:
+        """Mocked Http.get returns Ok with response body."""
+        from io import BytesIO
+        from unittest.mock import MagicMock, patch
+
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Http>)
+{
+  let @Result<String, String> = Http.get("http://example.com");
+  match @Result<String, String>.0 {
+    Ok(@String) -> string_length(@String.0),
+    Err(@String) -> 0
+  }
+}
+"""
+        result = _compile_ok(source)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"hello"
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            exec_result = execute(result)
+            assert exec_result.value == 5
+
+    def test_http_get_mocked_failure(self) -> None:
+        """Mocked Http.get failure returns Err."""
+        from unittest.mock import patch
+
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Http>)
+{
+  let @Result<String, String> = Http.get("http://example.com");
+  match @Result<String, String>.0 {
+    Ok(@String) -> 0,
+    Err(@String) -> string_length(@String.0)
+  }
+}
+"""
+        result = _compile_ok(source)
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=Exception("connection refused"),
+        ):
+            exec_result = execute(result)
+            assert exec_result.value is not None
+            assert exec_result.value > 0
+
+    def test_http_post_mocked(self) -> None:
+        """Mocked Http.post returns Ok with response body."""
+        from unittest.mock import MagicMock, patch
+
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Http>)
+{
+  let @Result<String, String> = Http.post("http://example.com", "data");
+  match @Result<String, String>.0 {
+    Ok(@String) -> string_length(@String.0),
+    Err(@String) -> 0
+  }
+}
+"""
+        result = _compile_ok(source)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"created"
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            exec_result = execute(result)
+            assert exec_result.value == 7
+
+
 class TestDecimalMonomorphization:
     """Monomorphization of generic functions with Decimal type args (#341)."""
 

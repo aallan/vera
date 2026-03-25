@@ -855,5 +855,20 @@
       "decimal_from_string",
       "match"
     ]
+  },
+  {
+    "id": "ch09_http",
+    "file": "ch09_http.vera",
+    "chapter": 9,
+    "title": "Http effect (get, post, composition with Json)",
+    "level": "check",
+    "spec_ref": "Section 9.5.3",
+    "features": [
+      "http_get",
+      "http_post",
+      "effect_declaration",
+      "json",
+      "result"
+    ]
   }
 ]

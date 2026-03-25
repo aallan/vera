@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.99] - 2026-03-25
+
+### Added
+- **Http effect** ([#57](https://github.com/aallan/vera/issues/57)) — built-in `<Http>` algebraic effect with two operations: `Http.get(url)` and `Http.post(url, body)`, both returning `Result<String, String>`. Implemented via host imports (Python `urllib.request` / JavaScript `fetch`). Composes with `json_parse` for typed API responses. Built-in effect — no `effect Http { ... }` declaration needed. New conformance test `ch09_http` (62 programs, was 61). New example `http.vera`. Browser runtime support. Closes #57.
+
+### Known limitations
+- No custom headers ([#351](https://github.com/aallan/vera/issues/351))
+- No HTTP methods beyond GET/POST ([#352](https://github.com/aallan/vera/issues/352))
+- No response status code access ([#353](https://github.com/aallan/vera/issues/353))
+- No request timeout configuration ([#354](https://github.com/aallan/vera/issues/354))
+- No streaming responses ([#355](https://github.com/aallan/vera/issues/355))
+- No cookie/session management ([#356](https://github.com/aallan/vera/issues/356))
+
 ## [0.0.98] - 2026-03-25
 
 ### Added
@@ -1425,7 +1438,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.98...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.99...HEAD
+[0.0.99]: https://github.com/aallan/vera/compare/v0.0.98...v0.0.99
 [0.0.98]: https://github.com/aallan/vera/compare/v0.0.97...v0.0.98
 [0.0.97]: https://github.com/aallan/vera/compare/v0.0.96...v0.0.97
 [0.0.96]: https://github.com/aallan/vera/compare/v0.0.95...v0.0.96

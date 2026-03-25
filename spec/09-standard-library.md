@@ -8,7 +8,7 @@ The standard library comprises:
 
 - **Built-in ADTs**: `Option<T>` and `Result<T, E>` for representing partiality and fallibility.
 - **Built-in collections**: `Array<T>` for fixed-size homogeneous sequences, `Set<T>` for unordered unique elements, and `Map<K, V>` for key-value mappings.
-- **Built-in effects**: `IO` for output, `State<T>` for mutable state, plus future effects for networking, concurrency, and LLM inference.
+- **Built-in effects**: `IO` for output, `State<T>` for mutable state, `Http` for network I/O (`get` and `post`), plus future effects for concurrency and LLM inference.
 - **Built-in functions**: `array_length`, `array_append`, `array_range`, and `array_concat` for arrays, numeric operations (`abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`), type conversions (`int_to_float`, `float_to_int`, `nat_to_int`, `int_to_nat`, `byte_to_int`, `int_to_byte`), Float64 predicates (`float_is_nan`, `float_is_infinite`, `nan`, `infinity`), string search (`string_contains`, `string_starts_with`, `string_ends_with`, `string_index_of`), string transformation (`string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_split`, `string_join`, `string_char_code`, `string_from_char_code`), regular expressions (`regex_match`, `regex_find`, `regex_find_all`, `regex_replace`), plus future functions for vector similarity.
 - **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in the Python runtime; browser runtime uses IEEE 754 approximation.
 - **Json type**: `Json` ADT for structured data interchange — parse, query, and serialize JSON via 8 built-in functions (see §9.7.1).
@@ -409,20 +409,64 @@ private fn run_increment(@Unit -> @Int)
 
 For the runtime implementation of `State<T>`, see Chapter 12, Section 12.4.2.
 
-### 9.5.3 Http (Future)
+### 9.5.3 Http
 
-> **Status: Not yet implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57).
+> **Status: Implemented.** Tracked in [#57](https://github.com/aallan/vera/issues/57). `Http.get` and `Http.post` are fully compilable and execute via host imports (Python `urllib` / JavaScript `fetch`). Returns `Result<String, String>` — `Ok` with the response body, `Err` with the error message. New conformance test `ch09_http` (62 programs, was 61). New example `http.vera`.
 
-Network I/O will be modelled as an algebraic effect with operations like `get` and `post`. Functions performing network access will declare `effects(<Http>)`. Handlers will provide the implementation: real HTTP in production, mocks in tests.
+Network I/O is modelled as a built-in algebraic effect with two operations: `get` and `post`. Functions performing network access declare `effects(<Http>)`. The effect is built-in — no `effect Http { ... }` declaration is needed.
+
+**Operations:**
 
 ```
 effect Http {
-  op get(String -> String);
-  op post(String, String -> String);
+  op get(String -> Result<String, String>);
+  op post(String, String -> Result<String, String>);
 }
 ```
 
+- `Http.get(url)` — performs an HTTP GET request. Returns `Ok(body)` on success, `Err(message)` on failure.
+- `Http.post(url, body)` — performs an HTTP POST request with the given body (sent as `application/json`). Returns `Ok(body)` on success, `Err(message)` on failure.
+
 This fits naturally with Vera's algebraic effect system and makes network I/O explicit and testable.
+
+**Composition with JSON:**
+
+`Http.get` returns a string. To get typed data, compose with `json_parse`:
+
+```
+public fn fetch_json(@String -> @Result<Json, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Http>)
+{
+  let @Result<String, String> = Http.get(@String.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> json_parse(@String.0),
+    Err(@String) -> Err(@String.0)
+  }
+}
+```
+
+This follows the same pattern as Markdown: `json_parse(Http.get(url))`, not a dedicated `get_json` operation. One way to do things (§0.2.3).
+
+**Implementation notes:**
+
+- The Python runtime uses `urllib.request.urlopen` (stdlib, no external dependencies).
+- The browser/Node.js runtime uses the `fetch` API.
+- `Http.post` sends the body with `Content-Type: application/json`.
+- Responses are returned as the full response body string. Status codes are not currently exposed — non-2xx responses produce `Err`.
+- HTTPS is supported. Certificate verification follows the platform default.
+
+**Known limitations:**
+
+- No custom headers ([#351](https://github.com/aallan/vera/issues/351)).
+- No HTTP methods beyond GET/POST ([#352](https://github.com/aallan/vera/issues/352)).
+- No response status code access ([#353](https://github.com/aallan/vera/issues/353)).
+- No request timeout configuration ([#354](https://github.com/aallan/vera/issues/354)).
+- No streaming responses ([#355](https://github.com/aallan/vera/issues/355)).
+- No cookie/session management ([#356](https://github.com/aallan/vera/issues/356)).
+
+**Async composition (future work):**
 
 When the `<Async>` effect is available, Http naturally composes with it for concurrent requests:
 
@@ -439,6 +483,8 @@ private fn fetch_both(@String, @String -> @Tuple<Json, Json>)
   Tuple(@Json.1, @Json.0)
 }
 ```
+
+> **Note:** This async composition example uses future syntax. `Http.get` currently returns `Result<String, String>`, not `String`, so the async wrapping would need to account for error handling. True concurrent execution requires WASI 0.3 ([#237](https://github.com/aallan/vera/issues/237)).
 
 ### 9.5.4 Async
 

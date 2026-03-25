@@ -82,6 +82,7 @@ class CodeGenerator(
         self._decimal_ops_used: set[str] = set()  # Decimal host-import builtins
         self._decimal_imports: set[str] = set()  # Decimal WAT import declarations
         self._json_ops_used: set[str] = set()  # Json host-import builtins
+        self._http_ops_used: set[str] = set()  # Http host-import builtins
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
@@ -198,6 +199,7 @@ class CodeGenerator(
                 set_ops_used=set(self._set_ops_used),
                 decimal_ops_used=set(self._decimal_ops_used),
                 json_ops_used=set(self._json_ops_used),
+                http_ops_used=set(self._http_ops_used),
             )
 
         # Pass 2: compile function bodies
@@ -273,6 +275,7 @@ class CodeGenerator(
                 set_ops_used=set(self._set_ops_used),
                 decimal_ops_used=set(self._decimal_ops_used),
                 json_ops_used=set(self._json_ops_used),
+                http_ops_used=set(self._http_ops_used),
             )
 
         return CompileResult(
@@ -287,6 +290,7 @@ class CodeGenerator(
             set_ops_used=set(self._set_ops_used),
             decimal_ops_used=set(self._decimal_ops_used),
             json_ops_used=set(self._json_ops_used),
+                http_ops_used=set(self._http_ops_used),
         )
 
     # -----------------------------------------------------------------

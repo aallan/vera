@@ -119,6 +119,22 @@ class AssemblyMixin:
             self._needs_alloc = True
             self._needs_memory = True
 
+        # Http host imports — http_get(url_ptr, url_len) -> i32 Result ptr
+        #                      http_post(url_ptr, url_len, body_ptr, body_len) -> i32
+        if "http_get" in self._http_ops_used:
+            parts.append(
+                '  (import "vera" "http_get" '
+                "(func $vera.http_get (param i32 i32) (result i32)))"
+            )
+        if "http_post" in self._http_ops_used:
+            parts.append(
+                '  (import "vera" "http_post" '
+                "(func $vera.http_post (param i32 i32 i32 i32) (result i32)))"
+            )
+        if self._http_ops_used:
+            self._needs_alloc = True
+            self._needs_memory = True
+
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:
             parts.append(
@@ -189,6 +205,7 @@ class AssemblyMixin:
             or self._set_ops_used
             or self._decimal_ops_used
             or self._json_ops_used
+            or self._http_ops_used
         ):
             parts.append('  (export "alloc" (func $alloc))')
 

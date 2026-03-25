@@ -104,6 +104,8 @@ class WasmContext(
         self._decimal_ops_used: set[str] = set()
         # Json host-import tracking (propagated to codegen core)
         self._json_ops_used: set[str] = set()
+        # Http host-import tracking (propagated to codegen core)
+        self._http_ops_used: set[str] = set()
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}
@@ -387,7 +389,10 @@ class WasmContext(
             # Other IO ops (read_line, read_file, etc.) produce values.
             if expr.qualifier == "IO":
                 return expr.name in ("print", "exit")
-            return True  # non-IO effect ops return void
+            # Http ops return Result<String, String> — not void
+            if expr.qualifier == "Http":
+                return False
+            return True  # other effect ops (State.put, etc.) return void
         if isinstance(expr, ast.UnitLit):
             return True
         if isinstance(expr, ast.FnCall) and expr.name in self._effect_ops:

@@ -659,6 +659,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **No LSP server** | No IDE integration or structured code intelligence for agents | [#222](https://github.com/aallan/vera/issues/222) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |
 | **No date/time, crypto, CSV** | Standard library limited to core types, strings, and arrays | [#233](https://github.com/aallan/vera/issues/233), [#235](https://github.com/aallan/vera/issues/235), [#236](https://github.com/aallan/vera/issues/236) |
+| **Http: GET/POST only** | No custom headers, no PUT/DELETE/PATCH, no status codes, no timeouts, no streaming, no cookies | [#351](https://github.com/aallan/vera/issues/351)–[#356](https://github.com/aallan/vera/issues/356) |
 | **No WASI compliance** | IO uses ad-hoc host imports, not standardised WASI interfaces | [#237](https://github.com/aallan/vera/issues/237) |
 | **No typed holes** | Partial programs cannot type-check; no placeholder expressions | [#226](https://github.com/aallan/vera/issues/226) |
 | **No resource limits** | No built-in fuel, memory, or timeout controls for untrusted code | [#239](https://github.com/aallan/vera/issues/239) |

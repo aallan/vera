@@ -842,8 +842,10 @@ Vera is pure by default. All side effects must be declared.
 ```vera
 effects(pure)                    -- no effects
 effects(<IO>)                    -- performs IO
+effects(<Http>)                  -- network access
 effects(<State<Int>>)            -- uses integer state
 effects(<State<Int>, IO>)        -- multiple effects
+effects(<Http, IO>)              -- network + IO
 effects(<Async>)                 -- async computation
 effects(<Diverge>)               -- may not terminate
 effects(<Diverge, IO>)           -- divergent with IO
@@ -982,6 +984,38 @@ private fn compute(@Int, @Int -> @Int)
 ```
 
 `async(expr)` evaluates `expr` and wraps the result in `Future<T>`. `await(@Future<T>.n)` unwraps it. In the reference implementation, evaluation is eager/sequential — `Future<T>` has the same WASM representation as `T` with no runtime overhead.
+
+### Http effect
+
+The `Http` effect enables network I/O. It is built-in — no `effect Http { ... }` declaration is needed.
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `Http.get` | `String -> Result<String, String>` | HTTP GET request |
+| `Http.post` | `String, String -> Result<String, String>` | HTTP POST request (body as JSON) |
+
+```vera
+effects(<Http>)                  -- network access
+effects(<Http, IO>)              -- network + IO
+```
+
+Both operations return `Result<String, String>` — `Ok` with the response body on success, `Err` with the error message on failure. Compose with `json_parse` for typed API responses:
+
+```vera
+public fn fetch_json(@String -> @Result<Json, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Http>)
+{
+  let @Result<String, String> = Http.get(@String.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> json_parse(@String.0),
+    Err(@String) -> Err(@String.0)
+  }
+}
+```
+
+Like IO, `Http` is a built-in effect. Unlike IO, it has a fixed set of two operations — there is no need to restrict operations via an explicit declaration.
 
 ### Effect handlers
 

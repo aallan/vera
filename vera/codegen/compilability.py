@@ -36,6 +36,8 @@ class CompilabilityMixin:
                         # Exn<E> — E must be a compilable type
                         if not self._check_exn_type(decl, eff):
                             return False
+                    elif eff.name == "Http":
+                        self._needs_memory = True
                     elif eff.name == "Async":
                         pass  # Sequential execution, no host imports
                     else:
@@ -186,6 +188,8 @@ class CompilabilityMixin:
         if isinstance(node, ast.QualifiedCall):
             if node.qualifier == "IO":
                 self._io_ops_used.add(node.name)
+            elif node.qualifier == "Http":
+                self._http_ops_used.add(f"http_{node.name}")
             for arg in node.args:
                 self._scan_io_ops(arg)
             return

@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the complete Vera documentation compiled into a single document. Version 0.0.98.
+This file contains the complete Vera documentation compiled into a single document. Version 0.0.99.
 
 
 ========================================================================
@@ -848,8 +848,10 @@ Vera is pure by default. All side effects must be declared.
 ```vera
 effects(pure)                    -- no effects
 effects(<IO>)                    -- performs IO
+effects(<Http>)                  -- network access
 effects(<State<Int>>)            -- uses integer state
 effects(<State<Int>, IO>)        -- multiple effects
+effects(<Http, IO>)              -- network + IO
 effects(<Async>)                 -- async computation
 effects(<Diverge>)               -- may not terminate
 effects(<Diverge, IO>)           -- divergent with IO
@@ -988,6 +990,38 @@ private fn compute(@Int, @Int -> @Int)
 ```
 
 `async(expr)` evaluates `expr` and wraps the result in `Future<T>`. `await(@Future<T>.n)` unwraps it. In the reference implementation, evaluation is eager/sequential — `Future<T>` has the same WASM representation as `T` with no runtime overhead.
+
+### Http effect
+
+The `Http` effect enables network I/O. It is built-in — no `effect Http { ... }` declaration is needed.
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `Http.get` | `String -> Result<String, String>` | HTTP GET request |
+| `Http.post` | `String, String -> Result<String, String>` | HTTP POST request (body as JSON) |
+
+```vera
+effects(<Http>)                  -- network access
+effects(<Http, IO>)              -- network + IO
+```
+
+Both operations return `Result<String, String>` — `Ok` with the response body on success, `Err` with the error message on failure. Compose with `json_parse` for typed API responses:
+
+```vera
+public fn fetch_json(@String -> @Result<Json, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Http>)
+{
+  let @Result<String, String> = Http.get(@String.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> json_parse(@String.0),
+    Err(@String) -> Err(@String.0)
+  }
+}
+```
+
+Like IO, `Http` is a built-in effect. Unlike IO, it has a fixed set of two operations — there is no need to restrict operations via an explicit declaration.
 
 ### Effect handlers
 
@@ -1662,7 +1696,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 58 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
+The conformance suite in `tests/conformance/` contains 62 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
 
 ### Workflow
 
@@ -1797,8 +1831,8 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 58 conformance programs must pass
-python scripts/check_examples.py       # All 26 examples must pass
+python scripts/check_conformance.py    # All 62 conformance programs must pass
+python scripts/check_examples.py       # All 28 examples must pass
 ```
 
 Test helpers follow a pattern: `_check_ok(source)` / `_check_err(source, match)` / `_verify_ok(source)` / `_verify_err(source, match)`. See existing tests for examples.
@@ -1807,8 +1841,8 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 58 conformance programs in `tests/conformance/` must pass their declared level
-- All 26 examples in `examples/` must pass `vera check` and `vera verify`
+- All 62 conformance programs in `tests/conformance/` must pass their declared level
+- All 28 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
 - Version must be in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
@@ -1905,6 +1939,15 @@ The compiler checks at every call site that the concrete type satisfies the requ
 The design choice to fix the ability set (rather than allowing user-defined abilities) is deliberate: it keeps the language simpler for models and avoids the coherence problems that plague open type class systems.
 
 
+## How does HTTP work in Vera?
+
+HTTP is modelled as a built-in algebraic effect. `Http.get(url)` and `Http.post(url, body)` are effect operations that return `Result<String, String>`. Functions that use them must declare `effects(<Http>)` in their signature, making network access explicit and trackable in the type system.
+
+The effect system means a caller that only permits `<IO>` cannot invoke a function that performs `<Http>` — network access is a separate capability. In tests, you can provide mock handlers instead of making real network requests. The pattern for fetching and parsing JSON from an API is: call `Http.get`, then `json_parse` the response body.
+
+Currently HTTP supports GET and POST. Custom headers, additional HTTP methods, response status codes, timeouts, and streaming are tracked as known limitations ([#351](https://github.com/aallan/vera/issues/351)–[#356](https://github.com/aallan/vera/issues/356)).
+
+
 ## Can I run Vera programs in the browser?
 
 Yes. `vera compile --target browser` produces a self-contained directory with a `.wasm` binary, a JavaScript runtime (`runtime.mjs`), and an `index.html`:
@@ -1955,7 +1998,7 @@ The reference compiler targets WebAssembly, so the initial applications are web-
 
 But the deeper answer is that the end users aren't humans directly — they're AI coding agents. The intended workflow is: a human (or an orchestrating agent) describes what they want; a model generates Vera code; the compiler verifies it; the WASM binary runs. The human's job is to review contracts, not implementations.
 
-The roadmap includes native HTTP, JSON, and Markdown support, which points toward agent workloads: API integration, data processing, and structured document generation. A research function that searches the web, processes results via LLM inference, and returns typed, contract-checked Markdown output is the kind of program Vera is designed for.
+HTTP, JSON, and Markdown are now built-in, which supports the primary agent workloads: API integration, data processing, and structured document generation. A Vera program can make an HTTP request, parse the JSON response, and return typed, contract-checked data — all with the network I/O declared as an algebraic effect (`effects(<Http>)`). A research function that fetches data from the web, processes results via LLM inference, and returns typed, contract-checked Markdown output is the kind of program Vera is designed for.
 
 
 ## Is there evidence this actually works?
