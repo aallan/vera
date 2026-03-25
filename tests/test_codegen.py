@@ -8874,3 +8874,18 @@ public fn main(-> @Int)
 }
 """
         assert _run(source) == 1
+
+    def test_option_unwrap_or_mixed_instantiations(self) -> None:
+        """Two distinct Map parameterizations in one module."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Map<String, Int>> = Some(map_insert(map_new(), "a", 1));
+  let @Map<String, Int> = option_unwrap_or(@Option<Map<String, Int>>.0, map_new());
+  let @Option<Map<Int, Int>> = Some(map_insert(map_new(), 42, 2));
+  let @Map<Int, Int> = option_unwrap_or(@Option<Map<Int, Int>>.0, map_new());
+  map_size(@Map<String, Int>.0) + map_size(@Map<Int, Int>.0)
+}
+"""
+        assert _run(source) == 2
