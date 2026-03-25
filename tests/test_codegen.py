@@ -8631,6 +8631,40 @@ class TestJsonCollection:
     """Json ADT built-in operations: json_parse, json_stringify,
     json_get, json_has_field, json_array_length, json_keys, json_type."""
 
+    def test_json_parse_wat_import(self) -> None:
+        """json_parse generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("null");
+  1
+}
+"""
+        result = _compile_ok(source)
+        assert '"json_parse"' in result.wat
+
+    def test_json_stringify_wat_import(self) -> None:
+        """json_stringify generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JNull)) }
+"""
+        result = _compile_ok(source)
+        assert '"json_stringify"' in result.wat
+
+    def test_json_no_imports_when_unused(self) -> None:
+        """Programs not using json_parse/json_stringify have no Json imports."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ json_array_length(JNull) }
+"""
+        result = _compile_ok(source)
+        assert '"json_parse"' not in result.wat
+        assert '"json_stringify"' not in result.wat
+
     def test_json_null_array_length(self) -> None:
         """json_array_length(JNull) returns 0."""
         source = """
@@ -8978,7 +9012,7 @@ public fn main(-> @Int)
   match @Result<Json, String>.0 {
     Ok(@Json) ->
       match json_get(@Json.0, "inner") {
-        Some(@Json) -> if json_has_field(@Json.0, "inner") then { 0 } else { 1 },
+        Some(@Json) -> if json_has_field(@Json.0, "x") then { 1 } else { 0 },
         None -> 0
       },
     Err(@String) -> 0

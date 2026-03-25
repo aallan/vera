@@ -7,10 +7,11 @@ vera.codegen.api.
 
 Write direction (Python → WASM):
   write_json(caller, alloc, write_i32, write_f64, alloc_string,
-             map_alloc, map_insert_ss, value) → ptr
+             map_alloc, value) → int (heap pointer)
 
 Read direction (WASM → Python):
-  read_json(caller, read_i32, read_f64, read_string, map_store) → Any
+  read_json(caller, ptr, read_i32, read_f64, read_string,
+            map_store) → Any
 
 Json ADT layouts (from prelude injection → registration.py):
   JNull                        tag=0  ()               total=8

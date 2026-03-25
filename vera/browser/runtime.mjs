@@ -1568,11 +1568,13 @@ function buildImportObject(module) {
     if (tag === 5) {
       const handle = readI32(ptr + 4);
       const m = mapStore.get(handle);
+      if (!m) {
+        console.warn(`readJson: unknown JObject handle ${handle} at pointer ${ptr}; possible memory corruption`);
+        return {};
+      }
       const result = {};
-      if (m) {
-        for (const [k, v] of m.entries()) {
-          result[String(k)] = readJson(v);
-        }
+      for (const [k, v] of m.entries()) {
+        result[String(k)] = readJson(v);
       }
       return result;
     }

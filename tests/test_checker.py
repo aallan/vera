@@ -2075,6 +2075,15 @@ private fn foo(@Json -> @Option<Json>)
 { json_array_get(@Json.0, "0") }
 """, "type")
 
+    def test_json_custom_data_shadows_prelude(self) -> None:
+        """User-defined data Json with non-standard constructors shadows prelude."""
+        _check_ok("""
+private data Json { MyNode(Int) }
+private fn foo(@Unit -> @Json)
+  requires(true) ensures(true) effects(pure)
+{ MyNode(42) }
+""")
+
 
 # =====================================================================
 # Return type checking
