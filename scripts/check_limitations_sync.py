@@ -135,11 +135,15 @@ def main() -> int:
     # 1. Extract limitation issues from each documentation tier
     # ------------------------------------------------------------------
 
-    # Tier 1: README.md — user-facing limitations table
+    # Tier 1: README.md — user-facing limitations and bugs tables
     readme_text = (root / "README.md").read_text()
     readme_issues = extract_limitation_table_issues(
         readme_text, "#### Limitations"
     )
+    readme_bugs = extract_limitation_table_issues(
+        readme_text, "#### Bugs"
+    )
+    readme_issues |= readme_bugs  # issues in either table count as tracked
 
     # Tier 2: vera/README.md — contributor-facing limitations table
     vera_readme_text = (root / "vera/README.md").read_text()
