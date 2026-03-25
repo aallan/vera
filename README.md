@@ -606,6 +606,7 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 |-----|-------|
 | Pipe operator with module-qualified calls produces spurious E201 | [#326](https://github.com/aallan/vera/issues/326) |
 | `vera run /dev/stdin` fails — stdin consumed before main compilation | [#335](https://github.com/aallan/vera/issues/335) |
+| `option_unwrap_or` with opaque handle types (Map, Set) fails monomorphization | [#341](https://github.com/aallan/vera/issues/341) |
 
 #### Limitations
 
@@ -624,7 +625,6 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 | Resource limits (fuel, memory, timeout) | [#239](https://github.com/aallan/vera/issues/239) |
 | Combinator bare-constructor type inference | [#293](https://github.com/aallan/vera/issues/293) |
 | Effect row variable unification | [#294](https://github.com/aallan/vera/issues/294) |
-| Monomorphization of opaque handle types (Map, Set) in generics | [#341](https://github.com/aallan/vera/issues/341) |
 
 ## Project Roadmap
 
