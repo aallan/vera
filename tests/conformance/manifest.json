@@ -810,5 +810,25 @@
       "show_operation",
       "hash_operation"
     ]
+  },
+  {
+    "id": "ch09_decimal_generics",
+    "file": "ch09_decimal_generics.vera",
+    "chapter": 9,
+    "title": "Decimal with generic functions (option_unwrap_or, match, decimal_compare)",
+    "level": "run",
+    "spec_ref": "Section 9.7.2",
+    "features": [
+      "decimal",
+      "generics",
+      "option",
+      "ordering",
+      "monomorphization",
+      "option_unwrap_or",
+      "decimal_div",
+      "decimal_compare",
+      "decimal_from_string",
+      "match"
+    ]
   }
 ]

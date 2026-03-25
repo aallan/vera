@@ -1559,11 +1559,9 @@ private fn decimal_demo(-> @Int)
 }
 ```
 
-**Known limitations:**
+**Known limitation:**
 
-1. **Monomorphization gap:** `Option<Decimal>` values returned by `decimal_div` and `decimal_from_string` cannot currently be used with `option_unwrap_or` or `match` because the monomorphizer does not produce `option_unwrap_or$Decimal`. Similarly, `Ordering` returned by `decimal_compare` cannot yet be used with `match` in codegen. This affects all new opaque types and will be resolved in a future release ([#341](https://github.com/aallan/vera/issues/341)).
-
-2. **Browser runtime precision:** The Python runtime uses `decimal.Decimal` and provides exact numeric arithmetic and comparison. The browser runtime MVP uses JavaScript `Number` (IEEE 754 double-precision float) for arithmetic operations (`decimal_add`, `decimal_sub`, `decimal_mul`, `decimal_div`, `decimal_round`, `decimal_compare`), which loses precision for values that are not exactly representable in binary floating-point. Note that `decimal_eq` in the browser performs strict string-representation equality (not numeric equivalence), so `decimal_from_string("1.0")` ≠ `decimal_from_string("1")` even though they are numerically equal — the Python runtime uses numeric `==` and considers them equal. A future browser runtime version will use an arbitrary-precision decimal library to match the Python runtime's exact semantics.
+**Browser runtime precision:** The Python runtime uses `decimal.Decimal` and provides exact numeric arithmetic and comparison. The browser runtime MVP uses JavaScript `Number` (IEEE 754 double-precision float) for arithmetic operations (`decimal_add`, `decimal_sub`, `decimal_mul`, `decimal_div`, `decimal_round`, `decimal_compare`), which loses precision for values that are not exactly representable in binary floating-point. Note that `decimal_eq` in the browser performs strict string-representation equality (not numeric equivalence), so `decimal_from_string("1.0")` ≠ `decimal_from_string("1")` even though they are numerically equal — the Python runtime uses numeric `==` and considers them equal. A future browser runtime version will use an arbitrary-precision decimal library to match the Python runtime's exact semantics.
 
 ### 9.7.3 Markdown
 

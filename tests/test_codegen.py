@@ -8314,15 +8314,14 @@ public fn main(-> @Int)
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  let @Decimal = decimal_from_int(10);
-  let @Decimal = decimal_from_int(2);
-  let @Option<Decimal> = decimal_div(@Decimal.1, @Decimal.0);
-  floor(decimal_to_float(@Decimal.1))
+  let @Option<Decimal> = decimal_div(decimal_from_int(10), decimal_from_int(2));
+  let @Decimal = option_unwrap_or(@Option<Decimal>.0, decimal_from_int(0));
+  if decimal_eq(@Decimal.0, decimal_from_int(5)) then { 1 } else { 0 }
 }
 """
         result = _compile_ok(source)
         assert '"decimal_div"' in result.wat
-        assert _run(source) == 10
+        assert _run(source) == 1
 
     def test_decimal_from_string_host_called(self) -> None:
         """decimal_from_string host import is wired and invoked."""
@@ -8331,12 +8330,15 @@ public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Option<Decimal> = decimal_from_string("42");
-  42
+  match @Option<Decimal>.0 {
+    None -> 0,
+    Some(@Decimal) -> if decimal_eq(@Decimal.0, decimal_from_int(42)) then { 1 } else { 0 }
+  }
 }
 """
         result = _compile_ok(source)
         assert '"decimal_from_string"' in result.wat
-        assert _run(source) == 42
+        assert _run(source) == 1
 
     def test_decimal_compare_host_called(self) -> None:
         """decimal_compare host import is wired and invoked."""
@@ -8345,7 +8347,11 @@ public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Ordering = decimal_compare(decimal_from_int(1), decimal_from_int(2));
-  1
+  match @Ordering.0 {
+    Less -> 1,
+    Equal -> 0,
+    Greater -> 0
+  }
 }
 """
         result = _compile_ok(source)
@@ -8360,7 +8366,11 @@ public fn main(-> @Int)
 {
   let @Ordering = decimal_compare(decimal_from_int(5), decimal_from_int(5));
   let @Ordering = decimal_compare(decimal_from_int(10), decimal_from_int(3));
-  1
+  match @Ordering.0 {
+    Less -> 0,
+    Equal -> 0,
+    Greater -> 1
+  }
 }
 """
         assert _run(source) == 1
@@ -8429,6 +8439,155 @@ public fn main(-> @Int)
 {
   let @Bool = decimal_eq(decimal_from_int(5), decimal_from_int(5));
   if @Bool.0 then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+
+class TestDecimalMonomorphization:
+    """Monomorphization of generic functions with Decimal type args (#341)."""
+
+    def test_option_unwrap_or_decimal(self) -> None:
+        """option_unwrap_or<Decimal> with Some value."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Decimal> = Some(decimal_from_int(42));
+  let @Decimal = option_unwrap_or(@Option<Decimal>.0, decimal_from_int(0));
+  if decimal_eq(@Decimal.0, decimal_from_int(42)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_option_unwrap_or_decimal_none(self) -> None:
+        """option_unwrap_or<Decimal> with None returns default."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Decimal> = None;
+  let @Decimal = option_unwrap_or(@Option<Decimal>.0, decimal_from_int(99));
+  if decimal_eq(@Decimal.0, decimal_from_int(99)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_match_option_decimal(self) -> None:
+        """match on Option<Decimal> with Some and None arms."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Decimal> = Some(decimal_from_int(7));
+  match @Option<Decimal>.0 {
+    None -> 0,
+    Some(@Decimal) -> if decimal_eq(@Decimal.0, decimal_from_int(7)) then { 1 } else { 0 }
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_div_unwrap(self) -> None:
+        """decimal_div returns Option<Decimal>, unwrapped with option_unwrap_or."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Decimal> = decimal_div(decimal_from_int(10), decimal_from_int(2));
+  let @Decimal = option_unwrap_or(@Option<Decimal>.0, decimal_from_int(0));
+  if decimal_eq(@Decimal.0, decimal_from_int(5)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_div_by_zero_unwrap(self) -> None:
+        """decimal_div by zero returns None, option_unwrap_or gives default."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Decimal> = decimal_div(decimal_from_int(10), decimal_from_int(0));
+  let @Decimal = option_unwrap_or(@Option<Decimal>.0, decimal_from_int(99));
+  if decimal_eq(@Decimal.0, decimal_from_int(99)) then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_compare_match(self) -> None:
+        """match on Ordering from decimal_compare."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Ordering = decimal_compare(decimal_from_int(1), decimal_from_int(2));
+  match @Ordering.0 {
+    Less -> 1,
+    Equal -> 2,
+    Greater -> 3
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_compare_equal(self) -> None:
+        """decimal_compare returns Equal for equal values."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Ordering = decimal_compare(decimal_from_int(5), decimal_from_int(5));
+  match @Ordering.0 {
+    Less -> 0,
+    Equal -> 1,
+    Greater -> 0
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_compare_greater(self) -> None:
+        """decimal_compare returns Greater."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Ordering = decimal_compare(decimal_from_int(10), decimal_from_int(3));
+  match @Ordering.0 {
+    Less -> 0,
+    Equal -> 0,
+    Greater -> 1
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_from_string_match(self) -> None:
+        """decimal_from_string returns Option<Decimal>, match extracts value."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Decimal> = decimal_from_string("42");
+  match @Option<Decimal>.0 {
+    None -> 0,
+    Some(@Decimal) -> if decimal_eq(@Decimal.0, decimal_from_int(42)) then { 1 } else { 0 }
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_decimal_from_string_invalid_match(self) -> None:
+        """decimal_from_string with invalid input returns None."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Decimal> = decimal_from_string("not_a_number");
+  match @Option<Decimal>.0 {
+    None -> 1,
+    Some(@Decimal) -> 0
+  }
 }
 """
         assert _run(source) == 1

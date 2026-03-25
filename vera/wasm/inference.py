@@ -99,6 +99,9 @@ class InferenceMixin:
                 return "i32_pair"
             base = (resolved.split("<")[0]
                     if "<" in resolved else resolved)
+            # Opaque handle types — i32 handles managed by host runtime
+            if base in ("Decimal", "Map", "Set"):
+                return "i32"
             if base in self._adt_type_names:
                 return "i32"
             # Function type aliases → i32 (closure pointer)
@@ -324,6 +327,9 @@ class InferenceMixin:
             if self._is_pair_type_name(name):
                 return "i32_pair"
             base = name.split("<")[0] if "<" in name else name
+            # Opaque handle types — i32 handles managed by host runtime
+            if base in ("Decimal", "Map", "Set"):
+                return "i32"
             if base in self._adt_type_names:
                 return "i32"
             return None  # pragma: no cover
