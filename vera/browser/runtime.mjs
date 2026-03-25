@@ -1576,6 +1576,7 @@ function buildImportObject(module) {
       }
       return result;
     }
+    console.warn(`readJson: unknown tag ${tag} at pointer ${ptr}; possible memory corruption`);
     return null;
   }
 

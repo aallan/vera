@@ -87,6 +87,9 @@ _BUILTIN_PARAMETERIZED_RETURNS: dict[str, tuple[str, tuple[str, ...]]] = {
     "decimal_from_string": ("Option", ("Decimal",)),
     "decimal_div": ("Option", ("Decimal",)),
     "json_parse": ("Result", ("Json", "String")),
+    "json_get": ("Option", ("Json",)),
+    "json_array_get": ("Option", ("Json",)),
+    "json_keys": ("Array", ("String",)),
 }
 
 
