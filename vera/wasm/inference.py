@@ -398,6 +398,20 @@ class InferenceMixin:
             return None  # pragma: no cover — assert/assume return Unit
         return None  # pragma: no cover
 
+    @staticmethod
+    def _format_named_type(te: ast.NamedType) -> str:
+        """Format a NamedType as a full type name including type args."""
+        if not te.type_args:
+            return te.name
+        arg_names = []
+        for ta in te.type_args:
+            if isinstance(ta, ast.NamedType):
+                arg_names.append(
+                    InferenceMixin._format_named_type(ta))
+            else:
+                return te.name
+        return f"{te.name}<{', '.join(arg_names)}>"
+
     def _infer_vera_type(self, expr: ast.Expr) -> str | None:
         """Infer the Vera type name of an expression for call rewriting."""
         if isinstance(expr, ast.IntLit):
@@ -409,6 +423,14 @@ class InferenceMixin:
         if isinstance(expr, ast.UnitLit):
             return "Unit"
         if isinstance(expr, ast.SlotRef):
+            if expr.type_args:
+                arg_names = []
+                for ta in expr.type_args:
+                    if isinstance(ta, ast.NamedType):
+                        arg_names.append(self._format_named_type(ta))
+                    else:
+                        return expr.type_name
+                return f"{expr.type_name}<{', '.join(arg_names)}>"
             return expr.type_name
         if isinstance(expr, ast.ConstructorCall):
             return self._ctor_to_adt_name(expr.name)
@@ -705,7 +727,7 @@ class InferenceMixin:
                 arg_names = []
                 for ta in expr.type_args:
                     if isinstance(ta, ast.NamedType):
-                        arg_names.append(ta.name)
+                        arg_names.append(self._format_named_type(ta))
                     else:  # pragma: no cover
                         return None
                 return (expr.type_name, tuple(arg_names))

@@ -369,7 +369,9 @@ class CallsMixin:
         for tv in forall_vars:
             if tv not in mapping:
                 mapping[tv] = "Bool"
-            parts.append(mapping[tv])
+            # Sanitize parameterized type names for WAT identifiers
+            s = mapping[tv].replace("<", "_").replace(">", "").replace(", ", "_")
+            parts.append(s)
         return f"{call.name}${'_'.join(parts)}"
 
     def _unify_param_arg_wasm(

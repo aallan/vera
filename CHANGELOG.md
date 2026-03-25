@@ -9,11 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [0.0.98] - 2026-03-25
 
 ### Fixed
-- **Monomorphization of opaque handle types** ([#341](https://github.com/aallan/vera/issues/341)) — generic prelude functions (`option_unwrap_or`, `match`) now work with `Option<Decimal>`, `Ordering` from `decimal_compare`, and `Option<Decimal>` from `decimal_div`/`decimal_from_string`. The monomorphizer's type inference now recognizes all Decimal, Map, and Set builtins via a declarative return-type lookup table. Previously, all opaque i32 handle types were incorrectly inferred as "Bool". Closes #341.
+- **Monomorphization of opaque handle types** ([#341](https://github.com/aallan/vera/issues/341)) — generic prelude functions (`option_unwrap_or`, `match`) now work with all opaque handle types: `Option<Decimal>`, `Option<Map<K,V>>`, `Option<Set<T>>`, `Ordering` from `decimal_compare`. The monomorphizer now preserves full parameterized type names (e.g. `Map<String, Int>`) through type inference, substitution, and name mangling. Previously, type arguments were dropped during inference, causing `option_unwrap_or$Map` to fail codegen. Closes #341.
 
 ### Added
 - New conformance test `ch09_decimal_generics` (60 programs, was 59) — exercises `option_unwrap_or`, `match`, and `decimal_compare` with Decimal.
-- 10 new unit tests for Decimal monomorphization paths.
+- 12 new unit tests for opaque handle monomorphization paths (Decimal, Map, Set).
 
 ## [0.0.97] - 2026-03-24
 

@@ -349,6 +349,15 @@ class MonomorphizationMixin:
         if isinstance(expr, ast.UnitLit):
             return "Unit"
         if isinstance(expr, ast.SlotRef):
+            if expr.type_args:
+                # Include type args for parameterized types like Map<String, Int>
+                arg_names = []
+                for ta in expr.type_args:
+                    if isinstance(ta, ast.NamedType):
+                        arg_names.append(self._format_type_name(ta))
+                    else:
+                        return expr.type_name
+                return f"{expr.type_name}<{', '.join(arg_names)}>"
             return expr.type_name
         if isinstance(expr, ast.ConstructorCall):
             return ctor_to_adt.get(expr.name)
@@ -417,6 +426,58 @@ class MonomorphizationMixin:
                 return "Float64"
         return None
 
+    @staticmethod
+    def _parse_type_name(name: str) -> ast.NamedType:
+        """Parse a full type name string into a NamedType AST node.
+
+        E.g. "Map<String, Int>" → NamedType("Map", (NamedType("String"),
+        NamedType("Int"))).  Handles nested types like
+        "Map<String, Array<Int>>".
+        """
+        if "<" not in name:
+            return ast.NamedType(name=name, type_args=None)
+        base = name[:name.index("<")]
+        inner = name[name.index("<") + 1:-1]  # strip outer < >
+        # Split at top-level commas (respecting nesting)
+        args: list[str] = []
+        depth = 0
+        current: list[str] = []
+        for ch in inner:
+            if ch == "<":
+                depth += 1
+                current.append(ch)
+            elif ch == ">":
+                depth -= 1
+                current.append(ch)
+            elif ch == "," and depth == 0:
+                args.append("".join(current).strip())
+                current = []
+            else:
+                current.append(ch)
+        if current:
+            args.append("".join(current).strip())
+        type_args = tuple(
+            MonomorphizationMixin._parse_type_name(a) for a in args
+        )
+        return ast.NamedType(name=base, type_args=type_args)
+
+    @staticmethod
+    def _format_type_name(te: ast.NamedType) -> str:
+        """Format a NamedType as a full type name including type args.
+
+        E.g. NamedType("Map", (NamedType("String"), NamedType("Int")))
+        becomes "Map<String, Int>".
+        """
+        if not te.type_args:
+            return te.name
+        arg_names = []
+        for ta in te.type_args:
+            if isinstance(ta, ast.NamedType):
+                arg_names.append(MonomorphizationMixin._format_type_name(ta))
+            else:
+                return te.name
+        return f"{te.name}<{', '.join(arg_names)}>"
+
     def _get_arg_type_info(
         self, expr: ast.Expr, ctor_to_adt: dict[str, str],
     ) -> tuple[str, tuple[str, ...]] | None:
@@ -430,7 +491,7 @@ class MonomorphizationMixin:
                 arg_names = []
                 for ta in expr.type_args:
                     if isinstance(ta, ast.NamedType):
-                        arg_names.append(ta.name)
+                        arg_names.append(self._format_type_name(ta))
                     else:
                         return None
                 return (expr.type_name, tuple(arg_names))
@@ -563,8 +624,15 @@ class MonomorphizationMixin:
         """Produce a mangled name for a monomorphized function.
 
         Example: identity + ("Int",) -> "identity$Int"
+        Example: option_unwrap_or + ("Map<String, Int>",)
+                 -> "option_unwrap_or$Map_String_Int"
         """
-        return f"{name}${'_'.join(concrete_types)}"
+        sanitized = []
+        for ct in concrete_types:
+            # Replace angle brackets and commas for WAT identifier safety
+            s = ct.replace("<", "_").replace(">", "").replace(", ", "_")
+            sanitized.append(s)
+        return f"{name}${'_'.join(sanitized)}"
 
     def _monomorphize_fn(
         self,
@@ -702,7 +770,12 @@ class MonomorphizationMixin:
         """
         # Special case: NamedType — substitute type variable names
         if isinstance(node, ast.NamedType):
-            new_name = mapping.get(node.name, node.name)
+            mapped = mapping.get(node.name)
+            if mapped is not None and "<" in mapped:
+                # Parameterized type like "Map<String, Int>" — parse into
+                # NamedType with type_args
+                return self._parse_type_name(mapped)
+            new_name = mapped if mapped is not None else node.name
             new_args: tuple[ast.TypeExpr, ...] | None = node.type_args
             if node.type_args:
                 new_args = tuple(
@@ -727,9 +800,16 @@ class MonomorphizationMixin:
                                  f"<{', '.join(ta_names)}>"
                                  if ta_names else node.type_name)
 
-            new_type_name = mapping.get(node.type_name, node.type_name)
-            new_slot_args: tuple[ast.TypeExpr, ...] | None = node.type_args
-            if node.type_args:
+            mapped_name = mapping.get(node.type_name)
+            if mapped_name is not None and "<" in mapped_name:
+                # Parameterized type — parse into base name + type_args
+                parsed = self._parse_type_name(mapped_name)
+                new_type_name = parsed.name
+                new_slot_args = parsed.type_args
+            else:
+                new_type_name = mapped_name if mapped_name is not None else node.type_name
+                new_slot_args = node.type_args
+            if node.type_args and new_slot_args is node.type_args:
                 new_slot_args = tuple(
                     self._substitute_type_expr(ta, mapping)
                     for ta in node.type_args

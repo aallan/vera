@@ -606,7 +606,6 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 |-----|-------|
 | Pipe operator with module-qualified calls produces spurious E201 | [#326](https://github.com/aallan/vera/issues/326) |
 | `vera run /dev/stdin` fails — stdin consumed before main compilation | [#335](https://github.com/aallan/vera/issues/335) |
-| `option_unwrap_or` with opaque handle types (Map, Set) fails monomorphization | [#341](https://github.com/aallan/vera/issues/341) |
 | Combinators cannot infer type variables from bare `None` / `Err` constructors | [#293](https://github.com/aallan/vera/issues/293) |
 
 #### Limitations
