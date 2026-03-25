@@ -8898,6 +8898,111 @@ public fn main(-> @Int)
 """
         assert _run(source) == 1
 
+    def test_json_stringify_object(self) -> None:
+        """json_stringify(JObject(...)) round-trips through read_json."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = JObject(map_insert(map_new(), "k", JNumber(1.0)));
+  string_length(json_stringify(@Json.0))
+}
+'''
+        result = _run(source)
+        assert result > 0
+
+    def test_json_stringify_array(self) -> None:
+        """json_stringify(JArray([...])) exercises read_json array path."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = JArray([JNull, JBool(true), JNumber(2.0)]);
+  string_length(json_stringify(@Json.0))
+}
+"""
+        result = _run(source)
+        assert result > 0
+
+    def test_json_stringify_string(self) -> None:
+        """json_stringify(JString(...)) exercises read_json string path."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JString("hello"))) }
+'''
+        result = _run(source)
+        assert result > 0
+
+    def test_json_stringify_bool_false(self) -> None:
+        """json_stringify(JBool(false)) returns 'false' (5 chars)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JBool(false))) }
+"""
+        assert _run(source) == 5
+
+    def test_json_stringify_number_negative(self) -> None:
+        """json_stringify(JNumber(-3.5)) exercises read_json f64 path."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(json_stringify(JNumber(0.0 - 3.5))) }
+"""
+        result = _run(source)
+        assert result > 0
+
+    def test_json_parse_with_string_values(self) -> None:
+        """json_parse with string values exercises write_json string path."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("{\\"name\\": \\"Alice\\"}");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> if json_has_field(@Json.0, "name") then { 1 } else { 0 },
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_json_parse_nested_object(self) -> None:
+        """json_parse with nested objects exercises write_json object path."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("{\\"inner\\": {\\"x\\": 1}}");
+  match @Result<Json, String>.0 {
+    Ok(@Json) ->
+      match json_get(@Json.0, "inner") {
+        Some(@Json) -> if json_has_field(@Json.0, "inner") then { 0 } else { 1 },
+        None -> 0
+      },
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_json_parse_stringify_roundtrip(self) -> None:
+        """Parse then stringify exercises both write_json and read_json."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("[1, true, null]");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> string_length(json_stringify(@Json.0)),
+    Err(@String) -> 0
+  }
+}
+'''
+        result = _run(source)
+        assert result > 0
+
 
 class TestDecimalMonomorphization:
     """Monomorphization of generic functions with Decimal type args (#341)."""

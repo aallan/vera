@@ -177,7 +177,16 @@ def read_json(
 
     if tag == _TAG_JOBJECT:
         handle = read_i32(caller, ptr + 4)
-        raw_map = map_store.get(handle, {})
+        if handle not in map_store:
+            import warnings
+            warnings.warn(
+                f"read_json: unknown JObject handle {handle} at pointer {ptr}; "
+                "possible memory corruption or missing map allocation",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return {}
+        raw_map = map_store[handle]
         obj: dict[str, Any] = {}
         for k, v in raw_map.items():
             key_str = str(k)

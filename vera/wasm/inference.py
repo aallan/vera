@@ -522,6 +522,11 @@ class InferenceMixin:
             return "Result"
         if call.name == "md_render":
             return "String"
+        # Json builtins
+        if call.name == "json_parse":
+            return "Result"
+        if call.name == "json_stringify":
+            return "String"
         if call.name in ("md_has_heading", "md_has_code_block"):
             return "Bool"
         if call.name == "md_extract_code_blocks":

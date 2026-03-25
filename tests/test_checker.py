@@ -2051,6 +2051,30 @@ private fn foo(@Unit -> @String)
 { json_stringify("not json") }
 """, "type")
 
+    def test_json_array_length_wrong_type(self) -> None:
+        """json_array_length with non-Json arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ json_array_length(42) }
+""", "type")
+
+    def test_json_keys_wrong_type(self) -> None:
+        """json_keys with non-Json arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+{ json_keys(42) }
+""", "type")
+
+    def test_json_array_get_wrong_index_type(self) -> None:
+        """json_array_get with String index produces error."""
+        _check_err("""
+private fn foo(@Json -> @Option<Json>)
+  requires(true) ensures(true) effects(pure)
+{ json_array_get(@Json.0, "0") }
+""", "type")
+
 
 # =====================================================================
 # Return type checking
