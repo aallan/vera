@@ -8572,6 +8572,60 @@ public fn main(-> @Int)
 """
         assert _run(source) == 1
 
+    def test_map_keys_in_if_expr(self) -> None:
+        """map_keys result type (i32_pair) inferred in if-expression."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "x", 1);
+  let @Array<String> = if 1 == 1
+    then { map_keys(@Map<String, Int>.0) }
+    else { map_keys(map_new()) };
+  array_length(@Array<String>.0)
+}
+"""
+        assert _run(source) == 1
+
+    def test_set_to_array_in_if_expr(self) -> None:
+        """set_to_array result type (i32_pair) inferred in if-expression."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_new(), 5);
+  let @Array<Int> = if 1 == 1
+    then { set_to_array(@Set<Int>.0) }
+    else { set_to_array(set_new()) };
+  array_length(@Array<Int>.0)
+}
+"""
+        assert _run(source) == 1
+
+    def test_map_contains_in_if_expr(self) -> None:
+        """map_contains in if-expression exercises Bool inference."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "k", 1);
+  if map_contains(@Map<String, Int>.0, "k") then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
+    def test_set_size_in_if_expr(self) -> None:
+        """set_size result type (i64) inferred in if-expression."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_add(set_add(set_new(), 1), 2);
+  if set_size(@Set<Int>.0) == 2 then { 1 } else { 0 }
+}
+"""
+        assert _run(source) == 1
+
 
 class TestDecimalMonomorphization:
     """Monomorphization of generic functions with Decimal type args (#341)."""
