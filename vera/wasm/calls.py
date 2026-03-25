@@ -354,6 +354,7 @@ class CallsMixin:
         if call.qualifier == "Http":
             wasm_name = f"http_{call.name}"
             self._http_ops_used.add(wasm_name)
+            self._needs_alloc = True
             instructions.append(f"call $vera.{wasm_name}")
         else:
             instructions.append(f"call $vera.{call.name}")

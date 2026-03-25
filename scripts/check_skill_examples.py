@@ -118,7 +118,7 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     1269: ("FRAGMENT", "Wrong: missing contracts"),
     1276: ("FRAGMENT", "Wrong: missing effects clause"),
     1289: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
-    1289: ("FRAGMENT", "Wrong: bare expression without indices"),
+    1299: ("FRAGMENT", "Wrong: bare expression without indices"),
     1336: ("FRAGMENT", "Wrong: missing index on slot reference"),
     1341: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
     1393: ("FRAGMENT", "Wrong: match arm with incorrect return"),
@@ -136,7 +136,6 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     1453: ("FRAGMENT", "Correct: if/else with braces (common mistakes)"),
 
     # String escapes — bare expression
-    1464: ("FRAGMENT", "String escape backslash examples"),
     1498: ("FRAGMENT", "Correct escape sequence examples, bare strings"),
 
     # Map/Set common mistakes — bare let bindings

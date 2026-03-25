@@ -392,7 +392,11 @@ class WasmContext(
             # Http ops return Result<String, String> — not void
             if expr.qualifier == "Http":
                 return False
-            return True  # other effect ops (State.put, etc.) return void
+            # State ops are desugared to FnCall, not QualifiedCall.
+            # Future qualified effects should be added explicitly above.
+            # Default to void for unknown qualified calls as a safe
+            # fallback — WASM validation will catch mismatches.
+            return True
         if isinstance(expr, ast.UnitLit):
             return True
         if isinstance(expr, ast.FnCall) and expr.name in self._effect_ops:

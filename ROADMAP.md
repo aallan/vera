@@ -24,7 +24,7 @@ Most remaining features are gated by a single dependency chain:
 
 **~~Map ([#62](https://github.com/aallan/vera/issues/62))~~ → ~~JSON ([#58](https://github.com/aallan/vera/issues/58))~~ → ~~HTTP ([#57](https://github.com/aallan/vera/issues/57))~~ → HTTP Server ([#305](https://github.com/aallan/vera/issues/305)) → MCP Server ([#306](https://github.com/aallan/vera/issues/306))**
 
-Map, JSON, and HTTP are complete. A Vera program can now make an HTTP call, parse the JSON response, and return typed, verified data. The chain extends to server-side effects: HTTP Server needs WASI 0.2 (#237) for incoming-handler support, and MCP Server needs JSON + HTTP Server to implement the JSON-RPC protocol.
+Map, JSON, and HTTP are complete. A Vera program can now make an HTTP call, parse the JSON response, and return typed, verified data. Http operations return raw `String` bodies — JSON parsing is separate (`json_parse(Http.get(url))`), keeping the two features composable. The chain extends to server-side effects: HTTP Server needs WASI 0.3 (#237) for incoming-handler support, and MCP Server needs JSON + HTTP Server to implement the JSON-RPC protocol.
 
 ## What's next
 

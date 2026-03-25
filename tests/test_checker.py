@@ -2152,6 +2152,14 @@ public fn fetch(@String -> @Result<String, String>)
 { Http.get(@String.0) }
 """, "effect")
 
+    def test_http_post_wrong_type(self) -> None:
+        """Http.post(42, "body") with Int URL is a type error."""
+        _check_err("""
+public fn post(@Unit -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http>)
+{ Http.post(42, "body") }
+""", "type")
+
     def test_http_with_io(self) -> None:
         """effects(<Http, IO>) composes correctly."""
         _check_ok("""

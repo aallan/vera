@@ -9076,6 +9076,34 @@ public fn post(@String, @String -> @Result<String, String>)
         result = _compile_ok(source)
         assert '"http_post"' in result.wat
 
+    def test_http_get_only_imports_get(self) -> None:
+        """Program using only Http.get does not import http_post."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Http>)
+{
+  let @Result<String, String> = Http.get("http://example.com");
+  42
+}
+"""
+        result = _compile_ok(source)
+        assert '"http_get"' in result.wat
+        assert '"http_post"' not in result.wat
+
+    def test_http_post_only_imports_post(self) -> None:
+        """Program using only Http.post does not import http_get."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Http>)
+{
+  let @Result<String, String> = Http.post("http://example.com", "body");
+  42
+}
+"""
+        result = _compile_ok(source)
+        assert '"http_post"' in result.wat
+        assert '"http_get"' not in result.wat
+
     def test_http_no_imports_when_unused(self) -> None:
         """Program without Http has no http imports."""
         source = """
