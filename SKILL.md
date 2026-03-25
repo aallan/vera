@@ -558,7 +558,7 @@ decimal_to_string(@Decimal.0)                       -- returns String
 decimal_to_float(@Decimal.0)                        -- returns Float64 (potentially lossy)
 ```
 
-> `decimal_from_string` and `decimal_div` return `Option<Decimal>`, but `Option<Decimal>` cannot yet be used with `option_unwrap_or` or `match` due to a monomorphization limitation. Similarly, `decimal_compare` returns `Ordering`, but `match` on `Ordering` is not yet supported by codegen. Avoid these three operations for now.
+`decimal_from_string` and `decimal_div` return `Option<Decimal>` — use `option_unwrap_or` or `match` to extract the value. `decimal_compare` returns `Ordering` — use `match` to dispatch on `Less`, `Equal`, `Greater`.
 
 ### String operations
 

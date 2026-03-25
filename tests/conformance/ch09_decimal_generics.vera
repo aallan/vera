@@ -1,0 +1,150 @@
+-- Conformance: Decimal with generic functions (Chapter 9)
+-- Tests: option_unwrap_or with Option<Decimal>, match on Option<Decimal>,
+--        decimal_compare with match on Ordering, decimal_from_string
+-- ================================================================
+-- test_option_unwrap_or_some
+-- option_unwrap_or(Some(decimal), default) returns the decimal value.
+-- ================================================================
+public fn test_option_unwrap_or_some(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Decimal = option_unwrap_or(Some(decimal_from_int(42)), decimal_from_int(0));
+  if decimal_eq(@Decimal.0, decimal_from_int(42)) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_option_unwrap_or_none
+-- option_unwrap_or(None, default) returns the default Decimal.
+-- ================================================================
+public fn test_option_unwrap_or_none(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Option<Decimal> = None;
+  let @Decimal = option_unwrap_or(@Option<Decimal>.0, decimal_from_int(99));
+  if decimal_eq(@Decimal.0, decimal_from_int(99)) then {
+    1
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_match_option_decimal
+-- Match on Option<Decimal> from decimal_div: 10/2 = Some(5).
+-- ================================================================
+public fn test_match_option_decimal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Option<Decimal> = decimal_div(decimal_from_int(10), decimal_from_int(2));
+  match @Option<Decimal>.0 {
+    Some(@Decimal) -> if decimal_eq(@Decimal.0, decimal_from_int(5)) then { 1 } else { 0 },
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_match_compare_less
+-- decimal_compare(1, 2) returns Less.
+-- ================================================================
+public fn test_match_compare_less(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Ordering = decimal_compare(decimal_from_int(1), decimal_from_int(2));
+  match @Ordering.0 {
+    Less -> 1,
+    Equal -> 0,
+    Greater -> 0
+  }
+}
+
+-- ================================================================
+-- test_match_compare_equal
+-- decimal_compare(5, 5) returns Equal.
+-- ================================================================
+public fn test_match_compare_equal(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Ordering = decimal_compare(decimal_from_int(5), decimal_from_int(5));
+  match @Ordering.0 {
+    Less -> 0,
+    Equal -> 1,
+    Greater -> 0
+  }
+}
+
+-- ================================================================
+-- test_match_compare_greater
+-- decimal_compare(9, 3) returns Greater.
+-- ================================================================
+public fn test_match_compare_greater(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  let @Ordering = decimal_compare(decimal_from_int(9), decimal_from_int(3));
+  match @Ordering.0 {
+    Less -> 0,
+    Equal -> 0,
+    Greater -> 1
+  }
+}
+
+-- ================================================================
+-- test_decimal_from_string_some
+-- decimal_from_string("3.14") returns Some.
+-- ================================================================
+public fn test_decimal_from_string_some(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match decimal_from_string("3.14") {
+    Some(@Decimal) -> 1,
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_decimal_from_string_none
+-- decimal_from_string("not_a_number") returns None.
+-- ================================================================
+public fn test_decimal_from_string_none(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match decimal_from_string("not_a_number") {
+    Some(@Decimal) -> 0,
+    None -> 1
+  }
+}
+
+-- ================================================================
+-- main — run all tests, return 0 if all 8 pass (sum == 8)
+-- ================================================================
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = test_option_unwrap_or_some(()) + test_option_unwrap_or_none(()) + test_match_option_decimal(()) + test_match_compare_less(()) + test_match_compare_equal(()) + test_match_compare_greater(()) + test_decimal_from_string_some(()) + test_decimal_from_string_none(());
+  if @Int.0 == 8 then {
+    0
+  } else {
+    1
+  }
+}

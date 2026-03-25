@@ -34,6 +34,51 @@ _ABILITY_TYPE_SETS: dict[str, tuple[frozenset[str], str]] = {
     "Show": (_SHOW_TYPES, "primitive types (Int, Nat, Bool, Float64, String, Byte, Unit)"),
 }
 
+# Builtin function name → Vera return type name.
+# Used by _infer_fncall_vera_type_simple() to resolve opaque handle
+# types that all share the same WASM representation (i32) but are
+# distinct Vera types.
+_BUILTIN_VERA_RETURN_TYPES: dict[str, str] = {
+    # Decimal builtins
+    "decimal_from_int": "Decimal",
+    "decimal_from_float": "Decimal",
+    "decimal_add": "Decimal",
+    "decimal_sub": "Decimal",
+    "decimal_mul": "Decimal",
+    "decimal_neg": "Decimal",
+    "decimal_round": "Decimal",
+    "decimal_abs": "Decimal",
+    "decimal_from_string": "Option",
+    "decimal_div": "Option",
+    "decimal_compare": "Ordering",
+    "decimal_eq": "Bool",
+    "decimal_to_float": "Float64",
+    "decimal_to_string": "String",
+    # Map builtins
+    "map_new": "Map",
+    "map_insert": "Map",
+    "map_remove": "Map",
+    "map_get": "Option",
+    "map_contains": "Bool",
+    "map_size": "Int",
+    "map_keys": "Array",
+    "map_values": "Array",
+    # Set builtins
+    "set_new": "Set",
+    "set_add": "Set",
+    "set_remove": "Set",
+    "set_contains": "Bool",
+    "set_size": "Int",
+    "set_to_array": "Array",
+}
+
+# Builtins returning parameterized types — maps function name to
+# (outer_type, (inner_type,)) for _get_arg_type_info().
+_BUILTIN_PARAMETERIZED_RETURNS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "decimal_from_string": ("Option", ("Decimal",)),
+    "decimal_div": ("Option", ("Decimal",)),
+}
+
 
 class MonomorphizationMixin:
     """Methods for monomorphizing generic functions."""
@@ -356,6 +401,11 @@ class MonomorphizationMixin:
 
     def _infer_fncall_vera_type_simple(self, call: ast.FnCall) -> str | None:
         """Infer Vera return type from registered function signatures."""
+        # Check builtin return types first — resolves opaque handle
+        # types (Decimal, Map, Set) that all share i32 representation.
+        builtin_ret = _BUILTIN_VERA_RETURN_TYPES.get(call.name)
+        if builtin_ret is not None:
+            return builtin_ret
         sig = self._fn_sigs.get(call.name)
         if sig:
             _, ret_wt = sig
@@ -407,6 +457,10 @@ class MonomorphizationMixin:
                     return ("Array", (elem_type,))
             return ("Array", ())
         if isinstance(expr, ast.FnCall):
+            # Builtins returning parameterized types (e.g. decimal_div → Option<Decimal>)
+            param_ret = _BUILTIN_PARAMETERIZED_RETURNS.get(expr.name)
+            if param_ret is not None:
+                return param_ret
             # Infer from known return types (e.g. array_range → Array<Int>)
             if expr.name == "array_range":
                 return ("Array", ("Int",))

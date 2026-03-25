@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.98] - 2026-03-25
+
+### Fixed
+- **Monomorphization of opaque handle types** ([#341](https://github.com/aallan/vera/issues/341)) — generic prelude functions (`option_unwrap_or`, `match`) now work with `Option<Decimal>`, `Ordering` from `decimal_compare`, and `Option<Decimal>` from `decimal_div`/`decimal_from_string`. The monomorphizer's type inference now recognizes all Decimal, Map, and Set builtins via a declarative return-type lookup table. Previously, all opaque i32 handle types were incorrectly inferred as "Bool". Closes #341.
+
+### Added
+- New conformance test `ch09_decimal_generics` (60 programs, was 59) — exercises `option_unwrap_or`, `match`, and `decimal_compare` with Decimal.
+- 10 new unit tests for Decimal monomorphization paths.
+
 ## [0.0.97] - 2026-03-24
 
 ### Added
@@ -1415,7 +1424,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.97...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.98...HEAD
+[0.0.98]: https://github.com/aallan/vera/compare/v0.0.97...v0.0.98
 [0.0.97]: https://github.com/aallan/vera/compare/v0.0.96...v0.0.97
 [0.0.96]: https://github.com/aallan/vera/compare/v0.0.95...v0.0.96
 [0.0.95]: https://github.com/aallan/vera/compare/v0.0.94...v0.0.95

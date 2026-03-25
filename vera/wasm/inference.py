@@ -99,6 +99,9 @@ class InferenceMixin:
                 return "i32_pair"
             base = (resolved.split("<")[0]
                     if "<" in resolved else resolved)
+            # Opaque handle types — i32 handles managed by host runtime
+            if base in ("Decimal", "Map", "Set"):
+                return "i32"
             if base in self._adt_type_names:
                 return "i32"
             # Function type aliases → i32 (closure pointer)
@@ -271,6 +274,26 @@ class InferenceMixin:
             return "f64"
         if expr.name == "decimal_to_string":
             return "i32_pair"  # String (ptr, len)
+        # Map builtins
+        if expr.name in ("map_new", "map_insert", "map_remove"):
+            return "i32"  # opaque handle
+        if expr.name == "map_get":
+            return "i32"  # Option heap pointer
+        if expr.name == "map_contains":
+            return "i32"  # Bool
+        if expr.name == "map_size":
+            return "i64"
+        if expr.name in ("map_keys", "map_values"):
+            return "i32_pair"  # Array (ptr, len)
+        # Set builtins
+        if expr.name in ("set_new", "set_add", "set_remove"):
+            return "i32"  # opaque handle
+        if expr.name == "set_contains":
+            return "i32"  # Bool
+        if expr.name == "set_size":
+            return "i64"
+        if expr.name == "set_to_array":
+            return "i32_pair"  # Array (ptr, len)
         # Numeric math builtins
         if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
             return "i64"
@@ -324,6 +347,9 @@ class InferenceMixin:
             if self._is_pair_type_name(name):
                 return "i32_pair"
             base = name.split("<")[0] if "<" in name else name
+            # Opaque handle types — i32 handles managed by host runtime
+            if base in ("Decimal", "Map", "Set"):
+                return "i32"
             if base in self._adt_type_names:
                 return "i32"
             return None  # pragma: no cover
