@@ -8845,3 +8845,32 @@ public fn main(-> @Int)
 }
 """
         assert _run(source) == 1
+
+    def test_option_unwrap_or_map_none(self) -> None:
+        """option_unwrap_or<Map<String, Int>> with None returns default."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Map<String, Int>> = None;
+  let @Map<String, Int> = option_unwrap_or(
+    @Option<Map<String, Int>>.0,
+    map_insert(map_new(), "d", 1)
+  );
+  map_size(@Map<String, Int>.0)
+}
+"""
+        assert _run(source) == 1
+
+    def test_option_unwrap_or_set_none(self) -> None:
+        """option_unwrap_or<Set<Int>> with None returns default."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Option<Set<Int>> = None;
+  let @Set<Int> = option_unwrap_or(@Option<Set<Int>>.0, set_add(set_new(), 7));
+  set_size(@Set<Int>.0)
+}
+"""
+        assert _run(source) == 1

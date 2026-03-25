@@ -467,6 +467,9 @@ class MonomorphizationMixin:
 
         E.g. NamedType("Map", (NamedType("String"), NamedType("Int")))
         becomes "Map<String, Int>".
+
+        Note: duplicated in InferenceMixin._format_named_type (inference.py).
+        Both must remain in sync — the mixin architecture prevents sharing.
         """
         if not te.type_args:
             return te.name

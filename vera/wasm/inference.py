@@ -400,7 +400,11 @@ class InferenceMixin:
 
     @staticmethod
     def _format_named_type(te: ast.NamedType) -> str:
-        """Format a NamedType as a full type name including type args."""
+        """Format a NamedType as a full type name including type args.
+
+        Note: duplicated in MonomorphizationMixin._format_type_name
+        (monomorphize.py). Both must remain in sync.
+        """
         if not te.type_args:
             return te.name
         arg_names = []
