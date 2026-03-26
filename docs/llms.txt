@@ -2,9 +2,9 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (`@T.n`) instead of variable names, requires contracts (preconditions, postconditions, effect declarations) on every function, and compiles to WebAssembly. Programs run at the command line via wasmtime or in the browser.
 
-Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts statically where possible; remaining contracts become runtime assertions. All side effects (IO, State, Exceptions, Async) are tracked in the type system via algebraic effects.
+Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts statically where possible; remaining contracts become runtime assertions. All side effects (IO, Http, State, Exceptions, Async) are tracked in the type system via algebraic effects.
 
-Current version: 0.0.98. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
+Current version: 0.0.99. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
 
 ## Language Reference
 
@@ -24,7 +24,7 @@ Current version: 0.0.98. The reference compiler is written in Python. Install wi
 - [Chapter 4: Expressions](https://raw.githubusercontent.com/aallan/vera/main/spec/04-expressions.md): Arithmetic, comparison, logical, and let expressions.
 - [Chapter 5: Functions](https://raw.githubusercontent.com/aallan/vera/main/spec/05-functions.md): Function declarations, closures, generics, and mutual recursion.
 - [Chapter 6: Contracts](https://raw.githubusercontent.com/aallan/vera/main/spec/06-contracts.md): Preconditions, postconditions, termination measures, and quantifiers.
-- [Chapter 7: Effects](https://raw.githubusercontent.com/aallan/vera/main/spec/07-effects.md): Algebraic effects, handlers, IO, State, Exceptions, and Async.
+- [Chapter 7: Effects](https://raw.githubusercontent.com/aallan/vera/main/spec/07-effects.md): Algebraic effects, handlers, IO, Http, State, Exceptions, and Async.
 - [Chapter 8: Modules](https://raw.githubusercontent.com/aallan/vera/main/spec/08-modules.md): Module system, imports, and visibility.
 - [Chapter 9: Standard Library](https://raw.githubusercontent.com/aallan/vera/main/spec/09-standard-library.md): All built-in functions — arrays, strings, markdown, regex, numeric, type conversions.
 - [Chapter 10: Grammar](https://raw.githubusercontent.com/aallan/vera/main/spec/10-grammar.md): Complete LALR(1) grammar in Lark notation.
@@ -33,7 +33,7 @@ Current version: 0.0.98. The reference compiler is written in Python. Install wi
 
 ## Examples
 
-- [examples/](https://github.com/aallan/vera/tree/main/examples): 25 verified example programs covering closures, generics, effects, pattern matching, string operations, async, markdown, regex, modules, and more.
+- [examples/](https://github.com/aallan/vera/tree/main/examples): 28 verified example programs covering closures, generics, effects, pattern matching, string operations, async, markdown, regex, modules, and more.
 
 ## Compiler and Tooling
 
@@ -44,6 +44,6 @@ Current version: 0.0.98. The reference compiler is written in Python. Install wi
 
 ## Optional
 
-- [TESTING.md](https://raw.githubusercontent.com/aallan/vera/main/TESTING.md): Test suite architecture — 2,749 tests, 96% coverage, conformance suite.
+- [TESTING.md](https://raw.githubusercontent.com/aallan/vera/main/TESTING.md): Test suite architecture — 3,012 tests, 96% coverage, conformance suite.
 - [CONTRIBUTING.md](https://raw.githubusercontent.com/aallan/vera/main/CONTRIBUTING.md): Contribution guidelines.
-- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 56 programs validating every language feature against the spec.
+- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 62 programs validating every language feature against the spec.

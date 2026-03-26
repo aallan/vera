@@ -1,0 +1,13 @@
+-- HTTP GET example: fetch a post from JSONPlaceholder API
+-- Demonstrates: Http.get, json_parse, json_get, pattern matching
+public fn fetch_title(@Int -> @Result<String, String>)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(<Http>)
+{
+  let @Result<String, String> = Http.get("https://jsonplaceholder.typicode.com/posts/1");
+  match @Result<String, String>.0 {
+    Ok(@String) -> match json_parse(@String.0) { Ok(@Json) -> match json_get(@Json.0, "title") { Some(@Json) -> Ok(json_stringify(@Json.0)), None -> Err("missing title field") }, Err(@String) -> Err(@String.0) },
+    Err(@String) -> Err(@String.0)
+  }
+}

@@ -85,6 +85,7 @@ class CompileResult:
     set_ops_used: set[str] = field(default_factory=set)
     decimal_ops_used: set[str] = field(default_factory=set)
     json_ops_used: set[str] = field(default_factory=set)
+    http_ops_used: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -1606,6 +1607,61 @@ def execute(
                     [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
                 ),
                 host_json_stringify, access_caller=True,
+            )
+
+    # -----------------------------------------------------------------
+    # Http host functions
+    # -----------------------------------------------------------------
+    if result.http_ops_used:
+        if "http_get" in result.http_ops_used:
+            def host_http_get(
+                caller: wasmtime.Caller, ptr: int, length: int,
+            ) -> int:
+                url = _read_wasm_string(caller, ptr, length)
+                try:
+                    import urllib.request
+                    with urllib.request.urlopen(url) as resp:
+                        body = resp.read().decode("utf-8")
+                    return _alloc_result_ok_string(caller, body)
+                except Exception as exc:
+                    return _alloc_result_err_string(caller, str(exc))
+
+            linker.define_func(
+                "vera", "http_get",
+                wasmtime.FuncType(
+                    [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                    [wasmtime.ValType.i32()],
+                ),
+                host_http_get, access_caller=True,
+            )
+
+        if "http_post" in result.http_ops_used:
+            def host_http_post(
+                caller: wasmtime.Caller,
+                url_ptr: int, url_len: int,
+                body_ptr: int, body_len: int,
+            ) -> int:
+                url = _read_wasm_string(caller, url_ptr, url_len)
+                body = _read_wasm_string(caller, body_ptr, body_len)
+                try:
+                    import urllib.request
+                    req = urllib.request.Request(
+                        url, data=body.encode("utf-8"), method="POST",
+                    )
+                    with urllib.request.urlopen(req) as resp:
+                        response_body = resp.read().decode("utf-8")
+                    return _alloc_result_ok_string(caller, response_body)
+                except Exception as exc:
+                    return _alloc_result_err_string(caller, str(exc))
+
+            linker.define_func(
+                "vera", "http_post",
+                wasmtime.FuncType(
+                    [wasmtime.ValType.i32(), wasmtime.ValType.i32(),
+                     wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                    [wasmtime.ValType.i32()],
+                ),
+                host_http_post, access_caller=True,
             )
 
     instance = linker.instantiate(store, module)

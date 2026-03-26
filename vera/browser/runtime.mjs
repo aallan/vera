@@ -1606,6 +1606,52 @@ function buildImportObject(module) {
     };
   }
 
+  // ── Http host imports ─────────────────────────────────────────
+  // Uses synchronous XMLHttpRequest (browser) with a guard for
+  // non-browser runtimes (Node.js) that returns a clear Err.
+  if (needed.has("http_get")) {
+    imports.vera.http_get = (urlPtr, urlLen) => {
+      const url = readString(urlPtr, urlLen);
+      try {
+        if (typeof XMLHttpRequest === "undefined") {
+          return allocResultErrString(
+            "Unsupported runtime: synchronous HTTP requires XMLHttpRequest (browser only)");
+        }
+        const xhr = new XMLHttpRequest();
+        xhr.open('GET', url, false);
+        xhr.send();
+        if (xhr.status >= 200 && xhr.status < 300) {
+          return allocResultOkString(xhr.responseText);
+        }
+        return allocResultErrString(`HTTP ${xhr.status}: ${xhr.statusText}`);
+      } catch (e) {
+        return allocResultErrString(e.message || 'HTTP request failed');
+      }
+    };
+  }
+
+  if (needed.has("http_post")) {
+    imports.vera.http_post = (urlPtr, urlLen, bodyPtr, bodyLen) => {
+      const url = readString(urlPtr, urlLen);
+      const body = readString(bodyPtr, bodyLen);
+      try {
+        if (typeof XMLHttpRequest === "undefined") {
+          return allocResultErrString(
+            "Unsupported runtime: synchronous HTTP requires XMLHttpRequest (browser only)");
+        }
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', url, false);
+        xhr.send(body);
+        if (xhr.status >= 200 && xhr.status < 300) {
+          return allocResultOkString(xhr.responseText);
+        }
+        return allocResultErrString(`HTTP ${xhr.status}: ${xhr.statusText}`);
+      } catch (e) {
+        return allocResultErrString(e.message || 'HTTP request failed');
+      }
+    };
+  }
+
   return imports;
 }
 

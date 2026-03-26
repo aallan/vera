@@ -181,9 +181,12 @@ class InferenceMixin:
     def _infer_qualified_call_wasm_type(
         self, expr: ast.QualifiedCall,
     ) -> str | None:
-        """Infer the WASM return type of a qualified call (IO ops)."""
+        """Infer the WASM return type of a qualified call (IO/Http ops)."""
         if expr.qualifier == "IO":
             return self._IO_WASM_TYPES.get(expr.name)
+        if expr.qualifier == "Http":
+            # Both get and post return Result<String, String> (i32 heap ptr)
+            return "i32"
         return None  # pragma: no cover
 
     def _infer_fncall_wasm_type(self, expr: ast.FnCall) -> str | None:

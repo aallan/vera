@@ -2109,6 +2109,69 @@ private fn foo(@Unit -> @Json)
 """)
 
 
+class TestHttpChecker:
+    """Http effect type checking."""
+
+    def test_http_get_type_checks(self) -> None:
+        """Http.get with String arg, effects(<Http>), returns Result<String, String>."""
+        _check_ok("""
+public fn fetch(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http>)
+{ Http.get(@String.0) }
+""")
+
+    def test_http_post_type_checks(self) -> None:
+        """Http.post with two String args type-checks."""
+        _check_ok("""
+public fn post(@String, @String -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http>)
+{ Http.post(@String.0, @String.1) }
+""")
+
+    def test_http_get_wrong_arity(self) -> None:
+        """Http.get() with no args is an error."""
+        _check_err("""
+public fn fetch(@Unit -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http>)
+{ Http.get() }
+""", "argument")
+
+    def test_http_get_wrong_type(self) -> None:
+        """Http.get(42) with Int arg is a type error."""
+        _check_err("""
+public fn fetch(@Unit -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http>)
+{ Http.get(42) }
+""", "type")
+
+    def test_http_missing_effect(self) -> None:
+        """Http.get without effects(<Http>) is an error."""
+        _check_err("""
+public fn fetch(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(pure)
+{ Http.get(@String.0) }
+""", "effect")
+
+    def test_http_post_wrong_type(self) -> None:
+        """Http.post(42, "body") with Int URL is a type error."""
+        _check_err("""
+public fn post(@Unit -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http>)
+{ Http.post(42, "body") }
+""", "type")
+
+    def test_http_with_io(self) -> None:
+        """effects(<Http, IO>) composes correctly."""
+        _check_ok("""
+public fn fetch_and_print(@String -> @Unit)
+  requires(true) ensures(true) effects(<Http, IO>)
+{
+  let @Result<String, String> = Http.get(@String.0);
+  IO.println("done")
+}
+""")
+
+
 # =====================================================================
 # Return type checking
 # =====================================================================

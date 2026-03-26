@@ -356,6 +356,23 @@ class TypeEnv:
             },
         )
 
+        # Http effect — network access via host imports.
+        # Functions using Http.get or Http.post must declare effects(<Http>).
+        self.effects["Http"] = EffectInfo(
+            name="Http",
+            type_params=None,
+            operations={
+                "get": OpInfo(
+                    "get", (STRING,),
+                    AdtType("Result", (STRING, STRING)), "Http",
+                ),
+                "post": OpInfo(
+                    "post", (STRING, STRING),
+                    AdtType("Result", (STRING, STRING)), "Http",
+                ),
+            },
+        )
+
         # Diverge effect — marker for potentially non-terminating functions.
         # No operations; its presence in the effect row opts out of
         # termination checking (Chapter 7, Section 7.7.3).

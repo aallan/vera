@@ -350,7 +350,14 @@ class CallsMixin:
             if arg_instrs is None:
                 return None
             instructions.extend(arg_instrs)
-        instructions.append(f"call $vera.{call.name}")
+        # Http operations use prefixed names to avoid collision
+        if call.qualifier == "Http":
+            wasm_name = f"http_{call.name}"
+            self._http_ops_used.add(wasm_name)
+            self._needs_alloc = True
+            instructions.append(f"call $vera.{wasm_name}")
+        else:
+            instructions.append(f"call $vera.{call.name}")
         # IO.exit never returns — add unreachable to satisfy WASM validation
         if call.qualifier == "IO" and call.name == "exit":
             instructions.append("unreachable")

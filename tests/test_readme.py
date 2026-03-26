@@ -18,8 +18,8 @@ README = Path(__file__).parent.parent / "README.md"
 # Must stay in sync with scripts/check_readme_examples.py.
 # Each key is the 1-based line number of the opening ```vera fence.
 ALLOWLIST: dict[int, str] = {
-    # "Project Roadmap" — depends on #57 (Http), #61 (Inference)
-    663: "Vision example uses Http, Inference effects (issues #57, #61)",
+    # "Project Roadmap" — depends on #61 (Inference)
+    690: "Vision example uses Inference effect (issue #61)",
 }
 
 
@@ -73,7 +73,7 @@ class TestReadmeCodeSamples:
         blocks = _extract_vera_blocks(README)
         # Currently: clamp, safe_divide, refinement_types, list_sum,
         # increment+run_counter, exn_handler, async_io, fizzbuzz,
-        # markdown, json, research_topic (vision, allowlisted)
-        assert len(blocks) == 11, (
-            f"Expected 11 Vera blocks in README.md, found {len(blocks)}"
+        # markdown, json, http, research_topic (vision, allowlisted)
+        assert len(blocks) == 12, (
+            f"Expected 12 Vera blocks in README.md, found {len(blocks)}"
         )

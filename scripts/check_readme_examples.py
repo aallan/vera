@@ -26,8 +26,8 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # it for removal (meaning the block should then parse successfully).
     # =================================================================
 
-    # Section "Project Roadmap" — depends on #57 (Http), #61 (Inference)
-    663: ("FUTURE", "Vision example uses Http, Inference effects (issues #57, #61)"),
+    # Section "Project Roadmap" — depends on #61 (Inference)
+    690: ("FUTURE", "Vision example uses Inference effect (issue #61)"),
 }
 
 

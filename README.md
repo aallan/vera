@@ -62,6 +62,7 @@ Vera has a number of key features:
 - **Async/await** — `Future<T>` with declared `<Async>` effects
 - **Typed Markdown** — built-in `MdBlock`/`MdInline` ADTs for structured document processing
 - **JSON** — built-in `Json` ADT with parse, query, and serialize operations for API integration
+- **HTTP** — `Http.get` and `Http.post` as algebraic effects, composing with JSON for typed API responses
 - **String interpolation** — `"value: \(@Int.0)"` with auto-conversion for primitive types
 - **Three-tier verification** — static verification via Z3, guided verification with hints, runtime fallback
 - **Diagnostics as instructions** — every error message is a natural language explanation with a concrete fix
@@ -349,6 +350,26 @@ private fn get_name(@String -> @Result<String, String>)
 ```
 
 > [`examples/json.vera`](examples/json.vera) — run with `vera run examples/json.vera`
+
+### HTTP — network I/O as an algebraic effect
+
+`Http.get` and `Http.post` are effect operations returning `Result<String, String>`. The `<Http>` effect is declared in the signature, making network access explicit and testable. Compose with `json_parse` for typed API responses.
+
+```vera
+public fn fetch_title(@Int -> @Result<String, String>)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(<Http>)
+{
+  let @Result<String, String> = Http.get("https://jsonplaceholder.typicode.com/posts/1");
+  match @Result<String, String>.0 {
+    Ok(@String) -> match json_parse(@String.0) { Ok(@Json) -> match json_get(@Json.0, "title") { Some(@Json) -> Ok(json_stringify(@Json.0)), None -> Err("missing title field") }, Err(@String) -> Err(@String.0) },
+    Err(@String) -> Err(@String.0)
+  }
+}
+```
+
+> [`examples/http.vera`](examples/http.vera)
 
 ## Runs Everywhere
 
@@ -653,12 +674,18 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 | WASI 0.2 compliance | [#237](https://github.com/aallan/vera/issues/237) |
 | Resource limits (fuel, memory, timeout) | [#239](https://github.com/aallan/vera/issues/239) |
 | Effect row variable unification | [#294](https://github.com/aallan/vera/issues/294) |
+| Http: no custom headers | [#351](https://github.com/aallan/vera/issues/351) |
+| Http: no HTTP status code access | [#352](https://github.com/aallan/vera/issues/352) |
+| Http: no request timeout control | [#353](https://github.com/aallan/vera/issues/353) |
+| Http: POST sends body without Content-Type | [#354](https://github.com/aallan/vera/issues/354) |
+| Http: browser uses deprecated synchronous XHR | [#355](https://github.com/aallan/vera/issues/355) |
+| Http: no PUT, PATCH, DELETE methods | [#356](https://github.com/aallan/vera/issues/356) |
 
 ## Project Roadmap
 
 Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. See **[ROADMAP.md](ROADMAP.md)** for the full language roadmap.
 
-The features on the roadmap — `<Http>` ([#57](https://github.com/aallan/vera/issues/57)), `<Inference>` ([#61](https://github.com/aallan/vera/issues/61)), the `Json` type ([#58](https://github.com/aallan/vera/issues/58)), and the `Markdown` type ([#147](https://github.com/aallan/vera/issues/147)) — converge into a single design goal: an LLM should be able to write a short Vera function that searches the web, feeds the results into another model, and returns typed, contract-checked output. No scaffolding, no untyped string wrangling, no unchecked side effects.
+The features on the roadmap — ~~`<Http>` ([#57](https://github.com/aallan/vera/issues/57))~~, `<Inference>` ([#61](https://github.com/aallan/vera/issues/61)), ~~the `Json` type ([#58](https://github.com/aallan/vera/issues/58))~~, and ~~the `Markdown` type ([#147](https://github.com/aallan/vera/issues/147))~~ — converge into a single design goal: an LLM should be able to write a short Vera function that searches the web, feeds the results into another model, and returns typed, contract-checked output. No scaffolding, no untyped string wrangling, no unchecked side effects. Http, Json, and Markdown are now complete — the remaining piece is the `<Inference>` effect.
 
 ```vera
 public fn research_topic(@String -> @MdBlock)

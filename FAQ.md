@@ -81,6 +81,15 @@ The compiler checks at every call site that the concrete type satisfies the requ
 The design choice to fix the ability set (rather than allowing user-defined abilities) is deliberate: it keeps the language simpler for models and avoids the coherence problems that plague open type class systems.
 
 
+## How does HTTP work in Vera?
+
+HTTP is modelled as a built-in algebraic effect. `Http.get(url)` and `Http.post(url, body)` are effect operations that return `Result<String, String>`. Functions that use them must declare `effects(<Http>)` in their signature, making network access explicit and trackable in the type system.
+
+The effect system means a caller that only permits `<IO>` cannot invoke a function that performs `<Http>` — network access is a separate capability. In tests, you can provide mock handlers instead of making real network requests. The pattern for fetching and parsing JSON from an API is: call `Http.get`, then `json_parse` the response body.
+
+Currently HTTP supports GET and POST. Custom headers, additional HTTP methods, response status codes, timeouts, and streaming are tracked as known limitations ([#351](https://github.com/aallan/vera/issues/351)–[#356](https://github.com/aallan/vera/issues/356)).
+
+
 ## Can I run Vera programs in the browser?
 
 Yes. `vera compile --target browser` produces a self-contained directory with a `.wasm` binary, a JavaScript runtime (`runtime.mjs`), and an `index.html`:
@@ -131,7 +140,7 @@ The reference compiler targets WebAssembly, so the initial applications are web-
 
 But the deeper answer is that the end users aren't humans directly — they're AI coding agents. The intended workflow is: a human (or an orchestrating agent) describes what they want; a model generates Vera code; the compiler verifies it; the WASM binary runs. The human's job is to review contracts, not implementations.
 
-The roadmap includes native HTTP, JSON, and Markdown support, which points toward agent workloads: API integration, data processing, and structured document generation. A research function that searches the web, processes results via LLM inference, and returns typed, contract-checked Markdown output is the kind of program Vera is designed for.
+HTTP, JSON, and Markdown are now built-in, which supports the primary agent workloads: API integration, data processing, and structured document generation. A Vera program can make an HTTP request, parse the JSON response, and return typed, contract-checked data — all with the network I/O declared as an algebraic effect (`effects(<Http>)`). A research function that fetches data from the web, processes results via LLM inference, and returns typed, contract-checked Markdown output is the kind of program Vera is designed for.
 
 
 ## Is there evidence this actually works?

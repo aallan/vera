@@ -56,7 +56,7 @@ Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent \
 Contracts are mandatory — every function must declare `requires(...)`, \
 `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts \
 statically where possible; remaining contracts become runtime assertions. \
-All side effects (IO, State, Exceptions, Async) are tracked in the type \
+All side effects (IO, Http, State, Exceptions, Async) are tracked in the type \
 system via algebraic effects.
 
 Current version: {version}. The reference compiler is written in Python. \
@@ -92,7 +92,7 @@ closures, generics, and mutual recursion.
 - [Chapter 6: Contracts]({RAW}/spec/06-contracts.md): Preconditions, \
 postconditions, termination measures, and quantifiers.
 - [Chapter 7: Effects]({RAW}/spec/07-effects.md): Algebraic effects, \
-handlers, IO, State, Exceptions, and Async.
+handlers, IO, Http, State, Exceptions, and Async.
 - [Chapter 8: Modules]({RAW}/spec/08-modules.md): Module system, imports, \
 and visibility.
 - [Chapter 9: Standard Library]({RAW}/spec/09-standard-library.md): All \
@@ -107,7 +107,7 @@ memory management, and GC.
 
 ## Examples
 
-- [examples/]({REPO}/tree/main/examples): 25 verified example programs \
+- [examples/]({REPO}/tree/main/examples): 28 verified example programs \
 covering closures, generics, effects, pattern matching, string operations, \
 async, markdown, regex, modules, and more.
 
@@ -122,10 +122,10 @@ pipeline stages, module map, design patterns.
 
 ## Optional
 
-- [TESTING.md]({RAW}/TESTING.md): Test suite architecture — 2,749 tests, \
+- [TESTING.md]({RAW}/TESTING.md): Test suite architecture — 3,012 tests, \
 96% coverage, conformance suite.
 - [CONTRIBUTING.md]({RAW}/CONTRIBUTING.md): Contribution guidelines.
-- [Conformance Suite]({REPO}/tree/main/tests/conformance): 56 programs \
+- [Conformance Suite]({REPO}/tree/main/tests/conformance): 62 programs \
 validating every language feature against the spec.
 """
 
@@ -300,7 +300,7 @@ fewer ways to get it wrong.
 using De Bruijn indexing
 - **Mandatory contracts** — `requires(...)`, `ensures(...)`, `effects(...)` \
 on every function
-- **Algebraic effects** — IO, State, Exceptions, Async tracked in the type system
+- **Algebraic effects** — IO, Http, State, Exceptions, Async tracked in the type system
 - **Z3 verification** — Contracts proved statically by the Z3 SMT solver
 - **Contract-driven testing** — Z3 generates test inputs from contracts
 - **WebAssembly** — Compiles to WASM, runs via wasmtime or in the browser
@@ -324,7 +324,7 @@ vera run examples/hello_world.vera
 - [AGENTS.md]({RAW}/AGENTS.md) — Instructions for AI agents
 - [FAQ]({RAW}/FAQ.md) — Design rationale and comparisons
 - [Specification]({REPO}/tree/main/spec) — 13-chapter formal spec
-- [Examples]({REPO}/tree/main/examples) — 25 verified programs
+- [Examples]({REPO}/tree/main/examples) — 28 verified programs
 
 ## Links
 
