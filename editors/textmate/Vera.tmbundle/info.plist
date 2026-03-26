@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>contactEmailRot13</key>
+	<string></string>
+	<key>contactName</key>
+	<string>Alasdair Allan</string>
+	<key>description</key>
+	<string>Syntax highlighting for the Vera programming language — a statically typed, purely functional language with algebraic effects and typed slot references, designed for LLM-generated code.</string>
+	<key>mainMenu</key>
+	<dict>
+		<key>items</key>
+		<array/>
+	</dict>
+	<key>name</key>
+	<string>Vera</string>
+	<key>uuid</key>
+	<string>A3E1B2C4-D5F6-7890-ABCD-EF1234567890</string>
+</dict>
+</plist>
