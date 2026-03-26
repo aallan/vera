@@ -356,14 +356,22 @@ private fn get_name(@String -> @Result<String, String>)
 `Http.get` and `Http.post` are effect operations returning `Result<String, String>`. The `<Http>` effect is declared in the signature, making network access explicit and testable. Compose with `json_parse` for typed API responses.
 
 ```vera
-public fn fetch_title(@Int -> @Result<String, String>)
-  requires(@Int.0 > 0)
+private fn fetch_title(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
   ensures(true)
   effects(<Http>)
 {
-  let @Result<String, String> = Http.get("https://jsonplaceholder.typicode.com/posts/1");
+  let @Result<String, String> = Http.get(@String.0);
   match @Result<String, String>.0 {
-    Ok(@String) -> match json_parse(@String.0) { Ok(@Json) -> match json_get(@Json.0, "title") { Some(@Json) -> Ok(json_stringify(@Json.0)), None -> Err("missing title field") }, Err(@String) -> Err(@String.0) },
+    Ok(@String) ->
+      match json_parse(@String.0) {
+        Ok(@Json) ->
+          match json_get(@Json.0, "title") {
+            Some(@Json) -> Ok(json_stringify(@Json.0)),
+            None -> Err("missing title field")
+          },
+        Err(@String) -> Err(@String.0)
+      },
     Err(@String) -> Err(@String.0)
   }
 }
@@ -680,6 +688,8 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 | Http: POST sends body without Content-Type | [#354](https://github.com/aallan/vera/issues/354) |
 | Http: browser uses deprecated synchronous XHR | [#355](https://github.com/aallan/vera/issues/355) |
 | Http: no PUT, PATCH, DELETE methods | [#356](https://github.com/aallan/vera/issues/356) |
+| Closure parameter with pair-ABI type emits invalid WAT | [#359](https://github.com/aallan/vera/issues/359) |
+| Duplicate prelude types across imported modules (E609) | [#360](https://github.com/aallan/vera/issues/360) |
 
 ## Project Roadmap
 

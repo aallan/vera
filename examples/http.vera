@@ -1,13 +1,45 @@
--- HTTP GET example: fetch a post from JSONPlaceholder API
+-- HTTP GET example: fetch a post title from JSONPlaceholder API
 -- Demonstrates: Http.get, json_parse, json_get, pattern matching
-public fn fetch_title(@Int -> @Result<String, String>)
-  requires(@Int.0 > 0)
+--
+-- Note: requires network access. Run with:
+--   vera run examples/http.vera
+
+private fn fetch_title(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
   ensures(true)
   effects(<Http>)
 {
-  let @Result<String, String> = Http.get("https://jsonplaceholder.typicode.com/posts/1");
+  let @Result<String, String> = Http.get(@String.0);
   match @Result<String, String>.0 {
-    Ok(@String) -> match json_parse(@String.0) { Ok(@Json) -> match json_get(@Json.0, "title") { Some(@Json) -> Ok(json_stringify(@Json.0)), None -> Err("missing title field") }, Err(@String) -> Err(@String.0) },
+    Ok(@String) ->
+      match json_parse(@String.0) {
+        Ok(@Json) ->
+          match json_get(@Json.0, "title") {
+            Some(@Json) -> Ok(json_stringify(@Json.0)),
+            None -> Err("missing title field")
+          },
+        Err(@String) -> Err(@String.0)
+      },
     Err(@String) -> Err(@String.0)
+  }
+}
+
+-- Main: fetch a post title and return 0 on success, 1 on error.
+-- The URL is hardcoded to JSONPlaceholder, a free test API.
+public fn main(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Http, IO>)
+{
+  let @Result<String, String> = fetch_title("https://jsonplaceholder.typicode.com/posts/1");
+  match @Result<String, String>.0 {
+    Ok(@String) -> {
+      IO.print(@String.0);
+      0
+    },
+    Err(@String) -> {
+      IO.print(@String.0);
+      1
+    }
   }
 }
