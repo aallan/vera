@@ -64,6 +64,10 @@ The grammar uses standard TextMate scope conventions so it works with any colour
 | `->` | `keyword.operator.arrow.vera` |
 | `\|>` | `keyword.operator.pipe.vera` |
 
+## Known limitations
+
+Slot reference patterns (`variable.other.slot.vera` and `variable.other.slot-binding.vera`) use `(?:<[^>]*>)*` to match generic type arguments. This cannot handle nested generics — `@Array<Option<Int>>.0` will only highlight up to the first `>`. Single-level generics like `@Map<String, Int>.0` work correctly. This is an accepted limitation of TextMate's regex-only grammar engine.
+
 ## Compatibility
 
 Built for [TextMate 2](https://macromates.com/). The `.tmLanguage` plist format is also compatible with editors and tools that consume TextMate grammars, including Sublime Text and any LSP or tree-sitter bridge that accepts TextMate scopes as a fallback.
