@@ -383,6 +383,15 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs fiv
 
 The coverage threshold of **80%** is enforced in CI. Current coverage is 96%. JavaScript coverage for `vera/browser/runtime.mjs` is collected separately using V8's built-in coverage and uploaded to Codecov with the `javascript` flag.
 
+## Open CI/Tooling Issues
+
+Tracked improvements to the testing and CI infrastructure:
+
+| Issue | Description |
+|-------|-------------|
+| [#349](https://github.com/aallan/vera/issues/349) | Improve browser runtime (`runtime.mjs`) test coverage to >80% — JS code is invisible to pytest-cov, blocking codecov/patch on PRs that touch the runtime |
+| [#361](https://github.com/aallan/vera/issues/361) | Validate `examples/README.md` run commands in CI — verify referenced files exist and `--fn` targets are exported |
+
 ## Opportunities
 
 Testing infrastructure that could be added in the future:
