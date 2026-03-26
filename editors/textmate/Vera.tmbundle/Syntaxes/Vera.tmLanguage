@@ -253,7 +253,7 @@
 			<key>name</key>
 			<string>entity.name.tag.constructor.vera</string>
 			<key>match</key>
-			<string>\b(Some|None|Ok|Err|Cons|Nil|Less|Equal|Greater|MkPositive|Red|Green|Blue|JNull|JBool|JNumber|JString|JArray|JObject|MdParagraph|MdHeading|MdCodeBlock|MdBlockQuote|MdList|MdThematicBreak|MdTable|MdDocument|MdText|MdCode|MdEmph|MdStrong|MdLink|MdImage)\b</string>
+			<string>\b(Some|None|Ok|Err|Cons|Nil|Less|Equal|Greater|MkPositive|Red|Green|Blue|JNull|JBool|JNumber|JString|JArray|JObject|HtmlElement|HtmlText|HtmlComment|MdParagraph|MdHeading|MdCodeBlock|MdBlockQuote|MdList|MdThematicBreak|MdTable|MdDocument|MdText|MdCode|MdEmph|MdStrong|MdLink|MdImage)\b</string>
 		</dict>
 		<!-- User-defined constructors: other uppercase identifiers followed by ( or , or ) in match context -->
 		<!-- This is a heuristic — catches most constructor uses -->
