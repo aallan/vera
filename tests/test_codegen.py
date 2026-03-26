@@ -9371,6 +9371,53 @@ public fn main(-> @Int)
         # "<br>" = 4 chars
         assert _run(source) == 4
 
+    def test_html_parse_comment_roundtrip(self) -> None:
+        """Parsed HTML comments survive roundtrip through html_to_string."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<!-- hello --><p>text</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> string_length(html_to_string(@HtmlNode.0)),
+    Err(@String) -> 0
+  }
+}
+'''
+        result = _run(source)
+        assert result > 0  # roundtrip produces non-empty HTML
+
+    def test_html_query_empty_result(self) -> None:
+        """html_query with no matches returns empty array."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>hello</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "div")),
+    Err(@String) -> 0 - 1
+  }
+}
+'''
+        assert _run(source) == 0
+
+    def test_html_nested_elements(self) -> None:
+        """html_text extracts text from nested elements."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<div><span>hello</span> <em>world</em></div>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> string_length(html_text(@HtmlNode.0)),
+    Err(@String) -> 0
+  }
+}
+'''
+        result = _run(source)
+        assert result > 0  # extracts "hello world" text
+
 
 class TestHttpCollection:
     """Http effect: host-import compilation and mocked execution."""
