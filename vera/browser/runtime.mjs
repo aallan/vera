@@ -1766,14 +1766,24 @@ function buildImportObject(module) {
   }
 
   // Simple HTML to string serializer
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function escapeAttr(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
   function htmlToString(node) {
-    if (node.tag === 'text') return node.content || '';
-    if (node.tag === 'comment') return `<!--${node.content || ''}-->`;
+    if (node.tag === 'text') return escapeHtml(node.content || '');
+    if (node.tag === 'comment') {
+      const c = (node.content || '').replace(/-->/g, '-- >');
+      return `<!--${c}-->`;
+    }
     const name = node.name || 'div';
     let attrStr = '';
     if (node.attrs) {
       for (const [k, v] of Object.entries(node.attrs)) {
-        attrStr += ` ${k}="${v}"`;
+        attrStr += ` ${k}="${escapeAttr(v)}"`;
       }
     }
     const voidElems = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);

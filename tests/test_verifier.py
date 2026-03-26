@@ -1588,7 +1588,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 145 T1 / 15 T3 without module resolution."""
+        """All examples together: 167 T1 / 20 T3 / 187 total without module resolution."""
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
             text = f.read_text()

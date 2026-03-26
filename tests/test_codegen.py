@@ -9181,6 +9181,89 @@ public fn main(-> @Int)
         result = _compile_ok(source)
         assert '"html_parse"' in result.wat
 
+    def test_html_to_string_wat_import(self) -> None:
+        """html_to_string generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(html_to_string(HtmlText("x"))) }
+"""
+        result = _compile_ok(source)
+        assert '"html_to_string"' in result.wat
+        assert '"html_parse"' not in result.wat
+
+    def test_html_query_wat_import(self) -> None:
+        """html_query generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>x</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "p")),
+    Err(@String) -> 0
+  }
+}
+"""
+        result = _compile_ok(source)
+        assert '"html_query"' in result.wat
+
+    def test_html_text_wat_import(self) -> None:
+        """html_text generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(html_text(HtmlText("hello"))) }
+"""
+        result = _compile_ok(source)
+        assert '"html_text"' in result.wat
+        assert '"html_parse"' not in result.wat
+
+    def test_html_query_by_class(self) -> None:
+        """html_query with class selector."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<div class=\\"foo\\">a</div><div>b</div>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, ".foo")),
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_html_query_by_id(self) -> None:
+        """html_query with ID selector."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p id=\\"main\\">hi</p><p>bye</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "#main")),
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_html_query_descendant(self) -> None:
+        """html_query with descendant selector."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<div><p>a</p><p>b</p></div><p>c</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "div p")),
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 2
+
     def test_html_no_imports_when_unused(self) -> None:
         """Programs not using html builtins have no Html imports."""
         source = """

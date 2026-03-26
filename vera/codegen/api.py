@@ -1673,20 +1673,30 @@ def execute(
                     return result
                 return self._root
 
+        def _html_escape(s: str) -> str:
+            """Escape &, <, > for HTML text content."""
+            return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        def _html_escape_attr(s: str) -> str:
+            """Escape &, <, >, " for HTML attribute values."""
+            return (s.replace("&", "&amp;").replace("<", "&lt;")
+                     .replace(">", "&gt;").replace('"', "&quot;"))
+
         def _html_to_string_py(node: dict[str, Any]) -> str:
             """Serialize Python HtmlNode dict to HTML string."""
             tag = node.get("tag", "text")
             if tag == "text":
-                return str(node.get("content", ""))
+                return _html_escape(str(node.get("content", "")))
             if tag == "comment":
-                return f"<!--{node.get('content', '')}-->"
+                content = str(node.get("content", "")).replace("-->", "-- >")
+                return f"<!--{content}-->"
             # element
             name = node.get("name", "div")
             attrs: dict[str, str] = node.get("attrs", {})
             children: list[Any] = node.get("children", [])
             attr_str = ""
             for k, v in attrs.items():
-                attr_str += f' {k}="{v}"'
+                attr_str += f' {k}="{_html_escape_attr(v)}"'
             if str(name).lower() in (
                 "area", "base", "br", "col", "embed", "hr", "img",
                 "input", "link", "meta", "param", "source", "track",

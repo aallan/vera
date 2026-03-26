@@ -2192,6 +2192,46 @@ private fn foo(@Unit -> @String)
 { html_to_string("not a node") }
 """, "type")
 
+    def test_html_query_wrong_node_type(self) -> None:
+        """html_query with Int as node produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Array<HtmlNode>)
+  requires(true) ensures(true) effects(pure)
+{ html_query(42, "div") }
+""", "type")
+
+    def test_html_query_wrong_selector_type(self) -> None:
+        """html_query with Int as selector produces error."""
+        _check_err("""
+private fn foo(@HtmlNode -> @Array<HtmlNode>)
+  requires(true) ensures(true) effects(pure)
+{ html_query(@HtmlNode.0, 42) }
+""", "type")
+
+    def test_html_text_wrong_type(self) -> None:
+        """html_text with String arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ html_text("not a node") }
+""", "type")
+
+    def test_html_attr_wrong_node_type(self) -> None:
+        """html_attr with Int as node produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Option<String>)
+  requires(true) ensures(true) effects(pure)
+{ html_attr(42, "href") }
+""", "type")
+
+    def test_html_attr_wrong_name_type(self) -> None:
+        """html_attr with Int as attribute name produces error."""
+        _check_err("""
+private fn foo(@HtmlNode -> @Option<String>)
+  requires(true) ensures(true) effects(pure)
+{ html_attr(@HtmlNode.0, 42) }
+""", "type")
+
 
 class TestHttpChecker:
     """Http effect type checking."""
