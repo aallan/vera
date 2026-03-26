@@ -55,7 +55,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_ast.py` | 122 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
 | `test_checker.py` | 488 | 5,406 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, removed legacy name regression |
 | `test_verifier.py` | 120 | 1,700 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
-| `test_codegen.py` | 821 | 9,769 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, example round-trips |
+| `test_codegen.py` | 821 | 9,783 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 52 | 897 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 19 | 473 | Closure lifting, captured variables, higher-order functions |
@@ -80,7 +80,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 
 ## Conformance Suite
 
-The conformance suite is a collection of 62 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Each program is self-contained, imports nothing, and tests one feature or a small group of related features.
+The conformance suite is a collection of 63 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Each program is self-contained, imports nothing, and tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -151,7 +151,7 @@ The manifest is the machine-readable feature inventory — agents can query it t
 ### Running the conformance suite
 
 ```bash
-# Via pytest (parametrized — 305 tests)
+# Via pytest (parametrized — 315 tests)
 pytest tests/test_conformance.py -v
 
 # Via standalone script (used in CI and pre-commit)
@@ -313,7 +313,7 @@ Twelve scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 | Script | What it validates |
 |--------|-------------------|
 | `check_conformance.py` | All 63 conformance programs pass their declared level (parse/check/verify/run) |
-| `check_examples.py` | All 27 `.vera` examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 29 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 148 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_skill_examples.py` | All Vera code blocks in SKILL.md parse correctly |

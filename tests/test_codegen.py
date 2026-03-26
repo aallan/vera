@@ -9180,6 +9180,9 @@ public fn main(-> @Int)
 """
         result = _compile_ok(source)
         assert '"html_parse"' in result.wat
+        assert '"html_to_string"' not in result.wat
+        assert '"html_query"' not in result.wat
+        assert '"html_text"' not in result.wat
 
     def test_html_to_string_wat_import(self) -> None:
         """html_to_string generates a WASM host import."""
@@ -9191,6 +9194,8 @@ public fn main(-> @Int)
         result = _compile_ok(source)
         assert '"html_to_string"' in result.wat
         assert '"html_parse"' not in result.wat
+        assert '"html_query"' not in result.wat
+        assert '"html_text"' not in result.wat
 
     def test_html_query_wat_import(self) -> None:
         """html_query generates a WASM host import."""
@@ -9218,6 +9223,8 @@ public fn main(-> @Int)
         result = _compile_ok(source)
         assert '"html_text"' in result.wat
         assert '"html_parse"' not in result.wat
+        assert '"html_to_string"' not in result.wat
+        assert '"html_query"' not in result.wat
 
     def test_html_query_by_class(self) -> None:
         """html_query with class selector."""
@@ -9326,26 +9333,33 @@ public fn main(-> @Int)
         assert _run(source) == 1
 
     def test_html_parse_with_attributes(self) -> None:
-        """Parsed element attributes are accessible via html_attr."""
+        """Parsed element attributes are accessible via html_query + html_attr."""
         source = '''
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Result<HtmlNode, String> = html_parse("<div class=\\"main\\">content</div>");
   match @Result<HtmlNode, String>.0 {
-    Ok(@HtmlNode) ->
-      match html_attr(@HtmlNode.0, "class") {
-        Some(@String) -> string_length(@String.0),
-        None -> 0
-      },
+    Ok(@HtmlNode) -> {
+      let @Array<HtmlNode> = html_query(@HtmlNode.0, ".main");
+      if array_length(@Array<HtmlNode>.0) > 0 then {
+        match @Array<HtmlNode>.0[0] {
+          HtmlElement(@String, @Map<String, String>, @Array<HtmlNode>) ->
+            match map_get(@Map<String, String>.0, "class") {
+              Some(@String) -> string_length(@String.0),
+              None -> 0
+            },
+          HtmlText(@String) -> 0,
+          HtmlComment(@String) -> 0
+        }
+      } else { 0 }
+    },
     Err(@String) -> 0
   }
 }
 '''
-        # "main" but html_query returns the root which wraps the div
-        # html_attr on the root won't have "class", need to query first
-        result = _run(source)
-        assert result >= 0  # exercises the attribute read path
+        # "main" = 4 chars
+        assert _run(source) == 4
 
     def test_html_void_element(self) -> None:
         """Void elements (br, img) serialize without closing tag."""
