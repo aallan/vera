@@ -675,11 +675,11 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 | Resource limits (fuel, memory, timeout) | [#239](https://github.com/aallan/vera/issues/239) |
 | Effect row variable unification | [#294](https://github.com/aallan/vera/issues/294) |
 | Http: no custom headers | [#351](https://github.com/aallan/vera/issues/351) |
-| Http: no PUT/DELETE/PATCH methods | [#352](https://github.com/aallan/vera/issues/352) |
-| Http: no response status code access | [#353](https://github.com/aallan/vera/issues/353) |
-| Http: no request timeout configuration | [#354](https://github.com/aallan/vera/issues/354) |
-| Http: no streaming responses | [#355](https://github.com/aallan/vera/issues/355) |
-| Http: no cookie/session management | [#356](https://github.com/aallan/vera/issues/356) |
+| Http: no HTTP status code access | [#352](https://github.com/aallan/vera/issues/352) |
+| Http: no request timeout control | [#353](https://github.com/aallan/vera/issues/353) |
+| Http: POST sends body without Content-Type | [#354](https://github.com/aallan/vera/issues/354) |
+| Http: browser uses deprecated synchronous XHR | [#355](https://github.com/aallan/vera/issues/355) |
+| Http: no PUT, PATCH, DELETE methods | [#356](https://github.com/aallan/vera/issues/356) |
 
 ## Project Roadmap
 

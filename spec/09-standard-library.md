@@ -460,11 +460,11 @@ This follows the same pattern as Markdown: `json_parse(Http.get(url))`, not a de
 **Known limitations:**
 
 - No custom headers ([#351](https://github.com/aallan/vera/issues/351)).
-- No HTTP methods beyond GET/POST ([#352](https://github.com/aallan/vera/issues/352)).
-- No response status code access ([#353](https://github.com/aallan/vera/issues/353)).
-- No request timeout configuration ([#354](https://github.com/aallan/vera/issues/354)).
-- No streaming responses ([#355](https://github.com/aallan/vera/issues/355)).
-- No cookie/session management ([#356](https://github.com/aallan/vera/issues/356)).
+- No HTTP status code access ([#352](https://github.com/aallan/vera/issues/352)).
+- No request timeout control ([#353](https://github.com/aallan/vera/issues/353)).
+- POST sends body without Content-Type header ([#354](https://github.com/aallan/vera/issues/354)).
+- Browser runtime uses deprecated synchronous XMLHttpRequest ([#355](https://github.com/aallan/vera/issues/355)).
+- No PUT, PATCH, DELETE methods ([#356](https://github.com/aallan/vera/issues/356)).
 
 **Async composition (future work):**
 
