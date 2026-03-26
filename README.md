@@ -521,6 +521,16 @@ vera verify --json file.vera          # JSON diagnostics for agent feedback loop
 
 `vera test` generates test inputs from contracts using Z3, compiles the function to WASM, and executes it against the generated inputs — validating that contracts and implementations agree without writing any test cases manually.
 
+### Editor support
+
+A [TextMate bundle](editors/textmate/) provides full syntax highlighting for `.vera` files — slot references, contracts, effects, ADT constructors, and string interpolation all get distinct highlighting. Install by copying into TextMate's bundle directory:
+
+```bash
+cp -r editors/textmate/Vera.tmbundle ~/Library/Application\ Support/TextMate/Bundles/
+```
+
+The `.tmLanguage` grammar is also compatible with Sublime Text and other editors that consume TextMate grammars. [TextMate 2](https://macromates.com/) is by [MacroMates](https://macromates.com/).
+
 ### Run the tests
 
 ```bash
@@ -655,7 +665,9 @@ vera/
 │   ├── .well-known/               #   Well-known directory
 │   │   └── ai-plugin.json         #     OpenAI plugin manifest
 │   └── .nojekyll                  #   Disable Jekyll processing
-├── examples/                      # 27 example Vera programs
+├── editors/                       # Editor support
+│   └── textmate/                  #   TextMate bundle (.tmLanguage grammar)
+├── examples/                      # 29 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
 ```

@@ -1,0 +1,504 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>fileTypes</key>
+	<array>
+		<string>vera</string>
+	</array>
+	<key>name</key>
+	<string>Vera</string>
+	<key>scopeName</key>
+	<string>source.vera</string>
+	<key>uuid</key>
+	<string>B4F2A3C5-D6E7-8901-BCDE-F23456789012</string>
+	<key>patterns</key>
+	<array>
+		<!-- Line comments -->
+		<dict>
+			<key>name</key>
+			<string>comment.line.double-dash.vera</string>
+			<key>match</key>
+			<string>--.*$</string>
+		</dict>
+		<!-- Block comments (nestable) -->
+		<dict>
+			<key>name</key>
+			<string>comment.block.vera</string>
+			<key>begin</key>
+			<string>\{-</string>
+			<key>end</key>
+			<string>-\}</string>
+			<key>patterns</key>
+			<array>
+				<dict>
+					<key>include</key>
+					<string>#block_comment</string>
+				</dict>
+			</array>
+		</dict>
+		<!-- Strings with interpolation -->
+		<dict>
+			<key>name</key>
+			<string>string.quoted.double.vera</string>
+			<key>begin</key>
+			<string>"</string>
+			<key>end</key>
+			<string>"</string>
+			<key>patterns</key>
+			<array>
+				<!-- String interpolation \(...) -->
+				<dict>
+					<key>name</key>
+					<string>meta.interpolation.vera</string>
+					<key>begin</key>
+					<string>\\\(</string>
+					<key>beginCaptures</key>
+					<dict>
+						<key>0</key>
+						<dict>
+							<key>name</key>
+							<string>punctuation.section.interpolation.begin.vera</string>
+						</dict>
+					</dict>
+					<key>end</key>
+					<string>\)</string>
+					<key>endCaptures</key>
+					<dict>
+						<key>0</key>
+						<dict>
+							<key>name</key>
+							<string>punctuation.section.interpolation.end.vera</string>
+						</dict>
+					</dict>
+					<key>contentName</key>
+					<string>source.vera.embedded</string>
+					<key>patterns</key>
+					<array>
+						<dict>
+							<key>include</key>
+							<string>$self</string>
+						</dict>
+					</array>
+				</dict>
+				<!-- Escape sequences -->
+				<dict>
+					<key>name</key>
+					<string>constant.character.escape.vera</string>
+					<key>match</key>
+					<string>\\[nrt\\"0]</string>
+				</dict>
+			</array>
+		</dict>
+		<!-- Slot references: @Type.index or @Type.result -->
+		<dict>
+			<key>name</key>
+			<string>variable.other.slot.vera</string>
+			<key>match</key>
+			<string>@[A-Z][A-Za-z0-9_]*(?:&lt;[^&gt;]*&gt;)*\.(?:result|\d+)</string>
+		</dict>
+		<!-- Bare @ in pattern match bindings: @Type without index -->
+		<dict>
+			<key>name</key>
+			<string>variable.other.slot-binding.vera</string>
+			<key>match</key>
+			<string>@[A-Z][A-Za-z0-9_]*(?:&lt;[^&gt;]*&gt;)*(?=\s*[,)\]}])</string>
+		</dict>
+		<!-- Float literals (must come before integer) -->
+		<dict>
+			<key>name</key>
+			<string>constant.numeric.float.vera</string>
+			<key>match</key>
+			<string>\b\d+\.\d+(?:[eE][+-]?\d+)?\b</string>
+		</dict>
+		<!-- Integer literals -->
+		<dict>
+			<key>name</key>
+			<string>constant.numeric.integer.vera</string>
+			<key>match</key>
+			<string>\b\d+\b</string>
+		</dict>
+		<!-- Visibility modifiers -->
+		<dict>
+			<key>name</key>
+			<string>storage.modifier.vera</string>
+			<key>match</key>
+			<string>\b(public|private)\b</string>
+		</dict>
+		<!-- Declaration keywords -->
+		<dict>
+			<key>name</key>
+			<string>keyword.declaration.vera</string>
+			<key>match</key>
+			<string>\b(fn|data|type|effect|ability|module|import)\b</string>
+		</dict>
+		<!-- Contract keywords -->
+		<dict>
+			<key>name</key>
+			<string>keyword.contract.vera</string>
+			<key>match</key>
+			<string>\b(requires|ensures|effects|decreases|invariant)\b</string>
+		</dict>
+		<!-- Generic / polymorphism keyword -->
+		<dict>
+			<key>name</key>
+			<string>keyword.other.forall.vera</string>
+			<key>match</key>
+			<string>\b(forall)\b</string>
+		</dict>
+		<!-- Control flow keywords -->
+		<dict>
+			<key>name</key>
+			<string>keyword.control.vera</string>
+			<key>match</key>
+			<string>\b(if|then|else|match|let|in|where|handle|resume|with)\b</string>
+		</dict>
+		<!-- Effect operation keywords -->
+		<dict>
+			<key>name</key>
+			<string>keyword.other.op.vera</string>
+			<key>match</key>
+			<string>\b(op)\b</string>
+		</dict>
+		<!-- Language constants -->
+		<dict>
+			<key>name</key>
+			<string>constant.language.vera</string>
+			<key>match</key>
+			<string>\b(true|false|pure)\b</string>
+		</dict>
+		<!-- Unit literal -->
+		<dict>
+			<key>name</key>
+			<string>constant.language.unit.vera</string>
+			<key>match</key>
+			<string>\(\)</string>
+		</dict>
+		<!-- Built-in primitive types -->
+		<dict>
+			<key>name</key>
+			<string>storage.type.primitive.vera</string>
+			<key>match</key>
+			<string>\b(Bool|Int|Nat|Float64|Byte|String|Unit|Never)\b</string>
+		</dict>
+		<!-- Built-in composite / container types -->
+		<dict>
+			<key>name</key>
+			<string>storage.type.composite.vera</string>
+			<key>match</key>
+			<string>\b(Array|Option|Map|Set|Tuple|Result|Decimal|Json|Future|Fn|Ordering)\b</string>
+		</dict>
+		<!-- Built-in ADT types -->
+		<dict>
+			<key>name</key>
+			<string>storage.type.adt.vera</string>
+			<key>match</key>
+			<string>\b(MdBlock|MdInline|UrlParts|HtmlNode)\b</string>
+		</dict>
+		<!-- Built-in effects -->
+		<dict>
+			<key>name</key>
+			<string>entity.name.type.effect.vera</string>
+			<key>match</key>
+			<string>\b(IO|State|Exn|Http|Async|Diverge)\b</string>
+		</dict>
+		<!-- Qualified effect operations: IO.print, State.put, etc. -->
+		<dict>
+			<key>match</key>
+			<string>\b([A-Z][A-Za-z0-9_]*)(\.)([a-z_][a-z_0-9]*)\b</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.type.effect.vera</string>
+				</dict>
+				<key>2</key>
+				<dict>
+					<key>name</key>
+					<string>punctuation.accessor.vera</string>
+				</dict>
+				<key>3</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.function.effect-op.vera</string>
+				</dict>
+			</dict>
+		</dict>
+		<!-- Module-qualified calls: module.name::function -->
+		<dict>
+			<key>match</key>
+			<string>\b([a-z][a-z0-9_.]*)(::)([a-z_][a-z_0-9]*)\b</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.namespace.vera</string>
+				</dict>
+				<key>2</key>
+				<dict>
+					<key>name</key>
+					<string>punctuation.separator.namespace.vera</string>
+				</dict>
+				<key>3</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.function.vera</string>
+				</dict>
+			</dict>
+		</dict>
+		<!-- ADT constructors (uppercase identifiers that aren't types/effects) -->
+		<dict>
+			<key>name</key>
+			<string>entity.name.tag.constructor.vera</string>
+			<key>match</key>
+			<string>\b(Some|None|Ok|Err|Cons|Nil|Less|Equal|Greater|MkPositive|Red|Green|Blue|JNull|JBool|JNumber|JString|JArray|JObject|HtmlElement|HtmlText|HtmlComment|MdParagraph|MdHeading|MdCodeBlock|MdBlockQuote|MdList|MdThematicBreak|MdTable|MdDocument|MdText|MdCode|MdEmph|MdStrong|MdLink|MdImage)\b</string>
+		</dict>
+		<!-- User-defined constructors: other uppercase identifiers followed by ( or , or ) in match context -->
+		<!-- This is a heuristic — catches most constructor uses -->
+		<dict>
+			<key>name</key>
+			<string>entity.name.tag.vera</string>
+			<key>match</key>
+			<string>\b[A-Z][A-Za-z0-9_]*\b(?=\s*[\(,\)])</string>
+		</dict>
+		<!-- Function calls: lowercase identifiers followed by ( -->
+		<dict>
+			<key>match</key>
+			<string>\b([a-z_][a-z_0-9]*)\s*(?=\()</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.function.vera</string>
+				</dict>
+			</dict>
+		</dict>
+		<!-- fn declaration name -->
+		<dict>
+			<key>match</key>
+			<string>\b(fn)\s+([a-z_][a-z_0-9]*)\b</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>keyword.declaration.vera</string>
+				</dict>
+				<key>2</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.function.definition.vera</string>
+				</dict>
+			</dict>
+		</dict>
+		<!-- data declaration name -->
+		<dict>
+			<key>match</key>
+			<string>\b(data)\s+([A-Z][A-Za-z0-9_]*)\b</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>keyword.declaration.vera</string>
+				</dict>
+				<key>2</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.type.vera</string>
+				</dict>
+			</dict>
+		</dict>
+		<!-- effect declaration name -->
+		<dict>
+			<key>match</key>
+			<string>\b(effect)\s+([A-Z][A-Za-z0-9_]*)\b</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>keyword.declaration.vera</string>
+				</dict>
+				<key>2</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.type.effect.vera</string>
+				</dict>
+			</dict>
+		</dict>
+		<!-- ability declaration name -->
+		<dict>
+			<key>match</key>
+			<string>\b(ability)\s+([A-Z][A-Za-z0-9_]*)\b</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>keyword.declaration.vera</string>
+				</dict>
+				<key>2</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.type.vera</string>
+				</dict>
+			</dict>
+		</dict>
+		<!-- type alias name -->
+		<dict>
+			<key>match</key>
+			<string>\b(type)\s+([A-Z][A-Za-z0-9_]*)\b</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>keyword.declaration.vera</string>
+				</dict>
+				<key>2</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.type.alias.vera</string>
+				</dict>
+			</dict>
+		</dict>
+		<!-- module declaration -->
+		<dict>
+			<key>match</key>
+			<string>\b(module)\s+([a-z][a-z0-9_.]*)\b</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>keyword.declaration.vera</string>
+				</dict>
+				<key>2</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.namespace.vera</string>
+				</dict>
+			</dict>
+		</dict>
+		<!-- import statement -->
+		<dict>
+			<key>match</key>
+			<string>\b(import)\s+([a-z][a-z0-9_.]*)\b</string>
+			<key>captures</key>
+			<dict>
+				<key>1</key>
+				<dict>
+					<key>name</key>
+					<string>keyword.declaration.vera</string>
+				</dict>
+				<key>2</key>
+				<dict>
+					<key>name</key>
+					<string>entity.name.namespace.vera</string>
+				</dict>
+			</dict>
+		</dict>
+		<!-- Quantifiers -->
+		<dict>
+			<key>name</key>
+			<string>keyword.other.quantifier.vera</string>
+			<key>match</key>
+			<string>\b(forall|exists)\b(?=\s*\()</string>
+		</dict>
+		<!-- Contract-specific: old/new for state contracts -->
+		<dict>
+			<key>name</key>
+			<string>keyword.other.contract.vera</string>
+			<key>match</key>
+			<string>\b(old|new)\b(?=\s*\()</string>
+		</dict>
+		<!-- Arrow operator -->
+		<dict>
+			<key>name</key>
+			<string>keyword.operator.arrow.vera</string>
+			<key>match</key>
+			<string>-&gt;</string>
+		</dict>
+		<!-- Pipe operator -->
+		<dict>
+			<key>name</key>
+			<string>keyword.operator.pipe.vera</string>
+			<key>match</key>
+			<string>\|&gt;</string>
+		</dict>
+		<!-- Implies operator (contracts only) -->
+		<dict>
+			<key>name</key>
+			<string>keyword.operator.implies.vera</string>
+			<key>match</key>
+			<string>==&gt;</string>
+		</dict>
+		<!-- Comparison operators -->
+		<dict>
+			<key>name</key>
+			<string>keyword.operator.comparison.vera</string>
+			<key>match</key>
+			<string>==|!=|&lt;=|&gt;=|&lt;|&gt;</string>
+		</dict>
+		<!-- Logical operators -->
+		<dict>
+			<key>name</key>
+			<string>keyword.operator.logical.vera</string>
+			<key>match</key>
+			<string>\|\||&amp;&amp;|!</string>
+		</dict>
+		<!-- Arithmetic operators -->
+		<dict>
+			<key>name</key>
+			<string>keyword.operator.arithmetic.vera</string>
+			<key>match</key>
+			<string>[+\-*/%]</string>
+		</dict>
+		<!-- Assignment in let -->
+		<dict>
+			<key>name</key>
+			<string>keyword.operator.assignment.vera</string>
+			<key>match</key>
+			<string>=(?!=)</string>
+		</dict>
+		<!-- Punctuation: semicolons -->
+		<dict>
+			<key>name</key>
+			<string>punctuation.terminator.vera</string>
+			<key>match</key>
+			<string>;</string>
+		</dict>
+		<!-- Wildcard pattern -->
+		<dict>
+			<key>name</key>
+			<string>variable.language.wildcard.vera</string>
+			<key>match</key>
+			<string>\b_\b</string>
+		</dict>
+	</array>
+	<!-- Repository for reusable patterns -->
+	<key>repository</key>
+	<dict>
+		<key>block_comment</key>
+		<dict>
+			<key>name</key>
+			<string>comment.block.vera</string>
+			<key>begin</key>
+			<string>\{-</string>
+			<key>end</key>
+			<string>-\}</string>
+			<key>patterns</key>
+			<array>
+				<dict>
+					<key>include</key>
+					<string>#block_comment</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+</dict>
+</plist>
