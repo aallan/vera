@@ -377,7 +377,7 @@ private fn fetch_title(@String -> @Result<String, String>)
 }
 ```
 
-> [`examples/http.vera`](examples/http.vera)
+> [`examples/http.vera`](examples/http.vera) — run with `vera run examples/http.vera` (requires network)
 
 ## Runs Everywhere
 
