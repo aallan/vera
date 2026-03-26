@@ -9198,20 +9198,17 @@ public fn main(-> @Int)
         assert '"html_text"' not in result.wat
 
     def test_html_query_wat_import(self) -> None:
-        """html_query generates a WASM host import."""
+        """html_query generates a WASM host import without html_parse."""
         source = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
-{
-  let @Result<HtmlNode, String> = html_parse("<p>x</p>");
-  match @Result<HtmlNode, String>.0 {
-    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "p")),
-    Err(@String) -> 0
-  }
-}
+{ array_length(html_query(HtmlElement("div", map_new(), [HtmlText("x")]), "div")) }
 """
         result = _compile_ok(source)
         assert '"html_query"' in result.wat
+        assert '"html_parse"' not in result.wat
+        assert '"html_to_string"' not in result.wat
+        assert '"html_text"' not in result.wat
 
     def test_html_text_wat_import(self) -> None:
         """html_text generates a WASM host import."""
@@ -9314,8 +9311,8 @@ public fn main(-> @Int)
   string_length(html_to_string(HtmlElement("p", @Map<String, String>.0, [])))
 }
 '''
-        result = _run(source)
-        assert result > 0  # successfully serialized
+        # <p title="a&quot;b"></p> = 24 chars (quote escaped as &quot;)
+        assert _run(source) == 24
 
     def test_html_query_attr_selector(self) -> None:
         """html_query with attribute presence selector [href]."""
