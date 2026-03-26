@@ -529,7 +529,7 @@ A [TextMate bundle](editors/textmate/) provides full syntax highlighting for `.v
 cp -r editors/textmate/Vera.tmbundle ~/Library/Application\ Support/TextMate/Bundles/
 ```
 
-The `.tmLanguage` grammar is also compatible with Sublime Text and other editors that consume TextMate grammars.
+The `.tmLanguage` grammar is also compatible with Sublime Text and other editors that consume TextMate grammars. [TextMate 2](https://macromates.com/) is by [MacroMates](https://macromates.com/).
 
 ### Run the tests
 
