@@ -197,6 +197,9 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1749): "FUTURE",   # md_has_code_block
     ("09-standard-library.md", 1758): "FUTURE",   # md_extract_code_blocks
     ("09-standard-library.md", 1782): "FUTURE",   # convert_to_markdown
+
+    # Chapter 9 — Http + Async composition (future Async effect, not yet compilable)
+    ("09-standard-library.md", 473): "FUTURE",    # fetch_both uses async(Http.get(...))
 }
 
 
@@ -245,9 +248,6 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
 
     # Chapter 7 — Exn handler references parse_int (not defined in block)
     ("07-effects.md", 202): "INCOMPLETE",    # handle[Exn<String>] + parse_int
-
-    # Chapter 9 — Http + Async composition example (async wrapping of Http.get)
-    ("09-standard-library.md", 473): "INCOMPLETE",  # fetch_both uses async(Http.get(...)) — future Async composition
 
     # Chapter 9 — Future<T> type definition (standalone, no visibility)
     ("09-standard-library.md", 137): "INCOMPLETE",  # data Future<T> (no visibility keyword)

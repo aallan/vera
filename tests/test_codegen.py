@@ -9115,6 +9115,17 @@ public fn main(-> @Int)
         assert '"http_get"' not in result.wat
         assert '"http_post"' not in result.wat
 
+    def test_http_declared_but_unused(self) -> None:
+        """effects(<Http>) declared but no Http ops used — no imports."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Http>)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert '"http_get"' not in result.wat
+        assert '"http_post"' not in result.wat
+
     def test_http_get_mocked_success(self) -> None:
         """Mocked Http.get returns Ok with response body."""
         from io import BytesIO

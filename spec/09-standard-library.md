@@ -471,20 +471,20 @@ This follows the same pattern as Markdown: `json_parse(Http.get(url))`, not a de
 When the `<Async>` effect is available, Http naturally composes with it for concurrent requests:
 
 ```
-private fn fetch_both(@String, @String -> @Tuple<Json, Json>)
+private fn fetch_both(@String, @String -> @Tuple<Result<String, String>, Result<String, String>>)
   requires(true)
   ensures(true)
   effects(<Http, Async>)
 {
-  let @Future<Json> = async(Http.get(@String.0));
-  let @Future<Json> = async(Http.get(@String.1));
-  let @Json = await(@Future<Json>.1);
-  let @Json = await(@Future<Json>.0);
-  Tuple(@Json.1, @Json.0)
+  let @Future<Result<String, String>> = async(Http.get(@String.0));
+  let @Future<Result<String, String>> = async(Http.get(@String.1));
+  let @Result<String, String> = await(@Future<Result<String, String>>.1);
+  let @Result<String, String> = await(@Future<Result<String, String>>.0);
+  Tuple(@Result<String, String>.1, @Result<String, String>.0)
 }
 ```
 
-> **Note:** This async composition example uses future syntax. `Http.get` currently returns `Result<String, String>`, not `String`, so the async wrapping would need to account for error handling. True concurrent execution requires WASI 0.3 ([#237](https://github.com/aallan/vera/issues/237)).
+> **Note:** This async composition example demonstrates future syntax. True concurrent execution requires the `<Async>` effect and WASI 0.3 ([#237](https://github.com/aallan/vera/issues/237)). Currently, `async(expr)` evaluates eagerly (sequentially).
 
 ### 9.5.4 Async
 
