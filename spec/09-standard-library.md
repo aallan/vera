@@ -13,6 +13,7 @@ The standard library comprises:
 - **Decimal type**: `Decimal` for exact decimal arithmetic via host imports (see §9.7.2). Exact in the Python runtime; browser runtime uses IEEE 754 approximation.
 - **Json type**: `Json` ADT for structured data interchange — parse, query, and serialize JSON via 8 built-in functions (see §9.7.1).
 - **Markdown type**: `MdBlock` and `MdInline` ADTs for agent-oriented document structure — parse, render, and query Markdown via pure host-import functions (see §9.7.3).
+- **Html type**: `HtmlNode` ADT for parsing and querying HTML documents — parse, serialize, query, and extract text via 5 built-in functions (see §9.7.4).
 - **Built-in abilities**: `Eq`, `Ord`, `Hash`, `Show` — type constraints for generic programming. The `Ordering` ADT (`Less`, `Equal`, `Greater`) supports `Ord`'s `compare` operation.
 
 All built-in types participate fully in the type system: they can appear in contracts, be verified by the SMT solver, and be used with refinement types and pattern matching. Built-in effects follow the same algebraic effect semantics as user-defined effects (see Chapter 7).
@@ -1801,6 +1802,76 @@ match md_parse(@String.0) {
 ```
 
 This follows the same pattern as JSON: `json_parse(Http.get(url))`, not a dedicated `get_json` operation. One way to do things (§0.2.3).
+
+### 9.7.4 Html
+
+HTML is the primary output format of web applications and the most common document format encountered by agents browsing the web. A typed HTML ADT makes document structure visible to the type system, enabling contracts that verify the structural properties of parsed web pages.
+
+HTML is represented as a single ADT `HtmlNode` with three constructors:
+
+```
+public data HtmlNode {
+  HtmlElement(String, Map<String, String>, Array<HtmlNode>),
+  HtmlText(String),
+  HtmlComment(String)
+}
+```
+
+`HtmlNode` constructors:
+- `HtmlElement(@String, @Map<String, String>, @Array<HtmlNode>)` — an HTML element: tag name, attribute map, and child nodes.
+- `HtmlText(@String)` — text content within an element.
+- `HtmlComment(@String)` — an HTML comment.
+
+**Parse and serialize operations:**
+
+```
+public fn html_parse(@String -> @Result<HtmlNode, String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Parses an HTML string into an `HtmlNode` tree. The parser is lenient (like browsers) — malformed HTML produces a best-effort tree rather than an error. Returns `Err` only on catastrophic parse failures.
+
+```
+public fn html_to_string(@HtmlNode -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Serializes an `HtmlNode` tree back to an HTML string.
+
+**Query and extraction operations:**
+
+```
+public fn html_query(@HtmlNode, @String -> @Array<HtmlNode>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Queries the tree using a simple CSS selector subset. Returns all matching elements. Supported selectors: tag name (`div`), class (`.classname`), ID (`#id`), attribute presence (`[href]`), and descendant combinator (`div p`).
+
+```
+public fn html_text(@HtmlNode -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Extracts all text content from the node and its descendants, recursively concatenated. Comments are excluded.
+
+```
+public fn html_attr(@HtmlNode, @String -> @Option<String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+```
+
+Returns the value of the named attribute if the node is an `HtmlElement` with that attribute present. Returns `None` for `HtmlText`, `HtmlComment`, or missing attributes. This is a pure Vera function (prelude-injected), not a host import.
+
+**Design note.** The `HtmlNode` ADT is intentionally simple compared to a full DOM. It captures the structural essence of HTML documents without modeling CSS, JavaScript, or DOM events. This matches the agent use case: extract structured information from web pages.
 
 ## 9.8 Abilities
 

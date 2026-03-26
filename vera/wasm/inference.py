@@ -302,6 +302,15 @@ class InferenceMixin:
             return "i32"  # Result<Json, String> heap pointer
         if expr.name == "json_stringify":
             return "i32_pair"  # String (ptr, len)
+        # Html builtins
+        if expr.name == "html_parse":
+            return "i32"  # Result<HtmlNode, String> heap pointer
+        if expr.name == "html_to_string":
+            return "i32_pair"  # String (ptr, len)
+        if expr.name == "html_query":
+            return "i32_pair"  # Array<HtmlNode> (ptr, len)
+        if expr.name == "html_text":
+            return "i32_pair"  # String (ptr, len)
         # Numeric math builtins
         if expr.name in ("abs", "min", "max", "floor", "ceil", "round"):
             return "i64"
@@ -530,6 +539,17 @@ class InferenceMixin:
             return "Result"
         if call.name == "json_stringify":
             return "String"
+        # Html builtins
+        if call.name == "html_parse":
+            return "Result"
+        if call.name == "html_to_string":
+            return "String"
+        if call.name == "html_query":
+            return "Array"
+        if call.name == "html_text":
+            return "String"
+        if call.name == "html_attr":
+            return "Option"
         if call.name in ("md_has_heading", "md_has_code_block"):
             return "Bool"
         if call.name == "md_extract_code_blocks":

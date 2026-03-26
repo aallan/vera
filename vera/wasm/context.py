@@ -104,6 +104,8 @@ class WasmContext(
         self._decimal_ops_used: set[str] = set()
         # Json host-import tracking (propagated to codegen core)
         self._json_ops_used: set[str] = set()
+        # Html host-import tracking (propagated to codegen core)
+        self._html_ops_used: set[str] = set()
         # Http host-import tracking (propagated to codegen core)
         self._http_ops_used: set[str] = set()
         # Function return WASM types for type inference:

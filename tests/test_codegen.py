@@ -9053,6 +9053,148 @@ public fn main(-> @Int)
         assert result > 0
 
 
+class TestHtmlCollection:
+    """HtmlNode ADT built-in operations: html_parse, html_to_string,
+    html_query, html_text, html_attr."""
+
+    def test_html_parse_valid(self) -> None:
+        """html_parse of valid HTML returns Ok."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>hello</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_html_text_extraction(self) -> None:
+        """html_text extracts text content from parsed HTML."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>hello</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> string_length(html_text(@HtmlNode.0)),
+    Err(@String) -> 0
+  }
+}
+"""
+        assert _run(source) == 5
+
+    def test_html_to_string_roundtrip(self) -> None:
+        """html_to_string serializes back to HTML."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>hi</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> string_length(html_to_string(@HtmlNode.0)),
+    Err(@String) -> 0
+  }
+}
+"""
+        assert _run(source) > 0
+
+    def test_html_query_by_tag(self) -> None:
+        """html_query finds elements by tag name."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<div><p>a</p><p>b</p></div>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "p")),
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 2
+
+    def test_html_attr_present(self) -> None:
+        """html_attr returns Some for present attributes."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<a href=\\"url\\">link</a>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> match html_attr(@HtmlNode.0, "href") {
+      Some(@String) -> string_length(@String.0),
+      None -> 0
+    },
+    Err(@String) -> 0 - 1
+  }
+}
+'''
+        assert _run(source) == 3
+
+    def test_html_attr_absent(self) -> None:
+        """html_attr returns None for missing attributes."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>text</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> match html_attr(@HtmlNode.0, "class") {
+      Some(@String) -> 1,
+      None -> 0
+    },
+    Err(@String) -> 0 - 1
+  }
+}
+"""
+        assert _run(source) == 0
+
+    def test_html_parse_invalid(self) -> None:
+        """Malformed HTML still parses leniently (best-effort)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>unclosed");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_html_parse_wat_import(self) -> None:
+        """html_parse generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>x</p>");
+  1
+}
+"""
+        result = _compile_ok(source)
+        assert '"html_parse"' in result.wat
+
+    def test_html_no_imports_when_unused(self) -> None:
+        """Programs not using html builtins have no Html imports."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert '"html_parse"' not in result.wat
+        assert '"html_to_string"' not in result.wat
+        assert '"html_query"' not in result.wat
+        assert '"html_text"' not in result.wat
+
+
 class TestHttpCollection:
     """Http effect: host-import compilation and mocked execution."""
 

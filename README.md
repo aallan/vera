@@ -62,6 +62,7 @@ Vera has a number of key features:
 - **Async/await** — `Future<T>` with declared `<Async>` effects
 - **Typed Markdown** — built-in `MdBlock`/`MdInline` ADTs for structured document processing
 - **JSON** — built-in `Json` ADT with parse, query, and serialize operations for API integration
+- **HTML** — built-in `HtmlNode` ADT with lenient parsing, CSS selector queries, and text extraction
 - **HTTP** — `Http.get` and `Http.post` as algebraic effects, composing with JSON for typed API responses
 - **String interpolation** — `"value: \(@Int.0)"` with auto-conversion for primitive types
 - **Three-tier verification** — static verification via Z3, guided verification with hints, runtime fallback
@@ -378,6 +379,22 @@ private fn fetch_title(@String -> @Result<String, String>)
 ```
 
 > [`examples/http.vera`](examples/http.vera) — run with `vera run examples/http.vera` (requires network)
+
+### HTML — lenient parsing and CSS selector queries
+
+`html_parse` produces a typed `HtmlNode` tree from any HTML string. The parser is lenient (like browsers) — malformed HTML produces a best-effort tree. Query elements with CSS selectors, extract text, and read attributes.
+
+```vera
+private fn count_links(@HtmlNode -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  array_length(html_query(@HtmlNode.0, "a"))
+}
+```
+
+> [`examples/html.vera`](examples/html.vera) — run with `vera run examples/html.vera`
 
 ## Runs Everywhere
 

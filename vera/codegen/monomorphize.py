@@ -79,6 +79,12 @@ _BUILTIN_VERA_RETURN_TYPES: dict[str, str] = {
     "json_keys": "Array",
     "json_has_field": "Bool",
     "json_type": "String",
+    # Html builtins
+    "html_parse": "Result",
+    "html_to_string": "String",
+    "html_query": "Array",
+    "html_text": "String",
+    "html_attr": "Option",
 }
 
 # Builtins returning parameterized types — maps function name to
@@ -90,6 +96,10 @@ _BUILTIN_PARAMETERIZED_RETURNS: dict[str, tuple[str, tuple[str, ...]]] = {
     "json_get": ("Option", ("Json",)),
     "json_array_get": ("Option", ("Json",)),
     "json_keys": ("Array", ("String",)),
+    # Html builtins
+    "html_parse": ("Result", ("HtmlNode", "String")),
+    "html_query": ("Array", ("HtmlNode",)),
+    "html_attr": ("Option", ("String",)),
 }
 
 

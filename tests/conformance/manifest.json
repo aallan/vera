@@ -597,6 +597,25 @@
     ]
   },
   {
+    "id": "ch09_html",
+    "file": "ch09_html.vera",
+    "chapter": 9,
+    "title": "HtmlNode ADT and html_* built-in functions",
+    "level": "run",
+    "spec_ref": "Section 9.7.4",
+    "features": [
+      "HtmlNode",
+      "HtmlElement",
+      "HtmlText",
+      "HtmlComment",
+      "html_parse",
+      "html_to_string",
+      "html_query",
+      "html_text",
+      "html_attr"
+    ]
+  },
+  {
     "id": "ch09_decimal",
     "file": "ch09_decimal.vera",
     "chapter": 9,

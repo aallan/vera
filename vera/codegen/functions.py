@@ -179,6 +179,8 @@ class FunctionCompilationMixin:
         self._decimal_ops_used.update(ctx._decimal_ops_used)
         # Propagate Json host-import tracking
         self._json_ops_used.update(ctx._json_ops_used)
+        # Propagate Html host-import tracking
+        self._html_ops_used.update(ctx._html_ops_used)
         # Propagate Http host-import tracking
         self._http_ops_used.update(ctx._http_ops_used)
 

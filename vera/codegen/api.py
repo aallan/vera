@@ -15,7 +15,7 @@ import sys
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import wasmtime
 
@@ -85,6 +85,7 @@ class CompileResult:
     set_ops_used: set[str] = field(default_factory=set)
     decimal_ops_used: set[str] = field(default_factory=set)
     json_ops_used: set[str] = field(default_factory=set)
+    html_ops_used: set[str] = field(default_factory=set)
     http_ops_used: set[str] = field(default_factory=set)
 
     @property
@@ -763,7 +764,8 @@ def execute(
     # Shared helpers for collection host functions (Map and Set).
     # Defined once, used by both Map and Set sections below.
     if (result.map_ops_used or result.set_ops_used
-            or result.decimal_ops_used or result.json_ops_used):
+            or result.decimal_ops_used or result.json_ops_used
+            or result.html_ops_used):
         def _write_i64(
             caller: wasmtime.Caller, offset: int, value: int,
         ) -> None:
@@ -882,8 +884,8 @@ def execute(
     # Map<K, V> host functions
     # -----------------------------------------------------------------
 
-    # Map store is needed for direct Map ops AND for Json (JObject uses Map).
-    if result.map_ops_used or result.json_ops_used:
+    # Map store is needed for direct Map ops, Json (JObject), and Html (HtmlElement attrs).
+    if result.map_ops_used or result.json_ops_used or result.html_ops_used:
         # Handle table: maps i32 handles to Python dicts.
         _map_store: dict[int, dict[object, object]] = {}
         _map_next_handle = [1]
@@ -1607,6 +1609,253 @@ def execute(
                     [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
                 ),
                 host_json_stringify, access_caller=True,
+            )
+
+    # -----------------------------------------------------------------
+    # Html host functions (§9.7.4)
+    # -----------------------------------------------------------------
+    if result.html_ops_used:
+        from html.parser import HTMLParser as _HTMLParser
+
+        from vera.wasm.html_serde import read_html, write_html
+
+        class _VeraHTMLParser(_HTMLParser):
+            """Lenient HTML parser producing a tree of node dicts."""
+
+            def __init__(self) -> None:
+                super().__init__(convert_charrefs=True)
+                self._root: dict[str, Any] = {
+                    "tag": "element", "name": "html",
+                    "attrs": {}, "children": [],
+                }
+                self._stack: list[dict[str, Any]] = [self._root]
+
+            def handle_starttag(
+                self, tag: str, attrs: list[tuple[str, str | None]],
+            ) -> None:
+                node: dict[str, Any] = {
+                    "tag": "element",
+                    "name": tag,
+                    "attrs": {k: (v or "") for k, v in attrs},
+                    "children": [],
+                }
+                self._stack[-1]["children"].append(node)
+                # Void elements don't get pushed
+                if tag.lower() not in (
+                    "area", "base", "br", "col", "embed", "hr", "img",
+                    "input", "link", "meta", "param", "source", "track",
+                    "wbr",
+                ):
+                    self._stack.append(node)
+
+            def handle_endtag(self, tag: str) -> None:
+                # Pop back to matching tag (lenient)
+                for i in range(len(self._stack) - 1, 0, -1):
+                    if self._stack[i]["name"] == tag:
+                        self._stack[i + 1:] = []
+                        break
+
+            def handle_data(self, data: str) -> None:
+                if data:
+                    self._stack[-1]["children"].append(
+                        {"tag": "text", "content": data},
+                    )
+
+            def handle_comment(self, data: str) -> None:
+                self._stack[-1]["children"].append(
+                    {"tag": "comment", "content": data},
+                )
+
+            def get_root(self) -> dict[str, Any]:
+                children: list[Any] = self._root["children"]
+                if len(children) == 1 and children[0].get("tag") == "element":
+                    result: dict[str, Any] = children[0]
+                    return result
+                return self._root
+
+        def _html_to_string_py(node: dict[str, Any]) -> str:
+            """Serialize Python HtmlNode dict to HTML string."""
+            tag = node.get("tag", "text")
+            if tag == "text":
+                return str(node.get("content", ""))
+            if tag == "comment":
+                return f"<!--{node.get('content', '')}-->"
+            # element
+            name = node.get("name", "div")
+            attrs: dict[str, str] = node.get("attrs", {})
+            children: list[Any] = node.get("children", [])
+            attr_str = ""
+            for k, v in attrs.items():
+                attr_str += f' {k}="{v}"'
+            if str(name).lower() in (
+                "area", "base", "br", "col", "embed", "hr", "img",
+                "input", "link", "meta", "param", "source", "track",
+                "wbr",
+            ):
+                return f"<{name}{attr_str}>"
+            inner = "".join(_html_to_string_py(c) for c in children)
+            return f"<{name}{attr_str}>{inner}</{name}>"
+
+        def _html_query_py(
+            node: dict[str, Any], selector: str,
+        ) -> list[dict[str, Any]]:
+            """Simple CSS selector query on HtmlNode tree."""
+            results: list[dict[str, Any]] = []
+            parts = selector.strip().split()
+            if not parts:
+                return results
+            _html_query_walk(node, parts, 0, results)
+            return results
+
+        def _html_matches_selector(
+            node: dict[str, Any], sel: str,
+        ) -> bool:
+            """Check if a single element matches a simple selector."""
+            if node.get("tag") != "element":
+                return False
+            name = str(node.get("name", ""))
+            attrs: dict[str, str] = node.get("attrs", {})
+            if sel.startswith("#"):
+                return bool(attrs.get("id", "") == sel[1:])
+            if sel.startswith("."):
+                classes = str(attrs.get("class", "")).split()
+                return sel[1:] in classes
+            if sel.startswith("[") and sel.endswith("]"):
+                attr_name = sel[1:-1]
+                return bool(attr_name in attrs)
+            return bool(name == sel)
+
+        def _html_query_walk(
+            node: dict[str, Any],
+            parts: list[str],
+            depth: int,
+            results: list[dict[str, Any]],
+        ) -> None:
+            """Walk tree matching descendant combinator selectors."""
+            if node.get("tag") != "element":
+                return
+            if _html_matches_selector(node, parts[depth]):
+                if depth == len(parts) - 1:
+                    results.append(node)
+                else:
+                    # Continue matching remaining parts in descendants
+                    for child in node.get("children", []):
+                        _html_query_walk(child, parts, depth + 1, results)
+            # Always try matching from the start in all descendants
+            for child in node.get("children", []):
+                _html_query_walk(child, parts, 0, results)
+
+        def _html_text_py(node: dict[str, Any]) -> str:
+            """Extract text content recursively from HtmlNode."""
+            tag = node.get("tag", "text")
+            if tag == "text":
+                return str(node.get("content", ""))
+            if tag == "comment":
+                return ""
+            # element — concatenate children text
+            children: list[Any] = node.get("children", [])
+            return "".join(
+                _html_text_py(c) for c in children
+            )
+
+        if "html_parse" in result.html_ops_used:
+            def host_html_parse(
+                caller: wasmtime.Caller, ptr: int, length: int,
+            ) -> int:
+                text = _read_wasm_string(caller, ptr, length)
+                try:
+                    parser = _VeraHTMLParser()
+                    parser.feed(text)
+                    root = parser.get_root()
+                    html_ptr = write_html(
+                        caller, _call_alloc, _write_i32,
+                        _alloc_string, _map_alloc, root,
+                    )
+                    return _alloc_result_ok_i32(caller, html_ptr)
+                except Exception as exc:
+                    return _alloc_result_err_string(caller, str(exc))
+
+            linker.define_func(
+                "vera", "html_parse",
+                wasmtime.FuncType(
+                    [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                    [wasmtime.ValType.i32()],
+                ),
+                host_html_parse, access_caller=True,
+            )
+
+        if "html_to_string" in result.html_ops_used:
+            def host_html_to_string(
+                caller: wasmtime.Caller, ptr: int,
+            ) -> tuple[int, int]:
+                node = read_html(
+                    caller, ptr, _read_i32,
+                    _read_wasm_string, _map_store,
+                )
+                text = _html_to_string_py(node)
+                return _alloc_string(caller, text)
+
+            linker.define_func(
+                "vera", "html_to_string",
+                wasmtime.FuncType(
+                    [wasmtime.ValType.i32()],
+                    [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                ),
+                host_html_to_string, access_caller=True,
+            )
+
+        if "html_query" in result.html_ops_used:
+            def host_html_query(
+                caller: wasmtime.Caller,
+                node_ptr: int, sel_ptr: int, sel_len: int,
+            ) -> tuple[int, int]:
+                node = read_html(
+                    caller, node_ptr, _read_i32,
+                    _read_wasm_string, _map_store,
+                )
+                selector = _read_wasm_string(caller, sel_ptr, sel_len)
+                matches = _html_query_py(node, selector)
+                count = len(matches)
+                if count > 0:
+                    arr_ptr = _call_alloc(caller, count * 4)
+                    for i, m in enumerate(matches):
+                        m_ptr = write_html(
+                            caller, _call_alloc, _write_i32,
+                            _alloc_string, _map_alloc, m,
+                        )
+                        _write_i32(caller, arr_ptr + i * 4, m_ptr)
+                else:
+                    arr_ptr = 0
+                return (arr_ptr, count)
+
+            linker.define_func(
+                "vera", "html_query",
+                wasmtime.FuncType(
+                    [wasmtime.ValType.i32(),
+                     wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                    [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                ),
+                host_html_query, access_caller=True,
+            )
+
+        if "html_text" in result.html_ops_used:
+            def host_html_text(
+                caller: wasmtime.Caller, ptr: int,
+            ) -> tuple[int, int]:
+                node = read_html(
+                    caller, ptr, _read_i32,
+                    _read_wasm_string, _map_store,
+                )
+                text = _html_text_py(node)
+                return _alloc_string(caller, text)
+
+            linker.define_func(
+                "vera", "html_text",
+                wasmtime.FuncType(
+                    [wasmtime.ValType.i32()],
+                    [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                ),
+                host_html_text, access_caller=True,
             )
 
     # -----------------------------------------------------------------

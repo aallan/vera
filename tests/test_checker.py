@@ -2109,6 +2109,90 @@ private fn foo(@Unit -> @Json)
 """)
 
 
+class TestHtmlChecker:
+    """HtmlNode ADT and built-in function type checking."""
+
+    def test_html_element(self) -> None:
+        """HtmlElement constructor type-checks as HtmlNode."""
+        _check_ok("""
+private fn foo(@Unit -> @HtmlNode)
+  requires(true) ensures(true) effects(pure)
+{ HtmlElement("div", map_new(), []) }
+""")
+
+    def test_html_text(self) -> None:
+        """HtmlText(String) type-checks."""
+        _check_ok("""
+private fn foo(@Unit -> @HtmlNode)
+  requires(true) ensures(true) effects(pure)
+{ HtmlText("hello") }
+""")
+
+    def test_html_comment(self) -> None:
+        """HtmlComment(String) type-checks."""
+        _check_ok("""
+private fn foo(@Unit -> @HtmlNode)
+  requires(true) ensures(true) effects(pure)
+{ HtmlComment("a comment") }
+""")
+
+    def test_html_parse(self) -> None:
+        """html_parse returns Result<HtmlNode, String>."""
+        _check_ok("""
+private fn foo(@Unit -> @Result<HtmlNode, String>)
+  requires(true) ensures(true) effects(pure)
+{ html_parse("<p>hello</p>") }
+""")
+
+    def test_html_to_string(self) -> None:
+        """html_to_string returns String."""
+        _check_ok("""
+private fn foo(@HtmlNode -> @String)
+  requires(true) ensures(true) effects(pure)
+{ html_to_string(@HtmlNode.0) }
+""")
+
+    def test_html_query(self) -> None:
+        """html_query returns Array<HtmlNode>."""
+        _check_ok("""
+private fn foo(@HtmlNode -> @Array<HtmlNode>)
+  requires(true) ensures(true) effects(pure)
+{ html_query(@HtmlNode.0, "p") }
+""")
+
+    def test_html_text_fn(self) -> None:
+        """html_text returns String."""
+        _check_ok("""
+private fn foo(@HtmlNode -> @String)
+  requires(true) ensures(true) effects(pure)
+{ html_text(@HtmlNode.0) }
+""")
+
+    def test_html_attr(self) -> None:
+        """html_attr returns Option<String>."""
+        _check_ok("""
+private fn foo(@HtmlNode -> @Option<String>)
+  requires(true) ensures(true) effects(pure)
+{ html_attr(@HtmlNode.0, "href") }
+""")
+
+    def test_html_parse_wrong_type(self) -> None:
+        """html_parse with Int arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @Result<HtmlNode, String>)
+  requires(true) ensures(true) effects(pure)
+{ html_parse(42) }
+""", "type")
+
+    def test_html_to_string_wrong_type(self) -> None:
+        """html_to_string with String arg produces error."""
+        _check_err("""
+private fn foo(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ html_to_string("not a node") }
+""", "type")
+
+
 class TestHttpChecker:
     """Http effect type checking."""
 

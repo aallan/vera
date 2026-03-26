@@ -318,6 +318,29 @@ class TypeEnv:
         for c in self.data_types["MdBlock"].constructors.values():
             self.constructors[c.name] = c
 
+        # HtmlNode — HTML document nodes (§9.7.4)
+        _HTML_NODE = AdtType("HtmlNode", ())
+        _MAP_STR_STR = AdtType("Map", (STRING, STRING))
+        _ARR_HTML_NODE = AdtType("Array", (_HTML_NODE,))
+        self.data_types["HtmlNode"] = AdtInfo(
+            name="HtmlNode",
+            type_params=(),
+            constructors={
+                "HtmlElement": ConstructorInfo(
+                    "HtmlElement", "HtmlNode", (),
+                    (STRING, _MAP_STR_STR, _ARR_HTML_NODE),
+                ),
+                "HtmlText": ConstructorInfo(
+                    "HtmlText", "HtmlNode", (), (STRING,),
+                ),
+                "HtmlComment": ConstructorInfo(
+                    "HtmlComment", "HtmlNode", (), (STRING,),
+                ),
+            },
+        )
+        for c in self.data_types["HtmlNode"].constructors.values():
+            self.constructors[c.name] = c
+
         # State<T> effect with get/put
         self.effects["State"] = EffectInfo(
             name="State",
@@ -1079,6 +1102,46 @@ class TypeEnv:
             forall_vars=None,
             param_types=(_JSON_T,),
             return_type=STRING,
+            effect=PureEffectRow(),
+        )
+
+        # Html builtins (§9.7.4) — host-imported parse/to_string/query/text
+        _HTML_T = AdtType("HtmlNode", ())
+        _ARR_HTML_T = AdtType("Array", (_HTML_T,))
+        self.functions["html_parse"] = FunctionInfo(
+            name="html_parse",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType("Result", (_HTML_T, STRING)),
+            effect=PureEffectRow(),
+        )
+        self.functions["html_to_string"] = FunctionInfo(
+            name="html_to_string",
+            forall_vars=None,
+            param_types=(_HTML_T,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["html_query"] = FunctionInfo(
+            name="html_query",
+            forall_vars=None,
+            param_types=(_HTML_T, STRING),
+            return_type=_ARR_HTML_T,
+            effect=PureEffectRow(),
+        )
+        self.functions["html_text"] = FunctionInfo(
+            name="html_text",
+            forall_vars=None,
+            param_types=(_HTML_T,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        # html_attr is a pure Vera function (prelude-injected body)
+        self.functions["html_attr"] = FunctionInfo(
+            name="html_attr",
+            forall_vars=None,
+            param_types=(_HTML_T, STRING),
+            return_type=AdtType("Option", (STRING,)),
             effect=PureEffectRow(),
         )
 
