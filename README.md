@@ -688,6 +688,8 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 | Http: POST sends body without Content-Type | [#354](https://github.com/aallan/vera/issues/354) |
 | Http: browser uses deprecated synchronous XHR | [#355](https://github.com/aallan/vera/issues/355) |
 | Http: no PUT, PATCH, DELETE methods | [#356](https://github.com/aallan/vera/issues/356) |
+| Closure parameter with pair-ABI type emits invalid WAT | [#359](https://github.com/aallan/vera/issues/359) |
+| Duplicate prelude types across imported modules (E609) | [#360](https://github.com/aallan/vera/issues/360) |
 
 ## Project Roadmap
 
