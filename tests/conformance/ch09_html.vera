@@ -1,0 +1,120 @@
+-- Conformance: HtmlNode ADT and html_* built-in functions (Chapter 9)
+-- Tests: HtmlNode constructors, html_parse, html_to_string, html_query,
+--        html_text, html_attr
+-- ================================================================
+-- test_html_parse_ok
+-- html_parse of valid HTML returns Ok (length of text > 0).
+-- ================================================================
+public fn test_html_parse_ok(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  match html_parse("<p>hello</p>") {
+    Ok(@HtmlNode) -> string_length(html_text(@HtmlNode.0)),
+    Err(@String) -> 0 - 1
+  }
+}
+
+-- ================================================================
+-- test_html_text
+-- html_text extracts text content ("hello" has length 5).
+-- ================================================================
+public fn test_html_text(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  match html_parse("<p>hello</p>") {
+    Ok(@HtmlNode) -> string_length(html_text(@HtmlNode.0)),
+    Err(@String) -> 0
+  }
+}
+
+-- ================================================================
+-- test_html_query_count
+-- html_query("p") on HTML with 2 <p> tags returns array of length 2.
+-- ================================================================
+public fn test_html_query_count(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  match html_parse("<div><p>a</p><p>b</p></div>") {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "p")),
+    Err(@String) -> 0
+  }
+}
+
+-- ================================================================
+-- test_html_to_string
+-- html_to_string produces non-empty output (length > 0).
+-- ================================================================
+public fn test_html_to_string(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  match html_parse("<b>bold</b>") {
+    Ok(@HtmlNode) -> string_length(html_to_string(@HtmlNode.0)),
+    Err(@String) -> 0
+  }
+}
+
+-- ================================================================
+-- test_html_attr_present
+-- html_attr returns Some for an attribute that exists.
+-- "url" has length 3.
+-- ================================================================
+public fn test_html_attr_present(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  match html_parse("<a href=\"url\">x</a>") {
+    Ok(@HtmlNode) -> match html_attr(@HtmlNode.0, "href") { Some(@String) -> string_length(@String.0), None -> 0 },
+    Err(@String) -> 0 - 1
+  }
+}
+
+-- ================================================================
+-- test_html_attr_absent
+-- html_attr returns None for a missing attribute.
+-- ================================================================
+public fn test_html_attr_absent(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  match html_parse("<p>text</p>") {
+    Ok(@HtmlNode) -> match html_attr(@HtmlNode.0, "class") { Some(@String) -> 1, None -> 0 },
+    Err(@String) -> 0 - 1
+  }
+}
+
+-- ================================================================
+-- test_html_constructor_text
+-- HtmlText constructor produces text with correct content length.
+-- ================================================================
+public fn test_html_constructor_text(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  string_length(html_text(HtmlText("hello")))
+}
+
+-- ================================================================
+-- test_html_parse_lenient
+-- Malformed HTML parses leniently (returns Ok, not Err).
+-- ================================================================
+public fn test_html_parse_lenient(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match html_parse("<p>unclosed <b>tags") {
+    Ok(@HtmlNode) -> 1,
+    Err(@String) -> 0
+  }
+}

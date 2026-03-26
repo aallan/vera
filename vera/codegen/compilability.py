@@ -177,6 +177,10 @@ class CompilabilityMixin:
         "json_parse", "json_stringify",
     })
 
+    _HTML_BUILTINS = frozenset({
+        "html_parse", "html_to_string", "html_query", "html_text",
+    })
+
     def _scan_io_ops(self, node: ast.Node) -> None:
         """Walk a function body looking for IO, Markdown, and Regex builtins.
 
@@ -213,6 +217,8 @@ class CompilabilityMixin:
                 self._decimal_ops_used.add(node.name)
             if node.name in self._JSON_BUILTINS:
                 self._json_ops_used.add(node.name)
+            if node.name in self._HTML_BUILTINS:
+                self._html_ops_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
         elif isinstance(node, ast.ConstructorCall):

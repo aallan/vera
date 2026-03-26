@@ -1652,6 +1652,237 @@ function buildImportObject(module) {
     };
   }
 
+  // ── Html host imports ──────────────────────────────────────────
+  // Lenient HTML parser using DOMParser (browser) or returning Err
+  // in non-browser runtimes (Node.js).
+
+  // Write a JS HTML node object to WASM memory as HtmlNode ADT.
+  // HtmlElement: tag=0, String(name)+4, Map handle+12, Array(ptr,len)+16, total=24
+  // HtmlText: tag=1, String(content)+4, total=16
+  // HtmlComment: tag=2, String(content)+4, total=16
+  function writeHtml(node) {
+    if (node.tag === 'comment') {
+      const ptr = alloc(16);
+      const [sp, sl] = allocString(node.content || '');
+      writeI32(ptr, 2);
+      writeI32(ptr + 4, sp);
+      writeI32(ptr + 8, sl);
+      return ptr;
+    }
+    if (node.tag === 'text') {
+      const ptr = alloc(16);
+      const [sp, sl] = allocString(node.content || '');
+      writeI32(ptr, 1);
+      writeI32(ptr + 4, sp);
+      writeI32(ptr + 8, sl);
+      return ptr;
+    }
+    // element
+    const [np, nl] = allocString(node.name || '');
+    // Attributes as Map<String, String>
+    const m = new Map();
+    if (node.attrs) {
+      for (const [k, v] of Object.entries(node.attrs)) {
+        m.set(k, v);
+      }
+    }
+    const h = mapNextHandle++;
+    mapStore.set(h, m);
+    // Children array
+    const children = node.children || [];
+    const count = children.length;
+    let arrPtr = 0;
+    if (count > 0) {
+      arrPtr = alloc(count * 4);
+      for (let i = 0; i < count; i++) {
+        writeI32(arrPtr + i * 4, writeHtml(children[i]));
+      }
+    }
+    const ptr = alloc(24);
+    writeI32(ptr, 0);
+    writeI32(ptr + 4, np);
+    writeI32(ptr + 8, nl);
+    writeI32(ptr + 12, h);
+    writeI32(ptr + 16, arrPtr);
+    writeI32(ptr + 20, count);
+    return ptr;
+  }
+
+  // Read an HtmlNode ADT from WASM memory to a JS object.
+  function readHtml(ptr) {
+    const tag = readI32(ptr);
+    if (tag === 1) {
+      const sp = readI32(ptr + 4);
+      const sl = readI32(ptr + 8);
+      return { tag: 'text', content: readString(sp, sl) };
+    }
+    if (tag === 2) {
+      const sp = readI32(ptr + 4);
+      const sl = readI32(ptr + 8);
+      return { tag: 'comment', content: readString(sp, sl) };
+    }
+    // tag === 0: element
+    const np = readI32(ptr + 4);
+    const nl = readI32(ptr + 8);
+    const name = readString(np, nl);
+    const handle = readI32(ptr + 12);
+    const arrPtr = readI32(ptr + 16);
+    const arrLen = readI32(ptr + 20);
+    const attrs = {};
+    const m = mapStore.get(handle);
+    if (m) {
+      for (const [k, v] of m.entries()) {
+        attrs[String(k)] = String(v);
+      }
+    }
+    const children = [];
+    for (let i = 0; i < arrLen; i++) {
+      children.push(readHtml(readI32(arrPtr + i * 4)));
+    }
+    return { tag: 'element', name, attrs, children };
+  }
+
+  // Convert DOM node tree to HtmlNode JS object
+  function domToHtml(domNode) {
+    if (domNode.nodeType === 8) {
+      return { tag: 'comment', content: domNode.textContent || '' };
+    }
+    if (domNode.nodeType === 3) {
+      return { tag: 'text', content: domNode.textContent || '' };
+    }
+    if (domNode.nodeType === 1) {
+      const attrs = {};
+      for (const attr of domNode.attributes) {
+        attrs[attr.name] = attr.value;
+      }
+      const children = [];
+      for (const child of domNode.childNodes) {
+        children.push(domToHtml(child));
+      }
+      return { tag: 'element', name: domNode.tagName.toLowerCase(), attrs, children };
+    }
+    // Other node types: treat as text
+    return { tag: 'text', content: domNode.textContent || '' };
+  }
+
+  // Simple HTML to string serializer
+  function escapeHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  function escapeAttr(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  function htmlToString(node) {
+    if (node.tag === 'text') return escapeHtml(node.content || '');
+    if (node.tag === 'comment') {
+      const c = (node.content || '').replace(/-->/g, '-- >');
+      return `<!--${c}-->`;
+    }
+    const name = node.name || 'div';
+    let attrStr = '';
+    if (node.attrs) {
+      for (const [k, v] of Object.entries(node.attrs)) {
+        attrStr += ` ${k}="${escapeAttr(v)}"`;
+      }
+    }
+    const voidElems = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+    if (voidElems.has(name.toLowerCase())) return `<${name}${attrStr}>`;
+    const inner = (node.children || []).map(htmlToString).join('');
+    return `<${name}${attrStr}>${inner}</${name}>`;
+  }
+
+  // Extract text content recursively
+  function htmlText(node) {
+    if (node.tag === 'text') return node.content || '';
+    if (node.tag === 'comment') return '';
+    return (node.children || []).map(htmlText).join('');
+  }
+
+  // Simple CSS selector matcher
+  function htmlMatchesSelector(node, sel) {
+    if (node.tag !== 'element') return false;
+    if (sel.startsWith('#')) return (node.attrs || {}).id === sel.slice(1);
+    if (sel.startsWith('.')) return ((node.attrs || {}).class || '').split(/\s+/).includes(sel.slice(1));
+    if (sel.startsWith('[') && sel.endsWith(']')) return sel.slice(1, -1) in (node.attrs || {});
+    return node.name === sel;
+  }
+
+  // CSS selector query (descendant combinator)
+  function htmlQuery(node, selector) {
+    const parts = selector.trim().split(/\s+/);
+    if (!parts.length) return [];
+    const results = [];
+    function walk(n, depth) {
+      if (n.tag !== 'element') return;
+      if (htmlMatchesSelector(n, parts[depth])) {
+        if (depth === parts.length - 1) {
+          results.push(n);
+        } else {
+          for (const c of (n.children || [])) walk(c, depth + 1);
+        }
+      }
+      for (const c of (n.children || [])) walk(c, 0);
+    }
+    walk(node, 0);
+    return results;
+  }
+
+  if (needed.has("html_parse")) {
+    imports.vera.html_parse = (ptr, len) => {
+      const text = readString(ptr, len);
+      try {
+        let root;
+        if (typeof DOMParser !== "undefined") {
+          const parser = new DOMParser();
+          const doc = parser.parseFromString(text, 'text/html');
+          root = domToHtml(doc.body);
+        } else {
+          // Node.js fallback: simple regex-based parser for basic HTML
+          // Just wrap content as a single text node
+          return allocResultErrString(
+            "Unsupported runtime: HTML parsing requires DOMParser (browser only)");
+        }
+        const nodePtr = writeHtml(root);
+        return allocResultOkI32(nodePtr);
+      } catch (e) {
+        return allocResultErrString(String(e.message || 'HTML parse error'));
+      }
+    };
+  }
+
+  if (needed.has("html_to_string")) {
+    imports.vera.html_to_string = (ptr) => {
+      const node = readHtml(ptr);
+      const text = htmlToString(node);
+      return allocString(text);
+    };
+  }
+
+  if (needed.has("html_query")) {
+    imports.vera.html_query = (nodePtr, selPtr, selLen) => {
+      const node = readHtml(nodePtr);
+      const selector = readString(selPtr, selLen);
+      const matches = htmlQuery(node, selector);
+      const count = matches.length;
+      let arrPtr = 0;
+      if (count > 0) {
+        arrPtr = alloc(count * 4);
+        for (let i = 0; i < count; i++) {
+          writeI32(arrPtr + i * 4, writeHtml(matches[i]));
+        }
+      }
+      return [arrPtr, count];
+    };
+  }
+
+  if (needed.has("html_text")) {
+    imports.vera.html_text = (ptr) => {
+      const node = readHtml(ptr);
+      return allocString(htmlText(node));
+    };
+  }
+
   return imports;
 }
 

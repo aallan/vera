@@ -35,6 +35,24 @@ _JSON_DATA = """\
 data Json { JNull, JBool(Bool), JNumber(Float64), JString(String), JArray(Array<Json>), JObject(Map<String, Json>) }
 """
 
+_HTML_DATA = """\
+data HtmlNode { HtmlElement(String, Map<String, String>, Array<HtmlNode>), HtmlText(String), HtmlComment(String) }
+"""
+
+_HTML_COMBINATORS = """\
+private fn html_attr(@HtmlNode, @String -> @Option<String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @HtmlNode.0 {
+    HtmlElement(@String, @Map<String, String>, @Array<HtmlNode>) -> map_get(@Map<String, String>.0, @String.1),
+    HtmlText(@String) -> None,
+    HtmlComment(@String) -> None
+  }
+}
+"""
+
 # Type aliases needed by closure-taking combinators.
 _OPTION_TYPE_ALIASES = """\
 type OptionMapFn<A, B> = fn(A -> B) effects(pure);
@@ -444,6 +462,31 @@ def _source_mentions_json(program: ast.Program) -> bool:
     return False
 
 
+def _source_mentions_html(program: ast.Program) -> bool:
+    """Check if user code references HtmlNode types or constructors."""
+    html_names = frozenset({
+        "HtmlNode", "HtmlElement", "HtmlText", "HtmlComment",
+        "html_parse", "html_to_string", "html_query", "html_text",
+        "html_attr",
+    })
+    for tld in program.declarations:
+        decl = tld.decl
+        if _node_mentions(decl, html_names):
+            return True
+    return False
+
+
+def _has_standard_html(program: ast.Program) -> bool:
+    """Check if user's ``data HtmlNode`` has the expected 3 constructors."""
+    _EXPECTED = {"HtmlElement", "HtmlText", "HtmlComment"}
+    for tld in program.declarations:
+        decl = tld.decl
+        if isinstance(decl, ast.DataDecl) and decl.name == "HtmlNode":
+            ctor_names = {c.name for c in decl.constructors}
+            return ctor_names == _EXPECTED
+    return False  # pragma: no cover
+
+
 def _node_mentions(node: object, names: frozenset[str]) -> bool:
     """Recursively check if any AST node references one of the names."""
     if isinstance(node, ast.NamedType):
@@ -598,6 +641,28 @@ def inject_prelude(program: ast.Program) -> None:
         )
         if inject_json_combinators and not json_fn_names.issubset(user_names):
             source_parts.append(_JSON_COMBINATORS)
+
+    # HtmlNode ADT and html_attr — inject only when HtmlNode is referenced
+    html_fn_names = {"html_attr"}
+    _html_ctors = {"HtmlElement", "HtmlText", "HtmlComment"}
+    _html_builtins = {
+        "html_parse", "html_to_string", "html_query", "html_text",
+    }
+    user_uses_html = bool(
+        (user_names & html_fn_names)
+        or (user_names & _html_ctors)
+        or (user_names & _html_builtins)
+        or _source_mentions_html(program)
+    )
+    if user_uses_html:
+        user_has_html = "HtmlNode" in user_data_names
+        if not user_has_html:
+            source_parts.append(_HTML_DATA)
+        inject_html_combinators = (
+            not user_has_html or _has_standard_html(program)
+        )
+        if inject_html_combinators and not html_fn_names.issubset(user_names):
+            source_parts.append(_HTML_COMBINATORS)
 
     full_source = "\n".join(source_parts)
     parsed = _parse_source(full_source)

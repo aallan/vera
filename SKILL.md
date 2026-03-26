@@ -311,6 +311,7 @@ private fn abs(@Int -> @Nat)
 @Set<Int>                                -- unordered unique elements (Eq + Hash)
 @Decimal                                 -- exact decimal arithmetic
 @Json                                    -- JSON data (parse/query/serialize)
+@HtmlNode                                -- HTML document node (parse/query/serialize)
 Fn(Int -> Int) effects(pure)              -- function type
 { @Int | @Int.0 > 0 }                   -- refinement type
 ```
@@ -617,6 +618,11 @@ md_render(@MdBlock.0)                   -- returns String (render to canonical M
 md_has_heading(@MdBlock.0, @Nat.0)      -- returns Bool (check if heading of level exists)
 md_has_code_block(@MdBlock.0, @String.0) -- returns Bool (check if code block of language exists)
 md_extract_code_blocks(@MdBlock.0, @String.0) -- returns Array<String> (extract code by language)
+html_parse(@String.0)                  -- returns Result<HtmlNode, String> (parse HTML)
+html_to_string(@HtmlNode.0)            -- returns String (serialize to HTML)
+html_query(@HtmlNode.0, @String.0)     -- returns Array<HtmlNode> (CSS selector query)
+html_text(@HtmlNode.0)                 -- returns String (extract text content)
+html_attr(@HtmlNode.0, @String.0)      -- returns Option<String> (get attribute value)
 regex_match(@String.0, @String.1)      -- returns Result<Bool, String> (test if pattern matches)
 regex_find(@String.0, @String.1)       -- returns Result<Option<String>, String> (first match)
 regex_find_all(@String.0, @String.1)   -- returns Result<Array<String>, String> (all matches)
@@ -702,6 +708,39 @@ Two built-in ADTs represent the Markdown document structure:
 - `MdDocument(Array<MdBlock>)` — top-level document
 
 All Markdown functions are pure and available without imports. Pattern match on `MdBlock` and `MdInline` constructors to traverse the document tree.
+
+### HTML operations
+
+`HtmlNode` is a built-in ADT for parsing and querying HTML documents. Parse HTML strings, query elements with CSS selectors, and extract text content. All operations are pure.
+
+```vera
+html_parse(@String.0)                    -- returns Result<HtmlNode, String> (parse HTML)
+html_to_string(@HtmlNode.0)             -- returns String (serialize to HTML)
+html_query(@HtmlNode.0, @String.0)      -- returns Array<HtmlNode> (CSS selector query)
+html_text(@HtmlNode.0)                  -- returns String (extract text content)
+html_attr(@HtmlNode.0, @String.0)       -- returns Option<String> (get attribute value)
+```
+
+`html_parse` is lenient (like browsers) — malformed HTML produces a best-effort tree, not an error. `html_query` supports simple CSS selectors: tag name (`div`), class (`.classname`), ID (`#id`), attribute presence (`[href]`), and descendant combinator (`div p`). `html_text` recursively concatenates all text content, excluding comments. `html_attr` returns `None` for non-element nodes or missing attributes.
+
+**HtmlNode constructors:**
+
+- `HtmlElement(String, Map<String, String>, Array<HtmlNode>)` — element (tag name, attributes, children)
+- `HtmlText(String)` — text content
+- `HtmlComment(String)` — HTML comment
+
+```vera
+let @Result<HtmlNode, String> = html_parse("<div><a href=\"url\">link</a></div>");
+match @Result<HtmlNode, String>.0 {
+  Ok(@HtmlNode) -> {
+    let @Array<HtmlNode> = html_query(@HtmlNode.0, "a");
+    IO.print(int_to_string(array_length(@Array<HtmlNode>.0)))
+  },
+  Err(@String) -> IO.print(@String.0)
+}
+```
+
+All HTML functions are pure and available without imports. Pattern match on `HtmlNode` constructors to traverse the document tree.
 
 ### Regular expressions
 

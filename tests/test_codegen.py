@@ -9053,6 +9053,369 @@ public fn main(-> @Int)
         assert result > 0
 
 
+class TestHtmlCollection:
+    """HtmlNode ADT built-in operations: html_parse, html_to_string,
+    html_query, html_text, html_attr."""
+
+    def test_html_parse_valid(self) -> None:
+        """html_parse of valid HTML returns Ok."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>hello</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_html_text_extraction(self) -> None:
+        """html_text extracts text content from parsed HTML."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>hello</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> string_length(html_text(@HtmlNode.0)),
+    Err(@String) -> 0
+  }
+}
+"""
+        assert _run(source) == 5
+
+    def test_html_to_string_roundtrip(self) -> None:
+        """html_to_string serializes back to HTML."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>hi</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> string_length(html_to_string(@HtmlNode.0)),
+    Err(@String) -> 0
+  }
+}
+"""
+        assert _run(source) > 0
+
+    def test_html_query_by_tag(self) -> None:
+        """html_query finds elements by tag name."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<div><p>a</p><p>b</p></div>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "p")),
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 2
+
+    def test_html_attr_present(self) -> None:
+        """html_attr returns Some for present attributes."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<a href=\\"url\\">link</a>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> match html_attr(@HtmlNode.0, "href") {
+      Some(@String) -> string_length(@String.0),
+      None -> 0
+    },
+    Err(@String) -> 0 - 1
+  }
+}
+'''
+        assert _run(source) == 3
+
+    def test_html_attr_absent(self) -> None:
+        """html_attr returns None for missing attributes."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>text</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> match html_attr(@HtmlNode.0, "class") {
+      Some(@String) -> 1,
+      None -> 0
+    },
+    Err(@String) -> 0 - 1
+  }
+}
+"""
+        assert _run(source) == 0
+
+    def test_html_parse_invalid(self) -> None:
+        """Malformed HTML still parses leniently (best-effort)."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>unclosed");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        assert _run(source) == 1
+
+    def test_html_parse_wat_import(self) -> None:
+        """html_parse generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>x</p>");
+  1
+}
+"""
+        result = _compile_ok(source)
+        assert '"html_parse"' in result.wat
+        assert '"html_to_string"' not in result.wat
+        assert '"html_query"' not in result.wat
+        assert '"html_text"' not in result.wat
+
+    def test_html_to_string_wat_import(self) -> None:
+        """html_to_string generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(html_to_string(HtmlText("x"))) }
+"""
+        result = _compile_ok(source)
+        assert '"html_to_string"' in result.wat
+        assert '"html_parse"' not in result.wat
+        assert '"html_query"' not in result.wat
+        assert '"html_text"' not in result.wat
+
+    def test_html_query_wat_import(self) -> None:
+        """html_query generates a WASM host import without html_parse."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ array_length(html_query(HtmlElement("div", map_new(), [HtmlText("x")]), "div")) }
+"""
+        result = _compile_ok(source)
+        assert '"html_query"' in result.wat
+        assert '"html_parse"' not in result.wat
+        assert '"html_to_string"' not in result.wat
+        assert '"html_text"' not in result.wat
+
+    def test_html_text_wat_import(self) -> None:
+        """html_text generates a WASM host import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(html_text(HtmlText("hello"))) }
+"""
+        result = _compile_ok(source)
+        assert '"html_text"' in result.wat
+        assert '"html_parse"' not in result.wat
+        assert '"html_to_string"' not in result.wat
+        assert '"html_query"' not in result.wat
+
+    def test_html_query_by_class(self) -> None:
+        """html_query with class selector."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<div class=\\"foo\\">a</div><div>b</div>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, ".foo")),
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_html_query_by_id(self) -> None:
+        """html_query with ID selector."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p id=\\"main\\">hi</p><p>bye</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "#main")),
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_html_query_descendant(self) -> None:
+        """html_query with descendant selector."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<div><p>a</p><p>b</p></div><p>c</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "div p")),
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 2
+
+    def test_html_no_imports_when_unused(self) -> None:
+        """Programs not using html builtins have no Html imports."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert '"html_parse"' not in result.wat
+        assert '"html_to_string"' not in result.wat
+        assert '"html_query"' not in result.wat
+        assert '"html_text"' not in result.wat
+
+    def test_html_comment_roundtrip(self) -> None:
+        """HtmlComment serializes to <!-- ... --> via html_to_string."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(html_to_string(HtmlComment("a comment"))) }
+"""
+        # "<!--a comment-->" = 16 chars
+        assert _run(source) == 16
+
+    def test_html_text_escaping(self) -> None:
+        """html_to_string escapes & < > in text content."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(html_to_string(HtmlText("a&b"))) }
+'''
+        # "a&amp;b" = 7 chars
+        assert _run(source) == 7
+
+    def test_html_attr_value_escaping(self) -> None:
+        """html_to_string escapes quotes in attribute values."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, String> = map_insert(map_new(), "title", "a\\"b");
+  string_length(html_to_string(HtmlElement("p", @Map<String, String>.0, [])))
+}
+'''
+        # <p title="a&quot;b"></p> = 24 chars (quote escaped as &quot;)
+        assert _run(source) == 24
+
+    def test_html_query_attr_selector(self) -> None:
+        """html_query with attribute presence selector [href]."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<a href=\\"x\\">link</a><span>no</span>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "[href]")),
+    Err(@String) -> 0
+  }
+}
+'''
+        assert _run(source) == 1
+
+    def test_html_parse_with_attributes(self) -> None:
+        """Parsed element attributes are accessible via html_query + html_attr."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<div class=\\"main\\">content</div>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> {
+      let @Array<HtmlNode> = html_query(@HtmlNode.0, ".main");
+      if array_length(@Array<HtmlNode>.0) > 0 then {
+        match @Array<HtmlNode>.0[0] {
+          HtmlElement(@String, @Map<String, String>, @Array<HtmlNode>) ->
+            match map_get(@Map<String, String>.0, "class") {
+              Some(@String) -> string_length(@String.0),
+              None -> 0
+            },
+          HtmlText(@String) -> 0,
+          HtmlComment(@String) -> 0
+        }
+      } else { 0 }
+    },
+    Err(@String) -> 0
+  }
+}
+'''
+        # "main" = 4 chars
+        assert _run(source) == 4
+
+    def test_html_void_element(self) -> None:
+        """Void elements (br, img) serialize without closing tag."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ string_length(html_to_string(HtmlElement("br", map_new(), []))) }
+"""
+        # "<br>" = 4 chars
+        assert _run(source) == 4
+
+    def test_html_parse_comment_roundtrip(self) -> None:
+        """Parsed HTML comments survive roundtrip through html_to_string."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<!-- hello --><p>text</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> string_length(html_to_string(@HtmlNode.0)),
+    Err(@String) -> 0
+  }
+}
+'''
+        result = _run(source)
+        assert result > 0  # roundtrip produces non-empty HTML
+
+    def test_html_query_empty_result(self) -> None:
+        """html_query with no matches returns empty array."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<p>hello</p>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> array_length(html_query(@HtmlNode.0, "div")),
+    Err(@String) -> 0 - 1
+  }
+}
+'''
+        assert _run(source) == 0
+
+    def test_html_nested_elements(self) -> None:
+        """html_text extracts text from nested elements."""
+        source = '''
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<HtmlNode, String> = html_parse("<div><span>hello</span> <em>world</em></div>");
+  match @Result<HtmlNode, String>.0 {
+    Ok(@HtmlNode) -> string_length(html_text(@HtmlNode.0)),
+    Err(@String) -> 0
+  }
+}
+'''
+        result = _run(source)
+        assert result > 0  # extracts "hello world" text
+
+
 class TestHttpCollection:
     """Http effect: host-import compilation and mocked execution."""
 

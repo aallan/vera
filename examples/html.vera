@@ -1,0 +1,43 @@
+-- HTML: parse an HTML page, extract links, and count headings.
+--
+-- Scenario: an agent receives an HTML string and needs to extract structured
+-- information from it — all hyperlinks and a count of headings.
+-- Count elements matching a selector.
+-- Walks the query results and returns the length.
+private fn count_elements(@HtmlNode, @String -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  array_length(html_query(@HtmlNode.0, @String.0))
+}
+
+-- Extract the text content of a single element, returning its length.
+private fn text_length(@HtmlNode -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  string_length(html_text(@HtmlNode.0))
+}
+
+-- Main: parse an HTML document, count <h1> and <a> tags,
+-- and measure the total text length.
+-- Returns the sum of: heading count + link count + text length.
+public fn main(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @String = "<html><body><h1>Title</h1><p>Hello <a href=\"url1\">link1</a> and <a href=\"url2\">link2</a></p></body></html>";
+  match html_parse(@String.0) {
+    Ok(@HtmlNode) -> {
+      let @Int = count_elements(@HtmlNode.0, "h1");
+      let @Int = count_elements(@HtmlNode.0, "a");
+      let @Int = text_length(@HtmlNode.0);
+      -- h1_count + a_count + text_length
+      @Int.2 + @Int.1 + @Int.0
+    },
+    Err(@String) -> 0 - 1
+  }
+}

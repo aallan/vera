@@ -119,6 +119,31 @@ class AssemblyMixin:
             self._needs_alloc = True
             self._needs_memory = True
 
+        # Import Html host-import builtins
+        if "html_parse" in self._html_ops_used:
+            parts.append(
+                '  (import "vera" "html_parse" '
+                "(func $vera.html_parse (param i32 i32) (result i32)))"
+            )
+        if "html_to_string" in self._html_ops_used:
+            parts.append(
+                '  (import "vera" "html_to_string" '
+                "(func $vera.html_to_string (param i32) (result i32 i32)))"
+            )
+        if "html_query" in self._html_ops_used:
+            parts.append(
+                '  (import "vera" "html_query" '
+                "(func $vera.html_query (param i32 i32 i32) (result i32 i32)))"
+            )
+        if "html_text" in self._html_ops_used:
+            parts.append(
+                '  (import "vera" "html_text" '
+                "(func $vera.html_text (param i32) (result i32 i32)))"
+            )
+        if self._html_ops_used:
+            self._needs_alloc = True
+            self._needs_memory = True
+
         # Http host imports — http_get(url_ptr, url_len) -> i32 Result ptr
         #                      http_post(url_ptr, url_len, body_ptr, body_len) -> i32
         if "http_get" in self._http_ops_used:
@@ -205,6 +230,7 @@ class AssemblyMixin:
             or self._set_ops_used
             or self._decimal_ops_used
             or self._json_ops_used
+            or self._html_ops_used
             or self._http_ops_used
         ):
             parts.append('  (export "alloc" (func $alloc))')

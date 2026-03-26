@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.100] - 2026-03-26
+
+### Added
+- **Html standard library type** ([#311](https://github.com/aallan/vera/issues/311)) — built-in `HtmlNode` ADT (`HtmlElement`, `HtmlText`, `HtmlComment`) with 5 built-in functions: `html_parse`, `html_to_string`, `html_query`, `html_text`, `html_attr`. Lenient HTML parsing (like browsers). Simple CSS selector query support (tag, class, ID, attribute, descendant combinator). Implemented via host imports (Python `html.parser`). `html_attr` is a pure Vera prelude function using `map_get`. New conformance test `ch09_html` (63 programs, was 62). New example `html.vera`.
+
 ## [0.0.99] - 2026-03-25
 
 ### Added
@@ -1438,7 +1443,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.99...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.100...HEAD
+[0.0.100]: https://github.com/aallan/vera/compare/v0.0.99...v0.0.100
 [0.0.99]: https://github.com/aallan/vera/compare/v0.0.98...v0.0.99
 [0.0.98]: https://github.com/aallan/vera/compare/v0.0.97...v0.0.98
 [0.0.97]: https://github.com/aallan/vera/compare/v0.0.96...v0.0.97

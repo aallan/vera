@@ -78,6 +78,17 @@ class CallsMixin:
                 return self._translate_json_parse(call.args[0], env)
             if call.name == "json_stringify" and len(call.args) == 1:
                 return self._translate_json_stringify(call.args[0], env)
+            # Html host-import builtins
+            if call.name == "html_parse" and len(call.args) == 1:
+                return self._translate_html_parse(call.args[0], env)
+            if call.name == "html_to_string" and len(call.args) == 1:
+                return self._translate_html_to_string(call.args[0], env)
+            if call.name == "html_query" and len(call.args) == 2:
+                return self._translate_html_query(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "html_text" and len(call.args) == 1:
+                return self._translate_html_text(call.args[0], env)
             if call.name == "md_parse" and len(call.args) == 1:
                 return self._translate_md_parse(call.args[0], env)
             if call.name == "md_render" and len(call.args) == 1:
@@ -4485,6 +4496,78 @@ class CallsMixin:
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append("call $vera.json_stringify")
+        return ins
+
+    # ---- Html host-import builtins ------------------------------------
+
+    def _translate_html_parse(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """html_parse(s) -> Result<HtmlNode, String> via host import.
+
+        String arg is (ptr, len) pair on stack -> call $vera.html_parse -> i32.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+        self._html_ops_used.add("html_parse")
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append("call $vera.html_parse")
+        return ins
+
+    def _translate_html_to_string(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """html_to_string(node) -> String via host import.
+
+        HtmlNode arg is i32 heap pointer -> call $vera.html_to_string -> (i32, i32).
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+        self._html_ops_used.add("html_to_string")
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append("call $vera.html_to_string")
+        return ins
+
+    def _translate_html_query(
+        self, node_arg: ast.Expr, sel_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """html_query(node, selector) -> Array<HtmlNode> via host import.
+
+        HtmlNode is i32, selector String is (ptr, len) -> call $vera.html_query -> (i32, i32).
+        """
+        node_instrs = self.translate_expr(node_arg, env)
+        sel_instrs = self.translate_expr(sel_arg, env)
+        if node_instrs is None or sel_instrs is None:
+            return None
+        self.needs_alloc = True
+        self._html_ops_used.add("html_query")
+        ins: list[str] = []
+        ins.extend(node_instrs)
+        ins.extend(sel_instrs)
+        ins.append("call $vera.html_query")
+        return ins
+
+    def _translate_html_text(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """html_text(node) -> String via host import.
+
+        HtmlNode is i32 heap pointer -> call $vera.html_text -> (i32, i32).
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+        self._html_ops_used.add("html_text")
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append("call $vera.html_text")
         return ins
 
     # ---- Markdown host-import builtins ---------------------------------

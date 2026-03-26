@@ -18,7 +18,7 @@ Development follows an **interleaved spiral** — each phase adds a complete com
 
 ## Where we are
 
-**v0.0.99** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 108 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 62-program conformance suite, a canonical formatter, and contract-driven testing. `Map<K, V>`, `Set<T>`, and `Decimal` provide collections and exact arithmetic with ability constraints. `Json` provides structured data interchange with 8 built-in functions for parsing, querying, and serializing JSON. The `<Http>` effect enables network I/O — `Http.get` and `Http.post` return `Result<String, String>` and compose with `json_parse` for typed API responses. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, `UrlParts`, and `Json` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
+**v0.0.100** delivers a full compiler pipeline (parse → typecheck → verify → compile → run), 113 built-in functions plus 5 Option/Result combinators plus 4 higher-order array operations, a module system, algebraic effect handlers, constrained generics with four built-in abilities (Eq, Ord, Hash, Show), a 63-program conformance suite, a canonical formatter, and contract-driven testing. `Map<K, V>`, `Set<T>`, and `Decimal` provide collections and exact arithmetic with ability constraints. `Json` provides structured data interchange with 8 built-in functions for parsing, querying, and serializing JSON. `HtmlNode` provides HTML parsing and querying with 5 built-in functions — lenient parsing, CSS selector queries, text extraction, and attribute access. The `<Http>` effect enables network I/O — `Http.get` and `Http.post` return `Result<String, String>` and compose with `json_parse` for typed API responses. A standard prelude eliminates boilerplate — `Option<T>`, `Result<T, E>`, `Ordering`, `UrlParts`, `Json`, and `HtmlNode` are available in every program without explicit `data` declarations. An independent viability assessment rates Vera at **60–70% of the way to being a viable agent target**. The gap is standard library and data-format support, not the core language or verification system.
 
 Most remaining features are gated by a single dependency chain:
 
@@ -38,7 +38,7 @@ Tier 0 (unblocked)          Tier 1 (sequential)               Tier 2 (interleave
                                ✓ #57 HTTP ←──────┘─┐          #59 Async ──┐
                                  #305 Server ←─────┘─┐   #237 WASI 0.3 ←─┘
                                  #306 MCP ←──────────┘   #229 DB (←─ #62, #58)
-                                                         #311 HTML (←─ #58)
+                                                       ✓ #311 HTML (←─ #58)
                                                               #61 Inference
                                                            ✓ #333 Decimal
 ```
@@ -73,7 +73,7 @@ Independent of the Tier 1 chain. Can be scheduled between Tier 1 items or in par
 - [#235](https://github.com/aallan/vera/issues/235) **Cryptographic hashing** (SHA-256, HMAC) — needed for API authentication (webhook signatures, OAuth)
 - [#59](https://github.com/aallan/vera/issues/59) **Async concurrency** — type-level infrastructure shipped in v0.0.82 (marker effect, `Future<T>`, `async`/`await`), but execution is eager/sequential. True concurrency requires WASI 0.3 (#237) for native `future<T>`/`stream<T>`. Co-dependent with #237; enables real concurrent request handling for #305/#306.
 - [#229](https://github.com/aallan/vera/issues/229) **Database access effect** — `<DB>` with `query`/`execute` operations, parameterised queries only. Phase 1 (positional rows, SQLite) has no blocking dependencies. Phase 2 (named columns) needs Map (#62). Phase 3 (JSON columns) needs JSON (#58). See #309 for contract-verified SQL injection prevention.
-- [#311](https://github.com/aallan/vera/issues/311) **HTML standard library type** — parse and generate HTML documents, CSS selector queries, text extraction. Natural pairing with the browser target. Shares recursive ADT infrastructure with Markdown (#147) and JSON (#58). Schedule after JSON lands.
+- <del>[#311](https://github.com/aallan/vera/issues/311) **HTML standard library type** — parse and generate HTML documents, CSS selector queries, text extraction. Natural pairing with the browser target. Shares recursive ADT infrastructure with Markdown (#147) and JSON (#58). Schedule after JSON lands.</del> ([v0.0.100](https://github.com/aallan/vera/releases/tag/v0.0.100))
 - [#61](https://github.com/aallan/vera/issues/61) **Inference effect** — `effects(<Inference>)` in a signature means "this function calls an LLM, and you can mock it for testing." The feature that most differentiates Vera from Dafny as a verification target, and the one that positions it as the natural language for verified LLM orchestration.
 - <del>[#333](https://github.com/aallan/vera/issues/333) **Decimal type** — exact decimal arithmetic for financial and precision-sensitive applications. 14 built-in operations (construction, arithmetic, comparison, rounding, conversion) via host imports, following the Map/Set pattern. Software implementation in the runtime (Python `decimal.Decimal` / JS string-based decimal). Known limitation: `Option<Decimal>` from `decimal_div`/`decimal_from_string` and `Ordering` from `decimal_compare` cannot yet be used with `match` or `option_unwrap_or` due to monomorphization gaps.</del> ([v0.0.97](https://github.com/aallan/vera/releases/tag/v0.0.97))
 
@@ -116,7 +116,7 @@ Future effect types for extended agent workloads:
 - [#228](https://github.com/aallan/vera/issues/228) `<WebSocket>` / `<SSE>` — streaming clients
 - [#229](https://github.com/aallan/vera/issues/229) `<DB>` — database access (Phase 1: SQLite, no deps; Phase 2: named columns, depends on #62; Phase 3: JSON columns, depends on #58)
 - [#309](https://github.com/aallan/vera/issues/309) Contract-verified parameterised SQL queries — compile-time SQL injection prevention (depends on #229)
-- [#311](https://github.com/aallan/vera/issues/311) `Html` — HTML parsing, generation, and CSS selector queries (depends on #58)
+- <del>[#311](https://github.com/aallan/vera/issues/311) `Html` — HTML parsing, generation, and CSS selector queries (depends on #58)</del> ([v0.0.100](https://github.com/aallan/vera/releases/tag/v0.0.100))
 - [#236](https://github.com/aallan/vera/issues/236) CSV parsing and generation
 - [#270](https://github.com/aallan/vera/issues/270) `handle[Async]` — custom scheduling strategies
 

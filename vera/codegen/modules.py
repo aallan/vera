@@ -277,6 +277,8 @@ class CrossModuleMixin:
             "decimal_round", "decimal_abs",
             # Json operations (§9.7.1) — host-import builtins
             "json_parse", "json_stringify",
+            # Html operations (§9.7.4) — host-import builtins
+            "html_parse", "html_to_string", "html_query", "html_text",
         })
 
         seen: set[str] = set()  # deduplicate by function name
