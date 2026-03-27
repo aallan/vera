@@ -74,59 +74,61 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 
 | Module | Lines | Stage | Purpose | Key API |
 |--------|------:|-------|---------|---------|
-| `grammar.lark` | 330 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
+| `grammar.lark` | 342 | Parse | LALR(1) grammar definition | *(consumed by Lark)* |
 | `parser.py` | 147 | Parse | Lark frontend, error diagnosis | `parse()`, `parse_file()` |
-| `transform.py` | 1,000 | Transform | Lark tree → AST transformer | `transform()` |
-| `ast.py` | 785 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
-| `types.py` | 307 | Type check | Semantic type representation | `Type`, `is_subtype()` |
-| `environment.py` | 302 | Type check | Type environment, scope stacks, ability registry | `TypeEnv`, `AbilityInfo` |
-| `checker/` | 2,248 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
-| `  core.py` | 356 | | TypeChecker class, orchestration, contracts, constraint validation | |
-| `  resolution.py` | 190 | | AST TypeExpr → semantic Type, inference | |
+| `transform.py` | 1,228 | Transform | Lark tree → AST transformer | `transform()` |
+| `ast.py` | 824 | Transform | Frozen dataclass AST nodes, source formatting | `Program`, `Node`, `Expr`, `format_expr` |
+| `types.py` | 384 | Type check | Semantic type representation | `Type`, `is_subtype()` |
+| `environment.py` | 1,560 | Type check | Type environment, scope stacks, ability registry, all built-in registrations | `TypeEnv`, `AbilityInfo` |
+| `checker/` | 2,675 | Type check | Two-pass type checker (mixin package) | `typecheck()` |
+| `  core.py` | 395 | | TypeChecker class, orchestration, contracts, constraint validation | |
+| `  resolution.py` | 217 | | AST TypeExpr → semantic Type, inference | |
 | `  modules.py` | 153 | | Cross-module registration (C7b/C7c) | |
-| `  registration.py` | 138 | | Pass 1 forward declarations, ability registration | |
-| `  expressions.py` | 555 | | Expression synthesis (bidirectional), operators, statements | |
-| `  calls.py` | 486 | | Function/constructor/module/ability calls | |
-| `  control.py` | 482 | | If/match, patterns, effect handlers | |
+| `  registration.py` | 168 | | Pass 1 forward declarations, ability registration | |
+| `  expressions.py` | 624 | | Expression synthesis (bidirectional), operators, statements | |
+| `  calls.py` | 610 | | Function/constructor/module/ability calls | |
+| `  control.py` | 508 | | If/match, patterns, effect handlers | |
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
-| `smt.py` | 547 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
-| `verifier.py` | 703 | Verify | Contract verification | `verify()` |
-| `wasm/` | 2,474 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
-| ` ├ context.py` | 369 | | Composed WasmContext, expression dispatcher, block translation | |
-| ` ├ helpers.py` | 211 | | WasmSlotEnv, StringPool, type mapping, array element helpers | |
-| ` ├ inference.py` | 527 | | Type inference, slot/type utilities, operator tables | |
-| ` ├ operators.py` | 430 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
-| ` ├ calls.py` | 223 | | Function calls, generic resolution, effect handlers | |
-| ` ├ closures.py` | 248 | | Closures, anonymous functions, free variable analysis | |
-| ` ├ data.py` | 590 | | Constructors, match expressions (incl. nested patterns), arrays, indexing |
-| ` └ markdown.py` | ~380 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
-| `markdown.py` | ~450 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
-| `codegen/` | 4,279 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
-| `  api.py` | 842 | | Public API, dataclasses, host bindings, `execute()` | |
-| `  core.py` | 541 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6) | |
-| `  modules.py` | 356 | | Cross-module registration + call detection (C7e) | |
-| `  registration.py` | 198 | | Pass 1 forward declarations, ADT layout | |
-| `  monomorphize.py` | 618 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
-| `  functions.py` | 267 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
+| `smt.py` | 1,026 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
+| `verifier.py` | 1,005 | Verify | Contract verification | `verify()` |
+| `wasm/` | 12,672 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
+| ` ├ context.py` | 440 | | Composed WasmContext, expression dispatcher, block translation | |
+| ` ├ helpers.py` | 290 | | WasmSlotEnv, StringPool, type mapping, array element helpers | |
+| ` ├ inference.py` | 972 | | Type inference, slot/type utilities, operator tables | |
+| ` ├ operators.py` | 712 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
+| ` ├ calls.py` | 8,332 | | Function calls, generic resolution, effect ops, all built-in call translation | |
+| ` ├ closures.py` | 250 | | Closures, anonymous functions, free variable analysis | |
+| ` ├ data.py` | 739 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
+| ` ├ markdown.py` | 537 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
+| ` ├ json_serde.py` | 209 | | WASM memory marshalling for Json ADT | |
+| ` └ html_serde.py` | 191 | | WASM memory marshalling for HtmlNode ADT | |
+| `markdown.py` | 651 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
+| `codegen/` | 6,098 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
+| `  api.py` | 2,023 | | Public API, dataclasses, host bindings, `execute()` | |
+| `  core.py` | 624 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6) | |
+| `  modules.py` | 378 | | Cross-module registration + call detection (C7e) | |
+| `  registration.py` | 223 | | Pass 1 forward declarations, ADT layout | |
+| `  monomorphize.py` | 988 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
+| `  functions.py` | 282 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
 | `  closures.py` | 246 | | Closure lifting, GC instrumentation | |
 | `  contracts.py` | 282 | | Runtime pre/postconditions, old state snapshots | |
-| `  assembly.py` | 666 | | WAT module assembly, `$alloc`, `$gc_collect` | |
-| `  compilability.py` | 263 | | Compilability checks, state handler scanning | |
-| `tester.py` | ~530 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
-| `formatter.py` | 1,018 | Format | Canonical code formatter | `format_source()` |
+| `  assembly.py` | 749 | | WAT module assembly, `$alloc`, `$gc_collect` | |
+| `  compilability.py` | 303 | | Compilability checks, state handler scanning | |
+| `tester.py` | 750 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
+| `formatter.py` | 1,127 | Format | Canonical code formatter | `format_source()` |
 | `errors.py` | 515 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
-| `browser/` | 138+1,227 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
+| `browser/` | 2,258 | Execute | Browser runtime for compiled WASM (package) | `emit_browser_bundle()` |
 | ` ├ emit.py` | 137 | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
-| ` ├ runtime.mjs` | 1,123 | | Self-contained JS runtime: IO, State, contracts, Markdown | |
+| ` ├ runtime.mjs` | 2,017 | | Self-contained JS runtime: IO, State, Http, contracts, Markdown, Json, Html | |
 | ` └ harness.mjs` | 104 | | Node.js test harness for parity testing | |
-| `cli.py` | 972 | All | CLI commands | `main()` |
-| `registration.py` | 58 | Type check | Shared function registration | `register_fn()` |
+| `cli.py` | 977 | All | CLI commands | `main()` |
+| `registration.py` | 59 | Type check | Shared function registration | `register_fn()` |
 
-Total: ~12,850 lines of Python + 330 lines of grammar + 1,227 lines of JavaScript.
+Total: ~32,000 lines of Python + 342 lines of grammar + 2,121 lines of JavaScript.
 
 ## Parsing
 
-**Files:** `grammar.lark` (330 lines), `parser.py` (147 lines)
+**Files:** `grammar.lark` (342 lines), `parser.py` (147 lines)
 
 The grammar is a Lark LALR(1) grammar derived from the formal EBNF in spec Chapter 10. It uses:
 

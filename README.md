@@ -600,7 +600,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project Status
 
-Vera is in **active development** at v0.0.98. The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. Programs compile to WebAssembly and execute via wasmtime or in the browser.
+Vera is in **active development** at v0.0.100. The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. Programs compile to WebAssembly and execute via wasmtime or in the browser.
 
 The language specification is in draft across 13 chapters:
 
