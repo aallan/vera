@@ -13,7 +13,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **Spec code blocks** | 164 parseable blocks from 13 spec chapters: 86 parse, 72 type-check, 71 verify |
 | **README code blocks** | 13 Vera blocks (12 validated, 1 allowlisted future syntax) |
 | **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 allowlisted snippet) |
-| **HTML code blocks** | 4 Vera blocks in docs/index.html (4 validated: parse + check + verify) |
+| **HTML code blocks** | 5 Vera blocks in docs/index.html (5 validated: parse + check + verify) |
 | **Contract verification** | 162 of 179 contracts (90.5%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) + browser parity (Node.js 22) |
 

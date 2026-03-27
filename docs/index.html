@@ -817,7 +817,24 @@
       </div>
 
       <div class="code-subsection">
-        <p class="code-intro">Compose with <code>Http</code> to fetch, then reason. The <code>&lt;Http, Inference&gt;</code> annotation enforces the boundary: a caller that only permits <code>&lt;Http&gt;</code> cannot invoke this function. The postcondition can constrain the <em>shape</em> of the model&rsquo;s output at the type level.</p>
+        <p class="code-intro">Postconditions can constrain the model&rsquo;s output. Z3 cannot know what a model will return at compile time, so the contract is checked at runtime &mdash; if the model returns an empty string, the program traps with a contract violation rather than silently propagating garbage.</p>
+        <div class="code-block">
+<pre><span class="kw">public</span> <span class="kw">fn</span> safe_classify(<span class="sl">@String</span> -> <span class="sl">@String</span>)
+  <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
+  <span class="ct">ensures</span>(string_length(<span class="sl">@String.result</span>) > <span class="num">0</span>)
+  <span class="ct">effects</span>(&lt;Inference&gt;)
+{
+  <span class="kw">let</span> <span class="sl">@Result&lt;String, String&gt;</span> = classify_sentiment(<span class="sl">@String.0</span>);
+  <span class="kw">match</span> <span class="sl">@Result&lt;String, String&gt;.0</span> {
+    Ok(<span class="sl">@String</span>) -> <span class="sl">@String.0</span>,
+    Err(<span class="sl">@String</span>) -> <span class="str">"Neutral"</span>
+  }
+}</pre>
+        </div>
+      </div>
+
+      <div class="code-subsection">
+        <p class="code-intro">Compose with <code>Http</code> to fetch, then reason. The <code>&lt;Http, Inference&gt;</code> annotation enforces the boundary: a caller that only permits <code>&lt;Http&gt;</code> cannot invoke this function.</p>
         <div class="code-block">
 <pre><span class="kw">public</span> <span class="kw">fn</span> research_topic(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
   <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
