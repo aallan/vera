@@ -1,0 +1,297 @@
+{
+	"fileTypes": [
+		"vera"
+	],
+	"name": "Vera",
+	"scopeName": "source.vera",
+	"uuid": "B4F2A3C5-D6E7-8901-BCDE-F23456789012",
+	"patterns": [
+		{
+			"name": "comment.line.double-dash.vera",
+			"match": "--.*$"
+		},
+		{
+			"name": "comment.block.vera",
+			"begin": "\\{-",
+			"end": "-\\}",
+			"patterns": [
+				{
+					"include": "#block_comment"
+				}
+			]
+		},
+		{
+			"name": "string.quoted.double.vera",
+			"begin": "\"",
+			"end": "\"",
+			"patterns": [
+				{
+					"name": "meta.interpolation.vera",
+					"begin": "\\\\\\(",
+					"beginCaptures": {
+						"0": {
+							"name": "punctuation.section.interpolation.begin.vera"
+						}
+					},
+					"end": "\\)",
+					"endCaptures": {
+						"0": {
+							"name": "punctuation.section.interpolation.end.vera"
+						}
+					},
+					"contentName": "source.vera.embedded",
+					"patterns": [
+						{
+							"include": "$self"
+						}
+					]
+				},
+				{
+					"name": "constant.character.escape.vera",
+					"match": "\\\\[nrt\\\\\"0]"
+				}
+			]
+		},
+		{
+			"name": "variable.other.slot.vera",
+			"match": "@[A-Z][A-Za-z0-9_]*(?:<[^>]*>)*\\.(?:result|\\d+)"
+		},
+		{
+			"name": "variable.other.slot-binding.vera",
+			"match": "@[A-Z][A-Za-z0-9_]*(?:<[^>]*>)*(?=\\s*[,)\\]}])"
+		},
+		{
+			"name": "constant.numeric.float.vera",
+			"match": "\\b\\d+\\.\\d+(?:[eE][+-]?\\d+)?\\b"
+		},
+		{
+			"name": "constant.numeric.integer.vera",
+			"match": "\\b\\d+\\b"
+		},
+		{
+			"name": "storage.modifier.vera",
+			"match": "\\b(public|private)\\b"
+		},
+		{
+			"name": "keyword.declaration.vera",
+			"match": "\\b(fn|data|type|effect|ability|module|import)\\b"
+		},
+		{
+			"name": "keyword.contract.vera",
+			"match": "\\b(requires|ensures|effects|decreases|invariant)\\b"
+		},
+		{
+			"name": "keyword.other.forall.vera",
+			"match": "\\b(forall)\\b"
+		},
+		{
+			"name": "keyword.control.vera",
+			"match": "\\b(if|then|else|match|let|in|where|handle|resume|with)\\b"
+		},
+		{
+			"name": "keyword.other.op.vera",
+			"match": "\\b(op)\\b"
+		},
+		{
+			"name": "constant.language.vera",
+			"match": "\\b(true|false|pure)\\b"
+		},
+		{
+			"name": "constant.language.unit.vera",
+			"match": "\\(\\)"
+		},
+		{
+			"name": "storage.type.primitive.vera",
+			"match": "\\b(Bool|Int|Nat|Float64|Byte|String|Unit|Never)\\b"
+		},
+		{
+			"name": "storage.type.composite.vera",
+			"match": "\\b(Array|Option|Map|Set|Tuple|Result|Decimal|Json|Future|Fn|Ordering)\\b"
+		},
+		{
+			"name": "storage.type.adt.vera",
+			"match": "\\b(MdBlock|MdInline|UrlParts|HtmlNode)\\b"
+		},
+		{
+			"name": "entity.name.type.effect.vera",
+			"match": "\\b(IO|State|Exn|Http|Async|Diverge)\\b"
+		},
+		{
+			"match": "\\b([A-Z][A-Za-z0-9_]*)(\\.)([a-z_][a-z_0-9]*)\\b",
+			"captures": {
+				"1": {
+					"name": "entity.name.type.effect.vera"
+				},
+				"2": {
+					"name": "punctuation.accessor.vera"
+				},
+				"3": {
+					"name": "entity.name.function.effect-op.vera"
+				}
+			}
+		},
+		{
+			"match": "\\b([a-z][a-z0-9_.]*)(::)([a-z_][a-z_0-9]*)\\b",
+			"captures": {
+				"1": {
+					"name": "entity.name.namespace.vera"
+				},
+				"2": {
+					"name": "punctuation.separator.namespace.vera"
+				},
+				"3": {
+					"name": "entity.name.function.vera"
+				}
+			}
+		},
+		{
+			"name": "entity.name.tag.constructor.vera",
+			"match": "\\b(Some|None|Ok|Err|Cons|Nil|Less|Equal|Greater|MkPositive|Red|Green|Blue|JNull|JBool|JNumber|JString|JArray|JObject|HtmlElement|HtmlText|HtmlComment|MdParagraph|MdHeading|MdCodeBlock|MdBlockQuote|MdList|MdThematicBreak|MdTable|MdDocument|MdText|MdCode|MdEmph|MdStrong|MdLink|MdImage)\\b"
+		},
+		{
+			"name": "entity.name.tag.vera",
+			"match": "\\b[A-Z][A-Za-z0-9_]*\\b(?=\\s*[\\(,\\)])"
+		},
+		{
+			"match": "\\b([a-z_][a-z_0-9]*)\\s*(?=\\()",
+			"captures": {
+				"1": {
+					"name": "entity.name.function.vera"
+				}
+			}
+		},
+		{
+			"match": "\\b(fn)\\s+([a-z_][a-z_0-9]*)\\b",
+			"captures": {
+				"1": {
+					"name": "keyword.declaration.vera"
+				},
+				"2": {
+					"name": "entity.name.function.definition.vera"
+				}
+			}
+		},
+		{
+			"match": "\\b(data)\\s+([A-Z][A-Za-z0-9_]*)\\b",
+			"captures": {
+				"1": {
+					"name": "keyword.declaration.vera"
+				},
+				"2": {
+					"name": "entity.name.type.vera"
+				}
+			}
+		},
+		{
+			"match": "\\b(effect)\\s+([A-Z][A-Za-z0-9_]*)\\b",
+			"captures": {
+				"1": {
+					"name": "keyword.declaration.vera"
+				},
+				"2": {
+					"name": "entity.name.type.effect.vera"
+				}
+			}
+		},
+		{
+			"match": "\\b(ability)\\s+([A-Z][A-Za-z0-9_]*)\\b",
+			"captures": {
+				"1": {
+					"name": "keyword.declaration.vera"
+				},
+				"2": {
+					"name": "entity.name.type.vera"
+				}
+			}
+		},
+		{
+			"match": "\\b(type)\\s+([A-Z][A-Za-z0-9_]*)\\b",
+			"captures": {
+				"1": {
+					"name": "keyword.declaration.vera"
+				},
+				"2": {
+					"name": "entity.name.type.alias.vera"
+				}
+			}
+		},
+		{
+			"match": "\\b(module)\\s+([a-z][a-z0-9_.]*)\\b",
+			"captures": {
+				"1": {
+					"name": "keyword.declaration.vera"
+				},
+				"2": {
+					"name": "entity.name.namespace.vera"
+				}
+			}
+		},
+		{
+			"match": "\\b(import)\\s+([a-z][a-z0-9_.]*)\\b",
+			"captures": {
+				"1": {
+					"name": "keyword.declaration.vera"
+				},
+				"2": {
+					"name": "entity.name.namespace.vera"
+				}
+			}
+		},
+		{
+			"name": "keyword.other.quantifier.vera",
+			"match": "\\b(forall|exists)\\b(?=\\s*\\()"
+		},
+		{
+			"name": "keyword.other.contract.vera",
+			"match": "\\b(old|new)\\b(?=\\s*\\()"
+		},
+		{
+			"name": "keyword.operator.arrow.vera",
+			"match": "->"
+		},
+		{
+			"name": "keyword.operator.pipe.vera",
+			"match": "\\|>"
+		},
+		{
+			"name": "keyword.operator.implies.vera",
+			"match": "==>"
+		},
+		{
+			"name": "keyword.operator.comparison.vera",
+			"match": "==|!=|<=|>=|<|>"
+		},
+		{
+			"name": "keyword.operator.logical.vera",
+			"match": "\\|\\||&&|!"
+		},
+		{
+			"name": "keyword.operator.arithmetic.vera",
+			"match": "[+\\-*/%]"
+		},
+		{
+			"name": "keyword.operator.assignment.vera",
+			"match": "=(?!=)"
+		},
+		{
+			"name": "punctuation.terminator.vera",
+			"match": ";"
+		},
+		{
+			"name": "variable.language.wildcard.vera",
+			"match": "\\b_\\b"
+		}
+	],
+	"repository": {
+		"block_comment": {
+			"name": "comment.block.vera",
+			"begin": "\\{-",
+			"end": "-\\}",
+			"patterns": [
+				{
+					"include": "#block_comment"
+				}
+			]
+		}
+	}
+}

@@ -523,7 +523,13 @@ vera verify --json file.vera          # JSON diagnostics for agent feedback loop
 
 ### Editor support
 
-A [TextMate bundle](editors/textmate/) provides full syntax highlighting for `.vera` files — slot references, contracts, effects, ADT constructors, and string interpolation all get distinct highlighting. Install by copying into TextMate's bundle directory:
+A [VS Code extension](editors/vscode/) provides syntax highlighting and language configuration for `.vera` files. Install by symlinking into VS Code's extensions directory:
+
+```bash
+ln -s "$(pwd)/editors/vscode" ~/.vscode/extensions/vera-language
+```
+
+A [TextMate bundle](editors/textmate/) is also available — install by copying into TextMate's bundle directory:
 
 ```bash
 cp -r editors/textmate/Vera.tmbundle ~/Library/Application\ Support/TextMate/Bundles/
@@ -666,6 +672,7 @@ vera/
 │   │   └── ai-plugin.json         #     OpenAI plugin manifest
 │   └── .nojekyll                  #   Disable Jekyll processing
 ├── editors/                       # Editor support
+│   ├── vscode/                    #   VS Code extension
 │   └── textmate/                  #   TextMate bundle (.tmLanguage grammar)
 ├── examples/                      # 29 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
