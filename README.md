@@ -63,7 +63,7 @@ Vera has a number of key features:
 - **JSON** — built-in `Json` ADT with parse, query, and serialize operations for API integration
 - **HTML** — built-in `HtmlNode` ADT with lenient parsing, CSS selector queries, and text extraction
 - **HTTP** — `Http.get` and `Http.post` as algebraic effects, composing with JSON for typed API responses
-- **LLM inference** — `Inference.complete` as an algebraic effect; model calls are typed, contract-verifiable, and mockable; supports Anthropic, OpenAI, and Moonshot
+- **LLM inference** — `Inference.complete` as an algebraic effect; model calls are typed, contract-verifiable, and host-side mockable; supports Anthropic, OpenAI, and Moonshot
 - **String interpolation** — `"value: \(@Int.0)"` with auto-conversion for primitive types
 - **Three-tier verification** — static verification via Z3, guided verification with hints, runtime fallback
 - **Diagnostics as instructions** — every error message is a natural language explanation with a concrete fix
@@ -735,7 +735,7 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 
 Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. See **[ROADMAP.md](ROADMAP.md)** for the full language roadmap.
 
-The features on the roadmap — ~~`<Http>` ([#57](https://github.com/aallan/vera/issues/57))~~, ~~`<Inference>` ([#61](https://github.com/aallan/vera/issues/61))~~, ~~the `Json` type ([#58](https://github.com/aallan/vera/issues/58))~~, and ~~the `Markdown` type ([#147](https://github.com/aallan/vera/issues/147))~~ — converge into a single design goal: an LLM should be able to write a short Vera function that searches the web, feeds the results into another model, and returns typed, contract-checked output. No scaffolding, no untyped string wrangling, no unchecked side effects. All four pieces are now complete.
+~~`Markdown` ([#147](https://github.com/aallan/vera/issues/147))~~, ~~`Json` ([#58](https://github.com/aallan/vera/issues/58))~~, ~~`Http` ([#57](https://github.com/aallan/vera/issues/57))~~, and ~~`Inference` ([#61](https://github.com/aallan/vera/issues/61))~~ each followed a roadmap that led toward a single design goal: an LLM should be able to write a short Vera function that fetches from the web, feeds the result into another model, and returns typed, contract-checked output — with the full effect row declared in the signature.
 
 ```vera
 public fn research_topic(@String -> @Result<String, String>)

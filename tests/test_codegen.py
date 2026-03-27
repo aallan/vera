@@ -9612,15 +9612,8 @@ public fn main(-> @Int)
             "vera.codegen.api._call_inference_provider",
             return_value="Positive",
         ):
-            import os
-            orig = os.environ.copy()
-            os.environ["VERA_ANTHROPIC_API_KEY"] = "sk-test"
-            try:
-                exec_result = execute(result)
-                assert exec_result.value == 8  # len("Positive")
-            finally:
-                os.environ.clear()
-                os.environ.update(orig)
+            exec_result = execute(result, env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"})
+            assert exec_result.value == 8  # len("Positive")
 
     def test_inference_complete_mocked_failure(self) -> None:
         """Mocked Inference.complete raises exception — returns Err."""
@@ -9631,32 +9624,14 @@ public fn main(-> @Int)
             "vera.codegen.api._call_inference_provider",
             side_effect=Exception("timeout"),
         ):
-            import os
-            orig = os.environ.copy()
-            os.environ["VERA_ANTHROPIC_API_KEY"] = "sk-test"
-            try:
-                exec_result = execute(result)
-                assert exec_result.value == 0  # Err branch returns 0
-            finally:
-                os.environ.clear()
-                os.environ.update(orig)
+            exec_result = execute(result, env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"})
+            assert exec_result.value == 0  # Err branch returns 0
 
     def test_inference_no_api_key_returns_err(self) -> None:
         """Inference.complete with no API key configured returns Err."""
-        import os
-
         result = _compile_ok(self._CLASSIFY_SOURCE)
-        # Ensure no keys are set
-        orig = os.environ.copy()
-        for key in ("VERA_ANTHROPIC_API_KEY", "VERA_OPENAI_API_KEY",
-                    "VERA_MOONSHOT_API_KEY", "VERA_INFERENCE_PROVIDER"):
-            os.environ.pop(key, None)
-        try:
-            exec_result = execute(result)
-            assert exec_result.value == 0  # Err branch returns 0
-        finally:
-            os.environ.clear()
-            os.environ.update(orig)
+        exec_result = execute(result, env_vars={})
+        assert exec_result.value == 0  # Err branch returns 0
 
     def test_inference_openai_auto_detect(self) -> None:
         """OpenAI key auto-detected when no VERA_INFERENCE_PROVIDER set."""
@@ -9667,19 +9642,9 @@ public fn main(-> @Int)
             "vera.codegen.api._call_inference_provider",
             return_value="Positive",
         ) as mock_provider:
-            import os
-            orig = os.environ.copy()
-            for key in ("VERA_ANTHROPIC_API_KEY", "VERA_INFERENCE_PROVIDER"):
-                os.environ.pop(key, None)
-            os.environ["VERA_OPENAI_API_KEY"] = "sk-openai-test"
-            try:
-                exec_result = execute(result)
-                assert exec_result.value == 8  # len("Positive")
-                args = mock_provider.call_args
-                assert args[0][0] == "openai"
-            finally:
-                os.environ.clear()
-                os.environ.update(orig)
+            exec_result = execute(result, env_vars={"VERA_OPENAI_API_KEY": "sk-openai-test"})
+            assert exec_result.value == 8  # len("Positive")
+            assert mock_provider.call_args[0][0] == "openai"
 
     def test_inference_moonshot_auto_detect(self) -> None:
         """Moonshot key auto-detected when no other keys are set."""
@@ -9690,20 +9655,9 @@ public fn main(-> @Int)
             "vera.codegen.api._call_inference_provider",
             return_value="Neutral",
         ) as mock_provider:
-            import os
-            orig = os.environ.copy()
-            for key in ("VERA_ANTHROPIC_API_KEY", "VERA_OPENAI_API_KEY",
-                        "VERA_INFERENCE_PROVIDER"):
-                os.environ.pop(key, None)
-            os.environ["VERA_MOONSHOT_API_KEY"] = "sk-moonshot-test"
-            try:
-                exec_result = execute(result)
-                assert exec_result.value == 7  # len("Neutral")
-                args = mock_provider.call_args
-                assert args[0][0] == "moonshot"
-            finally:
-                os.environ.clear()
-                os.environ.update(orig)
+            exec_result = execute(result, env_vars={"VERA_MOONSHOT_API_KEY": "sk-moonshot-test"})
+            assert exec_result.value == 7  # len("Neutral")
+            assert mock_provider.call_args[0][0] == "moonshot"
 
     def test_inference_explicit_provider_override(self) -> None:
         """VERA_INFERENCE_PROVIDER overrides auto-detection."""
@@ -9714,18 +9668,12 @@ public fn main(-> @Int)
             "vera.codegen.api._call_inference_provider",
             return_value="ok",
         ) as mock_provider:
-            import os
-            orig = os.environ.copy()
-            os.environ["VERA_ANTHROPIC_API_KEY"] = "sk-ant-test"
-            os.environ["VERA_INFERENCE_PROVIDER"] = "openai"
-            os.environ["VERA_OPENAI_API_KEY"] = "sk-openai-test"
-            try:
-                execute(result)
-                args = mock_provider.call_args
-                assert args[0][0] == "openai"
-            finally:
-                os.environ.clear()
-                os.environ.update(orig)
+            execute(result, env_vars={
+                "VERA_ANTHROPIC_API_KEY": "sk-ant-test",
+                "VERA_OPENAI_API_KEY": "sk-openai-test",
+                "VERA_INFERENCE_PROVIDER": "openai",
+            })
+            assert mock_provider.call_args[0][0] == "openai"
 
 
 class TestInferenceProviderDispatch:

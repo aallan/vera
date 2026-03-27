@@ -47,7 +47,7 @@ class CompilabilityMixin:
                             decl,
                             f"Function '{decl.name}' uses unsupported "
                             f"effect '{eff.name}' — skipped.",
-                            rationale="Only pure, IO, Http, State<T>, "
+                            rationale="Only pure, IO, Http, Inference, State<T>, "
                             "Exn<E>, and Async effects are compilable.",
                             error_code="E603",
                         )

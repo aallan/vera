@@ -137,6 +137,9 @@ def compile(
     return gen.compile_program(program)
 
 
+_INFERENCE_TIMEOUT: int = 60  # seconds; prevents indefinite hangs on slow providers
+
+
 def _call_inference_provider(
     provider: str,
     prompt: str,
@@ -168,7 +171,7 @@ def _call_inference_provider(
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
         req = _urlreq.Request(url, data=body, headers=headers, method="POST")
-        with _urlreq.urlopen(req) as resp:
+        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:
             data = _json.loads(resp.read().decode("utf-8"))
         return str(data["content"][0]["text"])
 
@@ -185,7 +188,7 @@ def _call_inference_provider(
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
         req = _urlreq.Request(url, data=body, headers=headers, method="POST")
-        with _urlreq.urlopen(req) as resp:
+        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:
             data = _json.loads(resp.read().decode("utf-8"))
         return str(data["choices"][0]["message"]["content"])
 
@@ -202,7 +205,7 @@ def _call_inference_provider(
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
         req = _urlreq.Request(url, data=body, headers=headers, method="POST")
-        with _urlreq.urlopen(req) as resp:
+        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:
             data = _json.loads(resp.read().decode("utf-8"))
         return str(data["choices"][0]["message"]["content"])
 
@@ -2013,10 +2016,11 @@ def execute(
                 import urllib.request as _urlreq
 
                 prompt = _read_wasm_string(caller, ptr, length)
-                provider = _os.environ.get("VERA_INFERENCE_PROVIDER", "").lower()
-                anthropic_key = _os.environ.get("VERA_ANTHROPIC_API_KEY", "")
-                openai_key = _os.environ.get("VERA_OPENAI_API_KEY", "")
-                moonshot_key = _os.environ.get("VERA_MOONSHOT_API_KEY", "")
+                _env = env_vars if env_vars is not None else _os.environ
+                provider = _env.get("VERA_INFERENCE_PROVIDER", "").lower()
+                anthropic_key = _env.get("VERA_ANTHROPIC_API_KEY", "")
+                openai_key = _env.get("VERA_OPENAI_API_KEY", "")
+                moonshot_key = _env.get("VERA_MOONSHOT_API_KEY", "")
 
                 if not provider:
                     if anthropic_key:
@@ -2034,7 +2038,7 @@ def execute(
                         )
 
                 try:
-                    model = _os.environ.get("VERA_INFERENCE_MODEL", "")
+                    model = _env.get("VERA_INFERENCE_MODEL", "")
                     completion = _call_inference_provider(
                         provider, prompt, model,
                         anthropic_key, openai_key, moonshot_key,

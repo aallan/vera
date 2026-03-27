@@ -56,10 +56,6 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     # Chapter 2 — type constraint syntax (post-v0.1)
     ("02-types.md", 250): "FUTURE",          # forall<T where Ord<T>> fn sort
 
-    # Chapter 9 — future stdlib features and signature-only blocks
-    ("09-standard-library.md", 531): "FUTURE",   # effect Inference declaration
-    ("09-standard-library.md", 546): "FUTURE",   # fn classify — uses ++ (string concat)
-
     # Chapter 9 — numeric conversion/predicate signatures (no body)
     # 803, 833 — bare ``` fences (no language tag), heuristic skips them
     ("09-standard-library.md", 869): "FRAGMENT",  # nat_to_int signature (no body)

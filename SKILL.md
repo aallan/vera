@@ -1087,7 +1087,7 @@ Compose with `match` to handle the `Result`:
 
 ```vera
 public fn safe_classify(@String -> @String)
-  requires(true)
+  requires(string_length(@String.0) > 0)
   ensures(true)
   effects(<Inference>)
 {

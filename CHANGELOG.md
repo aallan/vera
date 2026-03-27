@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `complete` only — `embed` (returning `Array<Float64>`) deferred to a follow-up
 - No streaming responses — full completion only
 - No system prompt — single `complete(user_prompt)` call; structured prompting via `string_concat`
-- No token limits or temperature controls — uses provider defaults
+- No token limits or temperature controls — Anthropic: `max_tokens` hardcoded to 1024; OpenAI and Moonshot use provider defaults ([#370](https://github.com/aallan/vera/issues/370))
 - User-defined `handle[Inference]` handlers (for mocking, local models, replay) are planned for a future release
 
 ## [0.0.100] - 2026-03-26

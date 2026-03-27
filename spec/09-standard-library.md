@@ -558,7 +558,7 @@ private fn classify(@String -> @Result<String, String>)
 **Browser:** `Inference.complete` returns a detailed `Err` in browser runtimes — embedding API keys in client-side JavaScript is a security risk. Use a server-side proxy with the `Http` effect instead.
 
 **Limitations in this release:**
-- `complete` only — `embed` (returning `Array<Float64>`) is deferred ([#61](https://github.com/aallan/vera/issues/61) follow-up)
+- `complete` only — `embed` (returning `Array<Float64>`) is deferred ([#371](https://github.com/aallan/vera/issues/371))
 - No streaming — full response only
 - No system prompt — single `complete(user_prompt)` call; structured prompting via `string_concat`
 - User-defined `handle[Inference]` handlers (for mocking, local models, replay) are planned for a future release
