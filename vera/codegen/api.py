@@ -194,8 +194,8 @@ def _call_inference_provider(
 
     elif provider == "moonshot":
         api_key = moonshot_key
-        chosen_model = model or "moonshot-v1-8k"
-        url = "https://api.moonshot.cn/v1/chat/completions"
+        chosen_model = model or "kimi-k2-0905-preview"
+        url = "https://api.moonshot.ai/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
