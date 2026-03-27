@@ -415,6 +415,19 @@ class TypeEnv:
             operations={},
         )
 
+        # Inference effect — LLM calls via host imports.
+        # Functions using Inference.complete must declare effects(<Inference>).
+        self.effects["Inference"] = EffectInfo(
+            name="Inference",
+            type_params=None,
+            operations={
+                "complete": OpInfo(
+                    "complete", (STRING,),
+                    AdtType("Result", (STRING, STRING)), "Inference",
+                ),
+            },
+        )
+
         # Ordering ADT — result type for Ord's compare operation (§9.8).
         self.data_types["Ordering"] = AdtInfo(
             name="Ordering",

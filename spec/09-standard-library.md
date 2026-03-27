@@ -522,36 +522,46 @@ Key design points:
 - Custom scheduling strategies (thread pool, event loop) can be provided via `handle[Async]` handlers (see [#270](https://github.com/aallan/vera/issues/270)).
 - This avoids coloured-function problems because algebraic effects already separate the description of an operation from its execution.
 
-### 9.5.5 Inference (Future)
+### 9.5.5 Inference
 
-> **Status: Not yet implemented.** Tracked in [#61](https://github.com/aallan/vera/issues/61).
+The `Inference` effect models LLM calls as algebraic effects, making them explicit in the type system and contract-verifiable. Functions that call language models must declare `effects(<Inference>)`; pure functions cannot secretly call models.
 
-LLM inference will be modelled as an algebraic effect, making model calls explicit in the type system:
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `Inference.complete` | `String -> Result<String, String>` | Send a prompt to the configured LLM provider; returns `Ok(completion)` or `Err(message)` |
 
-```
-effect Inference {
-  op complete(String -> String);
-  op embed(String -> Array<Float64>);
-}
-```
+`Inference` is a built-in effect — no `effect Inference { ... }` declaration is needed in source files.
 
-Operations:
-- `complete(@String)` — sends a prompt to a language model and returns the completion.
-- `embed(@String)` — computes a vector embedding of the input string.
-
-Any function that calls an LLM declares `effects(<Inference>)`. Pure functions cannot secretly call models. Contracts still apply: preconditions on inference inputs are verified normally. Postconditions on outputs can use refinement types to constrain response format.
-
-Handlers provide the implementation: one handler uses an HTTP API, another uses a local model, another uses cached replay for deterministic testing.
-
-```
-private fn classify(@String -> @String)
-  requires(length(@String.0) > 0)
+```vera
+private fn classify(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
   ensures(true)
   effects(<Inference>)
 {
-  Inference.complete("Classify as Spam or Ham: " ++ @String.0)
+  let @String = string_concat("Classify as Spam or Ham: ", @String.0);
+  Inference.complete(@String.0)
 }
 ```
+
+**Effect composition:** `effects(<Inference, IO>)` for LLM + console output; `effects(<Http, Inference>)` for fetching + LLM.
+
+**Runtime:** In the reference implementation, `Inference` is host-backed — the runtime dispatches to the provider specified by environment variable:
+
+| Variable | Purpose |
+|----------|---------|
+| `VERA_ANTHROPIC_API_KEY` | Anthropic API key (Claude models) |
+| `VERA_OPENAI_API_KEY` | OpenAI API key (GPT models) |
+| `VERA_MOONSHOT_API_KEY` | Moonshot API key |
+| `VERA_INFERENCE_PROVIDER` | Force a provider (`anthropic`, `openai`, `moonshot`); auto-detected from whichever key is set if unset |
+| `VERA_INFERENCE_MODEL` | Override the model (defaults: `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `moonshot-v1-8k`) |
+
+**Browser:** `Inference.complete` returns a detailed `Err` in browser runtimes — embedding API keys in client-side JavaScript is a security risk. Use a server-side proxy with the `Http` effect instead.
+
+**Limitations in this release:**
+- `complete` only — `embed` (returning `Array<Float64>`) is deferred ([#61](https://github.com/aallan/vera/issues/61) follow-up)
+- No streaming — full response only
+- No system prompt — single `complete(user_prompt)` call; structured prompting via `string_concat`
+- User-defined `handle[Inference]` handlers (for mocking, local models, replay) are planned for a future release
 
 ## 9.6 Built-in Functions
 

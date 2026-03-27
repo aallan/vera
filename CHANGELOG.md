@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.101] - 2026-03-27
+
+### Added
+- **Inference effect** ([#61](https://github.com/aallan/vera/issues/61)) — built-in `<Inference>` algebraic effect with one operation: `Inference.complete(String → Result<String, String>)`. Sends a prompt to the configured LLM provider and returns `Ok(completion)` or `Err(message)`. Provider auto-detected from whichever API key is set; override with `VERA_INFERENCE_PROVIDER`. Model configurable via `VERA_INFERENCE_MODEL`. Default models: Anthropic → `claude-haiku-4-5-20251001`, OpenAI → `gpt-4o-mini`, Moonshot → `moonshot-v1-8k`. Implemented via host imports (Python `urllib.request`). Built-in effect — no `effect Inference { ... }` declaration needed. Browser runtime returns a detailed `Err` explaining why API keys cannot be embedded in client-side JavaScript. New conformance test `ch09_inference` (64 programs, was 63). New example `inference.vera`. Closes [#61](https://github.com/aallan/vera/issues/61).
+
+### Known limitations
+- `complete` only — `embed` (returning `Array<Float64>`) deferred to a follow-up
+- No streaming responses — full completion only
+- No system prompt — single `complete(user_prompt)` call; structured prompting via `string_concat`
+- No token limits or temperature controls — uses provider defaults
+- User-defined `handle[Inference]` handlers (for mocking, local models, replay) are planned for a future release
+
 ## [0.0.100] - 2026-03-26
 
 ### Added
@@ -1443,7 +1455,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.100...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.101...HEAD
+[0.0.101]: https://github.com/aallan/vera/compare/v0.0.100...v0.0.101
 [0.0.100]: https://github.com/aallan/vera/compare/v0.0.99...v0.0.100
 [0.0.99]: https://github.com/aallan/vera/compare/v0.0.98...v0.0.99
 [0.0.98]: https://github.com/aallan/vera/compare/v0.0.97...v0.0.98

@@ -889,5 +889,18 @@
       "json",
       "result"
     ]
+  },
+  {
+    "id": "ch09_inference",
+    "file": "ch09_inference.vera",
+    "chapter": 9,
+    "title": "Inference effect (complete, Result return type, composition with IO)",
+    "level": "check",
+    "spec_ref": "Section 9.5.5",
+    "features": [
+      "inference_complete",
+      "effect_declaration",
+      "result"
+    ]
   }
 ]

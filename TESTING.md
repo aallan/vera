@@ -6,14 +6,14 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,065 across 26 files (~34,000 lines of test code) |
+| **Tests** | 3,087 across 26 files (~34,000 lines of test code) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
-| **Conformance programs** | 63 programs across 9 spec chapters, validating every language feature |
-| **Example programs** | 29, all validated through `vera check` + `vera verify` |
+| **Conformance programs** | 64 programs across 9 spec chapters, validating every language feature |
+| **Example programs** | 30, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 164 parseable blocks from 13 spec chapters: 86 parse, 72 type-check, 71 verify |
 | **README code blocks** | 13 Vera blocks (12 validated, 1 allowlisted future syntax) |
 | **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 allowlisted snippet) |
-| **HTML code blocks** | 2 Vera blocks in docs/index.html (2 validated: parse + check + verify) |
+| **HTML code blocks** | 4 Vera blocks in docs/index.html (4 validated: parse + check + verify) |
 | **Contract verification** | 162 of 179 contracts (90.5%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) + browser parity (Node.js 22) |
 
@@ -36,8 +36,8 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # V8 coverage via c8
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_conformance.py                  # conformance suite (63 programs)
-python scripts/check_examples.py                     # 29 example programs
+python scripts/check_conformance.py                  # conformance suite (64 programs)
+python scripts/check_examples.py                     # 30 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
 python scripts/check_skill_examples.py               # SKILL.md code blocks
@@ -51,18 +51,18 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 
 | File | Tests | Lines | What it covers |
 |------|------:|------:|----------------|
-| `test_parser.py` | 123 | 968 | Grammar rules, operator precedence, parse errors |
-| `test_ast.py` | 122 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
-| `test_checker.py` | 488 | 5,406 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, removed legacy name regression |
-| `test_verifier.py` | 120 | 1,700 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
-| `test_codegen.py` | 824 | 9,827 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, example round-trips |
+| `test_parser.py` | 124 | 968 | Grammar rules, operator precedence, parse errors |
+| `test_ast.py` | 123 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
+| `test_checker.py` | 494 | 5,467 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, removed legacy name regression |
+| `test_verifier.py` | 121 | 1,700 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
+| `test_codegen.py` | 830 | 9,923 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 52 | 897 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 19 | 473 | Closure lifting, captured variables, higher-order functions |
 | `test_codegen_modules.py` | 18 | 529 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
-| `test_formatter.py` | 112 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
+| `test_formatter.py` | 114 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
 | `test_cli.py` | 177 | 2,362 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
@@ -73,7 +73,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_tester_coverage.py` | 30 | 789 | Tester coverage gaps: Float/String/ADT parameters, Bool/Byte parameters, unsatisfiable preconditions, type expression edge cases |
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_browser.py` | 61 | 750 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
-| `test_conformance.py` | 315 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 63 programs |
+| `test_conformance.py` | 320 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 64 programs |
 | `test_prelude.py` | 24 | 406 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
@@ -103,11 +103,11 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | Level | What it validates | Count |
 |-------|-------------------|------:|
 | `parse` | Source text is syntactically valid | 0 |
-| `check` | Parses and type-checks cleanly | 1 |
+| `check` | Parses and type-checks cleanly | 2 |
 | `verify` | Type-checks and all contracts verified by Z3 | 0 |
 | `run` | Compiles to WASM and executes correctly | 62 |
 
-Almost all programs are at the `run` level — they compile and execute, producing correct results. One program (`ch09_http`) is at the `check` level because it requires network access.
+Almost all programs are at the `run` level — they compile and execute, producing correct results. Two programs (`ch09_http`, `ch09_inference`) are at the `check` level because they require network or API key access.
 
 ### Directory structure
 
@@ -117,7 +117,7 @@ tests/conformance/
 ├── ch01_int_literals.vera     # Chapter 1: Integer literals
 ├── ch01_float_literals.vera   # Chapter 1: Float64 literals
 ├── ch01_string_escapes.vera   # Chapter 1: String escape sequences
-├── ...                        # 63 programs total, organized by spec chapter
+├── ...                        # 64 programs total, organized by spec chapter
 ├── ch07_state_handler.vera    # Chapter 7: State<T> effect handler
 ├── ch07_exn_handler.vera      # Chapter 7: Exn<E> effect handler
 ├── ch09_numeric_builtins.vera # Chapter 9: Numeric built-in functions
@@ -316,7 +316,7 @@ Twelve scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_conformance.py` | All 63 conformance programs pass their declared level (parse/check/verify/run) |
+| `check_conformance.py` | All 64 conformance programs pass their declared level (parse/check/verify/run) |
 | `check_examples.py` | All 29 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 148 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
@@ -358,7 +358,7 @@ After running `pre-commit install`, every commit is checked by 21 hooks:
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
 | `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
-| `check_conformance.py` | All 63 conformance programs pass their declared level |
+| `check_conformance.py` | All 64 conformance programs pass their declared level |
 | `check_examples.py` | All 29 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 | `check_skill_examples.py` | SKILL.md code blocks parse correctly |

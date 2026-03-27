@@ -1,0 +1,32 @@
+-- Conformance: Inference effect (Chapter 9, Section 9.5.5)
+-- Level: check
+-- Tests: Inference.complete, Result<String,String> return type, effect declaration, composition with IO
+public fn classify(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Inference>)
+{
+  let @String = string_concat("Classify the sentiment of the following text as Positive, Negative, or Neutral. Respond with one word.\n\n", @String.0);
+  Inference.complete(@String.0)
+}
+
+public fn safe_classify(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(<Inference>)
+{
+  let @Result<String, String> = classify(@String.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> @String.0,
+    Err(@String) -> "unknown"
+  }
+}
+
+public fn classify_and_print(@String -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<Inference, IO>)
+{
+  let @String = safe_classify(@String.0);
+  IO.print(@String.0)
+}

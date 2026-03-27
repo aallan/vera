@@ -43,10 +43,10 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     517: ("FRAGMENT", "Map built-in examples, bare calls"),
 
     # Handler syntax — pseudocode template
-    1080: ("FRAGMENT", "Effect handler syntax template"),
+    1125: ("FRAGMENT", "Effect handler syntax template"),
 
     # Common mistake: bare if/else expression
-    1487: ("FRAGMENT", "Common mistake example, bare if/else"),
+    1532: ("FRAGMENT", "Common mistake example, bare if/else"),
 
     # String operations — bare function calls
     599: ("FRAGMENT", "String built-in examples, bare calls"),
@@ -95,22 +95,23 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # (old entry at 580 removed — block shifted to 582 with Async addition)
 
     # Effect handler syntax template
-    1063: ("FRAGMENT", "Handler syntax template, not real code"),
+    1108: ("FRAGMENT", "Handler syntax template, not real code"),
 
     # Effect declarations — bare effects(...) clauses
     881: ("FRAGMENT", "Effect declarations list"),
     986: ("FRAGMENT", "Async effect declarations list"),
     1006: ("FRAGMENT", "Async effect declarations, bare clauses"),
     1036: ("FRAGMENT", "Http effect declarations list"),
+    1067: ("FRAGMENT", "Inference effect declarations list"),
 
     # Qualified calls and handler fragments — bare expressions
-    1092: ("FRAGMENT", "Handler with clause, bare expression"),
+    1137: ("FRAGMENT", "Handler with clause, bare expression"),
 
     # Module declaration and import syntax
-    1140: ("FRAGMENT", "Module declaration and import example"),
+    1185: ("FRAGMENT", "Module declaration and import example"),
 
     # Line comments — bare comments
-    1245: ("FRAGMENT", "Comment syntax example"),
+    1290: ("FRAGMENT", "Comment syntax example"),
 
     # Type conversions — bare function calls
     798: ("FRAGMENT", "Float64 predicate and constant examples, bare calls"),
@@ -119,35 +120,36 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     785: ("FRAGMENT", "Float64 predicate examples, bare calls"),
 
     # Common mistakes section — intentionally wrong code
-    1308: ("FRAGMENT", "Wrong: missing contracts"),
-    1315: ("FRAGMENT", "Wrong: missing effects clause"),
-    1328: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
-    1338: ("FRAGMENT", "Wrong: bare expression without indices"),
-    1375: ("FRAGMENT", "Wrong: missing index on slot reference"),
-    1380: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
+    1353: ("FRAGMENT", "Wrong: missing contracts"),
+    1360: ("FRAGMENT", "Wrong: missing effects clause"),
+    1373: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
+    1383: ("FRAGMENT", "Wrong: bare expression without indices"),
+    1420: ("FRAGMENT", "Wrong: missing index on slot reference"),
+    1425: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
     1432: ("FRAGMENT", "Wrong: match arm with incorrect return"),
-    1457: ("FRAGMENT", "Wrong: non-exhaustive match (missing None)"),
-    1470: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
+    1502: ("FRAGMENT", "Wrong: non-exhaustive match (missing None)"),
+    1515: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
 
     # Import syntax — intentionally unsupported
-    1503: ("FRAGMENT", "Wrong: import aliasing not supported"),
-    1508: ("FRAGMENT", "Correct: import syntax example"),
-    1518: ("FRAGMENT", "Wrong: import hiding not supported"),
-    1523: ("FRAGMENT", "Correct: multi-import syntax"),
+    1548: ("FRAGMENT", "Wrong: import aliasing not supported"),
+    1553: ("FRAGMENT", "Correct: import syntax example"),
+    1563: ("FRAGMENT", "Wrong: import hiding not supported"),
+    1568: ("FRAGMENT", "Correct: multi-import syntax"),
 
     # Match arm fragment — bare match body
     1477: ("FRAGMENT", "Match arm bare expression"),
-    1492: ("FRAGMENT", "Correct: if/else with braces (common mistakes)"),
+    1522: ("FRAGMENT", "Correct: match expression example (bare)"),
+    1537: ("FRAGMENT", "Correct: if/else with braces (common mistakes)"),
 
     # String escapes — bare expression
-    1537: ("FRAGMENT", "Correct escape sequence examples, bare strings"),
+    1582: ("FRAGMENT", "Correct escape sequence examples, bare strings"),
 
     # Map/Set common mistakes — bare let bindings
-    1545: ("FRAGMENT", "Wrong: standalone map_new/set_new without type context"),
-    1551: ("FRAGMENT", "Correct: map_new/set_new with type context"),
+    1590: ("FRAGMENT", "Wrong: standalone map_new/set_new without type context"),
+    1596: ("FRAGMENT", "Correct: map_new/set_new with type context"),
 
     # Effect disambiguation — qualified calls
-    1102: ("FRAGMENT", "Qualified effect calls (State.put, Logger.put)"),
+    1147: ("FRAGMENT", "Qualified effect calls (State.put, Logger.put)"),
 
     # =================================================================
     # MISMATCH — uses syntax the parser doesn't handle in isolation.

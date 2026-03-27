@@ -1,0 +1,35 @@
+-- Inference effect example: LLM-powered sentiment classification.
+-- Demonstrates: Inference.complete, Result matching, string concatenation.
+--
+-- Note: requires an LLM API key. Run with:
+--   VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera
+--   VERA_OPENAI_API_KEY=sk-...       vera run examples/inference.vera
+--   VERA_MOONSHOT_API_KEY=sk-...     vera run examples/inference.vera
+
+private fn classify_sentiment(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Inference>)
+{
+  let @String = string_concat("Classify the sentiment of this text as Positive, Negative, or Neutral. Respond with one word only.\n\n", @String.0);
+  Inference.complete(@String.0)
+}
+
+-- Main: classify a sample sentence and return 0 on success, 1 on error.
+public fn main(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Inference, IO>)
+{
+  let @Result<String, String> = classify_sentiment("The weather is beautiful today");
+  match @Result<String, String>.0 {
+    Ok(@String) -> {
+      IO.print(@String.0);
+      0
+    },
+    Err(@String) -> {
+      IO.print(@String.0);
+      1
+    }
+  }
+}

@@ -84,6 +84,7 @@ class CodeGenerator(
         self._json_ops_used: set[str] = set()  # Json host-import builtins
         self._html_ops_used: set[str] = set()  # Html host-import builtins
         self._http_ops_used: set[str] = set()  # Http host-import builtins
+        self._inference_ops_used: set[str] = set()  # Inference host-import builtins
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
@@ -202,6 +203,7 @@ class CodeGenerator(
                 json_ops_used=set(self._json_ops_used),
                 html_ops_used=set(self._html_ops_used),
                 http_ops_used=set(self._http_ops_used),
+                inference_ops_used=set(self._inference_ops_used),
             )
 
         # Pass 2: compile function bodies
@@ -279,6 +281,7 @@ class CodeGenerator(
                 json_ops_used=set(self._json_ops_used),
                 html_ops_used=set(self._html_ops_used),
                 http_ops_used=set(self._http_ops_used),
+                inference_ops_used=set(self._inference_ops_used),
             )
 
         return CompileResult(
@@ -294,7 +297,8 @@ class CodeGenerator(
             decimal_ops_used=set(self._decimal_ops_used),
             json_ops_used=set(self._json_ops_used),
             html_ops_used=set(self._html_ops_used),
-                http_ops_used=set(self._http_ops_used),
+            http_ops_used=set(self._http_ops_used),
+            inference_ops_used=set(self._inference_ops_used),
         )
 
     # -----------------------------------------------------------------

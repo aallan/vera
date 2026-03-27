@@ -9563,6 +9563,102 @@ public fn main(-> @Int)
             assert exec_result.value == 7
 
 
+class TestInferenceCollection:
+    """Inference effect: host-import compilation and mocked execution."""
+
+    _CLASSIFY_SOURCE = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Inference>)
+{
+  let @Result<String, String> = Inference.complete("Is this positive?");
+  match @Result<String, String>.0 {
+    Ok(@String) -> string_length(@String.0),
+    Err(@String) -> 0
+  }
+}
+"""
+
+    def test_inference_complete_compiles(self) -> None:
+        """Inference.complete generates a WASM host import."""
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        assert '"inference_complete"' in result.wat
+
+    def test_inference_no_import_when_unused(self) -> None:
+        """Program without Inference has no inference_complete import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert '"inference_complete"' not in result.wat
+
+    def test_inference_declared_but_unused(self) -> None:
+        """effects(<Inference>) declared but no Inference ops used — no import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Inference>)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert '"inference_complete"' not in result.wat
+
+    def test_inference_complete_mocked_success(self) -> None:
+        """Mocked Inference.complete returns Ok with completion."""
+        from unittest.mock import patch
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="Positive",
+        ):
+            import os
+            orig = os.environ.copy()
+            os.environ["VERA_ANTHROPIC_API_KEY"] = "sk-test"
+            try:
+                exec_result = execute(result)
+                assert exec_result.value == 8  # len("Positive")
+            finally:
+                os.environ.clear()
+                os.environ.update(orig)
+
+    def test_inference_complete_mocked_failure(self) -> None:
+        """Mocked Inference.complete raises exception — returns Err."""
+        from unittest.mock import patch
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            side_effect=Exception("timeout"),
+        ):
+            import os
+            orig = os.environ.copy()
+            os.environ["VERA_ANTHROPIC_API_KEY"] = "sk-test"
+            try:
+                exec_result = execute(result)
+                assert exec_result.value == 0  # Err branch returns 0
+            finally:
+                os.environ.clear()
+                os.environ.update(orig)
+
+    def test_inference_no_api_key_returns_err(self) -> None:
+        """Inference.complete with no API key configured returns Err."""
+        import os
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        # Ensure no keys are set
+        orig = os.environ.copy()
+        for key in ("VERA_ANTHROPIC_API_KEY", "VERA_OPENAI_API_KEY",
+                    "VERA_MOONSHOT_API_KEY", "VERA_INFERENCE_PROVIDER"):
+            os.environ.pop(key, None)
+        try:
+            exec_result = execute(result)
+            assert exec_result.value == 0  # Err branch returns 0
+        finally:
+            os.environ.clear()
+            os.environ.update(orig)
+
+
 class TestDecimalMonomorphization:
     """Monomorphization of generic functions with Decimal type args (#341)."""
 

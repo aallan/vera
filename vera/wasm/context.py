@@ -108,6 +108,8 @@ class WasmContext(
         self._html_ops_used: set[str] = set()
         # Http host-import tracking (propagated to codegen core)
         self._http_ops_used: set[str] = set()
+        # Inference host-import tracking (propagated to codegen core)
+        self._inference_ops_used: set[str] = set()
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}

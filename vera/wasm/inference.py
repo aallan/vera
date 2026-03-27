@@ -187,6 +187,9 @@ class InferenceMixin:
         if expr.qualifier == "Http":
             # Both get and post return Result<String, String> (i32 heap ptr)
             return "i32"
+        if expr.qualifier == "Inference":
+            # complete returns Result<String, String> (i32 heap ptr)
+            return "i32"
         return None  # pragma: no cover
 
     def _infer_fncall_wasm_type(self, expr: ast.FnCall) -> str | None:
