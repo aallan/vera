@@ -735,7 +735,7 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 
 Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. See **[ROADMAP.md](ROADMAP.md)** for the full language roadmap.
 
-~~`Markdown` ([#147](https://github.com/aallan/vera/issues/147))~~, ~~`Json` ([#58](https://github.com/aallan/vera/issues/58))~~, ~~`Http` ([#57](https://github.com/aallan/vera/issues/57))~~, and ~~`Inference` ([#61](https://github.com/aallan/vera/issues/61))~~ each followed a roadmap that led toward a single design goal: an LLM should be able to write a short Vera function that fetches from the web, feeds the result into another model, and returns typed, contract-checked output — with the full effect row declared in the signature.
+`Markdown` ([#147](https://github.com/aallan/vera/issues/147)), `Json` ([#58](https://github.com/aallan/vera/issues/58)), `Http` ([#57](https://github.com/aallan/vera/issues/57)), and `Inference` ([#61](https://github.com/aallan/vera/issues/61)) each followed a roadmap that led toward a single design goal: an LLM should be able to write a short Vera function that fetches from the web, feeds the result into another model, and returns typed, contract-checked output — with the full effect row declared in the signature.
 
 ```vera
 public fn research_topic(@String -> @Result<String, String>)
