@@ -1,0 +1,54 @@
+{
+	"name": "vera-language",
+	"displayName": "Vera Language",
+	"description": "Syntax highlighting for the Vera programming language — a statically typed, purely functional language with algebraic effects and typed slot references, designed for LLM-generated code.",
+	"version": "0.1.0",
+	"publisher": "aallan",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/aallan/vera"
+	},
+	"homepage": "https://veralang.dev/",
+	"bugs": {
+		"url": "https://github.com/aallan/vera/issues"
+	},
+	"engines": {
+		"vscode": "^1.75.0"
+	},
+	"categories": [
+		"Programming Languages"
+	],
+	"keywords": [
+		"vera",
+		"veralang",
+		"functional",
+		"algebraic effects",
+		"contracts",
+		"llm",
+		"wasm"
+	],
+	"icon": "images/vera-icon.png",
+	"contributes": {
+		"languages": [
+			{
+				"id": "vera",
+				"aliases": [
+					"Vera",
+					"vera"
+				],
+				"extensions": [
+					".vera"
+				],
+				"configuration": "./language-configuration.json"
+			}
+		],
+		"grammars": [
+			{
+				"language": "vera",
+				"scopeName": "source.vera",
+				"path": "./syntaxes/vera.tmLanguage.json"
+			}
+		]
+	}
+}

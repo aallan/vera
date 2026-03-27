@@ -27,7 +27,7 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # =================================================================
 
     # Section "Project Roadmap" — depends on #61 (Inference)
-    729: ("FUTURE", "Vision example uses Inference effect (issue #61)"),
+    736: ("FUTURE", "Vision example uses Inference effect (issue #61)"),
 }
 
 
