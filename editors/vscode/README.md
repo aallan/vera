@@ -25,11 +25,17 @@ Syntax highlighting and language support for the [Vera programming language](htt
 
 ### From source (recommended for now)
 
-Clone the Vera repository (or navigate to an existing clone), then symlink the extension directory into VS Code's extensions folder:
+**Fresh clone:**
 
 ```bash
 git clone https://github.com/aallan/vera.git
 ln -s "$(pwd)/vera/editors/vscode" ~/.vscode/extensions/vera-language
+```
+
+**Existing clone** (run from the repo root):
+
+```bash
+ln -s "$(pwd)/editors/vscode" ~/.vscode/extensions/vera-language
 ```
 
 Then reload VS Code. Any `.vera` file will be recognised automatically.
@@ -65,7 +71,7 @@ The grammar uses standard TextMate scope conventions, so it works with any colou
 | `Array`, `Option`, `Result` | `storage.type.composite.vera` |
 | `true`, `false`, `pure` | `constant.language.vera` |
 | `->` | `keyword.operator.arrow.vera` |
-| `\|>` | `keyword.operator.pipe.vera` |
+| `|>` | `keyword.operator.pipe.vera` |
 
 ## Links
 
