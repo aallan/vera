@@ -195,11 +195,11 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1793): "FUTURE",   # convert_to_markdown
 
     # Chapter 9 — Html stdlib type (function signatures without bodies)
-    ("09-standard-library.md", 1837): "FUTURE",   # html_parse
-    ("09-standard-library.md", 1846): "FUTURE",   # html_to_string
-    ("09-standard-library.md", 1857): "FUTURE",   # html_query
-    ("09-standard-library.md", 1866): "FUTURE",   # html_text
-    ("09-standard-library.md", 1875): "FUTURE",   # html_attr
+    ("09-standard-library.md", 1842): "FUTURE",   # html_parse
+    ("09-standard-library.md", 1851): "FUTURE",   # html_to_string
+    ("09-standard-library.md", 1862): "FUTURE",   # html_query
+    ("09-standard-library.md", 1871): "FUTURE",   # html_text
+    ("09-standard-library.md", 1880): "FUTURE",   # html_attr
 
     # Chapter 9 — Http + Async composition (future Async effect, not yet compilable)
     ("09-standard-library.md", 474): "FUTURE",    # fetch_both uses async(Http.get(...))

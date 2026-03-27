@@ -1801,12 +1801,17 @@ The host runtime can import tools like MarkItDown or pandoc. The WASM module rec
 
 **Connection to the Inference effect:**
 
-`Inference.complete()` (Section 9.5.5) returns `String`. Callers compose explicitly to get Markdown:
+`Inference.complete()` (Section 9.5.5) returns `Result<String, String>`. Callers compose explicitly to get Markdown:
 
 ```
-let @String = Inference.complete("Write a report about: " ++ @String.0);
-match md_parse(@String.0) {
-  Ok(@MdBlock) -> @MdBlock.0,
+let @Result<String, String> = Inference.complete(
+  string_concat("Write a report about: ", @String.0)
+);
+match @Result<String, String>.0 {
+  Ok(@String) -> match md_parse(@String.0) {
+    Ok(@MdBlock) -> @MdBlock.0,
+    Err(@String) -> MdDocument([MdParagraph([MdText(@String.0)])])
+  },
   Err(@String) -> MdDocument([MdParagraph([MdText(@String.0)])])
 }
 ```
