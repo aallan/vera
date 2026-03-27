@@ -92,7 +92,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1333): "FRAGMENT",  # base64_encode signature (no body)
     ("09-standard-library.md", 1352): "FRAGMENT",  # base64_decode signature (no body)
     ("09-standard-library.md", 1379): "FRAGMENT",  # url_encode signature (no body)
-    ("09-standard-library.md", 1388): "FRAGMENT",  # url_decode signature (no body)
+    ("09-standard-library.md", 1398): "FRAGMENT",  # url_decode signature (no body)
     ("09-standard-library.md", 1424): "FRAGMENT",  # url_parse signature (no body)
     ("09-standard-library.md", 1481): "FRAGMENT",  # regex_match signature (no body)
     ("09-standard-library.md", 1497): "FRAGMENT",  # regex_find signature (no body)
@@ -165,7 +165,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
 
     # Chapter 9 — Float64 predicates (signatures, no body)
     ("09-standard-library.md", 973): "FRAGMENT",  # float_is_infinite signature (no body)
-    ("09-standard-library.md", 982): "FRAGMENT",  # nan signature (no body)
+    ("09-standard-library.md", 992): "FRAGMENT",  # nan signature (no body)
 
     # Chapter 9 — String search signatures (no body)
     ("09-standard-library.md", 1028): "FRAGMENT",  # string_contains signature (no body)

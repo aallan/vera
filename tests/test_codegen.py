@@ -9658,6 +9658,149 @@ public fn main(-> @Int)
             os.environ.clear()
             os.environ.update(orig)
 
+    def test_inference_openai_auto_detect(self) -> None:
+        """OpenAI key auto-detected when no VERA_INFERENCE_PROVIDER set."""
+        from unittest.mock import patch
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="Positive",
+        ) as mock_provider:
+            import os
+            orig = os.environ.copy()
+            for key in ("VERA_ANTHROPIC_API_KEY", "VERA_INFERENCE_PROVIDER"):
+                os.environ.pop(key, None)
+            os.environ["VERA_OPENAI_API_KEY"] = "sk-openai-test"
+            try:
+                exec_result = execute(result)
+                assert exec_result.value == 8  # len("Positive")
+                args = mock_provider.call_args
+                assert args[0][0] == "openai"
+            finally:
+                os.environ.clear()
+                os.environ.update(orig)
+
+    def test_inference_moonshot_auto_detect(self) -> None:
+        """Moonshot key auto-detected when no other keys are set."""
+        from unittest.mock import patch
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="Neutral",
+        ) as mock_provider:
+            import os
+            orig = os.environ.copy()
+            for key in ("VERA_ANTHROPIC_API_KEY", "VERA_OPENAI_API_KEY",
+                        "VERA_INFERENCE_PROVIDER"):
+                os.environ.pop(key, None)
+            os.environ["VERA_MOONSHOT_API_KEY"] = "sk-moonshot-test"
+            try:
+                exec_result = execute(result)
+                assert exec_result.value == 7  # len("Neutral")
+                args = mock_provider.call_args
+                assert args[0][0] == "moonshot"
+            finally:
+                os.environ.clear()
+                os.environ.update(orig)
+
+    def test_inference_explicit_provider_override(self) -> None:
+        """VERA_INFERENCE_PROVIDER overrides auto-detection."""
+        from unittest.mock import patch
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="ok",
+        ) as mock_provider:
+            import os
+            orig = os.environ.copy()
+            os.environ["VERA_ANTHROPIC_API_KEY"] = "sk-ant-test"
+            os.environ["VERA_INFERENCE_PROVIDER"] = "openai"
+            os.environ["VERA_OPENAI_API_KEY"] = "sk-openai-test"
+            try:
+                execute(result)
+                args = mock_provider.call_args
+                assert args[0][0] == "openai"
+            finally:
+                os.environ.clear()
+                os.environ.update(orig)
+
+
+class TestInferenceProviderDispatch:
+    """Unit tests for _call_inference_provider — covers all three provider branches."""
+
+    def _make_response(self, body: str) -> object:
+        """Build a minimal mock urllib response."""
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.read.return_value = body.encode("utf-8")
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_anthropic_provider(self) -> None:
+        """Anthropic branch extracts content[0].text."""
+        import json
+        from unittest.mock import patch
+        from vera.codegen.api import _call_inference_provider
+
+        body = json.dumps({"content": [{"text": "hello"}]})
+        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
+            result = _call_inference_provider(
+                "anthropic", "prompt", "", "sk-ant", "", "")
+        assert result == "hello"
+
+    def test_openai_provider(self) -> None:
+        """OpenAI branch extracts choices[0].message.content."""
+        import json
+        from unittest.mock import patch
+        from vera.codegen.api import _call_inference_provider
+
+        body = json.dumps(
+            {"choices": [{"message": {"content": "world"}}]})
+        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
+            result = _call_inference_provider(
+                "openai", "prompt", "", "", "sk-openai", "")
+        assert result == "world"
+
+    def test_moonshot_provider(self) -> None:
+        """Moonshot branch uses same OpenAI-compatible format."""
+        import json
+        from unittest.mock import patch
+        from vera.codegen.api import _call_inference_provider
+
+        body = json.dumps(
+            {"choices": [{"message": {"content": "moonshot"}}]})
+        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
+            result = _call_inference_provider(
+                "moonshot", "prompt", "", "", "", "sk-moon")
+        assert result == "moonshot"
+
+    def test_custom_model_passed_through(self) -> None:
+        """VERA_INFERENCE_MODEL is forwarded to the provider."""
+        import json
+        from unittest.mock import patch, MagicMock
+        from vera.codegen.api import _call_inference_provider
+
+        body = json.dumps({"content": [{"text": "ok"}]})
+        mock_urlopen = MagicMock(return_value=self._make_response(body))
+        with patch("urllib.request.urlopen", mock_urlopen):
+            _call_inference_provider(
+                "anthropic", "hi", "claude-opus-4-6", "sk-ant", "", "")
+        call_args = mock_urlopen.call_args
+        import json as _json
+        sent = _json.loads(call_args[0][0].data.decode())
+        assert sent["model"] == "claude-opus-4-6"
+
+    def test_unknown_provider_raises(self) -> None:
+        """Unknown provider string raises ValueError."""
+        from vera.codegen.api import _call_inference_provider
+        import pytest
+        with pytest.raises(ValueError, match="Unknown inference provider"):
+            _call_inference_provider("unknown", "p", "", "", "", "")
+
 
 class TestDecimalMonomorphization:
     """Monomorphization of generic functions with Decimal type args (#341)."""
