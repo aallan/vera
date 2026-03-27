@@ -1,6 +1,6 @@
 # Roadmap
 
-Vera v0.0.101 delivers a complete compiler pipeline — parse, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
+Vera v0.0.101 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
 
 This roadmap is organised around four strategic milestones. Each milestone makes Vera meaningfully more useful to a concrete audience. Within each milestone, work is grouped into phases that can be executed roughly sequentially, though independent items can be interleaved.
 
@@ -8,7 +8,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-**v0.0.101** — the reference compiler is complete through ten development phases (C1–C9), with 3,095 tests, 96% code coverage of 15,149 statements, 64 conformance programs, 30 examples, and a 13-chapter specification. The `<Inference>` algebraic effect makes LLM calls explicit in the type system — the headline feature that distinguishes Vera from every other verified language. A Vera program can make an HTTP request, parse JSON, call an LLM, and return typed, contract-verified results. AI discoverability (llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json) is deployed on veralang.dev.
+**v0.0.101** — the reference compiler is complete through eleven development phases (C1–C9, including C6.5 and C8.5), with 3,095 tests, 96% code coverage of 15,149 statements, 64 conformance programs, 30 examples, and a 13-chapter specification. The `<Inference>` algebraic effect makes LLM calls explicit in the type system — the headline feature that distinguishes Vera from every other verified language. A Vera program can make an HTTP request, parse JSON, call an LLM, and return typed, contract-verified results. AI discoverability (llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json) is deployed on veralang.dev.
 
 An independent assessment rates the project at **60–70% of the way to being a viable agent target.** The remaining 30–40% is standard library breadth, tooling integration, empirical validation, and the server-side effect chain that unlocks the flagship use case.
 
