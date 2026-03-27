@@ -753,7 +753,7 @@ public fn research_topic(@String -> @Result<String, String>)
 
 Six lines of logic. The signature carries all the ceremony — parameter types, contracts, effect declarations — so the body reads like a pipeline. The `<Http, Inference>` effect annotation means a caller that only permits `<Http>` cannot invoke this function, and a caller that only permits `<Inference>` cannot invoke it either. Both callers must declare the full effect row.
 
-This is what "designed for LLMs to write" means in practice: the language makes the intent machine-checkable, the side effects explicit, and the output structurally typed — in fewer lines than most languages need for a HTTP request. Run a real example with `VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera`.
+This is what "designed for LLMs to write" means in practice: the language makes the intent machine-checkable, the side effects explicit, and the output structurally typed — in fewer lines than most languages need for a HTTP request. Run a real example with `VERA_ANTHROPIC_API_KEY=sk-ant-... vera run` [`examples/inference.vera`](examples/inference.vera).
 
 ## Technical Decisions
 
