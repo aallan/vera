@@ -9714,17 +9714,22 @@ class TestInferenceProviderDispatch:
         assert result == "world"
 
     def test_moonshot_provider(self) -> None:
-        """Moonshot branch uses same OpenAI-compatible format."""
+        """Moonshot branch uses correct endpoint, default model, OpenAI-compatible format."""
         import json
-        from unittest.mock import patch
+        from unittest.mock import patch, MagicMock
         from vera.codegen.api import _call_inference_provider
 
         body = json.dumps(
             {"choices": [{"message": {"content": "moonshot"}}]})
-        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
+        mock_urlopen = MagicMock(return_value=self._make_response(body))
+        with patch("urllib.request.urlopen", mock_urlopen):
             result = _call_inference_provider(
                 "moonshot", "prompt", "", "", "", "sk-moon")
         assert result == "moonshot"
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://api.moonshot.ai/v1/chat/completions"
+        sent_body = json.loads(req.data.decode())
+        assert sent_body["model"] == "kimi-k2-0905-preview"
 
     def test_custom_model_passed_through(self) -> None:
         """VERA_INFERENCE_MODEL is forwarded to the provider."""
