@@ -47,7 +47,8 @@ def main() -> int:
     if match:
         versions["README.md"] = match.group(1)
     else:
-        print("WARNING: Could not find version string in README.md", file=sys.stderr)
+        print("ERROR: Could not find version string in README.md", file=sys.stderr)
+        return 1
 
     # Check they all match
     unique = set(versions.values())
