@@ -107,7 +107,7 @@ memory management, and GC.
 
 ## Examples
 
-- [examples/]({REPO}/tree/main/examples): 28 verified example programs \
+- [examples/]({REPO}/tree/main/examples): 29 verified example programs \
 covering closures, generics, effects, pattern matching, string operations, \
 async, markdown, regex, modules, and more.
 
