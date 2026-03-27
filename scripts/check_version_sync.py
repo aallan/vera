@@ -41,6 +41,14 @@ def main() -> int:
                 file=sys.stderr,
             )
 
+    # README.md — "active development at vX.Y.Z"
+    readme = root / "README.md"
+    match = re.search(r"at v([0-9]+\.[0-9]+\.[0-9]+)", readme.read_text())
+    if match:
+        versions["README.md"] = match.group(1)
+    else:
+        print("WARNING: Could not find version string in README.md", file=sys.stderr)
+
     # Check they all match
     unique = set(versions.values())
     if len(unique) == 1:
