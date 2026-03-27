@@ -137,7 +137,7 @@ These are not strictly required for the MCP demo but would make it more compelli
 ### Phase 4a: Concurrency and streaming
 
 - [#59](https://github.com/aallan/vera/issues/59) **True async concurrency** — the type-level infrastructure (`Future<T>`, `async`/`await`, `<Async>` effect) shipped in v0.0.82, but execution is eager/sequential. True concurrency requires WASI 0.3 for native `future<T>`/`stream<T>` support.
-- [#237](https://github.com/aallan/vera/issues/237) **WASI 0.3** — native async I/O, required for concurrent request handling in server effects.
+- [#406](https://github.com/aallan/vera/issues/406) **WASI 0.3** — native async I/O, required for concurrent request handling in server effects. Depends on #237.
 - [#270](https://github.com/aallan/vera/issues/270) **`handle[Async]`** — custom scheduling strategies for async effect handlers.
 - [#228](https://github.com/aallan/vera/issues/228) **WebSocket/SSE** — streaming clients for real-time data feeds and LLM streaming responses.
 - [#227](https://github.com/aallan/vera/issues/227) **Timeout effect** — `<Timeout>` for cancellation and deadline management.
