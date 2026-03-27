@@ -160,6 +160,16 @@ class AssemblyMixin:
             self._needs_alloc = True
             self._needs_memory = True
 
+        # Inference effect host imports: inference_complete(prompt_ptr, prompt_len) -> i32
+        if "inference_complete" in self._inference_ops_used:
+            parts.append(
+                '  (import "vera" "inference_complete" '
+                "(func $vera.inference_complete (param i32 i32) (result i32)))"
+            )
+        if self._inference_ops_used:
+            self._needs_alloc = True
+            self._needs_memory = True
+
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:
             parts.append(
@@ -232,6 +242,7 @@ class AssemblyMixin:
             or self._json_ops_used
             or self._html_ops_used
             or self._http_ops_used
+            or self._inference_ops_used
         ):
             parts.append('  (export "alloc" (func $alloc))')
 

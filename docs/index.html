@@ -546,7 +546,7 @@
         For Agents → SKILL.md
       </a>
     </div>
-    <p style="display: flex; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 1rem; font-size: 0.9rem; color: var(--brown-400);">Current Version: <a href="https://github.com/aallan/vera/releases/tag/v0.0.100" style="color: var(--brown-500); font-weight: 500;">v0.0.100</a> <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" style="display: flex;"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height: 20px;"></a></p>
+    <p style="display: flex; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 1rem; font-size: 0.9rem; color: var(--brown-400);">Current Version: <a href="https://github.com/aallan/vera/releases/tag/v0.0.101" style="color: var(--brown-500); font-weight: 500;">v0.0.101</a> <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" style="display: flex;"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height: 20px;"></a></p>
   </div>
 
   <!-- Why -->
@@ -683,6 +683,13 @@
         <div class="feature">
           <div class="feature-marker"></div>
           <div>
+            <div class="feature-title">LLM inference</div>
+            <div class="feature-desc"><code>Inference.complete</code> as an algebraic effect &mdash; model calls are typed, contract-verifiable, and mockable; supports Anthropic, OpenAI, and Moonshot</div>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-marker"></div>
+          <div>
             <div class="feature-title">Async/await</div>
             <div class="feature-desc"><code>Future&lt;T&gt;</code> with declared <code>&lt;Async&gt;</code> effects, integrated into the effect system</div>
           </div>
@@ -792,6 +799,43 @@
     </div>
   </section>
 
+  <!-- LLM Integration -->
+  <section class="code-section">
+    <div class="container">
+      <h2 class="section-heading">LLM Integration</h2>
+      <p class="code-intro">The <code>&lt;Inference&gt;</code> effect models LLM calls as first-class algebraic effects &mdash; explicit in the type system, contract-verifiable, and impossible to call from pure functions. An LLM that uses another LLM declares it in the signature.</p>
+
+      <div class="code-block">
+<pre><span class="kw">public</span> <span class="kw">fn</span> classify_sentiment(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
+  <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
+  <span class="ct">ensures</span>(<span class="num">true</span>)
+  <span class="ct">effects</span>(&lt;Inference&gt;)
+{
+  <span class="kw">let</span> <span class="sl">@String</span> = string_concat(<span class="str">"Classify as Positive, Negative, or Neutral: "</span>, <span class="sl">@String.0</span>);
+  Inference.complete(<span class="sl">@String.0</span>)
+}</pre>
+      </div>
+
+      <div class="code-subsection">
+        <p class="code-intro">Compose with <code>Http</code> to fetch, then reason. The <code>&lt;Http, Inference&gt;</code> annotation enforces the boundary: a caller that only permits <code>&lt;Http&gt;</code> cannot invoke this function. The postcondition can constrain the <em>shape</em> of the model&rsquo;s output at the type level.</p>
+        <div class="code-block">
+<pre><span class="kw">public</span> <span class="kw">fn</span> research_topic(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
+  <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
+  <span class="ct">ensures</span>(<span class="num">true</span>)
+  <span class="ct">effects</span>(&lt;Http, Inference&gt;)
+{
+  <span class="kw">let</span> <span class="sl">@Result&lt;String, String&gt;</span> = Http.get(string_concat(<span class="str">"https://en.wikipedia.org/w/api.php?action=query&titles="</span>, <span class="sl">@String.0</span>));
+  <span class="kw">match</span> <span class="sl">@Result&lt;String, String&gt;.0</span> {
+    Ok(<span class="sl">@String</span>) -> Inference.complete(string_concat(<span class="str">"Summarise this in one paragraph:\n\n"</span>, <span class="sl">@String.0</span>)),
+    Err(<span class="sl">@String</span>) -> Err(<span class="sl">@String.0</span>)
+  }
+}</pre>
+        </div>
+        <p class="code-intro" style="margin-top: 1rem;">Supports Anthropic, OpenAI, and Moonshot — provider auto-detected from whichever API key is set. Run with <code>VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera</code>.</p>
+      </div>
+    </div>
+  </section>
+
   <!-- Runs Everywhere -->
   <section class="runs-everywhere">
     <div class="container">
@@ -818,6 +862,7 @@ Browser bundle: examples/hello_world_browser/
   index.html</pre>
         </div>
         <p class="runs-note">The browser bundle is self-contained &mdash; no build step or bundler needed. Serve the output directory with any HTTP server (<code>python&nbsp;-m&nbsp;http.server</code>) and open <code>index.html</code>. <code>IO.print</code> writes to the page, <code>IO.read_line</code> uses <code>prompt()</code>, and all other operations work identically to the CLI runtime. Mandatory parity tests enforce this on every PR.</p>
+        <p class="runs-note"><em>Note: <code>Inference.complete</code> returns an error in the browser &mdash; API keys cannot be safely embedded in client-side JavaScript. The recommended pattern is a server-side proxy called via the <code>Http</code> effect.</em></p>
       </div>
     </div>
   </section>

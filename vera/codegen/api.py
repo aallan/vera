@@ -87,6 +87,7 @@ class CompileResult:
     json_ops_used: set[str] = field(default_factory=set)
     html_ops_used: set[str] = field(default_factory=set)
     http_ops_used: set[str] = field(default_factory=set)
+    inference_ops_used: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -134,6 +135,85 @@ def compile(
         source=source, file=file, resolved_modules=resolved_modules,
     )
     return gen.compile_program(program)
+
+
+_INFERENCE_TIMEOUT: int = 60  # seconds; prevents indefinite hangs on slow providers
+
+
+def _call_inference_provider(
+    provider: str,
+    prompt: str,
+    model: str,
+    anthropic_key: str,
+    openai_key: str,
+    moonshot_key: str,
+) -> str:
+    """Dispatch a completion request to the configured LLM provider.
+
+    Raises an exception on network or API errors; the caller wraps
+    the result in Ok/Err and writes it to WASM memory.
+    """
+    import json as _json
+    import urllib.request as _urlreq
+
+    if provider == "anthropic":
+        api_key = anthropic_key
+        chosen_model = model or "claude-haiku-4-5-20251001"
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
+        body = _json.dumps({
+            "model": chosen_model,
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode("utf-8")
+        req = _urlreq.Request(url, data=body, headers=headers, method="POST")
+        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        return str(data["content"][0]["text"])
+
+    elif provider == "openai":
+        api_key = openai_key
+        chosen_model = model or "gpt-4o-mini"
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        body = _json.dumps({
+            "model": chosen_model,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode("utf-8")
+        req = _urlreq.Request(url, data=body, headers=headers, method="POST")
+        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        return str(data["choices"][0]["message"]["content"])
+
+    elif provider == "moonshot":
+        api_key = moonshot_key
+        chosen_model = model or "moonshot-v1-8k"
+        url = "https://api.moonshot.cn/v1/chat/completions"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        body = _json.dumps({
+            "model": chosen_model,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode("utf-8")
+        req = _urlreq.Request(url, data=body, headers=headers, method="POST")
+        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        return str(data["choices"][0]["message"]["content"])
+
+    else:
+        raise ValueError(
+            f"Unknown inference provider '{provider}'. "
+            "Valid values: anthropic, openai, moonshot."
+        )
 
 
 def execute(
@@ -1921,6 +2001,59 @@ def execute(
                     [wasmtime.ValType.i32()],
                 ),
                 host_http_post, access_caller=True,
+            )
+
+    # -----------------------------------------------------------------
+    # Inference effect host functions
+    # -----------------------------------------------------------------
+    if result.inference_ops_used:
+        if "inference_complete" in result.inference_ops_used:
+            def host_inference_complete(
+                caller: wasmtime.Caller, ptr: int, length: int,
+            ) -> int:
+                import json as _json
+                import os as _os
+                import urllib.request as _urlreq
+
+                prompt = _read_wasm_string(caller, ptr, length)
+                _env = env_vars if env_vars is not None else _os.environ
+                provider = _env.get("VERA_INFERENCE_PROVIDER", "").lower()
+                anthropic_key = _env.get("VERA_ANTHROPIC_API_KEY", "")
+                openai_key = _env.get("VERA_OPENAI_API_KEY", "")
+                moonshot_key = _env.get("VERA_MOONSHOT_API_KEY", "")
+
+                if not provider:
+                    if anthropic_key:
+                        provider = "anthropic"
+                    elif openai_key:
+                        provider = "openai"
+                    elif moonshot_key:
+                        provider = "moonshot"
+                    else:
+                        return _alloc_result_err_string(
+                            caller,
+                            "No inference provider configured. "
+                            "Set VERA_ANTHROPIC_API_KEY, VERA_OPENAI_API_KEY, "
+                            "or VERA_MOONSHOT_API_KEY.",
+                        )
+
+                try:
+                    model = _env.get("VERA_INFERENCE_MODEL", "")
+                    completion = _call_inference_provider(
+                        provider, prompt, model,
+                        anthropic_key, openai_key, moonshot_key,
+                    )
+                    return _alloc_result_ok_string(caller, completion)
+                except Exception as exc:
+                    return _alloc_result_err_string(caller, str(exc))
+
+            linker.define_func(
+                "vera", "inference_complete",
+                wasmtime.FuncType(
+                    [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                    [wasmtime.ValType.i32()],
+                ),
+                host_inference_complete, access_caller=True,
             )
 
     instance = linker.instantiate(store, module)

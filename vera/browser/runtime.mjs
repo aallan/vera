@@ -1652,6 +1652,24 @@ function buildImportObject(module) {
     };
   }
 
+  // ── Inference host imports ─────────────────────────────────────
+  // LLM API keys cannot safely be embedded in client-side JavaScript —
+  // they would be visible in page source and network requests.  Return
+  // a rich Err explaining the constraint and the recommended pattern.
+
+  if (needed.has("inference_complete")) {
+    imports.vera.inference_complete = (promptPtr, promptLen) => {
+      return allocResultErrString(
+        "The Inference effect cannot run in the browser directly. " +
+        "LLM API keys embedded in client-side JavaScript are visible in " +
+        "page source and network requests, creating a serious security risk. " +
+        "To use Inference in a browser application, implement a server-side " +
+        "proxy endpoint that holds the API key and forwards completion " +
+        "requests from your frontend. Call that endpoint with the Http effect instead."
+      );
+    };
+  }
+
   // ── Html host imports ──────────────────────────────────────────
   // Lenient HTML parser using DOMParser (browser) or returning Err
   // in non-browser runtimes (Node.js).

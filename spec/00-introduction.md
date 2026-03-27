@@ -177,7 +177,7 @@ The following features are planned for future versions. Each is specified in its
 | JSON standard library type | [#58](https://github.com/aallan/vera/issues/58) | Chapter 9, Section 9.7.1 |
 | Async futures and promises | [#59](https://github.com/aallan/vera/issues/59) | Chapter 9, Section 9.5.4 |
 | ~~Abilities (type constraints)~~ | ~~[#60](https://github.com/aallan/vera/issues/60)~~ | ~~Chapter 9, Section 9.8~~ — Implemented in v0.0.90 |
-| LLM inference effect | [#61](https://github.com/aallan/vera/issues/61) | Chapter 9, Section 9.5.5 |
+| ~~LLM inference effect~~ | ~~[#61](https://github.com/aallan/vera/issues/61)~~ | ~~Chapter 9, Section 9.5.5~~ — Implemented in v0.0.101 |
 | Collections (`Set`, `Map`, `Decimal`) | [#62](https://github.com/aallan/vera/issues/62) | Chapter 9, Sections 9.4.2-3, 9.7.2 |
 | Markdown standard library type | [#147](https://github.com/aallan/vera/issues/147) | Chapter 9, Section 9.7.3 |
 | Typed holes | [#226](https://github.com/aallan/vera/issues/226) | Chapter 4 |

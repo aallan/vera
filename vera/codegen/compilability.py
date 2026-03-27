@@ -40,12 +40,14 @@ class CompilabilityMixin:
                         self._needs_memory = True
                     elif eff.name == "Async":
                         pass  # Sequential execution, no host imports
+                    elif eff.name == "Inference":
+                        self._needs_memory = True
                     else:
                         self._warning(
                             decl,
                             f"Function '{decl.name}' uses unsupported "
                             f"effect '{eff.name}' — skipped.",
-                            rationale="Only pure, IO, Http, State<T>, "
+                            rationale="Only pure, IO, Http, Inference, State<T>, "
                             "Exn<E>, and Async effects are compilable.",
                             error_code="E603",
                         )
@@ -194,6 +196,8 @@ class CompilabilityMixin:
                 self._io_ops_used.add(node.name)
             elif node.qualifier == "Http":
                 self._http_ops_used.add(f"http_{node.name}")
+            elif node.qualifier == "Inference":
+                self._inference_ops_used.add(f"inference_{node.name}")
             for arg in node.args:
                 self._scan_io_ops(arg)
             return

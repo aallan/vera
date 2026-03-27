@@ -4,7 +4,6 @@
 
 [![CI](https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg)](https://github.com/aallan/vera/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/aallan/vera/graph/badge.svg)](https://codecov.io/gh/aallan/vera)
-[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/aallan/vera?utm_source=oss&utm_medium=github&utm_campaign=aallan%2Fvera&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 
 **Vera** (v-ERR-a) is a programming language designed for large language models to write. The name comes from the Latin *veritas* (truth). Programs compile to WebAssembly and run at the command line or in the browser.
 
@@ -64,6 +63,7 @@ Vera has a number of key features:
 - **JSON** — built-in `Json` ADT with parse, query, and serialize operations for API integration
 - **HTML** — built-in `HtmlNode` ADT with lenient parsing, CSS selector queries, and text extraction
 - **HTTP** — `Http.get` and `Http.post` as algebraic effects, composing with JSON for typed API responses
+- **LLM inference** — `Inference.complete` as an algebraic effect; model calls are typed, contract-verifiable, and host-side mockable; supports Anthropic, OpenAI, and Moonshot
 - **String interpolation** — `"value: \(@Int.0)"` with auto-conversion for primitive types
 - **Three-tier verification** — static verification via Z3, guided verification with hints, runtime fallback
 - **Diagnostics as instructions** — every error message is a natural language explanation with a concrete fix
@@ -726,29 +726,34 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 | Http: no PUT, PATCH, DELETE methods | [#356](https://github.com/aallan/vera/issues/356) |
 | Closure parameter with pair-ABI type emits invalid WAT | [#359](https://github.com/aallan/vera/issues/359) |
 | Duplicate prelude types across imported modules (E609) | [#360](https://github.com/aallan/vera/issues/360) |
+| Inference: `embed` operation (vector embeddings) | [#371](https://github.com/aallan/vera/issues/371) |
+| Inference: no token/temperature controls (`max_tokens` hardcoded) | [#370](https://github.com/aallan/vera/issues/370) |
+| Inference: no user-defined handlers (`handle[Inference]`) | [#372](https://github.com/aallan/vera/issues/372) |
+| No float array host-alloc (`_alloc_result_ok_float_array`) | [#373](https://github.com/aallan/vera/issues/373) |
 
 ## Project Roadmap
 
 Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. See **[ROADMAP.md](ROADMAP.md)** for the full language roadmap.
 
-The features on the roadmap — ~~`<Http>` ([#57](https://github.com/aallan/vera/issues/57))~~, `<Inference>` ([#61](https://github.com/aallan/vera/issues/61)), ~~the `Json` type ([#58](https://github.com/aallan/vera/issues/58))~~, and ~~the `Markdown` type ([#147](https://github.com/aallan/vera/issues/147))~~ — converge into a single design goal: an LLM should be able to write a short Vera function that searches the web, feeds the results into another model, and returns typed, contract-checked output. No scaffolding, no untyped string wrangling, no unchecked side effects. Http, Json, and Markdown are now complete — the remaining piece is the `<Inference>` effect.
+~~`Markdown` ([#147](https://github.com/aallan/vera/issues/147))~~, ~~`Json` ([#58](https://github.com/aallan/vera/issues/58))~~, ~~`Http` ([#57](https://github.com/aallan/vera/issues/57))~~, and ~~`Inference` ([#61](https://github.com/aallan/vera/issues/61))~~ each followed a roadmap that led toward a single design goal: an LLM should be able to write a short Vera function that fetches from the web, feeds the result into another model, and returns typed, contract-checked output — with the full effect row declared in the signature.
 
 ```vera
-public fn research_topic(@String -> @MdBlock)
-  requires(length(@String.0) > 0)
-  ensures(md_has_heading(@MdBlock.result, 1))
+public fn research_topic(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
   effects(<Http, Inference>)
 {
-  let @Array<MdBlock> = youtube_search(@String.0, 5);
-  let @String = md_render_all(@Array<MdBlock>.0);
-  let @String = complete("Summarise this research:\n" ++ @String.0);
-  md_parse(@String.0)
+  let @Result<String, String> = Http.get(string_concat("https://search.example.com/?q=", @String.0));
+  match @Result<String, String>.0 {
+    Ok(@String) -> Inference.complete(string_concat("Summarise this research:\n\n", @String.0)),
+    Err(@String) -> Err(@String.0)
+  }
 }
 ```
 
-Five lines of logic. The signature carries all the ceremony — parameter types, contracts, effect declarations — so the body reads like a pipeline. The `<Http, Inference>` effect annotation means a caller that only permits `<Http>` cannot invoke this function. The postcondition `md_has_heading(@MdBlock.result, 1)` constrains the shape of the LLM response at the type level: if the model produces output that lacks a top-level heading, the contract fails.
+Six lines of logic. The signature carries all the ceremony — parameter types, contracts, effect declarations — so the body reads like a pipeline. The `<Http, Inference>` effect annotation means a caller that only permits `<Http>` cannot invoke this function, and a caller that only permits `<Inference>` cannot invoke it either. Both callers must declare the full effect row.
 
-This is what "designed for LLMs to write" means in practice: the language makes the intent machine-checkable, the side effects explicit, and the output structurally typed — in fewer lines than most languages need for a HTTP request.
+This is what "designed for LLMs to write" means in practice: the language makes the intent machine-checkable, the side effects explicit, and the output structurally typed — in fewer lines than most languages need for a HTTP request. Run a real example with `VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera`.
 
 ## Technical Decisions
 

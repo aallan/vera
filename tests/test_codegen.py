@@ -9563,6 +9563,193 @@ public fn main(-> @Int)
             assert exec_result.value == 7
 
 
+class TestInferenceCollection:
+    """Inference effect: host-import compilation and mocked execution."""
+
+    _CLASSIFY_SOURCE = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Inference>)
+{
+  let @Result<String, String> = Inference.complete("Is this positive?");
+  match @Result<String, String>.0 {
+    Ok(@String) -> string_length(@String.0),
+    Err(@String) -> 0
+  }
+}
+"""
+
+    def test_inference_complete_compiles(self) -> None:
+        """Inference.complete generates a WASM host import."""
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        assert '"inference_complete"' in result.wat
+
+    def test_inference_no_import_when_unused(self) -> None:
+        """Program without Inference has no inference_complete import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert '"inference_complete"' not in result.wat
+
+    def test_inference_declared_but_unused(self) -> None:
+        """effects(<Inference>) declared but no Inference ops used — no import."""
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Inference>)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        assert '"inference_complete"' not in result.wat
+
+    def test_inference_complete_mocked_success(self) -> None:
+        """Mocked Inference.complete returns Ok with completion."""
+        from unittest.mock import patch
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="Positive",
+        ):
+            exec_result = execute(result, env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"})
+            assert exec_result.value == 8  # len("Positive")
+
+    def test_inference_complete_mocked_failure(self) -> None:
+        """Mocked Inference.complete raises exception — returns Err."""
+        from unittest.mock import patch
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            side_effect=Exception("timeout"),
+        ):
+            exec_result = execute(result, env_vars={"VERA_ANTHROPIC_API_KEY": "sk-test"})
+            assert exec_result.value == 0  # Err branch returns 0
+
+    def test_inference_no_api_key_returns_err(self) -> None:
+        """Inference.complete with no API key configured returns Err."""
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        exec_result = execute(result, env_vars={})
+        assert exec_result.value == 0  # Err branch returns 0
+
+    def test_inference_openai_auto_detect(self) -> None:
+        """OpenAI key auto-detected when no VERA_INFERENCE_PROVIDER set."""
+        from unittest.mock import patch
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="Positive",
+        ) as mock_provider:
+            exec_result = execute(result, env_vars={"VERA_OPENAI_API_KEY": "sk-openai-test"})
+            assert exec_result.value == 8  # len("Positive")
+            assert mock_provider.call_args[0][0] == "openai"
+
+    def test_inference_moonshot_auto_detect(self) -> None:
+        """Moonshot key auto-detected when no other keys are set."""
+        from unittest.mock import patch
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="Neutral",
+        ) as mock_provider:
+            exec_result = execute(result, env_vars={"VERA_MOONSHOT_API_KEY": "sk-moonshot-test"})
+            assert exec_result.value == 7  # len("Neutral")
+            assert mock_provider.call_args[0][0] == "moonshot"
+
+    def test_inference_explicit_provider_override(self) -> None:
+        """VERA_INFERENCE_PROVIDER overrides auto-detection."""
+        from unittest.mock import patch
+
+        result = _compile_ok(self._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="ok",
+        ) as mock_provider:
+            execute(result, env_vars={
+                "VERA_ANTHROPIC_API_KEY": "sk-ant-test",
+                "VERA_OPENAI_API_KEY": "sk-openai-test",
+                "VERA_INFERENCE_PROVIDER": "openai",
+            })
+            assert mock_provider.call_args[0][0] == "openai"
+
+
+class TestInferenceProviderDispatch:
+    """Unit tests for _call_inference_provider — covers all three provider branches."""
+
+    def _make_response(self, body: str) -> object:
+        """Build a minimal mock urllib response."""
+        from unittest.mock import MagicMock
+        resp = MagicMock()
+        resp.read.return_value = body.encode("utf-8")
+        resp.__enter__ = lambda s: s
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    def test_anthropic_provider(self) -> None:
+        """Anthropic branch extracts content[0].text."""
+        import json
+        from unittest.mock import patch
+        from vera.codegen.api import _call_inference_provider
+
+        body = json.dumps({"content": [{"text": "hello"}]})
+        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
+            result = _call_inference_provider(
+                "anthropic", "prompt", "", "sk-ant", "", "")
+        assert result == "hello"
+
+    def test_openai_provider(self) -> None:
+        """OpenAI branch extracts choices[0].message.content."""
+        import json
+        from unittest.mock import patch
+        from vera.codegen.api import _call_inference_provider
+
+        body = json.dumps(
+            {"choices": [{"message": {"content": "world"}}]})
+        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
+            result = _call_inference_provider(
+                "openai", "prompt", "", "", "sk-openai", "")
+        assert result == "world"
+
+    def test_moonshot_provider(self) -> None:
+        """Moonshot branch uses same OpenAI-compatible format."""
+        import json
+        from unittest.mock import patch
+        from vera.codegen.api import _call_inference_provider
+
+        body = json.dumps(
+            {"choices": [{"message": {"content": "moonshot"}}]})
+        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
+            result = _call_inference_provider(
+                "moonshot", "prompt", "", "", "", "sk-moon")
+        assert result == "moonshot"
+
+    def test_custom_model_passed_through(self) -> None:
+        """VERA_INFERENCE_MODEL is forwarded to the provider."""
+        import json
+        from unittest.mock import patch, MagicMock
+        from vera.codegen.api import _call_inference_provider
+
+        body = json.dumps({"content": [{"text": "ok"}]})
+        mock_urlopen = MagicMock(return_value=self._make_response(body))
+        with patch("urllib.request.urlopen", mock_urlopen):
+            _call_inference_provider(
+                "anthropic", "hi", "claude-opus-4-6", "sk-ant", "", "")
+        call_args = mock_urlopen.call_args
+        import json as _json
+        sent = _json.loads(call_args[0][0].data.decode())
+        assert sent["model"] == "claude-opus-4-6"
+
+    def test_unknown_provider_raises(self) -> None:
+        """Unknown provider string raises ValueError."""
+        from vera.codegen.api import _call_inference_provider
+        import pytest
+        with pytest.raises(ValueError, match="Unknown inference provider"):
+            _call_inference_provider("unknown", "p", "", "", "", "")
+
+
 class TestDecimalMonomorphization:
     """Monomorphization of generic functions with Decimal type args (#341)."""
 

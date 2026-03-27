@@ -1056,6 +1056,51 @@ public fn fetch_json(@String -> @Result<Json, String>)
 
 Like IO, `Http` is a built-in effect. Unlike IO, it has a fixed set of two operations — there is no need to restrict operations via an explicit declaration.
 
+### Inference effect
+
+The `Inference` effect makes LLM calls explicit in the type system. It is built-in — no `effect Inference { ... }` declaration is needed.
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `Inference.complete` | `String -> Result<String, String>` | Send a prompt, return `Ok(completion)` or `Err(message)` |
+
+```vera
+effects(<Inference>)             -- LLM access
+effects(<Inference, IO>)         -- LLM + console output
+effects(<Http, Inference>)       -- fetch + LLM
+```
+
+Returns `Result<String, String>` — `Ok` with the completion text on success, `Err` with the error message on failure. Provider is selected from environment variables: `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, or `VERA_MOONSHOT_API_KEY` (auto-detected from whichever key is set). Override with `VERA_INFERENCE_PROVIDER` and `VERA_INFERENCE_MODEL`.
+
+```vera
+private fn classify(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Inference>)
+{
+  let @String = string_concat("Classify the sentiment as Positive, Negative, or Neutral: ", @String.0);
+  Inference.complete(@String.0)
+}
+```
+
+Compose with `match` to handle the `Result`:
+
+```vera
+public fn safe_classify(@String -> @String)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Inference>)
+{
+  let @Result<String, String> = classify(@String.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> @String.0,
+    Err(@String) -> "unknown"
+  }
+}
+```
+
+Like `Http`, `Inference` is host-backed. The browser runtime returns a detailed `Err` explaining that API keys cannot be safely embedded in client-side JavaScript; use a server-side proxy with `Http` instead.
+
 ### Effect handlers
 
 Handlers eliminate an effect, converting effectful code to pure code:

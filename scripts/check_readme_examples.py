@@ -25,9 +25,6 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # When the feature lands, this entry will go stale and CI will flag
     # it for removal (meaning the block should then parse successfully).
     # =================================================================
-
-    # Section "Project Roadmap" — depends on #61 (Inference)
-    736: ("FUTURE", "Vision example uses Inference effect (issue #61)"),
 }
 
 

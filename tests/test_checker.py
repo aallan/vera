@@ -2296,6 +2296,67 @@ public fn fetch_and_print(@String -> @Unit)
 """)
 
 
+class TestInferenceChecker:
+    """Inference effect type checking."""
+
+    def test_inference_complete_type_checks(self) -> None:
+        """Inference.complete with String arg, effects(<Inference>), returns Result<String, String>."""
+        _check_ok("""
+public fn classify(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Inference>)
+{ Inference.complete(@String.0) }
+""")
+
+    def test_inference_complete_wrong_arity(self) -> None:
+        """Inference.complete() with no args is an error."""
+        _check_err("""
+public fn classify(@Unit -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Inference>)
+{ Inference.complete() }
+""", "argument")
+
+    def test_inference_complete_wrong_type(self) -> None:
+        """Inference.complete(42) with Int arg is a type error."""
+        _check_err("""
+public fn classify(@Unit -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Inference>)
+{ Inference.complete(42) }
+""", "type")
+
+    def test_inference_missing_effect(self) -> None:
+        """Inference.complete without effects(<Inference>) is an error."""
+        _check_err("""
+public fn classify(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(pure)
+{ Inference.complete(@String.0) }
+""", "effect")
+
+    def test_inference_with_io(self) -> None:
+        """effects(<Inference, IO>) composes correctly."""
+        _check_ok("""
+public fn classify_and_print(@String -> @Unit)
+  requires(true) ensures(true) effects(<Inference, IO>)
+{
+  let @Result<String, String> = Inference.complete(@String.0);
+  IO.println("done")
+}
+""")
+
+    def test_inference_with_http(self) -> None:
+        """effects(<Http, Inference>) composes correctly."""
+        _check_ok("""
+public fn fetch_and_classify(@String -> @Result<String, String>)
+  requires(true) ensures(true) effects(<Http, Inference>)
+{
+  let @Result<String, String> = Http.get(@String.0);
+  match @Result<String, String>.0 {
+    Ok(@String) -> Inference.complete(@String.0),
+    Err(@String) -> Err(@String.0)
+  }
+}
+""")
+
+
 # =====================================================================
 # Return type checking
 # =====================================================================
