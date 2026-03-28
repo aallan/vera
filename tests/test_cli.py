@@ -2559,17 +2559,19 @@ class TestTypedArgParsingDirect:
         return codegen_compile(ast, source=source, file=path)
 
     def test_string_arg_direct(self) -> None:
-        """execute(raw_args=["hello"]) allocates a String into WASM memory."""
+        """execute(raw_args=["hello"]) correctly allocates a String into WASM memory."""
         from vera.codegen import execute
+        # Use IO.print so we can verify the string bytes were written correctly:
+        # if _alloc_string_arg wrote the wrong bytes, IO.print would output
+        # garbage rather than the original text.
         source = """\
-public fn greet(@String -> @String)
-  requires(true) ensures(true) effects(pure)
-{ @String.0 }
+public fn greet(@String -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(@String.0) }
 """
         result = self._compile(source)
         exec_result = execute(result, fn_name="greet", raw_args=["hello"])  # type: ignore[arg-type]
-        # String functions return an i32 pointer; just confirm no error was raised
-        assert exec_result is not None
+        assert exec_result.stdout.strip() == "hello"
 
     def test_float_arg_direct(self) -> None:
         """execute(raw_args=["3.5"]) parses as f64 for Float64 parameters."""

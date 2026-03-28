@@ -214,7 +214,7 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.0.102 | 28 Mar | **Bug fixes** — stdin double-read on `/dev/stdin` and `/dev/stdin`-as-path resolved by a single `_load_and_parse` helper in the CLI (#335); two further production-stability fixes (#360, #326). **CLI typed argument passing** — `vera run --fn f -- "hello"` now accepts String, Float64, Bool, and Byte arguments alongside Int; the function's WASM signature drives type dispatch (#263); SKILL.md workaround note removed (#403). **Agent discovery** — five semantic metadata layers added to veralang.dev: `<link>` alternate/llms-txt elements for SKILL.md and AGENTS.md, JSON-LD `TechArticle` entries in the structured-data graph, button `rel="agent-instructions"` attributes, and an inline `<script type="text/llms.txt">` block (#400). |
+| v0.0.102 | 28 Mar | **Bug fixes** — stdin double-read on `/dev/stdin` and `/dev/stdin`-as-path resolved by a single `_load_and_parse` helper in the CLI (#335); two further production-stability fixes (#360, #326). **CLI typed argument passing** — `vera run --fn f -- "hello"` now accepts String, Float64, Bool, and Byte arguments alongside Int; the function's WASM signature drives type dispatch (#263); SKILL.md workaround note removed (#403). **Agent discovery** — four semantic metadata layers added to veralang.dev: `<link>` alternate/llms-txt elements for SKILL.md and AGENTS.md, JSON-LD `TechArticle` entries in the structured-data graph, button `rel="agent-instructions"` attributes, and an inline `<script type="text/llms.txt">` block (#400). |
 
 ---
 

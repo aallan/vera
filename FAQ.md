@@ -209,7 +209,7 @@ The reference compiler is under active development. The current release includes
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
 - Algebraic effect handlers with resume and state
 - Built-in `<Http>`, `<Inference>`, `<State>`, `<IO>`, `<Async>` effects
-- `<Inference>` dispatches to Anthropic, OpenAI, Moonshot, or Mistral via env vars
+- `<Inference>` dispatches to Anthropic, OpenAI, or Moonshot via env vars
 - Collection types: `Map<K,V>`, `Set<T>`, `Array<T>`, `Decimal`, `Json`, `HtmlNode`, `Markdown`
 - String interpolation with auto-conversion for primitive types
 - Cross-module imports with contract verification at call sites

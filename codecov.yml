@@ -3,6 +3,10 @@ coverage:
     project:
       python:
         target: auto
+        # Allow up to 0.5% drop to accommodate defensive error paths that
+        # cannot be triggered from normal test code (e.g. "module has no
+        # alloc export" checks that the compiler always satisfies).
+        threshold: 0.5%
         flags:
           - python
       javascript:
