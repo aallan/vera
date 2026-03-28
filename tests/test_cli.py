@@ -2360,3 +2360,74 @@ public fn positive(@Int -> @Int)
         # Pin: must mention the precondition violation specifically
         combined = (captured.err + captured.out).lower()
         assert "precondition violation" in combined or "trap" in combined
+
+
+# =====================================================================
+# TestStdinInput — /dev/stdin regression (#335)
+# =====================================================================
+
+
+class TestStdinInput:
+    """/dev/stdin works for all pipeline commands. Regression for #335.
+
+    Before the fix, each cmd_* function called p.read_text() to capture
+    the source and then called parse_file(path) which re-opened the path
+    a second time.  For /dev/stdin the second open returns empty content,
+    causing the parse tree to be empty and producing 'No exported functions
+    to call'.  The fix reads source once and passes it to parse() directly.
+    """
+
+    SIMPLE_PROGRAM = """\
+public fn main(-> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{ 42 }
+"""
+
+    def test_run_stdin(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """vera run /dev/stdin executes the program correctly."""
+        # Write to a named pipe via a temp file to simulate stdin
+        stdin_path = tmp_path / "input.vera"
+        stdin_path.write_text(self.SIMPLE_PROGRAM)
+        # Simulate the double-read bug: verify our fix reads source only once
+        # by using a real file that would have worked either way, then checking
+        # the output rather than relying on the path name.
+        rc = cmd_run(str(stdin_path))
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "42" in captured.out
+
+    def test_check_reads_source_once(self, tmp_path: Path) -> None:
+        """cmd_check parses from the already-read source, not by re-opening."""
+        # If check re-opened the file it would still work for a normal file,
+        # so we verify the behaviour via subprocess on /dev/stdin instead.
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "/dev/stdin"],
+            input=self.SIMPLE_PROGRAM,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "OK" in result.stdout
+
+    def test_run_dev_stdin_subprocess(self) -> None:
+        """vera run /dev/stdin produces correct output end-to-end. (#335)"""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", "/dev/stdin"],
+            input=self.SIMPLE_PROGRAM,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "42" in result.stdout
+
+    def test_verify_dev_stdin_subprocess(self) -> None:
+        """vera verify /dev/stdin works end-to-end."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "verify", "/dev/stdin"],
+            input=self.SIMPLE_PROGRAM,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr

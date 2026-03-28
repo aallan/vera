@@ -6,7 +6,6 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 | Bug | Issue |
 |-----|-------|
-| `vera run /dev/stdin` fails — stdin consumed before main compilation | [#335](https://github.com/aallan/vera/issues/335) |
 | Combinators cannot infer type variables from bare `None` / `Err` constructors | [#293](https://github.com/aallan/vera/issues/293) |
 | Closure parameter with pair-ABI type emits invalid WAT | [#359](https://github.com/aallan/vera/issues/359) |
 | Opaque handle memory leak in host stores | [#346](https://github.com/aallan/vera/issues/346) |

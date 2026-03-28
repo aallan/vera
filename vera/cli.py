@@ -32,7 +32,7 @@ import sys
 from pathlib import Path
 
 from vera.errors import VeraError
-from vera.parser import parse_file
+from vera.parser import parse
 from vera.transform import transform
 
 
@@ -48,7 +48,9 @@ def _is_int_str(s: str) -> bool:
 def cmd_parse(path: str) -> int:
     """Parse a .vera file and print the parse tree."""
     try:
-        tree = parse_file(path)
+        p = Path(path)
+        source = p.read_text(encoding="utf-8")
+        tree = parse(source, file=str(p))
         print(tree.pretty())
         return 0
     except FileNotFoundError:
@@ -67,7 +69,7 @@ def cmd_check(path: str, as_json: bool = False) -> int:
     try:
         p = Path(path)
         source = p.read_text(encoding="utf-8")
-        tree = parse_file(path)
+        tree = parse(source, file=str(p))
         ast = transform(tree)
 
 
@@ -132,7 +134,7 @@ def cmd_verify(path: str, as_json: bool = False) -> int:
     try:
         p = Path(path)
         source = p.read_text(encoding="utf-8")
-        tree = parse_file(path)
+        tree = parse(source, file=str(p))
         ast = transform(tree)
 
 
@@ -241,7 +243,7 @@ def cmd_compile(
     try:
         p = Path(path)
         source = p.read_text(encoding="utf-8")
-        tree = parse_file(path)
+        tree = parse(source, file=str(p))
         ast = transform(tree)
 
 
@@ -369,7 +371,7 @@ def cmd_run(
     try:
         p = Path(path)
         source = p.read_text(encoding="utf-8")
-        tree = parse_file(path)
+        tree = parse(source, file=str(p))
         ast = transform(tree)
 
 
@@ -586,7 +588,9 @@ def cmd_run(
 def cmd_ast(path: str, as_json: bool = False) -> int:
     """Parse a .vera file and print the AST."""
     try:
-        tree = parse_file(path)
+        p = Path(path)
+        source = p.read_text(encoding="utf-8")
+        tree = parse(source, file=str(p))
         ast = transform(tree)
         if as_json:
             print(json.dumps(ast.to_dict(), indent=2))
@@ -616,7 +620,7 @@ def cmd_test(
     try:
         p = Path(path)
         source = p.read_text(encoding="utf-8")
-        tree = parse_file(path)
+        tree = parse(source, file=str(p))
         ast = transform(tree)
 
 
