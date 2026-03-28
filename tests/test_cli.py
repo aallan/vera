@@ -2360,3 +2360,130 @@ public fn positive(@Int -> @Int)
         # Pin: must mention the precondition violation specifically
         combined = (captured.err + captured.out).lower()
         assert "precondition violation" in combined or "trap" in combined
+
+
+# =====================================================================
+# TestStdinInput — /dev/stdin regression (#335)
+# =====================================================================
+
+
+class TestStdinInput:
+    """/dev/stdin works for all pipeline commands. Regression for #335.
+
+    Before the fix, each cmd_* function called p.read_text() to capture
+    the source and then called parse_file(path) which re-opened the path
+    a second time.  For /dev/stdin the second open returns empty content,
+    causing the parse tree to be empty and producing 'No exported functions
+    to call'.  The fix reads source once and passes it to parse() directly.
+    """
+
+    SIMPLE_PROGRAM = """\
+public fn main(-> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{ 42 }
+"""
+
+    def test_run_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """cmd_run executes a regular .vera file correctly."""
+        path = tmp_path / "input.vera"
+        path.write_text(self.SIMPLE_PROGRAM)
+        rc = cmd_run(str(path))
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "42" in captured.out
+
+    def test_check_reads_source_once(self) -> None:
+        """cmd_check parses from the already-read source, not by re-opening."""
+        # If check re-opened the file it would still work for a normal file,
+        # so we verify the behaviour via subprocess on /dev/stdin instead.
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "/dev/stdin"],
+            input=self.SIMPLE_PROGRAM,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "OK" in result.stdout
+
+    def test_run_dev_stdin_subprocess(self) -> None:
+        """vera run /dev/stdin produces correct output end-to-end. (#335)"""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", "/dev/stdin"],
+            input=self.SIMPLE_PROGRAM,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "42" in result.stdout
+
+    def test_verify_dev_stdin_subprocess(self) -> None:
+        """vera verify /dev/stdin works end-to-end."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "verify", "/dev/stdin"],
+            input=self.SIMPLE_PROGRAM,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "verified" in result.stdout.lower(), result.stdout
+
+    def test_compile_dev_stdin_wat(self) -> None:
+        """vera compile --wat /dev/stdin prints WAT to stdout."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile", "--wat", "/dev/stdin"],
+            input=self.SIMPLE_PROGRAM,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "(module" in result.stdout
+
+    def test_compile_dev_stdin_default_output(self, tmp_path: Path) -> None:
+        """vera compile /dev/stdin writes stdin.wasm in CWD, not /dev/stdin.wasm."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile", "/dev/stdin"],
+            input=self.SIMPLE_PROGRAM,
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        out_path = tmp_path / "stdin.wasm"
+        assert out_path.exists(), f"Expected {out_path} to be created"
+        assert out_path.stat().st_size > 0
+
+    def test_check_dev_stdin_module_resolution(self, tmp_path: Path) -> None:
+        """vera check /dev/stdin resolves imports from CWD, not /dev/.
+
+        The _load_and_parse normalization returns Path.cwd()/"stdin.vera" for
+        stdin, so ModuleResolver uses the subprocess CWD (tmp_path) as the
+        import root.  Without the fix, ModuleResolver would look in /dev/ and
+        the import would fail to resolve.
+        """
+        lib_source = """\
+public fn helper(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ 1 }
+"""
+        main_source = """\
+import lib(helper);
+
+public fn main(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ helper() }
+"""
+        (tmp_path / "lib.vera").write_text(lib_source)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "/dev/stdin"],
+            input=main_source,
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
