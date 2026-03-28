@@ -452,23 +452,31 @@ public fn main(-> @Int)
 
     def test_prelude_types_not_flagged_as_collision(self) -> None:
         """Builtin ADTs (Option, Result, etc.) shared across two imported modules
-        must NOT produce E609. Regression test for #360."""
+        must NOT produce E609. Regression test for #360.
+
+        Both modules explicitly return builtin ADTs so that Option and Result
+        appear in each module's _adt_layouts when the temp CodeGenerators are
+        built — this is the exact scenario that triggered the false positive.
+        """
         mod_a = self._resolved(("mod_a",), """\
-public fn double(@Int -> @Int)
+public fn maybe_double(@Int -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
-{ @Int.0 * 2 }
+{ Some(@Int.0 * 2) }
 """)
         mod_b = self._resolved(("mod_b",), """\
-public fn triple(@Int -> @Int)
+public fn safe_triple(@Int -> @Option<Int>)
   requires(true) ensures(true) effects(pure)
-{ @Int.0 * 3 }
+{ Some(@Int.0 * 3) }
 """)
         result = self._compile_mod("""\
-import mod_a(double);
-import mod_b(triple);
+import mod_a(maybe_double);
+import mod_b(safe_triple);
 public fn main(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
-{ double(@Int.0) + triple(@Int.0) }
+{
+  let @Option<Int> = maybe_double(@Int.0);
+  match @Option<Int>.0 { Some(@Int) -> @Int.0, None -> 0 }
+}
 """, [mod_a, mod_b])
         errors = [d for d in result.diagnostics if d.severity == "error"]
         # Option, Result, Ordering, UrlParts, Tuple, MdInline, MdBlock are

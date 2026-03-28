@@ -59,7 +59,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 52 | 897 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 19 | 473 | Closure lifting, captured variables, higher-order functions |
-| `test_codegen_modules.py` | 19 | 557 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
+| `test_codegen_modules.py` | 19 | 565 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 114 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
