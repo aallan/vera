@@ -632,7 +632,8 @@ vera/
 ├── CODE_OF_CONDUCT.md             # Contributor Covenant
 ├── SECURITY.md                    # Security policy
 ├── CHANGELOG.md                   # Version history
-├── ROADMAP.md                     # Language roadmap
+├── ROADMAP.md                     # Language roadmap (milestones and what's next)
+├── HISTORY.md                     # Build narrative (how the compiler was built)
 ├── LICENSE                        # MIT licence
 ├── pyproject.toml                 # Package configuration
 ├── .pre-commit-config.yaml        # Pre-commit hook configuration
@@ -733,8 +734,6 @@ Testing is organized in three layers: **unit tests** (compiler internals and bro
 
 ## Project Roadmap
 
-Development follows an **interleaved spiral** — each phase adds a complete compiler layer with tests, docs, and working examples before moving to the next. See **[ROADMAP.md](ROADMAP.md)** for the full language roadmap.
-
 `Markdown` ([#147](https://github.com/aallan/vera/issues/147)), `Json` ([#58](https://github.com/aallan/vera/issues/58)), `Http` ([#57](https://github.com/aallan/vera/issues/57)), and `Inference` ([#61](https://github.com/aallan/vera/issues/61)) each followed a roadmap that led toward a single design goal: an LLM should be able to write a short Vera function that fetches from the web, feeds the result into another model, and returns typed, contract-checked output — with the full effect row declared in the signature.
 
 ```vera
@@ -754,6 +753,8 @@ public fn research_topic(@String -> @Result<String, String>)
 Six lines of logic. The signature carries all the ceremony — parameter types, contracts, effect declarations — so the body reads like a pipeline. The `<Http, Inference>` effect annotation means a caller that only permits `<Http>` cannot invoke this function, and a caller that only permits `<Inference>` cannot invoke it either. Both callers must declare the full effect row.
 
 This is what "designed for LLMs to write" means in practice: the language makes the intent machine-checkable, the side effects explicit, and the output structurally typed — in fewer lines than most languages need for a HTTP request. Run a real example with `VERA_ANTHROPIC_API_KEY=sk-ant-... vera run` [`examples/inference.vera`](examples/inference.vera).
+
+See **[ROADMAP.md](ROADMAP.md)** for the full milestone roadmap — what's next, what's in progress, and what's planned for each release phase. See **[HISTORY.md](HISTORY.md)** for the build narrative — how the compiler was constructed across 29 days from initial commit to v0.0.101.
 
 ## Technical Decisions
 
