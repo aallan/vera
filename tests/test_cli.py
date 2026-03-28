@@ -2428,3 +2428,28 @@ public fn main(-> @Int)
         )
         assert result.returncode == 0, result.stderr
         assert "verified" in result.stdout.lower(), result.stdout
+
+    def test_compile_dev_stdin_wat(self) -> None:
+        """vera compile --wat /dev/stdin prints WAT to stdout."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile", "--wat", "/dev/stdin"],
+            input=self.SIMPLE_PROGRAM,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "(module" in result.stdout
+
+    def test_compile_dev_stdin_default_output(self, tmp_path: Path) -> None:
+        """vera compile /dev/stdin writes stdin.wasm in CWD, not /dev/stdin.wasm."""
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile", "/dev/stdin"],
+            input=self.SIMPLE_PROGRAM,
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        out_path = tmp_path / "stdin.wasm"
+        assert out_path.exists(), f"Expected {out_path} to be created"
+        assert out_path.stat().st_size > 0

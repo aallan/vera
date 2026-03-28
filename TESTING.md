@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,108 across 26 files (~34,000 lines of test code) |
+| **Tests** | 3,110 across 26 files (~34,000 lines of test code) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 65 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 30, all validated through `vera check` + `vera verify` |
@@ -63,7 +63,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 114 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
-| `test_cli.py` | 181 | 2,430 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
+| `test_cli.py` | 183 | 2,455 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
@@ -204,7 +204,7 @@ The lowest-coverage module is `markdown.py` at 87%, reflecting Markdown AST trav
 
 Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved correct statically by Z3 — no runtime overhead. **Tier 3** contracts cannot be fully decided by the SMT solver and fall back to runtime assertion checks. The verifier never rejects a valid program; it simply warns when a contract drops to Tier 3.
 
-Across all 29 example programs:
+Across all 30 example programs:
 
 | Metric | Value |
 |--------|-------|
@@ -239,7 +239,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | ch02_adt_basic, ch02_adt_recursive, ch02_option_result | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen, test_verifier | ch02_refinement_types | refinement_types, safe_divide |
 | Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker | ch02_generics | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 29 examples |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 30 examples |
 | Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker | ch04_arithmetic, ch04_comparison, ch04_boolean_ops | factorial, absolute_value |
 | Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker | ch04_if_else, ch04_let_binding, ch04_match_basic, ch04_match_nested, ch04_pipe_operator | pattern_matching |
 | Ch 4: Expressions | String and array builtins | test_codegen | ch04_string_builtins, ch04_array_ops | string_ops |
@@ -292,7 +292,7 @@ _run_trap(source, fn, args)    # compile + execute, assert WASM trap
 
 ## Round-Trip Testing
 
-Every one of the 29 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
+Every one of the 30 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
 
 The formatter has **idempotency tests**: `format(format(x)) == format(x)` for all tested programs.
 

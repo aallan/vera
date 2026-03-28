@@ -46,17 +46,31 @@ def _is_int_str(s: str) -> bool:
         return False
 
 
+_STDIN_PATHS: frozenset[str] = frozenset({"-", "/dev/stdin"})
+
+
 def _load_and_parse(path: str) -> "tuple[Path, str, Tree[object]]":
-    """Read *path* once and return (Path, source, parse_tree).
+    """Read *path* once and return (logical_path, source, parse_tree).
 
     Using this helper avoids the double-read bug (#335): each caller used
     to call p.read_text() for the source string and then parse_file(path)
     which re-opened the same path.  For non-seekable inputs such as
     /dev/stdin the second open returns empty content.
+
+    For stdin paths ("-" or "/dev/stdin") the returned logical path is
+    ``Path.cwd() / "stdin.vera"`` rather than the raw special-file path.
+    This ensures callers use CWD for module resolution (ModuleResolver
+    _root) and produce sensible default output names (stdin.wasm) rather
+    than erroneously resolving imports under ``/dev/`` or writing output
+    to ``/dev/stdin.wasm``.  Diagnostics still reference the original
+    *path* string for readable error locations.
     """
-    p = Path(path)
-    source = p.read_text(encoding="utf-8")
-    tree = parse(source, file=str(p))
+    raw_p = Path(path)
+    source = raw_p.read_text(encoding="utf-8")
+    # Normalise stdin to a CWD-relative logical path so that module
+    # resolution and output naming work correctly.
+    p = Path.cwd() / "stdin.vera" if path in _STDIN_PATHS else raw_p
+    tree = parse(source, file=path)
     return p, source, tree
 
 
