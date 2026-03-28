@@ -23,14 +23,16 @@ The evidence suggests the biggest problem models face isn't syntax — it's cohe
 
 - **No variable names** — Typed slot references (`@Int.0`, `@String.1`) using De Bruijn indexing
 - **Mandatory contracts** — `requires(...)`, `ensures(...)`, `effects(...)` on every function
-- **Algebraic effects** — IO, Http, State, Exceptions, Async tracked in the type system
+- **Algebraic effects** — IO, Http, State, Exceptions, Async, Inference tracked in the type system
+- **LLM inference** — `Inference.complete` as a first-class algebraic effect; model calls are typed, contract-verifiable, and mockable
 - **Z3 verification** — Contracts proved statically by the Z3 SMT solver
 - **Contract-driven testing** — Z3 generates test inputs from contracts
 - **WebAssembly** — Compiles to WASM, runs via wasmtime or in the browser
+- **Built-in data types** — JSON, HTML, Markdown, Map, Set, Decimal with typed parse/query/serialize operations
+- **HTTP** — `Http.get` and `Http.post` as algebraic effects, composing with JSON for verified API access
 - **String interpolation** — `"value: \(@Int.0)"` with auto-conversion
-- **Typed Markdown** — Parse and query Markdown documents with type safety
 - **Pattern matching** — Exhaustive ADT matching with nested patterns
-- **Generics** — Parametric polymorphism with monomorphization
+- **Constrained generics** — Four built-in abilities (Eq, Ord, Hash, Show) with monomorphization
 
 ## Quick Start
 
@@ -45,13 +47,17 @@ vera run examples/hello_world.vera
 
 - [SKILL.md](https://raw.githubusercontent.com/aallan/vera/main/SKILL.md) — Complete language reference
 - [AGENTS.md](https://raw.githubusercontent.com/aallan/vera/main/AGENTS.md) — Instructions for AI agents
+- [EXAMPLES.md](https://raw.githubusercontent.com/aallan/vera/main/EXAMPLES.md) — Language tour with code examples
 - [FAQ](https://raw.githubusercontent.com/aallan/vera/main/FAQ.md) — Design rationale and comparisons
 - [Specification](https://github.com/aallan/vera/tree/main/spec) — 13-chapter formal spec
-- [Examples](https://github.com/aallan/vera/tree/main/examples) — 28 verified programs
+- [Examples](https://github.com/aallan/vera/tree/main/examples) — 30 verified programs
 
 ## Links
 
 - [GitHub](https://github.com/aallan/vera)
+- [Roadmap](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md)
+- [Changelog](https://raw.githubusercontent.com/aallan/vera/main/CHANGELOG.md)
+- [History](https://raw.githubusercontent.com/aallan/vera/main/HISTORY.md)
 - [Releases](https://github.com/aallan/vera/releases)
 - [Issues](https://github.com/aallan/vera/issues)
 - [MIT License](https://github.com/aallan/vera/blob/main/LICENSE)

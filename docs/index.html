@@ -15,6 +15,9 @@
   <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
   <link rel="icon" href="favicon-192.png" type="image/png" sizes="192x192">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="alternate" type="text/markdown" href="/llms.txt" title="LLM documentation index">
+  <link rel="alternate" type="text/markdown" href="/llms-full.txt" title="Full LLM documentation">
+  <link rel="alternate" type="text/markdown" href="/index.md" title="Markdown version">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -497,7 +500,8 @@
         "name": "Vera",
         "url": "https://veralang.dev",
         "alternateName": "veralang",
-        "description": "A statically typed, purely functional programming language with algebraic effects, mandatory contracts, and typed slot references. Designed for LLMs to write. Compiles to WebAssembly."
+        "description": "A statically typed, purely functional programming language with algebraic effects, mandatory contracts, and typed slot references. Designed for LLMs to write. Compiles to WebAssembly.",
+        "documentation": "https://veralang.dev/llms.txt"
       },
       {
         "@type": "SoftwareSourceCode",
@@ -556,6 +560,7 @@
       <p>Programming languages have always co-evolved with their users. Assembly emerged from hardware constraints. C from operating systems. Python from productivity needs. If models become the primary authors of code, it follows that languages should adapt to that too.</p>
       <p>The evidence suggests the biggest problem models face isn't syntax, instead it's coherence over scale. Models struggle with maintaining invariants across a codebase, understanding the ripple effects of changes, and reasoning about state over time. They're pattern matchers optimising for local plausibility, not architects holding the entire system in mind. The <a href="https://arxiv.org/abs/2307.12488">empirical literature</a> shows that models are particularly vulnerable to naming-related errors &mdash; choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value.</p>
       <p>Vera addresses this by making everything explicit and verifiable. The model doesn't need to be right, it needs to be checkable. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification that the compiler can verify against its implementation.</p>
+      <p style="margin-top: 0.75rem;">For deeper questions about the design &mdash; why no variable names, what gets verified, how Vera compares to Dafny, Lean, and Koka &mdash; see the <a href="https://github.com/aallan/vera/blob/main/FAQ.md">FAQ</a>.</p>
     </div>
   </section>
 
@@ -726,7 +731,7 @@
     </div>
   </section>
 
-  <!-- Code Example -->
+  <!-- What Vera Looks Like -->
   <section class="code-section">
     <div class="container">
       <h2 class="section-heading">What Vera Looks Like</h2>
@@ -767,7 +772,56 @@
       </div>
 
       <div class="code-subsection">
-        <p class="code-intro">Vera error messages are instructions for the model that wrote the code. Every error includes what went wrong, why, how to fix it, and a spec reference.</p>
+        <p class="code-intro">Both functions above are <code>effects(pure)</code> &mdash; the compiler has proved they perform no side effects of any kind. This matters because effects compose. When a function calls an LLM, the <code>&lt;Inference&gt;</code> effect appears in its signature. An LLM writing code that uses another LLM declares it explicitly.</p>
+        <div class="code-block">
+<pre><span class="kw">public</span> <span class="kw">fn</span> classify_sentiment(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
+  <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
+  <span class="ct">ensures</span>(<span class="num">true</span>)
+  <span class="ct">effects</span>(&lt;Inference&gt;)
+{
+  <span class="kw">let</span> <span class="sl">@String</span> = string_concat(<span class="str">"Classify as Positive, Negative, or Neutral: "</span>, <span class="sl">@String.0</span>);
+  Inference.complete(<span class="sl">@String.0</span>)
+}</pre>
+        </div>
+      </div>
+
+      <div class="code-subsection">
+        <p class="code-intro">Postconditions can constrain the model&rsquo;s output. Z3 cannot know what a model will return at compile time, so the contract is checked at runtime &mdash; if the model returns an empty string, the program traps with a contract violation rather than silently propagating garbage.</p>
+        <div class="code-block">
+<pre><span class="kw">public</span> <span class="kw">fn</span> safe_classify(<span class="sl">@String</span> -> <span class="sl">@String</span>)
+  <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
+  <span class="ct">ensures</span>(string_length(<span class="sl">@String.result</span>) > <span class="num">0</span>)
+  <span class="ct">effects</span>(&lt;Inference&gt;)
+{
+  <span class="kw">let</span> <span class="sl">@Result&lt;String, String&gt;</span> = classify_sentiment(<span class="sl">@String.0</span>);
+  <span class="kw">match</span> <span class="sl">@Result&lt;String, String&gt;.0</span> {
+    Ok(<span class="sl">@String</span>) -> <span class="sl">@String.0</span>,
+    Err(<span class="sl">@String</span>) -> <span class="str">"Neutral"</span>
+  }
+}</pre>
+        </div>
+      </div>
+
+      <div class="code-subsection">
+        <p class="code-intro">Compose with <code>Http</code> to fetch, then reason. The <code>&lt;Http, Inference&gt;</code> annotation enforces the boundary &mdash; a caller that only permits <code>&lt;Http&gt;</code> cannot invoke this function, and a caller that only permits <code>&lt;Inference&gt;</code> cannot invoke it either. Both must declare the full effect row.</p>
+        <div class="code-block">
+<pre><span class="kw">public</span> <span class="kw">fn</span> research_topic(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
+  <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
+  <span class="ct">ensures</span>(<span class="num">true</span>)
+  <span class="ct">effects</span>(&lt;Http, Inference&gt;)
+{
+  <span class="kw">let</span> <span class="sl">@Result&lt;String, String&gt;</span> = Http.get(string_concat(<span class="str">"https://en.wikipedia.org/w/api.php?action=query&titles="</span>, <span class="sl">@String.0</span>));
+  <span class="kw">match</span> <span class="sl">@Result&lt;String, String&gt;.0</span> {
+    Ok(<span class="sl">@String</span>) -> Inference.complete(string_concat(<span class="str">"Summarise this in one paragraph:\n\n"</span>, <span class="sl">@String.0</span>)),
+    Err(<span class="sl">@String</span>) -> Err(<span class="sl">@String.0</span>)
+  }
+}</pre>
+        </div>
+        <p class="code-intro" style="margin-top: 1rem;">Supports Anthropic, OpenAI, and Moonshot &mdash; provider auto-detected from whichever API key is set. Run with <code>VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera</code>.</p>
+      </div>
+
+      <div class="code-subsection">
+        <p class="code-intro">When you get it wrong, every error is an instruction for the model that wrote the code &mdash; what went wrong, why, how to fix it, and a spec reference.</p>
         <div class="code-block">
 <pre><span class="err-head">[E001] Error at main.vera, line 14, column 1:</span>
 
@@ -795,60 +849,6 @@
   <span class="err-ref">See: Chapter 5, Section 5.1 "Function Structure"</span></pre>
         </div>
         <p class="code-intro" style="margin-top: 1rem;">This principle applies at every stage: parse errors, type errors, effect mismatches, verification failures, and contract violations all produce natural language explanations with actionable fixes.</p>
-      </div>
-    </div>
-  </section>
-
-  <!-- LLM Integration -->
-  <section class="code-section">
-    <div class="container">
-      <h2 class="section-heading">LLM Integration</h2>
-      <p class="code-intro">The <code>&lt;Inference&gt;</code> effect models LLM calls as first-class algebraic effects &mdash; explicit in the type system, contract-verifiable, and impossible to call from pure functions. An LLM that uses another LLM declares it in the signature.</p>
-
-      <div class="code-block">
-<pre><span class="kw">public</span> <span class="kw">fn</span> classify_sentiment(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
-  <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
-  <span class="ct">ensures</span>(<span class="num">true</span>)
-  <span class="ct">effects</span>(&lt;Inference&gt;)
-{
-  <span class="kw">let</span> <span class="sl">@String</span> = string_concat(<span class="str">"Classify as Positive, Negative, or Neutral: "</span>, <span class="sl">@String.0</span>);
-  Inference.complete(<span class="sl">@String.0</span>)
-}</pre>
-      </div>
-
-      <div class="code-subsection">
-        <p class="code-intro">Postconditions can constrain the model&rsquo;s output. Z3 cannot know what a model will return at compile time, so the contract is checked at runtime &mdash; if the model returns an empty string, the program traps with a contract violation rather than silently propagating garbage.</p>
-        <div class="code-block">
-<pre><span class="kw">public</span> <span class="kw">fn</span> safe_classify(<span class="sl">@String</span> -> <span class="sl">@String</span>)
-  <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
-  <span class="ct">ensures</span>(string_length(<span class="sl">@String.result</span>) > <span class="num">0</span>)
-  <span class="ct">effects</span>(&lt;Inference&gt;)
-{
-  <span class="kw">let</span> <span class="sl">@Result&lt;String, String&gt;</span> = classify_sentiment(<span class="sl">@String.0</span>);
-  <span class="kw">match</span> <span class="sl">@Result&lt;String, String&gt;.0</span> {
-    Ok(<span class="sl">@String</span>) -> <span class="sl">@String.0</span>,
-    Err(<span class="sl">@String</span>) -> <span class="str">"Neutral"</span>
-  }
-}</pre>
-        </div>
-      </div>
-
-      <div class="code-subsection">
-        <p class="code-intro">Compose with <code>Http</code> to fetch, then reason. The <code>&lt;Http, Inference&gt;</code> annotation enforces the boundary: a caller that only permits <code>&lt;Http&gt;</code> cannot invoke this function.</p>
-        <div class="code-block">
-<pre><span class="kw">public</span> <span class="kw">fn</span> research_topic(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
-  <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
-  <span class="ct">ensures</span>(<span class="num">true</span>)
-  <span class="ct">effects</span>(&lt;Http, Inference&gt;)
-{
-  <span class="kw">let</span> <span class="sl">@Result&lt;String, String&gt;</span> = Http.get(string_concat(<span class="str">"https://en.wikipedia.org/w/api.php?action=query&titles="</span>, <span class="sl">@String.0</span>));
-  <span class="kw">match</span> <span class="sl">@Result&lt;String, String&gt;.0</span> {
-    Ok(<span class="sl">@String</span>) -> Inference.complete(string_concat(<span class="str">"Summarise this in one paragraph:\n\n"</span>, <span class="sl">@String.0</span>)),
-    Err(<span class="sl">@String</span>) -> Err(<span class="sl">@String.0</span>)
-  }
-}</pre>
-        </div>
-        <p class="code-intro" style="margin-top: 1rem;">Supports Anthropic, OpenAI, and Moonshot — provider auto-detected from whichever API key is set. Run with <code>VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera</code>.</p>
       </div>
     </div>
   </section>
@@ -925,7 +925,13 @@ vera compile --target browser examples/hello_world.vera</pre>
         </div>
       </div>
 
-      <h3 style="font-family: 'DM Serif Display', Georgia, serif; font-size: 1.35rem; color: var(--brown-900); margin-top: 2.5rem; margin-bottom: 0.75rem;">For Agents</h3>
+    </div>
+  </section>
+
+  <!-- For Agents -->
+  <section id="agents">
+    <div class="container">
+      <h2 class="section-heading">For Agents</h2>
       <p style="color: var(--brown-500); margin-bottom: 1rem; font-size: 0.95rem;">Vera ships with three files for LLM agents:</p>
       <div style="margin-bottom: 1.25rem;">
         <p style="color: var(--brown-500); font-size: 0.95rem; margin-bottom: 0.5rem;"><a href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md"><code>SKILL.md</code></a> &mdash; Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.</p>
@@ -950,10 +956,11 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
         Vera is under <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md" class="status-link">active development</a>
       </div>
       <p class="status-text">
-        The language specification, parser, type checker, contract verifier, WASM code generator, and browser runtime are functional.
+        A complete compiler with 122 built-in functions, algebraic effects (IO, Http, State, Inference), contract-driven testing, and a 13-chapter specification.
         <br>
         <a href="https://github.com/aallan/vera/blob/main/README.md">README</a> ·
         <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md">Roadmap</a> ·
+        <a href="https://github.com/aallan/vera/blob/main/HISTORY.md">History</a> ·
         <a href="https://github.com/aallan/vera/blob/main/CHANGELOG.md">Changelog</a> ·
         <a href="https://github.com/aallan/vera/blob/main/CONTRIBUTING.md">Contributing</a> ·
         <a href="https://github.com/aallan/vera/issues">Issues</a>
@@ -969,6 +976,8 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
         <a href="https://github.com/aallan/vera/blob/main/spec/">Specification</a>
         <a href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md">SKILL.md</a>
         <a href="https://github.com/aallan/vera/blob/main/AGENTS.md">AGENTS.md</a>
+        <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md">Roadmap</a>
+        <a href="https://github.com/aallan/vera/blob/main/CHANGELOG.md">Changelog</a>
         <a href="https://github.com/aallan/vera/blob/main/LICENSE">MIT Licence</a>
       </div>
       <p class="footer-copy">&copy; 2026 Alasdair Allan</p>
