@@ -3251,6 +3251,12 @@ public fn max(@Int, @Int -> @Int)
   ensures(true)
   effects(pure)
 { if @Int.0 > @Int.1 then { @Int.0 } else { @Int.1 } }
+
+public fn tag(@Int, @String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @String.0 }
 """
 
     @staticmethod
@@ -3304,6 +3310,55 @@ private fn f(@Int -> @Int)
         diags = typecheck(prog, source=source, resolved_modules=[mod])
         errors = [d for d in diags if d.severity == "error"]
         assert any("argument" in e.description.lower() for e in errors)
+
+    def test_pipe_into_module_call_typechecks(self) -> None:
+        """Pipe into module-qualified call type-checks without E201. (#326)"""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        source = """\
+import math(abs);
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 |> math::abs() }
+"""
+        prog = parse_to_ast(source)
+        diags = typecheck(prog, source=source, resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_pipe_chained_module_calls_typechecks(self) -> None:
+        """Chained pipes into module-qualified calls type-check. (#326)"""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        source = """\
+import math(abs);
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 |> math::abs() |> math::abs() }
+"""
+        prog = parse_to_ast(source)
+        diags = typecheck(prog, source=source, resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_pipe_module_call_arg_order_regression(self) -> None:
+        """LHS is prepended as first arg, not appended. (#326)
+
+        @Int.0 |> math::tag("ok") must desugar to math::tag(value, "ok"),
+        not math::tag("ok", value). tag has signature (@Int, @String -> @String),
+        so if the LHS were appended the checker would see String where Int is
+        expected and emit a type error — making the prepend/append distinction
+        type-observable.
+        """
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        source = """\
+import math(tag);
+private fn f(@Int -> @String)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 |> math::tag("ok") }
+"""
+        prog = parse_to_ast(source)
+        diags = typecheck(prog, source=source, resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
 
 
 # =====================================================================

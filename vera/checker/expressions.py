@@ -330,7 +330,7 @@ class ExpressionsMixin:
         return UnknownType()
 
     def _check_pipe(self, expr: ast.BinaryExpr) -> Type | None:
-        """Type-check pipe: left |> right (right must be a FnCall)."""
+        """Type-check pipe: left |> right (right must be a FnCall/ModuleCall)."""
         left_ty = self._synth_expr(expr.left)
         if left_ty is None:
             return None
@@ -341,6 +341,15 @@ class ExpressionsMixin:
             all_args = (expr.left,) + expr.right.args
             return self._check_call_with_args(
                 expr.right.name, all_args, expr.right)
+        # Module-qualified pipe: left |> mod::fn(args) → mod::fn(left, args)
+        if isinstance(expr.right, ast.ModuleCall):
+            desugared = ast.ModuleCall(
+                path=expr.right.path,
+                name=expr.right.name,
+                args=(expr.left,) + expr.right.args,
+                span=expr.right.span,
+            )
+            return self._check_module_call(desugared)
         # Fallback: just synth the right side
         return self._synth_expr(expr.right)
 

@@ -310,6 +310,18 @@
     ]
   },
   {
+    "id": "ch04_pipe_module_call",
+    "file": "ch04_pipe_module_call.vera",
+    "chapter": 4,
+    "title": "Pipe operator with module-qualified calls",
+    "level": "run",
+    "spec_ref": "Section 4.5",
+    "features": [
+      "pipe_operator",
+      "module_calls"
+    ]
+  },
+  {
     "id": "ch04_string_builtins",
     "file": "ch04_string_builtins.vera",
     "chapter": 4,
