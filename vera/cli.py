@@ -49,7 +49,7 @@ def _is_int_str(s: str) -> bool:
 _STDIN_PATHS: frozenset[str] = frozenset({"-", "/dev/stdin"})
 
 
-def _load_and_parse(path: str) -> "tuple[Path, str, Tree[object]]":
+def _load_and_parse(path: str) -> tuple[Path, str, Tree[object]]:
     """Read *path* once and return (logical_path, source, parse_tree).
 
     Using this helper avoids the double-read bug (#335): each caller used
