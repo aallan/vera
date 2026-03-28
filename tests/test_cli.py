@@ -2453,3 +2453,37 @@ public fn main(-> @Int)
         out_path = tmp_path / "stdin.wasm"
         assert out_path.exists(), f"Expected {out_path} to be created"
         assert out_path.stat().st_size > 0
+
+    def test_check_dev_stdin_module_resolution(self, tmp_path: Path) -> None:
+        """vera check /dev/stdin resolves imports from CWD, not /dev/.
+
+        The _load_and_parse normalization returns Path.cwd()/"stdin.vera" for
+        stdin, so ModuleResolver uses the subprocess CWD (tmp_path) as the
+        import root.  Without the fix, ModuleResolver would look in /dev/ and
+        the import would fail to resolve.
+        """
+        lib_source = """\
+public fn helper(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ 1 }
+"""
+        main_source = """\
+import lib(helper);
+
+public fn main(-> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ helper() }
+"""
+        (tmp_path / "lib.vera").write_text(lib_source)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "/dev/stdin"],
+            input=main_source,
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr

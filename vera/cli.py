@@ -77,7 +77,7 @@ def _load_and_parse(path: str) -> "tuple[Path, str, Tree[object]]":
 def cmd_parse(path: str) -> int:
     """Parse a .vera file and print the parse tree."""
     try:
-        p, source, tree = _load_and_parse(path)
+        _p, _source, tree = _load_and_parse(path)
         print(tree.pretty())
         return 0
     except FileNotFoundError:
@@ -607,7 +607,7 @@ def cmd_run(
 def cmd_ast(path: str, as_json: bool = False) -> int:
     """Parse a .vera file and print the AST."""
     try:
-        p, source, tree = _load_and_parse(path)
+        _p, _source, tree = _load_and_parse(path)
         ast = transform(tree)
         if as_json:
             print(json.dumps(ast.to_dict(), indent=2))
