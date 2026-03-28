@@ -157,7 +157,13 @@ programs validating every language feature against the spec.
 
 
 def build_llms_full_txt(version: str) -> str:
-    """Compile complete documentation into a single markdown file."""
+    """Compile core language documentation into a single markdown file.
+
+    Includes: language reference (SKILL.md), agent instructions (AGENTS.md),
+    FAQ, error code reference, and formal grammar. For full documentation
+    including the spec chapters and supplementary docs, see the individual
+    files listed in llms.txt.
+    """
     parts: list[str] = []
 
     def section(title: str, content: str) -> None:
@@ -168,7 +174,7 @@ def build_llms_full_txt(version: str) -> str:
         parts.append("")
 
     # Header
-    parts.append("# Vera — Complete Language Documentation")
+    parts.append("# Vera — Language Reference Documentation")
     parts.append("")
     parts.append(
         "> Vera is a statically typed, purely functional programming "
@@ -178,8 +184,11 @@ def build_llms_full_txt(version: str) -> str:
     )
     parts.append("")
     parts.append(
-        "This file contains the complete Vera documentation compiled "
-        f"into a single document. Version {version}."
+        "This file contains the core Vera language documentation — "
+        "language reference, agent instructions, FAQ, error codes, and "
+        f"formal grammar — compiled into a single document. Version {version}. "
+        "For the full documentation index including the 13-chapter "
+        "specification and supplementary docs, see llms.txt."
     )
     parts.append("")
 
