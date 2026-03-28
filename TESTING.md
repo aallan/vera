@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,103 across 26 files (~34,000 lines of test code) |
+| **Tests** | 3,104 across 26 files (~34,000 lines of test code) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 65 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 30, all validated through `vera check` + `vera verify` |
@@ -53,7 +53,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 |------|------:|------:|----------------|
 | `test_parser.py` | 124 | 968 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 123 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
-| `test_checker.py` | 496 | 5,495 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, removed legacy name regression |
+| `test_checker.py` | 497 | 5,519 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, removed legacy name regression |
 | `test_verifier.py` | 121 | 1,700 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion |
 | `test_codegen.py` | 838 | 10,019 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, example round-trips |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
@@ -151,7 +151,7 @@ The manifest is the machine-readable feature inventory — agents can query it t
 ### Running the conformance suite
 
 ```bash
-# Via pytest (parametrized — 315 tests)
+# Via pytest (parametrized — 325 tests)
 pytest tests/test_conformance.py -v
 
 # Via standalone script (used in CI and pre-commit)
@@ -316,8 +316,8 @@ Twelve scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_conformance.py` | All 64 conformance programs pass their declared level (parse/check/verify/run) |
-| `check_examples.py` | All 29 `.vera` examples pass `vera check` + `vera verify` |
+| `check_conformance.py` | All 65 conformance programs pass their declared level (parse/check/verify/run) |
+| `check_examples.py` | All 30 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 148 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_skill_examples.py` | All Vera code blocks in SKILL.md parse correctly |
@@ -358,7 +358,7 @@ After running `pre-commit install`, every commit is checked by 22 hooks:
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
 | `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
-| `check_conformance.py` | All 64 conformance programs pass their declared level |
+| `check_conformance.py` | All 65 conformance programs pass their declared level |
 | `check_examples.py` | All 30 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 | `check_examples_doc.py` | EXAMPLES.md code blocks parse correctly |
