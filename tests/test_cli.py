@@ -2644,6 +2644,7 @@ public fn id(@Int -> @Int)
         result = self._compile(source)
         with pytest.raises(RuntimeError, match="not valid for parameter type"):
             execute(result, fn_name="id", raw_args=["abc"])  # type: ignore[arg-type]
+
     def test_fallback_wasm_type_direct(self) -> None:
         """execute(raw_args=...) with an unsupported wasm_type falls back to int()."""
         from vera.codegen import execute
@@ -2653,8 +2654,10 @@ public fn id(@Int -> @Int)
 { @Int.0 }
 """
         result = self._compile(source)
-        # Inject a fake wasm type that doesn't match any known tag to exercise
-        # the fallback branch in the type-dispatch loop.
+        # Spoof an unrecognised wasm_type tag to exercise the else-branch fallback
+        # in execute() (raw_args parsing falls back to int()).  The underlying WASM
+        # function still expects i64, and Python int maps to i64, so the call
+        # remains valid and exec_result.value reflects the actual return.
         result.fn_param_types["id"] = ["unsupported_wasm_tag"]  # type: ignore[index]
         exec_result = execute(result, fn_name="id", raw_args=["42"])  # type: ignore[arg-type]
         assert exec_result.value == 42
