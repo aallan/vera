@@ -10,7 +10,6 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | `vera run /dev/stdin` fails — stdin consumed before main compilation | [#335](https://github.com/aallan/vera/issues/335) |
 | Combinators cannot infer type variables from bare `None` / `Err` constructors | [#293](https://github.com/aallan/vera/issues/293) |
 | Closure parameter with pair-ABI type emits invalid WAT | [#359](https://github.com/aallan/vera/issues/359) |
-| Duplicate prelude types across imported modules (E609) | [#360](https://github.com/aallan/vera/issues/360) |
 | Opaque handle memory leak in host stores | [#346](https://github.com/aallan/vera/issues/346) |
 | GC shadow stack pollution from opaque handle parameters | [#347](https://github.com/aallan/vera/issues/347) |
 | GC worklist overflow for deeply nested object graphs | [#348](https://github.com/aallan/vera/issues/348) |
