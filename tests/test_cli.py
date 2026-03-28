@@ -2163,9 +2163,9 @@ class TestMainInProcess:
     ) -> None:
         """Extra args after -- for no-arg function, in-process."""
         from unittest.mock import patch
+        from vera.cli import main
         with patch("sys.argv", ["vera", "run", HELLO_WORLD, "--", "abc"]):
             with pytest.raises(SystemExit) as exc_info:
-                from vera.cli import main
                 main()
             assert exc_info.value.code == 1
         assert "expects 0 arguments" in capsys.readouterr().err
