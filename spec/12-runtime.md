@@ -24,7 +24,7 @@ Every compilable top-level function is exported by name. The entry point for `ve
 2. Otherwise, if a function named `main` exists, call `main`.
 3. Otherwise, call the first exported function.
 
-Functions with unsupported parameter or return types (e.g., `String`, `Array<T>` in signatures) are skipped during compilation with a warning — they do not appear in the module's exports.
+Functions whose parameter or return types have no WASM representation (e.g., `Array<T>` return values, higher-kinded types) are skipped during compilation with a warning — they do not appear in the module's exports. Functions with `String` parameters are supported: the compiler emits a bump allocator and the host CLI allocates string arguments in linear memory before calling the function.
 
 ### 12.2.2 Imports
 

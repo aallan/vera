@@ -12,7 +12,14 @@ coverage:
         informational: true
     patch:
       python:
+        # Python coverage.py does not mark multi-line expression continuation
+        # lines as executable, so they are absent from coverage.xml.  Codecov
+        # counts every '+' diff line — including those continuation lines — as
+        # needing coverage, which systematically deflates patch percentages for
+        # any PR that reformats code into multi-line calls.  The project-level
+        # check (95%+) is the real coverage gate; patch is informational only.
         target: auto
+        informational: true
         flags:
           - python
       javascript:
