@@ -870,7 +870,7 @@ private fn simple(-> @Int)
         assert len(data["warnings"]) > 0
 
     def test_run_invalid_int_arg(self) -> None:
-        """Non-integer arguments after -- produce a clean error."""
+        """Non-parseable arguments after -- produce a clean type error."""
         import tempfile
         source = """\
 public fn id(@Int -> @Int)
@@ -888,15 +888,15 @@ public fn id(@Int -> @Int)
             capture_output=True, text=True,
         )
         assert result.returncode == 1
-        assert "Invalid integer" in result.stderr
+        assert "not valid for parameter type" in result.stderr
 
-    def test_run_invalid_float_arg(self) -> None:
-        """Float arguments after -- produce a clean error."""
+    def test_run_float_arg(self) -> None:
+        """Float arguments work for Float64 parameters."""
         import tempfile
         source = """\
-public fn id(@Int -> @Int)
+public fn double(@Float64 -> @Float64)
   requires(true) ensures(true) effects(pure)
-{ @Int.0 }
+{ @Float64.0 + @Float64.0 }
 """
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".vera", delete=False
@@ -905,11 +905,53 @@ public fn id(@Int -> @Int)
             path = f.name
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli",
-             "run", path, "--fn", "id", "--", "1.5"],
+             "run", path, "--fn", "double", "--", "3.5"],
             capture_output=True, text=True,
         )
-        assert result.returncode == 1
-        assert "Invalid integer" in result.stderr
+        assert result.returncode == 0, result.stderr
+        assert "7.0" in result.stdout
+
+    def test_run_string_arg(self) -> None:
+        """String arguments work for String parameters."""
+        import tempfile
+        source = """\
+public fn greet(@String -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(@String.0) }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli",
+             "run", path, "--fn", "greet", "--", "Hello"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Hello" in result.stdout
+
+    def test_run_bool_arg(self) -> None:
+        """Bool arguments work using true/false strings."""
+        import tempfile
+        source = """\
+public fn identity(@Bool -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @Bool.0 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli",
+             "run", path, "--fn", "identity", "--", "true"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "1" in result.stdout or "true" in result.stdout.lower()
 
     def test_run_invalid_arg_json(self) -> None:
         """Invalid args with --json produce JSON error."""
@@ -932,7 +974,7 @@ public fn id(@Int -> @Int)
         assert result.returncode == 1
         data = json.loads(result.stdout)
         assert data["ok"] is False
-        assert "Invalid integer" in data["diagnostics"][0]["description"]
+        assert "not valid for parameter type" in data["diagnostics"][0]["description"]
 
     def test_run_no_main_no_args(
         self, capsys: pytest.CaptureFixture[str]
@@ -1897,26 +1939,27 @@ class TestMainArgParsing:
         assert out_dir.exists()
 
     def test_invalid_args_after_dashdash(self) -> None:
-        """Non-integer arguments after -- produce error."""
+        """Extra arguments after -- for a no-arg function produce error."""
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run",
-             HELLO_WORLD, "--", "notanint"],
+             HELLO_WORLD, "--", "notanarg"],
             capture_output=True, text=True,
         )
         assert result.returncode == 1
-        assert "Invalid integer" in result.stderr
+        # Argument count mismatch: main takes 0 args
+        assert "expects 0 arguments" in result.stderr
 
     def test_invalid_args_after_dashdash_json(self) -> None:
-        """Non-integer arguments after -- in JSON mode."""
+        """Extra arguments after -- in JSON mode produce structured error."""
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run",
-             "--json", HELLO_WORLD, "--", "notanint"],
+             "--json", HELLO_WORLD, "--", "notanarg"],
             capture_output=True, text=True,
         )
         assert result.returncode == 1
         data = json.loads(result.stdout)
         assert data["ok"] is False
-        assert "Invalid integer" in data["diagnostics"][0]["description"]
+        assert "expects 0 arguments" in data["diagnostics"][0]["description"]
 
     def test_dispatch_test_command(self) -> None:
         """test command dispatches correctly."""
@@ -2118,14 +2161,14 @@ class TestMainInProcess:
     def test_invalid_fn_args_inprocess(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Non-integer args after --, in-process."""
+        """Extra args after -- for no-arg function, in-process."""
         from unittest.mock import patch
+        from vera.cli import main
         with patch("sys.argv", ["vera", "run", HELLO_WORLD, "--", "abc"]):
             with pytest.raises(SystemExit) as exc_info:
-                from vera.cli import main
                 main()
             assert exc_info.value.code == 1
-        assert "Invalid integer" in capsys.readouterr().err
+        assert "expects 0 arguments" in capsys.readouterr().err
 
     def test_invalid_fn_args_json_inprocess(
         self, capsys: pytest.CaptureFixture[str],
@@ -2487,3 +2530,134 @@ public fn main(-> @Int)
             cwd=tmp_path,
         )
         assert result.returncode == 0, result.stderr
+
+
+class TestTypedArgParsingDirect:
+    """In-process tests for execute(raw_args=...) typed CLI argument parsing.
+
+    Subprocess tests in TestCmdRunEdgeCases exercise the same paths end-to-end
+    but do not contribute to coverage measurement.  These direct tests call
+    compile() + execute() without spawning a subprocess so that the new code
+    in vera/codegen/api.py is traced by the coverage tool.
+    """
+
+    @staticmethod
+    def _compile(source: str) -> object:
+        """Compile a Vera source string and return the CompileResult."""
+        import tempfile
+        from vera.codegen import compile as codegen_compile
+        from vera.parser import parse_file
+        from vera.transform import transform
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            f.flush()
+            path = f.name
+        tree = parse_file(path)
+        ast = transform(tree)
+        return codegen_compile(ast, source=source, file=path)
+
+    def test_string_arg_direct(self) -> None:
+        """execute(raw_args=["hello"]) correctly allocates a String into WASM memory."""
+        from vera.codegen import execute
+        # Use IO.print so we can verify the string bytes were written correctly:
+        # if _alloc_string_arg wrote the wrong bytes, IO.print would output
+        # garbage rather than the original text.
+        source = """\
+public fn greet(@String -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(@String.0) }
+"""
+        result = self._compile(source)
+        exec_result = execute(result, fn_name="greet", raw_args=["hello"])  # type: ignore[arg-type]
+        assert exec_result.stdout.strip() == "hello"
+
+    def test_float_arg_direct(self) -> None:
+        """execute(raw_args=["3.5"]) parses as f64 for Float64 parameters."""
+        from vera.codegen import execute
+        source = """\
+public fn double(@Float64 -> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ @Float64.0 + @Float64.0 }
+"""
+        result = self._compile(source)
+        exec_result = execute(result, fn_name="double", raw_args=["3.5"])  # type: ignore[arg-type]
+        assert exec_result.value == pytest.approx(7.0)
+
+    def test_bool_arg_true_direct(self) -> None:
+        """execute(raw_args=["true"]) parses as i32 1 for Bool parameters."""
+        from vera.codegen import execute
+        source = """\
+public fn identity(@Bool -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @Bool.0 }
+"""
+        result = self._compile(source)
+        exec_result = execute(result, fn_name="identity", raw_args=["true"])  # type: ignore[arg-type]
+        assert exec_result.value == 1
+
+    def test_bool_arg_false_direct(self) -> None:
+        """execute(raw_args=["false"]) parses as i32 0 for Bool parameters."""
+        from vera.codegen import execute
+        source = """\
+public fn identity(@Bool -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @Bool.0 }
+"""
+        result = self._compile(source)
+        exec_result = execute(result, fn_name="identity", raw_args=["false"])  # type: ignore[arg-type]
+        assert exec_result.value == 0
+
+    def test_byte_arg_direct(self) -> None:
+        """execute(raw_args=["65"]) parses as i32 for Byte parameters."""
+        from vera.codegen import execute
+        source = """\
+public fn identity(@Byte -> @Byte)
+  requires(true) ensures(true) effects(pure)
+{ @Byte.0 }
+"""
+        result = self._compile(source)
+        exec_result = execute(result, fn_name="identity", raw_args=["65"])  # type: ignore[arg-type]
+        assert exec_result.value == 65
+
+    def test_empty_raw_args_arity_error(self) -> None:
+        """execute(raw_args=[]) with a function expecting 1 arg raises RuntimeError."""
+        from vera.codegen import execute
+        source = """\
+public fn id(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        result = self._compile(source)
+        with pytest.raises(RuntimeError, match="expects 1 argument"):
+            execute(result, fn_name="id", raw_args=[])  # type: ignore[arg-type]
+
+    def test_type_mismatch_error(self) -> None:
+        """execute(raw_args=["abc"]) for an Int param raises RuntimeError."""
+        from vera.codegen import execute
+        source = """\
+public fn id(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        result = self._compile(source)
+        with pytest.raises(RuntimeError, match="not valid for parameter type"):
+            execute(result, fn_name="id", raw_args=["abc"])  # type: ignore[arg-type]
+
+    def test_fallback_wasm_type_direct(self) -> None:
+        """execute(raw_args=...) with an unsupported wasm_type falls back to int()."""
+        from vera.codegen import execute
+        source = """\
+public fn id(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+"""
+        result = self._compile(source)
+        # Spoof an unrecognised wasm_type tag to exercise the else-branch fallback
+        # in execute() (raw_args parsing falls back to int()).  The underlying WASM
+        # function still expects i64, and Python int maps to i64, so the call
+        # remains valid and exec_result.value reflects the actual return.
+        result.fn_param_types["id"] = ["unsupported_wasm_tag"]  # type: ignore[index]
+        exec_result = execute(result, fn_name="id", raw_args=["42"])  # type: ignore[arg-type]
+        assert exec_result.value == 42

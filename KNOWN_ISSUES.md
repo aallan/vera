@@ -16,7 +16,6 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 | Limitation | Issue |
 |-----------|-------|
-| CLI only accepts integer arguments after `--` | [#263](https://github.com/aallan/vera/issues/263) |
 | `vera test` cannot generate String, Float64, or compound-type inputs | [#169](https://github.com/aallan/vera/issues/169) |
 | Type inference for bare `None`/`Err` in generic function calls | [#293](https://github.com/aallan/vera/issues/293) |
 | Effect row variable unification (full effect polymorphism) | [#294](https://github.com/aallan/vera/issues/294) |

@@ -24,7 +24,7 @@ Every compilable top-level function is exported by name. The entry point for `ve
 2. Otherwise, if a function named `main` exists, call `main`.
 3. Otherwise, call the first exported function.
 
-Functions with unsupported parameter or return types (e.g., `String`, `Array<T>` in signatures) are skipped during compilation with a warning — they do not appear in the module's exports.
+Functions whose parameter or return types have no WASM representation (e.g., `Array<T>` return values, higher-kinded types) are skipped during compilation with a warning — they do not appear in the module's exports. Functions with `String` parameters are supported: the compiler emits a bump allocator and the host CLI allocates string arguments in linear memory before calling the function.
 
 ### 12.2.2 Imports
 
@@ -435,7 +435,7 @@ Arguments are passed to the WASM function as typed values:
 - `Bool` / `Byte` arguments → `i32` values
 - `Float64` arguments → `f64` values
 
-The CLI (`vera run file.vera --fn f -- 42 3.14`) parses string arguments to the appropriate types. Integer arguments become `i64`; arguments containing a decimal point become `f64`.
+The CLI (`vera run file.vera --fn f -- 42 3.14`) parses string arguments to the appropriate types using the function's WASM signature. Integer arguments become `i64`; decimal arguments become `f64`; `true`/`false` (case-insensitive) become `i32` for `Bool` parameters; String arguments are allocated in WASM linear memory and passed as `(ptr, len)` pairs; `Byte` arguments are parsed as integers 0–255.
 
 ### 12.6.3 Return Value Extraction
 

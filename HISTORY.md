@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit to v0.0.101, in 617 commits across 29 days.
+How the Vera compiler was built, from initial commit to v0.0.102, across 30 development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -206,6 +206,18 @@ v0.0.101 completed the chain. A Vera program can fetch data from the web, parse 
 
 ---
 
+## Stage 9: Hardening and agent usability (28 March)
+
+*One day. Bug fixes, typed CLI arguments, and AI agent discovery.*
+
+With the core language complete, Stage 9 focused on friction removal and polish — the small issues that would bias any benchmark or frustrate any agent trying to use the language seriously.
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.0.102 | 28 Mar | **Bug fixes** — stdin double-read on `/dev/stdin` and `/dev/stdin`-as-path resolved by a single `_load_and_parse` helper in the CLI (#335); two further production-stability fixes (#360, #326). **CLI typed argument passing** — `vera run --fn f -- "hello"` now accepts String, Float64, Bool, and Byte arguments alongside Int; the function's WASM signature drives type dispatch (#263); SKILL.md workaround note removed (#403). **Agent discovery** — four semantic metadata layers added to veralang.dev: `<link>` alternate/llms-txt elements for SKILL.md and AGENTS.md, JSON-LD `TechArticle` entries in the structured-data graph, button `rel="agent-instructions"` attributes, and an inline `<script type="text/llms.txt">` block (#400). |
+
+---
+
 ## Editor and tooling support
 
 Alongside the compiler, editor support and AI discoverability infrastructure were developed:
@@ -226,14 +238,14 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 
 ## By the numbers
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) |
-|--------|:---:|:---:|:---:|:---:|:---:|:---:|
-| Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 |
-| Examples | 13 | 15 | 16 | 18 | 24 | 30 |
-| Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 |
-| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 |
-| Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 |
-| Code coverage | — | — | — | 90% | 91% | 96% |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.102 (28 Mar) |
+|--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,121 |
+| Examples | 13 | 15 | 16 | 18 | 24 | 30 | 30 |
+| Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 122 |
+| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 65 |
+| Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
+| Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **617 commits, 102 tagged releases, 29 active development days.**
+Total: **630+ commits, 103 tagged releases, 30 active development days.**

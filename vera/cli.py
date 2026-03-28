@@ -382,6 +382,7 @@ def cmd_run(
     as_json: bool = False,
     fn_name: str | None = None,
     fn_args: list[int | float] | None = None,
+    raw_fn_args: list[str] | None = None,
 ) -> int:
     """Parse, type-check, compile, and execute a .vera file."""
     from vera.ast import FnDecl
@@ -520,9 +521,13 @@ def cmd_run(
             return 1
 
         # Execute — pass CLI args as strings for IO.args
-        str_args = [str(a) for a in fn_args] if fn_args else []
+        str_args = (
+            raw_fn_args if raw_fn_args
+            else ([str(a) for a in fn_args] if fn_args else [])
+        )
         exec_result = execute(
-            result, fn_name=fn_name, args=fn_args, cli_args=str_args,
+            result, fn_name=fn_name, args=fn_args, raw_args=raw_fn_args,
+            cli_args=str_args,
         )
 
         if as_json:
@@ -920,25 +925,12 @@ def main() -> None:
         if o_idx + 1 < len(args):
             output_path = args[o_idx + 1]
 
-    # Parse -- <args> for run command
+    # Parse -- <args> for run command (kept as raw strings for type-aware parsing)
     fn_args: list[int | float] | None = None
+    raw_fn_args: list[str] | None = None
     if "--" in args:
         dash_idx = args.index("--")
-        raw_args = args[dash_idx + 1:]
-        if raw_args:
-            try:
-                fn_args = [int(a) for a in raw_args]
-            except ValueError:
-                bad = [a for a in raw_args if not _is_int_str(a)]
-                msg = f"Invalid integer argument(s): {', '.join(bad)}"
-                if use_json:
-                    print(json.dumps({"ok": False, "file": "",
-                                      "diagnostics": [{"severity": "error",
-                                                       "description": msg}]},
-                                     indent=2))
-                else:
-                    print(f"Error: {msg}", file=sys.stderr)
-                sys.exit(1)
+        raw_fn_args = list(args[dash_idx + 1:])
 
     # Remove flags from remaining args to find the filepath
     skip_flags = {"--json", "--wat", "--write", "--check"}
@@ -980,7 +972,8 @@ def main() -> None:
         ))
     elif command == "run":
         sys.exit(cmd_run(
-            filepath, as_json=use_json, fn_name=fn_name, fn_args=fn_args
+            filepath, as_json=use_json, fn_name=fn_name, fn_args=fn_args,
+            raw_fn_args=raw_fn_args,
         ))
     elif command == "ast":
         sys.exit(cmd_ast(filepath, as_json=use_json))

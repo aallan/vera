@@ -231,7 +231,9 @@ class AssemblyMixin:
             parts.append(self._emit_alloc())
             parts.append(self._emit_gc_collect())
 
-        # Export $alloc when host functions need to allocate WASM memory
+        # Export $alloc when host functions need to allocate WASM memory,
+        # or when the heap allocator is compiled in (e.g. String params need
+        # allocation for CLI argument passing)
         if (
             (self._io_ops_used & _IO_OPS_NEEDING_ALLOC)
             or self._md_ops_used
@@ -243,6 +245,7 @@ class AssemblyMixin:
             or self._html_ops_used
             or self._http_ops_used
             or self._inference_ops_used
+            or self._needs_alloc
         ):
             parts.append('  (export "alloc" (func $alloc))')
 

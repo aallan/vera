@@ -1,14 +1,16 @@
 # Roadmap
 
-Vera v0.0.101 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
+Vera v0.0.102 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
 
 This roadmap is organised around four strategic milestones. Each milestone makes Vera meaningfully more useful to a concrete audience. Within each milestone, work is grouped into phases that can be executed roughly sequentially, though independent items can be interleaved.
 
-See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was built across 29 development days.
+See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was built across 30 development days.
 
 ## Where we are
 
-**v0.0.101** — the reference compiler is complete through eleven development phases (C1–C9, including C6.5 and C8.5), with 3,095 tests, 96% code coverage of 15,149 statements, 64 conformance programs, 30 examples, and a 13-chapter specification. The `<Inference>` algebraic effect makes LLM calls explicit in the type system — the headline feature that distinguishes Vera from every other verified language. A Vera program can make an HTTP request, parse JSON, call an LLM, and return typed, contract-verified results. AI discoverability (llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json) is deployed on veralang.dev.
+**v0.0.102** — Phase 1a (evaluation friction removal) is underway. Three blocking bugs fixed (#360, #326, #335). CLI argument passing now supports all Vera types — Int, Float64, Bool, Byte, String (#263). Agent discovery metadata added to veralang.dev (#400). The compiler now has 3,120 tests, 65 conformance programs, 30 examples, and a 13-chapter specification.
+
+**v0.0.101** — the reference compiler completed eleven development phases (C1–C9, including C6.5 and C8.5), with 3,095 tests, 96% code coverage of 15,149 statements, 64 conformance programs, 30 examples, and a 13-chapter specification. The `<Inference>` algebraic effect makes LLM calls explicit in the type system — the headline feature that distinguishes Vera from every other verified language. A Vera program can make an HTTP request, parse JSON, call an LLM, and return typed, contract-verified results. AI discoverability (llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json) is deployed on veralang.dev.
 
 An independent assessment rates the project at **60–70% of the way to being a viable agent target.** The remaining 30–40% is standard library breadth, tooling integration, empirical validation, and the server-side effect chain that unlocks the flagship use case.
 
@@ -24,10 +26,8 @@ This is the most important milestone. Everything else — adoption, ecosystem, r
 
 These are quick fixes that would bias any benchmark or frustrate any evaluator. Do them first.
 
-- [#263](https://github.com/aallan/vera/issues/263) **CLI argument passing: strings, floats, typed dispatch** — the CLI currently rejects non-integer arguments. Any benchmark that includes string-processing functions hits this immediately. Try int, then float, then treat as string literal; use the target function's signature to disambiguate.
 - [#293](https://github.com/aallan/vera/issues/293) **Type inference for bare `None`/`Err` in generic calls** — `option_map(None, fn(...) { ... })` fails because the type checker can't infer `T` from `None` alone. The workaround (typed let binding) is documented but clunky. Investigate bidirectional inference from the callback's parameter type.
-- [#403](https://github.com/aallan/vera/issues/403) **Document CLI string limitation in SKILL.md** — until #263 lands, add a note after the `vera run --fn f -- 42` line explaining the limitation and the workaround (write a `main` wrapper or use `vera test`).
-- [#404](https://github.com/aallan/vera/issues/404) **Add "Known Limitations" section to SKILL.md** — consolidate the limitations an agent will encounter: CLI int-only args, `vera test` String/Float64 skip, bare `None`/`Err` inference gap, effect row variable unification (#294). Saves agents from discovering these the hard way.
+- [#404](https://github.com/aallan/vera/issues/404) **Add "Known Limitations" section to SKILL.md** — consolidate the limitations an agent will encounter: `vera test` String/Float64 skip, bare `None`/`Err` inference gap, effect row variable unification (#294). Saves agents from discovering these the hard way.
 
 ### Phase 1b: Build the benchmark suite
 
@@ -67,6 +67,7 @@ The `<Inference>` effect is the headline feature. Harden it before building on t
 - [#372](https://github.com/aallan/vera/issues/372) **User-defined `handle[Inference]` handlers** — currently the Inference effect cannot be handled in user code; full handler support enables mocking, caching, and routing strategies.
 - [#371](https://github.com/aallan/vera/issues/371) **`Inference.embed` operation** — `Array<Float64>` vector embeddings for semantic search and retrieval. Depends on #373 (float array host-alloc infrastructure).
 - [#373](https://github.com/aallan/vera/issues/373) **Float array host-alloc infrastructure** — `_alloc_result_ok_float_array` support for returning float arrays from host imports. Required by #371.
+- [#413](https://github.com/aallan/vera/issues/413) **Add Mistral AI provider to the Inference effect** — extend the `<Inference>` effect runtime with Mistral API support alongside the existing Anthropic, OpenAI, and Moonshot providers.
 - [#379](https://github.com/aallan/vera/issues/379) **Add an Inference + JSON composition example** — demonstrate `Inference.complete` → `json_parse` → typed extraction. This is the pattern every real agent workload will use and it should be a first-class example.
 - [#380](https://github.com/aallan/vera/issues/380) **Add an effect handler mocking example** — show `handle[Inference] { complete(@String) -> { resume(Ok("mock")) } } in { ... }` for deterministic testing. This demonstrates the key architectural advantage of modelling inference as an algebraic effect.
 
@@ -215,4 +216,4 @@ The compiler was built through ten development phases from February to March 202
 | C8.5 | v0.0.66–v0.0.88 | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
 | C9 | v0.0.89–v0.0.101 | **Abilities, standard library, data types, effects** — Eq/Ord/Hash/Show, Map/Set, JSON, HTML, Markdown, Http, Decimal, Inference, standard prelude, combinators, higher-order array ops | Done |
 
-**617 commits, 102 tagged releases, 3,095 tests, 96% coverage, 64 conformance programs, 30 examples, 13 spec chapters.**
+**630+ commits, 103 tagged releases, 3,120 tests, 96% coverage, 65 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built across 30 development days.

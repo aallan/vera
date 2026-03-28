@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.101. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.102. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -49,7 +49,10 @@ vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --json file.vera             # Compile with JSON diagnostics
 vera compile --target browser file.vera   # Compile + emit browser bundle (wasm + JS + html)
 vera run file.vera                # Compile and execute (calls main)
-vera run file.vera --fn f -- 42   # Call function f with argument 42
+vera run file.vera --fn f -- 42         # Call function f with Int argument
+vera run file.vera --fn f -- 3.14       # Call function f with Float64 argument
+vera run file.vera --fn f -- true       # Call function f with Bool argument
+vera run file.vera --fn f -- "hello"    # Call function f with String argument
 vera run --json file.vera         # Run with JSON output
 vera test file.vera               # Contract-driven testing via Z3 + WASM
 vera test --json file.vera        # Test with JSON output
@@ -2141,20 +2144,20 @@ This is a deliberate trade-off. Mandatory contracts add friction. But the fricti
 
 ## What does the project status look like?
 
-The reference compiler is at v0.0.90. It includes:
+The reference compiler is under active development. The current release includes:
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
-- Around 28,500 lines of Python compiler code
 - A 13-chapter formal specification
-- 2,375 unit tests plus a 55-program conformance suite
-- 25 working example programs
-- 70 built-in functions plus 5 Option/Result combinators
+- Over 3,000 unit tests plus a 65-program conformance suite
+- 30 working example programs
+- 122 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
 - Full IO operations (print, read_line, read_file, write_file, args, exit, get_env)
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
 - Algebraic effect handlers with resume and state
-- Async/await with `Future<T>` and the `<Async>` effect
-- Typed Markdown (`MdBlock`/`MdInline` ADTs) for structured document processing
+- Built-in `<Http>`, `<Inference>`, `<State>`, `<IO>`, `<Async>` effects
+- `<Inference>` dispatches to Anthropic, OpenAI, or Moonshot via env vars
+- Collection types: `Map<K,V>`, `Set<T>`, `Array<T>`, `Decimal`, `Json`, `HtmlNode`, `Markdown`
 - String interpolation with auto-conversion for primitive types
 - Cross-module imports with contract verification at call sites
 - Contract-driven testing via Z3 and WASM
