@@ -2,12 +2,12 @@
 """Verify limitation tracking is consistent across documentation tiers.
 
 Vera documents limitations in three places:
-  1. README.md — user-facing "Limitations" table
+  1. KNOWN_ISSUES.md — user-facing "Bugs" and "Limitations" tables
   2. vera/README.md — contributor-facing "Current Limitations" table
   3. spec/ chapters — language-design-level limitation tables (ch 8, 9, 11, 12)
 
 This script extracts GitHub issue numbers from each tier and checks:
-  - Every open limitation issue in spec or vera/README appears in README.md
+  - Every open limitation issue in spec or vera/README appears in KNOWN_ISSUES.md
   - No stale "Done" entries remain in limitation tables
 
 With --check-states, also verifies via GitHub API that no closed issues are
@@ -135,13 +135,13 @@ def main() -> int:
     # 1. Extract limitation issues from each documentation tier
     # ------------------------------------------------------------------
 
-    # Tier 1: README.md — user-facing limitations and bugs tables
-    readme_text = (root / "README.md").read_text()
+    # Tier 1: KNOWN_ISSUES.md — user-facing limitations and bugs tables
+    readme_text = (root / "KNOWN_ISSUES.md").read_text()
     readme_issues = extract_limitation_table_issues(
-        readme_text, "#### Limitations"
+        readme_text, "## Limitations"
     )
     readme_bugs = extract_limitation_table_issues(
-        readme_text, "#### Bugs"
+        readme_text, "## Bugs"
     )
     readme_issues |= readme_bugs  # issues in either table count as tracked
 
@@ -185,7 +185,7 @@ def main() -> int:
                 sources.append(spec_path)
         errors.append(
             f"Issue #{num} appears in {', '.join(sources)} "
-            f"but is missing from README.md Limitations table"
+            f"but is missing from KNOWN_ISSUES.md"
         )
 
     # ------------------------------------------------------------------
@@ -212,7 +212,7 @@ def main() -> int:
                 if state == "CLOSED":
                     locations = []
                     if num in readme_issues:
-                        locations.append("README.md")
+                        locations.append("KNOWN_ISSUES.md")
                     if num in vera_readme_open:
                         locations.append("vera/README.md")
                     for spec_path, issues in spec_issues.items():
@@ -239,7 +239,7 @@ def main() -> int:
     mode = " (with state check)" if do_check_states else ""
     print(
         f"Limitation tracking is consistent{mode} "
-        f"({len(readme_issues)} in README.md, "
+        f"({len(readme_issues)} in KNOWN_ISSUES.md, "
         f"{len(vera_readme_open)} in vera/README.md, "
         f"{len(all_spec_issues)} across spec chapters)."
     )

@@ -46,6 +46,7 @@ python scripts/check_conformance.py    # Verify all 64 conformance programs pass
 python scripts/check_examples.py      # Verify all 30 examples parse + check + verify
 python scripts/check_spec_examples.py # Verify spec code blocks parse
 python scripts/check_readme_examples.py # Verify README code blocks parse
+python scripts/check_examples_doc.py  # Verify EXAMPLES.md code blocks parse
 python scripts/check_skill_examples.py # Verify SKILL.md code blocks parse
 python scripts/check_faq_examples.py  # Verify FAQ code blocks parse
 python scripts/check_html_examples.py # Verify HTML code blocks parse + check + verify
