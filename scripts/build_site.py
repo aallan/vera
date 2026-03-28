@@ -37,11 +37,27 @@ def _version() -> str:
     return m.group(1)
 
 
+def _count_examples() -> int:
+    """Count .vera files in examples/."""
+    return len(list((ROOT / "examples").glob("*.vera")))
+
+
+def _count_conformance() -> int:
+    """Count conformance programs from manifest.json."""
+    import json as _json
+    manifest = _json.loads(
+        (ROOT / "tests" / "conformance" / "manifest.json").read_text()
+    )
+    return len(manifest)
+
+
 # ── llms.txt ────────────────────────────────────────────────────────
 
 
 def build_llms_txt(version: str) -> str:
     """Build the curated llms.txt index."""
+    n_examples = _count_examples()
+    n_conformance = _count_conformance()
     return f"""\
 # Vera
 
@@ -56,8 +72,8 @@ Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent \
 Contracts are mandatory — every function must declare `requires(...)`, \
 `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts \
 statically where possible; remaining contracts become runtime assertions. \
-All side effects (IO, Http, State, Exceptions, Async) are tracked in the type \
-system via algebraic effects.
+All side effects (IO, Http, State, Exceptions, Async, Inference) are \
+tracked in the type system via algebraic effects.
 
 Current version: {version}. The reference compiler is written in Python. \
 Install with `pip install -e .` from the repository.
@@ -92,12 +108,12 @@ closures, generics, and mutual recursion.
 - [Chapter 6: Contracts]({RAW}/spec/06-contracts.md): Preconditions, \
 postconditions, termination measures, and quantifiers.
 - [Chapter 7: Effects]({RAW}/spec/07-effects.md): Algebraic effects, \
-handlers, IO, Http, State, Exceptions, and Async.
+handlers, IO, Http, State, Exceptions, Async, and Inference.
 - [Chapter 8: Modules]({RAW}/spec/08-modules.md): Module system, imports, \
 and visibility.
 - [Chapter 9: Standard Library]({RAW}/spec/09-standard-library.md): All \
-built-in functions — arrays, strings, markdown, regex, numeric, type \
-conversions.
+built-in functions — arrays, strings, maps, sets, decimals, JSON, HTML, \
+markdown, regex, numeric, type conversions.
 - [Chapter 10: Grammar]({RAW}/spec/10-grammar.md): Complete LALR(1) grammar \
 in Lark notation.
 - [Chapter 11: Compilation]({RAW}/spec/11-compilation.md): Compilation \
@@ -107,26 +123,30 @@ memory management, and GC.
 
 ## Examples
 
-- [examples/]({REPO}/tree/main/examples): 29 verified example programs \
-covering closures, generics, effects, pattern matching, string operations, \
-async, markdown, regex, modules, and more.
+- [examples/]({REPO}/tree/main/examples): {n_examples} verified example \
+programs covering closures, generics, effects, pattern matching, string \
+operations, async, markdown, JSON, HTML, HTTP, inference, regex, modules, \
+and more.
 
 ## Compiler and Tooling
 
-- [README]({RAW}/README.md): Project overview, feature matrix, and \
-installation.
+- [README]({RAW}/README.md): Project overview, installation, and getting started.
+- [EXAMPLES]({RAW}/EXAMPLES.md): Language tour with code examples.
+- [DESIGN]({RAW}/DESIGN.md): Technical decisions and prior art.
 - [CHANGELOG]({RAW}/CHANGELOG.md): Version history and release notes.
-- [ROADMAP]({RAW}/ROADMAP.md): Development roadmap and planned features.
+- [ROADMAP]({RAW}/ROADMAP.md): Forward-looking language roadmap.
+- [HISTORY]({RAW}/HISTORY.md): How the compiler was built.
 - [Compiler Architecture]({RAW}/vera/README.md): Compiler internals — \
 pipeline stages, module map, design patterns.
 
 ## Optional
 
-- [TESTING.md]({RAW}/TESTING.md): Test suite architecture — 3,012 tests, \
-96% coverage, conformance suite.
+- [TESTING.md]({RAW}/TESTING.md): Test suite architecture, coverage data, \
+and test conventions.
+- [KNOWN_ISSUES.md]({RAW}/KNOWN_ISSUES.md): Known bugs and limitations.
 - [CONTRIBUTING.md]({RAW}/CONTRIBUTING.md): Contribution guidelines.
-- [Conformance Suite]({REPO}/tree/main/tests/conformance): 62 programs \
-validating every language feature against the spec.
+- [Conformance Suite]({REPO}/tree/main/tests/conformance): {n_conformance} \
+programs validating every language feature against the spec.
 """
 
 
@@ -257,6 +277,7 @@ def build_sitemap_xml() -> str:
 
 def build_index_md(version: str) -> str:
     """Build a Markdown companion of the landing page."""
+    n_examples = _count_examples()
     return f"""\
 # Vera — A language designed for machines to write
 
@@ -300,14 +321,21 @@ fewer ways to get it wrong.
 using De Bruijn indexing
 - **Mandatory contracts** — `requires(...)`, `ensures(...)`, `effects(...)` \
 on every function
-- **Algebraic effects** — IO, Http, State, Exceptions, Async tracked in the type system
+- **Algebraic effects** — IO, Http, State, Exceptions, Async, Inference \
+tracked in the type system
+- **LLM inference** — `Inference.complete` as a first-class algebraic \
+effect; model calls are typed, contract-verifiable, and mockable
 - **Z3 verification** — Contracts proved statically by the Z3 SMT solver
 - **Contract-driven testing** — Z3 generates test inputs from contracts
 - **WebAssembly** — Compiles to WASM, runs via wasmtime or in the browser
+- **Built-in data types** — JSON, HTML, Markdown, Map, Set, Decimal with \
+typed parse/query/serialize operations
+- **HTTP** — `Http.get` and `Http.post` as algebraic effects, composing \
+with JSON for verified API access
 - **String interpolation** — `"value: \\(@Int.0)"` with auto-conversion
-- **Typed Markdown** — Parse and query Markdown documents with type safety
 - **Pattern matching** — Exhaustive ADT matching with nested patterns
-- **Generics** — Parametric polymorphism with monomorphization
+- **Constrained generics** — Four built-in abilities (Eq, Ord, Hash, Show) \
+with monomorphization
 
 ## Quick Start
 
@@ -322,13 +350,17 @@ vera run examples/hello_world.vera
 
 - [SKILL.md]({RAW}/SKILL.md) — Complete language reference
 - [AGENTS.md]({RAW}/AGENTS.md) — Instructions for AI agents
+- [EXAMPLES.md]({RAW}/EXAMPLES.md) — Language tour with code examples
 - [FAQ]({RAW}/FAQ.md) — Design rationale and comparisons
 - [Specification]({REPO}/tree/main/spec) — 13-chapter formal spec
-- [Examples]({REPO}/tree/main/examples) — 28 verified programs
+- [Examples]({REPO}/tree/main/examples) — {n_examples} verified programs
 
 ## Links
 
 - [GitHub]({REPO})
+- [Roadmap]({RAW}/ROADMAP.md)
+- [Changelog]({RAW}/CHANGELOG.md)
+- [History]({RAW}/HISTORY.md)
 - [Releases]({REPO}/releases)
 - [Issues]({REPO}/issues)
 - [MIT License]({REPO}/blob/main/LICENSE)

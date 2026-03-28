@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (`@T.n`) instead of variable names, requires contracts (preconditions, postconditions, effect declarations) on every function, and compiles to WebAssembly. Programs run at the command line via wasmtime or in the browser.
 
-Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts statically where possible; remaining contracts become runtime assertions. All side effects (IO, Http, State, Exceptions, Async) are tracked in the type system via algebraic effects.
+Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts statically where possible; remaining contracts become runtime assertions. All side effects (IO, Http, State, Exceptions, Async, Inference) are tracked in the type system via algebraic effects.
 
 Current version: 0.0.101. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
 
@@ -24,26 +24,30 @@ Current version: 0.0.101. The reference compiler is written in Python. Install w
 - [Chapter 4: Expressions](https://raw.githubusercontent.com/aallan/vera/main/spec/04-expressions.md): Arithmetic, comparison, logical, and let expressions.
 - [Chapter 5: Functions](https://raw.githubusercontent.com/aallan/vera/main/spec/05-functions.md): Function declarations, closures, generics, and mutual recursion.
 - [Chapter 6: Contracts](https://raw.githubusercontent.com/aallan/vera/main/spec/06-contracts.md): Preconditions, postconditions, termination measures, and quantifiers.
-- [Chapter 7: Effects](https://raw.githubusercontent.com/aallan/vera/main/spec/07-effects.md): Algebraic effects, handlers, IO, Http, State, Exceptions, and Async.
+- [Chapter 7: Effects](https://raw.githubusercontent.com/aallan/vera/main/spec/07-effects.md): Algebraic effects, handlers, IO, Http, State, Exceptions, Async, and Inference.
 - [Chapter 8: Modules](https://raw.githubusercontent.com/aallan/vera/main/spec/08-modules.md): Module system, imports, and visibility.
-- [Chapter 9: Standard Library](https://raw.githubusercontent.com/aallan/vera/main/spec/09-standard-library.md): All built-in functions — arrays, strings, markdown, regex, numeric, type conversions.
+- [Chapter 9: Standard Library](https://raw.githubusercontent.com/aallan/vera/main/spec/09-standard-library.md): All built-in functions — arrays, strings, maps, sets, decimals, JSON, HTML, markdown, regex, numeric, type conversions.
 - [Chapter 10: Grammar](https://raw.githubusercontent.com/aallan/vera/main/spec/10-grammar.md): Complete LALR(1) grammar in Lark notation.
 - [Chapter 11: Compilation](https://raw.githubusercontent.com/aallan/vera/main/spec/11-compilation.md): Compilation model and WebAssembly code generation.
 - [Chapter 12: Runtime](https://raw.githubusercontent.com/aallan/vera/main/spec/12-runtime.md): Runtime execution, memory management, and GC.
 
 ## Examples
 
-- [examples/](https://github.com/aallan/vera/tree/main/examples): 29 verified example programs covering closures, generics, effects, pattern matching, string operations, async, markdown, regex, modules, and more.
+- [examples/](https://github.com/aallan/vera/tree/main/examples): 30 verified example programs covering closures, generics, effects, pattern matching, string operations, async, markdown, JSON, HTML, HTTP, inference, regex, modules, and more.
 
 ## Compiler and Tooling
 
-- [README](https://raw.githubusercontent.com/aallan/vera/main/README.md): Project overview, feature matrix, and installation.
+- [README](https://raw.githubusercontent.com/aallan/vera/main/README.md): Project overview, installation, and getting started.
+- [EXAMPLES](https://raw.githubusercontent.com/aallan/vera/main/EXAMPLES.md): Language tour with code examples.
+- [DESIGN](https://raw.githubusercontent.com/aallan/vera/main/DESIGN.md): Technical decisions and prior art.
 - [CHANGELOG](https://raw.githubusercontent.com/aallan/vera/main/CHANGELOG.md): Version history and release notes.
-- [ROADMAP](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md): Development roadmap and planned features.
+- [ROADMAP](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md): Forward-looking language roadmap.
+- [HISTORY](https://raw.githubusercontent.com/aallan/vera/main/HISTORY.md): How the compiler was built.
 - [Compiler Architecture](https://raw.githubusercontent.com/aallan/vera/main/vera/README.md): Compiler internals — pipeline stages, module map, design patterns.
 
 ## Optional
 
-- [TESTING.md](https://raw.githubusercontent.com/aallan/vera/main/TESTING.md): Test suite architecture — 3,012 tests, 96% coverage, conformance suite.
+- [TESTING.md](https://raw.githubusercontent.com/aallan/vera/main/TESTING.md): Test suite architecture, coverage data, and test conventions.
+- [KNOWN_ISSUES.md](https://raw.githubusercontent.com/aallan/vera/main/KNOWN_ISSUES.md): Known bugs and limitations.
 - [CONTRIBUTING.md](https://raw.githubusercontent.com/aallan/vera/main/CONTRIBUTING.md): Contribution guidelines.
-- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 62 programs validating every language feature against the spec.
+- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 64 programs validating every language feature against the spec.
