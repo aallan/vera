@@ -3251,6 +3251,12 @@ public fn max(@Int, @Int -> @Int)
   ensures(true)
   effects(pure)
 { if @Int.0 > @Int.1 then { @Int.0 } else { @Int.1 } }
+
+public fn tag(@Int, @String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @String.0 }
 """
 
     @staticmethod
@@ -3323,7 +3329,7 @@ private fn f(@Int -> @Int)
         """Chained pipes into module-qualified calls type-check. (#326)"""
         mod = self._resolved(("math",), self.MATH_MODULE)
         source = """\
-import math(abs, max);
+import math(abs);
 private fn f(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { @Int.0 |> math::abs() |> math::abs() }
@@ -3336,21 +3342,18 @@ private fn f(@Int -> @Int)
     def test_pipe_module_call_arg_order_regression(self) -> None:
         """LHS is prepended as first arg, not appended. (#326)
 
-        @Int.0 |> math::max(123) must desugar to math::max(value, 123),
-        not math::max(123, value). If the LHS were appended, the type-checker
-        would still accept it (both args are Int), so we verify via the
-        contract: ensures(@Int.result >= @Int.0) requires value >= 0 — max(v, 123)
-        satisfies that only when v is the first argument.
-
-        Since the checker operates on types not values, we rely on arity: using
-        an asymmetric two-arg function ensures any arg-count mismatch surfaces.
+        @Int.0 |> math::tag("ok") must desugar to math::tag(value, "ok"),
+        not math::tag("ok", value). tag has signature (@Int, @String -> @String),
+        so if the LHS were appended the checker would see String where Int is
+        expected and emit a type error — making the prepend/append distinction
+        type-observable.
         """
         mod = self._resolved(("math",), self.MATH_MODULE)
         source = """\
-import math(max);
-private fn f(@Int -> @Int)
+import math(tag);
+private fn f(@Int -> @String)
   requires(true) ensures(true) effects(pure)
-{ @Int.0 |> math::max(123) }
+{ @Int.0 |> math::tag("ok") }
 """
         prog = parse_to_ast(source)
         diags = typecheck(prog, source=source, resolved_modules=[mod])
