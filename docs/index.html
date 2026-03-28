@@ -18,6 +18,13 @@
   <link rel="alternate" type="text/markdown" href="/llms.txt" title="LLM documentation index">
   <link rel="alternate" type="text/markdown" href="/llms-full.txt" title="Full LLM documentation">
   <link rel="alternate" type="text/markdown" href="/index.md" title="Markdown version">
+  <!-- Agent skill file discovery -->
+  <link rel="alternate" type="text/markdown"
+        title="Vera SKILL.md — Complete agent language reference"
+        href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md" />
+  <!-- llms.txt discovery (Mintlify convention) -->
+  <link rel="llms-txt" href="/llms.txt" />
+  <link rel="llms-full-txt" href="/llms-full.txt" />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -516,6 +523,30 @@
           "applicationCategory": "DeveloperApplication",
           "operatingSystem": "Linux, macOS, Windows"
         }
+      },
+      {
+        "@type": "TechArticle",
+        "name": "SKILL.md",
+        "description": "Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.",
+        "url": "https://raw.githubusercontent.com/aallan/vera/main/SKILL.md",
+        "encodingFormat": "text/markdown",
+        "isPartOf": { "@id": "https://veralang.dev" },
+        "audience": {
+          "@type": "Audience",
+          "audienceType": "AI agents and LLMs"
+        }
+      },
+      {
+        "@type": "TechArticle",
+        "name": "AGENTS.md",
+        "description": "Setup instructions for any agent system (Copilot, Cursor, Windsurf, custom). Covers writing Vera code and working on the compiler.",
+        "url": "https://github.com/aallan/vera/blob/main/AGENTS.md",
+        "encodingFormat": "text/markdown",
+        "isPartOf": { "@id": "https://veralang.dev" },
+        "audience": {
+          "@type": "Audience",
+          "audienceType": "AI agents and LLMs"
+        }
       }
     ]
   }
@@ -546,7 +577,12 @@
         GitHub
       </a>
       <a href="#install" class="cta-btn secondary">Install</a>
-      <a href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md" class="cta-btn outline">
+      <a href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md"
+         rel="agent-instructions"
+         type="text/markdown"
+         data-agent-role="skill"
+         data-agent-description="Complete language reference for writing Vera code. Covers syntax, slot references, contracts, effects, and working examples."
+         class="cta-btn outline">
         For Agents → SKILL.md
       </a>
     </div>
@@ -983,6 +1019,22 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       <p class="footer-copy">&copy; 2026 Alasdair Allan</p>
     </div>
   </footer>
+
+  <!-- Inline agent instructions (Vercel llms.txt-in-HTML convention).
+       Invisible to browsers; discoverable by agents parsing the DOM. -->
+  <script type="text/llms.txt">
+## Vera — A programming language designed for LLMs to write
+
+Vera is a statically typed, purely functional language with algebraic effects,
+mandatory contracts, and typed slot references. Designed for LLM code generation.
+Compiles to WebAssembly. Runs at the CLI or in the browser.
+
+### For Agents
+- [SKILL.md](https://raw.githubusercontent.com/aallan/vera/main/SKILL.md): Complete language reference for writing Vera code
+- [AGENTS.md](https://github.com/aallan/vera/blob/main/AGENTS.md): Setup instructions for any agent system
+- [llms.txt](https://veralang.dev/llms.txt): Site index for LLMs
+- [llms-full.txt](https://veralang.dev/llms-full.txt): Full site content for LLMs
+  </script>
 
 </body>
 </html>
