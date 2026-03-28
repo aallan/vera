@@ -3305,6 +3305,34 @@ private fn f(@Int -> @Int)
         errors = [d for d in diags if d.severity == "error"]
         assert any("argument" in e.description.lower() for e in errors)
 
+    def test_pipe_into_module_call_typechecks(self) -> None:
+        """Pipe into module-qualified call type-checks without E201. (#326)"""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        source = """\
+import math(abs);
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 |> math::abs() }
+"""
+        prog = parse_to_ast(source)
+        diags = typecheck(prog, source=source, resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
+    def test_pipe_chained_module_calls_typechecks(self) -> None:
+        """Chained pipes into module-qualified calls type-check. (#326)"""
+        mod = self._resolved(("math",), self.MATH_MODULE)
+        source = """\
+import math(abs, max);
+private fn f(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 |> math::abs() |> math::abs() }
+"""
+        prog = parse_to_ast(source)
+        diags = typecheck(prog, source=source, resolved_modules=[mod])
+        errors = [d for d in diags if d.severity == "error"]
+        assert errors == [], [e.description for e in errors]
+
 
 # =====================================================================
 # Error code tests

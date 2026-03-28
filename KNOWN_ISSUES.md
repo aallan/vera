@@ -6,7 +6,6 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 | Bug | Issue |
 |-----|-------|
-| Pipe operator with module-qualified calls produces spurious E201 | [#326](https://github.com/aallan/vera/issues/326) |
 | `vera run /dev/stdin` fails — stdin consumed before main compilation | [#335](https://github.com/aallan/vera/issues/335) |
 | Combinators cannot infer type variables from bare `None` / `Err` constructors | [#293](https://github.com/aallan/vera/issues/293) |
 | Closure parameter with pair-ABI type emits invalid WAT | [#359](https://github.com/aallan/vera/issues/359) |

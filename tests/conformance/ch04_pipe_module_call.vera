@@ -1,0 +1,17 @@
+import vera.math(abs);
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  -5 |> vera.math::abs()
+}
+
+public fn test_chained(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  -5 |> vera.math::abs() |> vera.math::abs()
+}
