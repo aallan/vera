@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 import sys
 from datetime import date
-from functools import lru_cache
+from functools import cache
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,13 +38,13 @@ def _version() -> str:
     return m.group(1)
 
 
-@lru_cache(maxsize=None)
+@cache
 def _count_examples() -> int:
     """Count .vera files in examples/."""
     return len(list((ROOT / "examples").glob("*.vera")))
 
 
-@lru_cache(maxsize=None)
+@cache
 def _count_conformance() -> int:
     """Count conformance programs from manifest.json."""
     import json as _json
