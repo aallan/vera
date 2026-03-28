@@ -30,6 +30,14 @@ class CrossModuleMixin:
 
         from vera.codegen.core import CodeGenerator
 
+        # Pre-register builtin ADTs so we can identify them during collision
+        # detection.  Every CodeGenerator registers Option, Result, Ordering,
+        # UrlParts, Tuple, MdInline, MdBlock, etc. via _register_builtin_adts()
+        # — they are global infrastructure, not owned by any particular module.
+        # Seeing them in two imported modules must not trigger E609/E610.
+        self._register_builtin_adts()
+        builtin_adt_names: frozenset[str] = frozenset(self._adt_layouts.keys())
+
         # 1. Build import filter: path -> set of names (or None for wildcard)
         import_names: dict[tuple[str, ...], set[str] | None] = {}
         for imp in program.imports:
@@ -84,6 +92,12 @@ class CrossModuleMixin:
 
             # Harvest ADT layouts
             for adt_name, layouts in temp._adt_layouts.items():
+                # Builtin ADTs (Option, Result, Ordering, etc.) appear in
+                # every CodeGenerator's _adt_layouts — they are not owned by
+                # any imported module and must not trigger false E609/E610.
+                if adt_name in builtin_adt_names:
+                    continue
+
                 is_public = vis_map.get(adt_name) == "public"
                 in_filter = (
                     name_filter is None or adt_name in name_filter

@@ -450,6 +450,34 @@ public fn main(-> @Int)
             for e in errors
         )
 
+    def test_prelude_types_not_flagged_as_collision(self) -> None:
+        """Builtin ADTs (Option, Result, etc.) shared across two imported modules
+        must NOT produce E609. Regression test for #360."""
+        mod_a = self._resolved(("mod_a",), """\
+public fn double(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 * 2 }
+""")
+        mod_b = self._resolved(("mod_b",), """\
+public fn triple(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 * 3 }
+""")
+        result = self._compile_mod("""\
+import mod_a(double);
+import mod_b(triple);
+public fn main(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ double(@Int.0) + triple(@Int.0) }
+""", [mod_a, mod_b])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        # Option, Result, Ordering, UrlParts, Tuple, MdInline, MdBlock are
+        # builtins registered in every CodeGenerator — must not collide.
+        assert not any(
+            e.error_code == "E609" for e in errors
+        ), f"False E609 for builtin ADTs: {[e.description for e in errors if e.error_code == 'E609']}"
+        assert result.ok is True
+
     def test_ctor_collision_across_adts(self) -> None:
         """Same constructor name in different ADTs produces E610."""
         mod_a = self._resolved(("colors",), """\

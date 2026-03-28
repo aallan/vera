@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,095 across 26 files (~34,000 lines of test code) |
+| **Tests** | 3,096 across 26 files (~34,000 lines of test code) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 64 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 30, all validated through `vera check` + `vera verify` |
@@ -59,7 +59,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 52 | 897 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 19 | 473 | Closure lifting, captured variables, higher-order functions |
-| `test_codegen_modules.py` | 18 | 529 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
+| `test_codegen_modules.py` | 19 | 557 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 114 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
