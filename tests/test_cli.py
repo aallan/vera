@@ -2385,20 +2385,16 @@ public fn main(-> @Int)
 { 42 }
 """
 
-    def test_run_stdin(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-        """vera run /dev/stdin executes the program correctly."""
-        # Write to a named pipe via a temp file to simulate stdin
-        stdin_path = tmp_path / "input.vera"
-        stdin_path.write_text(self.SIMPLE_PROGRAM)
-        # Simulate the double-read bug: verify our fix reads source only once
-        # by using a real file that would have worked either way, then checking
-        # the output rather than relying on the path name.
-        rc = cmd_run(str(stdin_path))
+    def test_run_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """cmd_run executes a regular .vera file correctly."""
+        path = tmp_path / "input.vera"
+        path.write_text(self.SIMPLE_PROGRAM)
+        rc = cmd_run(str(path))
         assert rc == 0
         captured = capsys.readouterr()
         assert "42" in captured.out
 
-    def test_check_reads_source_once(self, tmp_path: Path) -> None:
+    def test_check_reads_source_once(self) -> None:
         """cmd_check parses from the already-read source, not by re-opening."""
         # If check re-opened the file it would still work for a normal file,
         # so we verify the behaviour via subprocess on /dev/stdin instead.
@@ -2431,3 +2427,4 @@ public fn main(-> @Int)
             text=True,
         )
         assert result.returncode == 0, result.stderr
+        assert "verified" in result.stdout.lower(), result.stdout
