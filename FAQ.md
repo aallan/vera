@@ -197,20 +197,20 @@ This is a deliberate trade-off. Mandatory contracts add friction. But the fricti
 
 ## What does the project status look like?
 
-The reference compiler is at v0.0.90. It includes:
+The reference compiler is under active development. The current release includes:
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
-- Around 28,500 lines of Python compiler code
 - A 13-chapter formal specification
-- 2,375 unit tests plus a 55-program conformance suite
-- 25 working example programs
-- 70 built-in functions plus 5 Option/Result combinators
+- Over 3,000 unit tests plus a 65-program conformance suite
+- 30 working example programs
+- 122 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
 - Full IO operations (print, read_line, read_file, write_file, args, exit, get_env)
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
 - Algebraic effect handlers with resume and state
-- Async/await with `Future<T>` and the `<Async>` effect
-- Typed Markdown (`MdBlock`/`MdInline` ADTs) for structured document processing
+- Built-in `<Http>`, `<Inference>`, `<State>`, `<IO>`, `<Async>` effects
+- `<Inference>` dispatches to Anthropic, OpenAI, Moonshot, or Mistral via env vars
+- Collection types: `Map<K,V>`, `Set<T>`, `Array<T>`, `Decimal`, `Json`, `HtmlNode`, `Markdown`
 - String interpolation with auto-conversion for primitive types
 - Cross-module imports with contract verification at call sites
 - Contract-driven testing via Z3 and WASM

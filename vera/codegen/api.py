@@ -2100,22 +2100,27 @@ def execute(
         alloc_export = instance.exports(store).get("alloc")
 
         def _alloc_string_arg(s: str) -> tuple[int, int]:
-            assert isinstance(memory_export, wasmtime.Memory), (
-                "Cannot allocate String argument: module has no 'memory' export"
-            )
-            assert isinstance(alloc_export, wasmtime.Func), (
-                "Cannot allocate String argument: module has no 'alloc' export"
-            )
+            if not isinstance(memory_export, wasmtime.Memory):
+                raise RuntimeError(
+                    "Cannot allocate String argument: module has no 'memory' export"
+                )
+            if not isinstance(alloc_export, wasmtime.Func):
+                raise RuntimeError(
+                    "Cannot allocate String argument: module has no 'alloc' export"
+                )
             encoded = s.encode("utf-8")
             ptr = alloc_export(store, len(encoded))
-            assert isinstance(ptr, int)
+            if not isinstance(ptr, int):
+                raise RuntimeError(
+                    f"String allocator returned unexpected type {type(ptr).__name__!r}"
+                )
             buf = memory_export.data_ptr(store)
             for i, b in enumerate(encoded):
                 buf[ptr + i] = b
             return ptr, len(encoded)
 
         parsed: list[int | float] = []
-        for raw, wasm_type in zip(raw_args, vera_params):
+        for raw, wasm_type in zip(raw_args, vera_params, strict=True):
             try:
                 if wasm_type == "i64":
                     parsed.append(int(raw))

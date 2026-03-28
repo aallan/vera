@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.102] - 2026-03-28
+
+### Added
+- **Type-aware CLI argument passing** ([#263](https://github.com/aallan/vera/issues/263)) — `vera run file.vera --fn f -- arg` now accepts all Vera scalar and string types, not just integers. Arguments are parsed using the function's WASM signature: `Int`/`Nat` → integer literal, `Float64` → decimal literal, `Bool` → `true`/`false` (case-insensitive), `Byte` → integer 0–255, `String` → text (allocated into WASM linear memory). Type-mismatch errors identify the bad argument and expected type. `CompileResult.fn_param_types` (new field) exposes per-function Vera-level param types so the host runtime can allocate strings before invoking the function. Closes [#263](https://github.com/aallan/vera/issues/263). Closes [#403](https://github.com/aallan/vera/issues/403).
+- **Multi-layer agent discovery metadata** ([#400](https://github.com/aallan/vera/issues/400)) — veralang.dev now exposes `SKILL.md` through four machine-readable layers: `<head>` link elements (`rel="alternate" type="text/markdown"`, `rel="llms-txt"`, `rel="llms-full-txt"`), an inline `<script type="text/llms.txt">` block (Vercel convention), JSON-LD `TechArticle` entries for `SKILL.md` and `AGENTS.md`, and semantic attributes on the existing CTA button. HTTP headers skipped — GitHub Pages does not support custom response headers. Closes [#400](https://github.com/aallan/vera/issues/400).
+
+### Fixed
+- **E609 false positive on `Option<T>` return types across modules** ([#360](https://github.com/aallan/vera/issues/360)) — the name-collision checker incorrectly flagged `Option`, `Result`, and other built-in ADTs as user-defined names when they appeared as return types in imported modules. Fixed by pre-seeding `builtin_adt_names` before scanning module declarations. Closes [#360](https://github.com/aallan/vera/issues/360).
+- **Pipe operator into module-qualified calls** ([#326](https://github.com/aallan/vera/issues/326)) — `value |> mod::fn(args)` previously type-checked the right-hand side in isolation, ignoring the piped argument. The checker now desugars to a `ModuleCall` with the LHS prepended to the argument list. Closes [#326](https://github.com/aallan/vera/issues/326).
+- **`/dev/stdin` double-read** ([#335](https://github.com/aallan/vera/issues/335)) — all CLI commands (`check`, `verify`, `compile`, `run`, `ast`, `test`) previously called `p.read_text()` for the source string and then `parse_file(path)` which re-opened the same path. For `/dev/stdin` the second open returns empty content. Fixed by extracting `_load_and_parse(path)` which reads the source once and passes it directly to `parse()`. For stdin paths, returns `Path.cwd()/"stdin.vera"` so module resolution and compile output naming use CWD. Closes [#335](https://github.com/aallan/vera/issues/335).
+
 ## [0.0.101] - 2026-03-27
 
 ### Added
@@ -1455,7 +1466,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.101...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.102...HEAD
+[0.0.102]: https://github.com/aallan/vera/compare/v0.0.101...v0.0.102
 [0.0.101]: https://github.com/aallan/vera/compare/v0.0.100...v0.0.101
 [0.0.100]: https://github.com/aallan/vera/compare/v0.0.99...v0.0.100
 [0.0.99]: https://github.com/aallan/vera/compare/v0.0.98...v0.0.99

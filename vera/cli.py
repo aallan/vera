@@ -930,9 +930,7 @@ def main() -> None:
     raw_fn_args: list[str] | None = None
     if "--" in args:
         dash_idx = args.index("--")
-        raw_args_list = args[dash_idx + 1:]
-        if raw_args_list:
-            raw_fn_args = list(raw_args_list)
+        raw_fn_args = list(args[dash_idx + 1:])
 
     # Remove flags from remaining args to find the filepath
     skip_flags = {"--json", "--wat", "--write", "--check"}
