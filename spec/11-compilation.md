@@ -351,7 +351,7 @@ Runs the full pipeline through execution. Compiles the program, instantiates it 
 Flags:
 - `--fn <name>` — function to call (default: `main`)
 - `--json` — JSON output with result, stdout capture, and diagnostics
-- Arguments after `--` are passed to the function (parsed as integers)
+- Arguments after `--` are passed to the function (typed: `Int`→integer, `Float64`→decimal, `Bool`→`true`/`false`, `String`→text, `Byte`→integer 0–255)
 
 ## 11.10 Closures and Anonymous Functions
 

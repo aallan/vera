@@ -255,6 +255,15 @@ class CodeGenerator(
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
 
+        # If any exported function takes String/Array (i32_pair) params, ensure
+        # the heap allocator is compiled in so CLI callers can allocate args.
+        for export_name in exports:
+            sig = self._fn_sigs.get(export_name)
+            if sig and any(t == "i32_pair" for t in sig[0] if t is not None):
+                self._needs_alloc = True
+                self._needs_memory = True
+                break
+
         # Assemble the module
         wat = self._assemble_module(functions_wat)
 
@@ -284,6 +293,10 @@ class CodeGenerator(
                 inference_ops_used=set(self._inference_ops_used),
             )
 
+        fn_param_types = {
+            name: [t for t in params if t is not None]
+            for name, (params, _) in self._fn_sigs.items()
+        }
         return CompileResult(
             wat=wat,
             wasm_bytes=bytes(wasm_bytes),
@@ -299,6 +312,7 @@ class CodeGenerator(
             html_ops_used=set(self._html_ops_used),
             http_ops_used=set(self._http_ops_used),
             inference_ops_used=set(self._inference_ops_used),
+            fn_param_types=fn_param_types,
         )
 
     # -----------------------------------------------------------------

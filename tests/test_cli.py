@@ -870,7 +870,7 @@ private fn simple(-> @Int)
         assert len(data["warnings"]) > 0
 
     def test_run_invalid_int_arg(self) -> None:
-        """Non-integer arguments after -- produce a clean error."""
+        """Non-parseable arguments after -- produce a clean type error."""
         import tempfile
         source = """\
 public fn id(@Int -> @Int)
@@ -888,15 +888,15 @@ public fn id(@Int -> @Int)
             capture_output=True, text=True,
         )
         assert result.returncode == 1
-        assert "Invalid integer" in result.stderr
+        assert "not valid for parameter type" in result.stderr
 
-    def test_run_invalid_float_arg(self) -> None:
-        """Float arguments after -- produce a clean error."""
+    def test_run_float_arg(self) -> None:
+        """Float arguments work for Float64 parameters."""
         import tempfile
         source = """\
-public fn id(@Int -> @Int)
+public fn double(@Float64 -> @Float64)
   requires(true) ensures(true) effects(pure)
-{ @Int.0 }
+{ @Float64.0 + @Float64.0 }
 """
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".vera", delete=False
@@ -905,11 +905,52 @@ public fn id(@Int -> @Int)
             path = f.name
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli",
-             "run", path, "--fn", "id", "--", "1.5"],
+             "run", path, "--fn", "double", "--", "3.5"],
             capture_output=True, text=True,
         )
-        assert result.returncode == 1
-        assert "Invalid integer" in result.stderr
+        assert result.returncode == 0, result.stderr
+        assert "7.0" in result.stdout
+
+    def test_run_string_arg(self) -> None:
+        """String arguments work for String parameters."""
+        import tempfile
+        source = """\
+public fn greet(@String -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(@String.0) }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli",
+             "run", path, "--fn", "greet", "--", "Hello"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "Hello" in result.stdout
+
+    def test_run_bool_arg(self) -> None:
+        """Bool arguments work using true/false strings."""
+        import tempfile
+        source = """\
+public fn identity(@Bool -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ @Bool.0 }
+"""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False
+        ) as f:
+            f.write(source)
+            path = f.name
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli",
+             "run", path, "--fn", "identity", "--", "true"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
     def test_run_invalid_arg_json(self) -> None:
         """Invalid args with --json produce JSON error."""
@@ -932,7 +973,7 @@ public fn id(@Int -> @Int)
         assert result.returncode == 1
         data = json.loads(result.stdout)
         assert data["ok"] is False
-        assert "Invalid integer" in data["diagnostics"][0]["description"]
+        assert "not valid for parameter type" in data["diagnostics"][0]["description"]
 
     def test_run_no_main_no_args(
         self, capsys: pytest.CaptureFixture[str]
@@ -1897,26 +1938,27 @@ class TestMainArgParsing:
         assert out_dir.exists()
 
     def test_invalid_args_after_dashdash(self) -> None:
-        """Non-integer arguments after -- produce error."""
+        """Extra arguments after -- for a no-arg function produce error."""
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run",
-             HELLO_WORLD, "--", "notanint"],
+             HELLO_WORLD, "--", "notanarg"],
             capture_output=True, text=True,
         )
         assert result.returncode == 1
-        assert "Invalid integer" in result.stderr
+        # Argument count mismatch: main takes 0 args
+        assert "expects 0 arguments" in result.stderr
 
     def test_invalid_args_after_dashdash_json(self) -> None:
-        """Non-integer arguments after -- in JSON mode."""
+        """Extra arguments after -- in JSON mode produce structured error."""
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run",
-             "--json", HELLO_WORLD, "--", "notanint"],
+             "--json", HELLO_WORLD, "--", "notanarg"],
             capture_output=True, text=True,
         )
         assert result.returncode == 1
         data = json.loads(result.stdout)
         assert data["ok"] is False
-        assert "Invalid integer" in data["diagnostics"][0]["description"]
+        assert "expects 0 arguments" in data["diagnostics"][0]["description"]
 
     def test_dispatch_test_command(self) -> None:
         """test command dispatches correctly."""
@@ -2118,14 +2160,14 @@ class TestMainInProcess:
     def test_invalid_fn_args_inprocess(
         self, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Non-integer args after --, in-process."""
+        """Extra args after -- for no-arg function, in-process."""
         from unittest.mock import patch
         with patch("sys.argv", ["vera", "run", HELLO_WORLD, "--", "abc"]):
             with pytest.raises(SystemExit) as exc_info:
                 from vera.cli import main
                 main()
             assert exc_info.value.code == 1
-        assert "Invalid integer" in capsys.readouterr().err
+        assert "expects 0 arguments" in capsys.readouterr().err
 
     def test_invalid_fn_args_json_inprocess(
         self, capsys: pytest.CaptureFixture[str],

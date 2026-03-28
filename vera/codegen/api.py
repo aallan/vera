@@ -88,6 +88,7 @@ class CompileResult:
     html_ops_used: set[str] = field(default_factory=set)
     http_ops_used: set[str] = field(default_factory=set)
     inference_ops_used: set[str] = field(default_factory=set)
+    fn_param_types: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -220,6 +221,7 @@ def execute(
     result: CompileResult,
     fn_name: str | None = None,
     args: list[int | float] | None = None,
+    raw_args: list[str] | None = None,
     initial_state: dict[str, int | float] | None = None,
     stdin: str | None = None,
     cli_args: list[str] | None = None,
@@ -233,6 +235,9 @@ def execute(
 
     Parameters
     ----------
+    raw_args : list[str] | None
+        Unparsed CLI string arguments to type-parse using ``result.fn_param_types``.
+        Takes precedence over ``args`` when provided.
     stdin : str | None
         Input for ``IO.read_line``.  If *None*, reads from ``sys.stdin``.
     cli_args : list[str] | None
@@ -2077,6 +2082,64 @@ def execute(
             f"Function '{fn_name}' not found in exports. "
             f"Available: {exports_str}"
         )
+
+    # Type-aware parsing of CLI raw string arguments
+    if raw_args is not None:
+        vera_params = result.fn_param_types.get(fn_name or "", [])
+        if len(raw_args) != len(vera_params):
+            n = len(vera_params)
+            m = len(raw_args)
+            msg = (
+                f"Function '{fn_name}' expects {n} "
+                f"argument{'s' if n != 1 else ''} "
+                f"but {m} {'were' if m != 1 else 'was'} provided."
+            )
+            raise RuntimeError(msg)
+
+        memory_export = instance.exports(store).get("memory")
+        alloc_export = instance.exports(store).get("alloc")
+
+        def _alloc_string_arg(s: str) -> tuple[int, int]:
+            assert isinstance(memory_export, wasmtime.Memory), (
+                "Cannot allocate String argument: module has no 'memory' export"
+            )
+            assert isinstance(alloc_export, wasmtime.Func), (
+                "Cannot allocate String argument: module has no 'alloc' export"
+            )
+            encoded = s.encode("utf-8")
+            ptr = alloc_export(store, len(encoded))
+            assert isinstance(ptr, int)
+            buf = memory_export.data_ptr(store)
+            for i, b in enumerate(encoded):
+                buf[ptr + i] = b
+            return ptr, len(encoded)
+
+        parsed: list[int | float] = []
+        for raw, wasm_type in zip(raw_args, vera_params):
+            try:
+                if wasm_type == "i64":
+                    parsed.append(int(raw))
+                elif wasm_type == "f64":
+                    parsed.append(float(raw))
+                elif wasm_type == "i32":
+                    # Bool or Byte: accept true/false or integer
+                    if raw.lower() in ("true", "yes", "1"):
+                        parsed.append(1)
+                    elif raw.lower() in ("false", "no", "0"):
+                        parsed.append(0)
+                    else:
+                        parsed.append(int(raw))
+                elif wasm_type == "i32_pair":
+                    ptr, length = _alloc_string_arg(raw)
+                    parsed.extend([ptr, length])
+                else:
+                    parsed.append(int(raw))  # fallback
+            except (ValueError, TypeError) as exc:
+                raise RuntimeError(
+                    f"Argument {raw!r} is not valid for parameter type "
+                    f"'{wasm_type}': {exc}"
+                ) from exc
+        args = parsed
 
     # Check parameter count before calling
     call_args: list[int | float] = args or []
