@@ -345,7 +345,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-After running `pre-commit install`, every commit is checked by 21 hooks:
+After running `pre-commit install`, every commit is checked by 22 hooks:
 
 | Hook | What it does |
 |------|-------------|
@@ -359,13 +359,14 @@ After running `pre-commit install`, every commit is checked by 21 hooks:
 | `pytest tests/ -q` | Run full test suite |
 | `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
 | `check_conformance.py` | All 64 conformance programs pass their declared level |
-| `check_examples.py` | All 29 examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 30 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
+| `check_examples_doc.py` | EXAMPLES.md code blocks parse correctly |
 | `check_skill_examples.py` | SKILL.md code blocks parse correctly |
 | `check_faq_examples.py` | FAQ.md code blocks parse correctly |
 | `check_html_examples.py` | HTML landing page code blocks pass parse + check + verify |
 | `check_doc_counts.py` | Counts in docs match live codebase |
-| `check_limitations_sync.py` | Limitation tables consistent across README, vera/README, and spec |
+| `check_limitations_sync.py` | Limitation tables consistent across KNOWN_ISSUES.md, vera/README, and spec |
 | `check_licenses.py` | All package licenses are MIT-compatible |
 | `build_site.py` | Regenerate AI-readable site assets (llms.txt, llms-full.txt, robots.txt, sitemap.xml, index.md) |
 | `browser parity` | Browser runtime produces identical output to Python runtime |

@@ -71,7 +71,7 @@ pre-commit install
 
 ### Pre-commit Hooks
 
-After running `pre-commit install`, every commit is automatically checked by 21 hooks including:
+After running `pre-commit install`, every commit is automatically checked by 22 hooks including:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -81,7 +81,7 @@ After running `pre-commit install`, every commit is automatically checked by 21 
 - pytest test suite
 - All conformance programs pass their declared level
 - All `.vera` examples type-check and verify cleanly
-- README, SKILL.md, HTML, and spec code blocks parse correctly
+- README, EXAMPLES.md, SKILL.md, HTML, and spec code blocks parse correctly
 - Documentation counts match live codebase
 - Site assets (`docs/llms.txt`, `docs/llms-full.txt`, etc.) regenerated and up-to-date
 - License compliance (all dependencies MIT-compatible)
@@ -114,6 +114,7 @@ python scripts/check_conformance.py      # verify all conformance programs
 python scripts/check_examples.py         # verify all .vera examples
 python scripts/check_spec_examples.py    # verify spec code blocks parse
 python scripts/check_readme_examples.py  # verify README code blocks parse
+python scripts/check_examples_doc.py     # verify EXAMPLES.md code blocks parse
 python scripts/check_skill_examples.py   # verify SKILL.md code blocks parse
 python scripts/check_faq_examples.py    # verify FAQ code blocks parse
 python scripts/check_html_examples.py   # verify HTML code blocks parse, check, verify

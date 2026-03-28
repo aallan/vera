@@ -40,7 +40,7 @@ repos:
         entry: .venv/bin/python scripts/fix_allowlists.py --fix
         language: system
         pass_filenames: false
-        files: '(README\.md$|FAQ\.md$|SKILL\.md$|spec/.*\.md$)'
+        files: '(README\.md$|EXAMPLES\.md$|FAQ\.md$|SKILL\.md$|spec/.*\.md$)'
 
       - id: conformance-suite
         name: conformance suite
@@ -62,6 +62,13 @@ repos:
         language: system
         pass_filenames: false
         files: '(README\.md$|vera/.*\.py$|vera/grammar\.lark$)'
+
+      - id: examples-doc
+        name: examples doc
+        entry: .venv/bin/python scripts/check_examples_doc.py
+        language: system
+        pass_filenames: false
+        files: '(EXAMPLES\.md$|vera/.*\.py$|vera/grammar\.lark$)'
 
       - id: skill-examples
         name: skill examples
@@ -96,7 +103,7 @@ repos:
         entry: .venv/bin/python scripts/check_limitations_sync.py
         language: system
         pass_filenames: false
-        files: '(README\.md$|vera/README\.md$|spec/0[89]-.*\.md$|spec/1[12]-.*\.md$)'
+        files: '(KNOWN_ISSUES\.md$|vera/README\.md$|spec/0[89]-.*\.md$|spec/1[12]-.*\.md$)'
 
       - id: license-check
         name: license check

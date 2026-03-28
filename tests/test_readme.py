@@ -18,8 +18,7 @@ README = Path(__file__).parent.parent / "README.md"
 # Must stay in sync with scripts/check_readme_examples.py.
 # Each key is the 1-based line number of the opening ```vera fence.
 ALLOWLIST: dict[int, str] = {
-    # "Project Roadmap" — depends on #61 (Inference)
-    736: "Vision example uses Inference effect (issue #61)",
+    # No blocks currently require allowlisting — all three vera blocks parse.
 }
 
 
@@ -71,9 +70,10 @@ class TestReadmeCodeSamples:
     def test_vera_block_count(self) -> None:
         """README should have the expected number of Vera code blocks."""
         blocks = _extract_vera_blocks(README)
-        # Currently: clamp, safe_divide, refinement_types, list_sum,
-        # increment+run_counter, exn_handler, async_io, fizzbuzz,
-        # markdown, json, html, http, research_topic (vision, allowlisted)
-        assert len(blocks) == 13, (
-            f"Expected 13 Vera blocks in README.md, found {len(blocks)}"
+        # Currently: safe_divide (intro), safe_divide (contracts section),
+        # research_topic (effects section).
+        # The error display block uses a plain ``` fence (not ```vera) by design.
+        # Remaining examples live in EXAMPLES.md.
+        assert len(blocks) == 3, (
+            f"Expected 3 Vera blocks in README.md, found {len(blocks)}"
         )

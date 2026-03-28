@@ -303,17 +303,17 @@ class TestVeraError:
 # =====================================================================
 
 def _extract_readme_error_block() -> str:
-    """Extract the fenced code block under 'What Errors Look Like' in README.md."""
+    """Extract the fenced code block under 'Errors are instructions' in README.md."""
     lines = README.read_text(encoding="utf-8").splitlines()
     in_section = False
     in_fence = False
     block_lines: list[str] = []
     for line in lines:
-        if line.startswith("## What Errors Look Like"):
+        if line.startswith("### Errors are instructions"):
             in_section = True
             continue
-        if in_section and line.startswith("## "):
-            break  # next section
+        if in_section and (line.startswith("## ") or line.startswith("### ")):
+            break  # next section or subsection
         if in_section and not in_fence and line.strip() == "```":
             in_fence = True
             continue
