@@ -168,6 +168,12 @@ These are not milestone-gated — they should be addressed continuously alongsid
 | Improve browser runtime test coverage to >80% | [#349](https://github.com/aallan/vera/issues/349) | 2–4 hours | Parity with Python-side coverage gate |
 | Validate examples/README.md run commands in CI | [#361](https://github.com/aallan/vera/issues/361) | 1–2 hours | Prevents stale example invocations |
 
+### Verification depth
+
+| Item | Issue | Effort | Impact |
+|------|-------|--------|--------|
+| Tier 2 verification — Z3 with hints from `assert` and lemma functions | [#427](https://github.com/aallan/vera/issues/427) | 2–4 days | Promotes function-call and quantifier contracts from runtime to statically proved; completes the three-tier pipeline specified in §6.3.2 |
+
 ### Security
 
 | Item | Issue | Effort | Impact |

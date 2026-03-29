@@ -127,7 +127,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("05-functions.md", 324): "FRAGMENT",   # fn(A -> B) in param position
 
     # Chapter 6 — inline function type in type alias
-    ("06-contracts.md", 312): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
+    ("06-contracts.md", 316): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
 
     # Chapter 7 — anonymous function at top level
     ("07-effects.md", 116): "FRAGMENT",     # effect Logger + anonymous fn body
