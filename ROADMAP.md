@@ -8,7 +8,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-**v0.0.102** — Phase 1a (evaluation friction removal) is underway. Three blocking bugs fixed (#360, #326, #335). CLI argument passing now supports all Vera types — Int, Float64, Bool, Byte, String (#263). Agent discovery metadata added to veralang.dev (#400). The compiler now has 3,120 tests, 65 conformance programs, 30 examples, and a 13-chapter specification.
+**v0.0.102** — Phase 1a (evaluation friction removal) is underway. Three blocking bugs fixed (#360, #326, #335). CLI argument passing now supports all Vera types — Int, Float64, Bool, Byte, String (#263). Agent discovery metadata added to veralang.dev (#400). The compiler now has 3,121 tests, 65 conformance programs, 30 examples, and a 13-chapter specification.
 
 **v0.0.101** — the reference compiler completed eleven development phases (C1–C9, including C6.5 and C8.5), with 3,095 tests, 96% code coverage of 15,149 statements, 64 conformance programs, 30 examples, and a 13-chapter specification. The `<Inference>` algebraic effect makes LLM calls explicit in the type system — the headline feature that distinguishes Vera from every other verified language. A Vera program can make an HTTP request, parse JSON, call an LLM, and return typed, contract-verified results. AI discoverability (llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json) is deployed on veralang.dev.
 
