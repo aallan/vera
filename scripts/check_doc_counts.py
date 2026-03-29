@@ -449,23 +449,45 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 13. Check ROADMAP.md "Where we are" summary
     # ------------------------------------------------------------------
+    # Scope the search to the "Where we are" section only — ROADMAP.md
+    # also contains historical per-release snapshots with older counts
+    # (e.g. "3,121 tests, 65 conformance programs" for v0.0.102) that
+    # would produce false positives if the whole file were searched.
 
     roadmap_md = (root / "ROADMAP.md").read_text()
 
-    m = re.search(r"([\d,]+) tests,.*?(\d+) conformance programs", roadmap_md)
-    if m:
-        doc_tests = int(m.group(1).replace(",", ""))
-        doc_conf = int(m.group(2))
-        if doc_tests != live_total_tests:
+    where_m = re.search(
+        r"## Where we are\n(.*?)(?=\n##|\Z)", roadmap_md, re.DOTALL
+    )
+    if not where_m:
+        errors.append(
+            "ROADMAP.md: could not find '## Where we are' section"
+        )
+    else:
+        where_section = where_m.group(1)
+        m = re.search(
+            r"([\d,]+) tests,.*?(\d+) conformance programs",
+            where_section,
+            re.DOTALL,
+        )
+        if not m:
             errors.append(
-                f"ROADMAP.md: test count: doc says {doc_tests},"
-                f" live is {live_total_tests}"
+                "ROADMAP.md: could not find test/conformance count"
+                " pattern in 'Where we are' section"
             )
-        if doc_conf != live_conformance:
-            errors.append(
-                f"ROADMAP.md: conformance count: doc says {doc_conf},"
-                f" live is {live_conformance}"
-            )
+        else:
+            doc_tests = int(m.group(1).replace(",", ""))
+            doc_conf = int(m.group(2))
+            if doc_tests != live_total_tests:
+                errors.append(
+                    f"ROADMAP.md: test count: doc says {doc_tests},"
+                    f" live is {live_total_tests}"
+                )
+            if doc_conf != live_conformance:
+                errors.append(
+                    f"ROADMAP.md: conformance count: doc says {doc_conf},"
+                    f" live is {live_conformance}"
+                )
 
     # ------------------------------------------------------------------
     # Report
