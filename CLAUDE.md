@@ -79,7 +79,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### De Bruijn slot references
 
-Vera uses De Bruijn indexing for slot references: `@T.0` = **most recent** (last) binding of type T, not the first. For a function `fn foo(@Int, @Int -> @Int)`:
+See [`DE_BRUIJN.md`](DE_BRUIJN.md) for the full treatment. In brief: Vera uses De Bruijn indexing for slot references: `@T.0` = **most recent** (last) binding of type T, not the first. For a function `fn foo(@Int, @Int -> @Int)`:
 
 - `@Int.0` = second parameter (most recent)
 - `@Int.1` = first parameter

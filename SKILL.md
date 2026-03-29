@@ -216,7 +216,7 @@ private fn clamp(@Int, @Int, @Int -> @Int)
 
 ## Slot References (@T.n)
 
-Vera has no variable names. Every binding is referenced by type and index:
+Vera has no variable names. Every binding is referenced by type and index. See [`DE_BRUIJN.md`](DE_BRUIJN.md) for the academic background, deeper examples, and the commutative-operations trap.
 
 ```
 @Type.index
