@@ -6,7 +6,6 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 | Bug | Issue |
 |-----|-------|
-| Combinators cannot infer type variables from bare `None` / `Err` constructors | [#293](https://github.com/aallan/vera/issues/293) |
 | Closure parameter with pair-ABI type emits invalid WAT | [#359](https://github.com/aallan/vera/issues/359) |
 | Opaque handle memory leak in host stores | [#346](https://github.com/aallan/vera/issues/346) |
 | GC shadow stack pollution from opaque handle parameters | [#347](https://github.com/aallan/vera/issues/347) |
@@ -20,7 +19,6 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 |-----------|-------|
 | Tier 2 verification (Z3-guided with `assert`/lemma hints) is specified in §6.3.2 but not yet implemented; contracts requiring hints fall to Tier 3 (runtime check) | [#427](https://github.com/aallan/vera/issues/427) |
 | `vera test` cannot generate String, Float64, or compound-type inputs | [#169](https://github.com/aallan/vera/issues/169) |
-| Type inference for bare `None`/`Err` in generic function calls | [#293](https://github.com/aallan/vera/issues/293) |
 | Effect row variable unification (full effect polymorphism) | [#294](https://github.com/aallan/vera/issues/294) |
 | Incremental compilation | [#56](https://github.com/aallan/vera/issues/56) |
 | Module re-exports | [#127](https://github.com/aallan/vera/issues/127) |

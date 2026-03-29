@@ -71,6 +71,8 @@ class WasmContext(
         ) = None,
         ctor_to_adt: dict[str, str] | None = None,
         known_fns: set[str] | None = None,
+        ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] | None = None,
+        adt_tp_counts: dict[str, int] | None = None,
     ) -> None:
         self.string_pool = string_pool
         self._next_local: int = 0
@@ -93,6 +95,12 @@ class WasmContext(
         self._ctor_to_adt: dict[str, str] = ctor_to_adt or {}
         # Known locally-defined function names (for cross-module guard rail)
         self._known_fns: set[str] = known_fns or set()
+        # Per-field ADT type-param indices for sparse constructors (e.g. Err → (1,))
+        self._ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] = (
+            ctor_adt_tp_indices or {}
+        )
+        # Maps ADT name → number of type parameters
+        self._adt_tp_counts: dict[str, int] = adt_tp_counts or {}
         # Map host-import tracking (propagated to codegen core)
         self._map_imports: set[str] = set()
         self._map_ops_used: set[str] = set()

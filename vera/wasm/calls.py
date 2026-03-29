@@ -451,7 +451,10 @@ class CallsMixin:
                 for param_ta, arg_ta_name in zip(
                     param_te.type_args, arg_info[1]
                 ):
-                    if (isinstance(param_ta, ast.NamedType)
+                    # arg_ta_name is None for unknown ADT type-param positions
+                    # (e.g. T in Err(e) where only E is inferred from Err's field).
+                    if (arg_ta_name is not None
+                            and isinstance(param_ta, ast.NamedType)
                             and param_ta.name in forall_vars
                             and param_ta.name not in mapping):
                         mapping[param_ta.name] = arg_ta_name

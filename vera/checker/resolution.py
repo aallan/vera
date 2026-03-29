@@ -198,7 +198,29 @@ class ResolutionMixin:
                         for a in concrete.type_args)):
             return
         if isinstance(pattern, TypeVar):
-            if pattern.name not in mapping:
+            # Prefer concrete resolutions over fresh TypeVars (those named
+            # with '$', e.g. T$1 from _fresh_typevar).
+            #
+            # Fresh TypeVars are unresolved placeholders produced when a
+            # nullary constructor like None or Ok(x) can't fill all type
+            # parameters from its own args.  Recording A→T$1 from None's
+            # inferred Option<T$1> is fine as a first approximation, but must
+            # be overwritten when a later argument provides a concrete answer
+            # (e.g. the fn(@Int->@Int) callback in option_map(None, ...)).
+            #
+            # Overwrite iff the existing mapping is a fresh TypeVar AND the
+            # new concrete type is not itself a fresh TypeVar (#293).
+            # Forall-to-forall mappings (e.g. T→U when wrap<U> calls identity,
+            # where U has no '$') are recorded and kept as-is.
+            existing = mapping.get(pattern.name)
+            is_fresh = isinstance(concrete, TypeVar) and '$' in concrete.name
+            if existing is None:
+                mapping[pattern.name] = concrete
+            elif (isinstance(existing, TypeVar)
+                  and '$' in existing.name
+                  and not is_fresh):
+                # Overwrite a tentative fresh-TypeVar mapping with a concrete
+                # (or forall-var) resolution.
                 mapping[pattern.name] = concrete
             return
 

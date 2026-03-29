@@ -588,6 +588,58 @@ private forall<T> fn wrap(@T -> @Option<T>)
 { Some(@T.0) }
 """)
 
+    # -- Regression tests for #293: bare None/Err in combinator calls --
+
+    def test_none_as_first_arg_to_generic_fn(self) -> None:
+        """option_unwrap_or(None, 99) must infer T=Int from the default arg."""
+        _check_ok("""
+private fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ option_unwrap_or(None, 99) }
+""")
+
+    def test_none_as_first_arg_to_option_map(self) -> None:
+        """option_map(None, fn(@Int->@Int){...}) must infer A=Int, B=Int."""
+        _check_ok("""
+private fn test(@Unit -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ option_map(None, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }) }
+""")
+
+    def test_err_as_first_arg_to_result_unwrap_or(self) -> None:
+        """result_unwrap_or(Err("x"), false) must infer T=Bool, E=String."""
+        _check_ok("""
+private fn test(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ result_unwrap_or(Err("oops"), false) }
+""")
+
+    def test_ok_with_unresolvable_error_type(self) -> None:
+        """result_unwrap_or(Ok(77), 0): E is genuinely unknown — must not crash."""
+        _check_ok("""
+private fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ result_unwrap_or(Ok(77), 0) }
+""")
+
+    def test_none_infers_from_second_arg_not_first(self) -> None:
+        """When T is inferred from a later concrete arg, the fresh TypeVar
+        placeholder from None must be overwritten, not kept."""
+        _check_ok("""
+private forall<T> fn pick_default(@Option<T>, @T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<T>.0 {
+    None -> @T.0,
+    Some(@T) -> @T.0
+  }
+}
+
+private fn test(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ pick_default(None, "hello") }
+""")
+
 
 # =====================================================================
 # ADTs and constructors

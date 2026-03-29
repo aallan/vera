@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.104] - 2026-03-29
+
+### Fixed
+- **Type inference for bare `None`/`Err` constructors in generic combinator calls** ([#293](https://github.com/aallan/vera/issues/293)) — `option_unwrap_or(None, 99)`, `result_unwrap_or(Err("oops"), 0)`, and `option_map(None, fn(...) {...})` now type-check and compile correctly without requiring a typed `let` binding workaround. Three-layer fix: (1) the checker's fresh-TypeVar overwrite rule in `resolution.py` — later concrete resolutions now overwrite tentative fresh-TypeVar placeholders; (2) the monomorphizer's `_get_arg_type_info` now uses `_ctor_adt_tp_indices` to correctly map sparse constructor fields to their ADT type-param positions (e.g. `Err`'s single field maps to Result's `E`, not `T`); (3) added missing `StringLit` / `InterpolatedString` / `ArrayLit` cases to the monomorphizer's `_infer_vera_type_name`. Closes [#293](https://github.com/aallan/vera/issues/293).
+
+### Added
+- Conformance test `ch09_none_err_inference.vera` (level: run) covering all four bare-constructor inference cases.
+
 ## [0.0.103] - 2026-03-29
 
 ### Added
@@ -1489,7 +1497,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.103...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.104...HEAD
+[0.0.104]: https://github.com/aallan/vera/compare/v0.0.103...v0.0.104
 [0.0.103]: https://github.com/aallan/vera/compare/v0.0.102...v0.0.103
 [0.0.102]: https://github.com/aallan/vera/compare/v0.0.101...v0.0.102
 [0.0.101]: https://github.com/aallan/vera/compare/v0.0.100...v0.0.101

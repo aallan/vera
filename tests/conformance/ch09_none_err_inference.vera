@@ -1,0 +1,69 @@
+-- Conformance: Type inference for bare None/Err constructors in combinator calls (Chapter 9)
+-- Tests: none_inference, err_inference, generic_type_inference, combinator
+-- Case 1: option_unwrap_or(None, 99)
+-- T=Int inferred from the second argument (99); None alone is Option<T$1>.
+-- Before the fix this required: let @Option<Int> = None; option_unwrap_or(@Option<Int>.0, 99)
+-- Expected: 99 (None has no value, so default is returned)
+public fn test_none_unwrap_or(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  option_unwrap_or(None, 99)
+}
+
+-- Case 2: option_map(None, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
+-- A=Int and B=Int are both inferred from the callback type; None becomes Option<Int>.
+-- Before the fix a typed let was needed for None.
+-- Expected: None mapped is still None; unwrap with default 0 gives 0
+public fn test_none_map(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  option_unwrap_or(option_map(None, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }), 0)
+}
+
+-- Case 3: result_unwrap_or(Err(9999), 0)
+-- E=Int inferred from the Err argument; T=Int inferred from the default (0).
+-- Demonstrates that bare Err works without a typed let binding.
+-- (result_unwrap_or(Err("oops"), false) also type-checks after the fix but
+--  relies on String/Bool codegen support; we use Int here for a run-level test.)
+-- Expected: 0 (Err carries no Ok value, so default is returned)
+public fn test_err_unwrap_or(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  result_unwrap_or(Err(9999), 0)
+}
+
+-- Case 4: result_unwrap_or(Ok(77), 0)
+-- T=Int inferred from Ok argument; E stays as a fresh TypeVar (unconstrained, fine).
+-- Before the fix Ok alone could cause a fresh-var collision with a later concrete arg.
+-- Expected: 77 (Ok value is returned)
+public fn test_ok_unwrap_or(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  result_unwrap_or(Ok(77), 0)
+}
+
+-- Integration: all four cases must produce the expected values.
+-- test_none_unwrap_or -> 99
+-- test_none_map       -> 0
+-- test_err_unwrap_or  -> 0
+-- test_ok_unwrap_or   -> 77
+-- Return 0 if all checks pass, non-zero otherwise.
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = if test_none_unwrap_or(()) == 99 then { 0 } else { 1 };
+  let @Int = if test_none_map(()) == 0 then { 0 } else { 1 };
+  let @Int = if test_err_unwrap_or(()) == 0 then { 0 } else { 1 };
+  let @Int = if test_ok_unwrap_or(()) == 77 then { 0 } else { 1 };
+  @Int.3 + @Int.2 + @Int.1 + @Int.0
+}

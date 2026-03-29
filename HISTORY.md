@@ -216,6 +216,7 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 |---------|------|-------------|
 | v0.0.102 | 28 Mar | **Bug fixes** — stdin double-read on `/dev/stdin` resolved by a single `_load_and_parse` helper in the CLI (#335); E609 false positive on `Option<T>` return types across modules (#360); pipe operator into module-qualified calls (#326). |
 | v0.0.103 | 29 Mar | **CI security hardening** — `pip-audit` dependency CVE scanning (#384), `ruff --select S` Bandit-equivalent lint rules (#388), `zizmor` workflow hardening (#385), CycloneDX SBOM generation (#389). **CLI improvements** — `vera version` command (#381), `--quiet` flag (#382). **Bug fixes** — `Http.post` `Content-Type: application/json` header (#354), `vera test` skip messages (#383). **Conformance** — two `verify`-level De Bruijn tests: deep let-chains (#393) and non-commutative operations (#394). **Documentation** — Known Limitations in SKILL.md (#404), skipped-tests table in TESTING.md, MIT licence text in README. |
+| v0.0.104 | 29 Mar | **Type inference fix** — `option_unwrap_or(None, 99)`, `result_unwrap_or(Err("oops"), 0)`, and `option_map(None, fn(...){...})` now type-check without a typed `let` workaround (#293). Three-layer fix: checker fresh-TypeVar overwrite rule, monomorphizer sparse-constructor field→tp-index mapping, missing `StringLit` in monomorphizer type inferencer. Phase 1a complete. |
 
 ---
 
@@ -245,10 +246,10 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.102 (28 Mar) | v0.0.103 (29 Mar) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,121 | 3,157 |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,121 | 3,184 |
 | Examples | 13 | 15 | 16 | 18 | 24 | 30 | 30 | 30 |
 | Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 122 | 122 |
-| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 65 | 70 |
+| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 65 | 71 |
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% | 96% |
 

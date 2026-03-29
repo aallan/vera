@@ -351,7 +351,10 @@ class MonomorphizationMixin:
                 for param_ta, arg_ta_name in zip(
                     param_te.type_args, arg_info[1]
                 ):
-                    if (isinstance(param_ta, ast.NamedType)
+                    # arg_ta_name is None for unknown type-param positions
+                    # (e.g. T in Err(e) where only E can be inferred from Err).
+                    if (arg_ta_name is not None
+                            and isinstance(param_ta, ast.NamedType)
                             and param_ta.name in forall_vars
                             and param_ta.name not in mapping):
                         mapping[param_ta.name] = arg_ta_name
@@ -401,6 +404,12 @@ class MonomorphizationMixin:
         if isinstance(expr, ast.IfExpr):
             return self._infer_vera_type_name(
                 expr.then_branch.expr, ctor_to_adt, generic_decls)
+        if isinstance(expr, ast.StringLit):
+            return "String"
+        if isinstance(expr, ast.InterpolatedString):
+            return "String"
+        if isinstance(expr, ast.ArrayLit):
+            return "Array"
         if isinstance(expr, ast.FnCall) and generic_decls:
             return self._infer_fncall_vera_type(
                 expr, ctor_to_adt, generic_decls)
@@ -506,11 +515,13 @@ class MonomorphizationMixin:
 
     def _get_arg_type_info(
         self, expr: ast.Expr, ctor_to_adt: dict[str, str],
-    ) -> tuple[str, tuple[str, ...]] | None:
+    ) -> tuple[str, tuple[str | None, ...]] | None:
         """Get (type_name, type_arg_names) for an argument expression.
 
         Used to match parameterized types like Option<T> against
-        concrete arguments like @Option<Int>.0.
+        concrete arguments like @Option<Int>.0.  Type arg entries may be
+        None for positions that cannot be inferred from the argument (e.g.
+        T in Err(e) where only E is resolved from Err's field).
         """
         if isinstance(expr, ast.SlotRef):
             if expr.type_args:
@@ -525,7 +536,28 @@ class MonomorphizationMixin:
         if isinstance(expr, ast.ConstructorCall):
             adt_name = ctor_to_adt.get(expr.name)
             if adt_name:
-                # Infer type args from constructor arguments
+                # Use the per-field ADT type-param index mapping when available.
+                # This correctly handles sparse constructors like Err(e) whose
+                # single field maps to Result's *second* type param (E, index 1),
+                # not the first (T, index 0) as naïve positional zipping implies.
+                field_tp_idx = getattr(
+                    self, "_ctor_adt_tp_indices", {}
+                ).get(expr.name)
+                adt_tp_count = getattr(
+                    self, "_adt_tp_counts", {}
+                ).get(adt_name, 0)
+                if field_tp_idx is not None and adt_tp_count > 0:
+                    result_tps: list[str | None] = [None] * adt_tp_count
+                    for field_i, tp_idx in enumerate(field_tp_idx):
+                        if tp_idx is not None and field_i < len(expr.args):
+                            t = self._infer_vera_type_name(
+                                expr.args[field_i], ctor_to_adt)
+                            if t is not None:
+                                result_tps[tp_idx] = t
+                            # If t is None, leave position as None (unknown)
+                    return (adt_name, tuple(result_tps))
+                # Fall back to positional inference for constructors without
+                # mapping info (e.g. user-defined ADTs not yet registered).
                 arg_types = []
                 for a in expr.args:
                     t = self._infer_vera_type_name(a, ctor_to_adt)

@@ -1,6 +1,6 @@
 # Roadmap
 
-Vera v0.0.103 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
+Vera v0.0.104 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
 
 This roadmap is organised around four strategic milestones. Each milestone makes Vera meaningfully more useful to a concrete audience. Within each milestone, work is grouped into phases that can be executed roughly sequentially, though independent items can be interleaved.
 
@@ -8,13 +8,9 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-**v0.0.103** — CI security hardening (ruff S rules, pip-audit, CycloneDX SBOM, workflow hardening), new CLI features (`vera version`, `--quiet`), Http.post Content-Type fix, improved `vera test` skip messages, four new conformance tests (#393 deep let-chains, #394 non-commutative ops, #395 nested handlers, #396 cross-module contracts — two files), Known Limitations section in SKILL.md (#404), and SKILL.md now served on-domain at veralang.dev/SKILL.md (#398). The compiler now has 3,174 tests, 70 conformance programs, 30 examples, and a 13-chapter specification.
+**v0.0.104** — Type inference for bare `None`/`Err` constructors in generic combinator calls now works correctly (#293). `option_unwrap_or(None, 99)`, `result_unwrap_or(Err("oops"), 0)`, and `option_map(None, fn(...){...})` all type-check without requiring a typed `let` binding workaround. The fix addressed three independent layers: the checker's fresh-TypeVar overwrite rule, the monomorphizer's sparse-constructor field-to-type-param mapping, and a missing `StringLit` case in the monomorphizer's type inferencer. Phase 1a is now complete. The compiler has 3,184 tests, 71 conformance programs, 30 examples, and a 13-chapter specification.
 
-**v0.0.102** — Phase 1a (evaluation friction removal) is underway. Three blocking bugs fixed (#360, #326, #335). CLI argument passing now supports all Vera types — Int, Float64, Bool, Byte, String (#263). Agent discovery metadata added to veralang.dev (#400). The compiler now has 3,121 tests, 65 conformance programs, 30 examples, and a 13-chapter specification.
-
-**v0.0.101** — the reference compiler completed eleven development phases (C1–C9, including C6.5 and C8.5), with 3,095 tests, 96% code coverage of 15,149 statements, 64 conformance programs, 30 examples, and a 13-chapter specification. The `<Inference>` algebraic effect makes LLM calls explicit in the type system — the headline feature that distinguishes Vera from every other verified language. A Vera program can make an HTTP request, parse JSON, call an LLM, and return typed, contract-verified results. AI discoverability (llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json) is deployed on veralang.dev.
-
-A second independent assessment (March 2026) revised the rating upward to **65–75% of the way to being a viable agent target.** The assessor found no design drift across 104 releases and noted the documentation stack as "best-in-class for LLM consumption." The remaining gap is empirical validation (benchmark suite), standard library breadth (HTTP hardening, server effects), and tooling integration (LSP). The dependency chain is correctly ordered and the path forward is well-mapped. The single most important next step is building the benchmark suite (#225) — adoption, research credibility, and the case for why agents should use Vera all depend on having data.
+An independent assessment (March 2026) rated Vera **65–75% of the way to being a viable agent target.** No design drift across 104+ releases; documentation stack described as "best-in-class for LLM consumption." The remaining gap is empirical validation (benchmark suite), standard library breadth (HTTP hardening, server effects), and tooling integration (LSP). The single most important next step is the benchmark suite (#225).
 
 ---
 
@@ -24,11 +20,7 @@ A second independent assessment (March 2026) revised the rating upward to **65�
 
 This is the most important milestone. Everything else — adoption, ecosystem, research credibility — depends on having data that supports (or refutes) the core claim. Simultaneously, fix the small issues that would distort any benchmark or frustrate any agent trying to use the language seriously.
 
-### Phase 1a: Remove friction from evaluation
-
-These are quick fixes that would bias any benchmark or frustrate any evaluator. Do them first.
-
-- [#293](https://github.com/aallan/vera/issues/293) **Type inference for bare `None`/`Err` in generic calls** — `option_map(None, fn(...) { ... })` fails because the type checker can't infer `T` from `None` alone. The workaround (typed let binding) is documented but clunky. Investigate bidirectional inference from the callback's parameter type.
+Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.md) Stage 9 for details.
 
 ### Phase 1b: Build the benchmark suite
 
@@ -206,4 +198,4 @@ The compiler was built through ten development phases from February to March 202
 | C8.5 | v0.0.66–v0.0.88 | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
 | C9 | v0.0.89–v0.0.101 | **Abilities, standard library, data types, effects** — Eq/Ord/Hash/Show, Map/Set, JSON, HTML, Markdown, Http, Decimal, Inference, standard prelude, combinators, higher-order array ops | Done |
 
-**630+ commits, 104 tagged releases, 3,174 tests, 96% coverage, 70 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.
+**630+ commits, 104 tagged releases, 3,184 tests, 96% coverage, 71 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.
