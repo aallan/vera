@@ -141,6 +141,8 @@ Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 
 ### 6.3.2 Additionally Allowed in Contracts (Tier 2)
 
+> **Status: Not yet implemented.** Tier 2 (Z3-guided) is specified here but not implemented in the reference compiler. Tracked in [#427](https://github.com/aallan/vera/issues/427). Contracts using these constructs currently fall to Tier 3 (runtime check).
+
 Beyond the decidable fragment, contracts may also use:
 - Calls to `pure` functions that have their own contracts
 - Quantified expressions (limited, see below)
@@ -228,7 +230,7 @@ This means the verifier is modular: each function is verified independently, ass
 VCs are translated to SMT-LIB format and solved by Z3:
 
 1. **Tier 1 VCs** (decidable fragment): sent directly to Z3. Z3 returns `unsat` (VC is valid), `sat` (VC is invalid, with counterexample), or `unknown`.
-2. **Tier 2 VCs** (with hints): the compiler provides additional axioms from `assert` statements and lemma functions. Z3 has a timeout of 10 seconds.
+2. **Tier 2 VCs** (with hints, not yet implemented — [#427](https://github.com/aallan/vera/issues/427)): the compiler provides additional axioms from `assert` statements and lemma functions. Z3 has a timeout of 10 seconds. Currently, contracts requiring hints fall to Tier 3.
 3. **Tier 3 fallback**: if Z3 returns `unknown` or times out, the VC is compiled as a runtime check.
 
 ### 6.4.4 Counterexample Reporting
@@ -283,6 +285,8 @@ WARNING: Cannot statically verify contract at line 3: requires(@Int.0 > 0)
 
 ## 6.6 Lemma Functions
 
+> **Status: Not yet implemented.** Lemma functions are part of Tier 2 verification ([#427](https://github.com/aallan/vera/issues/427)) and are not yet supported by the reference compiler.
+
 A lemma function is a `pure` function whose sole purpose is to establish a fact for the verifier. Its body must type-check and its contract must verify, but it is never called at runtime:
 
 ```
@@ -328,7 +332,7 @@ The refinement type on the function parameter's second argument serves as the co
 | Tier | Scope | Solver | Timeout | Failure mode |
 |------|-------|--------|---------|--------------|
 | 1 | Decidable fragment (QF_LIA + length + bool) | Z3 | None (decidable) | Compile error with counterexample |
-| 2 | Extended (function calls, quantifiers, arrays) | Z3 with hints | 10 seconds | Falls to Tier 3 |
+| 2 | Extended (function calls, quantifiers, arrays) — [not yet implemented](https://github.com/aallan/vera/issues/427) | Z3 with hints | 10 seconds | Falls to Tier 3 |
 | 3 | Runtime | None (checks emitted as code) | N/A | Runtime trap |
 
 A fully Tier 1-verified program has the strongest guarantee: if it compiles, the contracts hold for all inputs. A program with Tier 3 contracts may fail at runtime if the contracts are violated.
@@ -338,7 +342,12 @@ The compiler reports a summary after compilation:
 ```
 Verification summary:
   12 contracts verified statically (Tier 1)
-   3 contracts verified with hints (Tier 2)
    1 contract checked at runtime (Tier 3)
    0 assumptions (assume statements)
 ```
+
+## 6.9 Limitations
+
+| Limitation | Issue |
+|-----------|-------|
+| Tier 2 verification (Z3-guided with `assert`/lemma hints) is specified in §6.3.2 and §6.6 but not implemented; contracts requiring hints fall to Tier 3 | [#427](https://github.com/aallan/vera/issues/427) |

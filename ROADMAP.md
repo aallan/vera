@@ -8,7 +8,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-**v0.0.103** — CI security hardening (ruff S rules, pip-audit, CycloneDX SBOM, workflow hardening), new CLI features (`vera version`, `--quiet`), Http.post Content-Type fix, improved `vera test` skip messages, four new conformance tests (#393 deep let-chains, #394 non-commutative ops, #395 nested handlers, #396 cross-module contracts — two files), Known Limitations section in SKILL.md (#404), and SKILL.md now served on-domain at veralang.dev/SKILL.md (#398). The compiler now has 3,157 tests, 70 conformance programs, 30 examples, and a 13-chapter specification.
+**v0.0.103** — CI security hardening (ruff S rules, pip-audit, CycloneDX SBOM, workflow hardening), new CLI features (`vera version`, `--quiet`), Http.post Content-Type fix, improved `vera test` skip messages, four new conformance tests (#393 deep let-chains, #394 non-commutative ops, #395 nested handlers, #396 cross-module contracts — two files), Known Limitations section in SKILL.md (#404), and SKILL.md now served on-domain at veralang.dev/SKILL.md (#398). The compiler now has 3,174 tests, 70 conformance programs, 30 examples, and a 13-chapter specification.
 
 **v0.0.102** — Phase 1a (evaluation friction removal) is underway. Three blocking bugs fixed (#360, #326, #335). CLI argument passing now supports all Vera types — Int, Float64, Bool, Byte, String (#263). Agent discovery metadata added to veralang.dev (#400). The compiler now has 3,121 tests, 65 conformance programs, 30 examples, and a 13-chapter specification.
 
@@ -168,6 +168,12 @@ These are not milestone-gated — they should be addressed continuously alongsid
 | Improve browser runtime test coverage to >80% | [#349](https://github.com/aallan/vera/issues/349) | 2–4 hours | Parity with Python-side coverage gate |
 | Validate examples/README.md run commands in CI | [#361](https://github.com/aallan/vera/issues/361) | 1–2 hours | Prevents stale example invocations |
 
+### Verification depth
+
+| Item | Issue | Effort | Impact |
+|------|-------|--------|--------|
+| Tier 2 verification — Z3 with hints from `assert` and lemma functions | [#427](https://github.com/aallan/vera/issues/427) | 2–4 days | Promotes function-call and quantifier contracts from runtime to statically proved; completes the three-tier pipeline specified in §6.3.2 |
+
 ### Security
 
 | Item | Issue | Effort | Impact |
@@ -200,4 +206,4 @@ The compiler was built through ten development phases from February to March 202
 | C8.5 | v0.0.66–v0.0.88 | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
 | C9 | v0.0.89–v0.0.101 | **Abilities, standard library, data types, effects** — Eq/Ord/Hash/Show, Map/Set, JSON, HTML, Markdown, Http, Decimal, Inference, standard prelude, combinators, higher-order array ops | Done |
 
-**630+ commits, 104 tagged releases, 3,157 tests, 96% coverage, 70 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.
+**630+ commits, 104 tagged releases, 3,174 tests, 96% coverage, 70 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.

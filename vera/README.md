@@ -247,7 +247,7 @@ The compiler maintains two distinct type representations:
 
 ### De Bruijn slot resolution
 
-Vera uses typed De Bruijn indices instead of variable names. `@Int.0` means "the most recent `Int` binding", `@Int.1` means "the one before that".
+See [`DE_BRUIJN.md`](../DE_BRUIJN.md) for the conceptual background and worked examples. In brief: Vera uses typed De Bruijn indices instead of variable names. `@Int.0` means "the most recent `Int` binding", `@Int.1` means "the one before that".
 
 ```
 private fn add(@Int, @Int -> @Int) {        Parameters bind left-to-right.

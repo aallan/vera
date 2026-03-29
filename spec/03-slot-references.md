@@ -1,5 +1,7 @@
 # Chapter 3: Slot References
 
+> This chapter is the formal specification for slot reference syntax and resolution. For conceptual background — the academic origins of De Bruijn indices, Vera's typed variant, the commutative-operations trap, and connections to proof assistants and LLM code generation research — see [`DE_BRUIJN.md`](../DE_BRUIJN.md).
+
 ## 3.1 Overview
 
 Vera does not have variable names. Instead, every binding is referenced by its **type** and a **positional index** that counts bindings of the same type, from the innermost (most recent) binding outward. This system is called **typed slot references**.

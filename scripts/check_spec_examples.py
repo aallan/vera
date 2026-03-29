@@ -116,18 +116,18 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     # =================================================================
 
     # Chapter 3 — generic functions without forall keyword
-    ("03-slot-references.md", 238): "FRAGMENT",  # fn map_array<A,B>(...) — needs forall
-    ("03-slot-references.md", 253): "FRAGMENT",  # fn list_head<T>(...) — needs forall
+    ("03-slot-references.md", 240): "FRAGMENT",  # fn map_array<A,B>(...) — needs forall
+    ("03-slot-references.md", 255): "FRAGMENT",  # fn list_head<T>(...) — needs forall
 
     # Chapter 3 — anonymous function at top level
-    ("03-slot-references.md", 343): "FRAGMENT",  # fn(@PosInt, @Int -> @Int) — no name
+    ("03-slot-references.md", 345): "FRAGMENT",  # fn(@PosInt, @Int -> @Int) — no name
 
     # Chapter 5 — inline function types in return/param position
     ("05-functions.md", 211): "FRAGMENT",   # fn make_adder returns fn(...) inline
     ("05-functions.md", 324): "FRAGMENT",   # fn(A -> B) in param position
 
     # Chapter 6 — inline function type in type alias
-    ("06-contracts.md", 312): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
+    ("06-contracts.md", 316): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
 
     # Chapter 7 — anonymous function at top level
     ("07-effects.md", 116): "FRAGMENT",     # effect Logger + anonymous fn body
@@ -226,7 +226,7 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
     ("02-types.md", 230): "INCOMPLETE",      # forall<A,B> fn swap uses Tuple
 
     # Chapter 3 — undefined stdlib function array_map
-    ("03-slot-references.md", 327): "INCOMPLETE",  # array_map in apply_to_array
+    ("03-slot-references.md", 329): "INCOMPLETE",  # array_map in apply_to_array
 
     # Chapter 5 — undefined stdlib function array_filter
     ("05-functions.md", 227): "INCOMPLETE",  # array_filter in filter_positive

@@ -25,7 +25,7 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # =================================================================
 
     # "What are abilities?" — snippet with `...` body
-    69: ("SNIPPET", "Abilities example with ellipsis body"),
+    71: ("SNIPPET", "Abilities example with ellipsis body"),
 }
 
 

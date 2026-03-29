@@ -52,7 +52,7 @@ Vera draws on ideas from several existing languages and systems:
 
 - **SPARK/Ada**: Industrial-strength contract-based verification. SPARK's philosophy of "if it compiles, it's correct" is a guiding principle for Vera.
 
-- **bruijn**: A pure lambda calculus language using De Bruijn indices as surface syntax. Vera extends this concept to a typed, effectful language with type-namespaced indices (`@T.n`).
+- **bruijn**: A pure lambda calculus language using De Bruijn indices as surface syntax. Vera extends this concept to a typed, effectful language with type-namespaced indices (`@T.n`). See [`DE_BRUIJN.md`](../DE_BRUIJN.md) for the academic background and Vera-specific worked examples.
 
 - **TLA+ / Alloy**: Formal specification languages. Vera's contracts serve a similar role — they are executable specifications that constrain what the implementation can do.
 
