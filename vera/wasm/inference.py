@@ -190,6 +190,12 @@ class InferenceMixin:
         if expr.qualifier == "Inference":
             # complete returns Result<String, String> (i32 heap ptr)
             return "i32"
+        # User-defined effect ops (e.g. Exn.throw, State.get/put)
+        if expr.name in self._effect_ops:
+            target_name, is_void = self._effect_ops[expr.name]
+            if expr.name == "throw" or is_void:
+                return None  # throw → Never; void ops return no value
+            return self._fn_ret_types.get(target_name)
         return None  # pragma: no cover
 
     def _infer_fncall_wasm_type(self, expr: ast.FnCall) -> str | None:
