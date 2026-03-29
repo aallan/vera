@@ -34,6 +34,7 @@ vera test --trials 50 file.vera   # Limit trials per function (default 100)
 vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
+vera version                      # Print the installed version (also --version, -V)
 ```
 
 ### Error handling

@@ -121,7 +121,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ emit.py` | 137 | | Browser bundle emission (wasm + runtime + html) | `emit_browser_bundle()` |
 | ` ├ runtime.mjs` | 2,035 | | Self-contained JS runtime: IO, State, Http, Inference, contracts, Markdown, Json, Html | |
 | ` └ harness.mjs` | 104 | | Node.js test harness for parity testing | |
-| `cli.py` | 977 | All | CLI commands | `main()` |
+| `cli.py` | 1,006 | All | CLI commands | `main()` |
 | `registration.py` | 59 | Type check | Shared function registration | `register_fn()` |
 
 Total: ~32,000 lines of Python + 342 lines of grammar + 2,121 lines of JavaScript.

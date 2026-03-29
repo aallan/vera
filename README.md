@@ -142,6 +142,7 @@ vera compile --target browser file.vera   # emit browser bundle
 vera test file.vera                       # contract-driven testing via Z3 + WASM
 vera fmt file.vera                        # format to canonical form
 vera verify --json file.vera              # JSON diagnostics for agent feedback loops
+vera version                             # print the installed version
 ```
 
 `vera compile --target browser` produces a self-contained bundle (wasm + JS runtime + HTML) that runs in any browser — no build step, no bundler. Mandatory parity tests ensure identical behaviour between the command-line and browser runtimes.

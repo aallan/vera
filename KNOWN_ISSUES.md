@@ -33,7 +33,6 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | Http: no custom headers | [#351](https://github.com/aallan/vera/issues/351) |
 | Http: no HTTP status code access | [#352](https://github.com/aallan/vera/issues/352) |
 | Http: no request timeout control | [#353](https://github.com/aallan/vera/issues/353) |
-| Http: POST sends body without Content-Type | [#354](https://github.com/aallan/vera/issues/354) |
 | Http: browser uses deprecated synchronous XHR | [#355](https://github.com/aallan/vera/issues/355) |
 | Http: no PUT, PATCH, DELETE methods | [#356](https://github.com/aallan/vera/issues/356) |
 | Inference: `embed` operation (vector embeddings) | [#371](https://github.com/aallan/vera/issues/371) |

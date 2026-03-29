@@ -58,10 +58,13 @@ vera ast --json file.vera         # Print the AST as JSON
 vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
+vera version                      # Print the installed version (also --version, -V)
 pytest tests/ -v                  # Run the test suite
 ```
 
 Errors are natural language instructions explaining what went wrong and how to fix it. Feed them back into your context to correct the code.
+
+`vera test` cannot generate Z3 inputs for `String`, `Float64`, or compound-type parameters. Functions with those parameter types are skipped with a message naming the specific type: `SKIPPED (cannot generate String inputs (see #169))`. Only `Int`, `Nat`, `Bool`, and `Byte` parameters support Z3-guided input generation.
 
 ### Browser compilation
 
@@ -1034,7 +1037,7 @@ The `Http` effect enables network I/O. It is built-in — no `effect Http { ... 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `Http.get` | `String -> Result<String, String>` | HTTP GET request |
-| `Http.post` | `String, String -> Result<String, String>` | HTTP POST request (body as JSON) |
+| `Http.post` | `String, String -> Result<String, String>` | HTTP POST request (body as JSON; sends `Content-Type: application/json`) |
 
 ```vera
 effects(<Http>)                  -- network access
