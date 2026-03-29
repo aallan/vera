@@ -4,7 +4,13 @@
 Checks filesystem-derivable counts (conformance programs, examples, test
 files, pre-commit hooks, CI jobs) and pytest-collection counts (total tests,
 per-file test counts and line counts) against the numbers written in
-TESTING.md and CONTRIBUTING.md.
+TESTING.md, CONTRIBUTING.md, CLAUDE.md, README.md, SKILL.md, AGENTS.md,
+FAQ.md, and ROADMAP.md.
+
+Intentionally excludes CHANGELOG.md: its counts are historical records
+(e.g. "64 programs, was 63") that are frozen snapshots of the project state
+at each release. Validating them would cause false positives on every new
+conformance addition, because the old entries are supposed to stay unchanged.
 
 Runs in under 1 second — fast enough for a pre-commit hook.
 """
@@ -349,6 +355,139 @@ def main() -> int:
         live_examples,
         "example count",
     )
+
+    # ------------------------------------------------------------------
+    # 10. Check SKILL.md
+    # ------------------------------------------------------------------
+
+    skill_md = (root / "SKILL.md").read_text()
+
+    m = re.search(r"contains (\d+) small, self-contained programs", skill_md)
+    if m:
+        doc_conf = int(m.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"SKILL.md: conformance count: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    # ------------------------------------------------------------------
+    # 11. Check AGENTS.md
+    # ------------------------------------------------------------------
+
+    agents_md = (root / "AGENTS.md").read_text()
+
+    m = re.search(r"contains (\d+) small, self-contained programs", agents_md)
+    if m:
+        doc_conf = int(m.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"AGENTS.md: conformance count: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    for m_iter in re.finditer(r"All (\d+) conformance programs", agents_md):
+        doc_conf = int(m_iter.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"AGENTS.md: conformance count: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    for m_iter in re.finditer(r"All (\d+) examples", agents_md):
+        doc_ex = int(m_iter.group(1))
+        if doc_ex != live_examples:
+            errors.append(
+                f"AGENTS.md: example count: doc says {doc_ex},"
+                f" live is {live_examples}"
+            )
+
+    for m_iter in re.finditer(
+        r"check_conformance\.py\s+# All (\d+) conformance", agents_md
+    ):
+        doc_conf = int(m_iter.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"AGENTS.md: script comment conformance count:"
+                f" doc says {doc_conf}, live is {live_conformance}"
+            )
+
+    for m_iter in re.finditer(
+        r"check_examples\.py\s+# All (\d+) examples", agents_md
+    ):
+        doc_ex = int(m_iter.group(1))
+        if doc_ex != live_examples:
+            errors.append(
+                f"AGENTS.md: script comment example count:"
+                f" doc says {doc_ex}, live is {live_examples}"
+            )
+
+    # ------------------------------------------------------------------
+    # 12. Check FAQ.md
+    # ------------------------------------------------------------------
+
+    faq_md = (root / "FAQ.md").read_text()
+
+    for m_iter in re.finditer(
+        r"conformance test suite \((\d+) programs", faq_md
+    ):
+        doc_conf = int(m_iter.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"FAQ.md: conformance count: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    for m_iter in re.finditer(r"(\d+)-program conformance suite", faq_md):
+        doc_conf = int(m_iter.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"FAQ.md: conformance suite size: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    # ------------------------------------------------------------------
+    # 13. Check ROADMAP.md "Where we are" summary
+    # ------------------------------------------------------------------
+    # Scope the search to the "Where we are" section only — ROADMAP.md
+    # also contains historical per-release snapshots with older counts
+    # (e.g. "3,121 tests, 65 conformance programs" for v0.0.102) that
+    # would produce false positives if the whole file were searched.
+
+    roadmap_md = (root / "ROADMAP.md").read_text()
+
+    where_m = re.search(
+        r"## Where we are\n(.*?)(?=\n##|\Z)", roadmap_md, re.DOTALL
+    )
+    if not where_m:
+        errors.append(
+            "ROADMAP.md: could not find '## Where we are' section"
+        )
+    else:
+        where_section = where_m.group(1)
+        m = re.search(
+            r"([\d,]+) tests,.*?(\d+) conformance programs",
+            where_section,
+            re.DOTALL,
+        )
+        if not m:
+            errors.append(
+                "ROADMAP.md: could not find test/conformance count"
+                " pattern in 'Where we are' section"
+            )
+        else:
+            doc_tests = int(m.group(1).replace(",", ""))
+            doc_conf = int(m.group(2))
+            if doc_tests != live_total_tests:
+                errors.append(
+                    f"ROADMAP.md: test count: doc says {doc_tests},"
+                    f" live is {live_total_tests}"
+                )
+            if doc_conf != live_conformance:
+                errors.append(
+                    f"ROADMAP.md: conformance count: doc says {doc_conf},"
+                    f" live is {live_conformance}"
+                )
 
     # ------------------------------------------------------------------
     # Report

@@ -14,7 +14,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 **v0.0.101** — the reference compiler completed eleven development phases (C1–C9, including C6.5 and C8.5), with 3,095 tests, 96% code coverage of 15,149 statements, 64 conformance programs, 30 examples, and a 13-chapter specification. The `<Inference>` algebraic effect makes LLM calls explicit in the type system — the headline feature that distinguishes Vera from every other verified language. A Vera program can make an HTTP request, parse JSON, call an LLM, and return typed, contract-verified results. AI discoverability (llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json) is deployed on veralang.dev.
 
-An independent assessment rates the project at **60–70% of the way to being a viable agent target.** The remaining 30–40% is standard library breadth, tooling integration, empirical validation, and the server-side effect chain that unlocks the flagship use case.
+A second independent assessment (March 2026) revised the rating upward to **65–75% of the way to being a viable agent target.** The assessor found no design drift across 104 releases and noted the documentation stack as "best-in-class for LLM consumption." The remaining gap is empirical validation (benchmark suite), standard library breadth (HTTP hardening, server effects), and tooling integration (LSP). The dependency chain is correctly ordered and the path forward is well-mapped. The single most important next step is building the benchmark suite (#225) — adoption, research credibility, and the case for why agents should use Vera all depend on having data.
 
 ---
 
@@ -62,12 +62,12 @@ This milestone follows the critical dependency chain that has driven the project
 
 The `<Inference>` effect is the headline feature. Harden it before building on top of it.
 
-- [#378](https://github.com/aallan/vera/issues/378) **Add timeout to `Inference.complete`** — the current implementation uses `urllib.request` with no timeout. A hung provider hangs the runtime indefinitely. Add a configurable timeout (default 30s, overridable via `VERA_INFERENCE_TIMEOUT`), returning `Err("inference timeout")` on expiry.
 - [#370](https://github.com/aallan/vera/issues/370) **Configurable `max_tokens` / `temperature`** — currently hardcoded; agent workloads need control over both.
 - [#372](https://github.com/aallan/vera/issues/372) **User-defined `handle[Inference]` handlers** — currently the Inference effect cannot be handled in user code; full handler support enables mocking, caching, and routing strategies.
 - [#371](https://github.com/aallan/vera/issues/371) **`Inference.embed` operation** — `Array<Float64>` vector embeddings for semantic search and retrieval. Depends on #373 (float array host-alloc infrastructure).
 - [#373](https://github.com/aallan/vera/issues/373) **Float array host-alloc infrastructure** — `_alloc_result_ok_float_array` support for returning float arrays from host imports. Required by #371.
-- [#413](https://github.com/aallan/vera/issues/413) **Add Mistral AI provider to the Inference effect** — extend the `<Inference>` effect runtime with Mistral API support alongside the existing Anthropic, OpenAI, and Moonshot providers.
+- [#413](https://github.com/aallan/vera/issues/413) **Add Mistral AI provider + provider registry refactor** — replace the `elif` chain in `_call_inference_provider()` with a `_ProviderConfig` dataclass and `_PROVIDERS` registry dict, then add Mistral as the fourth provider. At five providers (three structurally identical OpenAI-compatible endpoints) the table-driven approach collapses the dispatch to ~20 lines; adding further providers becomes a one-row change.
+- [#425](https://github.com/aallan/vera/issues/425) **Add xAI Grok provider to the Inference effect** — one-row addition to the `_PROVIDERS` registry introduced in #413. Endpoint: `api.x.ai/v1/chat/completions`; env var: `VERA_XAI_API_KEY`. Depends on #413.
 - [#379](https://github.com/aallan/vera/issues/379) **Add an Inference + JSON composition example** — demonstrate `Inference.complete` → `json_parse` → typed extraction. This is the pattern every real agent workload will use and it should be a first-class example.
 - [#380](https://github.com/aallan/vera/issues/380) **Add an effect handler mocking example** — show `handle[Inference] { complete(@String) -> { resume(Ok("mock")) } } in { ... }` for deterministic testing. This demonstrates the key architectural advantage of modelling inference as an algebraic effect.
 
@@ -174,7 +174,6 @@ These are not milestone-gated — they should be addressed continuously alongsid
 |------|-------|--------|--------|
 | Add Z3 solver timeout per contract | [#391](https://github.com/aallan/vera/issues/391) | 30 min | Prevents DoS via pathological contracts |
 | Audit `smt.py` for soundness | [#392](https://github.com/aallan/vera/issues/392) | 4–8 hours | A bug here silently bypasses verification |
-| Add `Inference.complete` timeout | [#378](https://github.com/aallan/vera/issues/378) | 30 min | Prevents runtime hang on unresponsive LLM provider |
 
 ### Testing gaps
 
