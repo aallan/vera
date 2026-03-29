@@ -42,3 +42,5 @@ The project uses automated security scanning on every push and pull request:
 All CI jobs use least-privilege permissions (`permissions: contents: read`). The security job additionally requires `security-events: write` for GitHub advisory integration. All `actions/checkout` steps set `persist-credentials: false` to prevent the `GITHUB_TOKEN` from being stored in `.git/config` for the lifetime of the runner.
 
 Action version pinning to SHA hashes (rather than semver tags) is tracked in [#390](https://github.com/aallan/vera/issues/390).
+
+`zizmor` reports one acknowledged `secrets-outside-env` finding: the `CODECOV_TOKEN` is passed as an action input (`token: ${{ secrets.CODECOV_TOKEN }}`) rather than through an environment variable. This is not actionable — `codecov/codecov-action` requires the token as an `inputs:` parameter and does not read it from an environment variable. The risk is low: the Codecov token has read-only scope on repository data, and `fail_ci_if_error: false` means missing or invalid tokens do not block CI.

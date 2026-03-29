@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.103] - 2026-03-29
+
+### Added
+- **`--quiet` flag for `vera check` / `vera verify`** ([#382](https://github.com/aallan/vera/issues/382)) — suppresses the `OK: ...` and `Verification: ...` success output; errors still print normally. Useful for CI scripts that only need the exit code. Closes [#382](https://github.com/aallan/vera/issues/382).
+- **De Bruijn conformance tests: deep let-chains** ([#393](https://github.com/aallan/vera/issues/393)) — `ch03_slot_let_chains.vera` at `verify` level: five sequential `let @Int =` bindings where each doubles the previous; `ensures(@Int.result == 32)` is proved by Z3. Confirms slot indices resolve correctly through deep same-typed `let` chains. Closes [#393](https://github.com/aallan/vera/issues/393).
+- **De Bruijn conformance tests: non-commutative operations** ([#394](https://github.com/aallan/vera/issues/394)) — `ch03_slot_noncommutative.vera` at `verify` level: subtraction, division, and comparison with `ensures` contracts that encode the exact De Bruijn ordering. Swapping `@Int.0` / `@Int.1` produces a Z3 counterexample. Closes [#394](https://github.com/aallan/vera/issues/394).
+- **Known Limitations section in SKILL.md** ([#404](https://github.com/aallan/vera/issues/404)) — table listing seven current implementation limits with issue links: CLI Int-only args (#263), `vera test` String/Float64 skip (#169), bare `None`/`Err` type inference (#293), effect row variable unification (#294), `map_new()`/`set_new()` type context, Inference `max_tokens`/temperature (#370), Inference user-defined handlers (#372). Closes [#404](https://github.com/aallan/vera/issues/404).
+- **`vera version` / `--version` / `-V` CLI command** ([#381](https://github.com/aallan/vera/issues/381)) — prints `vera X.Y.Z` on stdout. Closes [#381](https://github.com/aallan/vera/issues/381).
+- **CycloneDX SBOM generation in CI** ([#389](https://github.com/aallan/vera/issues/389)) — new `sbom` job runs `cyclonedx-py environment --of JSON` on every push, uploading a CycloneDX JSON SBOM as a 90-day artifact. Closes [#389](https://github.com/aallan/vera/issues/389).
+
+### Fixed
+- **`Http.post` missing `Content-Type: application/json`** ([#354](https://github.com/aallan/vera/issues/354)) — the Python host function now sets the header on the `urllib.request.Request`; the browser runtime sets `xhr.setRequestHeader('Content-Type', 'application/json')`. `Http.post` is intentionally JSON-only at the Vera level; custom `Content-Type` headers tracked in [#351](https://github.com/aallan/vera/issues/351). Closes [#354](https://github.com/aallan/vera/issues/354).
+- **`vera test` skip messages now name the unsupported type** ([#383](https://github.com/aallan/vera/issues/383)) — was `SKIPPED (unsupported parameter types)`; now `SKIPPED (cannot generate String inputs (see #169))`. The specific type name is extracted via the new `_unsupported_type_names` helper. Closes [#383](https://github.com/aallan/vera/issues/383).
+- **HTTP host functions missing `timeout`** — `host_http_get` and `host_http_post` now pass `timeout=_INFERENCE_TIMEOUT` to `urllib.request.urlopen`, consistent with the Inference effect.
+
+### Security
+- **`ruff check --select S` added to lint job** ([#388](https://github.com/aallan/vera/issues/388)) — 32 Bandit-equivalent S-rule findings audited and suppressed with `# noqa` comments where appropriate (S310 intentional HTTPS calls, S101 compiler invariant asserts, S105 parse-token false positives). `ruff>=0.9` added to `[dev]` dependencies. Closes [#388](https://github.com/aallan/vera/issues/388).
+- **`dependency-audit` CI job** ([#384](https://github.com/aallan/vera/issues/384)) — `pip-audit --skip-editable` checks all installed packages against the OSV database on every push. `pygments 2.19.2` has `CVE-2026-4539` (transitive via pytest/rich, no fix release yet) — suppressed with `--ignore-vuln`. Closes [#384](https://github.com/aallan/vera/issues/384).
+- **CI workflow hardening** ([#385](https://github.com/aallan/vera/issues/385)) — `persist-credentials: false` on all checkout steps (`artipacked`); per-job `permissions: contents: read` with `security-events: write` on the security job (`excessive-permissions`). SHA pinning of action refs deferred to [#390](https://github.com/aallan/vera/issues/390). Closes [#385](https://github.com/aallan/vera/issues/385).
+
 ## [0.0.102] - 2026-03-28
 
 ### Added
@@ -1466,7 +1486,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.102...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.103...HEAD
+[0.0.103]: https://github.com/aallan/vera/compare/v0.0.102...v0.0.103
 [0.0.102]: https://github.com/aallan/vera/compare/v0.0.101...v0.0.102
 [0.0.101]: https://github.com/aallan/vera/compare/v0.0.100...v0.0.101
 [0.0.100]: https://github.com/aallan/vera/compare/v0.0.99...v0.0.100

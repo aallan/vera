@@ -19,6 +19,10 @@ import sys
 # All of these are permissive licenses compatible with MIT redistribution.
 # MPL-2.0 is included because it allows larger works under any license —
 # only the MPL-covered source files themselves must remain under MPL.
+# LGPL is included because it explicitly permits linking from non-copyleft code
+# (unlike GPL); a Python tool distributed as source automatically satisfies the
+# LGPL requirement that the covered library can be replaced. The only current
+# LGPL dependency is chardet (via cyclonedx-bom, used for SBOM generation).
 
 _COMPATIBLE_PATTERNS: list[str] = [
     "mit",
@@ -28,6 +32,8 @@ _COMPATIBLE_PATTERNS: list[str] = [
     "python software foundation",
     "isc",
     "mpl",
+    "lgpl",
+    "gnu lesser",
     "unlicense",
     "cc0",
     "public domain",

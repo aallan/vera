@@ -1,12 +1,14 @@
 # Roadmap
 
-Vera v0.0.102 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
+Vera v0.0.103 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
 
 This roadmap is organised around four strategic milestones. Each milestone makes Vera meaningfully more useful to a concrete audience. Within each milestone, work is grouped into phases that can be executed roughly sequentially, though independent items can be interleaved.
 
 See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was built.
 
 ## Where we are
+
+**v0.0.103** — CI security hardening (ruff S rules, pip-audit, CycloneDX SBOM, workflow hardening), new CLI features (`vera version`, `--quiet`), Http.post Content-Type fix, improved `vera test` skip messages, two new `verify`-level conformance tests for deep De Bruijn slot correctness (#393, #394), and Known Limitations section in SKILL.md (#404). The compiler now has 3,138 tests, 67 conformance programs, 30 examples, and a 13-chapter specification.
 
 **v0.0.102** — Phase 1a (evaluation friction removal) is underway. Three blocking bugs fixed (#360, #326, #335). CLI argument passing now supports all Vera types — Int, Float64, Bool, Byte, String (#263). Agent discovery metadata added to veralang.dev (#400). The compiler now has 3,121 tests, 65 conformance programs, 30 examples, and a 13-chapter specification.
 
@@ -27,7 +29,6 @@ This is the most important milestone. Everything else — adoption, ecosystem, r
 These are quick fixes that would bias any benchmark or frustrate any evaluator. Do them first.
 
 - [#293](https://github.com/aallan/vera/issues/293) **Type inference for bare `None`/`Err` in generic calls** — `option_map(None, fn(...) { ... })` fails because the type checker can't infer `T` from `None` alone. The workaround (typed let binding) is documented but clunky. Investigate bidirectional inference from the callback's parameter type.
-- [#404](https://github.com/aallan/vera/issues/404) **Add "Known Limitations" section to SKILL.md** — consolidate the limitations an agent will encounter: `vera test` String/Float64 skip, bare `None`/`Err` inference gap, effect row variable unification (#294). Saves agents from discovering these the hard way.
 
 ### Phase 1b: Build the benchmark suite
 
@@ -47,7 +48,6 @@ These are quick fixes that would bias any benchmark or frustrate any evaluator. 
 ### Phase 1c: Expand contract-driven testing
 
 - [#169](https://github.com/aallan/vera/issues/169) → [#170](https://github.com/aallan/vera/issues/170) **`vera test` input generation for String, Float64, compound types** — currently `vera test` skips any function with non-Int/Nat/Bool parameters. String generation: empty, single char, ASCII printable, unicode edge cases. Float64: 0.0, -0.0, small, large, subnormals. This unblocks contract-driven testing for most real programs.
-- [#383](https://github.com/aallan/vera/issues/383) **Improve `vera test` skip messages** — show the specific unsupported type, not a generic message. "SKIPPED (cannot generate String inputs — see #169)" helps agents understand what they can and can't test.
 - [#170](https://github.com/aallan/vera/issues/170) **Hypothesis integration** — use Hypothesis strategies for input generation, enabling property-based contract testing with shrinking. This is the long-term path to replacing hand-written test generation with a mature fuzzing framework.
 
 ---
@@ -78,7 +78,6 @@ The `<Inference>` effect is the headline feature. Harden it before building on t
 - [#351](https://github.com/aallan/vera/issues/351) Custom headers support
 - [#352](https://github.com/aallan/vera/issues/352) HTTP status code access in responses
 - [#353](https://github.com/aallan/vera/issues/353) Per-request timeout control
-- [#354](https://github.com/aallan/vera/issues/354) Correct `Content-Type` header on POST
 - [#355](https://github.com/aallan/vera/issues/355) Replace deprecated synchronous XHR in browser runtime
 - [#356](https://github.com/aallan/vera/issues/356) PUT, PATCH, DELETE methods
 
@@ -121,8 +120,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 ### Phase 3c: Developer experience
 
 - [#224](https://github.com/aallan/vera/issues/224) **REPL** — interactive exploration for both agents and humans. Useful for rapid prototyping and debugging.
-- [#381](https://github.com/aallan/vera/issues/381) **`vera version` command** — print the installed version. Basic hygiene for bug reports and CI scripts.
-- [#382](https://github.com/aallan/vera/issues/382) **`--quiet` flag for `vera check`/`vera verify`** — suppress "OK" output for CI scripts that only care about the exit code.
 - [#143](https://github.com/aallan/vera/issues/143) **Comprehensive example programs** — expand from 30 to 50+ examples covering every major pattern: API clients, data pipelines, text processing, LLM orchestration, effect composition.
 - [#337](https://github.com/aallan/vera/issues/337) **Native JavaScript coverage** — c8 + Codecov for the browser runtime, ensuring parity testing has the same visibility as Python-side coverage.
 
@@ -165,13 +162,9 @@ These are not milestone-gated — they should be addressed continuously alongsid
 
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
-| Add `pip-audit` to CI for CVE scanning | [#384](https://github.com/aallan/vera/issues/384) | 15 min | Catches dependency vulnerabilities |
-| Add `zizmor` for GitHub Actions security audit | [#385](https://github.com/aallan/vera/issues/385) | 15 min | Audits CI workflow files for injection risks |
-| Add `ruff check --select S` to lint job | [#388](https://github.com/aallan/vera/issues/388) | 15 min | Bandit-equivalent security rules on compiler code |
 | Add property-based testing with Hypothesis | [#386](https://github.com/aallan/vera/issues/386) | 2–4 hours | Catches parser/formatter edge cases via round-trip properties |
 | Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether 3,095 tests catch real bugs, not just execute paths |
 | Investigate parser fuzzing with Atheris | [#402](https://github.com/aallan/vera/issues/402) | 4–8 hours | Crash-inducing inputs for parser and type checker |
-| Generate CycloneDX SBOM on release | [#389](https://github.com/aallan/vera/issues/389) | 30 min | Supply chain transparency for downstream consumers |
 | Add hash-pinned lockfile (pip-compile or uv lock) | [#390](https://github.com/aallan/vera/issues/390) | 30 min | Prevents dependency confusion attacks |
 | Improve browser runtime test coverage to >80% | [#349](https://github.com/aallan/vera/issues/349) | 2–4 hours | Parity with Python-side coverage gate |
 | Validate examples/README.md run commands in CI | [#361](https://github.com/aallan/vera/issues/361) | 1–2 hours | Prevents stale example invocations |
@@ -188,8 +181,6 @@ These are not milestone-gated — they should be addressed continuously alongsid
 
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
-| Deep let-chain conformance tests (5+ same-typed bindings) | [#393](https://github.com/aallan/vera/issues/393) | 1 hour | Exercises the hardest De Bruijn case |
-| Non-commutative operation tests (subtraction, division with swapped indices) | [#394](https://github.com/aallan/vera/issues/394) | 1 hour | Catches silent index errors that commutative ops mask |
 | Effect handler composition tests (nested handlers) | [#395](https://github.com/aallan/vera/issues/395) | 2 hours | Where algebraic effect systems typically have subtle bugs |
 | Cross-module contract verification stress test | [#396](https://github.com/aallan/vera/issues/396) | 2 hours | Verifies postcondition chains work across module boundaries |
 
@@ -213,4 +204,4 @@ The compiler was built through ten development phases from February to March 202
 | C8.5 | v0.0.66–v0.0.88 | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
 | C9 | v0.0.89–v0.0.101 | **Abilities, standard library, data types, effects** — Eq/Ord/Hash/Show, Map/Set, JSON, HTML, Markdown, Http, Decimal, Inference, standard prelude, combinators, higher-order array ops | Done |
 
-**630+ commits, 103 tagged releases, 3,121 tests, 96% coverage, 65 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.
+**630+ commits, 104 tagged releases, 3,138 tests, 96% coverage, 67 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.

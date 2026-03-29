@@ -2690,3 +2690,59 @@ class TestCmdVersion:
             )
             assert result.returncode == 0
             assert result.stdout.startswith("vera ")
+
+
+class TestCmdQuiet:
+    """Tests for the --quiet flag on vera check and vera verify."""
+
+    def test_check_quiet_suppresses_ok(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera check --quiet suppresses the 'OK: ...' success line."""
+        f = tmp_path / "quiet_check.vera"
+        f.write_text(
+            "public fn add(@Int, @Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0 + @Int.1\n"
+            "}\n"
+        )
+        rc = cmd_check(str(f), quiet=True)
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "OK:" not in captured.out
+        assert captured.out == ""
+
+    def test_check_quiet_still_prints_errors(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera check --quiet still prints errors on failure."""
+        f = tmp_path / "bad.vera"
+        f.write_text("public fn bad(@Int -> @Int) { @Int.0 }\n")
+        rc = cmd_check(str(f), quiet=True)
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.err != ""
+
+    def test_verify_quiet_suppresses_ok(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera verify --quiet suppresses 'OK: ...' and 'Verification: ...' lines."""
+        f = tmp_path / "quiet_verify.vera"
+        f.write_text(
+            "public fn add(@Int, @Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0 + @Int.1\n"
+            "}\n"
+        )
+        rc = cmd_verify(str(f), quiet=True)
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "OK:" not in captured.out
+        assert "Verification:" not in captured.out
+        assert captured.out == ""

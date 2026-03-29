@@ -179,7 +179,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.0.102 — 630+ commits, 103 releases, 3,120 tests, 96% code coverage, 65 conformance programs, 30 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.0.103 — 630+ commits, 104 releases, 3,138 tests, 96% code coverage, 67 conformance programs, 30 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [13 chapters](spec/).
 
@@ -242,7 +242,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute to Ve
 
 ## Licence
 
-Vera is licensed under the [MIT License](LICENSE). All dependencies are MIT-compatible — licence compliance is enforced by CI.
+Vera is licensed under the [MIT License](LICENSE).
+
+All direct dependencies are MIT or Apache-2.0. One transitive dependency (`chardet`, via `cyclonedx-bom`) is LGPL v2+, which is compatible with MIT redistribution. Licence compliance is enforced by CI.
 
 | Dependency | Licence | Role |
 |-----------|---------|------|
@@ -251,3 +253,9 @@ Vera is licensed under the [MIT License](LICENSE). All dependencies are MIT-comp
 | [wasmtime](https://github.com/bytecodealliance/wasmtime) | Apache-2.0 | WebAssembly runtime |
 
 Copyright &copy; 2026 Alasdair Allan
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

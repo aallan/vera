@@ -6,9 +6,9 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,125 across 26 files (~34,000 lines of test code) |
+| **Tests** | 3,138 across 26 files (~34,000 lines of test code) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
-| **Conformance programs** | 65 programs across 9 spec chapters, validating every language feature |
+| **Conformance programs** | 67 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 30, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 164 parseable blocks from 13 spec chapters: 86 parse, 72 type-check, 71 verify |
 | **README code blocks** | 13 Vera blocks (12 validated, 1 allowlisted future syntax) |
@@ -36,7 +36,7 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # V8 coverage via c8
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_conformance.py                  # conformance suite (65 programs)
+python scripts/check_conformance.py                  # conformance suite (67 programs)
 python scripts/check_examples.py                     # 30 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
@@ -63,7 +63,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 114 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
-| `test_cli.py` | 197 | 2,692 | CLI commands (check, verify, compile, run, test, fmt, version), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
+| `test_cli.py` | 200 | 2,748 | CLI commands (check, verify, compile, run, test, fmt, version, quiet), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
@@ -73,7 +73,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_tester_coverage.py` | 30 | 789 | Tester coverage gaps: Float/String/ADT parameters, Bool/Byte parameters, unsatisfiable preconditions, type expression edge cases |
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_browser.py` | 61 | 750 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
-| `test_conformance.py` | 325 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 65 programs |
+| `test_conformance.py` | 335 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 67 programs |
 | `test_prelude.py` | 24 | 406 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
@@ -104,10 +104,32 @@ Each conformance program declares the deepest pipeline stage it must pass:
 |-------|-------------------|------:|
 | `parse` | Source text is syntactically valid | 0 |
 | `check` | Parses and type-checks cleanly | 2 |
-| `verify` | Type-checks and all contracts verified by Z3 | 0 |
+| `verify` | Type-checks and all contracts verified by Z3 | 2 |
 | `run` | Compiles to WASM and executes correctly | 63 |
 
-Almost all programs are at the `run` level — they compile and execute, producing correct results. Two programs (`ch09_http`, `ch09_inference`) are at the `check` level because they require network or API key access.
+Almost all programs are at the `run` level — they compile and execute, producing correct results. Two programs (`ch09_http`, `ch09_inference`) are at the `check` level because they require network or API key access. Two programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`) are at the `verify` level, using Z3-provable `ensures` contracts to confirm correct De Bruijn slot ordering.
+
+### Skipped tests
+
+`pytest tests/ -v` reports 6 skipped tests across two categories:
+
+**Level-limited skips** — the conformance framework only runs tests up to the declared level; stages beyond that level are automatically skipped. These are expected and correct.
+
+| Test | Program | Declared level | Skipped stage | Reason |
+|------|---------|---------------|--------------|--------|
+| `test_run[ch03_slot_let_chains]` | `ch03_slot_let_chains.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
+| `test_run[ch03_slot_noncommutative]` | `ch03_slot_noncommutative.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
+
+**Environment-gated skips** — these programs require network access or a live API key that is not available in CI. They pass `vera check` (type-checking) but cannot be executed.
+
+| Test | Program | Declared level | Skipped stage | Reason |
+|------|---------|---------------|--------------|--------|
+| `test_verify[ch09_http]` | `ch09_http.vera` | `check` | `verify` | Requires outbound HTTP; unavailable in CI sandbox |
+| `test_run[ch09_http]` | `ch09_http.vera` | `check` | `run` | Requires outbound HTTP; unavailable in CI sandbox |
+| `test_verify[ch09_inference]` | `ch09_inference.vera` | `check` | `verify` | Requires `VERA_*_API_KEY`; not set in CI |
+| `test_run[ch09_inference]` | `ch09_inference.vera` | `check` | `run` | Requires `VERA_*_API_KEY`; not set in CI |
+
+To run the environment-gated tests locally: set `VERA_ANTHROPIC_API_KEY` (or another provider key) and ensure outbound HTTP is available, then `vera run tests/conformance/ch09_http.vera` / `vera run tests/conformance/ch09_inference.vera`.
 
 ### Directory structure
 
@@ -117,7 +139,7 @@ tests/conformance/
 ├── ch01_int_literals.vera     # Chapter 1: Integer literals
 ├── ch01_float_literals.vera   # Chapter 1: Float64 literals
 ├── ch01_string_escapes.vera   # Chapter 1: String escape sequences
-├── ...                        # 65 programs total, organized by spec chapter
+├── ...                        # 67 programs total, organized by spec chapter
 ├── ch07_state_handler.vera    # Chapter 7: State<T> effect handler
 ├── ch07_exn_handler.vera      # Chapter 7: Exn<E> effect handler
 ├── ch09_numeric_builtins.vera # Chapter 9: Numeric built-in functions
@@ -316,7 +338,7 @@ Twelve scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_conformance.py` | All 65 conformance programs pass their declared level (parse/check/verify/run) |
+| `check_conformance.py` | All 67 conformance programs pass their declared level (parse/check/verify/run) |
 | `check_examples.py` | All 30 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 148 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
@@ -358,7 +380,7 @@ After running `pre-commit install`, every commit is checked by 22 hooks:
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
 | `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
-| `check_conformance.py` | All 65 conformance programs pass their declared level |
+| `check_conformance.py` | All 67 conformance programs pass their declared level |
 | `check_examples.py` | All 30 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 | `check_examples_doc.py` | EXAMPLES.md code blocks parse correctly |
@@ -382,9 +404,9 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs sev
 | **test** | Python 3.11, 3.12, 3.13 x Ubuntu, macOS (6 combos) | `pytest -v` passes on all combinations |
 | **test** (coverage) | Python 3.12 x Ubuntu only | `pytest --cov=vera --cov-fail-under=80` |
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
-| **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_site_assets.py`, `check_licenses.py`, `ruff check --select S` (security rules) |
+| **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_site_assets.py`, `check_licenses.py`, `ruff check --select S vera/` (security rules) |
 | **security** | Ubuntu | [Gitleaks](https://github.com/gitleaks/gitleaks-action) secret scanning on full history |
-| **dependency-audit** | Python 3.12 x Ubuntu | `pip-audit --skip-editable` — checks all installed packages against the OSV vulnerability database (skips the local editable `vera` package, which is not on PyPI) |
+| **dependency-audit** | Python 3.12 x Ubuntu | `pip-audit --skip-editable --ignore-vuln CVE-2026-4539` — checks all installed packages against the OSV vulnerability database (skips the local editable `vera` package; `CVE-2026-4539` suppressed pending a pygments fix release) |
 | **sbom** | Python 3.12 x Ubuntu | `cyclonedx-py environment` — generates a [CycloneDX](https://cyclonedx.org) JSON SBOM of the full installed dependency tree and uploads it as a 90-day CI artifact |
 | **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime; collects V8 coverage via `NODE_V8_COVERAGE` and uploads to Codecov |
 

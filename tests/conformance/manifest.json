@@ -203,6 +203,34 @@
     ]
   },
   {
+    "id": "ch03_slot_let_chains",
+    "file": "ch03_slot_let_chains.vera",
+    "chapter": 3,
+    "title": "Deep let-chain slot indexing",
+    "level": "verify",
+    "spec_ref": "Section 3.2",
+    "features": [
+      "let_chain",
+      "deep_slots",
+      "slot_indexing"
+    ]
+  },
+  {
+    "id": "ch03_slot_noncommutative",
+    "file": "ch03_slot_noncommutative.vera",
+    "chapter": 3,
+    "title": "Non-commutative slot indexing",
+    "level": "verify",
+    "spec_ref": "Section 3.2",
+    "features": [
+      "slot_indexing",
+      "subtraction",
+      "division",
+      "comparison",
+      "noncommutative"
+    ]
+  },
+  {
     "id": "ch04_arithmetic",
     "file": "ch04_arithmetic.vera",
     "chapter": 4,
