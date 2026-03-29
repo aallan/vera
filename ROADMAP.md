@@ -62,12 +62,12 @@ This milestone follows the critical dependency chain that has driven the project
 
 The `<Inference>` effect is the headline feature. Harden it before building on top of it.
 
-- [#378](https://github.com/aallan/vera/issues/378) **Add timeout to `Inference.complete`** — the current implementation uses `urllib.request` with no timeout. A hung provider hangs the runtime indefinitely. Add a configurable timeout (default 30s, overridable via `VERA_INFERENCE_TIMEOUT`), returning `Err("inference timeout")` on expiry.
 - [#370](https://github.com/aallan/vera/issues/370) **Configurable `max_tokens` / `temperature`** — currently hardcoded; agent workloads need control over both.
 - [#372](https://github.com/aallan/vera/issues/372) **User-defined `handle[Inference]` handlers** — currently the Inference effect cannot be handled in user code; full handler support enables mocking, caching, and routing strategies.
 - [#371](https://github.com/aallan/vera/issues/371) **`Inference.embed` operation** — `Array<Float64>` vector embeddings for semantic search and retrieval. Depends on #373 (float array host-alloc infrastructure).
 - [#373](https://github.com/aallan/vera/issues/373) **Float array host-alloc infrastructure** — `_alloc_result_ok_float_array` support for returning float arrays from host imports. Required by #371.
-- [#413](https://github.com/aallan/vera/issues/413) **Add Mistral AI provider to the Inference effect** — extend the `<Inference>` effect runtime with Mistral API support alongside the existing Anthropic, OpenAI, and Moonshot providers.
+- [#413](https://github.com/aallan/vera/issues/413) **Add Mistral AI provider + provider registry refactor** — replace the `elif` chain in `_call_inference_provider()` with a `_ProviderConfig` dataclass and `_PROVIDERS` registry dict, then add Mistral as the fourth provider. At five providers (three structurally identical OpenAI-compatible endpoints) the table-driven approach collapses the dispatch to ~20 lines; adding further providers becomes a one-row change.
+- [#425](https://github.com/aallan/vera/issues/425) **Add xAI Grok provider to the Inference effect** — one-row addition to the `_PROVIDERS` registry introduced in #413. Endpoint: `api.x.ai/v1/chat/completions`; env var: `VERA_XAI_API_KEY`. Depends on #413.
 - [#379](https://github.com/aallan/vera/issues/379) **Add an Inference + JSON composition example** — demonstrate `Inference.complete` → `json_parse` → typed extraction. This is the pattern every real agent workload will use and it should be a first-class example.
 - [#380](https://github.com/aallan/vera/issues/380) **Add an effect handler mocking example** — show `handle[Inference] { complete(@String) -> { resume(Ok("mock")) } } in { ... }` for deterministic testing. This demonstrates the key architectural advantage of modelling inference as an algebraic effect.
 
@@ -174,7 +174,6 @@ These are not milestone-gated — they should be addressed continuously alongsid
 |------|-------|--------|--------|
 | Add Z3 solver timeout per contract | [#391](https://github.com/aallan/vera/issues/391) | 30 min | Prevents DoS via pathological contracts |
 | Audit `smt.py` for soundness | [#392](https://github.com/aallan/vera/issues/392) | 4–8 hours | A bug here silently bypasses verification |
-| Add `Inference.complete` timeout | [#378](https://github.com/aallan/vera/issues/378) | 30 min | Prevents runtime hang on unresponsive LLM provider |
 
 ### Testing gaps
 
