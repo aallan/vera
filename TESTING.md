@@ -6,9 +6,9 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,138 across 26 files (~34,000 lines of test code) |
+| **Tests** | 3,156 across 26 files (~34,000 lines of test code) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
-| **Conformance programs** | 67 programs across 9 spec chapters, validating every language feature |
+| **Conformance programs** | 70 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 30, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 164 parseable blocks from 13 spec chapters: 86 parse, 72 type-check, 71 verify |
 | **README code blocks** | 13 Vera blocks (12 validated, 1 allowlisted future syntax) |
@@ -36,7 +36,7 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # V8 coverage via c8
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_conformance.py                  # conformance suite (67 programs)
+python scripts/check_conformance.py                  # conformance suite (70 programs, see manifest.json)
 python scripts/check_examples.py                     # 30 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
@@ -63,7 +63,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 114 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
-| `test_cli.py` | 200 | 2,748 | CLI commands (check, verify, compile, run, test, fmt, version, quiet), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
+| `test_cli.py` | 203 | 2,796 | CLI commands (check, verify, compile, run, test, fmt, version, quiet), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
@@ -73,7 +73,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_tester_coverage.py` | 30 | 789 | Tester coverage gaps: Float/String/ADT parameters, Bool/Byte parameters, unsatisfiable preconditions, type expression edge cases |
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_browser.py` | 61 | 750 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
-| `test_conformance.py` | 335 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 67 programs |
+| `test_conformance.py` | 350 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 70 programs |
 | `test_prelude.py` | 24 | 406 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
@@ -103,15 +103,15 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | Level | What it validates | Count |
 |-------|-------------------|------:|
 | `parse` | Source text is syntactically valid | 0 |
-| `check` | Parses and type-checks cleanly | 2 |
-| `verify` | Type-checks and all contracts verified by Z3 | 2 |
-| `run` | Compiles to WASM and executes correctly | 63 |
+| `check` | Parses and type-checks cleanly | 3 |
+| `verify` | Type-checks and all contracts verified by Z3 | 3 |
+| `run` | Compiles to WASM and executes correctly | 64 |
 
-Almost all programs are at the `run` level — they compile and execute, producing correct results. Two programs (`ch09_http`, `ch09_inference`) are at the `check` level because they require network or API key access. Two programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`) are at the `verify` level, using Z3-provable `ensures` contracts to confirm correct De Bruijn slot ordering.
+Almost all programs are at the `run` level — they compile and execute, producing correct results. Three programs (`ch07_cross_module_contracts_lib`, `ch09_http`, `ch09_inference`) are at the `check` level. Three programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch07_cross_module_contracts`) are at the `verify` level, using Z3-provable contracts.
 
 ### Skipped tests
 
-`pytest tests/ -v` reports 6 skipped tests across two categories:
+`pytest tests/ -v` reports 8 skipped tests across two categories:
 
 **Level-limited skips** — the conformance framework only runs tests up to the declared level; stages beyond that level are automatically skipped. These are expected and correct.
 
@@ -119,6 +119,8 @@ Almost all programs are at the `run` level — they compile and execute, produci
 |------|---------|---------------|--------------|--------|
 | `test_run[ch03_slot_let_chains]` | `ch03_slot_let_chains.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_run[ch03_slot_noncommutative]` | `ch03_slot_noncommutative.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
+| `test_run[ch07_cross_module_contracts]` | `ch07_cross_module_contracts.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
+| `test_run[ch07_cross_module_contracts_lib]` | `ch07_cross_module_contracts_lib.vera` | `check` | `run` | `check`-level library module: no standalone `main` |
 
 **Environment-gated skips** — these programs require network access or a live API key that is not available in CI. They pass `vera check` (type-checking) but cannot be executed.
 
@@ -139,7 +141,7 @@ tests/conformance/
 ├── ch01_int_literals.vera     # Chapter 1: Integer literals
 ├── ch01_float_literals.vera   # Chapter 1: Float64 literals
 ├── ch01_string_escapes.vera   # Chapter 1: String escape sequences
-├── ...                        # 67 programs total, organized by spec chapter
+├── ...                        # 70 programs total, organized by spec chapter
 ├── ch07_state_handler.vera    # Chapter 7: State<T> effect handler
 ├── ch07_exn_handler.vera      # Chapter 7: Exn<E> effect handler
 ├── ch09_numeric_builtins.vera # Chapter 9: Numeric built-in functions
@@ -338,7 +340,7 @@ Twelve scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
 
 | Script | What it validates |
 |--------|-------------------|
-| `check_conformance.py` | All 67 conformance programs pass their declared level (parse/check/verify/run) |
+| `check_conformance.py` | All 70 conformance programs pass their declared level (parse/check/verify/run) |
 | `check_examples.py` | All 30 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 148 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
@@ -380,7 +382,7 @@ After running `pre-commit install`, every commit is checked by 22 hooks:
 | `mypy vera/` | Type-check compiler in strict mode |
 | `pytest tests/ -q` | Run full test suite |
 | `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
-| `check_conformance.py` | All 67 conformance programs pass their declared level |
+| `check_conformance.py` | All 70 conformance programs pass their declared level |
 | `check_examples.py` | All 30 examples pass `vera check` + `vera verify` |
 | `check_readme_examples.py` | README code blocks parse correctly |
 | `check_examples_doc.py` | EXAMPLES.md code blocks parse correctly |

@@ -1,0 +1,110 @@
+-- Conformance: Nested effect handler composition (Chapter 7)
+-- Tests: handle[Exn<Int>] inside handle[State<Int>], handle[State<Int>] inside handle[Exn<Int>], sequential handler scoping
+effect Exn<E> {
+  op throw(E -> Never);
+}
+
+-- State<Int> handler starting at 3, incremented twice: result = 5.
+private fn state_from_three(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 3) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    put(get(()) + 1);
+    put(get(()) + 1);
+    get(())
+  }
+}
+
+-- State<Int> handler starting at 0, incremented once: result = 1.
+-- Verifies that a second independent handler scopes to its own initial value.
+private fn state_from_zero(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    put(get(()) + 1);
+    get(())
+  }
+}
+
+-- Exn<Int> inside a State<Int> handler.
+-- State is set to 7 then an exception is thrown.
+-- The exception handler returns 99 (exception recovery value).
+-- Verifies that Exn<Int> composition with State<Int> works correctly.
+public fn test_exn_inside_state(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    put(7);
+    handle[Exn<Int>] {
+      throw(@Int) -> { 99 }
+    } in {
+      throw(42);
+      get(())
+    }
+  }
+}
+
+-- State<Int> inside an Exn<Int> handler.
+-- The inner computation sets state to 5 and reads it back.
+-- No exception is thrown, so the result is the state value (5).
+-- Verifies that State<Int> composition with Exn<Int> works correctly.
+public fn test_state_inside_exn(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> { 0 - 1 }
+  } in {
+    handle[State<Int>](@Int = 0) {
+      get(@Unit) -> { resume(@Int.0) },
+      put(@Int) -> { resume(()) } with @Int = @Int.0
+    } in {
+      put(5);
+      get(())
+    }
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Int = state_from_three(());
+  if @Int.0 != 5 then {
+    1
+  } else {
+    let @Int = state_from_zero(());
+    if @Int.0 != 1 then {
+      2
+    } else {
+      let @Int = test_exn_inside_state(());
+      if @Int.0 != 99 then {
+        3
+      } else {
+        let @Int = test_state_inside_exn(());
+        if @Int.0 != 5 then {
+          4
+        } else {
+          0
+        }
+      }
+    }
+  }
+}

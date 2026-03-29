@@ -21,7 +21,7 @@
   <!-- Agent skill file discovery -->
   <link rel="alternate" type="text/markdown"
         title="Vera SKILL.md — Complete agent language reference"
-        href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md" />
+        href="/SKILL.md" />
   <!-- llms.txt discovery (Mintlify convention) -->
   <link rel="llms-txt" href="/llms.txt" />
   <link rel="llms-full-txt" href="/llms-full.txt" />
@@ -528,7 +528,7 @@
         "@type": "TechArticle",
         "name": "SKILL.md",
         "description": "Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.",
-        "url": "https://raw.githubusercontent.com/aallan/vera/main/SKILL.md",
+        "url": "https://veralang.dev/SKILL.md",
         "encodingFormat": "text/markdown",
         "isPartOf": { "@id": "https://veralang.dev" },
         "audience": {
@@ -577,7 +577,7 @@
         GitHub
       </a>
       <a href="#install" class="cta-btn secondary">Install</a>
-      <a href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md"
+      <a href="/SKILL.md"
          rel="agent-instructions"
          type="text/markdown"
          data-agent-role="skill"
@@ -970,17 +970,17 @@ vera compile --target browser examples/hello_world.vera</pre>
       <h2 class="section-heading">For Agents</h2>
       <p style="color: var(--brown-500); margin-bottom: 1rem; font-size: 0.95rem;">Vera ships with three files for LLM agents:</p>
       <div style="margin-bottom: 1.25rem;">
-        <p style="color: var(--brown-500); font-size: 0.95rem; margin-bottom: 0.5rem;"><a href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md"><code>SKILL.md</code></a> &mdash; Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.</p>
+        <p style="color: var(--brown-500); font-size: 0.95rem; margin-bottom: 0.5rem;"><a href="/SKILL.md"><code>SKILL.md</code></a> &mdash; Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.</p>
         <p style="color: var(--brown-500); font-size: 0.95rem; margin-bottom: 0.5rem;"><a href="https://github.com/aallan/vera/blob/main/AGENTS.md"><code>AGENTS.md</code></a> &mdash; Instructions for any agent system (Copilot, Cursor, Windsurf, custom). Covers both writing Vera code and working on the compiler.</p>
         <p style="color: var(--brown-500); font-size: 0.95rem;"><a href="https://github.com/aallan/vera/blob/main/CLAUDE.md"><code>CLAUDE.md</code></a> &mdash; Project orientation for Claude Code. Key commands, layout, workflows, and invariants.</p>
       </div>
 
-      <p style="color: var(--brown-500); margin-bottom: 0.75rem; font-size: 0.95rem;">If you're working in the Vera repo, Claude Code discovers <a href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md"><code>SKILL.md</code></a> and <a href="https://github.com/aallan/vera/blob/main/CLAUDE.md"><code>CLAUDE.md</code></a> automatically. For other projects to give Claude access to the Vera language you can install the skill manually:</p>
+      <p style="color: var(--brown-500); margin-bottom: 0.75rem; font-size: 0.95rem;">If you're working in the Vera repo, Claude Code discovers <a href="/SKILL.md"><code>SKILL.md</code></a> and <a href="https://github.com/aallan/vera/blob/main/CLAUDE.md"><code>CLAUDE.md</code></a> automatically. For other projects to give Claude access to the Vera language you can install the skill manually:</p>
       <div class="install-steps" style="margin-bottom: 1rem;">
 <pre>mkdir -p ~/.claude/skills/vera-language
 cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       </div>
-      <p style="color: var(--brown-500); font-size: 0.95rem;">The skill is now available across all your Claude Code projects. Claude will read it automatically when you ask it to write Vera code. For other models, point the model at <a href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md"><code>SKILL.md</code></a> by including it in the system prompt, as a file attachment, or as a retrieval document. The file is self-contained and works with any model that can read markdown.</p>
+      <p style="color: var(--brown-500); font-size: 0.95rem;">The skill is now available across all your Claude Code projects. Claude will read it automatically when you ask it to write Vera code. For other models, point the model at <a href="/SKILL.md"><code>SKILL.md</code></a> by including it in the system prompt, as a file attachment, or as a retrieval document. The file is self-contained and works with any model that can read markdown.</p>
     </div>
   </section>
 
@@ -1010,7 +1010,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       <div class="footer-links">
         <a href="https://github.com/aallan/vera">GitHub</a>
         <a href="https://github.com/aallan/vera/blob/main/spec/">Specification</a>
-        <a href="https://raw.githubusercontent.com/aallan/vera/main/SKILL.md">SKILL.md</a>
+        <a href="/SKILL.md">SKILL.md</a>
         <a href="https://github.com/aallan/vera/blob/main/AGENTS.md">AGENTS.md</a>
         <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md">Roadmap</a>
         <a href="https://github.com/aallan/vera/blob/main/CHANGELOG.md">Changelog</a>
@@ -1030,7 +1030,7 @@ mandatory contracts, and typed slot references. Designed for LLM code generation
 Compiles to WebAssembly. Runs at the CLI or in the browser.
 
 ### For Agents
-- [SKILL.md](https://raw.githubusercontent.com/aallan/vera/main/SKILL.md): Complete language reference for writing Vera code
+- [SKILL.md](https://veralang.dev/SKILL.md): Complete language reference for writing Vera code
 - [AGENTS.md](https://github.com/aallan/vera/blob/main/AGENTS.md): Setup instructions for any agent system
 - [llms.txt](https://veralang.dev/llms.txt): Site index for LLMs
 - [llms-full.txt](https://veralang.dev/llms-full.txt): Full site content for LLMs

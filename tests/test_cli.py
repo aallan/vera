@@ -2746,3 +2746,51 @@ class TestCmdQuiet:
         assert "OK:" not in captured.out
         assert "Verification:" not in captured.out
         assert captured.out == ""
+
+
+class TestMainQuiet:
+    """Dispatch-level tests for --quiet flag exercising the CLI entry point."""
+
+    _GOOD_VERA = (
+        "public fn add(@Int, @Int -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  @Int.0 + @Int.1\n"
+        "}\n"
+    )
+    _BAD_VERA = "public fn bad(@Int -> @Int) { @Int.0 }\n"
+
+    def test_check_quiet_suppresses_ok(self, tmp_path: Path) -> None:
+        """vera check --quiet produces no stdout on success."""
+        f = tmp_path / "quiet.vera"
+        f.write_text(self._GOOD_VERA)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--quiet", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_check_quiet_still_prints_errors(self, tmp_path: Path) -> None:
+        """vera check --quiet still emits errors on stderr when the file is invalid."""
+        f = tmp_path / "bad.vera"
+        f.write_text(self._BAD_VERA)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--quiet", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert result.stderr != ""
+
+    def test_verify_quiet_suppresses_ok(self, tmp_path: Path) -> None:
+        """vera verify --quiet produces no stdout on success."""
+        f = tmp_path / "quiet_verify.vera"
+        f.write_text(self._GOOD_VERA)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "verify", "--quiet", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""

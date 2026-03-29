@@ -45,7 +45,7 @@ vera run examples/hello_world.vera
 
 ## Documentation
 
-- [SKILL.md](https://raw.githubusercontent.com/aallan/vera/main/SKILL.md) — Complete language reference
+- [SKILL.md](https://veralang.dev/SKILL.md) — Complete language reference
 - [AGENTS.md](https://raw.githubusercontent.com/aallan/vera/main/AGENTS.md) — Instructions for AI agents
 - [EXAMPLES.md](https://raw.githubusercontent.com/aallan/vera/main/EXAMPLES.md) — Language tour with code examples
 - [FAQ](https://raw.githubusercontent.com/aallan/vera/main/FAQ.md) — Design rationale and comparisons

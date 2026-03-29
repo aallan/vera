@@ -7,6 +7,7 @@ Auto-generates from source documentation:
   - docs/robots.txt      AI-crawler-friendly robots.txt
   - docs/sitemap.xml     XML sitemap
   - docs/index.md        Markdown companion of index.html
+  - docs/SKILL.md        Language reference served on-domain (copy of SKILL.md)
 
 Run manually or from CI:
     python scripts/build_site.py
@@ -83,7 +84,7 @@ Install with `pip install -e .` from the repository.
 
 ## Language Reference
 
-- [SKILL.md]({RAW}/SKILL.md): Complete language reference — syntax, types, \
+- [SKILL.md]({SITE}/SKILL.md): Complete language reference — syntax, types, \
 slot references, contracts, effects, built-in functions, common mistakes, \
 and working examples. This is the primary document for writing Vera code.
 
@@ -262,6 +263,7 @@ def build_sitemap_xml() -> str:
     today = date.today().isoformat()
     urls = [
         (f"{SITE}/", "1.0", "weekly"),
+        (f"{SITE}/SKILL.md", "0.9", "weekly"),
         (f"{SITE}/llms.txt", "0.8", "weekly"),
         (f"{SITE}/llms-full.txt", "0.8", "weekly"),
         (f"{SITE}/index.md", "0.5", "weekly"),
@@ -360,7 +362,7 @@ vera run examples/hello_world.vera
 
 ## Documentation
 
-- [SKILL.md]({RAW}/SKILL.md) — Complete language reference
+- [SKILL.md]({SITE}/SKILL.md) — Complete language reference
 - [AGENTS.md]({RAW}/AGENTS.md) — Instructions for AI agents
 - [EXAMPLES.md]({RAW}/EXAMPLES.md) — Language tour with code examples
 - [FAQ]({RAW}/FAQ.md) — Design rationale and comparisons
@@ -379,6 +381,19 @@ vera run examples/hello_world.vera
 """
 
 
+# ── SKILL.md ────────────────────────────────────────────────────────
+
+
+def build_skill_md() -> str:
+    """Return SKILL.md verbatim from the repository root.
+
+    The source of truth is the top-level SKILL.md.  This copy in docs/ is a
+    generated artefact that makes the language reference available at
+    veralang.dev/SKILL.md — same domain as the website, cacheable, stable.
+    """
+    return (ROOT / "SKILL.md").read_text(encoding="utf-8")
+
+
 # ── main ────────────────────────────────────────────────────────────
 
 
@@ -390,6 +405,7 @@ def main() -> int:
         "robots.txt": build_robots_txt(),
         "sitemap.xml": build_sitemap_xml(),
         "index.md": build_index_md(version),
+        "SKILL.md": build_skill_md(),
     }
     DOCS.mkdir(parents=True, exist_ok=True)
     for name, content in files.items():

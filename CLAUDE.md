@@ -45,7 +45,7 @@ pytest tests/ -v                  # Run the test suite (see TESTING.md)
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS coverage
 mypy vera/                        # Type-check the compiler itself
 
-python scripts/check_conformance.py    # Verify all 67 conformance programs pass their declared level
+python scripts/check_conformance.py    # Verify all 70 conformance programs pass their declared level
 python scripts/check_examples.py      # Verify all 30 examples parse + check + verify
 python scripts/check_spec_examples.py # Verify spec code blocks parse
 python scripts/check_readme_examples.py # Verify README code blocks parse
@@ -70,7 +70,7 @@ python scripts/fix_allowlists.py --fix # Auto-fix stale allowlist line numbers
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
 - `examples/` — 30 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite (unit tests + conformance suite)
-- `tests/conformance/` — 67 conformance programs validating every language feature against the spec
+- `tests/conformance/` — 70 conformance programs validating every language feature against the spec
 - `scripts/` — CI and validation scripts
 
 ## Writing Vera code
@@ -97,7 +97,7 @@ Each stage is a module with a public API function and is independently testable.
 ## What not to break
 
 - Pre-commit hooks run mypy + pytest + conformance suite + example validation on every commit
-- All 67 conformance programs in `tests/conformance/` must pass their declared level
+- All 70 conformance programs in `tests/conformance/` must pass their declared level
 - All 30 examples in `examples/` must pass `vera check` and `vera verify`
 - Version must stay in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 - All tests must pass: `pytest tests/ -v`

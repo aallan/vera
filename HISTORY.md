@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit to v0.0.102, across 30 development days.
+How the Vera compiler was built, from initial commit to v0.0.103, across 30 development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -248,7 +248,7 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,121 | 3,138 |
 | Examples | 13 | 15 | 16 | 18 | 24 | 30 | 30 | 30 |
 | Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 122 | 122 |
-| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 65 | 67 |
+| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 65 | 70 |
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% | 96% |
 

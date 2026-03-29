@@ -8,7 +8,7 @@ Current version: 0.0.103. The reference compiler is written in Python. Install w
 
 ## Language Reference
 
-- [SKILL.md](https://raw.githubusercontent.com/aallan/vera/main/SKILL.md): Complete language reference — syntax, types, slot references, contracts, effects, built-in functions, common mistakes, and working examples. This is the primary document for writing Vera code.
+- [SKILL.md](https://veralang.dev/SKILL.md): Complete language reference — syntax, types, slot references, contracts, effects, built-in functions, common mistakes, and working examples. This is the primary document for writing Vera code.
 
 ## Quick Start
 
@@ -50,4 +50,4 @@ Current version: 0.0.103. The reference compiler is written in Python. Install w
 - [TESTING.md](https://raw.githubusercontent.com/aallan/vera/main/TESTING.md): Test suite architecture, coverage data, and test conventions.
 - [KNOWN_ISSUES.md](https://raw.githubusercontent.com/aallan/vera/main/KNOWN_ISSUES.md): Known bugs and limitations.
 - [CONTRIBUTING.md](https://raw.githubusercontent.com/aallan/vera/main/CONTRIBUTING.md): Contribution guidelines.
-- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 67 programs validating every language feature against the spec.
+- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 70 programs validating every language feature against the spec.

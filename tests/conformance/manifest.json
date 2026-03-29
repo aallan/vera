@@ -578,6 +578,47 @@
     ]
   },
   {
+    "id": "ch07_cross_module_contracts_lib",
+    "file": "ch07_cross_module_contracts_lib.vera",
+    "chapter": 7,
+    "title": "Cross-module contract library",
+    "level": "check",
+    "spec_ref": "Section 7.5",
+    "features": [
+      "cross_module_contracts",
+      "exported_postcondition",
+      "exported_precondition"
+    ]
+  },
+  {
+    "id": "ch07_cross_module_contracts",
+    "file": "ch07_cross_module_contracts.vera",
+    "chapter": 7,
+    "title": "Cross-module contract verification",
+    "level": "verify",
+    "spec_ref": "Section 7.5",
+    "features": [
+      "cross_module_contracts",
+      "postcondition_chain",
+      "import_ensures",
+      "import_requires"
+    ]
+  },
+  {
+    "id": "ch07_nested_handlers",
+    "file": "ch07_nested_handlers.vera",
+    "chapter": 7,
+    "title": "Nested effect handler composition",
+    "level": "run",
+    "spec_ref": "Section 7.4",
+    "features": [
+      "nested_handlers",
+      "handler_composition",
+      "state_handler",
+      "exn_handler"
+    ]
+  },
+  {
     "id": "ch09_map",
     "file": "ch09_map.vera",
     "chapter": 9,

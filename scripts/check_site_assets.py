@@ -27,6 +27,7 @@ from build_site import (  # noqa: E402
     build_llms_full_txt,
     build_llms_txt,
     build_robots_txt,
+    build_skill_md,
     _version,
 )
 
@@ -39,6 +40,7 @@ def main() -> int:
         "robots.txt": build_robots_txt(),
         # sitemap.xml contains today's date, so skip exact comparison
         "index.md": build_index_md(version),
+        "SKILL.md": build_skill_md(),
     }
 
     stale: list[str] = []

@@ -1760,7 +1760,6 @@ These are known limitations in the current reference implementation. They are tr
 
 | Limitation | Details | Issue |
 |-----------|---------|-------|
-| CLI only accepts `Int` arguments | `vera run file.vera --fn f -- 42` supports integer arguments only. Passing strings, booleans, or compound types via the command line is not yet supported. | [#263](https://github.com/aallan/vera/issues/263) |
 | `vera test` cannot generate `String`, `Float64`, or compound-type inputs | The Z3-backed test runner only generates inputs for `Int`, `Nat`, `Bool`, and `Byte` parameters. Functions with other parameter types are skipped with a `SKIPPED (cannot generate String inputs (see #169))` message. | [#169](https://github.com/aallan/vera/issues/169) |
 | Type inference for bare `None`/`Err` in generic calls | Writing `None` or `Err(...)` without a type annotation in certain generic call positions can fail with a type inference error. Workaround: add an explicit type annotation or use a `let` binding. | [#293](https://github.com/aallan/vera/issues/293) |
 | Effect row variable unification | Effect rows containing type variables (e.g. `<E>` in a generic function) are not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations. | [#294](https://github.com/aallan/vera/issues/294) |
