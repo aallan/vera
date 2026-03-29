@@ -233,8 +233,8 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | 17 Mar | TextMate syntax highlighting bundle |
 | 18 Mar | VS Code extension for Vera syntax highlighting |
 | 20 Mar | AI discoverability: llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json, index.md |
-| 28 Mar | **`vera run` typed argument passing** — `vera run --fn f -- "hello"` now accepts String, Float64, Bool, and Byte arguments alongside Int; the function's WASM signature drives type dispatch (#263). |
-| 28 Mar | **Agent discovery metadata** — four semantic layers added to veralang.dev: `<link>` alternate/llms-txt elements, JSON-LD `TechArticle` entries for SKILL.md and AGENTS.md, button `rel="agent-instructions"` attributes, and an inline `<script type="text/llms.txt">` block (#400). |
+| 28 Mar | `vera run --fn f -- arg` typed argument passing — String, Float64, Bool, Byte alongside Int |
+| 28 Mar | Agent discovery metadata — llms-txt link elements, JSON-LD TechArticle entries, inline script block on veralang.dev |
 
 ---
 
