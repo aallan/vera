@@ -114,6 +114,9 @@ jobs:
       - name: Check license compliance
         run: python scripts/check_licenses.py
 
+      - name: Check documentation counts are consistent
+        run: python scripts/check_doc_counts.py
+
       - name: Security lint (ruff S rules)
         run: ruff check --select S vera/
 

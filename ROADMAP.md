@@ -14,7 +14,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 **v0.0.101** — the reference compiler completed eleven development phases (C1–C9, including C6.5 and C8.5), with 3,095 tests, 96% code coverage of 15,149 statements, 64 conformance programs, 30 examples, and a 13-chapter specification. The `<Inference>` algebraic effect makes LLM calls explicit in the type system — the headline feature that distinguishes Vera from every other verified language. A Vera program can make an HTTP request, parse JSON, call an LLM, and return typed, contract-verified results. AI discoverability (llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json) is deployed on veralang.dev.
 
-An independent assessment rates the project at **60–70% of the way to being a viable agent target.** The remaining 30–40% is standard library breadth, tooling integration, empirical validation, and the server-side effect chain that unlocks the flagship use case.
+A second independent assessment (March 2026) revised the rating upward to **65–75% of the way to being a viable agent target.** The assessor found no design drift across 104 releases and noted the documentation stack as "best-in-class for LLM consumption." The remaining gap is empirical validation (benchmark suite), standard library breadth (HTTP hardening, server effects), and tooling integration (LSP). The dependency chain is correctly ordered and the path forward is well-mapped. The single most important next step is building the benchmark suite (#225) — adoption, research credibility, and the case for why agents should use Vera all depend on having data.
 
 ---
 
