@@ -6,17 +6,12 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 
 ## Design principles
 
-1. **Checkability over correctness.** The model does not need to produce correct code on the first attempt — it needs to produce code that can be mechanically checked. When the code is wrong, the compiler provides a natural language explanation of the error with a concrete fix. The diagnostic is an instruction, not a status report.
-
-2. **Explicitness over convenience.** All state changes are declared. All effects are typed. All function contracts are mandatory. There is no implicit behaviour for the model to infer or hallucinate.
-
-3. **One canonical form.** Every construct has exactly one textual representation. No style choices, no optional syntax, no equivalent alternatives. The canonical formatter enforces this; `vera fmt --check` is a CI gate.
-
-4. **Structural references over names.** Bindings are referenced by type and positional index (`@T.n`), not by arbitrary names. This eliminates naming consistency errors — one of the most common failure modes when models generate code across large contexts. See [`DE_BRUIJN.md`](DE_BRUIJN.md) for the academic background and empirical evidence.
-
-5. **Contracts as the source of truth.** Every function declares what it requires (`requires`) and what it guarantees (`ensures`). The compiler verifies these statically where possible, inserts runtime checks where it cannot, and uses them as input generators for property-based testing. The contract is the specification.
-
-6. **Constrained expressiveness.** The space of valid programs is deliberately small. Refinement types, mandatory contracts, and the effect system combine to reject large classes of incorrect programs at compile time. Fewer valid programs means fewer opportunities for the model to be wrong.
+1. **Checkability over correctness.** Code that can be mechanically checked. When wrong, the compiler provides a natural language explanation of the error with a concrete fix — an instruction, not a status report.
+2. **Explicitness over convenience.** All state changes declared. All effects typed. All function contracts mandatory. No implicit behaviour.
+3. **One canonical form.** Every construct has exactly one textual representation. No style choices.
+4. **Structural references over names.** Bindings referenced by type and positional index (`@T.n`), not arbitrary names. See [`DE_BRUIJN.md`](DE_BRUIJN.md).
+5. **Contracts as the source of truth.** Every function declares what it requires and guarantees. The compiler verifies statically where possible.
+6. **Constrained expressiveness.** Fewer valid programs means fewer opportunities for the model to be wrong.
 
 ---
 
