@@ -1125,7 +1125,7 @@ private fn run_counter(@Unit -> @Int)
   ensures(true)
   effects(pure)
 {
-  handle[State<Int>](https://github.com/aallan/vera/blob/main/@Int = 0) {
+  handle[State<Int>](@Int = 0) {
     get(@Unit) -> { resume(@Int.0) },
     put(@Int) -> { resume(()) }
   } in {
@@ -1137,7 +1137,7 @@ private fn run_counter(@Unit -> @Int)
 
 Handler syntax:
 ```vera
-handle[EffectName<TypeArgs>](https://github.com/aallan/vera/blob/main/@StateType = initial_value) {
+handle[EffectName<TypeArgs>](@StateType = initial_value) {
   operation(@ParamType) -> { handler_body },
   operation(@ParamType) -> { handler_body } with @StateType = new_value,
   ...

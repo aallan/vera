@@ -170,14 +170,24 @@ def build_llms_full_txt(version: str) -> str:
     def _abs_links(text: str) -> str:
         """Rewrite relative markdown links to absolute GitHub blob URLs.
 
-        Links that already start with http/https/# are left unchanged.
-        Relative paths are resolved from the repo root.
+        Only rewrites links whose URL looks like a repo-relative file path
+        (alphanumeric characters, dots, slashes, hyphens, underscores).
+        Links that already start with http/https/# and anything inside
+        fenced code blocks are left unchanged.
         """
-        return re.sub(
-            r"\[([^\]]+)\]\((?!https?://|#)([^)]+)\)",
-            lambda m: f"[{m.group(1)}]({REPO}/blob/main/{m.group(2)})",
-            text,
-        )
+        # Split on fenced code blocks; only rewrite outside them.
+        parts_inner: list[str] = []
+        for i, chunk in enumerate(re.split(r"(```[^`]*```)", text, flags=re.DOTALL)):
+            if i % 2 == 1:
+                # Inside a code fence — leave unchanged
+                parts_inner.append(chunk)
+            else:
+                parts_inner.append(re.sub(
+                    r"\[([^\]]+)\]\((?!https?://|#)([A-Za-z0-9_./#-][A-Za-z0-9_./#-]*)\)",
+                    lambda m: f"[{m.group(1)}]({REPO}/blob/main/{m.group(2)})",
+                    chunk,
+                ))
+        return "".join(parts_inner)
 
     def section(title: str, content: str) -> None:
         parts.append(f"\n{'=' * 72}")
