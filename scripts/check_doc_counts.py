@@ -417,6 +417,51 @@ def main() -> int:
             )
 
     # ------------------------------------------------------------------
+    # 12. Check FAQ.md
+    # ------------------------------------------------------------------
+
+    faq_md = (root / "FAQ.md").read_text()
+
+    for m_iter in re.finditer(
+        r"conformance test suite \((\d+) programs", faq_md
+    ):
+        doc_conf = int(m_iter.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"FAQ.md: conformance count: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    for m_iter in re.finditer(r"(\d+)-program conformance suite", faq_md):
+        doc_conf = int(m_iter.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"FAQ.md: conformance suite size: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    # ------------------------------------------------------------------
+    # 13. Check ROADMAP.md "Where we are" summary
+    # ------------------------------------------------------------------
+
+    roadmap_md = (root / "ROADMAP.md").read_text()
+
+    m = re.search(r"([\d,]+) tests,.*?(\d+) conformance programs", roadmap_md)
+    if m:
+        doc_tests = int(m.group(1).replace(",", ""))
+        doc_conf = int(m.group(2))
+        if doc_tests != live_total_tests:
+            errors.append(
+                f"ROADMAP.md: test count: doc says {doc_tests},"
+                f" live is {live_total_tests}"
+            )
+        if doc_conf != live_conformance:
+            errors.append(
+                f"ROADMAP.md: conformance count: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    # ------------------------------------------------------------------
     # Report
     # ------------------------------------------------------------------
 
