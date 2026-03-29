@@ -361,7 +361,7 @@ def _write_table_data(
 def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
     """Read a little-endian i32 from WASM memory."""
     memory = caller["memory"]
-    assert isinstance(memory, wasmtime.Memory)
+    assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     buf = memory.data_ptr(caller)
     val: int = struct.unpack_from("<I", bytes(buf[offset:offset + 4]))[0]
     return val
@@ -370,7 +370,7 @@ def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
 def _read_i64(caller: wasmtime.Caller, offset: int) -> int:
     """Read a little-endian i64 from WASM memory."""
     memory = caller["memory"]
-    assert isinstance(memory, wasmtime.Memory)
+    assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     buf = memory.data_ptr(caller)
     val: int = struct.unpack_from("<Q", bytes(buf[offset:offset + 8]))[0]
     return val
@@ -381,7 +381,7 @@ def _read_string(caller: wasmtime.Caller, ptr: int, length: int) -> str:
     if length == 0:
         return ""  # pragma: no cover
     memory = caller["memory"]
-    assert isinstance(memory, wasmtime.Memory)
+    assert isinstance(memory, wasmtime.Memory)  # noqa: S101
     buf = memory.data_ptr(caller)
     return bytes(buf[ptr:ptr + length]).decode("utf-8")
 

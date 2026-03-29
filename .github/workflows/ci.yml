@@ -102,6 +102,9 @@ jobs:
       - name: Check license compliance
         run: python scripts/check_licenses.py
 
+      - name: Security lint (ruff S rules)
+        run: ruff check --select S vera/
+
   security:
     runs-on: ubuntu-latest
     steps:
@@ -113,6 +116,22 @@ jobs:
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies and pip-audit
+        run: pip install -e . && pip install pip-audit
+
+      - name: Audit dependencies for known CVEs
+        run: pip-audit --strict
 
   browser-parity:
     runs-on: ubuntu-latest

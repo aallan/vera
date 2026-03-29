@@ -364,7 +364,7 @@ def diagnose_lark_error(
         # Pattern: missing contract block
         # After fn signature, parser expects "requires"/"ensures"/"decreases"
         # but got "{" (the body) or something else
-        if token == "{" and expected & {"REQUIRES", "requires", "ENSURES", "ensures"}:
+        if token == "{" and expected & {"REQUIRES", "requires", "ENSURES", "ensures"}:  # noqa: S105
             return missing_contract_block(file, source, line, column)
 
         # Pattern: missing effects clause
@@ -374,7 +374,7 @@ def diagnose_lark_error(
         # Pattern: old dot syntax for module-qualified calls
         # module_path consumed all idents including the fn name, parser
         # expects "::" (__ANON_9) but got "("
-        if token == "(" and "__ANON_9" in expected:
+        if token == "(" and "__ANON_9" in expected:  # noqa: S105
             return module_call_dot_syntax(file, source, line, column)
 
         # Fallback

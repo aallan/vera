@@ -182,7 +182,7 @@ class MonomorphizationMixin:
             str, tuple[tuple[str, ...], tuple[ast.TypeExpr, ...]]
         ] = {}
         for name, decl in generic_decls.items():
-            assert decl.forall_vars is not None
+            assert decl.forall_vars is not None  # noqa: S101
             self._generic_fn_info[name] = (decl.forall_vars, decl.params)
 
         return mono_decls
@@ -674,7 +674,7 @@ class MonomorphizationMixin:
         (e.g. A→Int, B→Int), De Bruijn indices in slot references
         must be adjusted because formerly separate namespaces merge.
         """
-        assert decl.forall_vars is not None
+        assert decl.forall_vars is not None  # noqa: S101
         mapping = dict(zip(decl.forall_vars, concrete_types))
         mangled = self._mangle_fn_name(decl.name, concrete_types)
 
@@ -685,7 +685,7 @@ class MonomorphizationMixin:
 
         # Substitute type variables in the entire FnDecl
         substituted = self._substitute_in_ast(decl, mapping, reindex)
-        assert isinstance(substituted, ast.FnDecl)
+        assert isinstance(substituted, ast.FnDecl)  # noqa: S101
 
         # Override name and clear forall_vars/constraints
         return replace(
@@ -909,7 +909,7 @@ class MonomorphizationMixin:
     ) -> ast.TypeExpr:
         """Substitute type variables in a TypeExpr, returning a TypeExpr."""
         result = self._substitute_in_ast(te, mapping)
-        assert isinstance(result, ast.TypeExpr)
+        assert isinstance(result, ast.TypeExpr)  # noqa: S101
         return result
 
     def _check_constraints(
