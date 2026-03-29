@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from vera.cli import cmd_ast, cmd_check, cmd_compile, cmd_fmt, cmd_parse, cmd_run, cmd_test, cmd_verify
+from vera.cli import cmd_ast, cmd_check, cmd_compile, cmd_fmt, cmd_parse, cmd_run, cmd_test, cmd_verify, cmd_version
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 INCREMENT = str(EXAMPLES_DIR / "increment.vera")
@@ -2661,3 +2661,32 @@ public fn id(@Int -> @Int)
         result.fn_param_types["id"] = ["unsupported_wasm_tag"]  # type: ignore[index]
         exec_result = execute(result, fn_name="id", raw_args=["42"])  # type: ignore[arg-type]
         assert exec_result.value == 42
+
+
+class TestCmdVersion:
+    """Tests for the vera version command."""
+
+    def test_version_output(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """vera version prints 'vera X.Y.Z' on stdout."""
+        import vera
+        rc = cmd_version()
+        assert rc == 0
+        out = capsys.readouterr().out.strip()
+        assert out == f"vera {vera.__version__}"
+
+    def test_version_format(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Output starts with 'vera ' followed by a semver-shaped string."""
+        import re
+        cmd_version()
+        out = capsys.readouterr().out.strip()
+        assert re.match(r"^vera \d+\.\d+\.\d+", out)
+
+    def test_version_subprocess(self) -> None:
+        """vera version works as a subprocess (covers --version and -V aliases)."""
+        for flag in ("version", "--version", "-V"):
+            result = subprocess.run(
+                [sys.executable, "-m", "vera.cli", flag],
+                capture_output=True, text=True,
+            )
+            assert result.returncode == 0
+            assert result.stdout.startswith("vera ")

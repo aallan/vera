@@ -153,7 +153,7 @@ public forall<T> fn identity(@T -> @T)
         assert "generic" in f.reason.lower()
 
     def test_string_parameter(self) -> None:
-        """String params are unsupported for Z3 encoding."""
+        """String params produce a skip message naming the unsupported type."""
         source = """\
 public fn greet(@String -> @Int)
   requires(true)
@@ -166,6 +166,25 @@ public fn greet(@String -> @Int)
         result = _test(source)
         f = _fn_result(result, "greet")
         assert f.category == "skipped"
+        assert "String" in f.reason
+        assert "#169" in f.reason
+
+    def test_float_parameter_skip_message(self) -> None:
+        """Float64 params produce a skip message naming the unsupported type."""
+        source = """\
+public fn scale(@Float64 -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Float64.0
+}
+"""
+        result = _test(source)
+        f = _fn_result(result, "scale")
+        assert f.category == "skipped"
+        assert "Float64" in f.reason
+        assert "#169" in f.reason
 
     def test_trivial_contracts(self) -> None:
         """Functions with only trivial contracts are skipped."""

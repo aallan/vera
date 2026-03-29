@@ -1641,6 +1641,7 @@ function buildImportObject(module) {
         }
         const xhr = new XMLHttpRequest();
         xhr.open('POST', url, false);
+        xhr.setRequestHeader('Content-Type', 'application/json');
         xhr.send(body);
         if (xhr.status >= 200 && xhr.status < 300) {
           return allocResultOkString(xhr.responseText);

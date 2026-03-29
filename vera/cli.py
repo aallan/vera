@@ -23,6 +23,7 @@ Usage:
     vera fmt       <file.vera>              Format to canonical form (stdout)
     vera fmt       --write <file.vera>      Format in place
     vera fmt       --check <file.vera>      Check if already canonical
+    vera version                            Print the installed version
 """
 
 from __future__ import annotations
@@ -863,8 +864,22 @@ Options:
 """
 
 
+def cmd_version() -> int:
+    """Print the installed Vera version."""
+    import vera
+    print(f"vera {vera.__version__}")
+    return 0
+
+
 def main() -> None:
     args = sys.argv[1:]
+
+    # Handle version before the length check — these need no file argument.
+    if not args or args[0] in ("version", "--version", "-V"):
+        if not args:
+            print(USAGE, file=sys.stderr)
+            sys.exit(1)
+        sys.exit(cmd_version())
 
     if len(args) < 2:
         print(USAGE, file=sys.stderr)
@@ -955,7 +970,9 @@ def main() -> None:
 
     filepath = remaining[0]
 
-    if command == "parse":
+    if command in ("version", "--version", "-V"):
+        sys.exit(cmd_version())
+    elif command == "parse":
         sys.exit(cmd_parse(filepath))
     elif command in ("check", "typecheck"):
         sys.exit(cmd_check(filepath, as_json=use_json))

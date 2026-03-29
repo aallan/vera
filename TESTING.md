@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,121 across 26 files (~34,000 lines of test code) |
+| **Tests** | 3,125 across 26 files (~34,000 lines of test code) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 65 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 30, all validated through `vera check` + `vera verify` |
@@ -63,13 +63,13 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 114 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
-| `test_cli.py` | 194 | 2,663 | CLI commands (check, verify, compile, run, test, fmt), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
+| `test_cli.py` | 197 | 2,692 | CLI commands (check, verify, compile, run, test, fmt, version), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes |
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 22 | 255 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
 | `test_verifier_coverage.py` | 78 | 1,253 | Verifier/SMT coverage gaps: SMT encoding paths, verifier edge cases, defensive branches |
 | `test_wasm_coverage.py` | 225 | 3,903 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
-| `test_tester.py` | 13 | 345 | Contract-driven testing: tier classification, input generation, test execution |
+| `test_tester.py` | 14 | 364 | Contract-driven testing: tier classification, input generation, test execution, skip message content |
 | `test_tester_coverage.py` | 30 | 789 | Tester coverage gaps: Float/String/ADT parameters, Bool/Byte parameters, unsatisfiable preconditions, type expression edge cases |
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_browser.py` | 61 | 750 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |

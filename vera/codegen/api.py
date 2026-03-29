@@ -1991,6 +1991,7 @@ def execute(
                     import urllib.request
                     req = urllib.request.Request(  # noqa: S310
                         url, data=body.encode("utf-8"), method="POST",
+                        headers={"Content-Type": "application/json"},
                     )
                     with urllib.request.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
                         response_body = resp.read().decode("utf-8")
