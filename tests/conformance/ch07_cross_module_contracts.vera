@@ -1,0 +1,31 @@
+import ch07_cross_module_contracts_lib;
+
+-- The verifier must use safe_abs's postcondition (result >= 0) to
+-- discharge bounded_add's precondition (both args >= 0).
+-- This proves cross-module postcondition propagation works.
+private fn abs_sum(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  let @Int = safe_abs(@Int.1);
+  let @Int = safe_abs(@Int.1);
+  bounded_add(@Int.0, @Int.1)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  -- The postcondition of abs_sum guarantees result >= 0.
+  -- We can only check >= 0 here because imported bodies are not inlined;
+  -- only the ensures contract is visible across module boundaries.
+  let @Int = abs_sum(-3, 5);
+  let @Bool = @Int.0 >= 0;
+  if @Bool.0 then {
+    0
+  } else {
+    1
+  }
+}

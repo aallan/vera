@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.102. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.103. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -41,9 +41,11 @@ pip install -e ".[dev]"
 ```bash
 vera check file.vera              # Parse and type-check (or "OK")
 vera check --json file.vera       # Type-check with JSON diagnostics
+vera check --quiet file.vera      # Type-check, suppress success output (errors still shown)
 vera typecheck file.vera          # Same as check (explicit alias)
 vera verify file.vera             # Type-check and verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON diagnostics
+vera verify --quiet file.vera     # Verify, suppress success output (errors still shown)
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --json file.vera             # Compile with JSON diagnostics
@@ -64,10 +66,13 @@ vera ast --json file.vera         # Print the AST as JSON
 vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
+vera version                      # Print the installed version (also --version, -V)
 pytest tests/ -v                  # Run the test suite
 ```
 
 Errors are natural language instructions explaining what went wrong and how to fix it. Feed them back into your context to correct the code.
+
+`vera test` cannot generate Z3 inputs for `String`, `Float64`, or compound-type parameters. Functions with those parameter types are skipped with a message naming the specific type: `SKIPPED (cannot generate String inputs (see #169))`. Only `Int`, `Nat`, `Bool`, and `Byte` parameters support Z3-guided input generation.
 
 ### Browser compilation
 
@@ -1040,7 +1045,7 @@ The `Http` effect enables network I/O. It is built-in — no `effect Http { ... 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `Http.get` | `String -> Result<String, String>` | HTTP GET request |
-| `Http.post` | `String, String -> Result<String, String>` | HTTP POST request (body as JSON) |
+| `Http.post` | `String, String -> Result<String, String>` | HTTP POST request (body as JSON; sends `Content-Type: application/json`) |
 
 ```vera
 effects(<Http>)                  -- network access
@@ -1749,6 +1754,21 @@ Key conformance programs by feature:
 | Generics | `ch02_generics.vera` |
 | Recursive ADTs | `ch02_adt_recursive.vera` |
 
+## Known Limitations
+
+These are known limitations in the current reference implementation. Most are tracked as open issues; those without an issue link are noted as such.
+
+| Limitation | Details | Issue |
+|-----------|---------|-------|
+| `vera test` cannot generate `String`, `Float64`, or compound-type inputs | The Z3-backed test runner only generates inputs for `Int`, `Nat`, `Bool`, and `Byte` parameters. Functions with other parameter types are skipped with a `SKIPPED (cannot generate String inputs (see #169))` message. | [#169](https://github.com/aallan/vera/issues/169) |
+| Type inference for bare `None`/`Err` in generic calls | Writing `None` or `Err(...)` without a type annotation in certain generic call positions can fail with a type inference error. Workaround: add an explicit type annotation or use a `let` binding. | [#293](https://github.com/aallan/vera/issues/293) |
+| Effect row variable unification | Effect rows containing type variables (e.g. `<E>` in a generic function) are not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations. | [#294](https://github.com/aallan/vera/issues/294) |
+| `map_new()` / `set_new()` require type context | The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();` | — |
+| `Inference.complete` has no `max_tokens` or temperature controls | The host implementation uses provider defaults. Custom parameters (max tokens, temperature, top-p, system prompt) are not yet supported at the Vera level. | [#370](https://github.com/aallan/vera/issues/370) |
+| `Inference` effect has no user-defined handlers | In the current implementation, `Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not yet supported. | [#372](https://github.com/aallan/vera/issues/372) |
+| `Exn<String>` handler tag not supported | `String` is an `i32_pair` (fat pointer) in the WASM ABI and cannot be used as a WASM exception tag parameter. Use `Exn<Int>` or another scalar type for exception values; carry message strings in an ADT wrapper. | [#416](https://github.com/aallan/vera/issues/416) |
+| Nested `handle[State<T>]` of the same type share state | Two `handle[State<Int>]` handlers in nested scope both write to the same global WASM cell — the inner handler corrupts the outer handler's state. Workaround: use different state types (`State<Int>` + `State<Bool>`) or sequential (non-nested) handlers. | [#417](https://github.com/aallan/vera/issues/417) |
+
 ## Specification Reference
 
 The full language specification is in the [`spec/`](https://github.com/aallan/vera/tree/main/spec) directory of the repository:
@@ -1809,6 +1829,7 @@ vera test --trials 50 file.vera   # Limit trials per function (default 100)
 vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
+vera version                      # Print the installed version (also --version, -V)
 ```
 
 ### Error handling

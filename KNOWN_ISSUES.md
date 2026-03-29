@@ -11,6 +11,8 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | Opaque handle memory leak in host stores | [#346](https://github.com/aallan/vera/issues/346) |
 | GC shadow stack pollution from opaque handle parameters | [#347](https://github.com/aallan/vera/issues/347) |
 | GC worklist overflow for deeply nested object graphs | [#348](https://github.com/aallan/vera/issues/348) |
+| `Exn<String>` handler tag fails — `String` is `i32_pair`, not a valid WASM tag parameter type | [#416](https://github.com/aallan/vera/issues/416) |
+| Nested `handle[State<T>]` of the same type share a global state cell (inner handler corrupts outer) | [#417](https://github.com/aallan/vera/issues/417) |
 
 ## Limitations
 
@@ -33,7 +35,6 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | Http: no custom headers | [#351](https://github.com/aallan/vera/issues/351) |
 | Http: no HTTP status code access | [#352](https://github.com/aallan/vera/issues/352) |
 | Http: no request timeout control | [#353](https://github.com/aallan/vera/issues/353) |
-| Http: POST sends body without Content-Type | [#354](https://github.com/aallan/vera/issues/354) |
 | Http: browser uses deprecated synchronous XHR | [#355](https://github.com/aallan/vera/issues/355) |
 | Http: no PUT, PATCH, DELETE methods | [#356](https://github.com/aallan/vera/issues/356) |
 | Inference: `embed` operation (vector embeddings) | [#371](https://github.com/aallan/vera/issues/371) |

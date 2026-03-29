@@ -19,7 +19,7 @@ import z3
 from vera import ast
 from vera.errors import Diagnostic, SourceLocation
 from vera.smt import SlotEnv, SmtContext
-from vera.types import BOOL, BYTE, FLOAT64, INT, NAT, STRING, UNIT, RefinedType, Type, base_type
+from vera.types import BOOL, BYTE, FLOAT64, INT, NAT, STRING, UNIT, PrimitiveType, RefinedType, Type, base_type
 
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
@@ -83,6 +83,17 @@ class TestResult:
 
 # Types we can encode in Z3 for input generation
 _Z3_SUPPORTED = {INT, NAT, BOOL, BYTE}
+
+
+def _unsupported_type_names(param_types: list[Type]) -> list[str]:
+    """Return a sorted list of type names that cannot be Z3-encoded."""
+    return sorted({
+        t.name if isinstance(t, PrimitiveType) else type(t).__name__
+        for pt in param_types
+        for t in (base_type(pt),)
+        if t not in _Z3_SUPPORTED
+    })
+
 
 # Boundary values seeded before the diversity loop
 _BOUNDARY_INT = [0, 1, -1, 2, -2, 10, -10, 100, -100]
@@ -243,11 +254,13 @@ class _TestEngine:
             inputs = _generate_inputs(decl, param_types, self.trials)
 
             if inputs is None:  # pragma: no cover — _classify_functions filters unsupported types
+                unsupported_names = _unsupported_type_names(param_types)
+                skip_reason = f"cannot generate {', '.join(unsupported_names)} inputs (see #169)"
                 summary.skipped += 1
                 results.append(FunctionTestResult(
                     fn_name=fn_name,
                     category="skipped",
-                    reason="unsupported parameter types for input generation",
+                    reason=skip_reason,
                     trials_run=0,
                     trials_passed=0,
                     trials_failed=0,
@@ -425,9 +438,10 @@ def _classify_functions(
 
         # Unsupported param types → skip
         if has_unsupported:
+            unsupported_names = _unsupported_type_names(param_types)
             result[decl.name] = (
                 "skipped",
-                "unsupported parameter types for input generation",
+                f"cannot generate {', '.join(unsupported_names)} inputs (see #169)",
                 decl,
             )
             continue

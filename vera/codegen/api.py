@@ -171,8 +171,8 @@ def _call_inference_provider(
             "max_tokens": 1024,
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
-        req = _urlreq.Request(url, data=body, headers=headers, method="POST")
-        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:
+        req = _urlreq.Request(url, data=body, headers=headers, method="POST")  # noqa: S310
+        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
             data = _json.loads(resp.read().decode("utf-8"))
         return str(data["content"][0]["text"])
 
@@ -188,8 +188,8 @@ def _call_inference_provider(
             "model": chosen_model,
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
-        req = _urlreq.Request(url, data=body, headers=headers, method="POST")
-        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:
+        req = _urlreq.Request(url, data=body, headers=headers, method="POST")  # noqa: S310
+        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
             data = _json.loads(resp.read().decode("utf-8"))
         return str(data["choices"][0]["message"]["content"])
 
@@ -205,8 +205,8 @@ def _call_inference_provider(
             "model": chosen_model,
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
-        req = _urlreq.Request(url, data=body, headers=headers, method="POST")
-        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:
+        req = _urlreq.Request(url, data=body, headers=headers, method="POST")  # noqa: S310
+        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
             data = _json.loads(resp.read().decode("utf-8"))
         return str(data["choices"][0]["message"]["content"])
 
@@ -271,7 +271,7 @@ def execute(
     ) -> str:
         """Read a UTF-8 string from WASM memory."""
         memory = caller["memory"]
-        assert isinstance(memory, wasmtime.Memory)
+        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
         buf = memory.data_ptr(store)
         return bytes(buf[ptr:ptr + length]).decode("utf-8")
 
@@ -280,7 +280,7 @@ def execute(
     ) -> None:
         """Write raw bytes into WASM linear memory."""
         memory = caller["memory"]
-        assert isinstance(memory, wasmtime.Memory)
+        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
         buf = memory.data_ptr(store)
         for i, b in enumerate(data):
             buf[offset + i] = b
@@ -294,9 +294,9 @@ def execute(
     def _call_alloc(caller: wasmtime.Caller, size: int) -> int:
         """Call the exported $alloc to allocate WASM heap memory."""
         alloc_fn = caller["alloc"]
-        assert isinstance(alloc_fn, wasmtime.Func)
+        assert isinstance(alloc_fn, wasmtime.Func)  # noqa: S101
         ptr = alloc_fn(caller, size)
-        assert isinstance(ptr, int)
+        assert isinstance(ptr, int)  # noqa: S101
         return ptr
 
     def _alloc_string(
@@ -405,7 +405,7 @@ def execute(
     # Host function: vera.print(ptr: i32, len: i32) -> ()
     def host_print(caller: wasmtime.Caller, ptr: int, length: int) -> None:
         memory = caller["memory"]
-        assert isinstance(memory, wasmtime.Memory)
+        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
         buf = memory.data_ptr(store)
         data = bytes(buf[ptr:ptr + length])
         text = data.decode("utf-8")
@@ -545,7 +545,7 @@ def execute(
         caller: wasmtime.Caller, ptr: int, length: int,
     ) -> None:
         memory = caller["memory"]
-        assert isinstance(memory, wasmtime.Memory)
+        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
         buf = memory.data_ptr(store)
         data = bytes(buf[ptr:ptr + length])
         last_violation.clear()
@@ -870,7 +870,7 @@ def execute(
         def _read_i32(caller: wasmtime.Caller, offset: int) -> int:
             """Read a little-endian i32 from WASM memory."""
             memory = caller["memory"]
-            assert isinstance(memory, wasmtime.Memory)
+            assert isinstance(memory, wasmtime.Memory)  # noqa: S101
             buf = memory.data_ptr(caller)
             val: int = struct.unpack_from(
                 "<I", bytes(buf[offset:offset + 4]),
@@ -880,7 +880,7 @@ def execute(
         def _read_f64(caller: wasmtime.Caller, offset: int) -> float:
             """Read a little-endian f64 from WASM memory."""
             memory = caller["memory"]
-            assert isinstance(memory, wasmtime.Memory)
+            assert isinstance(memory, wasmtime.Memory)  # noqa: S101
             buf = memory.data_ptr(caller)
             val: float = struct.unpack_from(
                 "<d", bytes(buf[offset:offset + 8]),
@@ -1067,16 +1067,16 @@ def execute(
                 if val is None:
                     return _alloc_option_none(caller)
                 if vt == "i":
-                    assert isinstance(val, int)
+                    assert isinstance(val, int)  # noqa: S101
                     return _alloc_option_some_i64(caller, val)
                 if vt == "f":
-                    assert isinstance(val, (int, float))
+                    assert isinstance(val, (int, float))  # noqa: S101
                     return _alloc_option_some_f64(caller, float(val))
                 if vt == "s":
-                    assert isinstance(val, str)
+                    assert isinstance(val, str)  # noqa: S101
                     return _alloc_option_some_string(caller, val)
                 # i32 (Bool, Byte, ADT, Map handle)
-                assert isinstance(val, int)
+                assert isinstance(val, int)  # noqa: S101
                 return _alloc_option_some_i32(caller, val)
 
             if kt == "s":
@@ -1964,7 +1964,7 @@ def execute(
                 url = _read_wasm_string(caller, ptr, length)
                 try:
                     import urllib.request
-                    with urllib.request.urlopen(url) as resp:
+                    with urllib.request.urlopen(url, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
                         body = resp.read().decode("utf-8")
                     return _alloc_result_ok_string(caller, body)
                 except Exception as exc:
@@ -1989,10 +1989,14 @@ def execute(
                 body = _read_wasm_string(caller, body_ptr, body_len)
                 try:
                     import urllib.request
-                    req = urllib.request.Request(
+                    # Http.post is intentionally JSON-only: the Vera-level API
+                    # takes a String body and always sends it as application/json.
+                    # Custom Content-Type headers require #351 (custom headers).
+                    req = urllib.request.Request(  # noqa: S310
                         url, data=body.encode("utf-8"), method="POST",
+                        headers={"Content-Type": "application/json"},
                     )
-                    with urllib.request.urlopen(req) as resp:
+                    with urllib.request.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
                         response_body = resp.read().decode("utf-8")
                     return _alloc_result_ok_string(caller, response_body)
                 except Exception as exc:

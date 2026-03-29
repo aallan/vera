@@ -169,18 +169,12 @@ Throughout this specification:
 
 ## 0.8 Design Notes (Future Features)
 
-The following features are planned for future versions. Each is specified in its target chapter with full design details; this section provides a brief index.
+The following features are still planned for future versions. Each is specified in its target chapter with full design details; this section provides a brief index.
+
+For features that have already shipped, see [HISTORY.md](https://github.com/aallan/vera/blob/main/HISTORY.md). For the full forward-looking roadmap, see [ROADMAP.md](https://github.com/aallan/vera/blob/main/ROADMAP.md).
 
 | Feature | Issue | Specification |
 |---------|-------|---------------|
-| Network access (`Http` effect) | [#57](https://github.com/aallan/vera/issues/57) | Chapter 9, Section 9.5.3 |
-| JSON standard library type | [#58](https://github.com/aallan/vera/issues/58) | Chapter 9, Section 9.7.1 |
-| Async futures and promises | [#59](https://github.com/aallan/vera/issues/59) | Chapter 9, Section 9.5.4 |
-| ~~Abilities (type constraints)~~ | ~~[#60](https://github.com/aallan/vera/issues/60)~~ | ~~Chapter 9, Section 9.8~~ — Implemented in v0.0.90 |
-| ~~LLM inference effect~~ | ~~[#61](https://github.com/aallan/vera/issues/61)~~ | ~~Chapter 9, Section 9.5.5~~ — Implemented in v0.0.101 |
-| Collections (`Set`, `Map`, `Decimal`) | [#62](https://github.com/aallan/vera/issues/62) | Chapter 9, Sections 9.4.2-3, 9.7.2 |
-| Markdown standard library type | [#147](https://github.com/aallan/vera/issues/147) | Chapter 9, Section 9.7.3 |
 | Typed holes | [#226](https://github.com/aallan/vera/issues/226) | Chapter 4 |
 | Timeout and cancellation effects | [#227](https://github.com/aallan/vera/issues/227) | Chapter 7, Chapter 9 |
-| String interpolation | [#230](https://github.com/aallan/vera/issues/230) | Chapter 1 |
 | Date and time handling | [#233](https://github.com/aallan/vera/issues/233) | Chapter 9 |

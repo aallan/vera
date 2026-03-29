@@ -1,0 +1,48 @@
+-- Conformance: Deep let-chain slot indexing (Chapter 3)
+-- Tests: sequential let bindings of same type, match arm slot shadowing
+-- Five sequential let bindings each doubling the previous value via @Int.0.
+-- Starting from the parameter (1), each step doubles: 1→2→4→8→16→32.
+-- The ensures contract is only provable when every @Int.0 reference resolves
+-- to the immediately preceding let binding (De Bruijn index 0).
+private fn deep_let_chain(@Int -> @Int)
+  requires(@Int.0 == 1)
+  ensures(@Int.result == 32)
+  effects(pure)
+{
+  let @Int = @Int.0 * 2;
+  let @Int = @Int.0 * 2;
+  let @Int = @Int.0 * 2;
+  let @Int = @Int.0 * 2;
+  let @Int = @Int.0 * 2;
+  @Int.0
+}
+
+-- Bind a sentinel value, match an Option<Int>, and verify the arm's bound
+-- @Int.0 refers to the matched payload (not the outer let binding).
+-- The outer sentinel (10) is at @Int.1 inside the Some arm; the payload is @Int.0.
+private fn let_shadowing_in_match(@Option<Int>, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    None -> @Int.0,
+    Some(@Int) -> @Int.0
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Int = deep_let_chain(1);
+  let @Bool = @Int.0 == 32;
+  let @Int = let_shadowing_in_match(Some(99), 10);
+  let @Bool = @Int.0 == 99;
+  if @Bool.0 then {
+    0
+  } else {
+    1
+  }
+}

@@ -8206,7 +8206,7 @@ class CallsMixin:
         3. Compiling the body with these ops active
         4. Restoring the previous effect ops
         """
-        assert isinstance(expr.effect, ast.EffectRef)
+        assert isinstance(expr.effect, ast.EffectRef)  # noqa: S101
         type_arg = expr.effect.type_args[0]  # type: ignore[index]
         if isinstance(type_arg, ast.NamedType):
             type_name = type_arg.name
@@ -8263,7 +8263,7 @@ class CallsMixin:
             <handler clause body>
           end
         """
-        assert isinstance(expr.effect, ast.EffectRef)
+        assert isinstance(expr.effect, ast.EffectRef)  # noqa: S101
         type_arg = expr.effect.type_args[0]  # type: ignore[index]
         if not isinstance(type_arg, ast.NamedType):
             return None

@@ -21,8 +21,10 @@ python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 ```bash
 vera check file.vera              # Parse and type-check
 vera check --json file.vera       # Type-check with JSON diagnostics
+vera check --quiet file.vera      # Type-check, suppress success output
 vera verify file.vera             # Type-check + verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON diagnostics
+vera verify --quiet file.vera     # Verify, suppress success output
 vera compile file.vera                    # Compile to .wasm binary
 vera compile --wat file.vera              # Print WAT text (human-readable WASM)
 vera compile --target browser file.vera   # Compile + emit browser bundle
@@ -37,12 +39,13 @@ vera ast --json file.vera         # Print the AST as JSON
 vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
+vera version                      # Print the installed version (also --version, -V)
 
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS coverage
 mypy vera/                        # Type-check the compiler itself
 
-python scripts/check_conformance.py    # Verify all 65 conformance programs pass their declared level
+python scripts/check_conformance.py    # Verify all 70 conformance programs pass their declared level
 python scripts/check_examples.py      # Verify all 30 examples parse + check + verify
 python scripts/check_spec_examples.py # Verify spec code blocks parse
 python scripts/check_readme_examples.py # Verify README code blocks parse
@@ -67,7 +70,7 @@ python scripts/fix_allowlists.py --fix # Auto-fix stale allowlist line numbers
 - `vera/` — Reference compiler: grammar, parser, AST, transformer, type checker, verifier, codegen, CLI
 - `examples/` — 30 example Vera programs (all must pass `vera check` and `vera verify`)
 - `tests/` — Test suite (unit tests + conformance suite)
-- `tests/conformance/` — 65 conformance programs validating every language feature against the spec
+- `tests/conformance/` — 70 conformance programs validating every language feature against the spec
 - `scripts/` — CI and validation scripts
 
 ## Writing Vera code
@@ -94,7 +97,7 @@ Each stage is a module with a public API function and is independently testable.
 ## What not to break
 
 - Pre-commit hooks run mypy + pytest + conformance suite + example validation on every commit
-- All 65 conformance programs in `tests/conformance/` must pass their declared level
+- All 70 conformance programs in `tests/conformance/` must pass their declared level
 - All 30 examples in `examples/` must pass `vera check` and `vera verify`
 - Version must stay in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 - All tests must pass: `pytest tests/ -v`
@@ -151,9 +154,10 @@ Do NOT use `noreply@anthropic.com` — that email resolves to an unrelated GitHu
 
 ## Release workflow
 
-- **Roadmap strikethrough in the feature PR**: Include the full `<del>[#NNN](...) description</del> ([vX.Y.Z](release-url))` in the same commit/PR as the feature itself. The tag link will resolve after merge+tag. Do NOT leave it as a separate post-merge commit — main is protected and that forces a tedious second PR.
+- **Completed issues in the feature PR**: When an issue is closed by a PR, **delete** the entry from `ROADMAP.md` entirely and add a one-liner to the relevant version row in the `HISTORY.md` Stage 9 table. Do NOT use `<del>` strikethroughs in ROADMAP.md — completed items live in HISTORY.md, not as struck-through clutter in the roadmap.
+- **No strikethroughs anywhere in docs**: Things are either future (in ROADMAP.md) or past (in HISTORY.md). Do NOT use `<del>` or `~~...~~` to strike through completed items in ROADMAP.md, spec chapters, SKILL.md limitation tables, or anywhere else in the documentation. Instead: delete completed items from wherever they appear as future work, and add a note in HISTORY.md or CHANGELOG.md. Limitation tables in the spec should only list current limitations — fixed items are removed, not struck through, with a reference to the CHANGELOG entry that fixed them.
 - **CHANGELOG link references**: Keep a Changelog format requires `[version]: compare-url` link references at the bottom of CHANGELOG.md. These must be added for every new version. The `[Unreleased]` link must point to `latest-tag...HEAD`.
-- **Roadmap is in ROADMAP.md**: The project roadmap (phase table, priority tiers, completed-phase details, issue strikethroughs) lives in `ROADMAP.md`, not README.md. README.md links to it.
+- **Roadmap is in ROADMAP.md**: The project roadmap (phase table, priority tiers, completed-phase details) lives in `ROADMAP.md`, not README.md. README.md links to it.
 
 ## CodeRabbit
 

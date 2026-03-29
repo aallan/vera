@@ -1,0 +1,24 @@
+module ch07_cross_module_contracts_lib;
+
+-- Returns the absolute value. Postcondition guarantees result >= 0.
+public fn safe_abs(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  if @Int.0 < 0 then {
+    0 - @Int.0
+  } else {
+    @Int.0
+  }
+}
+
+-- Adds two non-negative integers. Requires both inputs >= 0
+-- and ensures the result is also >= 0.
+public fn bounded_add(@Int, @Int -> @Int)
+  requires(@Int.1 >= 0 && @Int.0 >= 0)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  @Int.1 + @Int.0
+}

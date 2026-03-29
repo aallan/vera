@@ -203,6 +203,34 @@
     ]
   },
   {
+    "id": "ch03_slot_let_chains",
+    "file": "ch03_slot_let_chains.vera",
+    "chapter": 3,
+    "title": "Deep let-chain slot indexing",
+    "level": "verify",
+    "spec_ref": "Section 3.2",
+    "features": [
+      "let_chain",
+      "deep_slots",
+      "slot_indexing"
+    ]
+  },
+  {
+    "id": "ch03_slot_noncommutative",
+    "file": "ch03_slot_noncommutative.vera",
+    "chapter": 3,
+    "title": "Non-commutative slot indexing",
+    "level": "verify",
+    "spec_ref": "Section 3.2",
+    "features": [
+      "slot_indexing",
+      "subtraction",
+      "division",
+      "comparison",
+      "noncommutative"
+    ]
+  },
+  {
     "id": "ch04_arithmetic",
     "file": "ch04_arithmetic.vera",
     "chapter": 4,
@@ -547,6 +575,47 @@
       "exn_effect",
       "handler",
       "throw"
+    ]
+  },
+  {
+    "id": "ch07_cross_module_contracts_lib",
+    "file": "ch07_cross_module_contracts_lib.vera",
+    "chapter": 7,
+    "title": "Cross-module contract library",
+    "level": "check",
+    "spec_ref": "Section 7.5",
+    "features": [
+      "cross_module_contracts",
+      "exported_postcondition",
+      "exported_precondition"
+    ]
+  },
+  {
+    "id": "ch07_cross_module_contracts",
+    "file": "ch07_cross_module_contracts.vera",
+    "chapter": 7,
+    "title": "Cross-module contract verification",
+    "level": "verify",
+    "spec_ref": "Section 7.5",
+    "features": [
+      "cross_module_contracts",
+      "postcondition_chain",
+      "import_ensures",
+      "import_requires"
+    ]
+  },
+  {
+    "id": "ch07_nested_handlers",
+    "file": "ch07_nested_handlers.vera",
+    "chapter": 7,
+    "title": "Nested effect handler composition",
+    "level": "run",
+    "spec_ref": "Section 7.4",
+    "features": [
+      "nested_handlers",
+      "handler_composition",
+      "state_handler",
+      "exn_handler"
     ]
   },
   {

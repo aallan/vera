@@ -463,7 +463,6 @@ This follows the same pattern as Markdown: `json_parse(Http.get(url))`, not a de
 - No custom headers ([#351](https://github.com/aallan/vera/issues/351)).
 - No HTTP status code access ([#352](https://github.com/aallan/vera/issues/352)).
 - No request timeout control ([#353](https://github.com/aallan/vera/issues/353)).
-- POST sends body without Content-Type header ([#354](https://github.com/aallan/vera/issues/354)).
 - Browser runtime uses deprecated synchronous XMLHttpRequest ([#355](https://github.com/aallan/vera/issues/355)).
 - No PUT, PATCH, DELETE methods ([#356](https://github.com/aallan/vera/issues/356)).
 
@@ -561,7 +560,7 @@ private fn classify(@String -> @Result<String, String>)
 - `complete` only — `embed` (returning `Array<Float64>`) is deferred ([#371](https://github.com/aallan/vera/issues/371))
 - No streaming — full response only
 - No system prompt — single `complete(user_prompt)` call; structured prompting via `string_concat`
-- User-defined `handle[Inference]` handlers (for mocking, local models, replay) are planned for a future release
+- User-defined `handle[Inference]` handlers (for mocking, local models, replay) are planned for a future release ([#372](https://github.com/aallan/vera/issues/372))
 
 ## 9.6 Built-in Functions
 
@@ -1459,7 +1458,7 @@ url_join(UrlParts("", "", "", "", ""))
 
 ### 9.6.18 similarity (Future)
 
-> **Status: Not yet implemented.** Will be introduced alongside the `Inference` effect ([#61](https://github.com/aallan/vera/issues/61)).
+> **Status: Not yet implemented.** Requires `Inference.embed` (returning `Array<Float64>`) which is deferred to a follow-up release. `Inference.complete` was implemented in v0.0.101 ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
 
 ```
 public fn similarity(@Array<Float64>, @Array<Float64> -> @Float64)

@@ -27,3 +27,20 @@ Security issues in the following areas are in scope:
 - The verification system (unsound verification, false proofs)
 
 Issues in the language specification that affect soundness of the type system or contract system are also relevant and can be reported via the same channel.
+
+## CI Security Practices
+
+The project uses automated security scanning on every push and pull request:
+
+- **`ruff check --select S vera/`** (lint job) — Bandit-equivalent security rules applied to the compiler source. Detects patterns such as unsafe `subprocess` use, hardcoded secrets, and insecure HTTP calls. All findings are reviewed and either fixed or explicitly suppressed with a `# noqa: SXXX` annotation explaining why.
+- **`pip-audit --skip-editable`** (dependency-audit job) — Scans all installed packages against the [OSV vulnerability database](https://osv.dev) for known CVEs. The local editable `vera` install is skipped (it is not on PyPI); all third-party dependencies are audited. Known unfixed CVEs in transitive dependencies are suppressed with `--ignore-vuln` and a comment to revisit when a fix ships.
+- **CycloneDX SBOM** (sbom job) — Generates a [CycloneDX](https://cyclonedx.org) JSON Software Bill of Materials via `cyclonedx-py environment`, capturing the full transitive dependency tree at the point of each CI run. The SBOM is uploaded as a 90-day CI artifact for supply-chain auditing.
+- **Gitleaks** (security job) — Full-history secret scanning on every push and PR.
+
+### Workflow hardening
+
+All CI jobs use least-privilege permissions (`permissions: contents: read`). The security job additionally requires `security-events: write` for GitHub advisory integration. All `actions/checkout` steps set `persist-credentials: false` to prevent the `GITHUB_TOKEN` from being stored in `.git/config` for the lifetime of the runner.
+
+Action version pinning to SHA hashes (rather than semver tags) is tracked in [#390](https://github.com/aallan/vera/issues/390).
+
+`zizmor` reports one acknowledged `secrets-outside-env` finding: the `CODECOV_TOKEN` is passed as an action input (`token: ${{ secrets.CODECOV_TOKEN }}`) rather than through an environment variable. This is not actionable — `codecov/codecov-action` requires the token as an `inputs:` parameter and does not read it from an environment variable. The risk is low: the Codecov token has read-only scope on repository data, and `fail_ci_if_error: false` means missing or invalid tokens do not block CI.

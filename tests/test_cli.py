@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from vera.cli import cmd_ast, cmd_check, cmd_compile, cmd_fmt, cmd_parse, cmd_run, cmd_test, cmd_verify
+from vera.cli import cmd_ast, cmd_check, cmd_compile, cmd_fmt, cmd_parse, cmd_run, cmd_test, cmd_verify, cmd_version
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
 INCREMENT = str(EXAMPLES_DIR / "increment.vera")
@@ -2661,3 +2661,148 @@ public fn id(@Int -> @Int)
         result.fn_param_types["id"] = ["unsupported_wasm_tag"]  # type: ignore[index]
         exec_result = execute(result, fn_name="id", raw_args=["42"])  # type: ignore[arg-type]
         assert exec_result.value == 42
+
+
+class TestCmdVersion:
+    """Tests for the vera version command."""
+
+    def test_version_output(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """vera version prints 'vera X.Y.Z' on stdout."""
+        import vera
+        rc = cmd_version()
+        assert rc == 0
+        out = capsys.readouterr().out.strip()
+        assert out == f"vera {vera.__version__}"
+
+    def test_version_format(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Output starts with 'vera ' followed by a semver-shaped string."""
+        import re
+        cmd_version()
+        out = capsys.readouterr().out.strip()
+        assert re.match(r"^vera \d+\.\d+\.\d+", out)
+
+    def test_version_subprocess(self) -> None:
+        """vera version works as a subprocess (covers --version and -V aliases)."""
+        for flag in ("version", "--version", "-V"):
+            result = subprocess.run(
+                [sys.executable, "-m", "vera.cli", flag],
+                capture_output=True, text=True,
+            )
+            assert result.returncode == 0
+            assert result.stdout.startswith("vera ")
+
+
+class TestCmdQuiet:
+    """Tests for the --quiet flag on vera check and vera verify."""
+
+    def test_check_quiet_suppresses_ok(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera check --quiet suppresses the 'OK: ...' success line."""
+        f = tmp_path / "quiet_check.vera"
+        f.write_text(
+            "public fn add(@Int, @Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0 + @Int.1\n"
+            "}\n"
+        )
+        rc = cmd_check(str(f), quiet=True)
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "OK:" not in captured.out
+        assert captured.out == ""
+
+    def test_check_quiet_still_prints_errors(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera check --quiet still prints errors on failure."""
+        f = tmp_path / "bad.vera"
+        f.write_text("public fn bad(@Int -> @Int) { @Int.0 }\n")
+        rc = cmd_check(str(f), quiet=True)
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.err != ""
+
+    def test_verify_quiet_suppresses_ok(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera verify --quiet suppresses 'OK: ...' and 'Verification: ...' lines."""
+        f = tmp_path / "quiet_verify.vera"
+        f.write_text(
+            "public fn add(@Int, @Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0 + @Int.1\n"
+            "}\n"
+        )
+        rc = cmd_verify(str(f), quiet=True)
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "OK:" not in captured.out
+        assert "Verification:" not in captured.out
+        assert captured.out == ""
+
+    def test_verify_quiet_still_prints_errors(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera verify --quiet still emits errors on stderr when file is invalid."""
+        f = tmp_path / "bad_verify.vera"
+        f.write_text("public fn bad(@Int -> @Int) { @Int.0 }\n")
+        rc = cmd_verify(str(f), quiet=True)
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err != ""
+
+
+class TestMainQuiet:
+    """Dispatch-level tests for --quiet flag exercising the CLI entry point."""
+
+    _GOOD_VERA = (
+        "public fn add(@Int, @Int -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  @Int.0 + @Int.1\n"
+        "}\n"
+    )
+    _BAD_VERA = "public fn bad(@Int -> @Int) { @Int.0 }\n"
+
+    def test_check_quiet_suppresses_ok(self, tmp_path: Path) -> None:
+        """vera check --quiet produces no stdout on success."""
+        f = tmp_path / "quiet.vera"
+        f.write_text(self._GOOD_VERA)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--quiet", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""
+
+    def test_check_quiet_still_prints_errors(self, tmp_path: Path) -> None:
+        """vera check --quiet still emits errors on stderr when the file is invalid."""
+        f = tmp_path / "bad.vera"
+        f.write_text(self._BAD_VERA)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--quiet", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert result.stderr != ""
+
+    def test_verify_quiet_suppresses_ok(self, tmp_path: Path) -> None:
+        """vera verify --quiet produces no stdout on success."""
+        f = tmp_path / "quiet_verify.vera"
+        f.write_text(self._GOOD_VERA)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "verify", "--quiet", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout == ""

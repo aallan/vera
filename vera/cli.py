@@ -23,6 +23,9 @@ Usage:
     vera fmt       <file.vera>              Format to canonical form (stdout)
     vera fmt       --write <file.vera>      Format in place
     vera fmt       --check <file.vera>      Check if already canonical
+    vera version                            Print the installed version
+    vera --version                          Same as vera version
+    vera -V                                 Same as vera version
 """
 
 from __future__ import annotations
@@ -88,7 +91,7 @@ def cmd_parse(path: str) -> int:
         return 1
 
 
-def cmd_check(path: str, as_json: bool = False) -> int:
+def cmd_check(path: str, as_json: bool = False, quiet: bool = False) -> int:
     """Parse, transform, and type-check a .vera file."""
     from vera.checker import typecheck
     from vera.resolver import ModuleResolver
@@ -128,7 +131,8 @@ def cmd_check(path: str, as_json: bool = False) -> int:
                 print(e.format(), file=sys.stderr)
             return 1
 
-        print(f"OK: {path}")
+        if not quiet:
+            print(f"OK: {path}")
         return 0
     except FileNotFoundError:
         if as_json:
@@ -150,7 +154,7 @@ def cmd_check(path: str, as_json: bool = False) -> int:
         return 1
 
 
-def cmd_verify(path: str, as_json: bool = False) -> int:
+def cmd_verify(path: str, as_json: bool = False, quiet: bool = False) -> int:
     """Parse, transform, type-check, and verify a .vera file."""
     from vera.checker import typecheck
     from vera.resolver import ModuleResolver
@@ -227,8 +231,9 @@ def cmd_verify(path: str, as_json: bool = False) -> int:
             parts.append(f"{s.tier3_runtime} runtime checks (Tier 3)")
         summary_str = ", ".join(parts) if parts else "no contracts"
 
-        print(f"OK: {path}")
-        print(f"Verification: {summary_str}")
+        if not quiet:
+            print(f"OK: {path}")
+            print(f"Verification: {summary_str}")
         return 0
     except FileNotFoundError:
         if as_json:
@@ -839,10 +844,11 @@ USAGE = """\
 Usage: vera <command> [options] <file>
 
 Commands:
+    version              Print the installed Vera version (also --version, -V)
     parse                Parse a .vera file and print the parse tree
-    check [--json]       Parse and type-check a .vera file
-    typecheck [--json]   Same as check (explicit alias)
-    verify [--json]      Parse, type-check, and verify contracts
+    check [--json|--quiet]       Parse and type-check a .vera file
+    typecheck [--json|--quiet]   Same as check (explicit alias)
+    verify [--json|--quiet]      Parse, type-check, and verify contracts
     test [--json]        Test contracts via Z3-guided input generation
     compile [--wat]      Compile a .vera file to WebAssembly
     compile --target browser  Emit browser bundle (wasm + JS + HTML)
@@ -852,6 +858,7 @@ Commands:
 
 Options:
     --json               Output machine-readable JSON diagnostics
+    --quiet              Suppress success output (errors still printed)
     --wat                Print WAT text instead of writing .wasm binary
     --fn <name>          Function to execute or test
     --trials <n>         Number of test trials (default: 100, for vera test)
@@ -863,8 +870,22 @@ Options:
 """
 
 
+def cmd_version() -> int:
+    """Print the installed Vera version."""
+    import vera
+    print(f"vera {vera.__version__}")
+    return 0
+
+
 def main() -> None:
     args = sys.argv[1:]
+
+    # Handle version before the length check — these need no file argument.
+    if not args or args[0] in ("version", "--version", "-V"):
+        if not args:
+            print(USAGE, file=sys.stderr)
+            sys.exit(1)
+        sys.exit(cmd_version())
 
     if len(args) < 2:
         print(USAGE, file=sys.stderr)
@@ -872,6 +893,7 @@ def main() -> None:
 
     command = args[0]
     use_json = "--json" in args
+    use_quiet = "--quiet" in args
     use_wat = "--wat" in args
     use_write = "--write" in args
     use_check_fmt = "--check" in args and command == "fmt"
@@ -933,7 +955,7 @@ def main() -> None:
         raw_fn_args = list(args[dash_idx + 1:])
 
     # Remove flags from remaining args to find the filepath
-    skip_flags = {"--json", "--wat", "--write", "--check"}
+    skip_flags = {"--json", "--quiet", "--wat", "--write", "--check"}
     skip_next = {"--fn", "-o", "--trials", "--target"}
     remaining: list[str] = []
     i = 1  # skip command
@@ -958,9 +980,9 @@ def main() -> None:
     if command == "parse":
         sys.exit(cmd_parse(filepath))
     elif command in ("check", "typecheck"):
-        sys.exit(cmd_check(filepath, as_json=use_json))
+        sys.exit(cmd_check(filepath, as_json=use_json, quiet=use_quiet))
     elif command == "verify":
-        sys.exit(cmd_verify(filepath, as_json=use_json))
+        sys.exit(cmd_verify(filepath, as_json=use_json, quiet=use_quiet))
     elif command == "test":
         sys.exit(cmd_test(
             filepath, as_json=use_json, trials=trials, fn_name=fn_name

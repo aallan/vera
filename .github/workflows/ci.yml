@@ -8,6 +8,8 @@ on:
 
 jobs:
   test:
+    permissions:
+      contents: read
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
@@ -18,6 +20,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v6
@@ -44,9 +48,13 @@ jobs:
           fail_ci_if_error: false
 
   typecheck:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -60,9 +68,13 @@ jobs:
         run: mypy vera/
 
   lint:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -102,22 +114,85 @@ jobs:
       - name: Check license compliance
         run: python scripts/check_licenses.py
 
+      - name: Security lint (ruff S rules)
+        run: ruff check --select S vera/
+
   security:
+    permissions:
+      contents: read
+      security-events: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  browser-parity:
+  dependency-audit:
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies and pip-audit
+        run: pip install -e . && pip install pip-audit
+
+      - name: Audit dependencies for known CVEs
+        # --skip-editable: vera itself is a local editable install, not on PyPI
+        # --ignore-vuln CVE-2026-4539: pygments 2.19.2 (transitive via pytest/rich);
+        #   no fix release exists yet — revisit when pygments >2.19.2 ships
+        run: pip-audit --skip-editable --ignore-vuln CVE-2026-4539
+
+  sbom:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    # Generate an SBOM on every push to main (i.e. each release merge).
+    # PRs get the artifact too, useful for reviewing dependency changes.
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install vera and CycloneDX tooling
+        run: pip install -e . && pip install cyclonedx-bom
+
+      - name: Generate CycloneDX SBOM
+        run: cyclonedx-py environment --of JSON -o sbom.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+          retention-days: 90
+
+  browser-parity:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v6
