@@ -1964,7 +1964,7 @@ def execute(
                 url = _read_wasm_string(caller, ptr, length)
                 try:
                     import urllib.request
-                    with urllib.request.urlopen(url) as resp:  # noqa: S310
+                    with urllib.request.urlopen(url, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
                         body = resp.read().decode("utf-8")
                     return _alloc_result_ok_string(caller, body)
                 except Exception as exc:
@@ -1992,7 +1992,7 @@ def execute(
                     req = urllib.request.Request(  # noqa: S310
                         url, data=body.encode("utf-8"), method="POST",
                     )
-                    with urllib.request.urlopen(req) as resp:  # noqa: S310
+                    with urllib.request.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
                         response_body = resp.read().decode("utf-8")
                     return _alloc_result_ok_string(caller, response_body)
                 except Exception as exc:
