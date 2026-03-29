@@ -3023,6 +3023,24 @@ public fn test(@Unit -> @Int)
 """
         assert _run(src, fn="test") == 5
 
+    def test_state_qualified_get_put(self) -> None:
+        """State.get / State.put (qualified forms) compile and run correctly."""
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int)  -> { resume(()) }
+  } in {
+    State.put(State.get(()) + 1);
+    State.put(State.get(()) + 1);
+    State.get(())
+  }
+}
+"""
+        assert _run(src, fn="test") == 2
+
     def test_exn_with_io(self) -> None:
         """Exn handler inside a function with IO effects."""
         src = """\

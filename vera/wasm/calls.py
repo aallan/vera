@@ -363,7 +363,13 @@ class CallsMixin:
             instructions.extend(arg_instrs)
         # User-defined effect ops (e.g. Exn.throw, State.get/put) — delegate to
         # the effect_ops table, exactly as the unqualified _translate_call path does.
-        if call.name in self._effect_ops:
+        # Guard: skip for host-import built-ins (Http, Inference, IO) whose op names
+        # are handled by the branches below. Http.get and Http.post share the names
+        # "get"/"post" with possible user effect ops; the qualifier check prevents
+        # misrouting Http.get into _effect_ops when inside a handle[State<T>] body
+        # where _effect_ops["get"] is populated.
+        _host_import_qualifiers = {"Http", "Inference", "IO"}
+        if call.qualifier not in _host_import_qualifiers and call.name in self._effect_ops:
             target_name, _is_void = self._effect_ops[call.name]
             if call.name == "throw":
                 instructions.append(f"throw {target_name}")
