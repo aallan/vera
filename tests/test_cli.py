@@ -2747,6 +2747,18 @@ class TestCmdQuiet:
         assert "Verification:" not in captured.out
         assert captured.out == ""
 
+    def test_verify_quiet_still_prints_errors(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """vera verify --quiet still emits errors on stderr when file is invalid."""
+        f = tmp_path / "bad_verify.vera"
+        f.write_text("public fn bad(@Int -> @Int) { @Int.0 }\n")
+        rc = cmd_verify(str(f), quiet=True)
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err != ""
+
 
 class TestMainQuiet:
     """Dispatch-level tests for --quiet flag exercising the CLI entry point."""

@@ -1750,7 +1750,7 @@ Key conformance programs by feature:
 
 ## Known Limitations
 
-These are known limitations in the current reference implementation. They are tracked as open issues and will be resolved in future releases.
+These are known limitations in the current reference implementation. Most are tracked as open issues; those without an issue link are noted as such.
 
 | Limitation | Details | Issue |
 |-----------|---------|-------|

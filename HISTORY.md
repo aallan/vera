@@ -206,9 +206,9 @@ v0.0.101 completed the chain. A Vera program can fetch data from the web, parse 
 
 ---
 
-## Stage 9: Hardening and agent usability (28 March)
+## Stage 9: Hardening and agent usability (28–29 March)
 
-*One day. Bug fixes, typed CLI arguments, and AI agent discovery.*
+*Two days. Bug fixes, typed CLI arguments, AI agent discovery, security hardening, and conformance improvements.*
 
 With the core language complete, Stage 9 focused on friction removal and polish — the small issues that would bias any benchmark or frustrate any agent trying to use the language seriously.
 
@@ -245,7 +245,7 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.102 (28 Mar) | v0.0.103 (29 Mar) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,121 | 3,138 |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,121 | 3,157 |
 | Examples | 13 | 15 | 16 | 18 | 24 | 30 | 30 | 30 |
 | Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 122 | 122 |
 | Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 65 | 70 |
