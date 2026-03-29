@@ -53,6 +53,7 @@ Vera's contracts are checked in two implemented tiers, applied at every call sit
 **Tier 3 — Runtime fallback.** If Z3 returns `unknown` or times out, the contract is compiled as a runtime check in the WASM binary. A violation raises a trap at the call site with the contract text.
 
 `vera verify --json` reports the tier breakdown:
+
 ```json
 {"verification": {"tier1_verified": 12, "tier3_runtime": 1, "total": 13}}
 ```
