@@ -4,7 +4,13 @@
 Checks filesystem-derivable counts (conformance programs, examples, test
 files, pre-commit hooks, CI jobs) and pytest-collection counts (total tests,
 per-file test counts and line counts) against the numbers written in
-TESTING.md and CONTRIBUTING.md.
+TESTING.md, CONTRIBUTING.md, CLAUDE.md, README.md, SKILL.md, AGENTS.md,
+FAQ.md, and ROADMAP.md.
+
+Intentionally excludes CHANGELOG.md: its counts are historical records
+(e.g. "64 programs, was 63") that are frozen snapshots of the project state
+at each release. Validating them would cause false positives on every new
+conformance addition, because the old entries are supposed to stay unchanged.
 
 Runs in under 1 second — fast enough for a pre-commit hook.
 """
