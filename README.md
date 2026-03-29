@@ -241,6 +241,19 @@ See **[DESIGN.md](DESIGN.md)** for the full technical decisions table (represent
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to contribute to Vera. For compiler internals, see [vera/README.md](vera/README.md).
 
+## Citation
+
+If you use Vera in your research, please cite:
+
+```bibtex
+@software{vera2026,
+  author = {Allan, Alasdair},
+  title = {Vera: a programming language designed for LLMs to write},
+  year = {2026},
+  url = {https://github.com/aallan/vera}
+}
+```
+
 ## Licence
 
 Vera is licensed under the [MIT License](LICENSE).

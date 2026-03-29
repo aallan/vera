@@ -361,6 +361,15 @@ class CallsMixin:
             if arg_instrs is None:
                 return None
             instructions.extend(arg_instrs)
+        # User-defined effect ops (e.g. Exn.throw, State.get/put) — delegate to
+        # the effect_ops table, exactly as the unqualified _translate_call path does.
+        if call.name in self._effect_ops:
+            target_name, _is_void = self._effect_ops[call.name]
+            if call.name == "throw":
+                instructions.append(f"throw {target_name}")
+            else:
+                instructions.append(f"call {target_name}")
+            return instructions
         # Http operations use prefixed names to avoid collision
         if call.qualifier == "Http":
             wasm_name = f"http_{call.name}"

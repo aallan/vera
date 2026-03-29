@@ -2977,6 +2977,52 @@ public fn test(@Unit -> @Int)
 """
         assert _run(src, fn="test") == 11
 
+    def test_exn_qualified_throw_caught(self) -> None:
+        """Exn.throw (qualified form) compiles and runs identically to bare throw."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+private fn require_non_negative(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(<Exn<Int>>)
+{
+  if @Int.0 < 0 then { Exn.throw(@Int.0) } else { @Int.0 }
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> 0
+  } in {
+    require_non_negative(0 - 3)
+  }
+}
+"""
+        assert _run(src, fn="test") == 0
+
+    def test_exn_qualified_throw_no_throw(self) -> None:
+        """Exn.throw (qualified form) — non-throwing path returns correct value."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+private fn require_non_negative(@Int -> @Int)
+  requires(true) ensures(@Int.result >= 0) effects(<Exn<Int>>)
+{
+  if @Int.0 < 0 then { Exn.throw(@Int.0) } else { @Int.0 }
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<Int>] {
+    throw(@Int) -> 0
+  } in {
+    require_non_negative(5)
+  }
+}
+"""
+        assert _run(src, fn="test") == 5
+
     def test_exn_with_io(self) -> None:
         """Exn handler inside a function with IO effects."""
         src = """\
