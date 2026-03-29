@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.103. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.104. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -498,15 +498,6 @@ result_map(Ok(10), fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
 ```
 
 These are generic functions that follow the `domain_verb` naming convention. They are automatically injected and undergo normal monomorphization. If you define a function with the same name, your definition takes precedence.
-
-> **Limitation ([#293](https://github.com/aallan/vera/issues/293)):** When a combinator's type variable appears only in a return position (not in any argument), the type checker cannot infer it from a bare constructor like `None` or `Err("msg")`. Use a typed binding instead:
->
-> ```vera
-> -- Won't type-check: option_map(None, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
-> -- Use a typed binding:
-> let @Option<Int> = None;
-> option_map(@Option<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
-> ```
 
 ### Array operations
 
@@ -1738,7 +1729,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 70 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 71 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -1761,7 +1752,6 @@ These are known limitations in the current reference implementation. Most are tr
 | Limitation | Details | Issue |
 |-----------|---------|-------|
 | `vera test` cannot generate `String`, `Float64`, or compound-type inputs | The Z3-backed test runner only generates inputs for `Int`, `Nat`, `Bool`, and `Byte` parameters. Functions with other parameter types are skipped with a `SKIPPED (cannot generate String inputs (see #169))` message. | [#169](https://github.com/aallan/vera/issues/169) |
-| Type inference for bare `None`/`Err` in generic calls | Writing `None` or `Err(...)` without a type annotation in certain generic call positions can fail with a type inference error. Workaround: add an explicit type annotation or use a `let` binding. | [#293](https://github.com/aallan/vera/issues/293) |
 | Effect row variable unification | Effect rows containing type variables (e.g. `<E>` in a generic function) are not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations. | [#294](https://github.com/aallan/vera/issues/294) |
 | `map_new()` / `set_new()` require type context | The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();` | — |
 | `Inference.complete` has no `max_tokens` or temperature controls | The host implementation uses provider defaults. Custom parameters (max tokens, temperature, top-p, system prompt) are not yet supported at the Vera level. | [#370](https://github.com/aallan/vera/issues/370) |
@@ -1803,7 +1793,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 70 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
+The conformance suite in `tests/conformance/` contains 71 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
 
 ### Workflow
 
@@ -1941,7 +1931,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 70 conformance programs must pass
+python scripts/check_conformance.py    # All 71 conformance programs must pass
 python scripts/check_examples.py       # All 30 examples must pass
 ```
 
@@ -1951,7 +1941,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 70 conformance programs in `tests/conformance/` must pass their declared level
+- All 71 conformance programs in `tests/conformance/` must pass their declared level
 - All 30 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
@@ -2130,7 +2120,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (70 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (71 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -2171,7 +2161,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 13-chapter formal specification
-- Over 3,000 unit tests plus a 70-program conformance suite
+- Over 3,000 unit tests plus a 71-program conformance suite
 - 30 working example programs
 - 122 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation

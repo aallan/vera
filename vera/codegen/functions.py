@@ -68,6 +68,8 @@ class FunctionCompilationMixin:
             generic_fn_info=getattr(self, "_generic_fn_info", None),
             ctor_to_adt=ctor_to_adt,
             known_fns=set(self._fn_sigs.keys()),
+            ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
+            adt_tp_counts=getattr(self, "_adt_tp_counts", None),
         )
         # Build function return type map for FnCall type inference
         fn_ret_types: dict[str, str | None] = {}

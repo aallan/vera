@@ -858,6 +858,20 @@
     ]
   },
   {
+    "id": "ch09_none_err_inference",
+    "file": "ch09_none_err_inference.vera",
+    "chapter": 9,
+    "title": "Type inference for bare None/Err constructors in combinator calls",
+    "level": "run",
+    "spec_ref": "Section 9.3.7",
+    "features": [
+      "none_inference",
+      "err_inference",
+      "generic_type_inference",
+      "combinator"
+    ]
+  },
+  {
     "id": "ch09_prelude",
     "file": "ch09_prelude.vera",
     "chapter": 9,

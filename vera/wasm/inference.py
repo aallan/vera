@@ -760,8 +760,12 @@ class InferenceMixin:
 
     def _get_arg_type_info_wasm(
         self, expr: ast.Expr,
-    ) -> tuple[str, tuple[str, ...]] | None:
-        """Get (type_name, type_arg_names) for an argument expression."""
+    ) -> tuple[str, tuple[str | None, ...]] | None:
+        """Get (type_name, type_arg_names) for an argument expression.
+
+        Type arg entries may be None for positions that cannot be inferred
+        from the argument (e.g. T in Err(e) where only E is resolved).
+        """
         if isinstance(expr, ast.SlotRef):
             if expr.type_args:
                 arg_names = []
@@ -773,9 +777,22 @@ class InferenceMixin:
                 return (expr.type_name, tuple(arg_names))
             return (expr.type_name, ())
         if isinstance(expr, ast.ConstructorCall):
-            # Infer from constructor args
+            # Infer from constructor args, respecting field→type-param index mapping
+            # so sparse constructors like Err(e) bind to the correct ADT type param.
             adt_name = self._ctor_to_adt_name(expr.name)
             if adt_name:
+                field_tp_idx = self._ctor_adt_tp_indices.get(expr.name)
+                adt_tp_count = self._adt_tp_counts.get(adt_name, 0)
+                if field_tp_idx is not None and adt_tp_count > 0:
+                    result_tps: list[str | None] = [None] * adt_tp_count
+                    for field_i, tp_idx in enumerate(field_tp_idx):
+                        if tp_idx is not None and field_i < len(expr.args):
+                            t = self._infer_vera_type(expr.args[field_i])
+                            if t is not None:
+                                result_tps[tp_idx] = t
+                            # If t is None, leave position as None (unknown)
+                    return (adt_name, tuple(result_tps))
+                # Fall back to positional inference for unmapped constructors.
                 arg_types = []
                 for a in expr.args:
                     t = self._infer_vera_type(a)

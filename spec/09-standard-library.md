@@ -2004,11 +2004,3 @@ Ability operations are compiled via two mechanisms:
 1. **AST-level rewriting** (Pass 1.6): `eq(a, b)` is rewritten to `a == b`, and `compare(a, b)` is rewritten to `if a < b then Less else if a == b then Equal else Greater`. This reuses existing comparison codegen.
 
 2. **WASM-level dispatch**: `show(x)` and `hash(x)` are dispatched at WASM generation time based on the inferred type of the argument, routing to type-specific implementations (e.g., `to_string` for Int, FNV-1a for String hashing).
-
-## 9.9 Limitations
-
-The current standard library has the following limitations, each tracked as a GitHub issue:
-
-| Limitation | Issue | Notes |
-|-----------|-------|-------|
-| Combinator type inference with bare constructors | [#293](https://github.com/aallan/vera/issues/293) | `option_map(None, f)` cannot infer `None`'s type variable; use a typed binding instead |

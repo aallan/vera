@@ -140,8 +140,7 @@ private fn check_unwrap_or_none(@Unit -> @Int)
   ensures(@Int.result == 1)
   effects(pure)
 {
-  let @Option<Int> = None;
-  if option_unwrap_or(@Option<Int>.0, 99) == 99 then {
+  if option_unwrap_or(None, 99) == 99 then {
     1
   } else {
     0
@@ -168,8 +167,7 @@ private fn check_result_unwrap_or_err(@Unit -> @Int)
   ensures(@Int.result == 1)
   effects(pure)
 {
-  let @Result<Int, String> = Err("oops");
-  if result_unwrap_or(@Result<Int, String>.0, 0) == 0 then {
+  if result_unwrap_or(Err("oops"), 0) == 0 then {
     1
   } else {
     0

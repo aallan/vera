@@ -669,7 +669,6 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **No WASI compliance** | IO uses ad-hoc host imports, not standardised WASI interfaces | [#237](https://github.com/aallan/vera/issues/237) |
 | **No typed holes** | Partial programs cannot type-check; no placeholder expressions | [#226](https://github.com/aallan/vera/issues/226) |
 | **No resource limits** | No built-in fuel, memory, or timeout controls for untrusted code | [#239](https://github.com/aallan/vera/issues/239) |
-| **Combinator bare-constructor inference** | `option_map(None, f)` cannot infer type variable from bare `None`/`Err`; use typed binding | [#293](https://github.com/aallan/vera/issues/293) |
 
 ## Extending the Compiler
 

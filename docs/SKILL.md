@@ -493,15 +493,6 @@ result_map(Ok(10), fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
 
 These are generic functions that follow the `domain_verb` naming convention. They are automatically injected and undergo normal monomorphization. If you define a function with the same name, your definition takes precedence.
 
-> **Limitation ([#293](https://github.com/aallan/vera/issues/293)):** When a combinator's type variable appears only in a return position (not in any argument), the type checker cannot infer it from a bare constructor like `None` or `Err("msg")`. Use a typed binding instead:
->
-> ```vera
-> -- Won't type-check: option_map(None, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
-> -- Use a typed binding:
-> let @Option<Int> = None;
-> option_map(@Option<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 })
-> ```
-
 ### Array operations
 
 ```vera
@@ -1732,7 +1723,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 70 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 71 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -1755,7 +1746,6 @@ These are known limitations in the current reference implementation. Most are tr
 | Limitation | Details | Issue |
 |-----------|---------|-------|
 | `vera test` cannot generate `String`, `Float64`, or compound-type inputs | The Z3-backed test runner only generates inputs for `Int`, `Nat`, `Bool`, and `Byte` parameters. Functions with other parameter types are skipped with a `SKIPPED (cannot generate String inputs (see #169))` message. | [#169](https://github.com/aallan/vera/issues/169) |
-| Type inference for bare `None`/`Err` in generic calls | Writing `None` or `Err(...)` without a type annotation in certain generic call positions can fail with a type inference error. Workaround: add an explicit type annotation or use a `let` binding. | [#293](https://github.com/aallan/vera/issues/293) |
 | Effect row variable unification | Effect rows containing type variables (e.g. `<E>` in a generic function) are not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations. | [#294](https://github.com/aallan/vera/issues/294) |
 | `map_new()` / `set_new()` require type context | The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();` | — |
 | `Inference.complete` has no `max_tokens` or temperature controls | The host implementation uses provider defaults. Custom parameters (max tokens, temperature, top-p, system prompt) are not yet supported at the Vera level. | [#370](https://github.com/aallan/vera/issues/370) |

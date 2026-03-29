@@ -159,6 +159,22 @@ class RegistrationMixin:
             ),
         }
 
+        # Constructor → per-field ADT type-param index mapping for built-in ADTs.
+        # Each tuple position corresponds to a constructor field; the value is the
+        # index of that field's type in the parent ADT's type-param list, or None
+        # for concrete (non-type-variable) fields.  This lets the monomorphizer
+        # and WASM type inference correctly bind Err(e) to E (index 1 in
+        # Result<T, E>), not to T (index 0) as naïve positional zipping would do.
+        self._ctor_adt_tp_indices["None"] = ()         # Option<T>: no fields
+        self._ctor_adt_tp_indices["Some"] = (0,)       # field 0 → T (index 0)
+        self._ctor_adt_tp_indices["Ok"] = (0,)         # field 0 → T (index 0)
+        self._ctor_adt_tp_indices["Err"] = (1,)        # field 0 → E (index 1)
+        self._adt_tp_counts["Option"] = 1
+        self._adt_tp_counts["Result"] = 2
+        self._adt_tp_counts["Ordering"] = 0
+        self._adt_tp_counts["UrlParts"] = 0
+        self._adt_tp_counts["Tuple"] = 0
+
     def _register_data(self, decl: ast.DataDecl) -> None:
         """Register an ADT and precompute constructor layouts."""
         layouts: dict[str, ConstructorLayout] = {}
@@ -168,6 +184,25 @@ class RegistrationMixin:
         self._adt_layouts[decl.name] = layouts
         self._needs_alloc = True
         self._needs_memory = True
+
+        # Build per-constructor type-param index mapping so the monomorphizer and
+        # WASM type inference can correctly bind forall vars from sparse constructors
+        # (e.g. a constructor that only carries the *second* type param of the ADT).
+        type_params = decl.type_params or ()
+        tp_index: dict[str, int] = {tp: i for i, tp in enumerate(type_params)}
+        self._adt_tp_counts[decl.name] = len(type_params)
+        for ctor in decl.constructors:
+            if ctor.fields is not None:
+                indices: list[int | None] = []
+                for field_te in ctor.fields:
+                    if (isinstance(field_te, ast.NamedType)
+                            and field_te.name in tp_index):
+                        indices.append(tp_index[field_te.name])
+                    else:
+                        indices.append(None)
+                self._ctor_adt_tp_indices[ctor.name] = tuple(indices)
+            else:
+                self._ctor_adt_tp_indices[ctor.name] = ()
 
     def _compute_constructor_layout(
         self,

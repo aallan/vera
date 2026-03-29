@@ -89,6 +89,14 @@ class CodeGenerator(
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
         self._needs_alloc: bool = False
+        # Constructor type-param index mapping: ctor_name → tuple of ADT type-param
+        # indices (or None for concrete fields).  Used by the monomorphizer and WASM
+        # type inference to correctly bind forall vars from sparse constructors like
+        # Err(e) whose single field maps to Result's *second* type param (E), not T.
+        self._ctor_adt_tp_indices: dict[str, tuple[int | None, ...]] = {}
+        # Maps ADT name → number of type parameters (needed to produce full-length
+        # type-arg tuples with None placeholders for unknown positions).
+        self._adt_tp_counts: dict[str, int] = {}
 
         # Type aliases (populated during registration)
         # Maps alias name -> TypeExpr (for resolving function type aliases)
