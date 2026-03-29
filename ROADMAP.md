@@ -114,10 +114,8 @@ These are not strictly required for the MCP demo but would make it more compelli
 
 ### Phase 3b: Discoverability improvements
 
-- [#397](https://github.com/aallan/vera/issues/397) **Add `<link>` tags to docs/index.html** — `<link rel="alternate" type="text/markdown" href="/llms.txt">` and equivalents for llms-full.txt and index.md. Standard HTML link discovery for agents parsing the DOM.
 - [#398](https://github.com/aallan/vera/issues/398) **Serve SKILL.md from veralang.dev** — copy to `docs/SKILL.md` via `build_site.py` so the primary agent reference is on the same domain as the website. Add to sitemap.xml.
 - **Register with llms.txt directories** — submit to [llms-txt-hub](https://github.com/thedaviddias/llms-txt-hub) and [llmstxthub.com](https://llmstxthub.com). Manual task, no code change required.
-- [#399](https://github.com/aallan/vera/issues/399) **Add JSON-LD structured data** — `SoftwareApplication` schema with documentation links to llms.txt and SKILL.md.
 - [#400](https://github.com/aallan/vera/issues/400) **Move "For Agents" section above the fold** — currently below the installation instructions; should be more prominent for a language whose primary audience is AI agents.
 - [#401](https://github.com/aallan/vera/issues/401) **MCP documentation endpoint** — a static MCP server (via mcpdoc or similar) that serves Vera documentation to MCP-aware tools. Low lift, high discoverability for the growing MCP ecosystem.
 
