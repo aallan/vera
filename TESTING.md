@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,157 across 26 files (~34,000 lines of test code) |
+| **Tests** | 3,174 across 27 files (~34,000 lines of test code) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 70 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 30, all validated through `vera check` + `vera verify` |
@@ -77,6 +77,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_prelude.py` | 24 | 406 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
+| `test_build_site.py` | 17 | 213 | `_abs_links` unit tests: relative link rewriting, fenced block immunity (backtick and tilde fences, inline backticks inside fences), http/https/fragment pass-through, Vera effect syntax not mis-parsed |
 
 ## Conformance Suite
 

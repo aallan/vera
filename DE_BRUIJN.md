@@ -203,7 +203,9 @@ Parameters:
 
 The `decreases(@Nat.0)` termination measure refers to the exponent, which decreases by 1 at each recursive call. The recursive call `power(@Int.0, @Nat.0 - 1)` passes the base unchanged and the decremented exponent.
 
-A common mistake is writing `power(@Nat.0, @Int.0 - 1)` — swapping base and exponent in the recursive call. This compiles without error (both types are present in scope) but produces wrong results. The commutative-operations observation applies here too: if the function were `add(@Int, @Int -> @Int)`, swapping the arguments in the recursive call would be invisible. For `power`, it is catastrophic.
+A common mistake is writing `power(@Nat.0, @Int.0 - 1)` — swapping base and exponent in the recursive call. Because `power` expects `(@Int, @Nat)` but this call supplies `(@Nat, @Int)`, the type checker catches it immediately as a compile-time error: `@Nat.0` is a `Nat` where an `Int` is expected, and `@Int.0 - 1` is an `Int` where a `Nat` is expected. The types differ, so the swap is visible.
+
+The commutative-operations trap is more dangerous with same-type parameters. If the function were `add(@Int, @Int -> @Int)`, swapping `@Int.0` and `@Int.1` in the recursive call would produce no type error — both slots are `Int` — and for a commutative operation like addition the result would still be correct, hiding the index mistake entirely.
 
 ### 5.5 Let bindings in a recursive function
 
