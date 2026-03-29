@@ -156,6 +156,35 @@ jobs:
         #   no fix release exists yet — revisit when pygments >2.19.2 ships
         run: pip-audit --skip-editable --ignore-vuln CVE-2026-4539
 
+  sbom:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    # Generate an SBOM on every push to main (i.e. each release merge).
+    # PRs get the artifact too, useful for reviewing dependency changes.
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install vera and CycloneDX tooling
+        run: pip install -e . && pip install cyclonedx-bom
+
+      - name: Generate CycloneDX SBOM
+        run: cyclonedx-py environment --output-format JSON --outfile sbom.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.json
+          retention-days: 90
+
   browser-parity:
     permissions:
       contents: read
