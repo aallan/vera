@@ -18,6 +18,7 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 | Limitation | Issue |
 |-----------|-------|
+| Tier 2 verification (Z3-guided with `assert`/lemma hints) is specified in §6.3.2 but not yet implemented; contracts requiring hints fall to Tier 3 (runtime check) | [#427](https://github.com/aallan/vera/issues/427) |
 | `vera test` cannot generate String, Float64, or compound-type inputs | [#169](https://github.com/aallan/vera/issues/169) |
 | Type inference for bare `None`/`Err` in generic function calls | [#293](https://github.com/aallan/vera/issues/293) |
 | Effect row variable unification (full effect polymorphism) | [#294](https://github.com/aallan/vera/issues/294) |

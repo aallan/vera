@@ -345,3 +345,9 @@ Verification summary:
    1 contract checked at runtime (Tier 3)
    0 assumptions (assume statements)
 ```
+
+## 6.9 Limitations
+
+| Limitation | Issue |
+|-----------|-------|
+| Tier 2 verification (Z3-guided with `assert`/lemma hints) is specified in §6.3.2 and §6.6 but not implemented; contracts requiring hints fall to Tier 3 | [#427](https://github.com/aallan/vera/issues/427) |
