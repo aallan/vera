@@ -351,6 +351,72 @@ def main() -> int:
     )
 
     # ------------------------------------------------------------------
+    # 10. Check SKILL.md
+    # ------------------------------------------------------------------
+
+    skill_md = (root / "SKILL.md").read_text()
+
+    m = re.search(r"contains (\d+) small, self-contained programs", skill_md)
+    if m:
+        doc_conf = int(m.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"SKILL.md: conformance count: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    # ------------------------------------------------------------------
+    # 11. Check AGENTS.md
+    # ------------------------------------------------------------------
+
+    agents_md = (root / "AGENTS.md").read_text()
+
+    m = re.search(r"contains (\d+) small, self-contained programs", agents_md)
+    if m:
+        doc_conf = int(m.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"AGENTS.md: conformance count: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    for m_iter in re.finditer(r"All (\d+) conformance programs", agents_md):
+        doc_conf = int(m_iter.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"AGENTS.md: conformance count: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    for m_iter in re.finditer(r"All (\d+) examples", agents_md):
+        doc_ex = int(m_iter.group(1))
+        if doc_ex != live_examples:
+            errors.append(
+                f"AGENTS.md: example count: doc says {doc_ex},"
+                f" live is {live_examples}"
+            )
+
+    for m_iter in re.finditer(
+        r"check_conformance\.py\s+# All (\d+) conformance", agents_md
+    ):
+        doc_conf = int(m_iter.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"AGENTS.md: script comment conformance count:"
+                f" doc says {doc_conf}, live is {live_conformance}"
+            )
+
+    for m_iter in re.finditer(
+        r"check_examples\.py\s+# All (\d+) examples", agents_md
+    ):
+        doc_ex = int(m_iter.group(1))
+        if doc_ex != live_examples:
+            errors.append(
+                f"AGENTS.md: script comment example count:"
+                f" doc says {doc_ex}, live is {live_examples}"
+            )
+
+    # ------------------------------------------------------------------
     # Report
     # ------------------------------------------------------------------
 
