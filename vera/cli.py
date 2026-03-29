@@ -24,6 +24,8 @@ Usage:
     vera fmt       --write <file.vera>      Format in place
     vera fmt       --check <file.vera>      Check if already canonical
     vera version                            Print the installed version
+    vera --version                          Same as vera version
+    vera -V                                 Same as vera version
 """
 
 from __future__ import annotations
@@ -970,9 +972,7 @@ def main() -> None:
 
     filepath = remaining[0]
 
-    if command in ("version", "--version", "-V"):
-        sys.exit(cmd_version())
-    elif command == "parse":
+    if command == "parse":
         sys.exit(cmd_parse(filepath))
     elif command in ("check", "typecheck"):
         sys.exit(cmd_check(filepath, as_json=use_json))

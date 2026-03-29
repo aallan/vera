@@ -1989,6 +1989,9 @@ def execute(
                 body = _read_wasm_string(caller, body_ptr, body_len)
                 try:
                     import urllib.request
+                    # Http.post is intentionally JSON-only: the Vera-level API
+                    # takes a String body and always sends it as application/json.
+                    # Custom Content-Type headers require #351 (custom headers).
                     req = urllib.request.Request(  # noqa: S310
                         url, data=body.encode("utf-8"), method="POST",
                         headers={"Content-Type": "application/json"},
