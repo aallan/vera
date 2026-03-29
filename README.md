@@ -154,7 +154,7 @@ vera version                             # print the installed version
 
 ## For agents
 
-Vera ships with three files for LLM agents:
+Vera ships with these files for LLM agents:
 
 - [`SKILL.md`](SKILL.md) — Complete language reference. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.
 - [`AGENTS.md`](AGENTS.md) — Instructions for any agent system (Copilot, Cursor, Windsurf, custom). Covers both writing Vera code and working on the compiler.

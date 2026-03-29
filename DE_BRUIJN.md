@@ -73,11 +73,13 @@ The tradeoff is that human readability suffers — `@Int.1 - @Int.0` is harder t
 
 ## 3. Vera's typed variant
 
-Classic De Bruijn indices count *all* binders, regardless of type. In a term like `λInt. λString. λInt. ⋯`, the second `Int` has De Bruijn index 2 (two binders intervene: the `String` and the first `Int`). The `String` has index 1. The first `Int` has index 2.
+Classic De Bruijn indices count *all* binders, regardless of type. Using 0-based indexing (where the innermost, most recently introduced binder has index 0), in a term like `λInt. λString. λInt. ⋯`:
 
-Vera uses a *type-stratified* variant: the index counts only binders of the **same type**. Each type maintains its own independent counter.
+- The innermost `Int` (third binder, most recent) — index **0**
+- The `String` (second binder) — index **1**
+- The outermost `Int` (first binder) — index **2**
 
-In a function `fn(@Int, @String, @Int -> ...)`:
+Vera uses a *type-stratified* variant: the index counts only binders of the **same type**. Each type maintains its own independent counter. For the equivalent Vera function `fn(@Int, @String, @Int -> ...)`:
 
 | Parameter | Type | Position | Index |
 |-----------|------|----------|-------|
