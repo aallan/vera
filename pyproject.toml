@@ -46,6 +46,7 @@ vera = "vera.cli:main"
 include = ["vera*"]
 
 [tool.setuptools.package-data]
+"vera" = ["*.lark"]
 "vera.browser" = ["*.mjs"]
 
 [build-system]
