@@ -41,3 +41,14 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | Inference: no token/temperature controls (`max_tokens` hardcoded) | [#370](https://github.com/aallan/vera/issues/370) |
 | Inference: no user-defined handlers (`handle[Inference]`) | [#372](https://github.com/aallan/vera/issues/372) |
 | No float array host-alloc (`_alloc_result_ok_float_array`) | [#373](https://github.com/aallan/vera/issues/373) |
+
+## Refactoring needed
+
+Files that have grown beyond a comfortable size and need decomposition. None of these affect correctness — they are purely internal structural debt.
+
+| File | Lines | Refactoring | Issue |
+|------|-------|-------------|-------|
+| `vera/wasm/calls.py` | 8,337 | Split into subsystem mixins: strings, arrays, containers, encoding, parsing, conversions, math, markup, decimal | [#418](https://github.com/aallan/vera/issues/418) |
+| `tests/test_codegen.py` | 10,019 | Split into feature-focused test files (literals, arithmetic, control flow, strings, arrays, collections, effects, data types) | [#419](https://github.com/aallan/vera/issues/419) |
+| `tests/test_checker.py` | 5,522 | Split into phase-focused test files (types, functions, effects, contracts, modules, errors) | [#420](https://github.com/aallan/vera/issues/420) |
+| `vera/codegen/api.py` | 2,228 | Extract memory layout utilities → `memory.py`; extract host runtime → `runtime.py` | [#421](https://github.com/aallan/vera/issues/421) |
