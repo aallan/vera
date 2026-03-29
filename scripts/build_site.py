@@ -167,11 +167,23 @@ def build_llms_full_txt(version: str) -> str:
     """
     parts: list[str] = []
 
+    def _abs_links(text: str) -> str:
+        """Rewrite relative markdown links to absolute GitHub blob URLs.
+
+        Links that already start with http/https/# are left unchanged.
+        Relative paths are resolved from the repo root.
+        """
+        return re.sub(
+            r"\[([^\]]+)\]\((?!https?://|#)([^)]+)\)",
+            lambda m: f"[{m.group(1)}]({REPO}/blob/main/{m.group(2)})",
+            text,
+        )
+
     def section(title: str, content: str) -> None:
         parts.append(f"\n{'=' * 72}")
         parts.append(f"# {title}")
         parts.append(f"{'=' * 72}\n")
-        parts.append(content.strip())
+        parts.append(_abs_links(content.strip()))
         parts.append("")
 
     # Header
