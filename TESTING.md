@@ -81,7 +81,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 
 ## Conformance Suite
 
-The conformance suite is a collection of 71 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Each program is self-contained, imports nothing, and tests one feature or a small group of related features.
+The conformance suite is a collection of 71 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Each program is self-contained and imports nothing, with the single exception of `ch07_cross_module_contracts.vera` which depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -177,7 +177,7 @@ The manifest is the machine-readable feature inventory — agents can query it t
 ### Running the conformance suite
 
 ```bash
-# Via pytest (parametrized — 350 tests)
+# Via pytest (parametrized — 355 tests)
 pytest tests/test_conformance.py -v
 
 # Via standalone script (used in CI and pre-commit)

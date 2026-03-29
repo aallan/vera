@@ -91,6 +91,8 @@ class ClosureLiftingMixin:
             ctor_layouts=ctor_layouts,
             adt_type_names=set(self._adt_layouts.keys()),
             ctor_to_adt=ctor_to_adt,
+            ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
+            adt_tp_counts=getattr(self, "_adt_tp_counts", None),
         )
         fn_ret_types: dict[str, str | None] = {}
         for fn_name, (_, ret_wt) in self._fn_sigs.items():
