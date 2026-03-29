@@ -175,7 +175,7 @@ The manifest is the machine-readable feature inventory — agents can query it t
 ### Running the conformance suite
 
 ```bash
-# Via pytest (parametrized — 325 tests)
+# Via pytest (parametrized — 350 tests)
 pytest tests/test_conformance.py -v
 
 # Via standalone script (used in CI and pre-commit)
