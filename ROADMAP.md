@@ -4,7 +4,7 @@ Vera v0.0.102 delivers a complete compiler pipeline — parse, transform, type-c
 
 This roadmap is organised around four strategic milestones. Each milestone makes Vera meaningfully more useful to a concrete audience. Within each milestone, work is grouped into phases that can be executed roughly sequentially, though independent items can be interleaved.
 
-See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was built across 30 development days.
+See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was built.
 
 ## Where we are
 
@@ -216,4 +216,4 @@ The compiler was built through ten development phases from February to March 202
 | C8.5 | v0.0.66–v0.0.88 | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
 | C9 | v0.0.89–v0.0.101 | **Abilities, standard library, data types, effects** — Eq/Ord/Hash/Show, Map/Set, JSON, HTML, Markdown, Http, Decimal, Inference, standard prelude, combinators, higher-order array ops | Done |
 
-**630+ commits, 103 tagged releases, 3,120 tests, 96% coverage, 65 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built across 30 development days.
+**630+ commits, 103 tagged releases, 3,121 tests, 96% coverage, 65 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.

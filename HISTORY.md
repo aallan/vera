@@ -214,7 +214,7 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.0.102 | 28 Mar | **Bug fixes** — stdin double-read on `/dev/stdin` and `/dev/stdin`-as-path resolved by a single `_load_and_parse` helper in the CLI (#335); two further production-stability fixes (#360, #326). **CLI typed argument passing** — `vera run --fn f -- "hello"` now accepts String, Float64, Bool, and Byte arguments alongside Int; the function's WASM signature drives type dispatch (#263); SKILL.md workaround note removed (#403). **Agent discovery** — four semantic metadata layers added to veralang.dev: `<link>` alternate/llms-txt elements for SKILL.md and AGENTS.md, JSON-LD `TechArticle` entries in the structured-data graph, button `rel="agent-instructions"` attributes, and an inline `<script type="text/llms.txt">` block (#400). |
+| v0.0.102 | 28 Mar | **Bug fixes** — stdin double-read on `/dev/stdin` resolved by a single `_load_and_parse` helper in the CLI (#335); E609 false positive on `Option<T>` return types across modules (#360); pipe operator into module-qualified calls (#326). |
 
 ---
 
@@ -233,6 +233,8 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | 17 Mar | TextMate syntax highlighting bundle |
 | 18 Mar | VS Code extension for Vera syntax highlighting |
 | 20 Mar | AI discoverability: llms.txt, llms-full.txt, robots.txt, sitemap.xml, ai-plugin.json, index.md |
+| 28 Mar | **`vera run` typed argument passing** — `vera run --fn f -- "hello"` now accepts String, Float64, Bool, and Byte arguments alongside Int; the function's WASM signature drives type dispatch (#263). |
+| 28 Mar | **Agent discovery metadata** — four semantic layers added to veralang.dev: `<link>` alternate/llms-txt elements, JSON-LD `TechArticle` entries for SKILL.md and AGENTS.md, button `rel="agent-instructions"` attributes, and an inline `<script type="text/llms.txt">` block (#400). |
 
 ---
 
