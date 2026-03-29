@@ -21,7 +21,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 |----------|--------|-----------|
 | References | [`@T.n` typed De Bruijn indices](DE_BRUIJN.md) | Eliminates naming coherence errors; indices are locally determinable from types alone |
 | Contracts | Mandatory `requires`/`ensures`/`effects` on all functions | Programs must be checkable; contracts are the machine-verifiable specification |
-| Verification | Three-tier: Z3 static → Z3 guided → runtime fallback | Maximises static guarantees; degrades gracefully where SMT is undecidable |
+| Verification | Z3 static (Tier 1) → runtime fallback (Tier 3); Tier 2 (Z3-guided) is specified but not yet implemented | Maximises static guarantees; degrades gracefully where SMT is undecidable |
 | Effects | Algebraic, row-polymorphic (`IO`, `Http`, `State`, `Exn`, `Async`, `Inference`) | All state and side effects explicit; effects are typed, trackable, and handleable |
 | Error handling | `Result<T,E>` ADTs for expected errors; `Exn<T>` algebraic effect for exceptions | Errors are values; `match` enforces handling every case; `Exn<T>` is handleable like any other effect |
 | Inference | `Inference.complete` as an algebraic effect | LLM calls are typed, contract-verifiable, mockable via `handle[Inference]`, and explicit in signatures |
@@ -46,11 +46,9 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 
 ## The verification pipeline
 
-Vera's contracts are checked in three tiers, applied at every call site:
+Vera's contracts are checked in two implemented tiers, applied at every call site:
 
 **Tier 1 — Z3 static (decidable fragment).** The compiler generates a verification condition and sends it to Z3. If Z3 returns `unsat`, the contract is proved for all inputs. This covers arithmetic, boolean logic, and simple refinement predicates.
-
-**Tier 2 — Z3 guided (extended fragment).** The compiler adds hints from `assert` statements and lemma functions. Z3 has a 10-second timeout. Covers function calls, quantifiers, and array properties.
 
 **Tier 3 — Runtime fallback.** If Z3 returns `unknown` or times out, the contract is compiled as a runtime check in the WASM binary. A violation raises a trap at the call site with the contract text.
 
@@ -60,6 +58,8 @@ Vera's contracts are checked in three tiers, applied at every call site:
 ```
 
 A fully Tier 1–verified program has the strongest guarantee: if it compiles and verifies, the contracts hold for all inputs. See [spec/06-contracts.md](spec/06-contracts.md) for the formal treatment.
+
+**Tier 2 — Z3 guided (extended fragment)** is specified in [spec/06-contracts.md §6.3.2](spec/06-contracts.md) but not yet implemented in the reference compiler. The spec describes it adding hints from `assert` statements and lemma functions to cover function calls, quantifiers, and array properties.
 
 ---
 
@@ -74,7 +74,7 @@ Built-in effects:
 | `IO` | `print`, `read_line`, file ops | Console and file I/O |
 | `Http` | `get`, `post` | Network requests; returns `Result<String, String>` |
 | `State<T>` | `get`, `put` | Typed mutable state; scope controlled by `handle[State<T>]` |
-| `Exn<T>` | `throw`, `catch` | Typed exceptions; handleable like any algebraic effect |
+| `Exn<T>` | `throw` | Typed exceptions; `throw` never resumes (`Never` return type); handling is via `handle[Exn<T>]` syntax |
 | `Async` | `async`, `await` | `Future<T>` is zero-overhead at compile time; true concurrency deferred to WASI 0.3 |
 | `Inference` | `complete` | LLM calls; `String → Result<String, String>`; provider selected by env var |
 

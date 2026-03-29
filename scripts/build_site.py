@@ -157,6 +157,44 @@ programs validating every language feature against the spec.
 # ── llms-full.txt ───────────────────────────────────────────────────
 
 
+def _abs_links(text: str) -> str:
+    """Rewrite relative markdown links to absolute GitHub blob URLs.
+
+    Only rewrites links whose URL looks like a repo-relative file path
+    (alphanumeric characters, dots, slashes, hyphens, underscores).
+    Links that already start with http/https/# and anything inside
+    fenced code blocks are left unchanged.
+    """
+    # Walk line-by-line so fenced blocks may safely contain backticks.
+    # The regex-split approach (```[^`]*```) breaks when code inside a
+    # fence contains inline backticks, because [^`]* stops at the first one.
+    link_re = re.compile(
+        r"\[([^\]]+)\]\((?!https?://|#)([A-Za-z0-9_./#-][A-Za-z0-9_./#-]*)\)"
+    )
+    parts_inner: list[str] = []
+    in_fence = False
+    fence_marker: str | None = None
+    for line in text.splitlines(keepends=True):
+        m = re.match(r"^\s*(```|~~~)", line)
+        if m:
+            marker = m.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker
+            elif marker == fence_marker:
+                in_fence = False
+                fence_marker = None
+            parts_inner.append(line)
+            continue
+        if in_fence:
+            parts_inner.append(line)
+        else:
+            parts_inner.append(link_re.sub(
+                lambda m: f"[{m.group(1)}]({REPO}/blob/main/{m.group(2)})", line
+            ))
+    return "".join(parts_inner)
+
+
 def build_llms_full_txt(version: str) -> str:
     """Compile core language documentation into a single markdown file.
 
@@ -166,28 +204,6 @@ def build_llms_full_txt(version: str) -> str:
     files listed in llms.txt.
     """
     parts: list[str] = []
-
-    def _abs_links(text: str) -> str:
-        """Rewrite relative markdown links to absolute GitHub blob URLs.
-
-        Only rewrites links whose URL looks like a repo-relative file path
-        (alphanumeric characters, dots, slashes, hyphens, underscores).
-        Links that already start with http/https/# and anything inside
-        fenced code blocks are left unchanged.
-        """
-        # Split on fenced code blocks; only rewrite outside them.
-        parts_inner: list[str] = []
-        for i, chunk in enumerate(re.split(r"(```[^`]*```)", text, flags=re.DOTALL)):
-            if i % 2 == 1:
-                # Inside a code fence — leave unchanged
-                parts_inner.append(chunk)
-            else:
-                parts_inner.append(re.sub(
-                    r"\[([^\]]+)\]\((?!https?://|#)([A-Za-z0-9_./#-][A-Za-z0-9_./#-]*)\)",
-                    lambda m: f"[{m.group(1)}]({REPO}/blob/main/{m.group(2)})",
-                    chunk,
-                ))
-        return "".join(parts_inner)
 
     def section(title: str, content: str) -> None:
         parts.append(f"\n{'=' * 72}")
@@ -407,13 +423,15 @@ vera run examples/hello_world.vera
 
 
 def build_skill_md() -> str:
-    """Return SKILL.md verbatim from the repository root.
+    """Return SKILL.md with relative links rewritten to absolute GitHub URLs.
 
     The source of truth is the top-level SKILL.md.  This copy in docs/ is a
     generated artefact that makes the language reference available at
     veralang.dev/SKILL.md — same domain as the website, cacheable, stable.
+    Relative links are rewritten to absolute GitHub blob URLs because this
+    file is consumed outside the repository context.
     """
-    return (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    return _abs_links((ROOT / "SKILL.md").read_text(encoding="utf-8"))
 
 
 # ── main ────────────────────────────────────────────────────────────

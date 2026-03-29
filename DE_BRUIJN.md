@@ -198,8 +198,8 @@ private fn power(@Int, @Nat -> @Int)
 ```
 
 Parameters:
-- `@Int.0` — second parameter (the base); rightmost `Int`
-- `@Nat.0` — second parameter (the exponent); rightmost `Nat` (and the only `Nat`)
+- `@Int.0` — first parameter (the base); the only `Int`
+- `@Nat.0` — second parameter (the exponent); the only `Nat`
 
 The `decreases(@Nat.0)` termination measure refers to the exponent, which decreases by 1 at each recursive call. The recursive call `power(@Int.0, @Nat.0 - 1)` passes the base unchanged and the decremented exponent.
 
@@ -343,7 +343,7 @@ This comment is erased by `vera fmt --write` (the canonical formatter strips com
 
 ### 7.1 Classic De Bruijn indices
 
-Classic De Bruijn indices count *all* binders, not just same-type binders. In the lambda term `λInt λString λInt . ⋯`, the second `Int` has De Bruijn index 2 (two binders intervene). Vera's type-stratified variant would assign it index `@Int.1` (one `Int` binder intervenes).
+Classic De Bruijn indices count *all* binders, not just same-type binders. In the lambda term `λInt λString λInt . ⋯`, the outermost (first) `Int` has De Bruijn index 2 (two binders intervene: the `String` and the innermost `Int`), while the innermost (second) `Int` has index 0. Vera's type-stratified variant would assign the outermost `Int` index `@Int.1` (one `Int` binder intervenes), and the innermost `Int` index `@Int.0`.
 
 The type-stratified approach is strictly more convenient for a typed language: the model only needs to track the binding stack for the type it cares about. It is less well-studied theoretically, but the substitution and shifting properties carry over straightforwardly with type annotations.
 
