@@ -24,9 +24,11 @@ Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.
 
 ### Phase 1b: Build the benchmark suite
 
-- [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — design a HumanEval/MBPP-style benchmark adapted for Vera. This is the single highest-value work item for the project's scientific credibility.
+**[VeraBench](https://github.com/aallan/vera-bench) is under active development** in a separate repository. The benchmark is being built out now; contributions and feedback welcome.
 
-  The benchmark should cover five difficulty tiers:
+- [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — a HumanEval/MBPP-style benchmark adapted for Vera. This is the single highest-value work item for the project's scientific credibility.
+
+  The benchmark covers five difficulty tiers:
   1. **Pure arithmetic** — functions with 1–2 parameters, simple contracts (the easy case for `@T.n`)
   2. **String and array manipulation** — functions using built-ins, testing whether agents find the right `domain_verb` names
   3. **ADTs and pattern matching** — custom data types, exhaustive match, testing De Bruijn indices in match arms

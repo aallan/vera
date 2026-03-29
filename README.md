@@ -186,7 +186,7 @@ The reference compiler — parser, AST, type checker, contract verifier (Z3), WA
 
 **Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, algebraic effects (IO, Http, State, Exceptions, Async, Inference), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 122 built-in functions (strings, arrays, maps, sets, decimals, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, canonical formatter, browser runtime, and three-tier verification (Z3 static, guided, runtime fallback).
 
-**What's next:** the path from "working language" to "the language agents actually use" — see **[ROADMAP.md](ROADMAP.md)** for the four strategic milestones. The flagship goal is a verified MCP tool server where contracts guarantee tool schemas at compile time.
+**What's next:** the path from "working language" to "the language agents actually use" — see **[ROADMAP.md](ROADMAP.md)** for the four strategic milestones. The flagship goal is a verified MCP tool server where contracts guarantee tool schemas at compile time. Empirical evaluation is underway via **[VeraBench](https://github.com/aallan/vera-bench)**, a HumanEval-style benchmark suite being built in a separate repository.
 
 Known bugs and open issues are tracked on the **[issue tracker](https://github.com/aallan/vera/issues)**. See **[KNOWN_ISSUES.md](KNOWN_ISSUES.md)** for a consolidated list.
 
