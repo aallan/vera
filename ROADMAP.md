@@ -8,9 +8,9 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-**v0.0.104** — Type inference for bare `None`/`Err` constructors in generic combinator calls now works correctly (#293). `option_unwrap_or(None, 99)`, `result_unwrap_or(Err("oops"), 0)`, and `option_map(None, fn(...){...})` all type-check without requiring a typed `let` binding workaround. The fix addressed three independent layers: the checker's fresh-TypeVar overwrite rule, the monomorphizer's sparse-constructor field-to-type-param mapping, and a missing `StringLit` case in the monomorphizer's type inferencer. Phase 1a is now complete. The compiler has 3,184 tests, 71 conformance programs, 30 examples, and a 13-chapter specification.
+The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,184 tests, 71 conformance programs, 30 examples, and a 13-chapter specification.
 
-An independent assessment (March 2026) rated Vera **65–75% of the way to being a viable agent target.** No design drift across 104+ releases; documentation stack described as "best-in-class for LLM consumption." The remaining gap is empirical validation (benchmark suite), standard library breadth (HTTP hardening, server effects), and tooling integration (LSP). The single most important next step is the benchmark suite (#225).
+Significant progress has been made towards Vera being a viable agent target. The remaining gap is empirical validation (benchmark suite), standard library breadth (HTTP hardening, server effects), and tooling integration (LSP). The single most important next step is the benchmark suite (#225).
 
 ---
 
