@@ -12,6 +12,8 @@ Le et al. ("When Names Disappear", [arXiv:2510.03178](https://arxiv.org/abs/2510
 
 So the problem isn't that variable names are useless to LLMs. It's that they're a crutch that lets the model appear to understand code when it's actually not reasoning about the code. Vera's bet is that if you remove the crutch and give the model verified structural information instead — contracts, types, effect declarations — you force it onto firmer ground.
 
+See [`DE_BRUIJN.md`](DE_BRUIJN.md) for a deeper treatment: where the indexing idea comes from academically, how Vera's typed variant differs from classic De Bruijn indices, worked examples of the common traps (particularly the commutative-operations pitfall), and further reading.
+
 
 ## Why not keep variable names and strip them with tooling?
 

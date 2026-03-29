@@ -159,6 +159,7 @@ Vera ships with three files for LLM agents:
 - [`SKILL.md`](SKILL.md) — Complete language reference. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.
 - [`AGENTS.md`](AGENTS.md) — Instructions for any agent system (Copilot, Cursor, Windsurf, custom). Covers both writing Vera code and working on the compiler.
 - [`CLAUDE.md`](CLAUDE.md) — Project orientation for Claude Code. Key commands, layout, workflows, and invariants.
+- [`DE_BRUIJN.md`](DE_BRUIJN.md) — Deep dive into Vera's typed slot references: the academic background, worked examples, the commutative-operations trap, and connections to proof assistants and LLM code-generation research.
 
 **Claude Code** discovers `SKILL.md` and `CLAUDE.md` automatically in this repo. For other projects, install the skill manually:
 
@@ -183,7 +184,7 @@ Vera is in **active development** at v0.0.103 — 630+ commits, 104 releases, 3,
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [13 chapters](spec/).
 
-**Key features delivered:** typed De Bruijn indices (`@T.n`), mandatory contracts, algebraic effects (IO, Http, State, Exceptions, Async, Inference), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 122 built-in functions (strings, arrays, maps, sets, decimals, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, canonical formatter, browser runtime, and three-tier verification (Z3 static, guided, runtime fallback).
+**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, algebraic effects (IO, Http, State, Exceptions, Async, Inference), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 122 built-in functions (strings, arrays, maps, sets, decimals, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, canonical formatter, browser runtime, and three-tier verification (Z3 static, guided, runtime fallback).
 
 **What's next:** the path from "working language" to "the language agents actually use" — see **[ROADMAP.md](ROADMAP.md)** for the four strategic milestones. The flagship goal is a verified MCP tool server where contracts guarantee tool schemas at compile time.
 
