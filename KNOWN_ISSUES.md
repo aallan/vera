@@ -11,6 +11,8 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | Opaque handle memory leak in host stores | [#346](https://github.com/aallan/vera/issues/346) |
 | GC shadow stack pollution from opaque handle parameters | [#347](https://github.com/aallan/vera/issues/347) |
 | GC worklist overflow for deeply nested object graphs | [#348](https://github.com/aallan/vera/issues/348) |
+| `Exn<String>` handler tag fails — `String` is `i32_pair`, not a valid WASM tag parameter type | [#416](https://github.com/aallan/vera/issues/416) |
+| Nested `handle[State<T>]` of the same type share a global state cell (inner handler corrupts outer) | [#417](https://github.com/aallan/vera/issues/417) |
 
 ## Limitations
 
