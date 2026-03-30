@@ -58,6 +58,8 @@ These are not hypothetical failure modes. Empirical studies of LLM code generati
 
 - C.C. Le, M.V.T. Pham, C.D. Van, H.N. Phan, H.N. Phan, and T.N. Nguyen. ["When Names Disappear."](https://arxiv.org/pdf/2510.03178) arXiv:2510.03178, 2025. Demonstrates that LLMs exploit statistical correlations between identifiers and functionality even on execution prediction tasks that depend only on program structure — what the authors call "identifier leakage." The model appears to understand code when it is pattern-matching on familiar tokens rather than reasoning about program structure.
 
+- **[VeraBench](https://github.com/aallan/vera-bench)** — first empirical results from Vera's own benchmark suite confirm slot ordering as the dominant failure mode. Claude Sonnet 4 achieved 83% run_correct overall, but GCD, `div_natural`, and `safe_div` all failed because the model wrote `@Int.0 / @Int.1` with the arguments reversed — `@Int.0` is the *most recent* binding (the divisor), not the first parameter (the dividend). These are exactly the non-commutative operations where De Bruijn ordering matters most.
+
 ### The structural alternative
 
 Typed slot references eliminate the naming problem by construction. To reference a value in Vera, the model needs to know two things:
