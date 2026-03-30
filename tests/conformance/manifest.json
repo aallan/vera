@@ -231,6 +231,18 @@
     ]
   },
   {
+    "id": "ch03_typed_holes",
+    "file": "ch03_typed_holes.vera",
+    "chapter": 3,
+    "title": "Typed holes",
+    "level": "check",
+    "spec_ref": "Section 3.10",
+    "features": [
+      "typed_holes",
+      "W001"
+    ]
+  },
+  {
     "id": "ch04_arithmetic",
     "file": "ch04_arithmetic.vera",
     "chapter": 4,

@@ -8,12 +8,25 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 71 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
+The conformance suite in `tests/conformance/` contains 72 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
 
 ### Workflow
 
 ```
 write .vera file -> vera check -> fix errors -> vera verify -> fix errors -> done
+```
+
+Use **typed holes** (`?`) to build programs incrementally. A `?` in any expression position is valid — `vera check` reports a `W001` warning with the expected type and all available slot bindings:
+
+```
+Warning [W001]: Typed hole: expected Int.
+Fix: Replace ? with an expression of type Int. Available bindings: @Int.0: Int; @Int.1: Int.
+```
+
+Programs with holes type-check (`ok: true`) but cannot compile (`E614`). Iterative workflow:
+
+```
+write skeleton with ? -> vera check (get W001 hints) -> fill holes -> vera check -> vera verify
 ```
 
 ### Commands
@@ -69,6 +82,7 @@ Every diagnostic has a stable error code. Common codes:
 
 | Code | Meaning |
 |------|---------|
+| W001 | Typed hole (`?`) — expected type and available bindings reported |
 | E001 | Missing contract block (requires/ensures/effects) |
 | E121 | Function body type doesn't match return type |
 | E130 | Unresolved slot reference (@T.n has no matching binding) |
@@ -77,8 +91,9 @@ Every diagnostic has a stable error code. Common codes:
 | E200 | Unresolved function call |
 | E300 | If condition is not Bool |
 | E311 | Non-exhaustive match |
+| E614 | Program contains typed holes — compile rejected until holes are filled |
 
-Full code ranges: E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing). See `vera/errors.py` `ERROR_CODES` for the complete registry.
+Full code ranges: W0xx (warnings), E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing). See `vera/errors.py` `ERROR_CODES` for the complete registry.
 
 The `verify --json` output includes a verification summary:
 
@@ -146,7 +161,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 71 conformance programs must pass
+python scripts/check_conformance.py    # All 72 conformance programs must pass
 python scripts/check_examples.py       # All 30 examples must pass
 ```
 
@@ -156,7 +171,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 71 conformance programs in `tests/conformance/` must pass their declared level
+- All 72 conformance programs in `tests/conformance/` must pass their declared level
 - All 30 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass

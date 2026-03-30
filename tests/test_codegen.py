@@ -10081,3 +10081,20 @@ public fn main(-> @Int)
 }
 """
         assert _run(source) == 2
+
+
+class TestTypedHoles:
+    """Typed holes: compile rejects programs with ? placeholders."""
+
+    def test_hole_compile_rejected(self) -> None:
+        """Programs with holes produce E614 and cannot compile."""
+        src = """\
+public fn foo(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ ? }
+"""
+        result = _compile(src)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert any(d.error_code == "E614" for d in errors), \
+            f"Expected E614, got: {[d.error_code for d in errors]}"
+        assert result.wasm_bytes == b""

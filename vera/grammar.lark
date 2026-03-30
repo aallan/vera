@@ -196,6 +196,7 @@ refinement_type: "{" "@" type_expr "|" expr "}"
              | "true"                        -> true_lit
              | "false"                       -> false_lit
              | "(" ")"                       -> unit_lit
+             | "?"                           -> hole_expr
              | slot_ref
              | result_ref
              | fn_call
