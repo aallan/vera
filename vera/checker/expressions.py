@@ -70,6 +70,8 @@ class ExpressionsMixin:
             return BOOL
         if isinstance(expr, ast.UnitLit):
             return UNIT
+        if isinstance(expr, ast.HoleExpr):
+            return self._check_hole(expr, expected=expected)
         if isinstance(expr, ast.SlotRef):
             return self._check_slot_ref(expr)
         if isinstance(expr, ast.ResultRef):
@@ -544,6 +546,53 @@ class ExpressionsMixin:
             return AdtType("Array", (UnknownType(),))
 
         return AdtType("Array", (first,))
+
+    # -----------------------------------------------------------------
+    # Typed holes
+    # -----------------------------------------------------------------
+
+    def _check_hole(self, expr: ast.HoleExpr, *,
+                    expected: Type | None) -> Type:
+        """Emit a hole warning with expected type and available bindings."""
+        expected_str = pretty_type(expected) if expected else "unknown"
+
+        # Collect all bindings in scope (innermost first) for the fix hint.
+        # Each binding is (slot_ref_string, type_string).
+        bindings: list[tuple[str, str]] = []
+        index_by_type: dict[str, int] = {}
+        for scope in reversed(self.env._scopes):
+            for binding in reversed(scope):
+                tname = binding.type_name
+                idx = index_by_type.get(tname, 0)
+                index_by_type[tname] = idx + 1
+                bindings.append((f"@{tname}.{idx}",
+                                  pretty_type(binding.resolved_type)))
+
+        if bindings:
+            context = "; ".join(
+                f"{ref}: {ty}" for ref, ty in bindings
+            )
+            fix_hint = (
+                f"Replace ? with an expression of type {expected_str}. "
+                f"Available bindings: {context}."
+            )
+        else:
+            fix_hint = f"Replace ? with an expression of type {expected_str}."
+
+        self._error(
+            expr,
+            f"Typed hole: expected {expected_str}.",
+            rationale=(
+                "? is a placeholder for an incomplete expression. "
+                "The compiler reports the expected type and available "
+                "bindings so the hole can be filled in."
+            ),
+            fix=fix_hint,
+            spec_ref='Chapter 3, Section 3.10 "Typed Holes"',
+            severity="warning",
+            error_code="W001",
+        )
+        return expected if expected is not None else UnknownType()
 
     # -----------------------------------------------------------------
     # Assert / Assume

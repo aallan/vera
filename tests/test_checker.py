@@ -3463,10 +3463,10 @@ class TestErrorCodes:
         assert "error_code" not in data
 
     def test_error_codes_registry_valid(self) -> None:
-        """All codes in ERROR_CODES are valid Exxx patterns and unique."""
+        """All codes in ERROR_CODES are valid Exxx/Wxxx patterns and unique."""
         import re
         from vera.errors import ERROR_CODES
-        pattern = re.compile(r"^E\d{3}$")
+        pattern = re.compile(r"^[EW]\d{3}$")
         seen: set[str] = set()
         for code in ERROR_CODES:
             assert pattern.match(code), f"Invalid code format: {code}"
@@ -5572,3 +5572,85 @@ private fn f(@Int -> @Int)
         mapping: dict[str, Type] = {}
         checker._unify_for_inference(pattern, concrete, mapping)
         assert mapping == {"A": INT, "B": BOOL}
+
+# =====================================================================
+# Typed holes (#226)
+# =====================================================================
+
+class TestTypedHoles:
+    """Typed hole expressions: ? placeholder with expected-type warning."""
+
+    def test_hole_in_fn_body_warns(self):
+        """A hole in a function body produces a W001 warning, not an error."""
+        src = """
+public fn foo(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ ? }
+"""
+        warnings = _warnings(src)
+        errors = _errors(src)
+        assert errors == [], f"Unexpected errors: {errors}"
+        assert any("W001" in w.error_code for w in warnings)
+        assert any("Int" in w.description for w in warnings)
+
+    def test_hole_reports_expected_type(self):
+        """The hole warning includes the expected return type."""
+        src = """
+public fn to_bool(@Int -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ ? }
+"""
+        warnings = _warnings(src)
+        assert any("Bool" in w.description for w in warnings)
+
+    def test_hole_fix_hint_includes_bindings(self):
+        """The fix hint lists all available slot bindings in De Bruijn order."""
+        src = """
+public fn add(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ ? }
+"""
+        warnings = _warnings(src)
+        assert len(warnings) == 1
+        fix = warnings[0].fix
+        assert "@Int.0" in fix
+        assert "@Int.1" in fix
+        # De Bruijn order: @Int.0 (most recent) appears before @Int.1 in hint
+        assert fix.find("@Int.0") < fix.find("@Int.1")
+
+    def test_hole_with_no_int_bindings(self):
+        """A hole in a function with no Int params has no @Int binding in the hint."""
+        src = """
+public fn zero(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ ? }
+"""
+        warnings = _warnings(src)
+        assert len(warnings) == 1
+        assert "Int" in warnings[0].description
+        # No Int parameter, so @Int should not appear in the fix hint
+        assert "@Int" not in warnings[0].fix
+
+    def test_hole_is_warning_not_error(self):
+        """vera check succeeds (ok=true) with holes; compile fails."""
+        src = """
+public fn foo(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ ? }
+"""
+        # check should have no errors
+        assert _errors(src) == []
+
+    def test_multiple_holes(self):
+        """Multiple holes each get their own W001 warning."""
+        src = """
+public fn two_holes(@Int, @Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = ?;
+  ?
+}
+"""
+        warnings = _warnings(src)
+        hole_warnings = [w for w in warnings if w.error_code == "W001"]
+        assert len(hole_warnings) == 2

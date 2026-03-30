@@ -37,6 +37,26 @@ if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 
 
+def _find_holes(program: ast.Program) -> list[ast.HoleExpr]:
+    """Walk the AST and return all HoleExpr nodes."""
+    holes: list[ast.HoleExpr] = []
+    _walk_node(program, holes)
+    return holes
+
+
+def _walk_node(node: object, holes: list[ast.HoleExpr]) -> None:
+    """Recursively walk AST nodes collecting HoleExpr instances."""
+    if isinstance(node, ast.HoleExpr):
+        holes.append(node)
+        return
+    if isinstance(node, ast.Node):
+        for field_val in vars(node).values():
+            _walk_node(field_val, holes)
+    elif isinstance(node, (list, tuple)):
+        for item in node:
+            _walk_node(item, holes)
+
+
 class CodeGenerator(
     CrossModuleMixin,
     RegistrationMixin,
@@ -158,6 +178,47 @@ class CodeGenerator(
 
     def compile_program(self, program: ast.Program) -> CompileResult:
         """Compile a complete Vera program to WebAssembly."""
+        # Pass 0a: reject programs with typed holes
+        holes = _find_holes(program)
+        if holes:
+            for hole in holes:
+                loc = SourceLocation(file=self.file)
+                if hole.span:
+                    loc.line = hole.span.line
+                    loc.column = hole.span.column
+                self.diagnostics.append(Diagnostic(
+                    description=(
+                        "Program contains a typed hole (?); "
+                        "fill all holes before compiling."
+                    ),
+                    location=loc,
+                    rationale=(
+                        "Typed holes are placeholders for incomplete "
+                        "expressions. They are allowed by vera check but "
+                        "cannot be compiled to WebAssembly."
+                    ),
+                    fix="Replace ? with a complete expression.",
+                    spec_ref='Chapter 3, Section 3.10 "Typed Holes"',
+                    severity="error",
+                    error_code="E614",
+                ))
+            return CompileResult(
+                wat="",
+                wasm_bytes=b"",
+                exports=[],
+                diagnostics=self.diagnostics,
+                state_types=[],
+                md_ops_used=set(),
+                regex_ops_used=set(),
+                map_ops_used=set(),
+                set_ops_used=set(),
+                decimal_ops_used=set(),
+                json_ops_used=set(),
+                html_ops_used=set(),
+                http_ops_used=set(),
+                inference_ops_used=set(),
+            )
+
         # Pass 0: register imported module declarations (C7e)
         self._register_modules(program)
 

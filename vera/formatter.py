@@ -103,6 +103,7 @@ from vera.ast import (
     UnaryExpr,
     UnaryOp,
     UnitLit,
+    HoleExpr,
     WildcardPattern,
 )
 from vera.parser import parse as vera_parse, parse_file
@@ -898,6 +899,8 @@ class Formatter:
             return '"' + "".join(chunks) + '"'
         if isinstance(expr, UnitLit):
             return "()"
+        if isinstance(expr, HoleExpr):
+            return "?"
         if isinstance(expr, ArrayLit):
             elems = ", ".join(self._fmt_expr(e) for e in expr.elements)
             return f"[{elems}]"

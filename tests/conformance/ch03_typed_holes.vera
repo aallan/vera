@@ -1,0 +1,9 @@
+-- Conformance: Typed holes (Chapter 3)
+-- Tests: ? placeholder expression, W001 warning, expected type reporting
+public fn identity(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  ?
+}

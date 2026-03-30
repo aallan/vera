@@ -85,6 +85,7 @@ from vera.ast import (
     UnaryExpr,
     UnaryOp,
     UnitLit,
+    HoleExpr,
     WildcardPattern,
     _ForallVars,
     _Signature,
@@ -861,6 +862,10 @@ class VeraTransformer(Transformer):
     @v_args(meta=True)
     def unit_lit(self, meta, children):
         return UnitLit(span=_span_from_meta(meta))
+
+    @v_args(meta=True)
+    def hole_expr(self, meta, children):
+        return HoleExpr(span=_span_from_meta(meta))
 
     # =================================================================
     # Expressions — Slot and Result References

@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.104. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.105. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -105,23 +105,26 @@ On error, each diagnostic includes `severity`, `description`, `location` (`file`
 
 ### Error codes
 
-Every diagnostic has a stable error code (`E001`–`E702`) grouped by compiler phase:
+Every diagnostic has a stable error code grouped by compiler phase:
 
+- **W001** — Typed hole (`?`) — expected type and available bindings reported (warning, not error)
 - **E001–E007** — Parse errors (missing contracts, unexpected tokens)
 - **E010** — Transform errors (internal)
 - **E120–E176** — Type check: core + expressions (type mismatches, slot resolution, operators)
 - **E200–E233** — Type check: calls (unresolved functions, argument mismatches, module calls)
 - **E300–E335** — Type check: control flow (if/match, patterns, effect handlers)
 - **E500–E525** — Verification (contract violations, undecidable fallbacks)
-- **E600–E607** — Codegen (unsupported features)
+- **E600–E614** — Codegen (unsupported features, typed holes block compilation)
 - **E700–E702** — Testing (contract violations, input generation, execution errors)
 
 Common codes you'll encounter:
+- **W001** — Typed hole: fill `?` with an expression of the stated type
 - **E130** — Unresolved slot reference (`@T.n` has no matching binding)
 - **E121** — Function body type doesn't match return type
 - **E200** — Unresolved function call
 - **E300** — If condition is not Bool
 - **E001** — Missing contract block (requires/ensures/effects)
+- **E614** — Program contains typed holes; compile rejected until holes are filled
 
 ## Function Structure
 
@@ -428,6 +431,65 @@ Blocks contain statements followed by a final expression:
 ```
 
 Statements end with `;`. The final expression (no `;`) is the block's value.
+
+## Typed Holes
+
+A **typed hole** is the expression `?`. It is a placeholder for an incomplete expression. The compiler reports the expected type and all available bindings — you do not have to guess.
+
+```vera
+public fn double(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  ?
+}
+```
+
+`vera check` reports a `W001` warning (not an error):
+
+```text
+Warning [W001]: Typed hole: expected Int.
+Fix: Replace ? with an expression of type Int. Available bindings: @Int.0: Int.
+```
+
+The program type-checks successfully (`ok: true`) — holes are warnings, not errors. This means you can check the *rest* of a function for type errors while one expression is still incomplete.
+
+`vera check --json` includes hole warnings in the `warnings` array with the full expected type and binding context, making them machine-readable for agent workflows.
+
+**Programs with holes cannot be compiled.** `vera compile` and `vera run` reject any program containing `?` with an `E614` error.
+
+### Workflow
+
+Use holes to build programs incrementally:
+
+```vera
+public fn safe_div(@Int, @Int -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  if ? then {       -- W001: expected Bool. Bindings: @Int.0: Int; @Int.1: Int
+    Some(?)         -- W001: expected Int.  Bindings: @Int.0: Int; @Int.1: Int
+  } else {
+    None
+  }
+}
+```
+
+Check this, read the `W001` fix hints, then fill in the holes:
+
+```vera
+  if @Int.0 != 0 then {
+    Some(@Int.1 / @Int.0)
+  } else {
+    None
+  }
+```
+
+### Multiple holes
+
+Multiple holes in one program each produce their own `W001` warning with independent context. You can fill them one at a time and re-check between iterations.
+
+### Conformance
+
+See `tests/conformance/ch03_typed_holes.vera` for a minimal working example.
 
 ## Iteration
 
@@ -1327,6 +1389,22 @@ Vera's De Bruijn slot references (`@T.n`) are clear when functions have 2–3 pa
 - Break long let-chains (4+ bindings of the same type) into where-functions — they create fresh scopes with reset slot indices
 - Commutative operations (`+`, `*`) mask index errors; be especially careful with non-commutative operations (`-`, `/`, `<`, `>`) and recursive calls
 
+### Use typed holes to build incrementally
+
+When writing a new function, start with `?` placeholders and check the skeleton first. The `W001` warning tells you the expected type and lists every available binding — it is the cheapest way to confirm the return type is correct before writing the body:
+
+```vera
+public fn gcd(@Int, @Int -> @Int)
+  requires(@Int.1 > 0 && @Int.0 > 0)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  ?   -- W001: expected Int. Available bindings: @Int.0: Int; @Int.1: Int
+}
+```
+
+Read the hint, then fill in the expression. This is especially useful when De Bruijn indices are non-obvious — the hint always shows the correct `@T.n` form for every binding in scope.
+
 ### Use where-functions for complex logic
 
 Where-functions are private helpers scoped to their parent function. They reset the slot index namespace, making code easier to reason about:
@@ -1729,7 +1807,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 71 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 72 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -1738,6 +1816,7 @@ Key conformance programs by feature:
 | Feature | Program |
 |---------|---------|
 | Slot references (`@T.n`) | `ch03_slot_basic.vera`, `ch03_slot_indexing.vera` |
+| Typed holes (`?`) | `ch03_typed_holes.vera` |
 | Match expressions | `ch04_match_basic.vera`, `ch04_match_nested.vera` |
 | Contracts (requires/ensures) | `ch06_requires.vera`, `ch06_ensures.vera` |
 | Effect handlers | `ch07_state_handler.vera`, `ch07_exn_handler.vera` |
@@ -1793,12 +1872,25 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 71 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
+The conformance suite in `tests/conformance/` contains 72 small, self-contained programs — one per language feature — that serve as minimal working examples. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
-```
+```text
 write .vera file -> vera check -> fix errors -> vera verify -> fix errors -> done
+```
+
+Use **typed holes** (`?`) to build programs incrementally. A `?` in any expression position is valid — `vera check` reports a `W001` warning with the expected type and all available slot bindings:
+
+```text
+Warning [W001]: Typed hole: expected Int.
+Fix: Replace ? with an expression of type Int. Available bindings: @Int.0: Int; @Int.1: Int.
+```
+
+Programs with holes type-check (`ok: true`) but cannot compile (`E614`). Iterative workflow:
+
+```text
+write skeleton with ? -> vera check (get W001 hints) -> fill holes -> vera check -> vera verify
 ```
 
 ### Commands
@@ -1854,6 +1946,7 @@ Every diagnostic has a stable error code. Common codes:
 
 | Code | Meaning |
 |------|---------|
+| W001 | Typed hole (`?`) — expected type and available bindings reported |
 | E001 | Missing contract block (requires/ensures/effects) |
 | E121 | Function body type doesn't match return type |
 | E130 | Unresolved slot reference (@T.n has no matching binding) |
@@ -1862,8 +1955,9 @@ Every diagnostic has a stable error code. Common codes:
 | E200 | Unresolved function call |
 | E300 | If condition is not Bool |
 | E311 | Non-exhaustive match |
+| E614 | Program contains typed holes — compile rejected until holes are filled |
 
-Full code ranges: E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing). See `vera/errors.py` `ERROR_CODES` for the complete registry.
+Full code ranges: W0xx (warnings), E0xx (parse), E1xx (type/expressions), E2xx (calls), E3xx (control flow), E5xx (verification), E6xx (codegen), E7xx (testing). See `vera/errors.py` `ERROR_CODES` for the complete registry.
 
 The `verify --json` output includes a verification summary:
 
@@ -1931,7 +2025,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 71 conformance programs must pass
+python scripts/check_conformance.py    # All 72 conformance programs must pass
 python scripts/check_examples.py       # All 30 examples must pass
 ```
 
@@ -1941,7 +2035,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 71 conformance programs in `tests/conformance/` must pass their declared level
+- All 72 conformance programs in `tests/conformance/` must pass their declared level
 - All 30 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
@@ -2120,7 +2214,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (71 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (72 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -2161,7 +2255,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 13-chapter formal specification
-- Over 3,000 unit tests plus a 71-program conformance suite
+- Over 3,000 unit tests plus a 72-program conformance suite
 - 30 working example programs
 - 122 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
@@ -2316,6 +2410,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E611**: Exn without type argument
 - **E612**: Exn with unsupported type
 - **E613**: Type does not satisfy ability constraint
+- **E614**: Program contains typed holes
 - **E700**: Contract violation during testing
 - **E701**: Cannot generate test inputs
 - **E702**: Test execution error
@@ -2526,6 +2621,7 @@ refinement_type: "{" "@" type_expr "|" expr "}"
              | "true"                        -> true_lit
              | "false"                       -> false_lit
              | "(" ")"                       -> unit_lit
+             | "?"                           -> hole_expr
              | slot_ref
              | result_ref
              | fn_call

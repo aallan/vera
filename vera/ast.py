@@ -368,6 +368,11 @@ class UnitLit(Expr):
     """Unit literal: ()."""
 
 
+@dataclass(frozen=True)
+class HoleExpr(Expr):
+    """Typed hole: ?  Placeholder expression for partial programs."""
+
+
 # -- Slot references --
 
 @dataclass(frozen=True)

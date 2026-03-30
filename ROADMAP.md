@@ -1,6 +1,6 @@
 # Roadmap
 
-Vera v0.0.104 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
+Vera v0.0.105 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
 
 This roadmap is organised around four strategic milestones. Each milestone makes Vera meaningfully more useful to a concrete audience. Within each milestone, work is grouped into phases that can be executed roughly sequentially, though independent items can be interleaved.
 
@@ -8,9 +8,9 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,187 tests, 71 conformance programs, 30 examples, and a 13-chapter specification.
+The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,200 tests, 72 conformance programs, 30 examples, and a 13-chapter specification.
 
-Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers with canonical Vera, Python, and TypeScript solutions — is complete and has produced initial results: Claude Sonnet 4 achieves 96% check@1 and 83% run_correct on Vera versus 92% on Python, a 9-percentage-point gap that is smaller than might be expected for a new language. The dominant failure mode is De Bruijn slot ordering, confirming the hypothesis that `@T.n` indexing is the main learning curve for models. The remaining gaps are empirical breadth (more model baselines, Phase 3 reporting), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
+Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers with canonical Vera and Python solutions — is complete and has produced initial results: Claude Sonnet 4 achieves 96% check@1 and 83% run_correct on Vera versus 92% on Python, a 9-percentage-point gap that is smaller than might be expected for a new language. The dominant failure mode is De Bruijn slot ordering, confirming the hypothesis that `@T.n` indexing is the main learning curve for models. The remaining gaps are empirical breadth (more model baselines, Phase 3 reporting), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
 
 ---
 
@@ -24,25 +24,50 @@ Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.
 
 ### Phase 1b: Benchmark suite
 
-**[VeraBench](https://github.com/aallan/vera-bench)** is a separate repository containing 50 problems across 5 difficulty tiers with canonical solutions in Vera, Python, and TypeScript.
+**[VeraBench](https://github.com/aallan/vera-bench)** is a separate repository containing 50 problems across 5 difficulty tiers with canonical solutions written in Vera, Python, and Typescript.
 
-- [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — Phase 1 (problem set + validation infrastructure) and Phase 2 (LLM runner) are complete. Phase 3 (additional model baselines + reporting) is next.
-
-  The benchmark covers five difficulty tiers:
+- [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — The benchmark covers five difficulty tiers:
   1. **Pure arithmetic** — functions with 1–2 parameters, simple contracts (the easy case for `@T.n`)
   2. **String and array manipulation** — functions using built-ins, testing whether agents find the right `domain_verb` names
   3. **ADTs and pattern matching** — custom data types, exhaustive match, testing De Bruijn indices in match arms
   4. **Recursive functions with termination proofs** — `decreases` clauses, testing whether agents produce provably terminating code
   5. **Multi-function programs with effects** — IO, State, Http, Inference, testing cross-function contract coherence
 
-  **First results (Claude Sonnet 4, full-spec mode):**
-  - 96% check@1, 96% verify@1, 83% run_correct
-  - Cross-language: 83% Vera vs 92% Python — a 9-percentage-point gap, smaller than expected for a new language
-  - Tier 5 (effects) is hard for both: 60% Vera, 67% Python
-  - **Dominant failure mode:** De Bruijn slot ordering — GCD, `div_natural`, and `safe_div` all failed because `@Int.0 / @Int.1` has the arguments reversed relative to conventional thinking. This is exactly the failure mode the language was designed to make visible.
-  - Vera's verification catches bugs Python misses at compile time (the model wrote `x * -1` instead of `-x` — Vera rejected it; Python silently passed wrong tests)
+  All four evaluation modes run on Claude Sonnet 4 across 50 problems.
 
-  DafnyBench demonstrated that tracking verification success rates over time (68% → 96% in one year) attracts genuine research attention. Publish the benchmark, track it across model releases, and the research community will find you.
+  Complete cross-language benchmark with Claude Sonnet 4 across 50 problems.
+
+  ### Summary
+
+  | Mode | check@1 | verify@1 | fix@1 | run_correct |
+  |------|---------|----------|-------|-------------|
+  | Vera (full-spec) | 94% | 98% | 67% | 83% |
+  | Vera (spec-from-NL) | 94% | 88% | 33% | 78% |
+  | Python (LLM) | 100% | - | - | 92% |
+  | TypeScript (LLM) | 100% | - | - | 79% |
+  | Python baseline | 100% | - | - | 100% |
+  | TypeScript baseline | 100% | - | - | 100% |
+
+  ### By Tier (run_correct)
+
+  | Language | Tier 1 | Tier 4 | Tier 5 |
+  |----------|--------|--------|--------|
+  | Vera full-spec | 100% | 75% | 67% |
+  | Vera spec-from-NL | 100% | 50% | 80% |
+  | Python LLM | 100% | 100% | 67% |
+  | TypeScript LLM | 100% | 88% | 33% |
+  | Both baselines | 100% | 100% | 100% |
+
+  ### Key findings
+
+  **TypeScript is surprisingly worse than Vera.** Sonnet's TypeScript achieves only 79% run_correct — below Vera's 83% (full-spec). The damage is in Tier 5 where TypeScript drops to 33% vs Python's 67% and Vera's 67%. Sonnet struggles with stateful/effectful patterns in TypeScript more than in Python, likely because the problems describe Vera-style state handlers which map more naturally to Python's imperative state than TypeScript's class/closure patterns.
+
+  **Python remains the strongest LLM target.** 92% run_correct, 100% check. Python's familiarity in training data and direct imperative style make it the easiest language for these problems.
+
+  **Vera with contracts beats TypeScript without them.** Vera full-spec (83%) outperforms TypeScript (79%) despite being a novel language not in training data. The contract system provides guardrails that compensate for the syntactic unfamiliarity.
+
+  **The ranking: Python (92%) > Vera full-spec (83%) > TypeScript (79%) > Vera spec-from-NL (78%).** Writing contracts from scratch is harder than writing in an unfamiliar language with contracts given.
+
 
 ### Phase 1c: Expand contract-driven testing
 
@@ -105,7 +130,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 ### Phase 3a: Agent integration
 
 - [#222](https://github.com/aallan/vera/issues/222) **LSP server** — the standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf). The existing `--json` infrastructure provides most of what's needed. An LSP enables real-time feedback as agents write code — diagnostics, hover information, completion suggestions. This is the single highest-leverage adoption enabler.
-- [#226](https://github.com/aallan/vera/issues/226) **Typed holes** — partial program generation where the agent leaves `?` placeholders and the compiler reports the expected type at each hole site. Improves LLM completion quality by providing type context mid-generation.
 - [#329](https://github.com/aallan/vera/issues/329) **Plumbing integration** — Vera WASM modules as verified tool calls in [Plumbing](https://arxiv.org/abs/2602.13275) agent graphs. Typed port interface maps Plumbing stream types to Vera ADTs at the JSON serialisation boundary.
 - [#183](https://github.com/aallan/vera/issues/183) **Human-readable slot annotations** — optional `-- name` annotations on slot references that are preserved by the formatter but ignored by the compiler. Bridges the readability gap for human reviewers of agent-generated code without compromising the De Bruijn system.
 - [#181](https://github.com/aallan/vera/issues/181) **Signature refactoring** — mechanical slot index rewriting when function signatures change. Essential for any refactoring workflow, whether human or agent-driven.
@@ -161,7 +185,7 @@ These are not milestone-gated — they should be addressed continuously alongsid
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
 | Add property-based testing with Hypothesis | [#386](https://github.com/aallan/vera/issues/386) | 2–4 hours | Catches parser/formatter edge cases via round-trip properties |
-| Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether 3,187 tests catch real bugs, not just execute paths |
+| Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether 3,200 tests catch real bugs, not just execute paths |
 | Investigate parser fuzzing with Atheris | [#402](https://github.com/aallan/vera/issues/402) | 4–8 hours | Crash-inducing inputs for parser and type checker |
 | Add hash-pinned lockfile (pip-compile or uv lock) | [#390](https://github.com/aallan/vera/issues/390) | 30 min | Prevents dependency confusion attacks |
 | Improve browser runtime test coverage to >80% | [#349](https://github.com/aallan/vera/issues/349) | 2–4 hours | Parity with Python-side coverage gate |
@@ -205,4 +229,4 @@ The compiler was built through ten development phases from February to March 202
 | C8.5 | v0.0.66–v0.0.88 | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
 | C9 | v0.0.89–v0.0.101 | **Abilities, standard library, data types, effects** — Eq/Ord/Hash/Show, Map/Set, JSON, HTML, Markdown, Http, Decimal, Inference, standard prelude, combinators, higher-order array ops | Done |
 
-**630+ commits, 104 tagged releases, 3,187 tests, 96% coverage, 71 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.
+**630+ commits, 105 tagged releases, 3,200 tests, 96% coverage, 72 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.

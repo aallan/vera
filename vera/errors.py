@@ -408,6 +408,8 @@ def diagnose_lark_error(
 # =====================================================================
 
 ERROR_CODES: dict[str, str] = {
+    # W0xx — Warnings
+    "W001": "Typed hole",
     # E0xx — Parse & Transform
     "E001": "Missing contract block",
     "E002": "Missing effect clause",
@@ -508,6 +510,7 @@ ERROR_CODES: dict[str, str] = {
     "E611": "Exn without type argument",
     "E612": "Exn with unsupported type",
     "E613": "Type does not satisfy ability constraint",
+    "E614": "Program contains typed holes",
     # E7xx — Testing
     "E700": "Contract violation during testing",
     "E701": "Cannot generate test inputs",

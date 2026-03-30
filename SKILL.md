@@ -99,23 +99,26 @@ On error, each diagnostic includes `severity`, `description`, `location` (`file`
 
 ### Error codes
 
-Every diagnostic has a stable error code (`E001`–`E702`) grouped by compiler phase:
+Every diagnostic has a stable error code grouped by compiler phase:
 
+- **W001** — Typed hole (`?`) — expected type and available bindings reported (warning, not error)
 - **E001–E007** — Parse errors (missing contracts, unexpected tokens)
 - **E010** — Transform errors (internal)
 - **E120–E176** — Type check: core + expressions (type mismatches, slot resolution, operators)
 - **E200–E233** — Type check: calls (unresolved functions, argument mismatches, module calls)
 - **E300–E335** — Type check: control flow (if/match, patterns, effect handlers)
 - **E500–E525** — Verification (contract violations, undecidable fallbacks)
-- **E600–E607** — Codegen (unsupported features)
+- **E600–E614** — Codegen (unsupported features, typed holes block compilation)
 - **E700–E702** — Testing (contract violations, input generation, execution errors)
 
 Common codes you'll encounter:
+- **W001** — Typed hole: fill `?` with an expression of the stated type
 - **E130** — Unresolved slot reference (`@T.n` has no matching binding)
 - **E121** — Function body type doesn't match return type
 - **E200** — Unresolved function call
 - **E300** — If condition is not Bool
 - **E001** — Missing contract block (requires/ensures/effects)
+- **E614** — Program contains typed holes; compile rejected until holes are filled
 
 ## Function Structure
 
@@ -422,6 +425,65 @@ Blocks contain statements followed by a final expression:
 ```
 
 Statements end with `;`. The final expression (no `;`) is the block's value.
+
+## Typed Holes
+
+A **typed hole** is the expression `?`. It is a placeholder for an incomplete expression. The compiler reports the expected type and all available bindings — you do not have to guess.
+
+```vera
+public fn double(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  ?
+}
+```
+
+`vera check` reports a `W001` warning (not an error):
+
+```text
+Warning [W001]: Typed hole: expected Int.
+Fix: Replace ? with an expression of type Int. Available bindings: @Int.0: Int.
+```
+
+The program type-checks successfully (`ok: true`) — holes are warnings, not errors. This means you can check the *rest* of a function for type errors while one expression is still incomplete.
+
+`vera check --json` includes hole warnings in the `warnings` array with the full expected type and binding context, making them machine-readable for agent workflows.
+
+**Programs with holes cannot be compiled.** `vera compile` and `vera run` reject any program containing `?` with an `E614` error.
+
+### Workflow
+
+Use holes to build programs incrementally:
+
+```vera
+public fn safe_div(@Int, @Int -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  if ? then {       -- W001: expected Bool. Bindings: @Int.0: Int; @Int.1: Int
+    Some(?)         -- W001: expected Int.  Bindings: @Int.0: Int; @Int.1: Int
+  } else {
+    None
+  }
+}
+```
+
+Check this, read the `W001` fix hints, then fill in the holes:
+
+```vera
+  if @Int.0 != 0 then {
+    Some(@Int.1 / @Int.0)
+  } else {
+    None
+  }
+```
+
+### Multiple holes
+
+Multiple holes in one program each produce their own `W001` warning with independent context. You can fill them one at a time and re-check between iterations.
+
+### Conformance
+
+See `tests/conformance/ch03_typed_holes.vera` for a minimal working example.
 
 ## Iteration
 
@@ -1321,6 +1383,22 @@ Vera's De Bruijn slot references (`@T.n`) are clear when functions have 2–3 pa
 - Break long let-chains (4+ bindings of the same type) into where-functions — they create fresh scopes with reset slot indices
 - Commutative operations (`+`, `*`) mask index errors; be especially careful with non-commutative operations (`-`, `/`, `<`, `>`) and recursive calls
 
+### Use typed holes to build incrementally
+
+When writing a new function, start with `?` placeholders and check the skeleton first. The `W001` warning tells you the expected type and lists every available binding — it is the cheapest way to confirm the return type is correct before writing the body:
+
+```vera
+public fn gcd(@Int, @Int -> @Int)
+  requires(@Int.1 > 0 && @Int.0 > 0)
+  ensures(@Int.result > 0)
+  effects(pure)
+{
+  ?   -- W001: expected Int. Available bindings: @Int.0: Int; @Int.1: Int
+}
+```
+
+Read the hint, then fill in the expression. This is especially useful when De Bruijn indices are non-obvious — the hint always shows the correct `@T.n` form for every binding in scope.
+
 ### Use where-functions for complex logic
 
 Where-functions are private helpers scoped to their parent function. They reset the slot index namespace, making code easier to reason about:
@@ -1723,7 +1801,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 71 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 72 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -1732,6 +1810,7 @@ Key conformance programs by feature:
 | Feature | Program |
 |---------|---------|
 | Slot references (`@T.n`) | `ch03_slot_basic.vera`, `ch03_slot_indexing.vera` |
+| Typed holes (`?`) | `ch03_typed_holes.vera` |
 | Match expressions | `ch04_match_basic.vera`, `ch04_match_nested.vera` |
 | Contracts (requires/ensures) | `ch06_requires.vera`, `ch06_ensures.vera` |
 | Effect handlers | `ch07_state_handler.vera`, `ch07_exn_handler.vera` |
