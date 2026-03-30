@@ -195,7 +195,7 @@ This final stage delivered the critical dependency chain that had driven the roa
 |---------|------|-------------|
 | v0.0.94 | 23 Mar | **Map\<K, V\>** — eight built-in operations with Eq + Hash ability constraints. Opaque i32 handles backed by Python dicts / JS Maps. 40 new tests. |
 | v0.0.95 | 24 Mar | **Set\<T\>** — six built-in operations. |
-| v0.0.96 | 24 Mar | Collections documentation sweep. |
+| v0.0.96 | 24 Mar | Collections documentation sweep. **CI** — native JavaScript coverage for the browser runtime via `NODE_V8_COVERAGE` + c8 + Codecov (`javascript` flag); browser parity tests now have the same coverage visibility as Python-side tests (#337). |
 | v0.0.97 | 24 Mar | **Decimal** — exact decimal arithmetic. 14 built-in operations. |
 | v0.0.98 | 25 Mar | **JSON** — built-in `Json` ADT (6 constructors), 8 built-in functions. Parse, query, and serialise structured data. |
 | v0.0.99 | 25 Mar | **HTTP** — built-in `<Http>` algebraic effect. `Http.get` and `Http.post` returning `Result<String, String>`. A Vera program can now make an HTTP request and parse the JSON response. |
