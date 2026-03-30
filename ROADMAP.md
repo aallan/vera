@@ -24,7 +24,7 @@ Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.
 
 ### Phase 1b: Benchmark suite
 
-**[VeraBench](https://github.com/aallan/vera-bench)** is a separate repository containing 50 problems across 5 difficulty tiers with canonical solutions in Vera and Python. Typescript comparison is the next step.
+**[VeraBench](https://github.com/aallan/vera-bench)** is a separate repository containing 50 problems across 5 difficulty tiers with canonical solutions written in Vera, Python, and Typescript.
 
 - [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — The benchmark covers five difficulty tiers:
   1. **Pure arithmetic** — functions with 1–2 parameters, simple contracts (the easy case for `@T.n`)
@@ -35,35 +35,39 @@ Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.
 
   All four evaluation modes run on Claude Sonnet 4 across 50 problems.
 
+  Complete cross-language benchmark with Claude Sonnet 4 across 50 problems.
+
   ### Summary
 
   | Mode | check@1 | verify@1 | fix@1 | run_correct |
   |------|---------|----------|-------|-------------|
   | Vera (full-spec) | 94% | 98% | 67% | 83% |
   | Vera (spec-from-NL) | 94% | 88% | 33% | 78% |
-  | Python (LLM-generated) | 100% | - | - | 92% |
-  | Python (canonical baseline) | 100% | - | - | 100% |
+  | Python (LLM) | 100% | - | - | 92% |
+  | TypeScript (LLM) | 100% | - | - | 79% |
+  | Python baseline | 100% | - | - | 100% |
+  | TypeScript baseline | 100% | - | - | 100% |
 
   ### By Tier (run_correct)
 
-  | Mode | Tier 1 | Tier 4 | Tier 5 |
-  |------|--------|--------|--------|
+  | Language | Tier 1 | Tier 4 | Tier 5 |
+  |----------|--------|--------|--------|
   | Vera full-spec | 100% | 75% | 67% |
   | Vera spec-from-NL | 100% | 50% | 80% |
   | Python LLM | 100% | 100% | 67% |
-  | Python baseline | 100% | 100% | 100% |
+  | TypeScript LLM | 100% | 88% | 33% |
+  | Both baselines | 100% | 100% | 100% |
 
   ### Key findings
 
-  **1. Vera is surprisingly close to Python.** Despite being a novel language not in training data, Vera full-spec achieves 83% run_correct vs Python's 92%. The 9-point gap is the cost of De Bruijn indices and mandatory contracts — smaller than expected.
+  **TypeScript is surprisingly worse than Vera.** Sonnet's TypeScript achieves only 79% run_correct — below Vera's 83% (full-spec). The damage is in Tier 5 where TypeScript drops to 33% vs Python's 67% and Vera's 67%. Sonnet struggles with stateful/effectful patterns in TypeScript more than in Python, likely because the problems describe Vera-style state handlers which map more naturally to Python's imperative state than TypeScript's class/closure patterns.
 
-  **2. Contract design is the hard part.** The delta between full-spec (contracts given) and spec-from-NL (contracts inferred) is 10 points on verify (98% → 88%) and 5 points on run_correct (83% → 78%). The damage is concentrated in Tier 4 where verify drops from 90% to 50% — writing correct `decreases` clauses from natural language is hard.
+  **Python remains the strongest LLM target.** 92% run_correct, 100% check. Python's familiarity in training data and direct imperative style make it the easiest language for these problems.
 
-  **3. Tier 5 is hard regardless of language.** Both Vera full-spec (67%) and Python (67%) struggle equally with state/effect problems. The difficulty is in understanding the problem specification, not the target language. The spec-from-NL mode actually does *better* at Tier 5 run_correct (80%) than full-spec (67%) — non-deterministic, but suggests the model sometimes writes more defensive code when it has to design its own contracts.
+  **Vera with contracts beats TypeScript without them.** Vera full-spec (83%) outperforms TypeScript (79%) despite being a novel language not in training data. The contract system provides guardrails that compensate for the syntactic unfamiliarity.
 
-  **4. Vera's verification catches bugs Python misses.** verify@1 at 98% (full-spec) means almost all code that compiles also verifies. The remaining run_correct failures (83% vs 98% verify) are logic bugs that pass weak contracts — exactly the class of bug that stronger postconditions would catch (see vera-bench#14).
+  **The ranking: Python (92%) > Vera full-spec (83%) > TypeScript (79%) > Vera spec-from-NL (78%).** Writing contracts from scratch is harder than writing in an unfamiliar language with contracts given.
 
-  **5. Error feedback is less effective for spec-from-NL.** fix@1 drops from 67% to 33% when contracts aren't provided. When the model writes wrong contracts *and* wrong code, the error message points at the contract violation, but the model doesn't know whether to fix the contract or the code.
 
 ### Phase 1c: Expand contract-driven testing
 
