@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 - **Typed holes** ([#226](https://github.com/aallan/vera/issues/226)) — `?` is now a valid expression placeholder for partial programs. `vera check` reports each hole as a `W001` warning (not an error) with the expected type and all available De Bruijn slot bindings. Programs with holes type-check successfully (`ok: true`) but cannot compile (`E614`). The `--json` output includes hole warnings in the `warnings` array with machine-readable expected type and fix hint. New error code `W001` (typed hole warning) and `E614` (holes block compilation). Conformance test `ch03_typed_holes.vera`. Closes [#226](https://github.com/aallan/vera/issues/226).
-- SKILL.md: new [Typed Holes](#typed-holes) section with workflow examples; best-practices tip on incremental development with holes; error code table updated with `W001` and `E614`.
+- SKILL.md: new [Typed Holes](SKILL.md#typed-holes) section with workflow examples; best-practices tip on incremental development with holes; error code table updated with `W001` and `E614`.
 - AGENTS.md: workflow section updated with typed-holes iterative pattern; error code table updated.
 
 ## [0.0.104] - 2026-03-29

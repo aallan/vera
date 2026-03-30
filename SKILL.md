@@ -440,7 +440,7 @@ public fn double(@Int -> @Int)
 
 `vera check` reports a `W001` warning (not an error):
 
-```
+```text
 Warning [W001]: Typed hole: expected Int.
 Fix: Replace ? with an expression of type Int. Available bindings: @Int.0: Int.
 ```

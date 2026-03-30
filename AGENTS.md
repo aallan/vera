@@ -8,7 +8,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 72 small, self-contained programs — one per language feature — that all parse, type-check, verify, and (mostly) run correctly. These are the best minimal working examples of each feature. When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec. The `manifest.json` file maps features to programs.
+The conformance suite in `tests/conformance/` contains 72 small, self-contained programs — one per language feature — that serve as minimal working examples. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 

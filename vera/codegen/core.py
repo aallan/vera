@@ -182,7 +182,7 @@ class CodeGenerator(
         holes = _find_holes(program)
         if holes:
             for hole in holes:
-                loc = SourceLocation(file=None)
+                loc = SourceLocation(file=self.file)
                 if hole.span:
                     loc.line = hole.span.line
                     loc.column = hole.span.column

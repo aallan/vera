@@ -10098,3 +10098,19 @@ public fn foo(@Int -> @Int)
         assert any(d.error_code == "E614" for d in errors), \
             f"Expected E614, got: {[d.error_code for d in errors]}"
         assert result.wasm_bytes == b""
+
+    def test_hole_nested_compile_rejected(self) -> None:
+        """Holes in non-root positions (let bindings) also produce E614."""
+        src = """\
+public fn bar(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = ?;
+  @Int.0 + 1
+}
+"""
+        result = _compile(src)
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert any(d.error_code == "E614" for d in errors), \
+            f"Expected E614, got: {[d.error_code for d in errors]}"
+        assert result.wasm_bytes == b""

@@ -5604,7 +5604,7 @@ public fn to_bool(@Int -> @Bool)
         assert any("Bool" in w.description for w in warnings)
 
     def test_hole_fix_hint_includes_bindings(self):
-        """The fix hint lists all available slot bindings."""
+        """The fix hint lists all available slot bindings in De Bruijn order."""
         src = """
 public fn add(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -5615,9 +5615,11 @@ public fn add(@Int, @Int -> @Int)
         fix = warnings[0].fix
         assert "@Int.0" in fix
         assert "@Int.1" in fix
+        # De Bruijn order: @Int.0 (most recent) appears before @Int.1 in hint
+        assert fix.find("@Int.0") < fix.find("@Int.1")
 
-    def test_hole_with_no_bindings(self):
-        """A hole in a zero-parameter function produces a clean hint."""
+    def test_hole_with_no_int_bindings(self):
+        """A hole in a function with no Int params has no @Int binding in the hint."""
         src = """
 public fn zero(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -5626,6 +5628,8 @@ public fn zero(@Unit -> @Int)
         warnings = _warnings(src)
         assert len(warnings) == 1
         assert "Int" in warnings[0].description
+        # No Int parameter, so @Int should not appear in the fix hint
+        assert "@Int" not in warnings[0].fix
 
     def test_hole_is_warning_not_error(self):
         """vera check succeeds (ok=true) with holes; compile fails."""
