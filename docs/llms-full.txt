@@ -1876,7 +1876,7 @@ The conformance suite in `tests/conformance/` contains 72 small, self-contained 
 
 ### Workflow
 
-```
+```text
 write .vera file -> vera check -> fix errors -> vera verify -> fix errors -> done
 ```
 
