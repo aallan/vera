@@ -2113,7 +2113,7 @@ The Vericoding benchmark (Sun et al., "A Benchmark for Vericoding", [arXiv:2509.
 
 Blinn et al. ("Statically Contextualizing Large Language Models with Typed Holes", OOPSLA 2024, [ACM DL](https://doi.org/10.1145/3689728)) demonstrated that providing type context at incomplete program locations significantly improves LLM completion quality — a result that directly motivates Vera's planned typed holes feature ([#226](https://github.com/aallan/vera/issues/226)).
 
-None of this is Vera-specific, but it validates the design choices. The thesis is plausible, the tooling exists. What's missing is someone running the experiment.
+None of this is Vera-specific, but it validates the design choices. The thesis is plausible, the tooling exists, and initial Vera-specific results are consistent with the broader literature. What's needed is expanded and replicated evaluations — more models, more tiers, and longitudinal tracking across releases — to confirm these findings across languages and settings.
 
 
 ## What about the training data problem? LLMs have never seen Vera code.
