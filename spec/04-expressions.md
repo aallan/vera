@@ -349,7 +349,7 @@ string_strip(@String.0)                 -- returns String (trim whitespace)
 
 String concatenation uses a function, not an operator. There is no `+` on strings.
 
-String memory is allocated via the bump allocator and is not freed. Garbage collection for WASM linear memory is tracked in [#51](https://github.com/aallan/vera/issues/51). See Chapter 11, Section 11.5 for the string pool implementation.
+String memory is managed by the conservative mark-sweep garbage collector (shipped v0.0.65, [#51](https://github.com/aallan/vera/issues/51)). See Chapter 11, Section 11.5 for the string pool implementation.
 
 ### 4.13.1 String Interpolation
 

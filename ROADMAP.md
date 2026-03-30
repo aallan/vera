@@ -143,7 +143,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 
 - [#224](https://github.com/aallan/vera/issues/224) **REPL** — interactive exploration for both agents and humans. Useful for rapid prototyping and debugging.
 - [#143](https://github.com/aallan/vera/issues/143) **Comprehensive example programs** — expand from 30 to 50+ examples covering every major pattern: API clients, data pipelines, text processing, LLM orchestration, effect composition.
-- [#337](https://github.com/aallan/vera/issues/337) **Native JavaScript coverage** — c8 + Codecov for the browser runtime, ensuring parity testing has the same visibility as Python-side coverage.
 
 ---
 
@@ -153,7 +152,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 
 ### Phase 4a: Concurrency and streaming
 
-- [#59](https://github.com/aallan/vera/issues/59) **True async concurrency** — the type-level infrastructure (`Future<T>`, `async`/`await`, `<Async>` effect) shipped in v0.0.82, but execution is eager/sequential. True concurrency requires WASI 0.3 for native `future<T>`/`stream<T>` support.
 - [#406](https://github.com/aallan/vera/issues/406) **WASI 0.3** — native async I/O, required for concurrent request handling in server effects. Depends on #237.
 - [#270](https://github.com/aallan/vera/issues/270) **`handle[Async]`** — custom scheduling strategies for async effect handlers.
 - [#228](https://github.com/aallan/vera/issues/228) **WebSocket/SSE** — streaming clients for real-time data feeds and LLM streaming responses.

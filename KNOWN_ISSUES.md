@@ -25,7 +25,6 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | Package system and registry | [#130](https://github.com/aallan/vera/issues/130) |
 | LSP server | [#222](https://github.com/aallan/vera/issues/222) |
 | REPL | [#224](https://github.com/aallan/vera/issues/224) |
-| Typed holes for partial programs | [#226](https://github.com/aallan/vera/issues/226) |
 | Date and time handling | [#233](https://github.com/aallan/vera/issues/233) |
 | Cryptographic hashing | [#235](https://github.com/aallan/vera/issues/235) |
 | CSV parsing and generation | [#236](https://github.com/aallan/vera/issues/236) |
