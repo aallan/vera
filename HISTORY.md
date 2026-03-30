@@ -210,7 +210,7 @@ v0.0.101 completed the chain. A Vera program can fetch data from the web, parse 
 
 *Two days. Bug fixes, typed CLI arguments, AI agent discovery, security hardening, and conformance improvements.*
 
-With the core language complete, Stage 9 focused on friction removal and polish — the small issues that would bias any benchmark or frustrate any agent trying to use the language seriously.
+With the core language complete, Stage 9 focused on friction removal and polish — the small issues that would bias any benchmark or frustrate any agent trying to use the language seriously. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark suite built in a separate repository — began producing initial results during this stage.
 
 | Version | Date | What shipped |
 |---------|------|-------------|

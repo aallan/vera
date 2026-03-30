@@ -10,7 +10,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,187 tests, 71 conformance programs, 30 examples, and a 13-chapter specification.
 
-Significant progress has been made towards Vera being a viable agent target. The remaining gap is empirical validation (benchmark suite), standard library breadth (HTTP hardening, server effects), and tooling integration (LSP). The single most important next step is the benchmark suite (#225).
+Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers with canonical Vera, Python, and TypeScript solutions — is complete and has produced initial results: Claude Sonnet 4 achieves 96% check@1 and 83% run_correct on Vera versus 92% on Python, a 9-percentage-point gap that is smaller than might be expected for a new language. The dominant failure mode is De Bruijn slot ordering, confirming the hypothesis that `@T.n` indexing is the main learning curve for models. The remaining gaps are empirical breadth (more model baselines, Phase 3 reporting), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
 
 ---
 
@@ -22,11 +22,11 @@ This is the most important milestone. Everything else — adoption, ecosystem, r
 
 Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.md) Stage 9 for details.
 
-### Phase 1b: Build the benchmark suite
+### Phase 1b: Benchmark suite
 
-**[VeraBench](https://github.com/aallan/vera-bench) is under active development** in a separate repository. The benchmark is being built out now; contributions and feedback welcome.
+**[VeraBench](https://github.com/aallan/vera-bench)** is a separate repository containing 50 problems across 5 difficulty tiers with canonical solutions in Vera, Python, and TypeScript.
 
-- [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — a HumanEval/MBPP-style benchmark adapted for Vera. This is the single highest-value work item for the project's scientific credibility.
+- [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — Phase 1 (problem set + validation infrastructure) and Phase 2 (LLM runner) are complete. Phase 3 (additional model baselines + reporting) is next.
 
   The benchmark covers five difficulty tiers:
   1. **Pure arithmetic** — functions with 1–2 parameters, simple contracts (the easy case for `@T.n`)
@@ -35,7 +35,12 @@ Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.
   4. **Recursive functions with termination proofs** — `decreases` clauses, testing whether agents produce provably terminating code
   5. **Multi-function programs with effects** — IO, State, Http, Inference, testing cross-function contract coherence
 
-  For each problem, measure: first-attempt correctness (does `vera check` pass?), verification rate (does `vera verify` pass at Tier 1?), and fix-from-error rate (given the error message, does the agent fix it in one turn?). Run the same problems in Python and TypeScript as baselines.
+  **First results (Claude Sonnet 4, full-spec mode):**
+  - 96% check@1, 96% verify@1, 83% run_correct
+  - Cross-language: 83% Vera vs 92% Python — a 9-percentage-point gap, smaller than expected for a new language
+  - Tier 5 (effects) is hard for both: 60% Vera, 67% Python
+  - **Dominant failure mode:** De Bruijn slot ordering — GCD, `div_natural`, and `safe_div` all failed because `@Int.0 / @Int.1` has the arguments reversed relative to conventional thinking. This is exactly the failure mode the language was designed to make visible.
+  - Vera's verification catches bugs Python misses at compile time (the model wrote `x * -1` instead of `-x` — Vera rejected it; Python silently passed wrong tests)
 
   DafnyBench demonstrated that tracking verification success rates over time (68% → 96% in one year) attracts genuine research attention. Publish the benchmark, track it across model releases, and the research community will find you.
 

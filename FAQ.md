@@ -147,15 +147,15 @@ HTTP, JSON, and Markdown are now built-in, which supports the primary agent work
 
 ## Is there evidence this actually works?
 
-Vera-specific data doesn't exist yet. Nobody has run a controlled comparison measuring whether models produce more reliable code in Vera than in existing languages. That's the experiment that needs to happen.
+Early Vera-specific data is now available. **[VeraBench](https://github.com/aallan/vera-bench)** — a 50-problem benchmark across 5 difficulty tiers with canonical Vera, Python, and TypeScript solutions — ran its first evaluation on Claude Sonnet 4: 96% check@1, 96% verify@1, and 83% run_correct on Vera versus 92% on Python. A 9-percentage-point gap is smaller than might be expected for a language the model has never seen in training. Tier 5 (multi-function programs with effects) is hard for both: 60% Vera, 67% Python. The dominant failure mode is De Bruijn slot ordering — non-commutative operations like division where the model writes `@Int.0 / @Int.1` with arguments reversed. Phase 3 of VeraBench (additional model baselines and reporting) is ongoing.
 
-However, the recent literature is encouraging. The type-constrained decoding paper (Mündler, He, Wang et al., "Type-Constrained Code Generation with Language Models", PLDI 2025, [ACM DL](https://dl.acm.org/doi/10.1145/3729274)) found that enforcing type constraints during LLM code generation cut compilation errors by more than half and improved functional correctness by 3.5–4.5%. Syntax constraints alone provided limited improvement — it was the *type* constraints that made the difference. The same paper found that 94% of LLM-generated compilation errors are type-check failures — exactly the class of error that a strong static type system catches at compile time.
+The broader literature is also encouraging. The type-constrained decoding paper (Mündler, He, Wang et al., "Type-Constrained Code Generation with Language Models", PLDI 2025, [ACM DL](https://dl.acm.org/doi/10.1145/3729274)) found that enforcing type constraints during LLM code generation cut compilation errors by more than half and improved functional correctness by 3.5–4.5%. Syntax constraints alone provided limited improvement — it was the *type* constraints that made the difference. The same paper found that 94% of LLM-generated compilation errors are type-check failures — exactly the class of error that a strong static type system catches at compile time.
 
 The Vericoding benchmark (Sun et al., "A Benchmark for Vericoding", [arXiv:2509.22908](https://arxiv.org/abs/2509.22908)) shows LLMs achieving 82% verification success on Dafny versus 27% on Lean, which suggests SMT-automated verification (Vera's approach) is significantly more LLM-tractable than explicit proof construction.
 
 Blinn et al. ("Statically Contextualizing Large Language Models with Typed Holes", OOPSLA 2024, [ACM DL](https://doi.org/10.1145/3689728)) demonstrated that providing type context at incomplete program locations significantly improves LLM completion quality — a result that directly motivates Vera's planned typed holes feature ([#226](https://github.com/aallan/vera/issues/226)).
 
-None of this is Vera-specific, but it validates the design choices. The thesis is plausible, the tooling exists. What's missing is someone running the experiment.
+None of this is Vera-specific, but it validates the design choices. The thesis is plausible, the tooling exists, and initial Vera-specific results are consistent with the broader literature. What's needed is expanded and replicated evaluations — more models, more tiers, and longitudinal tracking across releases — to confirm these findings across languages and settings.
 
 
 ## What about the training data problem? LLMs have never seen Vera code.
@@ -242,3 +242,4 @@ For agents, point your model at [SKILL.md](https://raw.githubusercontent.com/aal
 - Mündler, He, Wang et al., "Type-Constrained Code Generation with Language Models", PLDI 2025, [ACM DL](https://dl.acm.org/doi/10.1145/3729274)
 - Blinn et al., "Statically Contextualizing Large Language Models with Typed Holes", OOPSLA 2024, [ACM DL](https://doi.org/10.1145/3689728)
 - Sun et al., "A Benchmark for Vericoding: Formally Verified Program Synthesis", [arXiv:2509.22908](https://arxiv.org/abs/2509.22908)
+- Allan, "VeraBench: a benchmark for LLM code generation in Vera", [github.com/aallan/vera-bench](https://github.com/aallan/vera-bench)
