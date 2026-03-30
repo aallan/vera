@@ -18,14 +18,14 @@ write .vera file -> vera check -> fix errors -> vera verify -> fix errors -> don
 
 Use **typed holes** (`?`) to build programs incrementally. A `?` in any expression position is valid — `vera check` reports a `W001` warning with the expected type and all available slot bindings:
 
-```
+```text
 Warning [W001]: Typed hole: expected Int.
 Fix: Replace ? with an expression of type Int. Available bindings: @Int.0: Int; @Int.1: Int.
 ```
 
 Programs with holes type-check (`ok: true`) but cannot compile (`E614`). Iterative workflow:
 
-```
+```text
 write skeleton with ? -> vera check (get W001 hints) -> fill holes -> vera check -> vera verify
 ```
 
