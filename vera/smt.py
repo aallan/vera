@@ -191,6 +191,18 @@ class SmtContext:
         self.solver.add(v >= 0)
         return v
 
+    def declare_string(self, name: str) -> z3.SeqRef:
+        """Declare a Z3 string variable (sequence sort)."""
+        v = z3.String(name)
+        self._vars[name] = v
+        return v
+
+    def declare_float64(self, name: str) -> z3.ArithRef:
+        """Declare a Z3 real variable (mathematical reals, approximates Float64)."""
+        v = z3.Real(name)
+        self._vars[name] = v
+        return v
+
     def set_result_var(self, var: z3.ExprRef) -> None:
         """Set the variable used for @T.result references."""
         self._result_var = var
@@ -248,6 +260,10 @@ class SmtContext:
                 return z3.IntSort()
             if ty.name == "Bool":
                 return z3.BoolSort()
+            if ty.name == "String":
+                return z3.StringSort()
+            if ty.name == "Float64":
+                return z3.RealSort()
             return None
         if isinstance(ty, AdtType):
             key = _adt_sort_key(ty.name, ty.type_args)
