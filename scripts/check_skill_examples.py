@@ -45,9 +45,6 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # Handler syntax — pseudocode template
     1186: ("FRAGMENT", "Effect handler syntax template"),
 
-    # Common mistake: bare if/else expression
-    1609: ("FRAGMENT", "Common mistake example, bare if/else"),
-
     # String operations — bare function calls
     660: ("FRAGMENT", "String built-in examples, bare calls"),
 
@@ -107,11 +104,8 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # Qualified calls and handler fragments — bare expressions
     1136: ("FRAGMENT", "Handler with clause, bare expression"),
 
-    # Module declaration and import syntax
-    1246: ("FRAGMENT", "Module declaration and import example"),
-
     # Line comments — bare comments
-    1351: ("FRAGMENT", "Comment syntax example"),
+    1402: ("FRAGMENT", "Comment syntax example"),
 
     # Type conversions — bare function calls
     859: ("FRAGMENT", "Float64 predicate and constant examples, bare calls"),
@@ -120,33 +114,29 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     846: ("FRAGMENT", "Float64 predicate examples, bare calls"),
 
     # Common mistakes section — intentionally wrong code
-    1430: ("FRAGMENT", "Wrong: missing contracts"),
-    1437: ("FRAGMENT", "Wrong: missing effects clause"),
-    1450: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
-    1460: ("FRAGMENT", "Wrong: bare expression without indices"),
-    1497: ("FRAGMENT", "Wrong: missing index on slot reference"),
-    1502: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
-    1509: ("FRAGMENT", "Wrong: match arm with incorrect return"),
-    1579: ("FRAGMENT", "Wrong: non-exhaustive match (missing None)"),
-    1592: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
+    1481: ("FRAGMENT", "Wrong: missing contracts"),
+    1501: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
+    1548: ("FRAGMENT", "Wrong: missing index on slot reference"),
+    1553: ("FRAGMENT", "Correct: expression with indices (not full fn)"),
+    1630: ("FRAGMENT", "Wrong: non-exhaustive match (missing None)"),
+    1643: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
 
     # Import syntax — intentionally unsupported
-    1625: ("FRAGMENT", "Wrong: import aliasing not supported"),
-    1630: ("FRAGMENT", "Correct: import syntax example"),
-    1640: ("FRAGMENT", "Wrong: import hiding not supported"),
-    1645: ("FRAGMENT", "Correct: multi-import syntax"),
+    1676: ("FRAGMENT", "Wrong: import aliasing not supported"),
+    1681: ("FRAGMENT", "Correct: import syntax example"),
+    1691: ("FRAGMENT", "Wrong: import hiding not supported"),
 
     # Match arm fragment — bare match body
-    1554: ("FRAGMENT", "Match arm bare expression"),
-    1599: ("FRAGMENT", "Correct: match expression example (bare)"),
-    1614: ("FRAGMENT", "Correct: if/else with braces (common mistakes)"),
+    1650: ("FRAGMENT", "Correct: match expression example (bare)"),
+    1660: ("FRAGMENT", "Common mistake example, bare if/else"),
+    1665: ("FRAGMENT", "Correct: if/else with braces (common mistakes)"),
 
     # String escapes — bare expression
-    1659: ("FRAGMENT", "Correct escape sequence examples, bare strings"),
+    1710: ("FRAGMENT", "Correct escape sequence examples, bare strings"),
 
     # Map/Set common mistakes — bare let bindings
-    1667: ("FRAGMENT", "Wrong: standalone map_new/set_new without type context"),
-    1673: ("FRAGMENT", "Correct: map_new/set_new with type context"),
+    1718: ("FRAGMENT", "Wrong: standalone map_new/set_new without type context"),
+    1724: ("FRAGMENT", "Correct: map_new/set_new with type context"),
 
     # Effect disambiguation — qualified calls
     1208: ("FRAGMENT", "Qualified effect calls (State.put, Logger.put)"),
