@@ -153,11 +153,16 @@ public forall<T> fn identity(@T -> @T)
         assert "generic" in f.reason.lower()
 
     def test_string_parameter(self) -> None:
-        """String params produce a skip message naming the unsupported type."""
+        """String params are now supported — function is tested, not skipped.
+
+        Uses decreases(0) to force Tier 3 classification so the function
+        is exercised with generated inputs rather than proved statically.
+        """
         source = """\
 public fn greet(@String -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
+  decreases(0)
   effects(pure)
 {
   0
@@ -165,16 +170,18 @@ public fn greet(@String -> @Int)
 """
         result = _test(source)
         f = _fn_result(result, "greet")
-        assert f.category == "skipped"
-        assert "String" in f.reason
-        assert "#169" in f.reason
+        assert f.category == "tested"
 
-    def test_float_parameter_skip_message(self) -> None:
-        """Float64 params produce a skip message naming the unsupported type."""
+    def test_float_parameter(self) -> None:
+        """Float64 params are now supported — function is tested, not skipped.
+
+        Uses decreases(0) to force Tier 3 classification.
+        """
         source = """\
 public fn scale(@Float64 -> @Float64)
   requires(true)
   ensures(true)
+  decreases(0)
   effects(pure)
 {
   @Float64.0
@@ -182,9 +189,7 @@ public fn scale(@Float64 -> @Float64)
 """
         result = _test(source)
         f = _fn_result(result, "scale")
-        assert f.category == "skipped"
-        assert "Float64" in f.reason
-        assert "#169" in f.reason
+        assert f.category == "tested"
 
     def test_trivial_contracts(self) -> None:
         """Functions with only trivial contracts are skipped."""

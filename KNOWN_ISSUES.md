@@ -18,14 +18,13 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | Limitation | Issue |
 |-----------|-------|
 | Tier 2 verification (Z3-guided with `assert`/lemma hints) is specified in §6.3.2 but not yet implemented; contracts requiring hints fall to Tier 3 (runtime check) | [#427](https://github.com/aallan/vera/issues/427) |
-| `vera test` cannot generate String, Float64, or compound-type inputs | [#169](https://github.com/aallan/vera/issues/169) |
+| `vera test` cannot generate ADT (algebraic data type) inputs | [#440](https://github.com/aallan/vera/issues/440) |
 | Effect row variable unification (full effect polymorphism) | [#294](https://github.com/aallan/vera/issues/294) |
 | Incremental compilation | [#56](https://github.com/aallan/vera/issues/56) |
 | Module re-exports | [#127](https://github.com/aallan/vera/issues/127) |
 | Package system and registry | [#130](https://github.com/aallan/vera/issues/130) |
 | LSP server | [#222](https://github.com/aallan/vera/issues/222) |
 | REPL | [#224](https://github.com/aallan/vera/issues/224) |
-| Typed holes for partial programs | [#226](https://github.com/aallan/vera/issues/226) |
 | Date and time handling | [#233](https://github.com/aallan/vera/issues/233) |
 | Cryptographic hashing | [#235](https://github.com/aallan/vera/issues/235) |
 | CSV parsing and generation | [#236](https://github.com/aallan/vera/issues/236) |

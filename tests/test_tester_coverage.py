@@ -39,17 +39,19 @@ def _write_vera(tmp_path: Path, source: str, name: str = "test.vera") -> str:
 
 
 class TestTesterUnsupportedParamTypes:
-    """Cover lines 246-266, 477-488, 510: functions with Float64/String/ADT
-    params that are unsupported for Z3 input generation."""
+    """Cover ADT params that are still unsupported for Z3 input generation.
+    String and Float64 are now supported — their tests live in TestTesterStringInput
+    and TestTesterFloat64Input."""
 
-    def test_float_param_skipped(
+    def test_float_param_tested(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A function with Float64 param is skipped (unsupported type)."""
+        """A function with Float64 param is now tested (Z3 Real sort)."""
         source = """\
 public fn square(@Float64 -> @Float64)
   requires(true)
   ensures(@Float64.result >= 0.0)
+  decreases(0)
   effects(pure)
 {
   @Float64.0 * @Float64.0
@@ -59,16 +61,17 @@ public fn square(@Float64 -> @Float64)
         rc = cmd_test(path, trials=5)
         assert rc == 0
         out = capsys.readouterr().out
-        assert "SKIPPED" in out
+        assert "TESTED" in out or "VERIFIED" in out
 
-    def test_float_param_skipped_json(
+    def test_float_param_tested_json(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Float64 param function in JSON mode shows skipped category."""
+        """Float64 param function in JSON mode shows tested category."""
         source = """\
 public fn negate(@Float64 -> @Float64)
   requires(true)
   ensures(true)
+  decreases(0)
   effects(pure)
 {
   0.0 - @Float64.0
@@ -79,17 +82,18 @@ public fn negate(@Float64 -> @Float64)
         assert rc == 0
         data = json.loads(capsys.readouterr().out)
         funcs = data["functions"]
-        skipped = [f for f in funcs if f["category"] == "skipped"]
-        assert len(skipped) > 0
+        tested = [f for f in funcs if f["category"] in ("tested", "verified")]
+        assert len(tested) > 0
 
-    def test_string_param_skipped(
+    def test_string_param_tested(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """A function with String param is skipped (unsupported type)."""
+        """A function with String param is now tested (Z3 sequence sort)."""
         source = """\
 public fn identity_str(@String -> @String)
   requires(true)
   ensures(true)
+  decreases(0)
   effects(pure)
 {
   @String.0
@@ -99,7 +103,7 @@ public fn identity_str(@String -> @String)
         rc = cmd_test(path, trials=5)
         assert rc == 0
         out = capsys.readouterr().out
-        assert "SKIPPED" in out
+        assert "TESTED" in out or "VERIFIED" in out
 
     def test_adt_param_skipped(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
@@ -456,15 +460,15 @@ public fn mixed_apply(@Int, @Nat -> @Int)
         out = capsys.readouterr().out
         assert "TESTED" in out or "VERIFIED" in out or "SKIPPED" in out
 
-    def test_mixed_supported_unsupported(
+    def test_mixed_int_string(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Function with both supported (Int) and unsupported (String) params
-        is skipped."""
+        """Function with both Int and String params is now tested (both supported)."""
         source = """\
-public fn mixed_skip(@Int, @String -> @Int)
-  requires(true)
+public fn mixed_params(@Int, @String -> @Int)
+  requires(@Int.0 >= 0)
   ensures(@Int.result >= 0)
+  decreases(0)
   effects(pure)
 {
   @Int.0
@@ -474,7 +478,7 @@ public fn mixed_skip(@Int, @String -> @Int)
         rc = cmd_test(path, trials=5)
         assert rc == 0
         out = capsys.readouterr().out
-        assert "SKIPPED" in out
+        assert "TESTED" in out or "VERIFIED" in out
 
 
 # =====================================================================
@@ -505,6 +509,112 @@ public forall<A> fn identity(@A -> @A)
         funcs = data["functions"]
         skipped = [f for f in funcs if f["category"] == "skipped"]
         assert len(skipped) > 0
+
+
+# =====================================================================
+# TestTesterStringInput
+# =====================================================================
+
+
+class TestTesterStringInput:
+    """Tests for String parameter Z3 input generation (#169)."""
+
+    def test_string_param_tested(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A function with only String param is tested (not skipped)."""
+        source = """\
+public fn strlen_positive(@String -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  decreases(0)
+  effects(pure)
+{
+  string_length(@String.0)
+}
+"""
+        path = _write_vera(tmp_path, source)
+        rc = cmd_test(path, trials=5)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "TESTED" in out or "VERIFIED" in out
+
+    def test_string_param_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """String param function in JSON mode shows tested/verified category."""
+        source = """\
+public fn echo(@String -> @String)
+  requires(true)
+  ensures(true)
+  decreases(0)
+  effects(pure)
+{
+  @String.0
+}
+"""
+        path = _write_vera(tmp_path, source)
+        rc = cmd_test(path, as_json=True, trials=5)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        funcs = data["functions"]
+        tested = [f for f in funcs if f["category"] in ("tested", "verified")]
+        assert len(tested) > 0
+
+
+# =====================================================================
+# TestTesterFloat64Input
+# =====================================================================
+
+
+class TestTesterFloat64Input:
+    """Tests for Float64 parameter Z3 input generation (#169)."""
+
+    def test_float64_param_tested(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A function with only Float64 param is tested (not skipped)."""
+        source = """\
+public fn abs_float(@Float64 -> @Float64)
+  requires(true)
+  ensures(@Float64.result >= 0.0)
+  decreases(0)
+  effects(pure)
+{
+  if @Float64.0 >= 0.0 then {
+    @Float64.0
+  } else {
+    0.0 - @Float64.0
+  }
+}
+"""
+        path = _write_vera(tmp_path, source)
+        rc = cmd_test(path, trials=5)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "TESTED" in out or "VERIFIED" in out
+
+    def test_float64_param_json(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Float64 param function in JSON mode shows tested/verified category."""
+        source = """\
+public fn double(@Float64 -> @Float64)
+  requires(true)
+  ensures(true)
+  decreases(0)
+  effects(pure)
+{
+  @Float64.0 + @Float64.0
+}
+"""
+        path = _write_vera(tmp_path, source)
+        rc = cmd_test(path, as_json=True, trials=5)
+        assert rc == 0
+        data = json.loads(capsys.readouterr().out)
+        funcs = data["functions"]
+        tested = [f for f in funcs if f["category"] in ("tested", "verified")]
+        assert len(tested) > 0
 
 
 # =====================================================================
@@ -745,15 +855,17 @@ class TestTesterUnitFunctions:
         assert _has_nontrivial_contracts(decl) is True
 
     def test_generate_inputs_unsupported_type(self) -> None:
-        """Cover line 510: unsupported type returns None."""
+        """Cover the unsupported-type returns-None path (ADT, not Float64)."""
         from vera.tester import _generate_inputs
-        from vera.types import FLOAT64, Type
+        from vera.types import AdtType, Type
         from vera import ast as vera_ast
 
+        # ADT types are unsupported; _generate_inputs should return None
+        adt_type = AdtType(name="Color", type_args=())
         decl = vera_ast.FnDecl(
             name="test",
-            params=(vera_ast.NamedType(name="Float64", type_args=()),),
-            return_type=vera_ast.NamedType(name="Float64", type_args=()),
+            params=(vera_ast.NamedType(name="Color", type_args=()),),
+            return_type=vera_ast.NamedType(name="Int", type_args=()),
             contracts=(
                 vera_ast.Requires(expr=vera_ast.BoolLit(value=True)),
                 vera_ast.Ensures(expr=vera_ast.BoolLit(value=True)),
@@ -765,7 +877,7 @@ class TestTesterUnitFunctions:
             where_fns=None,
             span=None,
         )
-        result = _generate_inputs(decl, [FLOAT64], 10)
+        result = _generate_inputs(decl, [adt_type], 10)
         assert result is None
 
     def test_get_source_line_out_of_range(self) -> None:

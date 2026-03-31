@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.106] - 2026-03-31
+
+### Added
+- **`vera test` String and Float64 input generation** ([#169](https://github.com/aallan/vera/issues/169)) — `vera test` now generates Z3 inputs for `String` and `Float64` parameters, removing the `SKIPPED (cannot generate String inputs (see #169))` limitation for those types. String uses Z3's sequence sort with a 50-character length cap; Float64 uses Z3's mathematical real sort with boundary seeding (0.0, ±1.0, ±0.5, ±10.0, ±1e10, ±1e-10). Both types route through the `raw_args` calling convention so that String's two-i32 WASM ABI is handled correctly. IEEE 754 special values (NaN, ±∞, subnormals) are not generated — use explicit test inputs for those cases. ADT input generation remains unsupported ([#440](https://github.com/aallan/vera/issues/440)). Closes [#169](https://github.com/aallan/vera/issues/169).
+
 ## [0.0.105] - 2026-03-30
 
 ### Added
@@ -1504,7 +1509,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.105...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.106...HEAD
+[0.0.106]: https://github.com/aallan/vera/compare/v0.0.105...v0.0.106
 [0.0.105]: https://github.com/aallan/vera/compare/v0.0.104...v0.0.105
 [0.0.104]: https://github.com/aallan/vera/compare/v0.0.103...v0.0.104
 [0.0.103]: https://github.com/aallan/vera/compare/v0.0.102...v0.0.103

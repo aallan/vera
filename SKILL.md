@@ -66,7 +66,7 @@ pytest tests/ -v                  # Run the test suite
 
 Errors are natural language instructions explaining what went wrong and how to fix it. Feed them back into your context to correct the code.
 
-`vera test` cannot generate Z3 inputs for `String`, `Float64`, or compound-type parameters. Functions with those parameter types are skipped with a message naming the specific type: `SKIPPED (cannot generate String inputs (see #169))`. Only `Int`, `Nat`, `Bool`, and `Byte` parameters support Z3-guided input generation.
+`vera test` generates Z3 inputs for `Int`, `Nat`, `Bool`, `Byte`, `String`, and `Float64` parameters. Functions with ADT or function-type parameters are skipped with a message naming the specific type. Float64 uses Z3's mathematical reals (NaN, ±∞, and subnormals are not generated). Strings are capped at 50 characters.
 
 ### Browser compilation
 
@@ -1875,7 +1875,6 @@ These are known limitations in the current reference implementation. Most are tr
 
 | Limitation | Details | Issue |
 |-----------|---------|-------|
-| `vera test` cannot generate `String`, `Float64`, or compound-type inputs | The Z3-backed test runner only generates inputs for `Int`, `Nat`, `Bool`, and `Byte` parameters. Functions with other parameter types are skipped with a `SKIPPED (cannot generate String inputs (see #169))` message. | [#169](https://github.com/aallan/vera/issues/169) |
 | Effect row variable unification | Effect rows containing type variables (e.g. `<E>` in a generic function) are not unified with concrete effect rows at call sites. Functions that abstract over effects require explicit row declarations. | [#294](https://github.com/aallan/vera/issues/294) |
 | `map_new()` / `set_new()` require type context | The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();` | — |
 | `Inference.complete` has no `max_tokens` or temperature controls | The host implementation uses provider defaults. Custom parameters (max tokens, temperature, top-p, system prompt) are not yet supported at the Vera level. | [#370](https://github.com/aallan/vera/issues/370) |

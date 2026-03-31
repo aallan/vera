@@ -474,6 +474,142 @@
       color: var(--brown-300);
     }
 
+    /* === VeraBench === */
+    .verabench {
+      background: #FEEAD1;
+      padding: 4rem 0;
+      border-top: 1px solid rgba(26, 11, 0, 0.06);
+    }
+
+    .verabench .section-heading {
+      color: var(--brown-900);
+    }
+
+    .verabench-layout {
+      display: flex;
+      align-items: flex-start;
+      gap: 2.5rem;
+    }
+
+    .verabench-meerkat {
+      flex-shrink: 0;
+      width: 320px;
+    }
+
+    .verabench-meerkat img {
+      width: 100%;
+      height: auto;
+    }
+
+    .verabench-content {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .verabench-intro {
+      color: var(--brown-500);
+      font-size: 0.95rem;
+      margin-bottom: 1.25rem;
+      line-height: 1.6;
+    }
+
+    .verabench-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .verabench-table thead th {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--brown-300);
+      text-align: left;
+      padding: 0.5rem 0.75rem;
+      border-bottom: 2px solid var(--brown-300);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .verabench-table tbody td {
+      padding: 0.6rem 0.75rem;
+      color: var(--brown-700);
+      border-bottom: 1px solid rgba(26, 11, 0, 0.06);
+    }
+
+    .verabench-table tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    .verabench-table .lang-label {
+      font-weight: 500;
+      color: var(--brown-900);
+    }
+
+    .verabench-table .metric-val {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.85rem;
+      color: var(--brown-700);
+    }
+
+    .verabench-table .highlight {
+      color: #1A7F45;
+      font-weight: 600;
+    }
+
+    .verabench-desc {
+      color: var(--brown-500);
+      font-size: 0.9rem;
+      line-height: 1.6;
+      margin-bottom: 0.75rem;
+    }
+
+    .verabench-cta {
+      margin-top: 1.25rem;
+    }
+
+    .mode-tag {
+      font-size: 0.7rem;
+      font-family: 'JetBrains Mono', monospace;
+      color: var(--brown-300);
+    }
+
+    .mode-tag.dim {
+      color: var(--brown-300);
+      opacity: 0.6;
+    }
+
+    .verabench-table .metric-val.dim {
+      opacity: 0.3;
+    }
+
+    .verabench-table .metric-val.surprise {
+      color: #C0392B;
+      font-weight: 600;
+    }
+
+    .verabench-table .dim-row {
+      opacity: 0.4;
+      font-size: 0.8rem;
+    }
+
+    .verabench-table tr.baseline-separator td {
+      border-top: 2px solid rgba(26, 11, 0, 0.08);
+    }
+
+    @media (max-width: 640px) {
+      .verabench-layout {
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+      }
+      .verabench-meerkat { width: 220px; }
+      .verabench-table { font-size: 0.8rem; }
+      .verabench-table thead th { font-size: 0.7rem; padding: 0.4rem 0.5rem; }
+      .verabench-table tbody td { padding: 0.5rem; }
+    }
+
     /* === Responsive === */
     @media (max-width: 640px) {
       section { padding: 3rem 0; }
@@ -486,6 +622,10 @@
       .code-block pre { font-size: 0.8rem; }
       .principles-grid { grid-template-columns: 1fr; }
       .features-grid { grid-template-columns: 1fr; }
+      .verabench-layout { text-align: center; }
+      .verabench-meerkat { width: 220px; margin: 0 auto; }
+      .verabench-table { font-size: 0.8rem; }
+      .verabench-table thead th, .verabench-table tbody td { padding: 0.4rem 0.5rem; }
     }
   </style>
   <script type="application/ld+json">
@@ -586,7 +726,7 @@
         For Agents → SKILL.md
       </a>
     </div>
-    <p style="display: flex; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 1rem; font-size: 0.9rem; color: var(--brown-400);">Current Version: <a href="https://github.com/aallan/vera/releases/tag/v0.0.105" style="color: var(--brown-500); font-weight: 500;">v0.0.105</a> <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" style="display: flex;"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height: 20px;"></a></p>
+    <p style="display: flex; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 1rem; font-size: 0.9rem; color: var(--brown-400);">Current Version: <a href="https://github.com/aallan/vera/releases/tag/v0.0.106" style="color: var(--brown-500); font-weight: 500;">v0.0.106</a> <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" style="display: flex;"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height: 20px;"></a></p>
   </div>
 
   <!-- Why -->
@@ -984,6 +1124,86 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
     </div>
   </section>
 
+  <!-- VeraBench -->
+  <section class="verabench">
+    <div class="container">
+      <h2 class="section-heading">VeraBench</h2>
+      <div class="verabench-layout">
+        <div class="verabench-meerkat">
+          <img src="vera-bench-meerkat-only.png" alt="VeraBench meerkat" width="542" height="640">
+        </div>
+        <div class="verabench-content">
+          <p class="verabench-intro">A 50-problem benchmark across 5 difficulty tiers, measuring whether LLMs write better code in a language designed for them.</p>
+          <table class="verabench-table">
+            <thead>
+              <tr>
+                <th>Mode</th>
+                <th>check@1</th>
+                <th>verify@1</th>
+                <th>fix@1</th>
+                <th>run_correct</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="lang-label">Vera <span class="mode-tag">full-spec</span></td>
+                <td class="metric-val">94%</td>
+                <td class="metric-val">98%</td>
+                <td class="metric-val">67%</td>
+                <td class="metric-val highlight">83%</td>
+              </tr>
+              <tr>
+                <td class="lang-label">Vera <span class="mode-tag">spec-from-NL</span></td>
+                <td class="metric-val">94%</td>
+                <td class="metric-val">88%</td>
+                <td class="metric-val">33%</td>
+                <td class="metric-val">78%</td>
+              </tr>
+              <tr class="baseline-separator">
+                <td class="lang-label">Python <span class="mode-tag dim">LLM</span></td>
+                <td class="metric-val">100%</td>
+                <td class="metric-val dim">&mdash;</td>
+                <td class="metric-val dim">&mdash;</td>
+                <td class="metric-val">92%</td>
+              </tr>
+              <tr>
+                <td class="lang-label">TypeScript <span class="mode-tag dim">LLM</span></td>
+                <td class="metric-val">100%</td>
+                <td class="metric-val dim">&mdash;</td>
+                <td class="metric-val dim">&mdash;</td>
+                <td class="metric-val surprise">79%</td>
+              </tr>
+              <tr class="baseline-separator">
+                <td class="lang-label dim-row">Python baseline</td>
+                <td class="metric-val dim-row">100%</td>
+                <td class="metric-val dim-row">&mdash;</td>
+                <td class="metric-val dim-row">&mdash;</td>
+                <td class="metric-val dim-row">100%</td>
+              </tr>
+              <tr>
+                <td class="lang-label dim-row">TypeScript baseline</td>
+                <td class="metric-val dim-row">100%</td>
+                <td class="metric-val dim-row">&mdash;</td>
+                <td class="metric-val dim-row">&mdash;</td>
+                <td class="metric-val dim-row">100%</td>
+              </tr>
+            </tbody>
+          </table>
+          <p class="verabench-desc">First benchmark results from <a href="https://github.com/aallan/vera-bench/releases/tag/v0.0.4">VeraBench v0.0.4</a> against <a href="https://github.com/aallan/vera/releases/tag/v0.0.104">Vera v0.0.104</a> using a single run of <a href="https://platform.claude.com/docs/en/about-claude/models/overview#claude-4">Claude Sonnet 4</a> (claude-sonnet-4-20250514) across 50 problems.</p>
+
+		  <p class="verabench-desc"><strong style="color: var(--brown-900);">The TypeScript result is the surprise</strong> &mdash; 79% run_correct, worse than Vera's 83%. Tier 5 is the culprit at 33% vs Python's 67%. Sonnet writes TypeScript that compiles (100% check) but gets the state/effect patterns wrong more often than in Python.</p>
+          <p class="verabench-desc">Inspired by <a href="https://github.com/openai/human-eval">HumanEval</a> and <a href="https://github.com/sun-wendy/DafnyBench">DafnyBench</a>. Five tiers from pure arithmetic through ADTs, recursion, and multi-function effect propagation.</p>
+          <div class="verabench-cta">
+            <a href="https://github.com/aallan/vera-bench" class="cta-btn primary">
+              <svg class="cta-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+              GitHub
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- Status -->
   <section class="status-banner">
     <div class="container">
@@ -993,7 +1213,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       </div>
       <p class="status-text">
         A complete compiler with 122 built-in functions, algebraic effects (IO, Http, State, Inference), contract-driven testing, and a 13-chapter specification.
-        <a href="https://github.com/aallan/vera-bench" class="status-link">VeraBench</a> — a 50-problem benchmark across 5 difficulty tiers — has initial results: Claude Sonnet 4 achieves 83% run_correct on Vera versus 92% on Python, a 9pp gap smaller than expected for a new language.
+
         <br>
         <a href="https://github.com/aallan/vera/blob/main/README.md">README</a> ·
         <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md">Roadmap</a> ·
