@@ -252,8 +252,8 @@ class SmtContext:
     ) -> z3.SortRef | None:
         """Map a Vera Type to a Z3 sort.
 
-        Returns None for unsupported types (String, Float64, Unit,
-        TypeVar, function types).
+        Returns None for unsupported types (Unit, TypeVar, function types).
+        String maps to z3.StringSort(); Float64 maps to z3.RealSort().
         """
         if isinstance(ty, PrimitiveType):
             if ty.name in ("Int", "Nat"):
