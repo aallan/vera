@@ -218,6 +218,7 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 | v0.0.103 | 29 Mar | **CI security hardening** — `pip-audit` dependency CVE scanning (#384), `ruff --select S` Bandit-equivalent lint rules (#388), `zizmor` workflow hardening (#385), CycloneDX SBOM generation (#389). **CLI improvements** — `vera version` command (#381), `--quiet` flag (#382). **Bug fixes** — `Http.post` `Content-Type: application/json` header (#354), `vera test` skip messages (#383). **Conformance** — two `verify`-level De Bruijn tests: deep let-chains (#393) and non-commutative operations (#394). **Documentation** — Known Limitations in SKILL.md (#404), skipped-tests table in TESTING.md, MIT licence text in README. |
 | v0.0.104 | 29 Mar | **Type inference fix** — `option_unwrap_or(None, 99)`, `result_unwrap_or(Err("oops"), 0)`, and `option_map(None, fn(...){...})` now type-check without a typed `let` workaround (#293). Three-layer fix: checker fresh-TypeVar overwrite rule, monomorphizer sparse-constructor field→tp-index mapping, missing `StringLit` in monomorphizer type inferencer. Phase 1a complete. |
 | v0.0.105 | 30 Mar | **Typed holes** — `?` placeholder expression for partial programs (#226). `vera check` reports W001 with expected type and available slot bindings; programs with holes cannot compile (E614). Iterative workflow: write skeleton with holes, read hints, fill in. |
+| v0.0.106 | 31 Mar | **`vera test` String & Float64 input generation** — Z3-guided contract testing now covers `String` (sequence sort, ≤50 chars) and `Float64` (real sort, boundary seeding) parameters, removing the `SKIPPED (cannot generate … inputs (see #169))` limitation for those types (#169). ADT input generation tracked in #440. |
 
 ---
 
@@ -254,4 +255,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% | 96% |
 
-Total: **630+ commits, 105 tagged releases, 30 active development days.**
+Total: **630+ commits, 106 tagged releases, 30 active development days.**

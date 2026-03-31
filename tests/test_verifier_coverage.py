@@ -685,12 +685,21 @@ class TestSmtContextDirect:
         sort = ctx._vera_type_to_z3_sort(BOOL)
         assert sort == z3.BoolSort()
 
-    def test_vera_type_to_z3_sort_unsupported(self) -> None:
-        """_vera_type_to_z3_sort returns None for String type."""
+    def test_vera_type_to_z3_sort_string(self) -> None:
+        """_vera_type_to_z3_sort returns StringSort for String type."""
+        import z3
         from vera.smt import SmtContext
         from vera.types import STRING
         ctx = SmtContext()
         sort = ctx._vera_type_to_z3_sort(STRING)
+        assert sort == z3.StringSort()
+
+    def test_vera_type_to_z3_sort_unsupported(self) -> None:
+        """_vera_type_to_z3_sort returns None for Unit type (unsupported)."""
+        from vera.smt import SmtContext
+        from vera.types import UNIT
+        ctx = SmtContext()
+        sort = ctx._vera_type_to_z3_sort(UNIT)
         assert sort is None
 
     def test_vera_type_to_z3_sort_type_var(self) -> None:

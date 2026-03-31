@@ -34,7 +34,7 @@ class TrialResult:
     """Outcome of a single test trial."""
 
     fn_name: str
-    args: dict[str, int | float]  # {"@Int.0": 5, "@Nat.0": 3}
+    args: dict[str, int | float | str]  # {"@Int.0": 5, "@String.0": "hello"}
     status: str  # "pass" | "fail" | "error"
     message: str  # violation message or empty
 
@@ -82,7 +82,10 @@ class TestResult:
 # =====================================================================
 
 # Types we can encode in Z3 for input generation
-_Z3_SUPPORTED = {INT, NAT, BOOL, BYTE}
+_Z3_SUPPORTED = {INT, NAT, BOOL, BYTE, STRING, FLOAT64}
+
+# Types that require the raw_args calling convention (String uses i32_pair ABI)
+_NEEDS_RAW = {STRING, FLOAT64}
 
 
 def _unsupported_type_names(param_types: list[Type]) -> list[str]:
@@ -100,9 +103,18 @@ _BOUNDARY_INT = [0, 1, -1, 2, -2, 10, -10, 100, -100]
 _BOUNDARY_NAT = [0, 1, 2, 10, 100]
 _BOUNDARY_BYTE = [0, 1, 127, 128, 255]
 _BOUNDARY_BOOL = [True, False]
+_BOUNDARY_STRING: list[str] = ["", "a", "abc", "hello world", "abc123", "\n", "\t", "   "]
+# Note: NaN and ±inf are not representable in Z3 RealSort; -0.0 == 0.0 in Z3.
+_BOUNDARY_FLOAT64: list[float] = [
+    0.0, 1.0, -1.0, 0.5, -0.5, 2.0, -2.0, 10.0, -10.0,
+    1e10, -1e10, 1e-10, -1e-10,
+]
 
 # i64 safe range (stays within WASM i64 and JS number precision)
 _I64_BOUND = 2**53
+
+# Maximum Z3-generated string length (prevents pathologically long strings)
+_MAX_STRING_LEN = 50
 
 
 # =====================================================================
@@ -511,7 +523,7 @@ def _generate_inputs(
     decl: ast.FnDecl,
     param_types: list[Type],
     count: int,
-) -> list[list[int]] | None:
+) -> list[list[int | float | str]] | None:
     """Generate test inputs from requires() clauses via Z3.
 
     Returns None if any parameter type is unsupported.
@@ -543,6 +555,11 @@ def _generate_inputs(
             var = smt.declare_int(z3_name)
             smt.solver.add(var >= 0)
             smt.solver.add(var <= 255)
+        elif bt == STRING:
+            var = smt.declare_string(z3_name)
+            smt.solver.add(z3.Length(var) <= _MAX_STRING_LEN)
+        elif bt == FLOAT64:
+            var = smt.declare_float64(z3_name)
         else:
             # Int
             var = smt.declare_int(z3_name)
@@ -571,8 +588,8 @@ def _generate_inputs(
         # If untranslatable, we skip the constraint (best-effort)
 
     # 5. Collect inputs: boundary seeding + diversity loop
-    inputs: list[list[int]] = []
-    seen: set[tuple[int, ...]] = set()
+    inputs: list[list[int | float | str]] = []
+    seen: set[tuple[int | float | str, ...]] = set()
 
     # Boundary seeding
     _seed_boundaries(smt, z3_vars, var_types, inputs, seen)
@@ -604,11 +621,39 @@ def _seed_boundaries(
     smt: SmtContext,
     z3_vars: list[z3.ExprRef],
     var_types: list[Type],
-    inputs: list[list[int]],
-    seen: set[tuple[int, ...]],
+    inputs: list[list[int | float | str]],
+    seen: set[tuple[int | float | str, ...]],
 ) -> None:
     """Try boundary values for each parameter."""
     for i, (var, bt) in enumerate(zip(z3_vars, var_types)):
+        if bt == STRING:
+            for sval in _BOUNDARY_STRING:
+                smt.solver.push()
+                smt.solver.add(var == z3.StringVal(sval))
+                if smt.solver.check() == z3.sat:
+                    model = smt.solver.model()
+                    values = _extract_values(model, z3_vars, var_types)
+                    key = tuple(values)
+                    if key not in seen:
+                        seen.add(key)
+                        inputs.append(values)
+                smt.solver.pop()
+            continue
+
+        if bt == FLOAT64:
+            for fval in _BOUNDARY_FLOAT64:
+                smt.solver.push()
+                smt.solver.add(var == z3.RealVal(fval))
+                if smt.solver.check() == z3.sat:
+                    model = smt.solver.model()
+                    values = _extract_values(model, z3_vars, var_types)
+                    key = tuple(values)
+                    if key not in seen:
+                        seen.add(key)
+                        inputs.append(values)
+                smt.solver.pop()
+            continue
+
         boundaries: list[int | bool]
         if bt == BOOL:
             boundaries = list(_BOUNDARY_BOOL)
@@ -619,12 +664,12 @@ def _seed_boundaries(
         else:
             boundaries = list(_BOUNDARY_INT)
 
-        for bval in boundaries:
+        for ival in boundaries:
             smt.solver.push()
             if bt == BOOL:
-                smt.solver.add(var == z3.BoolVal(bval))
+                smt.solver.add(var == z3.BoolVal(ival))
             else:
-                smt.solver.add(var == bval)
+                smt.solver.add(var == ival)
 
             if smt.solver.check() == z3.sat:
                 model = smt.solver.model()
@@ -640,14 +685,22 @@ def _extract_values(
     model: z3.ModelRef,
     z3_vars: list[z3.ExprRef],
     var_types: list[Type],
-) -> list[int]:
-    """Extract Python int values from a Z3 model."""
-    values: list[int] = []
+) -> list[int | float | str]:
+    """Extract Python values from a Z3 model."""
+    values: list[int | float | str] = []
     for var, bt in zip(z3_vars, var_types):
         val = model.evaluate(var, model_completion=True)
         if bt == BOOL:
             # Convert to 0/1 for WASM
             values.append(1 if z3.is_true(val) else 0)
+        elif bt == STRING:
+            values.append(z3.simplify(val).as_string())
+        elif bt == FLOAT64:
+            # Z3 returns a rational; convert to Python float
+            try:
+                values.append(float(val.as_fraction()))
+            except Exception:
+                values.append(float(str(val)))
         else:
             values.append(int(str(val)))
     return values
@@ -660,17 +713,21 @@ def _extract_values(
 def _run_trials(
     compile_result: object,
     fn_name: str,
-    inputs: list[list[int]],
+    inputs: list[list[int | float | str]],
     param_types: list[Type],
     decl: ast.FnDecl,
 ) -> list[TrialResult]:
     """Execute test trials against the compiled WASM module."""
     from vera.codegen import execute
 
+    # String uses i32_pair ABI (two WASM params); Float64 has string→float
+    # parsing. Both require the raw_args calling convention.
+    needs_raw = any(base_type(pt) in _NEEDS_RAW for pt in param_types)
+
     results: list[TrialResult] = []
     for args in inputs:
         # Build descriptive arg dict
-        arg_dict: dict[str, int | float] = {}
+        arg_dict: dict[str, int | float | str] = {}
         slot_counts: dict[str, int] = {}
         for param_te, val in zip(decl.params, args):
             tname = _type_expr_to_slot_name(param_te)
@@ -679,7 +736,10 @@ def _run_trials(
             slot_counts[tname] = idx + 1
 
         try:
-            execute(compile_result, fn_name=fn_name, args=args)  # type: ignore[arg-type]
+            if needs_raw:
+                execute(compile_result, fn_name=fn_name, raw_args=[str(v) for v in args])  # type: ignore[arg-type]
+            else:
+                execute(compile_result, fn_name=fn_name, args=args)  # type: ignore[arg-type]
             results.append(TrialResult(
                 fn_name=fn_name, args=arg_dict,
                 status="pass", message="",
