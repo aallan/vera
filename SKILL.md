@@ -1258,7 +1258,7 @@ Key points:
 - The `where` block helper `sum_loop` has `effects(<State<Int>>)` — it uses `get`/`put` directly
 - Functions inside `where` blocks do NOT take `public`/`private` visibility
 - The `with @Int = @Int.0` clause updates the handler state when `put` resumes
-- Pure helper functions (like `add_value`) can be called from within the handler body
+- Pure helper functions (like `add_value`) can be called from the `where` block helper (`sum_loop`)
 - The `decreases` clause on the loop helper ensures termination
 
 ## Where Blocks (Mutual Recursion)

@@ -1216,6 +1216,57 @@ State.put(42);
 Logger.put("message");
 ```
 
+### State handler with a loop helper
+
+The most common State pattern uses a `where` block to define a loop helper with `effects(<State<Int>>)`. The handler wraps the entire computation; the helper calls `get` and `put` directly.
+
+```vera
+-- Sum 1..n using State<Int>
+private fn add_value(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.1 + @Int.0)
+  effects(pure)
+{
+  @Int.1 + @Int.0
+}
+
+public fn sum_with_state(@Nat -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[State<Int>](@Int = 0) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) } with @Int = @Int.0
+  } in {
+    sum_loop(@Nat.0, 1)
+  }
+}
+where {
+  fn sum_loop(@Nat, @Nat -> @Int)
+    requires(true)
+    ensures(true)
+    decreases(@Nat.1 - @Nat.0 + 1)
+    effects(<State<Int>>)
+  {
+    if @Nat.0 > @Nat.1 then {
+      get(())
+    } else {
+      put(add_value(get(()), @Nat.0));
+      sum_loop(@Nat.1, @Nat.0 + 1)
+    }
+  }
+}
+```
+
+Key points:
+- The outer function `sum_with_state` is **pure** — the handler discharges the State effect
+- The `where` block helper `sum_loop` has `effects(<State<Int>>)` — it uses `get`/`put` directly
+- Functions inside `where` blocks do NOT take `public`/`private` visibility
+- The `with @Int = @Int.0` clause updates the handler state when `put` resumes
+- Pure helper functions (like `add_value`) can be called from the `where` block helper (`sum_loop`)
+- The `decreases` clause on the loop helper ensures termination
+
 ## Where Blocks (Mutual Recursion)
 
 ```vera
