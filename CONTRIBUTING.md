@@ -69,6 +69,18 @@ pip install -e ".[dev]"
 pre-commit install
 ```
 
+For reproducible installs with hash-pinned versions, use `uv` instead (recommended):
+
+```bash
+pip install uv
+uv sync
+pre-commit install
+```
+
+`uv.lock` is checked in and tracks exact versions with hashes. Run `uv lock --check` to verify
+the lockfile is consistent with `pyproject.toml`, or `uv lock` to regenerate it after updating
+dependencies. CI enforces that `uv.lock` stays current.
+
 ### Pre-commit Hooks
 
 After running `pre-commit install`, every commit is automatically checked by 23 hooks including:

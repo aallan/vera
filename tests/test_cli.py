@@ -2806,3 +2806,129 @@ class TestMainQuiet:
         )
         assert result.returncode == 0
         assert result.stdout == ""
+
+
+class TestExplainSlots:
+    """Tests for vera check --explain-slots."""
+
+    _TWO_INT = (
+        "public fn divide(@Int, @Int -> @Int)\n"
+        "  requires(@Int.1 != 0)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  @Int.0 / @Int.1\n"
+        "}\n"
+    )
+    _MIXED = (
+        "public fn greet(@String, @Int -> @String)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  string_concat(@String.0, int_to_string(@Int.0))\n"
+        "}\n"
+    )
+    _BAD = "public fn bad(@Int -> @Int) { @Int.0 }\n"
+    _SINGLE = (
+        "public fn negate(@Int -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  -@Int.0\n"
+        "}\n"
+    )
+
+    def test_two_same_type_params(self, tmp_path: Path) -> None:
+        """Two @Int params: @Int.0 = param 2, @Int.1 = param 1."""
+        f = tmp_path / "two_int.vera"
+        f.write_text(self._TWO_INT)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        out = result.stdout
+        assert "Slot environments" in out
+        assert "@Int.0  parameter 2 (last @Int)" in out
+        assert "@Int.1  parameter 1 (first @Int)" in out
+
+    def test_single_param_per_type(self, tmp_path: Path) -> None:
+        """Single param: shown with 'only @T' label."""
+        f = tmp_path / "single.vera"
+        f.write_text(self._SINGLE)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        out = result.stdout
+        assert "Slot environments" in out
+        assert "@Int.0  parameter 1 (only @Int)" in out
+
+    def test_mixed_types(self, tmp_path: Path) -> None:
+        """@String and @Int each appear once: independent slot counters."""
+        f = tmp_path / "mixed.vera"
+        f.write_text(self._MIXED)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        out = result.stdout
+        assert "@Int.0  parameter 2 (only @Int)" in out
+        assert "@String.0  parameter 1 (only @String)" in out
+
+    def test_json_output(self, tmp_path: Path) -> None:
+        """--explain-slots --json includes slot_environments key."""
+        f = tmp_path / "two_int.vera"
+        f.write_text(self._TWO_INT)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", "--json", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is True
+        assert "slot_environments" in parsed
+        envs = parsed["slot_environments"]
+        assert len(envs) == 1
+        slots = envs[0]["slots"]
+        assert {"slot": "@Int.0", "type": "Int", "parameter": 2} in slots
+        assert {"slot": "@Int.1", "type": "Int", "parameter": 1} in slots
+
+    def test_no_output_on_error(self, tmp_path: Path) -> None:
+        """Type error → no slot environments emitted."""
+        f = tmp_path / "bad.vera"
+        f.write_text(self._BAD)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "Slot environments" not in result.stdout
+
+    def test_no_output_on_error_json(self, tmp_path: Path) -> None:
+        """Type error with --json → ok is False, no slot data emitted."""
+        f = tmp_path / "bad.vera"
+        f.write_text(self._BAD)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", "--json", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is False
+        # slot_environments may be absent (parse/transform errors) or [] (typecheck errors)
+        assert parsed.get("slot_environments", []) == []
+
+    def test_inprocess_two_int(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """In-process: cmd_check with explain_slots=True produces slot table."""
+        f = tmp_path / "two_int.vera"
+        f.write_text(self._TWO_INT)
+        rc = cmd_check(str(f), explain_slots=True)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "@Int.0  parameter 2 (last @Int)" in captured.out
+        assert "@Int.1  parameter 1 (first @Int)" in captured.out

@@ -91,35 +91,65 @@ def cmd_parse(path: str) -> int:
         return 1
 
 
-def cmd_check(path: str, as_json: bool = False, quiet: bool = False) -> int:
+def cmd_check(
+    path: str,
+    as_json: bool = False,
+    quiet: bool = False,
+    explain_slots: bool = False,
+) -> int:
     """Parse, transform, and type-check a .vera file."""
+    from vera.ast import FnDecl, format_type_expr
     from vera.checker import typecheck
     from vera.resolver import ModuleResolver
+    from vera.slots import format_slot_table, slot_table, slot_table_dict
 
     try:
         p, source, tree = _load_and_parse(path)
-        ast = transform(tree)
+        program = transform(tree)
 
 
         # Resolve imports (C7a)
         resolver = ModuleResolver(_root=p.parent)
-        resolved = resolver.resolve_imports(ast, p)
+        resolved = resolver.resolve_imports(program, p)
         resolve_diags = resolver.errors
 
         diagnostics = resolve_diags + typecheck(
-            ast, source, file=str(p), resolved_modules=resolved,
+            program, source, file=str(p), resolved_modules=resolved,
         )
 
         errors = [d for d in diagnostics if d.severity == "error"]
         warnings = [d for d in diagnostics if d.severity == "warning"]
 
+        # Build slot environment tables (only on success)
+        slot_sections: list[str] = []
+        slot_json: list[dict[str, object]] = []
+        if explain_slots and not errors:
+            for top in program.declarations:
+                if not isinstance(top.decl, FnDecl):
+                    continue
+                decl = top.decl
+                table = slot_table(decl.params)
+                params_str = (
+                    ", ".join(format_type_expr(te) for te in decl.params)
+                    + " -> "
+                    + format_type_expr(decl.return_type)
+                )
+                if as_json:
+                    slot_json.append(slot_table_dict(decl.name, table))
+                else:
+                    slot_sections.append(
+                        format_slot_table(decl.name, params_str, table)
+                    )
+
         if as_json:
-            result = {
+            result: dict[str, object] = {
                 "ok": len(errors) == 0,
                 "file": path,
                 "diagnostics": [e.to_dict() for e in errors],
                 "warnings": [w.to_dict() for w in warnings],
             }
+            if explain_slots:
+                result["slot_environments"] = slot_json  # [] on error
             print(json.dumps(result, indent=2))
             return 1 if errors else 0
 
@@ -133,6 +163,15 @@ def cmd_check(path: str, as_json: bool = False, quiet: bool = False) -> int:
 
         if not quiet:
             print(f"OK: {path}")
+
+        if slot_sections:
+            print()
+            print("Slot environments (index 0 = last occurrence in signature):")
+            print()
+            for section in slot_sections:
+                print(section)
+                print()
+
         return 0
     except FileNotFoundError:
         if as_json:
@@ -897,6 +936,7 @@ def main() -> None:
     use_wat = "--wat" in args
     use_write = "--write" in args
     use_check_fmt = "--check" in args and command == "fmt"
+    use_explain_slots = "--explain-slots" in args
 
     # Parse --fn <name> option
     fn_name: str | None = None
@@ -955,7 +995,7 @@ def main() -> None:
         raw_fn_args = list(args[dash_idx + 1:])
 
     # Remove flags from remaining args to find the filepath
-    skip_flags = {"--json", "--quiet", "--wat", "--write", "--check"}
+    skip_flags = {"--json", "--quiet", "--wat", "--write", "--check", "--explain-slots"}
     skip_next = {"--fn", "-o", "--trials", "--target"}
     remaining: list[str] = []
     i = 1  # skip command
@@ -980,7 +1020,10 @@ def main() -> None:
     if command == "parse":
         sys.exit(cmd_parse(filepath))
     elif command in ("check", "typecheck"):
-        sys.exit(cmd_check(filepath, as_json=use_json, quiet=use_quiet))
+        sys.exit(cmd_check(
+            filepath, as_json=use_json, quiet=use_quiet,
+            explain_slots=use_explain_slots,
+        ))
     elif command == "verify":
         sys.exit(cmd_verify(filepath, as_json=use_json, quiet=use_quiet))
     elif command == "test":

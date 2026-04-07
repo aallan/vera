@@ -229,7 +229,7 @@ This means the verifier is modular: each function is verified independently, ass
 
 VCs are translated to SMT-LIB format and solved by Z3:
 
-1. **Tier 1 VCs** (decidable fragment): sent directly to Z3. Z3 returns `unsat` (VC is valid), `sat` (VC is invalid, with counterexample), or `unknown`.
+1. **Tier 1 VCs** (decidable fragment): sent directly to Z3. Z3 returns `unsat` (VC is valid), `sat` (VC is invalid, with counterexample), or `unknown`. Each invocation is bounded to **10 seconds** by default to prevent pathological blowup on adversarially crafted contracts. Tier 1 contracts that time out fall to Tier 3.
 2. **Tier 2 VCs** (with hints, not yet implemented — [#427](https://github.com/aallan/vera/issues/427)): the compiler provides additional axioms from `assert` statements and lemma functions. Z3 has a timeout of 10 seconds. Currently, contracts requiring hints fall to Tier 3.
 3. **Tier 3 fallback**: if Z3 returns `unknown` or times out, the VC is compiled as a runtime check.
 

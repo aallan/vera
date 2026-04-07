@@ -649,10 +649,9 @@ class TestBrowserEmit:
     def test_cli_target_browser(self, tmp_path: Path) -> None:
         """vera compile --target browser via subprocess."""
         out_dir = tmp_path / "browser_out"
-        # Use the 'vera' entry point (installed via console_scripts)
-        vera_bin = shutil.which("vera") or str(
-            ROOT / ".venv" / "bin" / "vera"
-        )
+        # Prefer the venv vera to avoid picking up a system-installed binary
+        venv_vera = ROOT / ".venv" / "bin" / "vera"
+        vera_bin = str(venv_vera) if venv_vera.exists() else (shutil.which("vera") or "vera")
         proc = subprocess.run(
             [
                 vera_bin,

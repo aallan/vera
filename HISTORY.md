@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit to v0.0.103, across 30 development days.
+How the Vera compiler was built, from initial commit through Stage 9, across 31 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -206,20 +206,28 @@ v0.0.101 completed the chain. A Vera program can fetch data from the web, parse 
 
 ---
 
-## Stage 9: Hardening and agent usability (28–29 March)
+## Stage 9: Hardening and agent usability (28–31 March)
 
-*Two days. Bug fixes, typed CLI arguments, AI agent discovery, security hardening, and conformance improvements.*
+*Four days. Bug fixes, typed CLI arguments, AI agent discovery, security hardening, conformance improvements, and contract-driven testing extended to String and Float64.*
 
 With the core language complete, Stage 9 focused on friction removal and polish — the small issues that would bias any benchmark or frustrate any agent trying to use the language seriously. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark suite built in a separate repository — began producing initial results during this stage.
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.0.102 | 28 Mar | **Bug fixes** — stdin double-read on `/dev/stdin` resolved by a single `_load_and_parse` helper in the CLI (#335); E609 false positive on `Option<T>` return types across modules (#360); pipe operator into module-qualified calls (#326). |
-| v0.0.103 | 29 Mar | **CI security hardening** — `pip-audit` dependency CVE scanning (#384), `ruff --select S` Bandit-equivalent lint rules (#388), `zizmor` workflow hardening (#385), CycloneDX SBOM generation (#389). **CLI improvements** — `vera version` command (#381), `--quiet` flag (#382). **Bug fixes** — `Http.post` `Content-Type: application/json` header (#354), `vera test` skip messages (#383). **Conformance** — two `verify`-level De Bruijn tests: deep let-chains (#393) and non-commutative operations (#394). **Documentation** — Known Limitations in SKILL.md (#404), skipped-tests table in TESTING.md, MIT licence text in README. |
-| v0.0.104 | 29 Mar | **Type inference fix** — `option_unwrap_or(None, 99)`, `result_unwrap_or(Err("oops"), 0)`, and `option_map(None, fn(...){...})` now type-check without a typed `let` workaround (#293). Three-layer fix: checker fresh-TypeVar overwrite rule, monomorphizer sparse-constructor field→tp-index mapping, missing `StringLit` in monomorphizer type inferencer. Phase 1a complete. |
-| v0.0.105 | 30 Mar | **Typed holes** — `?` placeholder expression for partial programs (#226). `vera check` reports W001 with expected type and available slot bindings; programs with holes cannot compile (E614). Iterative workflow: write skeleton with holes, read hints, fill in. |
-| v0.0.106 | 31 Mar | **`vera test` String & Float64 input generation** — Z3-guided contract testing now covers `String` (sequence sort, ≤50 chars) and `Float64` (real sort, boundary seeding) parameters, removing the `SKIPPED (cannot generate … inputs (see #169))` limitation for those types (#169). ADT input generation tracked in #440. |
-| v0.0.107 | 7 Apr | **CI: validate `examples/README.md` run commands** — `check_examples_readme.py` verifies every `vera run` command in the example index tables references an existing file and an exported function (#361). |
+| v0.0.102 | 28 Mar | **Bug fixes** — stdin double-read (#335), E609 false positive on `Option<T>` across modules (#360), pipe into module-qualified calls (#326). |
+| v0.0.103 | 29 Mar | **CI security hardening** — `pip-audit`, `ruff --select S`, `zizmor`, CycloneDX SBOM. **CLI** — `vera version`, `--quiet`. **Bug fixes** — HTTP post Content-Type header, `vera test` skip messages. **Conformance** — two verify-level De Bruijn tests (#393, #394). |
+| v0.0.104 | 29 Mar | **Type inference fix** — `None`/`Err` bare constructors in generic calls now type-check without `let` workarounds (#293). Phase 1a complete. |
+| v0.0.105 | 30 Mar | **Typed holes** — `?` placeholder for partial programs; `vera check` reports W001 with expected type and slot bindings; holes block compilation (E614). |
+| v0.0.106 | 31 Mar | **`vera test` String & Float64 input generation** — Z3 testing extended to String (sequence sort, ≤50 chars) and Float64 (real sort, boundary seeding) (#169). |
+
+## Stage 10: Evaluation and CI quality (7 April onwards)
+
+*After a week working in parallel on [VeraBench](https://github.com/aallan/vera-bench) evaluation and a Solar Production monitoring side project, Stage 10 returns to the compiler with benchmark results informing priorities.*
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| v0.0.107 | 7 Apr | **CI: validate `examples/README.md` run commands** — `check_examples_readme.py` verifies every `vera run` command references an existing file and an exported function (#361). |
+| v0.0.108 | 7 Apr | **`vera check --explain-slots`** — slot resolution table showing which parameter position each `@T.n` index refers to; addresses dominant VeraBench failure mode (#445). **SKILL.md prescriptive improvements** — five sections reworked to action-oriented workflows. **uv.lock CI enforcement** (#390). **Z3 timeout documented** (#391). |
 
 ---
 

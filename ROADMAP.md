@@ -1,6 +1,6 @@
 # Roadmap
 
-Vera v0.0.107 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
+Vera v0.0.108 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
 
 This roadmap is organised around four strategic milestones. Each milestone makes Vera meaningfully more useful to a concrete audience. Within each milestone, work is grouped into phases that can be executed roughly sequentially, though independent items can be interleaved.
 
@@ -8,7 +8,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,205 tests, 72 conformance programs, 30 examples, and a 13-chapter specification.
+The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,212 tests, 72 conformance programs, 30 examples, and a 13-chapter specification.
 
 Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers with canonical Vera and Python solutions — is complete and has produced initial results: Claude Sonnet 4 achieves 96% check@1 and 83% run_correct on Vera versus 92% on Python, a 9-percentage-point gap that is smaller than might be expected for a new language. The dominant failure mode is De Bruijn slot ordering, confirming the hypothesis that `@T.n` indexing is the main learning curve for models. The remaining gaps are empirical breadth (more model baselines, Phase 3 reporting), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
 
@@ -131,7 +131,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 
 - [#222](https://github.com/aallan/vera/issues/222) **LSP server** — the standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf). The existing `--json` infrastructure provides most of what's needed. An LSP enables real-time feedback as agents write code — diagnostics, hover information, completion suggestions. This is the single highest-leverage adoption enabler.
 - [#329](https://github.com/aallan/vera/issues/329) **Plumbing integration** — Vera WASM modules as verified tool calls in [Plumbing](https://arxiv.org/abs/2602.13275) agent graphs. Typed port interface maps Plumbing stream types to Vera ADTs at the JSON serialisation boundary.
-- [#183](https://github.com/aallan/vera/issues/183) **Human-readable slot annotations** — optional `-- name` annotations on slot references that are preserved by the formatter but ignored by the compiler. Bridges the readability gap for human reviewers of agent-generated code without compromising the De Bruijn system.
 - [#181](https://github.com/aallan/vera/issues/181) **Signature refactoring** — mechanical slot index rewriting when function signatures change. Essential for any refactoring workflow, whether human or agent-driven.
 
 ### Phase 3b: Discoverability improvements
@@ -183,9 +182,8 @@ These are not milestone-gated — they should be addressed continuously alongsid
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
 | Add property-based testing with Hypothesis | [#386](https://github.com/aallan/vera/issues/386) | 2–4 hours | Catches parser/formatter edge cases via round-trip properties |
-| Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether 3,205 tests catch real bugs, not just execute paths |
+| Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether 3,212 tests catch real bugs, not just execute paths |
 | Investigate parser fuzzing with Atheris | [#402](https://github.com/aallan/vera/issues/402) | 4–8 hours | Crash-inducing inputs for parser and type checker |
-| Add hash-pinned lockfile (pip-compile or uv lock) | [#390](https://github.com/aallan/vera/issues/390) | 30 min | Prevents dependency confusion attacks |
 | Improve browser runtime test coverage to >80% | [#349](https://github.com/aallan/vera/issues/349) | 2–4 hours | Parity with Python-side coverage gate |
 
 
@@ -199,7 +197,6 @@ These are not milestone-gated — they should be addressed continuously alongsid
 
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
-| Add Z3 solver timeout per contract | [#391](https://github.com/aallan/vera/issues/391) | 30 min | Prevents DoS via pathological contracts |
 | Audit `smt.py` for soundness | [#392](https://github.com/aallan/vera/issues/392) | 4–8 hours | A bug here silently bypasses verification |
 
 ### Testing gaps
@@ -227,4 +224,4 @@ The compiler was built through ten development phases from February to March 202
 | C8.5 | v0.0.66–v0.0.88 | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
 | C9 | v0.0.89–v0.0.101 | **Abilities, standard library, data types, effects** — Eq/Ord/Hash/Show, Map/Set, JSON, HTML, Markdown, Http, Decimal, Inference, standard prelude, combinators, higher-order array ops | Done |
 
-**630+ commits, 107 tagged releases, 3,205 tests, 96% coverage, 72 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.
+**630+ commits, 108 tagged releases, 3,212 tests, 96% coverage, 72 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.
