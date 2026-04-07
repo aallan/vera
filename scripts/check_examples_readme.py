@@ -46,7 +46,10 @@ def parse_run_command(cmd: str) -> tuple[str, str | None]:
     fn_match = re.search(r"--fn\s+(\S+)", rest)
     fn_name = fn_match.group(1) if fn_match else None
     # File path is first token
-    file_path = rest.split()[0]
+    tokens = rest.split()
+    if not tokens:
+        raise ValueError(f"no file path in command: {cmd!r}")
+    file_path = tokens[0]
     return file_path, fn_name
 
 
