@@ -397,7 +397,44 @@ Inside an anonymous function, inner parameters are numbered first. Captured oute
 
 ---
 
-## 9. Further reading
+## 9. Debugging with `--explain-slots`
+
+When you are uncertain which parameter a slot index refers to, run:
+
+```bash
+vera check --explain-slots your_file.vera
+```
+
+The compiler prints a slot resolution table for every function:
+
+```text
+Slot environments (index 0 = last occurrence in signature):
+
+  fn divide(@Int, @Int -> @Int)
+    @Int.0  parameter 2 (last @Int)
+    @Int.1  parameter 1 (first @Int)
+
+  fn repeat(@String, @Int -> @String)
+    @Int.0    parameter 2 (only @Int)
+    @String.0  parameter 1 (only @String)
+```
+
+**Use this before writing non-commutative operations.** For `fn subtract(@Int, @Int -> @Int)`,
+the body `@Int.1 - @Int.0` computes parameter1 − parameter2 (first minus second). The body
+`@Int.0 - @Int.1` computes the opposite. The table removes all ambiguity.
+
+The `--json` flag works too: `vera check --explain-slots --json` includes a `slot_environments`
+array in the output, useful for programmatic consumption.
+
+**Recommended workflow for any function with duplicate parameter types:**
+1. Write the signature.
+2. Run `vera check --explain-slots`.
+3. Read the table.
+4. Write contracts and body using the confirmed indices.
+
+---
+
+## 10. Further reading
 
 The spec chapter on slot references is the authoritative technical reference for how Vera resolves `@T.n`:
 

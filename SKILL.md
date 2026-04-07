@@ -219,6 +219,8 @@ private fn clamp(@Int, @Int, @Int -> @Int)
 
 ## Slot References (@T.n)
 
+**De Bruijn slot ordering is the most common source of bugs in Vera programs.** Before writing contracts, `ensures` clauses, or body expressions that involve multiple parameters of the same type, run `vera check --explain-slots` to confirm which index maps to which parameter. Do not rely on intuition.
+
 Vera has no variable names. Every binding is referenced by type and index. See [`DE_BRUIJN.md`](DE_BRUIJN.md) for the academic background, deeper examples, and the commutative-operations trap.
 
 ```
@@ -296,6 +298,42 @@ private fn abs(@Int -> @Nat)
 ### Index is mandatory
 
 `@Int` alone is not a valid reference. Always write `@Int.0`, `@Int.1`, etc.
+
+### Debugging slot indices with --explain-slots
+
+**Always run `vera check --explain-slots` before writing contracts or function calls that
+involve multiple parameters of the same type.** This is the single most reliable way to avoid
+De Bruijn ordering mistakes.
+
+```bash
+vera check --explain-slots your_file.vera
+```
+
+Output:
+
+```text
+Slot environments (index 0 = last occurrence in signature):
+
+  fn divide(@Int, @Int -> @Int)
+    @Int.0  parameter 2 (last @Int)
+    @Int.1  parameter 1 (first @Int)
+```
+
+**Read this table before writing any contract or recursive call.** The ordering only matters
+when a function has multiple parameters of the same type — but that is exactly when bugs occur.
+
+Example: for `fn divide(@Int, @Int -> @Int)`, the contract `requires(@Int.1 != 0)` guards the
+*first* parameter (the divisor). Confirm this by checking the table: `@Int.1 = parameter 1
+(first @Int)`.
+
+**Workflow:**
+1. Write the function signature.
+2. Run `vera check --explain-slots` to get the slot table.
+3. Use the table to write contracts and body expressions with correct `@T.n` indices.
+4. If `vera check` reports E130 (unresolved slot), re-read the table — you have the wrong index.
+
+The `--json` flag also works: `vera check --explain-slots --json` emits a `slot_environments`
+array, useful when processing diagnostics programmatically.
 
 ## Types
 
@@ -428,7 +466,7 @@ Statements end with `;`. The final expression (no `;`) is the block's value.
 
 ## Typed Holes
 
-A **typed hole** is the expression `?`. It is a placeholder for an incomplete expression. The compiler reports the expected type and all available bindings — you do not have to guess.
+**When you do not know the right expression to write, use `?` rather than guessing.** A typed hole tells you immediately what type is needed and what bindings are available — it is always faster than writing the wrong thing and debugging the type error.
 
 ```vera
 public fn double(@Int -> @Int)
@@ -524,6 +562,8 @@ All built-in functions follow predictable naming patterns. When guessing a funct
 | Prefix-less | Math universals and float constants only | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, `infinity` |
 
 **String operations always use `string_` prefix** — `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`. **Float64 predicates use `float_` prefix** — `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`** — `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) and float constants (`nan`, `infinity`) are the **only** exceptions — they need no prefix because they are universally understood mathematical names.
+
+**If `vera check` reports an unresolved function name, apply these patterns to derive the correct name before giving up.** The convention is strict and consistent — the right name is always derivable. Do not invent names that don't follow the pattern; they will not exist.
 
 ### Option and Result Combinators
 
@@ -918,6 +958,29 @@ private fn factorial(@Nat -> @Nat)
 ```
 
 For nested recursion, use lexicographic ordering: `decreases(@Nat.0, @Nat.1)`.
+
+### Workflow: writing contracts incrementally
+
+**Start with scaffolding, then strengthen.** A function with placeholder contracts type-checks
+and compiles:
+
+```vera
+requires(true) ensures(true)
+```
+
+Fill in real contracts *after* the body type-checks cleanly. Strengthen in this order:
+
+1. Write `requires(true) ensures(true)` and run `vera check` — confirm the body is correct first.
+2. Add a `requires` condition for each invariant the caller must satisfy.
+3. Add an `ensures` condition describing what the function guarantees. Use `@T.result` for the
+   return value.
+4. Run `vera verify` — **not just `vera check`** — to confirm contracts are statically provable.
+   `vera check` only type-checks; `vera verify` runs Z3.
+5. If `vera verify` reports a contract will be checked at runtime (Tier 3), the Z3 solver could
+   not prove it. Add a `decreases` clause for recursive functions, or simplify the contract
+   expression.
+6. Run `vera test` to find counterexamples. If `vera test` reports a failure, the contract is
+   reachable and the function body is wrong.
 
 ### Quantified expressions
 

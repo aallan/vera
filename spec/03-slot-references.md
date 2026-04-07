@@ -81,6 +81,23 @@ In this example:
 - After the `let`, there are two `Int` bindings: the `let` binding (`@Int.0`) and the parameter (`@Int.1`).
 - The final `@Int.0` evaluates to the `let` binding.
 
+### 3.4.2 Development Aid: `vera check --explain-slots`
+
+The `vera check --explain-slots` flag prints a slot resolution table for each function after a
+successful type-check, showing which parameter position each `@T.n` index refers to. This is
+a development and debugging aid — it is equivalent to manually applying the resolution algorithm
+to the function's parameter list.
+
+Example output for `fn divide(@Int, @Int -> @Int)`:
+
+```text
+  fn divide(@Int, @Int -> @Int)
+    @Int.0  parameter 2 (last @Int)
+    @Int.1  parameter 1 (first @Int)
+```
+
+The `--json` flag extends the output with a `slot_environments` array for programmatic use.
+
 ## 3.5 Worked Examples
 
 ### Example 1: Simple Function

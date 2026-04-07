@@ -2806,3 +2806,216 @@ class TestMainQuiet:
         )
         assert result.returncode == 0
         assert result.stdout == ""
+
+
+class TestExplainSlots:
+    """Tests for vera check --explain-slots."""
+
+    _TWO_INT = (
+        "public fn divide(@Int, @Int -> @Int)\n"
+        "  requires(@Int.1 != 0)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  @Int.0 / @Int.1\n"
+        "}\n"
+    )
+    _MIXED = (
+        "public fn greet(@String, @Int -> @String)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  string_concat(@String.0, int_to_string(@Int.0))\n"
+        "}\n"
+    )
+    _BAD = "public fn bad(@Int -> @Int) { @Int.0 }\n"
+    _SINGLE = (
+        "public fn negate(@Int -> @Int)\n"
+        "  requires(true)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  -@Int.0\n"
+        "}\n"
+    )
+
+    def test_two_same_type_params(self, tmp_path: Path) -> None:
+        """Two @Int params: @Int.0 = param 2, @Int.1 = param 1."""
+        f = tmp_path / "two_int.vera"
+        f.write_text(self._TWO_INT)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        out = result.stdout
+        assert "Slot environments" in out
+        assert "@Int.0  parameter 2 (last @Int)" in out
+        assert "@Int.1  parameter 1 (first @Int)" in out
+
+    def test_single_param_per_type(self, tmp_path: Path) -> None:
+        """Single param: shown with 'only @T' label."""
+        f = tmp_path / "single.vera"
+        f.write_text(self._SINGLE)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        out = result.stdout
+        assert "Slot environments" in out
+        assert "@Int.0  parameter 1 (only @Int)" in out
+
+    def test_mixed_types(self, tmp_path: Path) -> None:
+        """@String and @Int each appear once: independent slot counters."""
+        f = tmp_path / "mixed.vera"
+        f.write_text(self._MIXED)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        out = result.stdout
+        assert "@Int.0  parameter 2 (only @Int)" in out
+        assert "@String.0  parameter 1 (only @String)" in out
+
+    def test_json_output(self, tmp_path: Path) -> None:
+        """--explain-slots --json includes slot_environments key."""
+        f = tmp_path / "two_int.vera"
+        f.write_text(self._TWO_INT)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", "--json", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is True
+        assert "slot_environments" in parsed
+        envs = parsed["slot_environments"]
+        assert len(envs) == 1
+        slots = envs[0]["slots"]
+        assert {"slot": "@Int.0", "type": "Int", "parameter": 2} in slots
+        assert {"slot": "@Int.1", "type": "Int", "parameter": 1} in slots
+
+    def test_no_output_on_error(self, tmp_path: Path) -> None:
+        """Type error → no slot environments emitted."""
+        f = tmp_path / "bad.vera"
+        f.write_text(self._BAD)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        assert "Slot environments" not in result.stdout
+
+    def test_no_output_on_error_json(self, tmp_path: Path) -> None:
+        """Type error with --json → ok is False, no slot data emitted."""
+        f = tmp_path / "bad.vera"
+        f.write_text(self._BAD)
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", "--json", str(f)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is False
+        assert parsed["slot_environments"] == []
+
+    def test_missing_file_json_explain_slots(self, tmp_path: Path) -> None:
+        """Missing file with --explain-slots --json → slot_environments: [] in output."""
+        missing = tmp_path / "does_not_exist.vera"
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", "--json", str(missing)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is False
+        assert parsed["slot_environments"] == []
+
+    def test_inprocess_two_int(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """In-process: cmd_check with explain_slots=True produces slot table."""
+        f = tmp_path / "two_int.vera"
+        f.write_text(self._TWO_INT)
+        rc = cmd_check(str(f), explain_slots=True)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "@Int.0  parameter 2 (last @Int)" in captured.out
+        assert "@Int.1  parameter 1 (first @Int)" in captured.out
+
+    def test_inprocess_single_param(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """In-process: single param per type shows 'only @T' label."""
+        f = tmp_path / "single.vera"
+        f.write_text(self._SINGLE)
+        rc = cmd_check(str(f), explain_slots=True)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "only @Int" in captured.out
+
+    def test_inprocess_mixed_types(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """In-process: mixed types each show 'only @T' label."""
+        f = tmp_path / "mixed.vera"
+        f.write_text(self._MIXED)
+        rc = cmd_check(str(f), explain_slots=True)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "only @String" in captured.out
+        assert "only @Int" in captured.out
+
+    def test_inprocess_json(self, tmp_path: Path) -> None:
+        """In-process: as_json=True includes slot_environments in result dict."""
+        import io
+        from contextlib import redirect_stdout
+        f = tmp_path / "two_int.vera"
+        f.write_text(self._TWO_INT)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cmd_check(str(f), as_json=True, explain_slots=True)
+        assert rc == 0
+        parsed = json.loads(buf.getvalue())
+        assert "slot_environments" in parsed
+        assert len(parsed["slot_environments"]) == 1
+        slots = parsed["slot_environments"][0]["slots"]
+        assert any(s["slot"] == "@Int.0" and s["parameter"] == 2 for s in slots)
+
+    def test_inprocess_generic_param(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """In-process: generic type param like @Option<Int> gets correct slot name."""
+        src = (
+            "public fn unwrap_or(@Option<Int>, @Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  match @Option<Int>.0 {\n"
+            "    Some(@Int) -> @Int.0,\n"
+            "    None -> @Int.0\n"
+            "  }\n"
+            "}\n"
+        )
+        f = tmp_path / "generic.vera"
+        f.write_text(src)
+        rc = cmd_check(str(f), explain_slots=True)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "@Option<Int>.0" in captured.out
+
+    def test_inprocess_three_same_type(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """In-process: three params of same type produces 'N from last' label."""
+        src = (
+            "public fn triple(@Int, @Int, @Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0 + @Int.1 + @Int.2\n"
+            "}\n"
+        )
+        f = tmp_path / "triple.vera"
+        f.write_text(src)
+        rc = cmd_check(str(f), explain_slots=True)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "last @Int" in captured.out
+        assert "2 from last @Int" in captured.out
+        assert "first @Int" in captured.out

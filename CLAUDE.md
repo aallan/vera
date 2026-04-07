@@ -22,6 +22,7 @@ python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 vera check file.vera              # Parse and type-check
 vera check --json file.vera       # Type-check with JSON diagnostics
 vera check --quiet file.vera      # Type-check, suppress success output
+vera check --explain-slots file.vera  # Show slot resolution table (which @T.n maps to which param)
 vera verify file.vera             # Type-check + verify contracts via Z3
 vera verify --json file.vera      # Verify with JSON diagnostics
 vera verify --quiet file.vera     # Verify, suppress success output

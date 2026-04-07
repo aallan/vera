@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.108] - 2026-04-07
+
+### Added
+- **`vera check --explain-slots`** ([#445](https://github.com/aallan/vera/issues/445)) — new flag prints a slot resolution table after a successful type-check, showing which parameter position each `@T.n` index refers to. Example: `fn divide(@Int, @Int -> @Int)` produces `@Int.0 = parameter 2 (last @Int)`, `@Int.1 = parameter 1 (first @Int)`. Also available in JSON mode via `--json` (adds `slot_environments` array to output). Closes [#445](https://github.com/aallan/vera/issues/445), closes [#183](https://github.com/aallan/vera/issues/183) (won't fix — see issue for design rationale).
+- **SKILL.md prescriptive improvements** — five sections reworked from descriptive to action-oriented: De Bruijn intro now leads with a bold warning; new `--explain-slots` workflow subsection; new "Workflow: writing contracts incrementally" subsection in the Contracts section; Typed Holes intro reframed imperatively; Built-in function naming section adds a directive for handling unresolved names.
+- **DE_BRUIJN.md** — new §9 "Debugging with `--explain-slots`" with worked examples.
+- **`uv lock --check` in CI** ([#390](https://github.com/aallan/vera/issues/390)) — lint job now verifies `uv.lock` is consistent with `pyproject.toml` on every PR. `CONTRIBUTING.md` updated to document `uv sync` as the recommended install method. Closes [#390](https://github.com/aallan/vera/issues/390).
+
+### Fixed
+- **Z3 solver timeout documented** ([#391](https://github.com/aallan/vera/issues/391)) — the 10-second per-contract timeout was already implemented in `vera/smt.py` but undocumented. `spec/06-contracts.md` §6.4.3 now explicitly documents the default. Closes [#391](https://github.com/aallan/vera/issues/391).
+
 ## [0.0.107] - 2026-04-07
 
 ### Added
@@ -1514,7 +1525,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.107...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.108...HEAD
+[0.0.108]: https://github.com/aallan/vera/compare/v0.0.107...v0.0.108
 [0.0.107]: https://github.com/aallan/vera/compare/v0.0.106...v0.0.107
 [0.0.106]: https://github.com/aallan/vera/compare/v0.0.105...v0.0.106
 [0.0.105]: https://github.com/aallan/vera/compare/v0.0.104...v0.0.105
