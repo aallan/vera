@@ -401,13 +401,13 @@ Inside an anonymous function, inner parameters are numbered first. Captured oute
 
 When you are uncertain which parameter a slot index refers to, run:
 
-```
+```bash
 vera check --explain-slots your_file.vera
 ```
 
 The compiler prints a slot resolution table for every function:
 
-```
+```text
 Slot environments (index 0 = last occurrence in signature):
 
   fn divide(@Int, @Int -> @Int)

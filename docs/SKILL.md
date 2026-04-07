@@ -305,13 +305,13 @@ private fn abs(@Int -> @Nat)
 involve multiple parameters of the same type.** This is the single most reliable way to avoid
 De Bruijn ordering mistakes.
 
-```
+```bash
 vera check --explain-slots your_file.vera
 ```
 
 Output:
 
-```
+```text
 Slot environments (index 0 = last occurrence in signature):
 
   fn divide(@Int, @Int -> @Int)

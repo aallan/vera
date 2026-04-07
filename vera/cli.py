@@ -4,6 +4,7 @@ Usage:
     vera parse     <file.vera>              Parse a file and print the tree
     vera check     <file.vera>              Parse and type-check a file
     vera check     --json <file.vera>       Type-check and output JSON diagnostics
+    vera check     --explain-slots <file>   Show slot resolution table (@T.n → parameter)
     vera typecheck <file.vera>              Same as check (explicit alias)
     vera verify    <file.vera>              Type-check and verify contracts
     vera verify    --json <file.vera>       Verify and output JSON diagnostics

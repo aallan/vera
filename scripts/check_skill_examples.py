@@ -97,7 +97,7 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # Effect declarations — bare effects(...) clauses
     1005: ("FRAGMENT", "Effect declarations list"),
     1110: ("FRAGMENT", "Async effect declarations list"),
-    1005: ("FRAGMENT", "Async effect declarations, bare clauses"),
+    1130: ("FRAGMENT", "Async effect declarations, bare clauses"),
     1160: ("FRAGMENT", "Http effect declarations list"),
     1191: ("FRAGMENT", "Inference effect declarations list"),
 
@@ -108,10 +108,10 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     1465: ("FRAGMENT", "Comment syntax example"),
 
     # Type conversions — bare function calls
-    859: ("FRAGMENT", "Float64 predicate and constant examples, bare calls"),
+    886: ("FRAGMENT", "Type conversions, bare calls"),
 
     # Float64 predicates — bare function calls
-    886: ("FRAGMENT", "Float64 predicate examples, bare calls"),
+    899: ("FRAGMENT", "Float64 predicate and constant examples, bare calls"),
 
     # Common mistakes section — intentionally wrong code
     1544: ("FRAGMENT", "Wrong: missing contracts"),
