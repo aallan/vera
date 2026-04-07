@@ -76,7 +76,11 @@ def main() -> int:
     failures: list[str] = []
 
     for lineno, cmd in commands:
-        file_path_str, fn_name = parse_run_command(cmd)
+        try:
+            file_path_str, fn_name = parse_run_command(cmd)
+        except ValueError as exc:
+            failures.append(f"  line {lineno}: {exc}\n    Command: {cmd}")
+            continue
         vera_file = root / file_path_str
 
         if not vera_file.is_file():
