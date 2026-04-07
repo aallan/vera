@@ -90,6 +90,9 @@ jobs:
       - name: Check all examples type-check and verify cleanly
         run: python scripts/check_examples.py
 
+      - name: Check vera run commands in examples/README.md are valid
+        run: python scripts/check_examples_readme.py
+
       - name: Check version numbers are in sync
         run: python scripts/check_version_sync.py
 

@@ -47,6 +47,7 @@ mypy vera/                        # Type-check the compiler itself
 
 python scripts/check_conformance.py    # Verify all 72 conformance programs pass their declared level
 python scripts/check_examples.py      # Verify all 30 examples parse + check + verify
+python scripts/check_examples_readme.py # Verify vera run commands in examples/README.md
 python scripts/check_spec_examples.py # Verify spec code blocks parse
 python scripts/check_readme_examples.py # Verify README code blocks parse
 python scripts/check_examples_doc.py  # Verify EXAMPLES.md code blocks parse

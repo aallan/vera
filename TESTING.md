@@ -371,7 +371,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-After running `pre-commit install`, every commit is checked by 22 hooks:
+After running `pre-commit install`, every commit is checked by 23 hooks:
 
 | Hook | What it does |
 |------|-------------|
