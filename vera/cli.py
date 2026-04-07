@@ -896,8 +896,8 @@ Usage: vera <command> [options] <file>
 Commands:
     version              Print the installed Vera version (also --version, -V)
     parse                Parse a .vera file and print the parse tree
-    check [--json|--quiet]       Parse and type-check a .vera file
-    typecheck [--json|--quiet]   Same as check (explicit alias)
+    check [--json|--quiet|--explain-slots]       Parse and type-check a .vera file
+    typecheck [--json|--quiet|--explain-slots]   Same as check (explicit alias)
     verify [--json|--quiet]      Parse, type-check, and verify contracts
     test [--json]        Test contracts via Z3-guided input generation
     compile [--wat]      Compile a .vera file to WebAssembly
@@ -916,6 +916,7 @@ Options:
     --target <t>         Compilation target: wasm (default) or browser
     --write              Format in place (vera fmt)
     --check              Check if already canonical (vera fmt)
+    --explain-slots      Print slot-resolution tables after a successful check
     -- <args...>         Arguments to pass to the executed function
 """
 

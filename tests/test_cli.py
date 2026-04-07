@@ -2922,6 +2922,18 @@ class TestExplainSlots:
         assert parsed["ok"] is False
         assert parsed["slot_environments"] == []
 
+    def test_missing_file_json_explain_slots(self, tmp_path: Path) -> None:
+        """Missing file with --explain-slots --json → slot_environments: [] in output."""
+        missing = tmp_path / "does_not_exist.vera"
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "check", "--explain-slots", "--json", str(missing)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        parsed = json.loads(result.stdout)
+        assert parsed["ok"] is False
+        assert parsed["slot_environments"] == []
+
     def test_inprocess_two_int(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """In-process: cmd_check with explain_slots=True produces slot table."""
         f = tmp_path / "two_int.vera"
