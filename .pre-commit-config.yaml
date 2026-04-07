@@ -56,6 +56,13 @@ repos:
         pass_filenames: false
         files: '(\.vera$|vera/.*\.py$|vera/grammar\.lark$)'
 
+      - id: examples-readme
+        name: examples readme
+        entry: .venv/bin/python scripts/check_examples_readme.py
+        language: system
+        pass_filenames: false
+        files: '(examples/README\.md$|examples/.*\.vera$)'
+
       - id: readme-examples
         name: readme examples
         entry: .venv/bin/python scripts/check_readme_examples.py
