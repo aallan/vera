@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.107] - 2026-04-07
+
+### Added
+- **Validate `vera run` commands in `examples/README.md`** ([#361](https://github.com/aallan/vera/issues/361)) — new `scripts/check_examples_readme.py` parses every `vera run` command in the example index tables, verifies the referenced `.vera` file exists, and verifies any `--fn <name>` target is a public function in that file. Wired into pre-commit (triggers on `examples/README.md` or `.vera` changes) and CI. Closes [#361](https://github.com/aallan/vera/issues/361).
+
 ## [0.0.106] - 2026-03-31
 
 ### Added
@@ -1509,7 +1514,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.106...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.107...HEAD
+[0.0.107]: https://github.com/aallan/vera/compare/v0.0.106...v0.0.107
 [0.0.106]: https://github.com/aallan/vera/compare/v0.0.105...v0.0.106
 [0.0.105]: https://github.com/aallan/vera/compare/v0.0.104...v0.0.105
 [0.0.104]: https://github.com/aallan/vera/compare/v0.0.103...v0.0.104
