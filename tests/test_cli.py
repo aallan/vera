@@ -2920,8 +2920,7 @@ class TestExplainSlots:
         assert result.returncode == 1
         parsed = json.loads(result.stdout)
         assert parsed["ok"] is False
-        # slot_environments may be absent (parse/transform errors) or [] (typecheck errors)
-        assert parsed.get("slot_environments", []) == []
+        assert parsed["slot_environments"] == []
 
     def test_inprocess_two_int(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         """In-process: cmd_check with explain_slots=True produces slot table."""

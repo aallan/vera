@@ -176,19 +176,29 @@ def cmd_check(
         return 0
     except FileNotFoundError:
         if as_json:
-            print(json.dumps({"ok": False, "file": path,
-                              "diagnostics": [{"severity": "error",
-                                               "description": f"file not found: {path}",
-                                               "location": {"line": 0, "column": 0}}],
-                              "warnings": []}, indent=2))
+            err_result: dict[str, object] = {
+                "ok": False, "file": path,
+                "diagnostics": [{"severity": "error",
+                                 "description": f"file not found: {path}",
+                                 "location": {"line": 0, "column": 0}}],
+                "warnings": [],
+            }
+            if explain_slots:
+                err_result["slot_environments"] = []
+            print(json.dumps(err_result, indent=2))
             return 1
         print(f"Error: file not found: {path}", file=sys.stderr)
         return 1
     except VeraError as exc:
         if as_json:
-            print(json.dumps({"ok": False, "file": path,
-                              "diagnostics": [exc.diagnostic.to_dict()],
-                              "warnings": []}, indent=2))
+            err_result = {
+                "ok": False, "file": path,
+                "diagnostics": [exc.diagnostic.to_dict()],
+                "warnings": [],
+            }
+            if explain_slots:
+                err_result["slot_environments"] = []
+            print(json.dumps(err_result, indent=2))
             return 1
         print(exc.diagnostic.format(), file=sys.stderr)
         return 1
