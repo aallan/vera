@@ -222,7 +222,7 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 
 ## Stage 10: Evaluation and CI quality (7 April onwards)
 
-*After a week working in parallel on [VeraBench](https://github.com/aallan/vera-bench) evaluation and a Solar Production monitoring side project, Stage 10 returns to the compiler with benchmark results informing priorities.*
+*After a week working in parallel on [VeraBench](https://github.com/aallan/vera-bench) evaluation, Stage 10 returns to the compiler with benchmark results informing priorities.*
 
 | Version | Date | What shipped |
 |---------|------|-------------|
