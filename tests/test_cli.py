@@ -2932,3 +2932,79 @@ class TestExplainSlots:
         captured = capsys.readouterr()
         assert "@Int.0  parameter 2 (last @Int)" in captured.out
         assert "@Int.1  parameter 1 (first @Int)" in captured.out
+
+    def test_inprocess_single_param(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """In-process: single param per type shows 'only @T' label."""
+        f = tmp_path / "single.vera"
+        f.write_text(self._SINGLE)
+        rc = cmd_check(str(f), explain_slots=True)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "only @Int" in captured.out
+
+    def test_inprocess_mixed_types(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """In-process: mixed types each show 'only @T' label."""
+        f = tmp_path / "mixed.vera"
+        f.write_text(self._MIXED)
+        rc = cmd_check(str(f), explain_slots=True)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "only @String" in captured.out
+        assert "only @Int" in captured.out
+
+    def test_inprocess_json(self, tmp_path: Path) -> None:
+        """In-process: as_json=True includes slot_environments in result dict."""
+        import io
+        from contextlib import redirect_stdout
+        f = tmp_path / "two_int.vera"
+        f.write_text(self._TWO_INT)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cmd_check(str(f), as_json=True, explain_slots=True)
+        assert rc == 0
+        parsed = json.loads(buf.getvalue())
+        assert "slot_environments" in parsed
+        assert len(parsed["slot_environments"]) == 1
+        slots = parsed["slot_environments"][0]["slots"]
+        assert any(s["slot"] == "@Int.0" and s["parameter"] == 2 for s in slots)
+
+    def test_inprocess_generic_param(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """In-process: generic type param like @Option<Int> gets correct slot name."""
+        src = (
+            "public fn unwrap_or(@Option<Int>, @Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  match @Option<Int>.0 {\n"
+            "    Some(@Int) -> @Int.0,\n"
+            "    None -> @Int.0\n"
+            "  }\n"
+            "}\n"
+        )
+        f = tmp_path / "generic.vera"
+        f.write_text(src)
+        rc = cmd_check(str(f), explain_slots=True)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "@Option<Int>.0" in captured.out
+
+    def test_inprocess_three_same_type(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """In-process: three params of same type produces 'N from last' label."""
+        src = (
+            "public fn triple(@Int, @Int, @Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0 + @Int.1 + @Int.2\n"
+            "}\n"
+        )
+        f = tmp_path / "triple.vera"
+        f.write_text(src)
+        rc = cmd_check(str(f), explain_slots=True)
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "last @Int" in captured.out
+        assert "2 from last @Int" in captured.out
+        assert "first @Int" in captured.out
