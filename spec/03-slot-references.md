@@ -90,7 +90,7 @@ to the function's parameter list.
 
 Example output for `fn divide(@Int, @Int -> @Int)`:
 
-```
+```text
   fn divide(@Int, @Int -> @Int)
     @Int.0  parameter 2 (last @Int)
     @Int.1  parameter 1 (first @Int)

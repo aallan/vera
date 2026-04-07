@@ -205,7 +205,7 @@ def main() -> int:
         return 1
 
     # Non-Vera language tags to skip entirely
-    skip_langs = {"bash", "python", "json", "toml", "yaml", "shell", "sh", ""}
+    skip_langs = {"bash", "python", "json", "toml", "yaml", "shell", "sh", "text", ""}
 
     blocks = extract_code_blocks(skill)
 
