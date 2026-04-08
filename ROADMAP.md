@@ -10,7 +10,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,218 tests, 72 conformance programs, 30 examples, and a 13-chapter specification.
 
-Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers with canonical Vera and Python solutions — is complete and has produced initial results: Claude Sonnet 4 achieves 96% check@1 and 83% run_correct on Vera versus 92% on Python, a 9-percentage-point gap that is smaller than might be expected for a new language. The dominant failure mode is De Bruijn slot ordering, confirming the hypothesis that `@T.n` indexing is the main learning curve for models. The remaining gaps are empirical breadth (more model baselines, Phase 3 reporting), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
+Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers — now covers 6 models across 3 providers (v0.0.7). The headline result: Kimi K2.5 achieves 100% run_correct on Vera, beating both Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera. The flagship tier averages 93% Vera run_correct vs 93% Python — essentially parity. These are single-run results with high variance; stable rates will require pass@k evaluation. The remaining gaps are empirical breadth (repeated trials, more models), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
 
 ---
 
@@ -33,40 +33,35 @@ Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.
   4. **Recursive functions with termination proofs** — `decreases` clauses, testing whether agents produce provably terminating code
   5. **Multi-function programs with effects** — IO, State, Http, Inference, testing cross-function contract coherence
 
-  All four evaluation modes run on Claude Sonnet 4 across 50 problems.
+  Six models across three providers evaluated on all four modes (v0.0.7).
 
-  Complete cross-language benchmark with Claude Sonnet 4 across 50 problems.
+  ### Summary (run_correct — Vera vs Python vs TypeScript)
 
-  ### Summary
+  **Flagship tier:**
 
-  | Mode | check@1 | verify@1 | fix@1 | run_correct |
-  |------|---------|----------|-------|-------------|
-  | Vera (full-spec) | 94% | 98% | 67% | 83% |
-  | Vera (spec-from-NL) | 94% | 88% | 33% | 78% |
-  | Python (LLM) | 100% | - | - | 92% |
-  | TypeScript (LLM) | 100% | - | - | 79% |
-  | Python baseline | 100% | - | - | 100% |
-  | TypeScript baseline | 100% | - | - | 100% |
+  | Model | Vera | Python | TypeScript |
+  |-------|------|--------|------------|
+  | **Kimi K2.5** | **100%** | 86% | 91% |
+  | GPT-4.1 | 91% | 96% | 96% |
+  | Claude Opus 4 | 88% | 96% | 96% |
 
-  ### By Tier (run_correct)
+  **Sonnet tier:**
 
-  | Language | Tier 1 | Tier 4 | Tier 5 |
-  |----------|--------|--------|--------|
-  | Vera full-spec | 100% | 75% | 67% |
-  | Vera spec-from-NL | 100% | 50% | 80% |
-  | Python LLM | 100% | 100% | 67% |
-  | TypeScript LLM | 100% | 88% | 33% |
-  | Both baselines | 100% | 100% | 100% |
+  | Model | Vera | Python | TypeScript |
+  |-------|------|--------|------------|
+  | **Kimi K2 Turbo** | **83%** | 88% | 79% |
+  | Claude Sonnet 4 | 79% | 96% | 88% |
+  | GPT-4o | 78% | 93% | 83% |
 
   ### Key findings
 
-  **TypeScript is surprisingly worse than Vera.** Sonnet's TypeScript achieves only 79% run_correct — below Vera's 83% (full-spec). The damage is in Tier 5 where TypeScript drops to 33% vs Python's 67% and Vera's 67%. Sonnet struggles with stateful/effectful patterns in TypeScript more than in Python, likely because the problems describe Vera-style state handlers which map more naturally to Python's imperative state than TypeScript's class/closure patterns.
+  **Kimi K2.5 writes perfect Vera code.** 100% run_correct on both full-spec and spec-from-NL modes, beating Python (86%) and TypeScript (91%). This is the first model where Vera is the best language across the board.
 
-  **Python remains the strongest LLM target.** 92% run_correct, 100% check. Python's familiarity in training data and direct imperative style make it the easiest language for these problems.
+  **Three models beat TypeScript on Vera.** Kimi K2.5 (+9pp), Kimi K2 Turbo (+4pp), and in the initial v0.0.4 benchmark Claude Sonnet 4 also beat TypeScript (83% vs 79%). The pattern is consistent across providers.
 
-  **Vera with contracts beats TypeScript without them.** Vera full-spec (83%) outperforms TypeScript (79%) despite being a novel language not in training data. The contract system provides guardrails that compensate for the syntactic unfamiliarity.
+  **Python remains the strongest target for most models.** The gap between Python and Vera varies from 0pp (Kimi K2.5) to 17pp (Claude Sonnet 4). The flagship tier averages 93% Vera vs 93% Python — essentially parity.
 
-  **The ranking: Python (92%) > Vera full-spec (83%) > TypeScript (79%) > Vera spec-from-NL (78%).** Writing contracts from scratch is harder than writing in an unfamiliar language with contracts given.
+  **These are early, single-run results.** The v0.0.4 Claude Sonnet 4 result (83% Vera, 79% TypeScript) shifted to 79%/88% in the v0.0.7 re-run, illustrating the variance inherent in single-run evaluation. Stable rates will require pass@k evaluation with multiple trials.
 
 
 ### Phase 1c: Expand contract-driven testing
