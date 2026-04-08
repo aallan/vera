@@ -558,6 +558,10 @@
       font-weight: 600;
     }
 
+    .verabench-expanded {
+      margin-top: 2rem;
+    }
+
     .verabench-desc {
       color: var(--brown-500);
       font-size: 0.9rem;
@@ -1182,16 +1186,19 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
               </tr>
             </tbody>
           </table>
-          <p class="verabench-desc">In our latest results <strong style="color: var(--brown-900);">Kimi K2.5 writes perfect Vera code</strong> &mdash; 100% run_correct, beating both Python (86%) and TypeScript (91%), alongside that we see that Kimi K2 Turbo also writes better Vera than TypeScript. While in our previous <a href="https://github.com/aallan/vera-bench/releases/tag/v0.0.4">v0.0.4</a> benchmark, Claude Sonnet 4 wrote Vera better than TypeScript (83% vs 79%) this result flipped in the latest v0.0.7 re-run above illustrating the variance inherent in single-run evaluation.</p>
-          <a href="https://github.com/aallan/vera-bench" style="display: block; margin: 1.25rem 0;"><img src="verabench-delta-chart.png" alt="Does Vera beat Python / TypeScript?" style="width: 100%; height: auto; border-radius: 4px;"></a>
-          <p class="verabench-desc">It seems like Vera's mandatory contracts and typed slot references provide enough structure to compensate for zero training data. However it is still early days, just 50 problems, and one run per model. Stable rates will require pass@k evaluation with multiple trials.</p>
-          <p class="verabench-desc">Results from <a href="https://github.com/aallan/vera-bench/releases/tag/v0.0.7">VeraBench v0.0.7</a> against <a href="https://github.com/aallan/vera/releases/tag/v0.0.108">Vera v0.0.108</a>. Five tiers from pure arithmetic through ADTs, recursion, and multi-function effect propagation.</p>
-          <div class="verabench-cta">
-            <a href="https://github.com/aallan/vera-bench" class="cta-btn primary">
-              <svg class="cta-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-              GitHub
-            </a>
-          </div>
+        </div>
+      </div>
+      <!-- Full-width content below the mascot + table row -->
+      <div class="verabench-expanded">
+        <p class="verabench-desc">In our latest results <strong style="color: var(--brown-900);">Kimi K2.5 writes perfect Vera code</strong> &mdash; 100% run_correct, beating both Python (86%) and TypeScript (91%), alongside that we see that Kimi K2 Turbo also writes better Vera than TypeScript. While in our previous <a href="https://github.com/aallan/vera-bench/releases/tag/v0.0.4">v0.0.4</a> benchmark, Claude Sonnet 4 wrote Vera better than TypeScript (83% vs 79%) this result flipped in the latest v0.0.7 re-run above illustrating the variance inherent in single-run evaluation.</p>
+        <a href="https://github.com/aallan/vera-bench" style="display: block; margin: 1.25rem 0;"><img src="verabench-delta-chart.png" alt="Does Vera beat Python / TypeScript?" style="width: 100%; height: auto; border-radius: 4px;"></a>
+        <p class="verabench-desc">It seems like Vera's mandatory contracts and typed slot references provide enough structure to compensate for zero training data. However it is still early days, just 50 problems, and one run per model. Stable rates will require pass@k evaluation with multiple trials.</p>
+        <p class="verabench-desc">Results from <a href="https://github.com/aallan/vera-bench/releases/tag/v0.0.7">VeraBench v0.0.7</a> against <a href="https://github.com/aallan/vera/releases/tag/v0.0.108">Vera v0.0.108</a>. Five tiers from pure arithmetic through ADTs, recursion, and multi-function effect propagation.</p>
+        <div class="verabench-cta">
+          <a href="https://github.com/aallan/vera-bench" class="cta-btn primary">
+            <svg class="cta-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+            GitHub
+          </a>
         </div>
       </div>
     </div>
