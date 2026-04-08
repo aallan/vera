@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+title: "Vera: a programming language designed for LLMs to write"
+message: "If you use Vera in your research, please cite it as below."
+type: software
+authors:
+  - given-names: Alasdair
+    family-names: Allan
+    email: alasdair@babilim.co.uk
+repository-code: "https://github.com/aallan/vera"
+url: "https://veralang.dev"
+license: MIT
+keywords:
+  - programming-language
+  - llm
+  - code-generation
+  - webassembly
+  - formal-verification
+  - contracts
+  - algebraic-effects
