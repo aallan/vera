@@ -3103,6 +3103,86 @@ public fn test(@Unit -> @Nat)
 """
         assert _run(src, fn="test") == 1042
 
+    def test_exn_string_throw_caught(self) -> None:
+        """Exn<String> throw+catch: pair type (ptr, len) uses (param i32 i32) tag."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> { string_length(@String.0) }
+  } in {
+    throw("hello")
+  }
+}
+"""
+        assert _run(src, fn="test") == 5
+
+    def test_exn_string_no_throw(self) -> None:
+        """Exn<String> handler with non-throwing body: pair type locals allocated."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> { 0 - 1 }
+  } in {
+    string_length("world")
+  }
+}
+"""
+        assert _run(src, fn="test") == 5
+
+    def test_exn_string_handler_returns_string(self) -> None:
+        """Handler clause returns a String (result_wt == i32_pair → result i32 i32)."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+public fn test(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = handle[Exn<String>] {
+    throw(@String) -> { @String.0 }
+  } in {
+    throw("caught")
+  };
+  IO.print(@String.0)
+}
+"""
+        # Pin the ABI-level encoding: tag uses (param i32 i32) for the String
+        # payload, and the outer block/try_table carry (result i32 i32) because
+        # the handler clause returns a String.
+        result = _compile_ok(src)
+        assert "(tag $exn_String (param i32 i32))" in result.wat
+        assert "result i32 i32" in result.wat
+        # Verify runtime behaviour
+        assert _run_io(src, fn="test") == "caught"
+
+    def test_exn_string_empty_payload(self) -> None:
+        """throw("") correctly passes a zero-length ptr/len pair through the tag."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> { string_length(@String.0) }
+  } in {
+    throw("")
+  }
+}
+"""
+        assert _run(src, fn="test") == 0
+
 
 # =====================================================================
 # C6k: Byte type

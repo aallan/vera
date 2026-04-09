@@ -1,0 +1,45 @@
+-- Conformance: Exn<String> effect handler (Chapter 7)
+-- Tests: Exn<String> throw, catch with String payload (pair type in WASM)
+effect Exn<E> {
+  op throw(E -> Never);
+}
+
+-- Throws if the input is empty, otherwise returns it uppercased.
+private fn safe_upper(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{
+  if string_length(@String.0) == 0 then {
+    throw("empty")
+  } else {
+    string_upper(@String.0)
+  }
+}
+
+-- Calls safe_upper; on exception returns the caught string, else returns result.
+public fn try_upper(@String -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> { @String.0 }
+  } in {
+    safe_upper(@String.0)
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- Throwing path: safe_upper("") throws "empty", handler returns "empty" (length 5)
+  let @String = try_upper("");
+  let @Int = string_length(@String.0);
+  -- Non-throwing path: safe_upper("hello") returns "HELLO" (length 5)
+  let @String = try_upper("hello");
+  let @Int = @Int.0 + string_length(@String.0);
+  @Int.0
+}

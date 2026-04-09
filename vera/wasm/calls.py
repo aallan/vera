@@ -8287,7 +8287,7 @@ class CallsMixin:
             return None
         type_name = type_arg.name
         tag_name = f"$exn_{type_name}"
-        thrown_wt = self._type_name_to_wasm(type_name)
+        is_pair = self._is_pair_type_name(type_name)
 
         # Unique label ids for nested handlers
         hid = self._next_handle_id
@@ -8323,18 +8323,36 @@ class CallsMixin:
             return None
         clause = expr.clauses[0]  # Exn<E> has exactly one op: throw
 
-        # Allocate a local for the caught exception value
-        thrown_local = self.alloc_local(thrown_wt)
+        # Allocate locals for the caught exception value.
+        # Pair types (String, Array<T>) use two consecutive i32 locals
+        # (ptr at thrown_local, len at thrown_local + 1) matching the
+        # convention used by _translate_slot_ref for pair types.
+        if is_pair:
+            thrown_local = self.alloc_local("i32")  # ptr
+            _len_local = self.alloc_local("i32")    # len (consecutive: thrown_local + 1)
+        else:
+            thrown_wt = self._type_name_to_wasm(type_name)
+            thrown_local = self.alloc_local(thrown_wt)
 
         # Push caught value into slot env for handler body
         handler_env = env.push(type_name, thrown_local)
         handler_instrs = self.translate_expr(clause.body, handler_env)
         if handler_instrs is None:
-            return None
+            return None  # pragma: no cover
 
-        # Assemble the try_table structure
-        result_spec = f" (result {result_wt})" if result_wt else ""
-        thrown_spec = f" (result {thrown_wt})" if thrown_wt else ""
+        # Assemble the try_table structure.
+        # i32_pair (String, Array<T>) must expand to "i32 i32" in WAT result
+        # annotations; "i32_pair" is an internal representation, not valid WAT.
+        if result_wt == "i32_pair":
+            result_spec = " (result i32 i32)"
+        elif result_wt:
+            result_spec = f" (result {result_wt})"
+        else:
+            result_spec = ""  # pragma: no cover
+        if is_pair:
+            thrown_spec = " (result i32 i32)"
+        else:
+            thrown_spec = f" (result {thrown_wt})" if thrown_wt else ""
 
         instructions: list[str] = []
         instructions.append(f"block {done_label}{result_spec}")
@@ -8347,8 +8365,13 @@ class CallsMixin:
         instructions.append("    end")
         instructions.append(f"    br {done_label}")
         instructions.append("  end")
-        # Caught value is on the stack — store it in the local
-        instructions.append(f"  local.set {thrown_local}")
+        # Caught value(s) are on the stack — store into local(s).
+        # Pair types: catch pushes (ptr, len); set len first (LIFO), then ptr.
+        if is_pair:
+            instructions.append(f"  local.set {_len_local}")
+            instructions.append(f"  local.set {thrown_local}")
+        else:
+            instructions.append(f"  local.set {thrown_local}")
         instructions.extend(f"  {i}" for i in handler_instrs)
         instructions.append("end")
 

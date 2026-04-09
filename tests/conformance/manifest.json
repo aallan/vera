@@ -590,6 +590,18 @@
     ]
   },
   {
+    "id": "ch07_exn_string",
+    "file": "ch07_exn_string.vera",
+    "chapter": 7,
+    "title": "Exn<String> effect handler — String payload",
+    "level": "run",
+    "spec_ref": "Section 7.4 Exn<E> handler — String payload",
+    "features": [
+      "exn_handler",
+      "string_exception"
+    ]
+  },
+  {
     "id": "ch07_cross_module_contracts_lib",
     "file": "ch07_cross_module_contracts_lib.vera",
     "chapter": 7,

@@ -143,9 +143,11 @@ class CompilabilityMixin:
                 error_code="E612",
             )
             return False
+        # i32_pair (String, Array<T>) → WASM exception tag uses two i32 params
+        wasm_tag_t = "i32 i32" if wt == "i32_pair" else wt
         type_name = self._type_expr_to_slot_name(type_arg)
-        if type_name and (type_name, wt) not in self._exn_types:
-            self._exn_types.append((type_name, wt))
+        if type_name and (type_name, wasm_tag_t) not in self._exn_types:
+            self._exn_types.append((type_name, wasm_tag_t))
         return True
 
     _MD_BUILTINS = frozenset({
@@ -266,9 +268,10 @@ class CompilabilityMixin:
                         type_arg = node.effect.type_args[0]
                         wt = self._type_expr_to_wasm_type(type_arg)
                         if wt and wt != "unsupported":
+                            wasm_tag_t = "i32 i32" if wt == "i32_pair" else wt
                             type_name = self._type_expr_to_slot_name(type_arg)
-                            if type_name and (type_name, wt) not in self._exn_types:
-                                self._exn_types.append((type_name, wt))
+                            if type_name and (type_name, wasm_tag_t) not in self._exn_types:
+                                self._exn_types.append((type_name, wasm_tag_t))
             self._scan_expr_for_handlers(node.body)
             return
         self._scan_expr_for_handlers(node)
