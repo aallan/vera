@@ -229,6 +229,7 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 | v0.0.107 | 7 Apr | **CI: validate `examples/README.md` run commands** — `check_examples_readme.py` verifies every `vera run` command references an existing file and an exported function (#361). |
 | v0.0.108 | 7 Apr | **`vera check --explain-slots`** — slot resolution table showing which parameter position each `@T.n` index refers to; addresses dominant VeraBench failure mode (#445). **SKILL.md prescriptive improvements** — five sections reworked to action-oriented workflows. **uv.lock CI enforcement** (#390). **Z3 timeout documented** (#391). |
 | VeraBench v0.0.7 | 8 Apr | **Multi-model evaluation** — expanded to 6 models across 3 providers. Kimi K2.5 achieves 100% run_correct on Vera, beating Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera; flagship tier averages 93% Vera vs 93% Python. Single-run results; pass@k evaluation ongoing. |
+| — | 9 Apr | **Bug fix: `Exn<String>` WASM tag encoding** — `String` exception payloads now use a two-parameter WASM tag `(param i32 i32)` instead of the invalid `(param i32_pair)` encoding; `handle[Exn<String>]` now compiles and executes correctly (#416). Added `ch07_exn_string` conformance test and four in-process `TestExnHandlers` tests including a WAT-level ABI assertion. |
 
 ---
 
