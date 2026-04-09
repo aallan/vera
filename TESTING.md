@@ -112,7 +112,7 @@ Almost all programs are at the `run` level — they compile and execute, produci
 
 ### Skipped tests
 
-`pytest tests/ -v` reports 9 skipped tests across two categories:
+`pytest tests/ -v` reports 11 skipped tests across two categories:
 
 **Level-limited skips** — the conformance framework only runs tests up to the declared level; stages beyond that level are automatically skipped. These are expected and correct.
 
@@ -120,6 +120,8 @@ Almost all programs are at the `run` level — they compile and execute, produci
 |------|---------|---------------|--------------|--------|
 | `test_run[ch03_slot_let_chains]` | `ch03_slot_let_chains.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_run[ch03_slot_noncommutative]` | `ch03_slot_noncommutative.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
+| `test_verify[ch03_typed_holes]` | `ch03_typed_holes.vera` | `check` | `verify` | `check`-level program: verify stage not run |
+| `test_run[ch03_typed_holes]` | `ch03_typed_holes.vera` | `check` | `run` | `check`-level program: no standalone `main` |
 | `test_run[ch07_cross_module_contracts]` | `ch07_cross_module_contracts.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_verify[ch07_cross_module_contracts_lib]` | `ch07_cross_module_contracts_lib.vera` | `check` | `verify` | `check`-level program: verify stage not run |
 | `test_run[ch07_cross_module_contracts_lib]` | `ch07_cross_module_contracts_lib.vera` | `check` | `run` | `check`-level library module: no standalone `main` |
