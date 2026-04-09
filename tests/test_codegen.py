@@ -3156,6 +3156,13 @@ public fn test(@Unit -> @Unit)
   IO.print(@String.0)
 }
 """
+        # Pin the ABI-level encoding: tag uses (param i32 i32) for the String
+        # payload, and the outer block/try_table carry (result i32 i32) because
+        # the handler clause returns a String.
+        result = _compile_ok(src)
+        assert "(tag $exn_String (param i32 i32))" in result.wat
+        assert "result i32 i32" in result.wat
+        # Verify runtime behaviour
         assert _run_io(src, fn="test") == "caught"
 
     def test_exn_string_empty_payload(self) -> None:
