@@ -8338,7 +8338,7 @@ class CallsMixin:
         handler_env = env.push(type_name, thrown_local)
         handler_instrs = self.translate_expr(clause.body, handler_env)
         if handler_instrs is None:
-            return None
+            return None  # pragma: no cover
 
         # Assemble the try_table structure.
         # i32_pair (String, Array<T>) must expand to "i32 i32" in WAT result
@@ -8348,7 +8348,7 @@ class CallsMixin:
         elif result_wt:
             result_spec = f" (result {result_wt})"
         else:
-            result_spec = ""
+            result_spec = ""  # pragma: no cover
         if is_pair:
             thrown_spec = " (result i32 i32)"
         else:

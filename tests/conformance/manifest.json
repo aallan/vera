@@ -595,7 +595,7 @@
     "chapter": 7,
     "title": "Exn<String> effect handler — String payload",
     "level": "run",
-    "spec_ref": "§7.2 Exn<E> handler — String payload",
+    "spec_ref": "§7.4 Exn<E> handler — String payload",
     "features": [
       "exn_handler",
       "string_exception"
