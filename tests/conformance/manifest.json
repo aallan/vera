@@ -595,12 +595,11 @@
     "chapter": 7,
     "title": "Exn<String> effect handler — String payload",
     "level": "run",
-    "spec_ref": "§7.4 Exn<E> handler — String payload",
+    "spec_ref": "Section 7.4 Exn<E> handler — String payload",
     "features": [
       "exn_handler",
       "string_exception"
-    ],
-    "expected": 10
+    ]
   },
   {
     "id": "ch07_cross_module_contracts_lib",

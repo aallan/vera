@@ -3158,6 +3158,24 @@ public fn test(@Unit -> @Unit)
 """
         assert _run_io(src, fn="test") == "caught"
 
+    def test_exn_string_empty_payload(self) -> None:
+        """throw("") correctly passes a zero-length ptr/len pair through the tag."""
+        src = """\
+effect Exn<E> {
+  op throw(E -> Never);
+}
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> { string_length(@String.0) }
+  } in {
+    throw("")
+  }
+}
+"""
+        assert _run(src, fn="test") == 0
+
 
 # =====================================================================
 # C6k: Byte type
