@@ -424,6 +424,8 @@ class WasmContext(
                     and self._is_void_expr(expr.else_branch))
         if isinstance(expr, ast.Block):
             return self._is_void_expr(expr.expr)
+        if isinstance(expr, ast.HandleExpr):
+            return self._is_void_expr(expr.body)
         return False
 
     def _is_pair_result_expr(self, expr: ast.Expr) -> bool:

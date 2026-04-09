@@ -32,7 +32,7 @@
 let wasm = null;       // WebAssembly instance exports
 let stdoutBuf = '';    // Captured IO.print output
 let lastViolation = ''; // Last contract violation message
-const stateCells = {}; // State<T> cells: { TypeName: value }
+const stateCells = {}; // State<T> stacks: { TypeName: [value, ...] } — top is [-1]
 let stdinQueue = [];   // Pre-queued input lines for IO.read_line
 let cliArgs = [];      // Command-line arguments for IO.args
 let envVars = {};      // Environment variables for IO.get_env
@@ -1071,23 +1071,41 @@ function buildImportObject(module) {
     imports.vera.contract_fail = hostContractFail;
   }
 
-  // State<T> bindings — dynamically created from import names
+  // State<T> bindings — dynamically created from import names.
+  // stateCells[key] is a stack; top is the active cell for the current handler.
   for (const name of needed) {
     const getMatch = name.match(/^state_get_(.+)$/);
     if (getMatch) {
       const key = getMatch[1];
       if (!(key in stateCells)) {
-        stateCells[key] = key.includes('Float') ? 0.0 : BigInt(0);
+        stateCells[key] = [key.includes('Float') ? 0.0 : BigInt(0)];
       }
-      imports.vera[name] = () => stateCells[key];
+      imports.vera[name] = () => stateCells[key][stateCells[key].length - 1];
     }
     const putMatch = name.match(/^state_put_(.+)$/);
     if (putMatch) {
       const key = putMatch[1];
       if (!(key in stateCells)) {
-        stateCells[key] = key.includes('Float') ? 0.0 : BigInt(0);
+        stateCells[key] = [key.includes('Float') ? 0.0 : BigInt(0)];
       }
-      imports.vera[name] = (val) => { stateCells[key] = val; };
+      imports.vera[name] = (val) => { stateCells[key][stateCells[key].length - 1] = val; };
+    }
+    const pushMatch = name.match(/^state_push_(.+)$/);
+    if (pushMatch) {
+      const key = pushMatch[1];
+      const def = key.includes('Float') ? 0.0 : BigInt(0);
+      if (!(key in stateCells)) {
+        stateCells[key] = [def];
+      }
+      imports.vera[name] = () => { stateCells[key].push(def); };
+    }
+    const popMatch = name.match(/^state_pop_(.+)$/);
+    if (popMatch) {
+      const key = popMatch[1];
+      if (!(key in stateCells)) {
+        stateCells[key] = [key.includes('Float') ? 0.0 : BigInt(0)];
+      }
+      imports.vera[name] = () => { if (stateCells[key].length > 1) stateCells[key].pop(); };
     }
   }
 
@@ -1993,19 +2011,20 @@ export function clearStdout() {
   stdoutBuf = '';
 }
 
-/** Return current State<T> cell values. */
+/** Return current State<T> top-of-stack values. */
 export function getState() {
   const result = {};
   for (const [k, v] of Object.entries(stateCells)) {
-    result[k] = typeof v === 'bigint' ? Number(v) : v;
+    const top = v[v.length - 1];
+    result[k] = typeof top === 'bigint' ? Number(top) : top;
   }
   return result;
 }
 
-/** Reset all State<T> cells to defaults. */
+/** Reset all State<T> stacks to a single default cell. */
 export function resetState() {
   for (const key of Object.keys(stateCells)) {
-    stateCells[key] = key.includes('Float') ? 0.0 : BigInt(0);
+    stateCells[key] = [key.includes('Float') ? 0.0 : BigInt(0)];
   }
 }
 

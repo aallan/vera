@@ -187,6 +187,14 @@ class AssemblyMixin:
                 f'  (import "vera" "state_put_{type_name}" '
                 f"(func $vera.state_put_{type_name} (param {wasm_t})))"
             )
+            parts.append(
+                f'  (import "vera" "state_push_{type_name}" '
+                f"(func $vera.state_push_{type_name}))"
+            )
+            parts.append(
+                f'  (import "vera" "state_pop_{type_name}" '
+                f"(func $vera.state_pop_{type_name}))"
+            )
 
         # Exception tags for Exn<E>
         for type_name, wasm_t in self._exn_types:

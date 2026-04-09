@@ -2798,9 +2798,85 @@ public fn test(@Unit -> @Int)
 """
         result = _compile_ok(src)
         assert result.wat is not None
-        assert "state_get_Int" in result.wat
-        assert "state_put_Int" in result.wat
-        assert "(import" in result.wat
+        assert '(import "vera" "state_get_Int"' in result.wat
+        assert '(import "vera" "state_put_Int"' in result.wat
+        assert '(import "vera" "state_push_Int"' in result.wat
+        assert '(import "vera" "state_pop_Int"' in result.wat
+
+    def test_nested_same_type_state_handlers(self) -> None:
+        """Nested handle[State<Int>] of the same type have independent cells (#417)."""
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 10) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    put(99);
+    handle[State<Int>](@Int = 1) {
+      get(@Unit) -> { resume(@Int.0) },
+      put(@Int) -> { resume(()) }
+    } in {
+      put(2);
+      ()
+    };
+    get(())
+  }
+}
+"""
+        assert _run(src, "test") == 99
+
+    def test_nested_state_inner_does_not_corrupt_outer(self) -> None:
+        """Inner handler put does not affect outer handler state (#417)."""
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 5) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    handle[State<Int>](@Int = 100) {
+      get(@Unit) -> { resume(@Int.0) },
+      put(@Int) -> { resume(()) }
+    } in {
+      put(999);
+      ()
+    };
+    get(())
+  }
+}
+"""
+        assert _run(src, "test") == 5
+
+    def test_nested_state_outer_readable_after_inner(self) -> None:
+        """After inner handler exits, outer handler value is restored (#417).
+
+        The inner handler returns an Int (not Unit) so state_pop_Int is called
+        with a live WASM value on the stack — verifying it is truly stack-neutral.
+        The outer block captures the inner result via let, then reads outer state.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  handle[State<Int>](@Int = 42) {
+    get(@Unit) -> { resume(@Int.0) },
+    put(@Int) -> { resume(()) }
+  } in {
+    let @Int = handle[State<Int>](@Int = 0) {
+      get(@Unit) -> { resume(@Int.0) },
+      put(@Int) -> { resume(()) }
+    } in {
+      put(7);
+      get(())
+    };
+    get(())
+  }
+}
+"""
+        assert _run(src, "test") == 42
 
     def test_exn_handler_compiles(self) -> None:
         """Exn<E> handler compiles to WASM using exception handling."""

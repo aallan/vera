@@ -8234,10 +8234,16 @@ class CallsMixin:
         wasm_type = self._type_name_to_wasm(type_name)
         put_import = f"$vera.state_put_{type_name}"
         get_import = f"$vera.state_get_{type_name}"
+        push_import = f"$vera.state_push_{type_name}"
+        pop_import = f"$vera.state_pop_{type_name}"
 
         instructions: list[str] = []
 
-        # 1. Initialize state: compile init_expr, call state_put
+        # 1. Push a fresh state cell (isolates this handler from any outer
+        #    handler of the same type — fixes #417).
+        instructions.append(f"call {push_import}")
+
+        # 2. Initialize state: compile init_expr, call state_put
         if expr.state is not None:
             init_instrs = self.translate_expr(expr.state.init_expr, env)
             if init_instrs is None:
@@ -8246,21 +8252,27 @@ class CallsMixin:
             instructions.append(f"call {put_import}")
         # If no state clause, state starts at default (0)
 
-        # 2. Save current effect_ops and inject handler ops
+        # 3. Save current effect_ops and inject handler ops
         saved_ops = dict(self._effect_ops)
         self._effect_ops["get"] = (get_import, False)
         self._effect_ops["put"] = (put_import, True)
 
-        # 3. Compile handler body
+        # 4. Compile handler body
         body_instrs = self.translate_block(expr.body, env)
 
-        # 4. Restore effect_ops
+        # 5. Restore effect_ops
         self._effect_ops = saved_ops
 
         if body_instrs is None:
             return None
 
         instructions.extend(body_instrs)
+
+        # 6. Pop the state cell (restores outer handler's value).
+        # pop is stack-neutral so the body's return value is already on the
+        # WASM value stack and is unaffected.
+        instructions.append(f"call {pop_import}")
+
         return instructions
 
     def _translate_handle_exn(
