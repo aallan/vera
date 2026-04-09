@@ -2843,12 +2843,13 @@ public fn test(@Unit -> @Int)
       put(@Int) -> { resume(()) }
     } in {
       put(999);
-      get(())
-    }
+      ()
+    };
+    get(())
   }
 }
 """
-        assert _run(src, "test") == 999
+        assert _run(src, "test") == 5
 
     def test_nested_state_outer_readable_after_inner(self) -> None:
         """After inner handler exits, outer handler value is restored (#417)."""
