@@ -9909,15 +9909,27 @@ class TestInferenceProviderDispatch:
         return resp
 
     def test_anthropic_provider(self) -> None:
-        """Anthropic branch extracts content[0].text."""
+        """Anthropic branch uses correct endpoint, headers, and request body shape."""
         import json
-        from unittest.mock import patch
+        from unittest.mock import patch, MagicMock
         from vera.codegen.api import _call_inference_provider
 
         body = json.dumps({"content": [{"text": "hello"}]})
-        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
+        mock_urlopen = MagicMock(return_value=self._make_response(body))
+        with patch("urllib.request.urlopen", mock_urlopen):
             result = _call_inference_provider("anthropic", "prompt", "", "sk-ant")
         assert result == "hello"
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://api.anthropic.com/v1/messages"
+        # Anthropic-style auth: x-api-key header, not Bearer
+        assert req.get_header("X-api-key") == "sk-ant"
+        assert req.get_header("Anthropic-version") == "2023-06-01"
+        assert req.get_header("Authorization") is None
+        sent_body = json.loads(req.data.decode())
+        # Anthropic body: includes max_tokens; no "choices" key
+        assert "max_tokens" in sent_body
+        assert "messages" in sent_body
+        assert sent_body["max_tokens"] == 1024
 
     def test_openai_provider(self) -> None:
         """OpenAI branch extracts choices[0].message.content."""
@@ -9980,6 +9992,33 @@ class TestInferenceProviderDispatch:
         ) as mock_provider:
             execute(result_src, env_vars={"VERA_MISTRAL_API_KEY": "sk-mistral-test"})
             assert mock_provider.call_args[0][0] == "mistral"
+
+    def test_multi_key_auto_detect_respects_provider_order(self) -> None:
+        """When multiple keys are set, _PROVIDERS insertion order determines which wins.
+
+        The auto-detection loop scans _PROVIDERS in order and picks the first
+        provider whose key is present in the environment.  With anthropic first
+        in the registry, setting both VERA_ANTHROPIC_API_KEY and
+        VERA_MOONSHOT_API_KEY must resolve to 'anthropic'.
+        """
+        from unittest.mock import patch
+        from vera.codegen.api import _PROVIDERS
+
+        first_provider = next(iter(_PROVIDERS))  # "anthropic" per current registry
+        first_cfg = _PROVIDERS[first_provider]
+        second_provider = list(_PROVIDERS)[1]    # "openai"
+        second_cfg = _PROVIDERS[second_provider]
+
+        result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="ok",
+        ) as mock_provider:
+            execute(result_src, env_vars={
+                first_cfg.env_key: "sk-first",
+                second_cfg.env_key: "sk-second",
+            })
+            assert mock_provider.call_args[0][0] == first_provider
 
     def test_explicit_provider_missing_key_returns_err(self) -> None:
         """Provider set via VERA_INFERENCE_PROVIDER but key env var absent → Err branch.
