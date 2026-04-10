@@ -1194,7 +1194,7 @@ effects(<Inference, IO>)         -- LLM + console output
 effects(<Http, Inference>)       -- fetch + LLM
 ```
 
-Returns `Result<String, String>` — `Ok` with the completion text on success, `Err` with the error message on failure. Provider is selected from environment variables: `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, or `VERA_MOONSHOT_API_KEY` (auto-detected from whichever key is set). Override with `VERA_INFERENCE_PROVIDER` and `VERA_INFERENCE_MODEL`.
+Returns `Result<String, String>` — `Ok` with the completion text on success, `Err` with the error message on failure. Provider is selected from environment variables: `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, `VERA_MOONSHOT_API_KEY`, or `VERA_MISTRAL_API_KEY` (auto-detected from whichever key is set). Override with `VERA_INFERENCE_PROVIDER` (valid values: `anthropic`, `openai`, `moonshot`, `mistral`) and `VERA_INFERENCE_MODEL`.
 
 ```vera
 private fn classify(@String -> @Result<String, String>)

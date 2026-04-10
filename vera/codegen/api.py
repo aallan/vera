@@ -141,26 +141,77 @@ def compile(
 _INFERENCE_TIMEOUT: int = 60  # seconds; prevents indefinite hangs on slow providers
 
 
+@dataclass(frozen=True)
+class _ProviderConfig:
+    """Configuration for a single LLM inference provider."""
+
+    env_key: str         # environment variable holding the API key
+    url: str             # chat completions endpoint URL
+    default_model: str   # cheap/fast default when VERA_INFERENCE_MODEL is unset
+    auth_style: str      # "anthropic" | "bearer"
+    response_style: str  # "anthropic" | "openai"
+
+
+#: Registry of supported inference providers.
+#: Adding a new OpenAI-compatible provider is a one-row change here.
+_PROVIDERS: dict[str, _ProviderConfig] = {
+    "anthropic": _ProviderConfig(
+        env_key="VERA_ANTHROPIC_API_KEY",
+        url="https://api.anthropic.com/v1/messages",
+        default_model="claude-haiku-4-5-20251001",
+        auth_style="anthropic",
+        response_style="anthropic",
+    ),
+    "openai": _ProviderConfig(
+        env_key="VERA_OPENAI_API_KEY",
+        url="https://api.openai.com/v1/chat/completions",
+        default_model="gpt-4o-mini",
+        auth_style="bearer",
+        response_style="openai",
+    ),
+    "moonshot": _ProviderConfig(
+        env_key="VERA_MOONSHOT_API_KEY",
+        url="https://api.moonshot.ai/v1/chat/completions",
+        default_model="kimi-k2-0905-preview",
+        auth_style="bearer",
+        response_style="openai",
+    ),
+    "mistral": _ProviderConfig(
+        env_key="VERA_MISTRAL_API_KEY",
+        url="https://api.mistral.ai/v1/chat/completions",
+        default_model="mistral-small-latest",
+        auth_style="bearer",
+        response_style="openai",
+    ),
+}
+
+
 def _call_inference_provider(
     provider: str,
     prompt: str,
     model: str,
-    anthropic_key: str,
-    openai_key: str,
-    moonshot_key: str,
+    api_key: str,
 ) -> str:
     """Dispatch a completion request to the configured LLM provider.
 
-    Raises an exception on network or API errors; the caller wraps
-    the result in Ok/Err and writes it to WASM memory.
+    Looks up *provider* in ``_PROVIDERS``, builds the appropriate request,
+    and returns the completion string.  Raises on network or API errors;
+    the caller wraps the result in Ok/Err and writes it to WASM memory.
     """
     import json as _json
     import urllib.request as _urlreq
 
-    if provider == "anthropic":
-        api_key = anthropic_key
-        chosen_model = model or "claude-haiku-4-5-20251001"
-        url = "https://api.anthropic.com/v1/messages"
+    cfg = _PROVIDERS.get(provider)
+    if cfg is None:
+        valid = ", ".join(sorted(_PROVIDERS))
+        raise ValueError(
+            f"Unknown inference provider '{provider}'. "
+            f"Valid values: {valid}."
+        )
+
+    chosen_model = model or cfg.default_model
+
+    if cfg.auth_style == "anthropic":
         headers = {
             "Content-Type": "application/json",
             "x-api-key": api_key,
@@ -171,50 +222,24 @@ def _call_inference_provider(
             "max_tokens": 1024,
             "messages": [{"role": "user", "content": prompt}],
         }).encode("utf-8")
-        req = _urlreq.Request(url, data=body, headers=headers, method="POST")  # noqa: S310
-        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
-            data = _json.loads(resp.read().decode("utf-8"))
+    else:  # bearer
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        body = _json.dumps({
+            "model": chosen_model,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode("utf-8")
+
+    req = _urlreq.Request(cfg.url, data=body, headers=headers, method="POST")  # noqa: S310
+    with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
+        data = _json.loads(resp.read().decode("utf-8"))
+
+    if cfg.response_style == "anthropic":
         return str(data["content"][0]["text"])
-
-    elif provider == "openai":
-        api_key = openai_key
-        chosen_model = model or "gpt-4o-mini"
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
-        body = _json.dumps({
-            "model": chosen_model,
-            "messages": [{"role": "user", "content": prompt}],
-        }).encode("utf-8")
-        req = _urlreq.Request(url, data=body, headers=headers, method="POST")  # noqa: S310
-        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
-            data = _json.loads(resp.read().decode("utf-8"))
+    else:  # openai
         return str(data["choices"][0]["message"]["content"])
-
-    elif provider == "moonshot":
-        api_key = moonshot_key
-        chosen_model = model or "kimi-k2-0905-preview"
-        url = "https://api.moonshot.ai/v1/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        }
-        body = _json.dumps({
-            "model": chosen_model,
-            "messages": [{"role": "user", "content": prompt}],
-        }).encode("utf-8")
-        req = _urlreq.Request(url, data=body, headers=headers, method="POST")  # noqa: S310
-        with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
-            data = _json.loads(resp.read().decode("utf-8"))
-        return str(data["choices"][0]["message"]["content"])
-
-    else:
-        raise ValueError(
-            f"Unknown inference provider '{provider}'. "
-            "Valid values: anthropic, openai, moonshot."
-        )
 
 
 def execute(
@@ -2053,30 +2078,32 @@ def execute(
                 prompt = _read_wasm_string(caller, ptr, length)
                 _env = env_vars if env_vars is not None else _os.environ
                 provider = _env.get("VERA_INFERENCE_PROVIDER", "").lower()
-                anthropic_key = _env.get("VERA_ANTHROPIC_API_KEY", "")
-                openai_key = _env.get("VERA_OPENAI_API_KEY", "")
-                moonshot_key = _env.get("VERA_MOONSHOT_API_KEY", "")
+
+                # Auto-detect provider from whichever key is set,
+                # respecting registry insertion order (anthropic first).
+                if not provider:
+                    for _pname, _pcfg in _PROVIDERS.items():
+                        if _env.get(_pcfg.env_key, ""):
+                            provider = _pname
+                            break
 
                 if not provider:
-                    if anthropic_key:
-                        provider = "anthropic"
-                    elif openai_key:
-                        provider = "openai"
-                    elif moonshot_key:
-                        provider = "moonshot"
-                    else:
-                        return _alloc_result_err_string(
-                            caller,
-                            "No inference provider configured. "
-                            "Set VERA_ANTHROPIC_API_KEY, VERA_OPENAI_API_KEY, "
-                            "or VERA_MOONSHOT_API_KEY.",
-                        )
+                    key_vars = ", ".join(
+                        c.env_key for c in _PROVIDERS.values()
+                    )
+                    return _alloc_result_err_string(
+                        caller,
+                        f"No inference provider configured. "
+                        f"Set {key_vars}.",
+                    )
+
+                cfg = _PROVIDERS.get(provider)
+                api_key = _env.get(cfg.env_key, "") if cfg else ""
 
                 try:
                     model = _env.get("VERA_INFERENCE_MODEL", "")
                     completion = _call_inference_provider(
-                        provider, prompt, model,
-                        anthropic_key, openai_key, moonshot_key,
+                        provider, prompt, model, api_key,
                     )
                     return _alloc_result_ok_string(caller, completion)
                 except Exception as exc:

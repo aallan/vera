@@ -9897,7 +9897,7 @@ public fn main(-> @Int)
 
 
 class TestInferenceProviderDispatch:
-    """Unit tests for _call_inference_provider — covers all three provider branches."""
+    """Unit tests for _call_inference_provider — covers all provider branches."""
 
     def _make_response(self, body: str) -> object:
         """Build a minimal mock urllib response."""
@@ -9916,8 +9916,7 @@ class TestInferenceProviderDispatch:
 
         body = json.dumps({"content": [{"text": "hello"}]})
         with patch("urllib.request.urlopen", return_value=self._make_response(body)):
-            result = _call_inference_provider(
-                "anthropic", "prompt", "", "sk-ant", "", "")
+            result = _call_inference_provider("anthropic", "prompt", "", "sk-ant")
         assert result == "hello"
 
     def test_openai_provider(self) -> None:
@@ -9926,11 +9925,9 @@ class TestInferenceProviderDispatch:
         from unittest.mock import patch
         from vera.codegen.api import _call_inference_provider
 
-        body = json.dumps(
-            {"choices": [{"message": {"content": "world"}}]})
+        body = json.dumps({"choices": [{"message": {"content": "world"}}]})
         with patch("urllib.request.urlopen", return_value=self._make_response(body)):
-            result = _call_inference_provider(
-                "openai", "prompt", "", "", "sk-openai", "")
+            result = _call_inference_provider("openai", "prompt", "", "sk-openai")
         assert result == "world"
 
     def test_moonshot_provider(self) -> None:
@@ -9939,17 +9936,44 @@ class TestInferenceProviderDispatch:
         from unittest.mock import patch, MagicMock
         from vera.codegen.api import _call_inference_provider
 
-        body = json.dumps(
-            {"choices": [{"message": {"content": "moonshot"}}]})
+        body = json.dumps({"choices": [{"message": {"content": "moonshot"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            result = _call_inference_provider(
-                "moonshot", "prompt", "", "", "", "sk-moon")
+            result = _call_inference_provider("moonshot", "prompt", "", "sk-moon")
         assert result == "moonshot"
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://api.moonshot.ai/v1/chat/completions"
         sent_body = json.loads(req.data.decode())
         assert sent_body["model"] == "kimi-k2-0905-preview"
+
+    def test_mistral_provider(self) -> None:
+        """Mistral branch uses correct endpoint, default model, OpenAI-compatible format."""
+        import json
+        from unittest.mock import patch, MagicMock
+        from vera.codegen.api import _call_inference_provider
+
+        body = json.dumps({"choices": [{"message": {"content": "mistral"}}]})
+        mock_urlopen = MagicMock(return_value=self._make_response(body))
+        with patch("urllib.request.urlopen", mock_urlopen):
+            result = _call_inference_provider("mistral", "prompt", "", "sk-mistral")
+        assert result == "mistral"
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://api.mistral.ai/v1/chat/completions"
+        sent_body = json.loads(req.data.decode())
+        assert sent_body["model"] == "mistral-small-latest"
+
+    def test_mistral_auto_detect(self) -> None:
+        """Mistral key auto-detected when no other keys are set."""
+        from unittest.mock import patch
+        from vera.codegen.api import _call_inference_provider
+
+        result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="ok",
+        ) as mock_provider:
+            execute(result_src, env_vars={"VERA_MISTRAL_API_KEY": "sk-mistral-test"})
+            assert mock_provider.call_args[0][0] == "mistral"
 
     def test_custom_model_passed_through(self) -> None:
         """VERA_INFERENCE_MODEL is forwarded to the provider."""
@@ -9960,11 +9984,9 @@ class TestInferenceProviderDispatch:
         body = json.dumps({"content": [{"text": "ok"}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            _call_inference_provider(
-                "anthropic", "hi", "claude-opus-4-6", "sk-ant", "", "")
-        call_args = mock_urlopen.call_args
+            _call_inference_provider("anthropic", "hi", "claude-opus-4-6", "sk-ant")
         import json as _json
-        sent = _json.loads(call_args[0][0].data.decode())
+        sent = _json.loads(mock_urlopen.call_args[0][0].data.decode())
         assert sent["model"] == "claude-opus-4-6"
 
     def test_unknown_provider_raises(self) -> None:
@@ -9972,7 +9994,7 @@ class TestInferenceProviderDispatch:
         from vera.codegen.api import _call_inference_provider
         import pytest
         with pytest.raises(ValueError, match="Unknown inference provider"):
-            _call_inference_provider("unknown", "p", "", "", "", "")
+            _call_inference_provider("unknown", "p", "", "")
 
 
 class TestDecimalMonomorphization:

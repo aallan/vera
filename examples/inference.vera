@@ -5,6 +5,7 @@
 --   VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera
 --   VERA_OPENAI_API_KEY=sk-...       vera run examples/inference.vera
 --   VERA_MOONSHOT_API_KEY=sk-...     vera run examples/inference.vera
+--   VERA_MISTRAL_API_KEY=sk-...      vera run examples/inference.vera
 
 private fn classify_sentiment(@String -> @Result<String, String>)
   requires(string_length(@String.0) > 0)

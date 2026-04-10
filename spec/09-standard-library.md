@@ -550,9 +550,10 @@ private fn classify(@String -> @Result<String, String>)
 |----------|---------|
 | `VERA_ANTHROPIC_API_KEY` | Anthropic API key (Claude models) |
 | `VERA_OPENAI_API_KEY` | OpenAI API key (GPT models) |
-| `VERA_MOONSHOT_API_KEY` | Moonshot API key |
-| `VERA_INFERENCE_PROVIDER` | Force a provider (`anthropic`, `openai`, `moonshot`); auto-detected from whichever key is set if unset |
-| `VERA_INFERENCE_MODEL` | Override the model (defaults: `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `moonshot-v1-8k`) |
+| `VERA_MOONSHOT_API_KEY` | Moonshot API key (Kimi models) |
+| `VERA_MISTRAL_API_KEY` | Mistral AI API key |
+| `VERA_INFERENCE_PROVIDER` | Force a provider (`anthropic`, `openai`, `moonshot`, `mistral`); auto-detected from whichever key is set if unset |
+| `VERA_INFERENCE_MODEL` | Override the model (defaults: `claude-haiku-4-5-20251001`, `gpt-4o-mini`, `kimi-k2-0905-preview`, `mistral-small-latest`) |
 
 **Browser:** `Inference.complete` returns a detailed `Err` in browser runtimes — embedding API keys in client-side JavaScript is a security risk. Use a server-side proxy with the `Http` effect instead.
 
