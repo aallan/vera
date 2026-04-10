@@ -588,7 +588,7 @@ class InferenceMixin:
                             if ret.name in alias_map:
                                 ta = alias_map[ret.name]
                                 if isinstance(ta, ast.NamedType):
-                                    return ta.name
+                                    return self._format_named_type(ta)
                             return ret.name
                     elif isinstance(alias_te.return_type, ast.NamedType):
                         return alias_te.return_type.name
@@ -838,6 +838,15 @@ class InferenceMixin:
                         alias_te, alias_params, closure_arg.type_args,
                     )
                 return self._fn_type_return_wasm(alias_te)
+        if isinstance(closure_arg, ast.AnonFn):
+            # Closure literal passed directly — infer return type from its
+            # declared return TypeExpr so call_indirect sig matches the
+            # lifted function's actual return (i32_pair for String/Array).
+            ret = closure_arg.return_type
+            if isinstance(ret, ast.NamedType):
+                if ret.name in ("String", "Array"):
+                    return "i32_pair"
+                return self._named_type_to_wasm(ret.name)
         return "i64"  # pragma: no cover — safe default for most cases
 
     def _resolve_generic_fn_return(

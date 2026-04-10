@@ -118,15 +118,24 @@ class ClosureLiftingMixin:
                 continue  # Unit param, skip
             if wt == "unsupported":  # pragma: no cover — defensive
                 return None
-            local_idx = ctx.alloc_param()
-            param_parts.append(f"(param $p{i} {wt})")
-            param_info.append((i, param_te, local_idx))
-            # Track pointer params for GC
-            type_name = self._type_expr_to_slot_name(param_te)
-            if wt == "i32" and type_name not in ("Bool", "Byte", None):
-                gc_pointer_params.append(local_idx)
-            elif wt == "i32_pair":  # pragma: no cover — String/Array closure params
-                gc_pointer_params.append(local_idx)
+            if wt == "i32_pair":
+                # String/Array params need two consecutive i32 slots (ptr, len).
+                # The pair convention uses ptr_idx and ptr_idx+1 implicitly, so
+                # env.push(type_name, ptr_idx) is sufficient for slot resolution.
+                ptr_idx = ctx.alloc_param()
+                ctx.alloc_param()  # len slot — consecutive with ptr_idx
+                param_parts.append(f"(param $p{i}_ptr i32)")
+                param_parts.append(f"(param $p{i}_len i32)")
+                param_info.append((i, param_te, ptr_idx))
+                gc_pointer_params.append(ptr_idx)
+            else:
+                local_idx = ctx.alloc_param()
+                param_parts.append(f"(param $p{i} {wt})")
+                param_info.append((i, param_te, local_idx))
+                # Track pointer params for GC
+                type_name = self._type_expr_to_slot_name(param_te)
+                if wt == "i32" and type_name not in ("Bool", "Byte", None):
+                    gc_pointer_params.append(local_idx)
 
         # Compute capture layout (must match _translate_anon_fn)
         cap_offsets: list[tuple[int, str]] = []
@@ -166,12 +175,27 @@ class ClosureLiftingMixin:
         ret_wt = self._type_expr_to_wasm_type(anon_fn.return_type)
         if ret_wt == "unsupported":  # pragma: no cover — defensive
             return None
-        result_part = f" (result {ret_wt})" if ret_wt else ""
+        if ret_wt == "i32_pair":
+            result_part = " (result i32 i32)"
+        elif ret_wt:
+            result_part = f" (result {ret_wt})"
+        else:
+            result_part = ""  # pragma: no cover — Unit closure return
 
         # Compile the body
         body_instrs = ctx.translate_block(anon_fn.body, env)
         if body_instrs is None:  # pragma: no cover — defensive
             return None
+
+        # Propagate host-import tracking from closure ctx to module level
+        self._map_ops_used.update(ctx._map_ops_used)
+        self._map_imports.update(ctx._map_imports)
+        self._set_ops_used.update(ctx._set_ops_used)
+        self._set_imports.update(ctx._set_imports)
+        self._decimal_ops_used.update(ctx._decimal_ops_used)
+        self._decimal_imports.update(ctx._decimal_imports)
+        self._json_ops_used.update(ctx._json_ops_used)
+        self._html_ops_used.update(ctx._html_ops_used)
 
         # Build GC prologue/epilogue (only when closure body allocates)
         gc_prologue: list[str] = []

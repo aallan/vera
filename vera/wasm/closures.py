@@ -114,9 +114,13 @@ class ClosuresMixin:
             if arg_instrs is None:
                 return None
             instructions.extend(arg_instrs)
-            # Infer WASM type for call_indirect type signature
+            # Infer WASM type for call_indirect type signature.
+            # Pair types (String, Array) push two i32 values onto the stack.
             wt = self._infer_expr_wasm_type(arg)
-            arg_wasm_types.append(wt or "i64")  # default to i64
+            if wt == "i32_pair":
+                arg_wasm_types.extend(["i32", "i32"])
+            else:
+                arg_wasm_types.append(wt or "i64")  # default to i64
 
         # Load func_table_idx from closure struct
         instructions.append(f"local.get {tmp}")

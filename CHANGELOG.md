@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.109] - 2026-04-10
+
+### Fixed
+- **Closure `i32_pair` param/return type in WAT** ([#359](https://github.com/aallan/vera/issues/359)) — `String` and `Array` parameters and return types inside closures now emit correct two-slot WAT signatures (`(param i32 i32)` / `(result i32 i32)`). Previously the closure lifting path and the `call_indirect` type descriptor each omitted the second i32 slot, causing WAT compilation failures for closures that accept or return `String`/`Array` values. Three fixes: (1) `codegen/closures.py` lifted function declarations now emit `(param $p{i}_ptr i32) (param $p{i}_len i32)` for `i32_pair` params; (2) `wasm/closures.py` `call_indirect` type descriptor emits two params per `i32_pair` argument; (3) `wasm/inference.py` `_infer_apply_fn_return_type` handles `AnonFn` literals to return `"i32_pair"` for `String`/`Array` return types, preventing `$closure_sig_N` naming collisions.
+- **Host imports not registered for closures** ([#359](https://github.com/aallan/vera/issues/359)) — Map/Set/Decimal/Json/Html host-import ops used inside closure bodies were not propagated to the module-level tracker, causing `unknown func` errors at runtime. `codegen/closures.py` `_compile_lifted_closure` now propagates all resource flags from the closure's `WasmContext` back to the module codegen.
+- **`_infer_fncall_vera_type` truncating parameterised accumulator types** ([#359](https://github.com/aallan/vera/issues/359)) — when inferring the return type of `apply_fn` calls for `_resolve_generic_call`, parameterised types like `Map<String, Int>` were reduced to the bare name `"Map"`, producing wrong monomorphised call targets (e.g. `array_fold_go$String_Map` instead of `array_fold_go$String_Map_String_Int`). Fixed by calling `_format_named_type` instead of returning `ta.name`.
+
 ## [0.0.108] - 2026-04-07
 
 ### Added
@@ -1525,7 +1532,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.108...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.109...HEAD
+[0.0.109]: https://github.com/aallan/vera/compare/v0.0.108...v0.0.109
 [0.0.108]: https://github.com/aallan/vera/compare/v0.0.107...v0.0.108
 [0.0.107]: https://github.com/aallan/vera/compare/v0.0.106...v0.0.107
 [0.0.106]: https://github.com/aallan/vera/compare/v0.0.105...v0.0.106
