@@ -10303,6 +10303,30 @@ public fn main(-> @Int)
 """
         assert _run(src) == 2
 
+    def test_closure_array_param_compiles(self) -> None:
+        """Closure with an Array<Int> parameter emits valid (param i32 i32) WAT."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = [10, 20, 30];
+  apply_fn(fn(@Array<Int> -> @Int) effects(pure) { array_length(@Array<Int>.0) }, @Array<Int>.0)
+}
+"""
+        assert _run(src) == 3
+
+    def test_closure_array_return_compiles(self) -> None:
+        """Closure with an Array<Int> return type emits valid (result i32 i32) WAT."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = apply_fn(fn(@Int -> @Array<Int>) effects(pure) { [1, 2] }, 0);
+  array_length(@Array<Int>.0)
+}
+"""
+        assert _run(src) == 2
+
     def test_array_fold_with_map_accumulator(self) -> None:
         """array_fold over String array with Map<String, Int> accumulator.
 

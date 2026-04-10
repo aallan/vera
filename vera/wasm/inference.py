@@ -589,9 +589,9 @@ class InferenceMixin:
                                 ta = alias_map[ret.name]
                                 if isinstance(ta, ast.NamedType):
                                     return self._format_named_type(ta)
-                            return ret.name
+                            return self._format_named_type(ret)
                     elif isinstance(alias_te.return_type, ast.NamedType):
-                        return alias_te.return_type.name
+                        return self._format_named_type(alias_te.return_type)
         # Map builtins
         if call.name in ("map_new", "map_insert", "map_remove"):
             return "Map"
@@ -877,9 +877,13 @@ class InferenceMixin:
                 subst[param] = arg.name
 
         ret = fn_type.return_type
+        if isinstance(ret, ast.RefinementType):
+            ret = ret.base_type
         if isinstance(ret, ast.NamedType):
             # If the return type is a type variable, substitute it
             name = subst.get(ret.name, ret.name)
+            if name in ("String", "Array"):
+                return "i32_pair"
             return self._named_type_to_wasm(name)
         return "i64"  # pragma: no cover — default
 
@@ -899,7 +903,11 @@ class InferenceMixin:
     def _fn_type_return_wasm(self, fn_type: ast.FnType) -> str | None:
         """Get the WASM return type from a FnType AST node."""
         ret = fn_type.return_type
+        if isinstance(ret, ast.RefinementType):
+            ret = ret.base_type
         if isinstance(ret, ast.NamedType):
+            if ret.name in ("String", "Array"):
+                return "i32_pair"
             return self._named_type_to_wasm(ret.name)
         return "i64"  # pragma: no cover — default
 
