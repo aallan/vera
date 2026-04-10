@@ -9932,15 +9932,26 @@ class TestInferenceProviderDispatch:
         assert sent_body["max_tokens"] == 1024
 
     def test_openai_provider(self) -> None:
-        """OpenAI branch extracts choices[0].message.content."""
+        """OpenAI branch uses correct endpoint, bearer auth, and OpenAI-compatible body."""
         import json
-        from unittest.mock import patch
-        from vera.codegen.api import _call_inference_provider
+        from unittest.mock import patch, MagicMock
+        from vera.codegen.api import _call_inference_provider, _PROVIDERS
 
         body = json.dumps({"choices": [{"message": {"content": "world"}}]})
-        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
+        mock_urlopen = MagicMock(return_value=self._make_response(body))
+        with patch("urllib.request.urlopen", mock_urlopen):
             result = _call_inference_provider("openai", "prompt", "", "sk-openai")
         assert result == "world"
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == _PROVIDERS["openai"].url
+        # Bearer auth, not Anthropic-style key header
+        assert req.get_header("Authorization") == "Bearer sk-openai"
+        assert req.get_header("X-api-key") is None
+        assert req.get_header("Content-type") == "application/json"
+        sent_body = json.loads(req.data.decode())
+        assert sent_body["model"] == _PROVIDERS["openai"].default_model
+        assert "messages" in sent_body
+        assert "max_tokens" not in sent_body
 
     def test_moonshot_provider(self) -> None:
         """Moonshot branch uses correct endpoint, default model, OpenAI-compatible format."""
