@@ -629,6 +629,18 @@ class SmtContext:
         if call.name == "nat_to_int" and len(call.args) == 1:
             return self.translate_expr(call.args[0], env)
 
+        # Built-in: string_length() — uninterpreted, result >= 0
+        if call.name == "string_length" and len(call.args) == 1:
+            arg = self.translate_expr(call.args[0], env)
+            if arg is not None:
+                length_fn = z3.Function(
+                    "string_length", arg.sort(), z3.IntSort(),
+                )
+                result = length_fn(arg)
+                self.solver.add(result >= 0)
+                return result
+            return None  # pragma: no cover
+
         # Built-in: byte_to_int() — identity (both IntSort in Z3)
         if call.name == "byte_to_int" and len(call.args) == 1:
             return self.translate_expr(call.args[0], env)

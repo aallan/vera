@@ -1588,7 +1588,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 170 T1 / 21 T3 / 191 total without module resolution."""
+        """All examples together: 172 T1 / 19 T3 / 191 total without module resolution."""
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
             text = f.read_text()
@@ -1598,8 +1598,8 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 170, f"Expected 170 T1, got {t1}"
-        assert t3 == 21, f"Expected 21 T3, got {t3}"
+        assert t1 == 172, f"Expected 172 T1, got {t1}"
+        assert t3 == 19, f"Expected 19 T3, got {t3}"
         assert total == 191, f"Expected 191 total, got {total}"
 
 
@@ -1698,3 +1698,57 @@ public fn outer(@Nat -> @Nat)
         result = verify(prog, text, file=str(source))
         assert result.summary.tier3_runtime == 0
         assert result.summary.tier1_verified == 8
+
+
+class TestStringLengthVerification:
+    """string_length() in contracts is decidable (Tier 1) via uninterpreted function."""
+
+    def test_string_length_gt_zero_requires_tier1(self) -> None:
+        """requires(string_length(@String.0) > 0) is verified Tier 1."""
+        source = """
+private fn non_empty(@String -> @Int)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(pure)
+{
+  string_length(@String.0)
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
+        assert result.summary.tier1_verified >= 1
+        assert result.summary.tier3_runtime == 0
+
+    def test_string_length_ensures_tier1(self) -> None:
+        """ensures(@Int.result >= 0) on string_length return is verified Tier 1."""
+        source = """
+private fn get_length(@String -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  string_length(@String.0)
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
+        assert result.summary.tier1_verified >= 1
+        assert result.summary.tier3_runtime == 0
+
+    def test_string_length_comparison_tier1(self) -> None:
+        """requires using string_length in a comparison resolves to Tier 1."""
+        source = """
+private fn longer_than(@String, @Int -> @Bool)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  string_length(@String.0) > @Int.0
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
+        assert result.summary.tier3_runtime == 0
