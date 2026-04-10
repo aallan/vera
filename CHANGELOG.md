@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.110] - 2026-04-10
+
+### Added
+- **Mistral AI provider for the Inference effect** ([#413](https://github.com/aallan/vera/issues/413)) — `Inference.complete` now supports Mistral models. Set `VERA_MISTRAL_API_KEY` to use; default model is `mistral-small-latest`. Closes [#413](https://github.com/aallan/vera/issues/413).
+
+### Changed
+- **Provider registry refactor** ([#413](https://github.com/aallan/vera/issues/413)) — `_call_inference_provider()` and the auto-detection logic in `execute()` are now table-driven via a `_ProviderConfig` dataclass and `_PROVIDERS` registry dict, replacing the `elif` chain. Adding further providers (Grok, DeepSeek, Gemini) is now a one-row change. The `_call_inference_provider` signature simplified from six parameters to four (`provider`, `prompt`, `model`, `api_key`).
+
 ## [0.0.109] - 2026-04-10
 
 ### Fixed
@@ -1532,7 +1540,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.109...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.110...HEAD
+[0.0.110]: https://github.com/aallan/vera/compare/v0.0.109...v0.0.110
 [0.0.109]: https://github.com/aallan/vera/compare/v0.0.108...v0.0.109
 [0.0.108]: https://github.com/aallan/vera/compare/v0.0.107...v0.0.108
 [0.0.107]: https://github.com/aallan/vera/compare/v0.0.106...v0.0.107

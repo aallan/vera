@@ -117,7 +117,7 @@ The `verify --json` output includes a verification summary:
 2. Use `@Type.index` to reference bindings (`@Int.0` = most recent Int, `@Int.1` = one before)
 3. Declare all effects: `effects(pure)` for pure functions, `effects(<IO>)` for IO, `effects(<Http>)` for network, `effects(<Inference>)` for LLM calls
 4. `Http.get(@String.0)` and `Http.post(@String.0, @String.1)` return `Result<String, String>`; match the result
-5. `Inference.complete(@String.0)` returns `Result<String, String>`; requires `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, or `VERA_MOONSHOT_API_KEY` to run; provider auto-detected from whichever key is set
+5. `Inference.complete(@String.0)` returns `Result<String, String>`; requires `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, `VERA_MOONSHOT_API_KEY` (Kimi), or `VERA_MISTRAL_API_KEY` to run; provider auto-detected from whichever key is set
 6. Recursive functions need a `decreases()` clause
 7. Match expressions must be exhaustive
 

@@ -231,6 +231,7 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 | VeraBench v0.0.7 | 8 Apr | **Multi-model evaluation** — expanded to 6 models across 3 providers. Kimi K2.5 achieves 100% run_correct on Vera, beating Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera; flagship tier averages 93% Vera vs 93% Python. Single-run results; pass@k evaluation ongoing. |
 | — | 9 Apr | **Bug fixes: `Exn<String>` WASM tag encoding** (#416) and **nested `handle[State<T>]` isolation** (#417). |
 | v0.0.109 | 10 Apr | **Fix closure `i32_pair` param/return types** (#359) — `String`/`Array` params and return types in closures now emit correct two-slot WAT signatures; host imports used inside closures now propagated to module-level tracker; `_infer_fncall_vera_type` fixed for parameterised accumulator types like `Map<String, Int>`. |
+| v0.0.110 | 10 Apr | **Mistral AI provider + provider registry refactor** (#413) — `Inference.complete` supports Mistral (`VERA_MISTRAL_API_KEY`, default `mistral-small-latest`). `_call_inference_provider` refactored to `_ProviderConfig` dataclass + `_PROVIDERS` registry dict; adding further providers is now a one-row change. |
 
 ---
 
@@ -267,4 +268,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% | 96% |
 
-Total: **630+ commits, 109 tagged releases, 32 active development days.**
+Total: **630+ commits, 110 tagged releases, 32 active development days.**

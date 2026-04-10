@@ -9897,7 +9897,7 @@ public fn main(-> @Int)
 
 
 class TestInferenceProviderDispatch:
-    """Unit tests for _call_inference_provider — covers all three provider branches."""
+    """Unit tests for _call_inference_provider — covers all provider branches."""
 
     def _make_response(self, body: str) -> object:
         """Build a minimal mock urllib response."""
@@ -9909,29 +9909,49 @@ class TestInferenceProviderDispatch:
         return resp
 
     def test_anthropic_provider(self) -> None:
-        """Anthropic branch extracts content[0].text."""
+        """Anthropic branch uses correct endpoint, headers, and request body shape."""
         import json
-        from unittest.mock import patch
+        from unittest.mock import patch, MagicMock
         from vera.codegen.api import _call_inference_provider
 
         body = json.dumps({"content": [{"text": "hello"}]})
-        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
-            result = _call_inference_provider(
-                "anthropic", "prompt", "", "sk-ant", "", "")
+        mock_urlopen = MagicMock(return_value=self._make_response(body))
+        with patch("urllib.request.urlopen", mock_urlopen):
+            result = _call_inference_provider("anthropic", "prompt", "", "sk-ant")
         assert result == "hello"
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://api.anthropic.com/v1/messages"
+        # Anthropic-style auth: x-api-key header, not Bearer
+        assert req.get_header("X-api-key") == "sk-ant"
+        assert req.get_header("Anthropic-version") == "2023-06-01"
+        assert req.get_header("Authorization") is None
+        sent_body = json.loads(req.data.decode())
+        # Anthropic body: includes max_tokens; no "choices" key
+        assert "max_tokens" in sent_body
+        assert "messages" in sent_body
+        assert sent_body["max_tokens"] == 1024
 
     def test_openai_provider(self) -> None:
-        """OpenAI branch extracts choices[0].message.content."""
+        """OpenAI branch uses correct endpoint, bearer auth, and OpenAI-compatible body."""
         import json
-        from unittest.mock import patch
-        from vera.codegen.api import _call_inference_provider
+        from unittest.mock import patch, MagicMock
+        from vera.codegen.api import _call_inference_provider, _PROVIDERS
 
-        body = json.dumps(
-            {"choices": [{"message": {"content": "world"}}]})
-        with patch("urllib.request.urlopen", return_value=self._make_response(body)):
-            result = _call_inference_provider(
-                "openai", "prompt", "", "", "sk-openai", "")
+        body = json.dumps({"choices": [{"message": {"content": "world"}}]})
+        mock_urlopen = MagicMock(return_value=self._make_response(body))
+        with patch("urllib.request.urlopen", mock_urlopen):
+            result = _call_inference_provider("openai", "prompt", "", "sk-openai")
         assert result == "world"
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == _PROVIDERS["openai"].url
+        # Bearer auth, not Anthropic-style key header
+        assert req.get_header("Authorization") == "Bearer sk-openai"
+        assert req.get_header("X-api-key") is None
+        assert req.get_header("Content-type") == "application/json"
+        sent_body = json.loads(req.data.decode())
+        assert sent_body["model"] == _PROVIDERS["openai"].default_model
+        assert "messages" in sent_body
+        assert "max_tokens" not in sent_body
 
     def test_moonshot_provider(self) -> None:
         """Moonshot branch uses correct endpoint, default model, OpenAI-compatible format."""
@@ -9939,17 +9959,99 @@ class TestInferenceProviderDispatch:
         from unittest.mock import patch, MagicMock
         from vera.codegen.api import _call_inference_provider
 
-        body = json.dumps(
-            {"choices": [{"message": {"content": "moonshot"}}]})
+        body = json.dumps({"choices": [{"message": {"content": "moonshot"}}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            result = _call_inference_provider(
-                "moonshot", "prompt", "", "", "", "sk-moon")
+            result = _call_inference_provider("moonshot", "prompt", "", "sk-moon")
         assert result == "moonshot"
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://api.moonshot.ai/v1/chat/completions"
         sent_body = json.loads(req.data.decode())
         assert sent_body["model"] == "kimi-k2-0905-preview"
+
+    def test_mistral_provider(self) -> None:
+        """Mistral branch uses correct endpoint, default model, OpenAI-compatible format."""
+        import json
+        from unittest.mock import patch, MagicMock
+        from vera.codegen.api import _call_inference_provider
+
+        body = json.dumps({"choices": [{"message": {"content": "mistral"}}]})
+        mock_urlopen = MagicMock(return_value=self._make_response(body))
+        with patch("urllib.request.urlopen", mock_urlopen):
+            result = _call_inference_provider("mistral", "prompt", "", "sk-mistral")
+        assert result == "mistral"
+        req = mock_urlopen.call_args[0][0]
+        assert req.full_url == "https://api.mistral.ai/v1/chat/completions"
+        # Bearer auth (OpenAI-compatible), not Anthropic-style key header
+        assert req.get_header("Authorization") == "Bearer sk-mistral"
+        assert req.get_header("X-api-key") is None
+        sent_body = json.loads(req.data.decode())
+        assert sent_body["model"] == "mistral-small-latest"
+        # OpenAI-compatible body: has "messages", no Anthropic "max_tokens"
+        assert "messages" in sent_body
+        assert "max_tokens" not in sent_body
+
+    def test_mistral_auto_detect(self) -> None:
+        """Mistral key auto-detected when no other keys are set."""
+        from unittest.mock import patch
+        from vera.codegen.api import _call_inference_provider
+
+        result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="ok",
+        ) as mock_provider:
+            execute(result_src, env_vars={"VERA_MISTRAL_API_KEY": "sk-mistral-test"})
+            assert mock_provider.call_args[0][0] == "mistral"
+
+    def test_multi_key_auto_detect_respects_provider_order(self) -> None:
+        """When multiple keys are set, _PROVIDERS insertion order determines which wins.
+
+        The auto-detection loop scans _PROVIDERS in order and picks the first
+        provider whose key is present in the environment.  With anthropic first
+        in the registry, setting both VERA_ANTHROPIC_API_KEY and
+        VERA_MOONSHOT_API_KEY must resolve to 'anthropic'.
+        """
+        from unittest.mock import patch
+        from vera.codegen.api import _PROVIDERS
+
+        first_provider = next(iter(_PROVIDERS))  # "anthropic" per current registry
+        first_cfg = _PROVIDERS[first_provider]
+        second_provider = list(_PROVIDERS)[1]    # "openai"
+        second_cfg = _PROVIDERS[second_provider]
+
+        result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            return_value="ok",
+        ) as mock_provider:
+            execute(result_src, env_vars={
+                first_cfg.env_key: "sk-first",
+                second_cfg.env_key: "sk-second",
+            })
+            assert mock_provider.call_args[0][0] == first_provider
+
+    def test_explicit_provider_missing_key_returns_err(self) -> None:
+        """Provider set via VERA_INFERENCE_PROVIDER but key env var absent → Err branch.
+
+        Patches _call_inference_provider to confirm the early-fail guard fires
+        *before* any provider invocation — exec_result.value == 0 alone is not
+        sufficient because the Err branch is also reached on a network failure.
+        """
+        from unittest.mock import patch
+
+        result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            side_effect=AssertionError("should not be called"),
+        ) as mock_provider:
+            exec_result = execute(
+                result_src,
+                env_vars={"VERA_INFERENCE_PROVIDER": "mistral"},
+            )
+        # Early-fail guard returned Err before reaching the provider
+        assert exec_result.value == 0
+        mock_provider.assert_not_called()
 
     def test_custom_model_passed_through(self) -> None:
         """VERA_INFERENCE_MODEL is forwarded to the provider."""
@@ -9960,11 +10062,9 @@ class TestInferenceProviderDispatch:
         body = json.dumps({"content": [{"text": "ok"}]})
         mock_urlopen = MagicMock(return_value=self._make_response(body))
         with patch("urllib.request.urlopen", mock_urlopen):
-            _call_inference_provider(
-                "anthropic", "hi", "claude-opus-4-6", "sk-ant", "", "")
-        call_args = mock_urlopen.call_args
+            _call_inference_provider("anthropic", "hi", "claude-opus-4-6", "sk-ant")
         import json as _json
-        sent = _json.loads(call_args[0][0].data.decode())
+        sent = _json.loads(mock_urlopen.call_args[0][0].data.decode())
         assert sent["model"] == "claude-opus-4-6"
 
     def test_unknown_provider_raises(self) -> None:
@@ -9972,7 +10072,7 @@ class TestInferenceProviderDispatch:
         from vera.codegen.api import _call_inference_provider
         import pytest
         with pytest.raises(ValueError, match="Unknown inference provider"):
-            _call_inference_provider("unknown", "p", "", "", "", "")
+            _call_inference_provider("unknown", "p", "", "")
 
 
 class TestDecimalMonomorphization:
