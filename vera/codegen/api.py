@@ -2100,6 +2100,13 @@ def execute(
                 cfg = _PROVIDERS.get(provider)
                 api_key = _env.get(cfg.env_key, "") if cfg else ""
 
+                if cfg is not None and not api_key:
+                    return _alloc_result_err_string(
+                        caller,
+                        f"Inference provider '{provider}' selected but "
+                        f"{cfg.env_key} is not set.",
+                    )
+
                 try:
                     model = _env.get("VERA_INFERENCE_MODEL", "")
                     completion = _call_inference_provider(

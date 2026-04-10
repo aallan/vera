@@ -9959,8 +9959,14 @@ class TestInferenceProviderDispatch:
         assert result == "mistral"
         req = mock_urlopen.call_args[0][0]
         assert req.full_url == "https://api.mistral.ai/v1/chat/completions"
+        # Bearer auth (OpenAI-compatible), not Anthropic-style key header
+        assert req.get_header("Authorization") == "Bearer sk-mistral"
+        assert req.get_header("X-api-key") is None
         sent_body = json.loads(req.data.decode())
         assert sent_body["model"] == "mistral-small-latest"
+        # OpenAI-compatible body: has "messages", no Anthropic "max_tokens"
+        assert "messages" in sent_body
+        assert "max_tokens" not in sent_body
 
     def test_mistral_auto_detect(self) -> None:
         """Mistral key auto-detected when no other keys are set."""
@@ -9974,6 +9980,16 @@ class TestInferenceProviderDispatch:
         ) as mock_provider:
             execute(result_src, env_vars={"VERA_MISTRAL_API_KEY": "sk-mistral-test"})
             assert mock_provider.call_args[0][0] == "mistral"
+
+    def test_explicit_provider_missing_key_returns_err(self) -> None:
+        """Provider set via VERA_INFERENCE_PROVIDER but key env var absent → Err branch."""
+        result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
+        exec_result = execute(
+            result_src,
+            env_vars={"VERA_INFERENCE_PROVIDER": "mistral"},
+        )
+        # Err branch in _CLASSIFY_SOURCE returns 0; confirms early-fail path is taken
+        assert exec_result.value == 0
 
     def test_custom_model_passed_through(self) -> None:
         """VERA_INFERENCE_MODEL is forwarded to the provider."""
