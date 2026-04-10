@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through Stage 10, across 31 active development days.
+How the Vera compiler was built, from initial commit through Stage 10, across 32 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -230,6 +230,7 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 | v0.0.108 | 7 Apr | **`vera check --explain-slots`** — slot resolution table showing which parameter position each `@T.n` index refers to; addresses dominant VeraBench failure mode (#445). **SKILL.md prescriptive improvements** — five sections reworked to action-oriented workflows. **uv.lock CI enforcement** (#390). **Z3 timeout documented** (#391). |
 | VeraBench v0.0.7 | 8 Apr | **Multi-model evaluation** — expanded to 6 models across 3 providers. Kimi K2.5 achieves 100% run_correct on Vera, beating Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera; flagship tier averages 93% Vera vs 93% Python. Single-run results; pass@k evaluation ongoing. |
 | — | 9 Apr | **Bug fixes: `Exn<String>` WASM tag encoding** (#416) and **nested `handle[State<T>]` isolation** (#417). |
+| v0.0.109 | 10 Apr | **Fix closure `i32_pair` param/return types** (#359) — `String`/`Array` params and return types in closures now emit correct two-slot WAT signatures; host imports used inside closures now propagated to module-level tracker; `_infer_fncall_vera_type` fixed for parameterised accumulator types like `Map<String, Int>`. |
 
 ---
 
@@ -266,4 +267,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% | 96% |
 
-Total: **630+ commits, 108 tagged releases, 31 active development days.**
+Total: **630+ commits, 109 tagged releases, 32 active development days.**

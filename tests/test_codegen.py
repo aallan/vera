@@ -10270,3 +10270,96 @@ public fn bar(@Int -> @Int)
         assert any(d.error_code == "E614" for d in errors), \
             f"Expected E614, got: {[d.error_code for d in errors]}"
         assert result.wasm_bytes == b""
+
+
+class TestClosureI32PairParams:
+    """Closures whose parameters or return types are i32_pair (String, Array).
+
+    Regression tests for #359: closure lifting and call_indirect type
+    descriptors must emit two consecutive i32 slots for i32_pair types,
+    not an unsupported/missing param.
+    """
+
+    def test_closure_string_param_compiles(self) -> None:
+        """Closure with a String parameter emits valid (param i32 i32) WAT."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  apply_fn(fn(@String -> @Int) effects(pure) { string_length(@String.0) }, "hello")
+}
+"""
+        assert _run(src) == 5
+
+    def test_closure_string_return_compiles(self) -> None:
+        """Closure with a String return type emits valid (result i32 i32) WAT."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @String = apply_fn(fn(@Int -> @String) effects(pure) { "ok" }, 0);
+  string_length(@String.0)
+}
+"""
+        assert _run(src) == 2
+
+    def test_closure_array_param_compiles(self) -> None:
+        """Closure with an Array<Int> parameter emits valid (param i32 i32) WAT."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = [10, 20, 30];
+  apply_fn(fn(@Array<Int> -> @Int) effects(pure) { array_length(@Array<Int>.0) }, @Array<Int>.0)
+}
+"""
+        assert _run(src) == 3
+
+    def test_closure_array_return_compiles(self) -> None:
+        """Closure with an Array<Int> return type emits valid (result i32 i32) WAT."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = apply_fn(fn(@Int -> @Array<Int>) effects(pure) { [1, 2] }, 0);
+  array_length(@Array<Int>.0)
+}
+"""
+        assert _run(src) == 2
+
+    def test_array_fold_with_map_accumulator(self) -> None:
+        """array_fold over String array with Map<String, Int> accumulator.
+
+        Exercises: (1) i32_pair closure param in the lifted fold fn,
+        (2) apply_fn return-type inference with a parameterized accumulator
+        so _resolve_generic_call produces array_fold_go$String_Map_String_Int.
+        Also exercises the zero-iteration path (empty array).
+        """
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<String> = ["a", "b", "c"];
+  let @Map<String, Int> = map_new();
+  let @Map<String, Int> = array_fold(
+    @Array<String>.0,
+    @Map<String, Int>.0,
+    fn(@Map<String, Int>, @String -> @Map<String, Int>) effects(pure) {
+      map_insert(@Map<String, Int>.0, @String.0, 1)
+    }
+  );
+  let @Int = map_size(@Map<String, Int>.0);
+  let @Array<String> = [];
+  let @Map<String, Int> = map_new();
+  let @Map<String, Int> = array_fold(
+    @Array<String>.0,
+    @Map<String, Int>.0,
+    fn(@Map<String, Int>, @String -> @Map<String, Int>) effects(pure) {
+      map_insert(@Map<String, Int>.0, @String.0, 1)
+    }
+  );
+  let @Int = map_size(@Map<String, Int>.0);
+  @Int.1 + @Int.0
+}
+"""
+        assert _run(src) == 3  # 3 + 0

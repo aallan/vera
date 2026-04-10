@@ -588,10 +588,10 @@ class InferenceMixin:
                             if ret.name in alias_map:
                                 ta = alias_map[ret.name]
                                 if isinstance(ta, ast.NamedType):
-                                    return ta.name
-                            return ret.name
+                                    return self._format_named_type(ta)
+                            return self._format_named_type(ret)
                     elif isinstance(alias_te.return_type, ast.NamedType):
-                        return alias_te.return_type.name
+                        return self._format_named_type(alias_te.return_type)
         # Map builtins
         if call.name in ("map_new", "map_insert", "map_remove"):
             return "Map"
@@ -838,6 +838,28 @@ class InferenceMixin:
                         alias_te, alias_params, closure_arg.type_args,
                     )
                 return self._fn_type_return_wasm(alias_te)
+        if isinstance(closure_arg, ast.AnonFn):
+            # Closure literal passed directly — infer return type from its
+            # declared return TypeExpr so call_indirect sig matches the
+            # lifted function's actual return (i32_pair for String/Array).
+            ret: ast.TypeExpr = closure_arg.return_type
+            # Fully resolve aliases and peel refinements to canonical name.
+            if isinstance(ret, ast.NamedType):
+                resolved_name = self._resolve_type_name_to_wasm_canonical(
+                    ret.name,
+                )
+                if resolved_name in ("String", "Array"):
+                    return "i32_pair"
+                return self._named_type_to_wasm(resolved_name)
+            if isinstance(ret, ast.RefinementType):  # pragma: no cover — closure returns are not refinement types
+                base = ret.base_type
+                if isinstance(base, ast.NamedType):
+                    resolved_name = self._resolve_type_name_to_wasm_canonical(
+                        base.name,
+                    )
+                    if resolved_name in ("String", "Array"):
+                        return "i32_pair"
+                    return self._named_type_to_wasm(resolved_name)
         return "i64"  # pragma: no cover — safe default for most cases
 
     def _resolve_generic_fn_return(
@@ -858,11 +880,41 @@ class InferenceMixin:
                 subst[param] = arg.name
 
         ret = fn_type.return_type
+        if isinstance(ret, ast.RefinementType):
+            ret = ret.base_type
         if isinstance(ret, ast.NamedType):
-            # If the return type is a type variable, substitute it
+            # Substitute type variable, then fully resolve aliases/refinements
             name = subst.get(ret.name, ret.name)
-            return self._named_type_to_wasm(name)
+            resolved = self._resolve_type_name_to_wasm_canonical(name)
+            if resolved in ("String", "Array"):
+                return "i32_pair"
+            return self._named_type_to_wasm(resolved)
         return "i64"  # pragma: no cover — default
+
+    def _resolve_type_name_to_wasm_canonical(self, name: str) -> str:
+        """Fully resolve a type name through aliases/refinements to canonical.
+
+        Follows alias chains (e.g. type A = B; type B = String) and
+        peels RefinementType wrappers until a concrete name is reached.
+        Returns the resolved name (e.g. "String", "Int", "MyADT").
+        """
+        seen: set[str] = set()
+        while name not in seen:
+            seen.add(name)
+            alias = self._type_aliases.get(name)
+            if alias is None:
+                break
+            if isinstance(alias, ast.RefinementType):
+                base = alias.base_type
+                if isinstance(base, ast.NamedType):
+                    name = base.name
+                else:  # pragma: no cover — refinement over non-NamedType
+                    break
+            elif isinstance(alias, ast.NamedType):  # pragma: no cover — plain alias
+                name = alias.name  # pragma: no cover
+            else:  # pragma: no cover — FnType alias or other
+                break
+        return name
 
     @staticmethod
     def _named_type_to_wasm(name: str) -> str | None:
@@ -880,8 +932,13 @@ class InferenceMixin:
     def _fn_type_return_wasm(self, fn_type: ast.FnType) -> str | None:
         """Get the WASM return type from a FnType AST node."""
         ret = fn_type.return_type
+        if isinstance(ret, ast.RefinementType):
+            ret = ret.base_type
         if isinstance(ret, ast.NamedType):
-            return self._named_type_to_wasm(ret.name)
+            resolved = self._resolve_type_name_to_wasm_canonical(ret.name)
+            if resolved in ("String", "Array"):
+                return "i32_pair"
+            return self._named_type_to_wasm(resolved)
         return "i64"  # pragma: no cover — default
 
     def _fn_type_param_wasm_types(
