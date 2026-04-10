@@ -843,20 +843,23 @@ class InferenceMixin:
             # declared return TypeExpr so call_indirect sig matches the
             # lifted function's actual return (i32_pair for String/Array).
             ret: ast.TypeExpr = closure_arg.return_type
-            # Peel refinement wrapper to get the underlying named type.
-            if isinstance(ret, ast.RefinementType):
-                ret = ret.base_type
+            # Fully resolve aliases and peel refinements to canonical name.
             if isinstance(ret, ast.NamedType):
-                # Resolve type aliases (e.g. a refined alias for String).
-                resolved_name = ret.name
-                alias = self._type_aliases.get(ret.name)
-                if isinstance(alias, ast.RefinementType):
-                    inner = alias.base_type
-                    if isinstance(inner, ast.NamedType):
-                        resolved_name = inner.name
+                resolved_name = self._resolve_type_name_to_wasm_canonical(
+                    ret.name,
+                )
                 if resolved_name in ("String", "Array"):
                     return "i32_pair"
                 return self._named_type_to_wasm(resolved_name)
+            if isinstance(ret, ast.RefinementType):  # pragma: no cover — closure returns are not refinement types
+                base = ret.base_type
+                if isinstance(base, ast.NamedType):
+                    resolved_name = self._resolve_type_name_to_wasm_canonical(
+                        base.name,
+                    )
+                    if resolved_name in ("String", "Array"):
+                        return "i32_pair"
+                    return self._named_type_to_wasm(resolved_name)
         return "i64"  # pragma: no cover — safe default for most cases
 
     def _resolve_generic_fn_return(
@@ -880,12 +883,38 @@ class InferenceMixin:
         if isinstance(ret, ast.RefinementType):
             ret = ret.base_type
         if isinstance(ret, ast.NamedType):
-            # If the return type is a type variable, substitute it
+            # Substitute type variable, then fully resolve aliases/refinements
             name = subst.get(ret.name, ret.name)
-            if name in ("String", "Array"):
+            resolved = self._resolve_type_name_to_wasm_canonical(name)
+            if resolved in ("String", "Array"):
                 return "i32_pair"
-            return self._named_type_to_wasm(name)
+            return self._named_type_to_wasm(resolved)
         return "i64"  # pragma: no cover — default
+
+    def _resolve_type_name_to_wasm_canonical(self, name: str) -> str:
+        """Fully resolve a type name through aliases/refinements to canonical.
+
+        Follows alias chains (e.g. type A = B; type B = String) and
+        peels RefinementType wrappers until a concrete name is reached.
+        Returns the resolved name (e.g. "String", "Int", "MyADT").
+        """
+        seen: set[str] = set()
+        while name not in seen:
+            seen.add(name)
+            alias = self._type_aliases.get(name)
+            if alias is None:
+                break
+            if isinstance(alias, ast.RefinementType):
+                base = alias.base_type
+                if isinstance(base, ast.NamedType):
+                    name = base.name
+                else:  # pragma: no cover — refinement over non-NamedType
+                    break
+            elif isinstance(alias, ast.NamedType):  # pragma: no cover — plain alias
+                name = alias.name  # pragma: no cover
+            else:  # pragma: no cover — FnType alias or other
+                break
+        return name
 
     @staticmethod
     def _named_type_to_wasm(name: str) -> str | None:
@@ -906,9 +935,10 @@ class InferenceMixin:
         if isinstance(ret, ast.RefinementType):
             ret = ret.base_type
         if isinstance(ret, ast.NamedType):
-            if ret.name in ("String", "Array"):
+            resolved = self._resolve_type_name_to_wasm_canonical(ret.name)
+            if resolved in ("String", "Array"):
                 return "i32_pair"
-            return self._named_type_to_wasm(ret.name)
+            return self._named_type_to_wasm(resolved)
         return "i64"  # pragma: no cover — default
 
     def _fn_type_param_wasm_types(
