@@ -349,15 +349,15 @@ private forall<A> fn identity(@A -> @A)
 class TestTier3Precondition:
     """Preconditions that can't be translated -> Tier 3 warning."""
 
-    def test_precondition_with_string_equality_tier3(self) -> None:
-        """A precondition referencing String -> can't be SMT-translated -> Tier 3."""
-        _verify_warn("""
+    def test_precondition_with_string_equality_tier1(self) -> None:
+        """String params declared as z3.String; string equality is Tier 1 via Z3 string theory."""
+        _verify_ok("""
 private fn greet(@String -> @Int)
   requires(@String.0 == "hello")
   ensures(true)
   effects(pure)
 { 42 }
-""", "outside the decidable fragment")
+""")
 
 
 # =====================================================================
@@ -367,15 +367,15 @@ private fn greet(@String -> @Int)
 class TestTier3Postcondition:
     """Postconditions that can't be translated -> Tier 3 warning."""
 
-    def test_postcondition_with_string_result_tier3(self) -> None:
-        """String result type -> body can't be SMT-translated -> Tier 3."""
-        _verify_warn("""
+    def test_postcondition_with_string_result_tier1(self) -> None:
+        """String result declared as z3.String; ensures string equality is Tier 1."""
+        _verify_ok("""
 private fn greet(@Int -> @String)
   requires(true)
   ensures(@String.result == "hello")
   effects(pure)
 { "hello" }
-""", "outside the decidable fragment")
+""")
 
     def test_postcondition_body_unsupported_tier3(self) -> None:
         """Lambda body -> can't translate -> Tier 3 for postcondition."""
@@ -395,20 +395,15 @@ private fn use_adder(@Int -> @Int)
 { apply_fn(make_adder(1), @Int.0) }
 """, "outside the decidable fragment")
 
-    def test_postcondition_expr_unsupported_tier3(self) -> None:
-        """Postcondition uses unsupported construct -> Tier 3 (E523).
-
-        The body translates fine (pure int) but the postcondition
-        expression can't be translated to SMT because it references
-        a string literal in a comparison.
-        """
-        _verify_warn("""
+    def test_postcondition_with_string_literal_comparison_tier1(self) -> None:
+        """String literal comparison in postcondition is Tier 1 via Z3 string theory."""
+        _verify_ok("""
 private fn f(@Int -> @Int)
   requires(true)
   ensures(@Int.result == @Int.0 && "hello" == "hello")
   effects(pure)
 { @Int.0 }
-""", "postcondition")
+""")
 
 
 # =====================================================================
@@ -667,13 +662,13 @@ class TestSmtContextDirect:
         assert result.status in ("verified", "violated", "unknown")
 
     def test_translate_expr_returns_none_for_unsupported(self) -> None:
-        """translate_expr returns None for unsupported expressions."""
+        """translate_expr returns None for unsupported expressions (e.g. FloatLit)."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import StringLit, Span
+        from vera.ast import FloatLit
         ctx = SmtContext()
         env = SlotEnv()
-        # StringLit is unsupported
-        result = ctx.translate_expr(StringLit(value="hello", span=None), env)
+        # FloatLit has no SMT handler — translate_expr falls through to return None
+        result = ctx.translate_expr(FloatLit(value=3.14, span=None), env)
         assert result is None
 
     def test_vera_type_to_z3_sort_bool(self) -> None:
@@ -1150,13 +1145,14 @@ class TestSmtTranslateEdgeCases:
     def test_binary_with_none_operand(self) -> None:
         """Binary expr where one operand can't be translated returns None."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import BinaryExpr, BinOp, StringLit, IntLit
+        from vera.ast import BinaryExpr, BinOp, FloatLit, IntLit
         ctx = SmtContext()
         env = SlotEnv()
+        # FloatLit has no SMT handler → translate_expr returns None for it
         expr = BinaryExpr(
             left=IntLit(value=1, span=None),
             op=BinOp.ADD,
-            right=StringLit(value="x", span=None),
+            right=FloatLit(value=1.5, span=None),
             span=None,
         )
         result = ctx.translate_expr(expr, env)
@@ -1165,12 +1161,13 @@ class TestSmtTranslateEdgeCases:
     def test_unary_with_none_operand(self) -> None:
         """Unary expr where operand can't be translated returns None."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import UnaryExpr, UnaryOp, StringLit
+        from vera.ast import UnaryExpr, UnaryOp, FloatLit
         ctx = SmtContext()
         env = SlotEnv()
+        # FloatLit has no SMT handler → translate_expr returns None for it
         expr = UnaryExpr(
             op=UnaryOp.NOT,
-            operand=StringLit(value="x", span=None),
+            operand=FloatLit(value=1.5, span=None),
             span=None,
         )
         result = ctx.translate_expr(expr, env)
@@ -1179,11 +1176,12 @@ class TestSmtTranslateEdgeCases:
     def test_if_with_untranslatable_condition(self) -> None:
         """If expr with untranslatable condition returns None."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import IfExpr, StringLit, IntLit
+        from vera.ast import IfExpr, FloatLit, IntLit
         ctx = SmtContext()
         env = SlotEnv()
+        # FloatLit has no SMT handler → translate_expr returns None for it
         expr = IfExpr(
-            condition=StringLit(value="cond", span=None),
+            condition=FloatLit(value=1.5, span=None),
             then_branch=IntLit(value=1, span=None),
             else_branch=IntLit(value=2, span=None),
             span=None,

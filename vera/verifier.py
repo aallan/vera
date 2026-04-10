@@ -24,8 +24,10 @@ from vera.errors import Diagnostic, SourceLocation
 from vera.smt import CallViolation, SlotEnv, SmtContext
 from vera.types import (
     BOOL,
+    FLOAT64,
     INT,
     NAT,
+    STRING,
     UNIT,
     AdtType,
     EffectRowType,
@@ -455,6 +457,10 @@ class ContractVerifier:
                 var = smt.declare_nat(z3_name)
             elif self._is_bool_type(param_ty):
                 var = smt.declare_bool(z3_name)
+            elif self._is_string_type(param_ty):
+                var = smt.declare_string(z3_name)
+            elif self._is_float64_type(param_ty):
+                var = smt.declare_float64(z3_name)
             elif self._is_adt_type(param_ty):
                 adt_var = smt.declare_adt(z3_name, param_ty)
                 var = adt_var if adt_var is not None else smt.declare_int(z3_name)
@@ -470,6 +476,10 @@ class ContractVerifier:
             result_var = smt.declare_nat("@result")
         elif self._is_bool_type(ret_type):
             result_var = smt.declare_bool("@result")
+        elif self._is_string_type(ret_type):
+            result_var = smt.declare_string("@result")
+        elif self._is_float64_type(ret_type):
+            result_var = smt.declare_float64("@result")
         elif self._is_adt_type(ret_type):
             adt_var = smt.declare_adt("@result", ret_type)
             result_var = adt_var if adt_var is not None else smt.declare_int("@result")
@@ -979,6 +989,16 @@ class ContractVerifier:
         """Check if a type is an algebraic data type."""
         from vera.types import AdtType
         return isinstance(ty, AdtType)
+
+    @staticmethod
+    def _is_string_type(ty: Type) -> bool:
+        """Check if a type is String."""
+        return ty == STRING
+
+    @staticmethod
+    def _is_float64_type(ty: Type) -> bool:
+        """Check if a type is Float64."""
+        return ty == FLOAT64
 
     @staticmethod
     def _count_slots(env: SlotEnv, type_name: str) -> int:

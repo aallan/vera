@@ -383,6 +383,9 @@ class SmtContext:
         if isinstance(expr, ast.BoolLit):
             return z3.BoolVal(expr.value)
 
+        if isinstance(expr, ast.StringLit):
+            return z3.StringVal(expr.value)
+
         if isinstance(expr, ast.SlotRef):
             return self._translate_slot_ref(expr, env)
 
@@ -629,17 +632,56 @@ class SmtContext:
         if call.name == "nat_to_int" and len(call.args) == 1:
             return self.translate_expr(call.args[0], env)
 
-        # Built-in: string_length() — uninterpreted, result >= 0
+        # Built-in: string_length() — use z3.Length() for String sorts so that
+        # Z3's string theory gives exact lengths (e.g. for literal arguments at
+        # call sites).  Fall back to an uninterpreted function for other sorts.
         if call.name == "string_length" and len(call.args) == 1:
             arg = self.translate_expr(call.args[0], env)
             if arg is not None:
-                length_fn = z3.Function(
-                    "string_length", arg.sort(), z3.IntSort(),
-                )
-                result = length_fn(arg)
+                if isinstance(arg.sort(), z3.SeqSortRef):
+                    result = z3.Length(arg)
+                else:
+                    length_fn = z3.Function(
+                        "string_length", arg.sort(), z3.IntSort(),
+                    )
+                    result = length_fn(arg)
                 self.solver.add(result >= 0)
                 return result
             return None  # pragma: no cover
+
+        # Built-ins: string_contains / string_starts_with / string_ends_with
+        # Z3's native string theory encodes these exactly.
+        # string_contains(haystack, needle) → Contains(haystack, needle)
+        # string_starts_with(s, prefix)     → PrefixOf(prefix, s)
+        # string_ends_with(s, suffix)       → SuffixOf(suffix, s)
+        if call.name == "string_contains" and len(call.args) == 2:
+            haystack = self.translate_expr(call.args[0], env)
+            needle = self.translate_expr(call.args[1], env)
+            if haystack is not None and needle is not None:
+                return z3.Contains(haystack, needle)
+            return None  # pragma: no cover
+
+        if call.name == "string_starts_with" and len(call.args) == 2:
+            s = self.translate_expr(call.args[0], env)
+            prefix = self.translate_expr(call.args[1], env)
+            if s is not None and prefix is not None:
+                return z3.PrefixOf(prefix, s)
+            return None  # pragma: no cover
+
+        if call.name == "string_ends_with" and len(call.args) == 2:
+            s = self.translate_expr(call.args[0], env)
+            suffix = self.translate_expr(call.args[1], env)
+            if s is not None and suffix is not None:
+                return z3.SuffixOf(suffix, s)
+            return None  # pragma: no cover
+
+        # Built-ins: float_is_nan / float_is_infinite
+        # Float64 maps to z3.Real (mathematical reals), which have no NaN or
+        # infinity.  Returning BoolVal(False) here would be UNSOUND: the
+        # compiler would skip the runtime check for requires(!float_is_nan(x)),
+        # silently dropping a safety guard.  Tier 3 (runtime check) is correct.
+        if call.name in ("float_is_nan", "float_is_infinite"):
+            return None
 
         # Built-in: byte_to_int() — identity (both IntSort in Z3)
         if call.name == "byte_to_int" and len(call.args) == 1:

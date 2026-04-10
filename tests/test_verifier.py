@@ -1752,3 +1752,87 @@ private fn longer_than(@String, @Int -> @Bool)
         typecheck(prog, source)
         result = verify(prog, source)
         assert result.summary.tier3_runtime == 0
+
+
+class TestStringPredicateVerification:
+    """string_contains/starts_with/ends_with use Z3 native string theory (Tier 1)."""
+
+    def test_string_contains_tier1(self) -> None:
+        """requires(string_contains(@String.0, ...)) verifies Tier 1."""
+        source = """
+private fn has_prefix(@String -> @Bool)
+  requires(string_contains(@String.0, "http"))
+  ensures(true)
+  effects(pure)
+{
+  string_starts_with(@String.0, "http")
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
+        assert result.summary.tier3_runtime == 0
+
+    def test_string_starts_with_tier1(self) -> None:
+        """requires(string_starts_with(...)) verifies Tier 1."""
+        source = """
+private fn require_https(@String -> @Bool)
+  requires(string_starts_with(@String.0, "https://"))
+  ensures(true)
+  effects(pure)
+{
+  string_length(@String.0) > 8
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
+        assert result.summary.tier3_runtime == 0
+
+    def test_string_ends_with_tier1(self) -> None:
+        """requires(string_ends_with(...)) verifies Tier 1."""
+        source = """
+private fn require_json(@String -> @Bool)
+  requires(string_ends_with(@String.0, ".json"))
+  ensures(true)
+  effects(pure)
+{
+  string_length(@String.0) > 5
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
+        assert result.summary.tier3_runtime == 0
+
+    def test_float_is_nan_stays_tier3(self) -> None:
+        """float_is_nan stays Tier 3: Float64 maps to reals; BoolVal(False) would be unsound."""
+        source = """
+private fn safe_sqrt(@Float64 -> @Float64)
+  requires(!float_is_nan(@Float64.0))
+  ensures(true)
+  effects(pure)
+{
+  @Float64.0
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
+        assert result.summary.tier3_runtime >= 1
+
+    def test_float_is_infinite_stays_tier3(self) -> None:
+        """float_is_infinite stays Tier 3 for the same soundness reason as float_is_nan."""
+        source = """
+private fn finite_only(@Float64 -> @Float64)
+  requires(!float_is_infinite(@Float64.0))
+  ensures(true)
+  effects(pure)
+{
+  @Float64.0
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
+        assert result.summary.tier3_runtime >= 1
