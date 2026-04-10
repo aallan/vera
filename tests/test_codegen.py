@@ -9982,14 +9982,26 @@ class TestInferenceProviderDispatch:
             assert mock_provider.call_args[0][0] == "mistral"
 
     def test_explicit_provider_missing_key_returns_err(self) -> None:
-        """Provider set via VERA_INFERENCE_PROVIDER but key env var absent → Err branch."""
+        """Provider set via VERA_INFERENCE_PROVIDER but key env var absent → Err branch.
+
+        Patches _call_inference_provider to confirm the early-fail guard fires
+        *before* any provider invocation — exec_result.value == 0 alone is not
+        sufficient because the Err branch is also reached on a network failure.
+        """
+        from unittest.mock import patch
+
         result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
-        exec_result = execute(
-            result_src,
-            env_vars={"VERA_INFERENCE_PROVIDER": "mistral"},
-        )
-        # Err branch in _CLASSIFY_SOURCE returns 0; confirms early-fail path is taken
+        with patch(
+            "vera.codegen.api._call_inference_provider",
+            side_effect=AssertionError("should not be called"),
+        ) as mock_provider:
+            exec_result = execute(
+                result_src,
+                env_vars={"VERA_INFERENCE_PROVIDER": "mistral"},
+            )
+        # Early-fail guard returned Err before reaching the provider
         assert exec_result.value == 0
+        mock_provider.assert_not_called()
 
     def test_custom_model_passed_through(self) -> None:
         """VERA_INFERENCE_MODEL is forwarded to the provider."""
