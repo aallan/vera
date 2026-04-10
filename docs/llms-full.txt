@@ -1200,7 +1200,7 @@ effects(<Inference, IO>)         -- LLM + console output
 effects(<Http, Inference>)       -- fetch + LLM
 ```
 
-Returns `Result<String, String>` — `Ok` with the completion text on success, `Err` with the error message on failure. Provider is selected from environment variables: `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, `VERA_MOONSHOT_API_KEY`, or `VERA_MISTRAL_API_KEY` (auto-detected from whichever key is set). Override with `VERA_INFERENCE_PROVIDER` (valid values: `anthropic`, `openai`, `moonshot`, `mistral`) and `VERA_INFERENCE_MODEL`.
+Returns `Result<String, String>` — `Ok` with the completion text on success, `Err` with the error message on failure. Provider is selected from environment variables: `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, `VERA_MOONSHOT_API_KEY` (Kimi), or `VERA_MISTRAL_API_KEY` (auto-detected from whichever key is set). Override with `VERA_INFERENCE_PROVIDER` (valid values: `anthropic`, `openai`, `moonshot`, `mistral`) and `VERA_INFERENCE_MODEL`.
 
 ```vera
 private fn classify(@String -> @Result<String, String>)
@@ -2094,7 +2094,7 @@ The `verify --json` output includes a verification summary:
 2. Use `@Type.index` to reference bindings (`@Int.0` = most recent Int, `@Int.1` = one before)
 3. Declare all effects: `effects(pure)` for pure functions, `effects(<IO>)` for IO, `effects(<Http>)` for network, `effects(<Inference>)` for LLM calls
 4. `Http.get(@String.0)` and `Http.post(@String.0, @String.1)` return `Result<String, String>`; match the result
-5. `Inference.complete(@String.0)` returns `Result<String, String>`; requires `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, or `VERA_MOONSHOT_API_KEY` to run; provider auto-detected from whichever key is set
+5. `Inference.complete(@String.0)` returns `Result<String, String>`; requires `VERA_ANTHROPIC_API_KEY`, `VERA_OPENAI_API_KEY`, `VERA_MOONSHOT_API_KEY` (Kimi), or `VERA_MISTRAL_API_KEY` to run; provider auto-detected from whichever key is set
 6. Recursive functions need a `decreases()` clause
 7. Match expressions must be exhaustive
 
@@ -2376,7 +2376,7 @@ The reference compiler is under active development. The current release includes
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
 - Algebraic effect handlers with resume and state
 - Built-in `<Http>`, `<Inference>`, `<State>`, `<IO>`, `<Async>` effects
-- `<Inference>` dispatches to Anthropic, OpenAI, or Moonshot via env vars
+- `<Inference>` dispatches to Anthropic, OpenAI, Kimi (Moonshot), or Mistral via env vars
 - Collection types: `Map<K,V>`, `Set<T>`, `Array<T>`, `Decimal`, `Json`, `HtmlNode`, `Markdown`
 - String interpolation with auto-conversion for primitive types
 - Cross-module imports with contract verification at call sites
