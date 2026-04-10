@@ -10309,6 +10309,7 @@ public fn main(-> @Int)
         Exercises: (1) i32_pair closure param in the lifted fold fn,
         (2) apply_fn return-type inference with a parameterized accumulator
         so _resolve_generic_call produces array_fold_go$String_Map_String_Int.
+        Also exercises the zero-iteration path (empty array).
         """
         src = """\
 public fn main(-> @Int)
@@ -10323,7 +10324,18 @@ public fn main(-> @Int)
       map_insert(@Map<String, Int>.0, @String.0, 1)
     }
   );
-  map_size(@Map<String, Int>.0)
+  let @Int = map_size(@Map<String, Int>.0);
+  let @Array<String> = [];
+  let @Map<String, Int> = map_new();
+  let @Map<String, Int> = array_fold(
+    @Array<String>.0,
+    @Map<String, Int>.0,
+    fn(@Map<String, Int>, @String -> @Map<String, Int>) effects(pure) {
+      map_insert(@Map<String, Int>.0, @String.0, 1)
+    }
+  );
+  let @Int = map_size(@Map<String, Int>.0);
+  @Int.1 + @Int.0
 }
 """
-        assert _run(src) == 3
+        assert _run(src) == 3  # 3 + 0

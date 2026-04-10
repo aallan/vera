@@ -842,11 +842,21 @@ class InferenceMixin:
             # Closure literal passed directly — infer return type from its
             # declared return TypeExpr so call_indirect sig matches the
             # lifted function's actual return (i32_pair for String/Array).
-            ret = closure_arg.return_type
+            ret: ast.TypeExpr = closure_arg.return_type
+            # Peel refinement wrapper to get the underlying named type.
+            if isinstance(ret, ast.RefinementType):
+                ret = ret.base_type
             if isinstance(ret, ast.NamedType):
-                if ret.name in ("String", "Array"):
+                # Resolve type aliases (e.g. a refined alias for String).
+                resolved_name = ret.name
+                alias = self._type_aliases.get(ret.name)
+                if isinstance(alias, ast.RefinementType):
+                    inner = alias.base_type
+                    if isinstance(inner, ast.NamedType):
+                        resolved_name = inner.name
+                if resolved_name in ("String", "Array"):
                     return "i32_pair"
-                return self._named_type_to_wasm(ret.name)
+                return self._named_type_to_wasm(resolved_name)
         return "i64"  # pragma: no cover — safe default for most cases
 
     def _resolve_generic_fn_return(
