@@ -1839,7 +1839,7 @@ private fn finite_only(@Float64 -> @Float64)
 
 
 class TestRefinedTypeParamSorts:
-    """Refinement types over String/Float64 use the correct Z3 sort (SeqSort / RealSort)."""
+    """Refinement types over Bool/String/Float64 use the correct Z3 sort."""
 
     def test_refined_string_param_string_predicate_tier1(self) -> None:
         """RefinedType(STRING) param uses SeqSort — string predicates resolve to Tier 1.
@@ -1887,4 +1887,28 @@ private fn identity(@PosFloat -> @Float64)
         typecheck(prog, source)
         result = verify(prog, source)
         # Contract trivially true — verifies at Tier 1
+        assert result.summary.tier3_runtime == 0
+
+    def test_refined_bool_param_verifies_cleanly(self) -> None:
+        """RefinedType(BOOL) param uses BoolSort — function verifies without sort errors.
+
+        Without the RefinedType branch in _is_bool_type, the parameter falls through to
+        declare_int (IntSort). With the fix, declare_bool (BoolSort) is used, matching the
+        behaviour of a plain @Bool parameter; contracts that reference the Bool param as a
+        boolean expression work correctly.
+        """
+        source = """
+type Flag = { @Bool | true };
+
+private fn identity(@Flag -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Flag.0
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
         assert result.summary.tier3_runtime == 0

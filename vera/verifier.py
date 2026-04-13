@@ -981,8 +981,8 @@ class ContractVerifier:
 
     @staticmethod
     def _is_bool_type(ty: Type) -> bool:
-        """Check if a type is Bool."""
-        return ty == BOOL
+        """Check if a type is Bool (including refinements of Bool)."""
+        return ty == BOOL or (isinstance(ty, RefinedType) and ty.base == BOOL)
 
     @staticmethod
     def _is_adt_type(ty: Type) -> bool:
