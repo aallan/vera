@@ -232,6 +232,7 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 | — | 9 Apr | **Bug fixes: `Exn<String>` WASM tag encoding** (#416) and **nested `handle[State<T>]` isolation** (#417). |
 | v0.0.109 | 10 Apr | **Fix closure `i32_pair` param/return types** (#359) — `String`/`Array` params and return types in closures now emit correct two-slot WAT signatures; host imports used inside closures now propagated to module-level tracker; `_infer_fncall_vera_type` fixed for parameterised accumulator types like `Map<String, Int>`. |
 | v0.0.110 | 10 Apr | **Mistral AI provider + provider registry refactor** (#413) — `Inference.complete` supports Mistral (`VERA_MISTRAL_API_KEY`, default `mistral-small-latest`). `_call_inference_provider` refactored to `_ProviderConfig` dataclass + `_PROVIDERS` registry dict; adding further providers is now a one-row change. |
+| v0.0.111 | 10 Apr | **SMT translator: String/Float64 parameter sorts + string predicates** — `String` and `Float64` function parameters now declared with correct Z3 sorts (SeqSort/RealSort) rather than falling back to IntSort. `StringLit` translates to `z3.StringVal()`. `string_length` uses `z3.Length()` for SeqSort args so call-site preconditions on string literals verify Tier 1. `string_contains`, `string_starts_with`, `string_ends_with` now Tier 1 via Z3 native string theory. `float_is_nan`/`float_is_infinite` explicitly Tier 3 (encoding as False would drop the runtime guard). |
 
 ---
 

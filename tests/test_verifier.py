@@ -1588,7 +1588,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 170 T1 / 21 T3 / 191 total without module resolution."""
+        """All examples together: 172 T1 / 19 T3 / 191 total without module resolution."""
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
             text = f.read_text()
@@ -1598,8 +1598,8 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 170, f"Expected 170 T1, got {t1}"
-        assert t3 == 21, f"Expected 21 T3, got {t3}"
+        assert t1 == 172, f"Expected 172 T1, got {t1}"
+        assert t3 == 19, f"Expected 19 T3, got {t3}"
         assert total == 191, f"Expected 191 total, got {total}"
 
 
@@ -1698,3 +1698,189 @@ public fn outer(@Nat -> @Nat)
         result = verify(prog, text, file=str(source))
         assert result.summary.tier3_runtime == 0
         assert result.summary.tier1_verified == 8
+
+
+class TestStringLengthVerification:
+    """string_length() on @String arguments uses z3.Length() — native Z3 string theory (Tier 1).
+
+    The uninterpreted function path is only a fallback for non-SeqSort arguments and is
+    never reached in practice now that String params are correctly declared as SeqSort.
+    """
+
+    def test_string_length_gt_zero_requires_tier1(self) -> None:
+        """requires(string_length(@String.0) > 0) is verified Tier 1."""
+        result = _verify("""
+private fn non_empty(@String -> @Int)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(pure)
+{
+  string_length(@String.0)
+}
+""")
+        assert result.summary.tier1_verified >= 1
+        assert result.summary.tier3_runtime == 0
+
+    def test_string_length_ensures_tier1(self) -> None:
+        """ensures(@Int.result >= 0) on string_length return is verified Tier 1."""
+        result = _verify("""
+private fn get_length(@String -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  string_length(@String.0)
+}
+""")
+        assert result.summary.tier1_verified >= 1
+        assert result.summary.tier3_runtime == 0
+
+    def test_string_length_comparison_tier1(self) -> None:
+        """string_length in both requires and ensures resolves to Tier 1."""
+        result = _verify("""
+private fn longer_than(@String, @Int -> @Bool)
+  requires(@Int.0 >= 0)
+  ensures(string_length(@String.0) >= 0)
+  effects(pure)
+{
+  string_length(@String.0) > @Int.0
+}
+""")
+        assert result.summary.tier1_verified >= 2
+        assert result.summary.tier3_runtime == 0
+
+
+class TestStringPredicateVerification:
+    """string_contains/starts_with/ends_with use Z3 native string theory (Tier 1)."""
+
+    def test_string_contains_tier1(self) -> None:
+        """requires(string_contains(@String.0, ...)) verifies Tier 1."""
+        result = _verify("""
+private fn has_prefix(@String -> @Bool)
+  requires(string_contains(@String.0, "http"))
+  ensures(true)
+  effects(pure)
+{
+  string_starts_with(@String.0, "http")
+}
+""")
+        assert result.summary.tier3_runtime == 0
+
+    def test_string_starts_with_tier1(self) -> None:
+        """requires(string_starts_with(...)) verifies Tier 1."""
+        result = _verify("""
+private fn require_https(@String -> @Bool)
+  requires(string_starts_with(@String.0, "https://"))
+  ensures(true)
+  effects(pure)
+{
+  string_length(@String.0) > 8
+}
+""")
+        assert result.summary.tier3_runtime == 0
+
+    def test_string_ends_with_tier1(self) -> None:
+        """requires(string_ends_with(...)) verifies Tier 1."""
+        result = _verify("""
+private fn require_json(@String -> @Bool)
+  requires(string_ends_with(@String.0, ".json"))
+  ensures(true)
+  effects(pure)
+{
+  string_length(@String.0) > 5
+}
+""")
+        assert result.summary.tier3_runtime == 0
+
+    def test_float_is_nan_stays_tier3(self) -> None:
+        """float_is_nan stays Tier 3: Float64 maps to reals; BoolVal(False) would be unsound."""
+        result = _verify("""
+private fn safe_sqrt(@Float64 -> @Float64)
+  requires(!float_is_nan(@Float64.0))
+  ensures(true)
+  effects(pure)
+{
+  @Float64.0
+}
+""")
+        assert result.summary.tier3_runtime >= 1
+
+    def test_float_is_infinite_stays_tier3(self) -> None:
+        """float_is_infinite stays Tier 3 for the same soundness reason as float_is_nan."""
+        result = _verify("""
+private fn finite_only(@Float64 -> @Float64)
+  requires(!float_is_infinite(@Float64.0))
+  ensures(true)
+  effects(pure)
+{
+  @Float64.0
+}
+""")
+        assert result.summary.tier3_runtime >= 1
+
+
+class TestRefinedTypeParamSorts:
+    """Refinement types over Bool/String/Float64 use the correct Z3 sort."""
+
+    def test_refined_string_param_string_predicate_tier1(self) -> None:
+        """RefinedType(STRING) param uses SeqSort — string predicates resolve to Tier 1.
+
+        Without the RefinedType branch in _is_string_type, the parameter falls through to
+        declare_int (IntSort) and string_length uses the uninterpreted function, which cannot
+        prove string_length(@NonEmptyString.0) > 0 even with the requires assumption (Tier 3).
+        With the fix, z3.Length() is used and Z3 proves the ensures from the requires (Tier 1).
+        """
+        result = _verify("""
+type NonEmptyString = { @String | string_length(@String.0) > 0 };
+
+private fn pass_through(@NonEmptyString -> @Bool)
+  requires(string_length(@NonEmptyString.0) > 0)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  string_length(@NonEmptyString.0) > 0
+}
+""")
+        assert result.summary.tier3_runtime == 0
+
+    def test_refined_float64_param_verifies_cleanly(self) -> None:
+        """RefinedType(FLOAT64) param uses RealSort — function verifies without sort errors.
+
+        Without the RefinedType branch in _is_float64_type, the parameter falls through to
+        declare_int (IntSort). With the fix, declare_float64 (RealSort) is used, matching the
+        behaviour of a plain @Float64 parameter.
+        """
+        result = _verify("""
+type PosFloat = { @Float64 | true };
+
+private fn identity(@PosFloat -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @PosFloat.0
+}
+""")
+        assert result.summary.tier3_runtime == 0
+
+    def test_refined_bool_param_verifies_cleanly(self) -> None:
+        """RefinedType(BOOL) param uses BoolSort — function verifies without sort errors.
+
+        Without the RefinedType branch in _is_bool_type, the parameter falls through to
+        declare_int (IntSort). With the fix, declare_bool (BoolSort) is used so that bool
+        contracts referencing the parameter are correctly translated by Z3.
+        requires(@Flag.0) and ensures(@Bool.result) both reference the Bool value as a
+        boolean expression — this would crash or misverify with IntSort.
+        """
+        result = _verify("""
+type Flag = { @Bool | true };
+
+private fn identity(@Flag -> @Bool)
+  requires(@Flag.0)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  @Flag.0
+}
+""")
+        assert result.summary.tier3_runtime == 0
