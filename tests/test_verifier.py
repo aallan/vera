@@ -1705,7 +1705,7 @@ class TestStringLengthVerification:
 
     def test_string_length_gt_zero_requires_tier1(self) -> None:
         """requires(string_length(@String.0) > 0) is verified Tier 1."""
-        source = """
+        result = _verify("""
 private fn non_empty(@String -> @Int)
   requires(string_length(@String.0) > 0)
   ensures(true)
@@ -1713,16 +1713,13 @@ private fn non_empty(@String -> @Int)
 {
   string_length(@String.0)
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
+""")
         assert result.summary.tier1_verified >= 1
         assert result.summary.tier3_runtime == 0
 
     def test_string_length_ensures_tier1(self) -> None:
         """ensures(@Int.result >= 0) on string_length return is verified Tier 1."""
-        source = """
+        result = _verify("""
 private fn get_length(@String -> @Int)
   requires(true)
   ensures(@Int.result >= 0)
@@ -1730,16 +1727,13 @@ private fn get_length(@String -> @Int)
 {
   string_length(@String.0)
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
+""")
         assert result.summary.tier1_verified >= 1
         assert result.summary.tier3_runtime == 0
 
     def test_string_length_comparison_tier1(self) -> None:
         """requires using string_length in a comparison resolves to Tier 1."""
-        source = """
+        result = _verify("""
 private fn longer_than(@String, @Int -> @Bool)
   requires(@Int.0 >= 0)
   ensures(true)
@@ -1747,10 +1741,7 @@ private fn longer_than(@String, @Int -> @Bool)
 {
   string_length(@String.0) > @Int.0
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
+""")
         assert result.summary.tier3_runtime == 0
 
 
@@ -1759,7 +1750,7 @@ class TestStringPredicateVerification:
 
     def test_string_contains_tier1(self) -> None:
         """requires(string_contains(@String.0, ...)) verifies Tier 1."""
-        source = """
+        result = _verify("""
 private fn has_prefix(@String -> @Bool)
   requires(string_contains(@String.0, "http"))
   ensures(true)
@@ -1767,15 +1758,12 @@ private fn has_prefix(@String -> @Bool)
 {
   string_starts_with(@String.0, "http")
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
+""")
         assert result.summary.tier3_runtime == 0
 
     def test_string_starts_with_tier1(self) -> None:
         """requires(string_starts_with(...)) verifies Tier 1."""
-        source = """
+        result = _verify("""
 private fn require_https(@String -> @Bool)
   requires(string_starts_with(@String.0, "https://"))
   ensures(true)
@@ -1783,15 +1771,12 @@ private fn require_https(@String -> @Bool)
 {
   string_length(@String.0) > 8
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
+""")
         assert result.summary.tier3_runtime == 0
 
     def test_string_ends_with_tier1(self) -> None:
         """requires(string_ends_with(...)) verifies Tier 1."""
-        source = """
+        result = _verify("""
 private fn require_json(@String -> @Bool)
   requires(string_ends_with(@String.0, ".json"))
   ensures(true)
@@ -1799,15 +1784,12 @@ private fn require_json(@String -> @Bool)
 {
   string_length(@String.0) > 5
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
+""")
         assert result.summary.tier3_runtime == 0
 
     def test_float_is_nan_stays_tier3(self) -> None:
         """float_is_nan stays Tier 3: Float64 maps to reals; BoolVal(False) would be unsound."""
-        source = """
+        result = _verify("""
 private fn safe_sqrt(@Float64 -> @Float64)
   requires(!float_is_nan(@Float64.0))
   ensures(true)
@@ -1815,15 +1797,12 @@ private fn safe_sqrt(@Float64 -> @Float64)
 {
   @Float64.0
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
+""")
         assert result.summary.tier3_runtime >= 1
 
     def test_float_is_infinite_stays_tier3(self) -> None:
         """float_is_infinite stays Tier 3 for the same soundness reason as float_is_nan."""
-        source = """
+        result = _verify("""
 private fn finite_only(@Float64 -> @Float64)
   requires(!float_is_infinite(@Float64.0))
   ensures(true)
@@ -1831,10 +1810,7 @@ private fn finite_only(@Float64 -> @Float64)
 {
   @Float64.0
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
+""")
         assert result.summary.tier3_runtime >= 1
 
 
@@ -1849,7 +1825,7 @@ class TestRefinedTypeParamSorts:
         prove string_length(@NonEmptyString.0) > 0 even with the requires assumption (Tier 3).
         With the fix, z3.Length() is used and Z3 proves the ensures from the requires (Tier 1).
         """
-        source = """
+        result = _verify("""
 type NonEmptyString = { @String | string_length(@String.0) > 0 };
 
 private fn pass_through(@NonEmptyString -> @Bool)
@@ -1859,10 +1835,7 @@ private fn pass_through(@NonEmptyString -> @Bool)
 {
   string_length(@NonEmptyString.0) > 0
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
+""")
         assert result.summary.tier3_runtime == 0
 
     def test_refined_float64_param_verifies_cleanly(self) -> None:
@@ -1872,7 +1845,7 @@ private fn pass_through(@NonEmptyString -> @Bool)
         declare_int (IntSort). With the fix, declare_float64 (RealSort) is used, matching the
         behaviour of a plain @Float64 parameter.
         """
-        source = """
+        result = _verify("""
 type PosFloat = { @Float64 | true };
 
 private fn identity(@PosFloat -> @Float64)
@@ -1882,33 +1855,27 @@ private fn identity(@PosFloat -> @Float64)
 {
   @PosFloat.0
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
-        # Contract trivially true — verifies at Tier 1
+""")
         assert result.summary.tier3_runtime == 0
 
     def test_refined_bool_param_verifies_cleanly(self) -> None:
         """RefinedType(BOOL) param uses BoolSort — function verifies without sort errors.
 
         Without the RefinedType branch in _is_bool_type, the parameter falls through to
-        declare_int (IntSort). With the fix, declare_bool (BoolSort) is used, matching the
-        behaviour of a plain @Bool parameter; contracts that reference the Bool param as a
-        boolean expression work correctly.
+        declare_int (IntSort). With the fix, declare_bool (BoolSort) is used so that bool
+        contracts referencing the parameter are correctly translated by Z3.
+        requires(@Flag.0) and ensures(@Bool.result) both reference the Bool value as a
+        boolean expression — this would crash or misverify with IntSort.
         """
-        source = """
+        result = _verify("""
 type Flag = { @Bool | true };
 
 private fn identity(@Flag -> @Bool)
-  requires(true)
-  ensures(true)
+  requires(@Flag.0)
+  ensures(@Bool.result)
   effects(pure)
 {
   @Flag.0
 }
-"""
-        prog = parse_to_ast(source)
-        typecheck(prog, source)
-        result = verify(prog, source)
+""")
         assert result.summary.tier3_runtime == 0
