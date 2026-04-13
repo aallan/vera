@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.111] - 2026-04-10
+
+### Fixed
+- **SMT translator: String/Float64 parameters declared with correct Z3 sorts** — `String` and `Float64` function parameters were being declared as Z3 integers (the `else` fallback in `verifier.py`), causing `string_contains`, `string_starts_with`, `string_ends_with`, and `string_length` to receive Int-sorted Z3 variables instead of the expected SeqSort/RealSort. String parameters are now declared via `smt.declare_string()` (Z3 `SeqSort`) and Float64 via `smt.declare_float64()` (Z3 `RealSort`).
+- **SMT translator: `StringLit` now translates to `z3.StringVal()`** — string literals in contract expressions (e.g. `requires(string_starts_with(@String.0, "https://"))`) were returning `None` from `translate_expr`, silently demoting the contract to Tier 3. Fixed by adding a `StringLit` branch that emits `z3.StringVal(expr.value)`.
+- **SMT translator: `string_length` uses `z3.Length()` for String sorts** — the previous uninterpreted function implementation meant Z3 could not prove `string_length("literal") > 0` at call sites (even though it's obviously true), producing spurious E501 call-site precondition errors. `string_length` on a `SeqSort` argument now uses Z3's native `z3.Length()`, giving full string-theory semantics; the uninterpreted fallback is retained for non-string sorts.
+- **SMT translator: `string_contains`, `string_starts_with`, `string_ends_with` now Tier 1** — these pure Boolean predicates on String arguments are now encoded via Z3's native string theory (`z3.Contains`, `z3.PrefixOf`, `z3.SuffixOf`) rather than falling through to Tier 3.
+- **`float_is_nan` / `float_is_infinite` explicitly return `None`** — previously fell through to the function-lookup path; now explicitly return `None` with a comment explaining why encoding them as `BoolVal(False)` would be unsound (Float64 is modelled as Z3 reals, which have no NaN/infinity; returning `False` would cause the compiler to skip the runtime guard).
+
 ## [0.0.110] - 2026-04-10
 
 ### Added
@@ -1540,7 +1549,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.110...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.111...HEAD
+[0.0.111]: https://github.com/aallan/vera/compare/v0.0.110...v0.0.111
 [0.0.110]: https://github.com/aallan/vera/compare/v0.0.109...v0.0.110
 [0.0.109]: https://github.com/aallan/vera/compare/v0.0.108...v0.0.109
 [0.0.108]: https://github.com/aallan/vera/compare/v0.0.107...v0.0.108
