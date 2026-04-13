@@ -1701,7 +1701,11 @@ public fn outer(@Nat -> @Nat)
 
 
 class TestStringLengthVerification:
-    """string_length() in contracts is decidable (Tier 1) via uninterpreted function."""
+    """string_length() on @String arguments uses z3.Length() — native Z3 string theory (Tier 1).
+
+    The uninterpreted function path is only a fallback for non-SeqSort arguments and is
+    never reached in practice now that String params are correctly declared as SeqSort.
+    """
 
     def test_string_length_gt_zero_requires_tier1(self) -> None:
         """requires(string_length(@String.0) > 0) is verified Tier 1."""
