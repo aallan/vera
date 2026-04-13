@@ -1736,16 +1736,17 @@ private fn get_length(@String -> @Int)
         assert result.summary.tier3_runtime == 0
 
     def test_string_length_comparison_tier1(self) -> None:
-        """requires using string_length in a comparison resolves to Tier 1."""
+        """string_length in both requires and ensures resolves to Tier 1."""
         result = _verify("""
 private fn longer_than(@String, @Int -> @Bool)
   requires(@Int.0 >= 0)
-  ensures(true)
+  ensures(string_length(@String.0) >= 0)
   effects(pure)
 {
   string_length(@String.0) > @Int.0
 }
 """)
+        assert result.summary.tier1_verified >= 2
         assert result.summary.tier3_runtime == 0
 
 
