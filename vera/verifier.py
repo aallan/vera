@@ -992,13 +992,13 @@ class ContractVerifier:
 
     @staticmethod
     def _is_string_type(ty: Type) -> bool:
-        """Check if a type is String."""
-        return ty == STRING
+        """Check if a type is String (including refinements of String)."""
+        return ty == STRING or (isinstance(ty, RefinedType) and ty.base == STRING)
 
     @staticmethod
     def _is_float64_type(ty: Type) -> bool:
-        """Check if a type is Float64."""
-        return ty == FLOAT64
+        """Check if a type is Float64 (including refinements of Float64)."""
+        return ty == FLOAT64 or (isinstance(ty, RefinedType) and ty.base == FLOAT64)
 
     @staticmethod
     def _count_slots(env: SlotEnv, type_name: str) -> int:

@@ -1836,3 +1836,55 @@ private fn finite_only(@Float64 -> @Float64)
         typecheck(prog, source)
         result = verify(prog, source)
         assert result.summary.tier3_runtime >= 1
+
+
+class TestRefinedTypeParamSorts:
+    """Refinement types over String/Float64 use the correct Z3 sort (SeqSort / RealSort)."""
+
+    def test_refined_string_param_string_predicate_tier1(self) -> None:
+        """RefinedType(STRING) param uses SeqSort — string predicates resolve to Tier 1.
+
+        Without the RefinedType branch in _is_string_type, the parameter falls through to
+        declare_int (IntSort) and string_length uses the uninterpreted function, which cannot
+        prove string_length(@NonEmptyString.0) > 0 even with the requires assumption (Tier 3).
+        With the fix, z3.Length() is used and Z3 proves the ensures from the requires (Tier 1).
+        """
+        source = """
+type NonEmptyString = { @String | string_length(@String.0) > 0 };
+
+private fn pass_through(@NonEmptyString -> @Bool)
+  requires(string_length(@NonEmptyString.0) > 0)
+  ensures(@Bool.result)
+  effects(pure)
+{
+  string_length(@NonEmptyString.0) > 0
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
+        assert result.summary.tier3_runtime == 0
+
+    def test_refined_float64_param_verifies_cleanly(self) -> None:
+        """RefinedType(FLOAT64) param uses RealSort — function verifies without sort errors.
+
+        Without the RefinedType branch in _is_float64_type, the parameter falls through to
+        declare_int (IntSort). With the fix, declare_float64 (RealSort) is used, matching the
+        behaviour of a plain @Float64 parameter.
+        """
+        source = """
+type PosFloat = { @Float64 | true };
+
+private fn identity(@PosFloat -> @Float64)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @PosFloat.0
+}
+"""
+        prog = parse_to_ast(source)
+        typecheck(prog, source)
+        result = verify(prog, source)
+        # Contract trivially true — verifies at Tier 1
+        assert result.summary.tier3_runtime == 0
