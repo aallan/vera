@@ -32,7 +32,7 @@ Changelog = "https://github.com/aallan/vera/blob/main/CHANGELOG.md"
 [project.optional-dependencies]
 dev = [
     "pytest>=9.0.3",
-    "pytest-cov>=4.0",
+    "pytest-cov>=7.1.0",
     "mypy>=1.0",
     "ruff>=0.9",
     "pre-commit>=3.0",
