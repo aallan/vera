@@ -586,7 +586,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9" },
-    { name = "wasmtime", specifier = ">=15.0" },
+    { name = "wasmtime", specifier = ">=43.0.0" },
     { name = "z3-solver", specifier = ">=4.12" },
 ]
 provides-extras = ["dev"]
