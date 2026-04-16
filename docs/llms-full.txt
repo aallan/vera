@@ -1948,8 +1948,6 @@ These are known limitations in the current reference implementation. Most are tr
 | `map_new()` / `set_new()` require type context | The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();` | — |
 | `Inference.complete` has no `max_tokens` or temperature controls | The host implementation uses provider defaults. Custom parameters (max tokens, temperature, top-p, system prompt) are not yet supported at the Vera level. | [#370](https://github.com/aallan/vera/issues/370) |
 | `Inference` effect has no user-defined handlers | In the current implementation, `Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not yet supported. | [#372](https://github.com/aallan/vera/issues/372) |
-| `Exn<String>` handler tag not supported | `String` is an `i32_pair` (fat pointer) in the WASM ABI and cannot be used as a WASM exception tag parameter. Use `Exn<Int>` or another scalar type for exception values; carry message strings in an ADT wrapper. | [#416](https://github.com/aallan/vera/issues/416) |
-| Nested `handle[State<T>]` of the same type share state | Two `handle[State<Int>]` handlers in nested scope both write to the same global WASM cell — the inner handler corrupts the outer handler's state. Workaround: use different state types (`State<Int>` + `State<Bool>`) or sequential (non-nested) handlers. | [#417](https://github.com/aallan/vera/issues/417) |
 
 ## Specification Reference
 
