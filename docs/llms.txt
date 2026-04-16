@@ -4,7 +4,7 @@
 
 Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts statically where possible; remaining contracts become runtime assertions. All side effects (IO, Http, State, Exceptions, Async, Inference) are tracked in the type system via algebraic effects.
 
-Current version: 0.0.112. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
+Current version: 0.0.113. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
 
 ## Language Reference
 

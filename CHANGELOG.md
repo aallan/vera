@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.113] - 2026-04-16
+
+### Changed
+- **Decompose `vera/wasm/calls.py` into 8 subsystem mixins** ([#418](https://github.com/aallan/vera/issues/418)) — the 8,390-line `calls.py` monolith is split into a small core dispatcher (572 lines) plus 8 domain-focused mixins: `calls_math.py` (numeric + conversions), `calls_markup.py` (JSON/HTML/Markdown/Regex/async), `calls_arrays.py`, `calls_handlers.py` (Show/Hash/handle), `calls_containers.py` (Map/Set/Decimal), `calls_parsing.py`, `calls_encoding.py` (base64/URL), `calls_strings.py`. Pure code motion — `WasmContext` continues to compose all mixins via Python MRO; no behavioral changes, runtime output identical. Makes `calls.py` 93% smaller and prepares ground for Stage 11 primitives additions. Closes [#418](https://github.com/aallan/vera/issues/418).
+
+### Known issues
+- **10 pre-existing bugs in WASM call translators** surfaced during review of [#474](https://github.com/aallan/vera/pull/474) — all predate this release; tracked in [#475](https://github.com/aallan/vera/issues/475). See `KNOWN_ISSUES.md` for the summary; the issue lists each bug with severity, location, and description.
+
 ## [0.0.112] - 2026-04-16
 
 ### Fixed
@@ -1554,7 +1562,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.112...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.113...HEAD
+[0.0.113]: https://github.com/aallan/vera/compare/v0.0.112...v0.0.113
 [0.0.112]: https://github.com/aallan/vera/compare/v0.0.111...v0.0.112
 [0.0.111]: https://github.com/aallan/vera/compare/v0.0.110...v0.0.111
 [0.0.110]: https://github.com/aallan/vera/compare/v0.0.109...v0.0.110
