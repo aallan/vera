@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through Stage 10, across 32 active development days.
+How the Vera compiler was built, from initial commit through Stage 11, across 40 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -220,7 +220,7 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 | v0.0.105 | 30 Mar | **Typed holes** — `?` placeholder for partial programs; `vera check` reports W001 with expected type and slot bindings; holes block compilation (E614). |
 | v0.0.106 | 31 Mar | **`vera test` String & Float64 input generation** — Z3 testing extended to String (sequence sort, ≤50 chars) and Float64 (real sort, boundary seeding) (#169). |
 
-## Stage 10: Evaluation and CI quality (7 April onwards)
+## Stage 10: Evaluation and CI quality (7–11 April)
 
 *After a week working in parallel on [VeraBench](https://github.com/aallan/vera-bench) evaluation, Stage 10 returns to the compiler with benchmark results informing priorities.*
 
@@ -233,6 +233,16 @@ With the core language complete, Stage 9 focused on friction removal and polish 
 | v0.0.109 | 10 Apr | **Fix closure `i32_pair` param/return types** (#359) — `String`/`Array` params and return types in closures now emit correct two-slot WAT signatures; host imports used inside closures now propagated to module-level tracker; `_infer_fncall_vera_type` fixed for parameterised accumulator types like `Map<String, Int>`. |
 | v0.0.110 | 10 Apr | **Mistral AI provider + provider registry refactor** (#413) — `Inference.complete` supports Mistral (`VERA_MISTRAL_API_KEY`, default `mistral-small-latest`). `_call_inference_provider` refactored to `_ProviderConfig` dataclass + `_PROVIDERS` registry dict; adding further providers is now a one-row change. |
 | v0.0.111 | 10 Apr | **SMT translator: String/Float64 parameter sorts + string predicates** — `String` and `Float64` function parameters now declared with correct Z3 sorts (SeqSort/RealSort) rather than falling back to IntSort. `StringLit` translates to `z3.StringVal()`. `string_length` uses `z3.Length()` for SeqSort args so call-site preconditions on string literals verify Tier 1. `string_contains`, `string_starts_with`, `string_ends_with` now Tier 1 via Z3 native string theory. `float_is_nan`/`float_is_infinite` explicitly Tier 3 (encoding as False would drop the runtime guard). |
+
+## Stage 11: Real-world programming (16 April onwards)
+
+*Bug fixes and standard library depth — closing the gaps that trip up models and human programmers alike.*
+
+Stage 11 shifts focus from evaluation infrastructure to the standard library and runtime correctness. The benchmark results from Stage 10 identified missing primitives as the dominant friction source: models reaching for `array_sort` or `string_reverse` and finding nothing, then writing fragile hand-rolled implementations. This stage adds the utility functions that any real program needs, alongside critical bug fixes.
+
+| Version | Date | What shipped |
+|---------|------|-------------|
+| — | 16 Apr | **Fix GC shadow stack overflow** (#464) — 4K shadow stack overflowed into the GC worklist during deep recursive array accumulation (450+ frames), causing silent corruption of the first array elements. Shadow stack increased to 16K with overflow guard trap. |
 
 ---
 
@@ -259,14 +269,14 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 
 ## By the numbers
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.102 (28 Mar) | v0.0.103 (29 Mar) |
-|--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,121 | 3,184 |
-| Examples | 13 | 15 | 16 | 18 | 24 | 30 | 30 | 30 |
-| Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 122 | 122 |
-| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 65 | 71 |
-| Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
-| Code coverage | — | — | — | 90% | 91% | 96% | 96% | 96% |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.111 (11 Apr) |
+|--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,253 |
+| Examples | 13 | 15 | 16 | 18 | 24 | 30 | 30 |
+| Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 122 |
+| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 73 |
+| Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
+| Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **630+ commits, 110 tagged releases, 32 active development days.**
+Total: **800+ commits, 112 tagged releases, 40 active development days.**
