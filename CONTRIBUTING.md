@@ -67,6 +67,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 pre-commit install
+pre-commit install --hook-type pre-push
 ```
 
 For reproducible installs with hash-pinned versions, use `uv` instead (recommended):
@@ -75,6 +76,7 @@ For reproducible installs with hash-pinned versions, use `uv` instead (recommend
 pip install uv
 uv sync
 pre-commit install
+pre-commit install --hook-type pre-push
 ```
 
 `uv.lock` is checked in and tracks exact versions with hashes. Run `uv lock --check` to verify
@@ -83,7 +85,7 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 ### Pre-commit Hooks
 
-After running `pre-commit install`, every commit is automatically checked by 23 hooks including:
+After running `pre-commit install` (and `pre-commit install --hook-type pre-push` for pre-push hooks), every commit is automatically checked by 24 hooks including:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -100,6 +102,19 @@ After running `pre-commit install`, every commit is automatically checked by 23 
 - Browser parity (JS runtime matches Python runtime)
 
 If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
+
+### Pre-push hook: CHANGELOG enforcement
+
+A separate `pre-push` hook runs once before each `git push` (not per-commit — which would be too noisy on feature branches). It verifies that any PR touching substantive code (`vera/`, `spec/`, `SKILL.md`) also adds a new entry to `CHANGELOG.md`. The same check also runs in CI, so pushes without the local hook installed are still caught before merge.
+
+**To enable locally:** `pre-commit install --hook-type pre-push` (part of the install instructions above).
+
+**Escape hatches** for PRs that genuinely don't need a CHANGELOG entry (e.g. fixing a typo in a code comment):
+
+- Include a `Skip-changelog: <reason>` trailer in any commit message on the branch (Git-native — works locally and in CI), or
+- Add the `skip-changelog` label to the PR on GitHub (CI-only).
+
+**Configuration:** Override the base ref with `CHANGELOG_CHECK_BASE=<ref>` if you're working on a non-`main` release branch.
 
 ### Running Tests
 

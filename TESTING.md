@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,253 across 27 files (~34,000 lines of test code; 3,242 passed, 11 skipped) |
+| **Tests** | 3,307 across 28 files (~34,000 lines of test code; 3,296 passed, 11 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 73 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 30, all validated through `vera check` + `vera verify` |
@@ -78,6 +78,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
 | `test_build_site.py` | 17 | 213 | `_abs_links` unit tests: relative link rewriting, fenced block immunity (backtick and tilde fences, inline backticks inside fences), http/https/fragment pass-through, Vera effect syntax not mis-parsed |
+| `test_check_changelog_updated.py` | 54 | 433 | `check_changelog_updated.py` unit + end-to-end tests: file classification, CHANGELOG diff parsing, `Skip-changelog:` trailer detection, temp-repo integration covering substantive/exempt/label/trailer paths |
 
 ## Conformance Suite
 
@@ -373,7 +374,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-After running `pre-commit install`, every commit is checked by 23 hooks:
+After running `pre-commit install`, every commit is checked by 24 hooks:
 
 | Hook | What it does |
 |------|-------------|

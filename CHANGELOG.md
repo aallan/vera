@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **CHANGELOG enforcement at pre-push and CI** ([#478](https://github.com/aallan/vera/issues/478)) — new `scripts/check_changelog_updated.py` fails a PR if any substantive file (`vera/`, `spec/`, `SKILL.md`) is changed without a matching new entry in `CHANGELOG.md`. Runs at the `pre-push` hook stage locally (opt in with `pre-commit install --hook-type pre-push`) and in the CI `lint` job. Escape hatches: a `Skip-changelog: <reason>` commit trailer (Git-native) or a `skip-changelog` PR label (CI-only). Prevents the kind of missed release-prep that happened on [#474](https://github.com/aallan/vera/pull/474).
+
 ## [0.0.113] - 2026-04-16
 
 ### Changed
