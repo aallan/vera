@@ -538,9 +538,9 @@ Memory is managed automatically. The allocator and garbage collector are impleme
 
 ```
 [0, data_end)            String constants (data section)
-[data_end, +4096)        GC shadow stack (1024 root slots)
-[data_end+4096, +8192)   GC mark worklist (1024 entries)
-[data_end+8192, ...)     Heap (objects with 4-byte headers)
+[data_end, +16K)         GC shadow stack (4096 root slots)
+[data_end+16K, +32K)     GC mark worklist (4096 entries)
+[data_end+32K, ...)      Heap (objects with 4-byte headers)
 ```
 
 **Allocator** (`$alloc` in `assembly.py`): Bump allocator with free-list overlay. Each allocation prepends a 4-byte header (`mark_bit | size << 1`). Allocation tries free-list first-fit, then bump, triggers GC on OOM, falls back to `memory.grow`.
@@ -550,7 +550,7 @@ Memory is managed automatically. The allocator and garbage collector are impleme
 2. **Mark** — seed worklist from shadow stack roots, drain iteratively; any i32 word that looks like a valid heap pointer is treated as one (no type descriptors needed)
 3. **Sweep** — walk heap, link unmarked objects into free list
 
-**Shadow stack** (`gc_shadow_push` in `helpers.py`): WASM has no stack scanning, so the compiler pushes live heap pointers explicitly. `_compile_fn` in `functions.py` emits a prologue (save `$gc_sp`, push pointer params) and epilogue (save return, restore `$gc_sp`, push return back). Allocation sites in `data.py`, `closures.py`, and `calls.py` push newly allocated pointers after each `call $alloc`.
+**Shadow stack** (`gc_shadow_push` in `helpers.py`): WASM has no stack scanning, so the compiler pushes live heap pointers explicitly. `_compile_fn` in `functions.py` emits a prologue (save `$gc_sp`, push pointer params) and epilogue (save return, restore `$gc_sp`, push return back). Allocation sites in `data.py`, `closures.py`, and `calls.py` push newly allocated pointers after each `call $alloc`. An overflow guard (`$gc_sp >= $gc_stack_limit`) traps if the shadow stack would overflow into the worklist region — this prevents silent GC corruption during deep recursion (#464).
 
 **Zero overhead:** The GC infrastructure (globals, shadow stack, worklist, `$gc_collect`) is only emitted when `needs_alloc` is True. Programs that perform no heap allocation have no GC overhead.
 
