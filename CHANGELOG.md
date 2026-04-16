@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.112] - 2026-04-16
+
+### Fixed
+- **GC shadow stack overflow causing silent array corruption** ([#464](https://github.com/aallan/vera/issues/464)) — the GC shadow stack was 4K (4096 bytes). Recursive functions with multiple `Array` parameters push ~12 bytes per frame (2 pointer params + 1 `array_append` destination), overflowing at ~341 frames into the adjacent GC worklist region. When GC triggered during deep recursion, the worklist corruption caused intermediate arrays to be incorrectly freed, silently overwriting the first bytes of Bool arrays with free-list pointers. Shadow stack increased from 4K to 16K; worklist increased from 4K to 16K; overflow guard added to `gc_shadow_push` (traps instead of silent corruption). Closes [#464](https://github.com/aallan/vera/issues/464).
+
 ## [0.0.111] - 2026-04-10
 
 ### Fixed
@@ -1549,7 +1554,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.111...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.112...HEAD
+[0.0.112]: https://github.com/aallan/vera/compare/v0.0.111...v0.0.112
 [0.0.111]: https://github.com/aallan/vera/compare/v0.0.110...v0.0.111
 [0.0.110]: https://github.com/aallan/vera/compare/v0.0.109...v0.0.110
 [0.0.109]: https://github.com/aallan/vera/compare/v0.0.108...v0.0.109

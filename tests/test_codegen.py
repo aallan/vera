@@ -10512,6 +10512,33 @@ public fn main(@Unit -> @Int)
 """
         assert _run(src) == 0  # first element must be false
 
+    def test_shadow_stack_overflow_traps(self) -> None:
+        """Overflow guard traps instead of silently corrupting memory."""
+        src = """
+private fn overflow(@Array<Bool>, @Array<Bool>, @Int -> @Array<Bool>)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  decreases(@Int.0)
+  effects(pure)
+{
+  if @Int.0 <= 0 then { @Array<Bool>.0 }
+  else {
+    overflow(
+      @Array<Bool>.1,
+      array_append(@Array<Bool>.0, false),
+      @Int.0 - 1
+    )
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(overflow([false], [false], 2000))
+}
+"""
+        _run_trap(src)
+
     def test_deep_array_accumulation_preserves_content(self) -> None:
         """Verify array content is fully preserved after deep accumulation."""
         src = """
