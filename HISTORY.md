@@ -242,7 +242,8 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| — | 16 Apr | **Fix GC shadow stack overflow** (#464) — 4K shadow stack overflowed into the GC worklist during deep recursive array accumulation (450+ frames), causing silent corruption of the first array elements. Shadow stack increased to 16K with overflow guard trap. |
+| v0.0.112 | 16 Apr | **Fix GC shadow stack overflow** ([#464](https://github.com/aallan/vera/issues/464)) — 4K shadow stack overflowed into the GC worklist during deep recursive array accumulation (450+ frames), causing silent corruption of the first array elements. Shadow stack increased to 16K with overflow guard trap. |
+| v0.0.113 | 16 Apr | **Decompose `calls.py` into 8 subsystem mixins** ([#418](https://github.com/aallan/vera/issues/418)) — split the 8,390-line `vera/wasm/calls.py` monolith into a 572-line core dispatcher plus domain mixins (math, markup, arrays, handlers, containers, parsing, encoding, strings). Pure code motion — no behavioral changes. Prepares the codebase for Stage 11's ~40 new built-in primitives (#463, #366, #466, #467, #470, #471). Review surfaced 10 pre-existing bugs tracked in [#475](https://github.com/aallan/vera/issues/475). |
 
 ---
 
@@ -269,7 +270,7 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 
 ## By the numbers
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.111 (11 Apr) |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.113 (16 Apr) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
 | Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,253 |
@@ -279,4 +280,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **800+ commits, 112 tagged releases, 40 active development days.**
+Total: **810+ commits, 113 tagged releases, 40 active development days.**
