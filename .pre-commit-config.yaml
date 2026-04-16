@@ -132,3 +132,17 @@ repos:
         language: system
         pass_filenames: false
         files: '(vera/browser/.*|vera/codegen/api\.py$|vera/wasm/markdown\.py$|vera/markdown\.py$)'
+
+      # Pre-push stage: runs once before `git push`, not per-commit.
+      # Checks that PRs touching substantive code (vera/, spec/, SKILL.md)
+      # also include a new CHANGELOG entry.  Escape hatches: a
+      # "Skip-changelog: <reason>" trailer in any commit on the branch,
+      # or SKIP_CHANGELOG_LABEL=1 in the environment (used by CI when a
+      # skip-changelog PR label has been detected).
+      - id: check-changelog-updated
+        name: check CHANGELOG updated for substantive changes
+        entry: .venv/bin/python scripts/check_changelog_updated.py
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        always_run: true

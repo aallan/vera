@@ -67,6 +67,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 pre-commit install
+pre-commit install --hook-type pre-push
 ```
 
 For reproducible installs with hash-pinned versions, use `uv` instead (recommended):
@@ -75,6 +76,7 @@ For reproducible installs with hash-pinned versions, use `uv` instead (recommend
 pip install uv
 uv sync
 pre-commit install
+pre-commit install --hook-type pre-push
 ```
 
 `uv.lock` is checked in and tracks exact versions with hashes. Run `uv lock --check` to verify
@@ -83,7 +85,9 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 ### Pre-commit Hooks
 
-After running `pre-commit install`, every commit is automatically checked by 23 hooks including:
+Every push is checked by 24 hooks across two stages: 23 run on every commit after `pre-commit install`, and 1 (`check-changelog-updated`, described below) runs only at push time after `pre-commit install --hook-type pre-push`.
+
+The **commit-time** hooks (23) include:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -100,6 +104,21 @@ After running `pre-commit install`, every commit is automatically checked by 23 
 - Browser parity (JS runtime matches Python runtime)
 
 If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, `vera/errors.py`, `vera/grammar.lark`, or `docs/index.html`), the `site-assets` hook will regenerate `docs/` files via `scripts/build_site.py`. The CI also runs `scripts/check_site_assets.py` to verify freshness.
+
+### Pre-push hook: CHANGELOG enforcement
+
+A separate `pre-push` hook runs once before each `git push` (not per-commit — which would be too noisy on feature branches). It verifies that any PR touching a non-exempt top-level path adds a new entry to `CHANGELOG.md`. The same check also runs in CI, so pushes without the local hook installed are still caught before merge.
+
+**Classification.** The check is exempt-list based: changes confined to `tests/`, `scripts/`, `.github/`, `docs/`, `examples/`, `editors/`, `assets/`; to any of the root-level doc files (`README.md`, `HISTORY.md`, `ROADMAP.md`, `KNOWN_ISSUES.md`, `FAQ.md`, `CONTRIBUTING.md`, `TESTING.md`, `AGENTS.md`, `CLAUDE.md`, `DE_BRUIJN.md`, `EXAMPLES.md`, `CHANGELOG.md`, `LICENSE`); or to `pyproject.toml`, `uv.lock`, `.pre-commit-config.yaml`, `.coderabbit.yaml`, `.gitignore` skip the requirement. Everything else — `vera/**`, `spec/**`, `SKILL.md`, and any new top-level directory you haven't explicitly added to the exempt list in `scripts/check_changelog_updated.py` — is treated as substantive and needs an entry. The conservative default means contributors get a clear failure rather than a silent bypass when adding a new top-level folder (e.g. `stdlib/` or `runtime/`).
+
+**To enable locally:** `pre-commit install --hook-type pre-push` (part of the install instructions above).
+
+**Escape hatches** for PRs that genuinely don't need a CHANGELOG entry (e.g. fixing a typo in a code comment):
+
+- Include a `Skip-changelog: <reason>` trailer in any commit message on the branch (Git-native — works locally and in CI), or
+- Add the `skip-changelog` label to the PR on GitHub (CI-only).
+
+**Configuration:** Override the base ref with `CHANGELOG_CHECK_BASE=<ref>` if you're working on a non-`main` release branch.
 
 ### Running Tests
 
