@@ -3,17 +3,28 @@
 from __future__ import annotations
 
 from vera import ast
-from vera.wasm.helpers import (
-    WasmSlotEnv,
-    _element_mem_size,
-    _element_store_op,
-    _is_pair_element_type,
-    gc_shadow_push,
-)
+from vera.wasm.helpers import WasmSlotEnv
 
 
 class CallsMixin:
-    """Methods for translating function calls and effect handlers to WASM."""
+    """Core dispatch mixin for WasmContext.
+
+    Houses the primary ``_translate_call`` and ``_translate_qualified_call``
+    dispatchers, generic-call resolution helpers, and the shared
+    ``_infer_concat_elem_type`` utility (used by both arrays and strings
+    for element-type inference).
+
+    Individual built-in families live in sibling mixins:
+
+    - ``CallsArraysMixin``      (calls_arrays.py)
+    - ``CallsContainersMixin``  (calls_containers.py) — Map/Set/Decimal
+    - ``CallsEncodingMixin``    (calls_encoding.py)   — Base64/URL
+    - ``CallsHandlersMixin``    (calls_handlers.py)   — Show/Hash/handle
+    - ``CallsMarkupMixin``      (calls_markup.py)     — JSON/HTML/Md/Regex
+    - ``CallsMathMixin``        (calls_math.py)
+    - ``CallsParsingMixin``     (calls_parsing.py)
+    - ``CallsStringsMixin``     (calls_strings.py)
+    """
 
     def _translate_call(
         self, call: ast.FnCall, env: WasmSlotEnv
@@ -70,9 +81,6 @@ class CallsMixin:
                 return self._translate_url_parse(call.args[0], env)
             if call.name == "url_join" and len(call.args) == 1:
                 return self._translate_url_join(call.args[0], env)
-            # Async builtins — identity (eager evaluation, Future<T>
-            # is WASM-transparent)
-            # Markdown host-import builtins (pure, implemented in Python)
             # Json host-import builtins
             if call.name == "json_parse" and len(call.args) == 1:
                 return self._translate_json_parse(call.args[0], env)
