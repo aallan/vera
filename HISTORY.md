@@ -244,6 +244,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 |---------|------|-------------|
 | v0.0.112 | 16 Apr | **Fix GC shadow stack overflow** ([#464](https://github.com/aallan/vera/issues/464)) — 4K shadow stack overflowed into the GC worklist during deep recursive array accumulation (450+ frames), causing silent corruption of the first array elements. Shadow stack increased to 16K with overflow guard trap. |
 | v0.0.113 | 16 Apr | **Decompose `calls.py` into 8 subsystem mixins** ([#418](https://github.com/aallan/vera/issues/418)) — split the 8,390-line `vera/wasm/calls.py` monolith into a 572-line core dispatcher plus domain mixins (math, markup, arrays, handlers, containers, parsing, encoding, strings). Pure code motion — no behavioral changes. Prepares the codebase for Stage 11's ~40 new built-in primitives (#463, #366, #466, #467, #470, #471). Review surfaced 10 pre-existing bugs tracked in [#475](https://github.com/aallan/vera/issues/475). |
+| — | 16 Apr | **CHANGELOG enforcement at pre-push and CI** ([#478](https://github.com/aallan/vera/issues/478)) — new `scripts/check_changelog_updated.py` fails a PR if any substantive file (`vera/`, `spec/`, `SKILL.md`) is changed without a matching new entry in `CHANGELOG.md`. Runs at the `pre-push` hook stage locally and in the CI `lint` job. Escape hatches: `Skip-changelog:` commit trailer (Git-native) or `skip-changelog` PR label (CI-only). Prevents the #474 release-prep miss from recurring. |
 
 ---
 
