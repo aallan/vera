@@ -510,6 +510,72 @@ class TestEndToEnd:
         result = _run_script(repo)
         assert result.returncode == 0, result.stderr
 
+    def test_bullet_far_below_unreleased_heading_still_counts(
+        self, tmp_path: Path,
+    ) -> None:
+        """Regression test: an added bullet separated from ``## [Unreleased]``
+        by more than git's default 3-line context still counts.
+
+        This is the scenario that hit PR #482 in CI.  On main, the
+        CHANGELOG already had an ``Added`` bullet under ``[Unreleased]``.
+        The PR added a new ``Documentation`` bullet several lines below
+        that existing content.  With ``git diff`` default 3-line
+        context, the ``## [Unreleased]`` heading fell outside the diff
+        window, and the section tracker never saw it — so the new
+        bullet was not attributed to the Unreleased section.  The
+        script now passes ``--unified=9999`` to include the whole
+        CHANGELOG file as context, guaranteeing the heading is always
+        visible regardless of how far the new bullet is from it.
+        """
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-b", "main")
+        _git(repo, "config", "user.email", "test@example.invalid")
+        _git(repo, "config", "user.name", "Test User")
+        _git(repo, "config", "commit.gpgsign", "false")
+
+        # Main-branch CHANGELOG has an existing entry under [Unreleased]
+        # that adds enough vertical distance between the heading and any
+        # new additions further down.
+        main_changelog = (
+            "# Changelog\n"
+            "\n"
+            "## [Unreleased]\n"
+            "\n"
+            "### Added\n"
+            "- **Existing feature** — prose that occupies several lines.\n"
+            "  Continued description on a second wrapped line.\n"
+            "  Continued description on a third wrapped line.\n"
+            "  Continued description on a fourth wrapped line.\n"
+            "\n"
+            "## [0.0.1] - 2026-01-01\n"
+        )
+        (repo / "CHANGELOG.md").write_text(main_changelog)
+        (repo / "vera").mkdir()
+        (repo / "vera" / "cli.py").write_text("# initial\n")
+        (repo / "tests").mkdir()
+        (repo / "tests" / "t.py").write_text("# placeholder\n")
+        _git(repo, "add", ".")
+        _git(repo, "commit", "-m", "Initial with existing Unreleased entry")
+
+        # Feature branch adds a new section and bullet, positioned so
+        # the ``## [Unreleased]`` heading is more than 3 lines above
+        # the first added line.
+        _git(repo, "checkout", "-b", "feature")
+        (repo / "vera" / "cli.py").write_text("# modified\n")
+        new_changelog = main_changelog.replace(
+            "\n## [0.0.1] - 2026-01-01\n",
+            "\n"
+            "### Documentation\n"
+            "- **New bullet** — added far below the Unreleased heading.\n"
+            "\n"
+            "## [0.0.1] - 2026-01-01\n",
+        )
+        (repo / "CHANGELOG.md").write_text(new_changelog)
+        _git(repo, "commit", "-am", "Add CHANGELOG entry far below heading")
+        result = _run_script(repo)
+        assert result.returncode == 0, result.stderr
+
     def test_skip_trailer_bypasses_check(self, tmp_path: Path) -> None:
         """``Skip-changelog:`` trailer lets substantive changes pass."""
         repo = _setup_repo(tmp_path)

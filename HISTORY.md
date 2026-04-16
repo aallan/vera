@@ -274,7 +274,7 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.113 (16 Apr) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,318 |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,319 |
 | Examples | 13 | 15 | 16 | 18 | 24 | 30 | 30 |
 | Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 122 |
 | Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 73 |
