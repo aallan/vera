@@ -34,6 +34,14 @@ from vera.wasm.helpers import (  # noqa: F401 — re-exported for consumers
 from vera.wasm.inference import InferenceMixin
 from vera.wasm.operators import OperatorsMixin
 from vera.wasm.calls import CallsMixin
+from vera.wasm.calls_arrays import CallsArraysMixin
+from vera.wasm.calls_containers import CallsContainersMixin
+from vera.wasm.calls_encoding import CallsEncodingMixin
+from vera.wasm.calls_handlers import CallsHandlersMixin
+from vera.wasm.calls_markup import CallsMarkupMixin
+from vera.wasm.calls_math import CallsMathMixin
+from vera.wasm.calls_parsing import CallsParsingMixin
+from vera.wasm.calls_strings import CallsStringsMixin
 from vera.wasm.closures import ClosuresMixin
 from vera.wasm.data import DataMixin
 
@@ -46,6 +54,14 @@ class WasmContext(
     InferenceMixin,
     OperatorsMixin,
     CallsMixin,
+    CallsArraysMixin,
+    CallsContainersMixin,
+    CallsEncodingMixin,
+    CallsHandlersMixin,
+    CallsMarkupMixin,
+    CallsMathMixin,
+    CallsParsingMixin,
+    CallsStringsMixin,
     ClosuresMixin,
     DataMixin,
 ):
