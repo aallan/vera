@@ -10539,8 +10539,8 @@ public fn main(@Unit -> @Int)
 """
         _run_trap(src)
 
-    def test_deep_array_accumulation_preserves_content(self) -> None:
-        """Verify array content is fully preserved after deep accumulation."""
+    def test_deep_array_accumulation_preserves_length(self) -> None:
+        """Verify array length is correct after deep single-param accumulation."""
         src = """
 private fn build_acc(@Array<Bool>, @Int -> @Array<Bool>)
   requires(@Int.0 >= 0)
