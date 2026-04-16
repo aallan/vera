@@ -216,7 +216,9 @@ class AssemblyMixin:
         if self._needs_alloc:
             data_end = self.string_pool.heap_offset
             gc_stack_base = data_end
-            gc_heap_start = data_end + 8192  # 4K shadow stack + 4K worklist
+            gc_stack_size = 16384  # 16K shadow stack
+            gc_worklist_size = 16384  # 16K worklist (4096 entries)
+            gc_heap_start = data_end + gc_stack_size + gc_worklist_size
             parts.append(
                 f"  (global $heap_ptr (export \"heap_ptr\") "
                 f"(mut i32) (i32.const {gc_heap_start}))"
@@ -228,6 +230,11 @@ class AssemblyMixin:
             parts.append(
                 f"  (global $gc_stack_base i32 "
                 f"(i32.const {gc_stack_base}))"
+            )
+            gc_stack_limit = gc_stack_base + gc_stack_size
+            parts.append(
+                f"  (global $gc_stack_limit i32 "
+                f"(i32.const {gc_stack_limit}))"
             )
             parts.append(
                 f"  (global $gc_heap_start i32 "
@@ -484,7 +491,7 @@ class AssemblyMixin:
           2. Mark from shadow-stack roots (iterative, conservative).
           3. Sweep: link unmarked objects into the free list.
         """
-        # Worklist region sits at gc_stack_base + 4096, size 4096 (1024 entries)
+        # Worklist region sits right after shadow stack, sized to match
         return (
             "  (func $gc_collect\n"
             "    (local $ptr i32)\n"
@@ -498,16 +505,12 @@ class AssemblyMixin:
             "    (local $obj_ptr i32)\n"
             "    (local $free_head i32)\n"
             "\n"
-            "    ;; Worklist region: gc_stack_base + 4096 .. +8192\n"
-            "    global.get $gc_stack_base\n"
-            "    i32.const 4096\n"
-            "    i32.add\n"
+            "    ;; Worklist region: gc_stack_limit .. gc_heap_start\n"
+            "    global.get $gc_stack_limit\n"
             "    local.set $wl_base\n"
             "    local.get $wl_base\n"
             "    local.set $wl_ptr\n"
-            "    local.get $wl_base\n"
-            "    i32.const 4096\n"
-            "    i32.add\n"
+            "    global.get $gc_heap_start\n"
             "    local.set $wl_end\n"
             "\n"
             "    ;; === Phase 1: Clear all mark bits ===\n"

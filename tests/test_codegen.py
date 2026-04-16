@@ -1652,13 +1652,13 @@ public fn main(@Unit -> @Unit)
 { IO.print("hello") }
 """
         result = _compile_ok(source)
-        # "hello" is 5 bytes; GC adds 8192 (4K shadow stack + 4K worklist)
-        # so heap_ptr should start at 5 + 8192 = 8197
+        # "hello" is 5 bytes; GC adds 32768 (16K shadow stack + 16K worklist)
+        # so heap_ptr should start at 5 + 32768 = 32773
         assert "global $heap_ptr" in result.wat
-        assert "i32.const 8197" in result.wat
+        assert "i32.const 32773" in result.wat
 
     def test_heap_ptr_zero_without_strings(self) -> None:
-        """Without strings, heap starts at GC offset 8192."""
+        """Without strings, heap starts at GC offset 32768."""
         source = """\
 private data Flag { On, Off }
 
@@ -1667,7 +1667,7 @@ public fn f(-> @Int)
 { 42 }
 """
         result = _compile_ok(source)
-        assert "i32.const 8192)" in result.wat  # heap_ptr init
+        assert "i32.const 32768)" in result.wat  # heap_ptr init
 
     def test_alloc_alignment_logic(self) -> None:
         """Alloc function contains 8-byte alignment rounding."""
@@ -10463,3 +10463,74 @@ public fn main(-> @Int)
 }
 """
         assert _run(src) == 3  # 3 + 0
+
+
+class TestGCShadowStackOverflow:
+    """Regression tests for #464: deep recursive array accumulation
+    overflowing the GC shadow stack into the worklist region.
+
+    With a 4K shadow stack, build_acc (2 Array<Bool> params + 1 array_append
+    dst = 12 bytes/frame) overflows at ~341 frames.  The overflow corrupted
+    the GC worklist, causing incorrect mark/sweep and silent data corruption
+    in the first few array elements.
+
+    Fixed by increasing the shadow stack to 16K and adding an overflow guard.
+    """
+
+    def test_deep_array_accumulation_bool(self) -> None:
+        """450-deep recursion with Array<Bool> accumulator."""
+        src = """
+private fn build_acc(@Array<Bool>, @Array<Bool>, @Int -> @Array<Bool>)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  decreases(@Int.0)
+  effects(pure)
+{
+  if @Int.0 <= 0 then { @Array<Bool>.0 }
+  else {
+    build_acc(
+      @Array<Bool>.1,
+      array_append(@Array<Bool>.0, false),
+      @Int.0 - 1
+    )
+  }
+}
+
+private fn first_bool(@Array<Bool> -> @Int)
+  requires(array_length(@Array<Bool>.0) > 0)
+  ensures(true)
+  effects(pure)
+{
+  if @Array<Bool>.0[0] then { 1 } else { 0 }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  first_bool(build_acc([false], [false, false, false], 450))
+}
+"""
+        assert _run(src) == 0  # first element must be false
+
+    def test_deep_array_accumulation_preserves_content(self) -> None:
+        """Verify array content is fully preserved after deep accumulation."""
+        src = """
+private fn build_acc(@Array<Bool>, @Int -> @Array<Bool>)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  decreases(@Int.0)
+  effects(pure)
+{
+  if @Int.0 <= 0 then { @Array<Bool>.0 }
+  else {
+    build_acc(array_append(@Array<Bool>.0, false), @Int.0 - 1)
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(build_acc([], 500))
+}
+"""
+        assert _run(src) == 500

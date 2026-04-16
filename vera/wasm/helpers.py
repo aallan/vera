@@ -114,11 +114,17 @@ def gc_shadow_push(local_idx: int) -> list[str]:
     """Generate WAT instructions to push an i32 value onto the GC shadow stack.
 
     Stores the value from ``local_idx`` at the current shadow-stack
-    pointer (``$gc_sp``) and advances ``$gc_sp`` by 4 bytes.  These
-    instructions are stack-neutral (consume nothing, produce nothing)
-    and can be inserted at any point in the instruction stream.
+    pointer (``$gc_sp``) and advances ``$gc_sp`` by 4 bytes.  Traps
+    if the push would overflow the shadow stack into the GC worklist
+    region.
     """
     return [
+        "global.get $gc_sp",
+        "global.get $gc_stack_limit",
+        "i32.ge_u",
+        "if",
+        "  unreachable",  # shadow stack overflow
+        "end",
         "global.get $gc_sp",
         f"local.get {local_idx}",
         "i32.store",
