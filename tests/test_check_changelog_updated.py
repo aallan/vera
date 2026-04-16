@@ -190,6 +190,52 @@ class TestChangelogHasNewEntry:
         monkeypatch.setattr(_mod, "_run", lambda cmd: diff)
         assert _mod._changelog_has_new_entry("origin/main") is True
 
+    def test_bare_unreleased_heading_alone_does_not_count(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An added ``+## [Unreleased]`` alone is structural scaffolding,
+        not a new entry — require a bullet under it to count.
+
+        Regression test: prior to the fix, the heading branch short-
+        circuited on *any* added ``## [`` heading including
+        ``[Unreleased]``, so reorganising a CHANGELOG to add the
+        Unreleased section without any entries would have satisfied
+        the check for any substantive change on the branch.
+        """
+        diff = textwrap.dedent("""\
+            diff --git a/CHANGELOG.md b/CHANGELOG.md
+            @@ -5,6 +5,8 @@
+             The format is based on [Keep a Changelog]...
+
+            +## [Unreleased]
+            +
+             ## [0.0.111] - 2026-04-10
+            """)
+        monkeypatch.setattr(_mod, "_run", lambda cmd: diff)
+        assert _mod._changelog_has_new_entry("origin/main") is False
+
+    def test_added_unreleased_heading_with_bullet_counts(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``+## [Unreleased]`` plus a ``+- `` bullet underneath counts.
+
+        The bullet-under-section branch must pick up the added bullet
+        once the section tracker has recorded ``Unreleased``.
+        """
+        diff = textwrap.dedent("""\
+            diff --git a/CHANGELOG.md b/CHANGELOG.md
+            @@ -5,6 +5,10 @@
+             The format is based on [Keep a Changelog]...
+
+            +## [Unreleased]
+            +### Added
+            +- **Something new** — actually shipped.
+            +
+             ## [0.0.111] - 2026-04-10
+            """)
+        monkeypatch.setattr(_mod, "_run", lambda cmd: diff)
+        assert _mod._changelog_has_new_entry("origin/main") is True
+
     def test_ignores_file_header_lines(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

@@ -107,7 +107,9 @@ If you modify documentation sources (SKILL.md, AGENTS.md, FAQ.md, `vera/errors.p
 
 ### Pre-push hook: CHANGELOG enforcement
 
-A separate `pre-push` hook runs once before each `git push` (not per-commit — which would be too noisy on feature branches). It verifies that any PR touching substantive code (`vera/`, `spec/`, `SKILL.md`) also adds a new entry to `CHANGELOG.md`. The same check also runs in CI, so pushes without the local hook installed are still caught before merge.
+A separate `pre-push` hook runs once before each `git push` (not per-commit — which would be too noisy on feature branches). It verifies that any PR touching a non-exempt top-level path adds a new entry to `CHANGELOG.md`. The same check also runs in CI, so pushes without the local hook installed are still caught before merge.
+
+**Classification.** The check is exempt-list based: changes confined to `tests/`, `scripts/`, `.github/`, `docs/`, `examples/`, `editors/`, `assets/`; to any of the root-level doc files (`README.md`, `HISTORY.md`, `ROADMAP.md`, `KNOWN_ISSUES.md`, `FAQ.md`, `CONTRIBUTING.md`, `TESTING.md`, `AGENTS.md`, `CLAUDE.md`, `DE_BRUIJN.md`, `EXAMPLES.md`, `CHANGELOG.md`, `LICENSE`); or to `pyproject.toml`, `uv.lock`, `.pre-commit-config.yaml`, `.coderabbit.yaml`, `.gitignore` skip the requirement. Everything else — `vera/**`, `spec/**`, `SKILL.md`, and any new top-level directory you haven't explicitly added to the exempt list in `scripts/check_changelog_updated.py` — is treated as substantive and needs an entry. The conservative default means contributors get a clear failure rather than a silent bypass when adding a new top-level folder (e.g. `stdlib/` or `runtime/`).
 
 **To enable locally:** `pre-commit install --hook-type pre-push` (part of the install instructions above).
 

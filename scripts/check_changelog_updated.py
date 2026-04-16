@@ -218,8 +218,13 @@ def _changelog_has_new_entry(base: str) -> bool:
             end = content.find("]", 4)
             if end > 4:
                 current_section = content[4:end]
-            # An *added* version heading is itself a new entry.
-            if line.startswith("+"):
+            # An *added* versioned heading (e.g. ``+## [0.0.114]``) is
+            # itself a new entry — that's the release-cutting pattern.
+            # But a bare ``+## [Unreleased]`` heading is just structural
+            # scaffolding; don't short-circuit on it, let the loop
+            # continue so the bullet-under-section check below can
+            # decide whether there's any actual content.
+            if line.startswith("+") and current_section != "Unreleased":
                 return True
             continue
 
