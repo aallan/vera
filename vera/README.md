@@ -472,7 +472,7 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen/` (6,618 lines across 11 modules), `wasm/` (12,998 lines across 17 modules, split into domain mixins — see the module table above)
+**Files:** `codegen/` (6,618 lines across 11 modules), `wasm/` (12,998 lines across 18 modules, split into domain mixins — see the module table above)
 
 ### Compilation pipeline
 
