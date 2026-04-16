@@ -125,6 +125,32 @@ class TestIsSubstantive:
         # "testing.md" is not "tests/" either
         assert _mod.is_substantive("testing.md") is True
 
+    @pytest.mark.parametrize("path", [
+        "README.md.bak",
+        "README.md.orig",
+        "CHANGELOG.md.old",
+        "pyproject.toml.backup",
+        ".gitignore.sample",
+    ])
+    def test_file_style_exemptions_require_exact_match(
+        self, path: str,
+    ) -> None:
+        """File-style exempt entries (no trailing slash) must match
+        exactly — a file whose name *starts with* an exempt filename
+        is still substantive.
+
+        Regression test: prior to the fix, ``path.startswith("README.md")``
+        returned True for ``"README.md.bak"``, silently exempting a
+        file that isn't actually README.md.
+        """
+        assert _mod.is_substantive(path) is True
+
+    def test_directory_style_exemptions_match_prefix(self) -> None:
+        """Directory-style entries (trailing slash) still match via prefix."""
+        # tests/ matches anything under the tests/ directory
+        assert _mod.is_substantive("tests/deeply/nested/test_foo.py") is False
+        assert _mod.is_substantive("tests/conformance/manifest.json") is False
+
 
 # ---------------------------------------------------------------------------
 # _changelog_has_new_entry — diff parsing
@@ -197,6 +223,73 @@ class TestChangelogHasNewEntry:
             """)
         monkeypatch.setattr(_mod, "_run", lambda cmd: diff)
         assert _mod._changelog_has_new_entry("origin/main") is False
+
+    def test_bullet_outside_unreleased_does_not_count(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Added bullets inside a *released* version entry are not new entries.
+
+        A prose fix that inserts a bullet into an existing version's
+        description isn't "adding a new entry" — only bullets under the
+        [Unreleased] section (or a new ``## [X.Y.Z]`` heading) count.
+
+        Regression test: prior to the fix, any added ``+- `` line
+        counted, so editing v0.0.111's description would have satisfied
+        the check for any substantive change on the branch.
+        """
+        diff = textwrap.dedent("""\
+            diff --git a/CHANGELOG.md b/CHANGELOG.md
+            @@ -5,7 +5,10 @@
+             ## [Unreleased]
+
+             ## [0.0.111] - 2026-04-10
+
+             ### Fixed
+            +
+            +- Additional clarification bullet on an existing fix.
+             - **SMT translator: String/Float64 parameters**...
+            """)
+        monkeypatch.setattr(_mod, "_run", lambda cmd: diff)
+        assert _mod._changelog_has_new_entry("origin/main") is False
+
+    def test_bullet_under_unreleased_counts(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Added bullet inside [Unreleased] section counts as a new entry."""
+        diff = textwrap.dedent("""\
+            diff --git a/CHANGELOG.md b/CHANGELOG.md
+            @@ -5,6 +5,9 @@
+             ## [Unreleased]
+
+            +### Added
+            +- **New feature** — shipped the thing.
+            +
+             ## [0.0.111] - 2026-04-10
+            """)
+        monkeypatch.setattr(_mod, "_run", lambda cmd: diff)
+        assert _mod._changelog_has_new_entry("origin/main") is True
+
+    def test_unreleased_section_tracking_survives_context(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Section tracker must use context lines, not only added lines.
+
+        If the ``## [Unreleased]`` heading is a context line (pre-existing)
+        and a ``+- `` is added immediately under it, the tracker should
+        have recorded ``Unreleased`` from the context line.
+        """
+        diff = textwrap.dedent("""\
+            diff --git a/CHANGELOG.md b/CHANGELOG.md
+            @@ -6,6 +6,8 @@
+             ## [Unreleased]
+
+            +### Fixed
+            +- Fixed a thing that was broken.
+
+             ## [0.0.111] - 2026-04-10
+            """)
+        monkeypatch.setattr(_mod, "_run", lambda cmd: diff)
+        assert _mod._changelog_has_new_entry("origin/main") is True
 
     def test_no_diff_means_no_entry(
         self, monkeypatch: pytest.MonkeyPatch,

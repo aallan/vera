@@ -136,6 +136,25 @@ def _changed_files(base: str) -> list[str]:
     return [line for line in stdout.strip().split("\n") if line]
 
 
+def _is_exempt(path: str) -> bool:
+    """Return True iff ``path`` matches any entry in ``EXEMPT_PREFIXES``.
+
+    Entries ending in ``/`` are treated as directory prefixes (matched
+    with ``startswith``).  Entries without a trailing slash are treated
+    as exact file paths (matched with equality).  This prevents
+    accidental overmatching — e.g. ``README.md`` is exempt but
+    ``README.md.bak`` is still treated as substantive.
+    """
+    for entry in EXEMPT_PREFIXES:
+        if entry.endswith("/"):
+            if path.startswith(entry):
+                return True
+        else:
+            if path == entry:
+                return True
+    return False
+
+
 def is_substantive(path: str) -> bool:
     """Return True iff ``path`` is substantive and needs a CHANGELOG entry.
 
@@ -147,28 +166,68 @@ def is_substantive(path: str) -> bool:
     path = path.strip()
     if not path:
         return False
-    return not any(path == p or path.startswith(p) for p in EXEMPT_PREFIXES)
+    return not _is_exempt(path)
 
 
 def _changelog_has_new_entry(base: str) -> bool:
     """Return True if the CHANGELOG.md diff adds a new entry.
 
-    Looks for at least one added line whose content starts with either
-    a bullet (``- ``) or a version heading (``## [``).  This catches
-    the two legitimate ways of adding entries; pure whitespace or
-    cosmetic changes to CHANGELOG.md don't count.
+    A "new entry" is either:
+
+    1. An added line introducing a new version heading (``+## [X.Y.Z]``
+       or ``+## [Unreleased]``).
+    2. An added bullet (``+- ...``) that appears *inside* the
+       ``[Unreleased]`` section.
+
+    Section-tracking is necessary because CHANGELOG.md commonly has
+    prose edits (typo fixes, wording tweaks) inside released-version
+    entries.  Those edits sometimes add bulleted lines, but they
+    shouldn't count as "adding a new entry" for the purposes of this
+    check — only bullets under ``[Unreleased]`` do.
+
+    Pure whitespace or cosmetic changes to CHANGELOG.md don't count.
     """
     diff = _run(["git", "diff", base, "HEAD", "--", "CHANGELOG.md"])
     if not diff:
         return False
+
+    # Track which section header we're currently inside.  The diff
+    # includes both context lines (prefixed with a space) and added
+    # lines (prefixed with ``+``); we update current_section on both
+    # so the tracker reflects the post-diff state of the file.
+    current_section: str | None = None
     for line in diff.splitlines():
-        # ``+++`` is the file header; actual added lines start with a
-        # single ``+`` followed by the content.
-        if not line.startswith("+") or line.startswith("+++"):
+        if line.startswith("+++") or line.startswith("---"):
+            # File headers — ignore entirely.
             continue
-        content = line[1:].lstrip()
-        if content.startswith("- ") or content.startswith("## ["):
-            return True
+
+        # Extract the line content regardless of diff marker.
+        if line.startswith("+") or line.startswith(" "):
+            content = line[1:].lstrip() if len(line) > 1 else ""
+        elif line.startswith("-"):
+            # Removed context — doesn't tell us about the post-diff
+            # section layout.
+            continue
+        else:
+            # Hunk headers (``@@ ... @@``) and other metadata.
+            continue
+
+        if content.startswith("## ["):
+            # Update section tracker — skip past ``## [`` (4 chars) to
+            # the name, up to the closing ``]``.
+            end = content.find("]", 4)
+            if end > 4:
+                current_section = content[4:end]
+            # An *added* version heading is itself a new entry.
+            if line.startswith("+"):
+                return True
+            continue
+
+        # Added bullets only count inside the [Unreleased] section.
+        if line.startswith("+") and content.startswith("- "):
+            if current_section == "Unreleased":
+                return True
+
     return False
 
 

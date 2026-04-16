@@ -85,7 +85,9 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 ### Pre-commit Hooks
 
-After running `pre-commit install` (and `pre-commit install --hook-type pre-push` for pre-push hooks), every commit is automatically checked by 24 hooks including:
+Every push is checked by 24 hooks across two stages: 23 run on every commit after `pre-commit install`, and 1 (`check-changelog-updated`, described below) runs only at push time after `pre-commit install --hook-type pre-push`.
+
+The **commit-time** hooks (23) include:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
