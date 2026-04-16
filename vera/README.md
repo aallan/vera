@@ -91,29 +91,37 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `smt.py` | 1,026 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
 | `verifier.py` | 1,005 | Verify | Contract verification | `verify()` |
-| `wasm/` | 12,672 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
-| ` ├ context.py` | 440 | | Composed WasmContext, expression dispatcher, block translation | |
-| ` ├ helpers.py` | 290 | | WasmSlotEnv, StringPool, type mapping, array element helpers | |
-| ` ├ inference.py` | 972 | | Type inference, slot/type utilities, operator tables | |
+| `wasm/` | 12,998 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
+| ` ├ context.py` | 468 | | Composed WasmContext, expression dispatcher, block translation | |
+| ` ├ helpers.py` | 296 | | WasmSlotEnv, StringPool, type mapping, array element helpers | |
+| ` ├ inference.py` | 1,055 | | Type inference, slot/type utilities, operator tables | |
 | ` ├ operators.py` | 712 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
-| ` ├ calls.py` | 8,332 | | Function calls, generic resolution, effect ops, all built-in call translation | |
-| ` ├ closures.py` | 250 | | Closures, anonymous functions, free variable analysis | |
+| ` ├ calls.py` | 572 | | Core dispatcher for `_translate_call` / `_translate_qualified_call`, generic resolution, shared element-type inference (domain mixins below) | |
+| ` ├ calls_arrays.py` | 576 | | `array_length` / `append` / `range` / `concat` / `slice` | |
+| ` ├ calls_containers.py` | 627 | | Map, Set, Decimal (opaque-handle types) | |
+| ` ├ calls_encoding.py` | 2,047 | | Base64 and URL encoding/decoding/parsing | |
+| ` ├ calls_handlers.py` | 379 | | Show/Hash ability dispatch, `handle[State<T>]` and `handle[Exn<E>]` | |
+| ` ├ calls_markup.py` | 315 | | JSON, HTML, Markdown, Regex, async/await (host-import wrappers) | |
+| ` ├ calls_math.py` | 457 | | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, Float64 predicates, numeric conversions | |
+| ` ├ calls_parsing.py` | 970 | | `parse_nat` / `parse_int` / `parse_bool` / `parse_float64` state machines | |
+| ` ├ calls_strings.py` | 2,588 | | All string ops (length, concat, slice, search, transform, split, join) + to-string conversions | |
+| ` ├ closures.py` | 254 | | Closures, anonymous functions, free variable analysis | |
 | ` ├ data.py` | 739 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
 | ` ├ markdown.py` | 537 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
 | ` ├ json_serde.py` | 209 | | WASM memory marshalling for Json ADT | |
 | ` └ html_serde.py` | 191 | | WASM memory marshalling for HtmlNode ADT | |
 | `markdown.py` | 651 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
-| `codegen/` | 6,098 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
-| `  api.py` | 2,023 | | Public API, dataclasses, host bindings, `execute()` | |
-| `  core.py` | 624 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6) | |
-| `  modules.py` | 378 | | Cross-module registration + call detection (C7e) | |
-| `  registration.py` | 223 | | Pass 1 forward declarations, ADT layout | |
-| `  monomorphize.py` | 988 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
-| `  functions.py` | 282 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
-| `  closures.py` | 246 | | Closure lifting, GC instrumentation | |
+| `codegen/` | 6,618 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
+| `  api.py` | 2,288 | | Public API, dataclasses, host bindings, `execute()` | |
+| `  core.py` | 711 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6) | |
+| `  modules.py` | 392 | | Cross-module registration + call detection (C7e) | |
+| `  registration.py` | 258 | | Pass 1 forward declarations, ADT layout | |
+| `  monomorphize.py` | 1,020 | | Generic instantiation, type inference, ability constraint checking (Pass 1.5) | |
+| `  functions.py` | 286 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
+| `  closures.py` | 272 | | Closure lifting, GC instrumentation | |
 | `  contracts.py` | 282 | | Runtime pre/postconditions, old state snapshots | |
-| `  assembly.py` | 749 | | WAT module assembly, `$alloc`, `$gc_collect` | |
-| `  compilability.py` | 303 | | Compilability checks, state handler scanning | |
+| `  assembly.py` | 774 | | WAT module assembly, `$alloc`, `$gc_collect` | |
+| `  compilability.py` | 310 | | Compilability checks, state handler scanning | |
 | `tester.py` | 750 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
 | `formatter.py` | 1,127 | Format | Canonical code formatter | `format_source()` |
 | `errors.py` | 515 | All | Diagnostic class, error hierarchy, error code registry | `Diagnostic`, `VeraError`, `ERROR_CODES` |
@@ -464,7 +472,7 @@ Error at line 3, column 3:
 
 ## Code Generation
 
-**Files:** `codegen/` (3,137 lines across 11 modules), `wasm/` (4,273 lines across 7 modules)
+**Files:** `codegen/` (6,618 lines across 11 modules), `wasm/` (12,998 lines across 18 modules, split into domain mixins — see the module table above)
 
 ### Compilation pipeline
 

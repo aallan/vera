@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - **CHANGELOG enforcement at pre-push and CI** ([#478](https://github.com/aallan/vera/issues/478)) — new `scripts/check_changelog_updated.py` fails a PR if any substantive file (`vera/`, `spec/`, `SKILL.md`) is changed without a matching new entry in `CHANGELOG.md`. Runs at the `pre-push` hook stage locally (opt in with `pre-commit install --hook-type pre-push`) and in the CI `lint` job. Escape hatches: a `Skip-changelog: <reason>` commit trailer (Git-native) or a `skip-changelog` PR label (CI-only). Prevents the kind of missed release-prep that happened on [#474](https://github.com/aallan/vera/pull/474).
 
+### Documentation
+- **Docs consistency sweep** — retroactively tag/release v0.0.113 (the release prep PR #477 merged but the tag+release finishing steps were never run); close [#418](https://github.com/aallan/vera/issues/418) manually (PR description lacked an auto-close keyword); refresh file-size tables in `vera/README.md` after the calls.py decomposition (`calls.py` 8,332 → 572 + 8 mixin rows; `wasm/` 4,273 → 12,998 across 17 modules; `codegen/` size drift); fix stale 3,253 → 3,318 test count in `README.md` and the HISTORY by-the-numbers table; add [#424](https://github.com/aallan/vera/issues/424), [#439](https://github.com/aallan/vera/issues/439), [#480](https://github.com/aallan/vera/issues/480) (iterative WASM higher-order array ops), and [#481](https://github.com/aallan/vera/issues/481) (auto-tag + auto-release on version bump) to ROADMAP; remove closed [#416](https://github.com/aallan/vera/issues/416) and [#417](https://github.com/aallan/vera/issues/417) from SKILL.md limitations.
+
 ## [0.0.113] - 2026-04-16
 
 ### Changed

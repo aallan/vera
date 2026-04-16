@@ -187,7 +187,16 @@ def _changelog_has_new_entry(base: str) -> bool:
 
     Pure whitespace or cosmetic changes to CHANGELOG.md don't count.
     """
-    diff = _run(["git", "diff", base, "HEAD", "--", "CHANGELOG.md"])
+    # ``--unified=9999`` forces git to include the whole file as context
+    # rather than just a few lines around each hunk.  Without this, a new
+    # bullet added more than 3 lines below the ``## [Unreleased]`` heading
+    # would see the heading fall outside the diff window, and the
+    # section tracker below would never have the chance to set
+    # ``current_section = "Unreleased"``.  CHANGELOG.md is a few thousand
+    # lines at worst, so running over the whole file is cheap.
+    diff = _run([
+        "git", "diff", "--unified=9999", base, "HEAD", "--", "CHANGELOG.md",
+    ])
     if not diff:
         return False
 
@@ -201,9 +210,13 @@ def _changelog_has_new_entry(base: str) -> bool:
             # File headers — ignore entirely.
             continue
 
-        # Extract the line content regardless of diff marker.
+        # Extract the line content regardless of diff marker.  Strip
+        # only the single-char diff prefix, NOT leading whitespace —
+        # prose that mentions "## [X]" with indentation (e.g. a code
+        # reference inside a bullet) must not be mistaken for a real
+        # heading, which always starts at column 0.
         if line.startswith("+") or line.startswith(" "):
-            content = line[1:].lstrip() if len(line) > 1 else ""
+            content = line[1:] if len(line) > 1 else ""
         elif line.startswith("-"):
             # Removed context — doesn't tell us about the post-diff
             # section layout.
