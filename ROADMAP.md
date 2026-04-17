@@ -16,18 +16,18 @@ Significant progress has been made towards Vera being a viable agent target. [Ve
 
 ## What's next — short-term priorities
 
-This section captures the concrete implementation order for Stage 11 work, ahead of the longer-term milestones below. The phase numbering in the milestones (Phase 4a/4b/4c etc.) reflects **strategic grouping** — what kind of feature it is and which broader goal it serves. It does **not** reflect implementation order. This section is where implementation order lives.
+This section captures the concrete **implementation order** for the next few weeks of work. The phase numbering in the milestones below (Phase 4a/4b/4c etc.) reflects **strategic grouping** — what kind of feature it is and which broader goal it serves — and is stable across releases. Implementation order shifts as empirical evidence arrives, so it lives here rather than as a reordering of the milestones.
 
 ### The ordering principle
 
-Early-stage Stage 11 issues fall into two categories:
+The near-term queue mixes issues from two categories:
 
 - **Capability-expansion** — unlocks *new kinds of programs that aren't possible today*. No hand-rolled workaround exists; the language literally can't do the thing. Examples: [#463](https://github.com/aallan/vera/issues/463) (`IO.sleep` / `IO.time` / `IO.stderr`), [#465](https://github.com/aallan/vera/issues/465) (Random effect), [#467](https://github.com/aallan/vera/issues/467) (log/sin/cos/constants).
 - **Error-reduction / ergonomic** — the program is already possible but verbose, bug-prone, or fragile. Hand-rolled recursive accumulators, manual ASCII range checks, nested Option/Json unwraps. Examples: [#466](https://github.com/aallan/vera/issues/466) (array utilities), [#470](https://github.com/aallan/vera/issues/470) / [#471](https://github.com/aallan/vera/issues/471) (string + char), [#366](https://github.com/aallan/vera/issues/366) (JSON accessors).
 
-Both matter, but they're asymmetric in timing: capability gaps are *blocking* (entire program categories don't exist), ergonomic gaps are *annoying* (programs compound verbosity). Blocking issues front-load more value per hour because they unlock whole genres of program. Early-stage: fix blockers first; later-stage: polish ergonomics.
+Both matter, but they're asymmetric in timing: capability gaps are *blocking* (entire program categories don't exist), ergonomic gaps are *annoying* (programs compound verbosity). Blocking issues front-load more value per hour because they unlock whole genres of program. The current state of the language is "most programs possible, some categories blocked" — so capability-expansion goes first, ergonomic polish follows.
 
-Empirical confirmation from a model writing Conway's Game of Life in Vera during Stage 11 planning:
+Empirical confirmation from a model writing Conway's Game of Life in Vera while this queue was being planned:
 
 > "The bug fix plus `IO.sleep` and Random are transformative. With `IO.sleep` I can write a proper animation loop… With Random I can generate a random soup initial state instead of hardcoding a glider and blinker, which is dramatically more interesting to watch. The program goes from 'dump 20 static frames' to 'animated random cellular automaton that runs in your terminal.' From [#466](https://github.com/aallan/vera/issues/466), `array_any` is useful for detecting extinction, and `array_contains` could simplify some checks, but neither is essential. From [#470](https://github.com/aallan/vera/issues/470), `string_pad_start` would let me right-align the generation counter — minor polish."
 
@@ -48,7 +48,7 @@ This reshaped the ordering: capability issues move up, ergonomic issues move dow
 
 ### What moves when
 
-Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md) as usual. When the Stage 11 primitives are mostly shipped and the table shrinks to ~3 items, this section should be re-evaluated — it's intended to be a rolling view of the next few weeks, not a permanent roadmap layer.
+Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md) as usual. When the table shrinks to ~3 items the section should be re-evaluated and repopulated from the next batch of priorities — it's intended to be a rolling view of the next few weeks, not a permanent roadmap layer.
 
 ---
 
