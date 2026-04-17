@@ -207,6 +207,10 @@ class CallsMixin:
                 return self._translate_array_map(
                     call.args[0], call.args[1], env,
                 )
+            if call.name == "array_filter" and len(call.args) == 2:
+                return self._translate_array_filter(
+                    call.args[0], call.args[1], env,
+                )
             # Numeric math builtins
             if call.name == "abs" and len(call.args) == 1:
                 return self._translate_abs(call.args[0], env)
@@ -573,6 +577,11 @@ class CallsMixin:
         if isinstance(expr, ast.FnCall):
             if expr.name == "array_range":
                 return "Int"
+            # array_map output element type = closure's return type.
+            # Not the input array's element type (that's the *input*
+            # of the map, not what we hand to the next combinator).
+            if expr.name == "array_map" and len(expr.args) == 2:
+                return self._infer_closure_return_vera_type(expr.args[1])
             if expr.name in (
                 "array_concat", "array_append", "array_slice",
                 "array_filter",

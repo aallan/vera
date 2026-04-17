@@ -70,50 +70,12 @@ type ArrayFoldFn<T, U> = fn(U, T -> U) effects(pure);
 """
 
 # Array higher-order operations.
-# array_map is emitted as an iterative WASM loop by codegen (#480) —
-# removed from this prelude injection.  array_filter and array_fold
-# still use recursive helpers with an index parameter to walk the
-# array; they will migrate to iterative implementations in follow-up
-# PRs.  De Bruijn slot references are commented for clarity.
+# array_map and array_filter are emitted as iterative WASM loops by
+# codegen (#480) — removed from this prelude injection.  array_fold
+# still uses a recursive helper with an index parameter; it will
+# migrate to an iterative implementation in the next follow-up PR.
+# De Bruijn slot references are commented for clarity.
 _ARRAY_COMBINATORS = """\
-private forall<T> fn array_filter_go(@Array<T>, @ArrayFilterFn<T>, @Int, @Array<T> -> @Array<T>)
-  requires(true)
-  ensures(true)
-  decreases(array_length(@Array<T>.1) - @Int.0)
-  effects(pure)
-{
-  -- @Array<T>.0 = acc (most recent), @Int.0 = index,
-  -- @ArrayFilterFn<T>.0 = predicate, @Array<T>.1 = input
-  if @Int.0 >= array_length(@Array<T>.1) then {
-    @Array<T>.0
-  } else {
-    if apply_fn(@ArrayFilterFn<T>.0, @Array<T>.1[@Int.0]) then {
-      array_filter_go(
-        @Array<T>.1,
-        @ArrayFilterFn<T>.0,
-        @Int.0 + 1,
-        array_append(@Array<T>.0, @Array<T>.1[@Int.0])
-      )
-    } else {
-      array_filter_go(
-        @Array<T>.1,
-        @ArrayFilterFn<T>.0,
-        @Int.0 + 1,
-        @Array<T>.0
-      )
-    }
-  }
-}
-
-private forall<T> fn array_filter(@Array<T>, @ArrayFilterFn<T> -> @Array<T>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  -- @ArrayFilterFn<T>.0 = predicate (most recent), @Array<T>.0 = input
-  array_filter_go(@Array<T>.0, @ArrayFilterFn<T>.0, 0, [])
-}
-
 private forall<T, U> fn array_fold_go(@Array<T>, @U, @ArrayFoldFn<T, U>, @Int -> @U)
   requires(true)
   ensures(true)
@@ -534,10 +496,10 @@ def inject_prelude(program: ast.Program) -> None:
     - Result combinators (``result_unwrap_or``, ``result_map``) —
       injected unless the user defines a non-standard ``Result<T, E>``
       or shadows the function names.
-    - Array operations (``array_filter``, ``array_fold``) — always
-      injected as recursive helpers until their own iterative
-      migration lands.  ``array_map`` is emitted as iterative WASM
-      by codegen (#480) and has no prelude body.
+    - Array operations (``array_fold``) — injected as a recursive
+      helper until its own iterative migration lands.  ``array_map``
+      and ``array_filter`` are emitted as iterative WASM by codegen
+      (#480) and have no prelude body.
     """
     user_names = _user_defined_names(program)
     user_data_names = _user_defined_data_names(program)
@@ -562,12 +524,11 @@ def inject_prelude(program: ast.Program) -> None:
     option_alias_names = {"OptionMapFn", "OptionBindFn"}
     result_fn_names = {"result_unwrap_or", "result_map"}
     result_alias_names = {"ResultMapFn"}
-    # array_map is a built-in emitted as iterative WASM (#480); it has
-    # no prelude body any more.  array_filter / array_fold are still
-    # injected as recursive helpers until their own iterative migration
-    # lands.
+    # array_map and array_filter are built-ins emitted as iterative
+    # WASM (#480); they have no prelude body any more.  array_fold is
+    # still injected as a recursive helper until its own iterative
+    # migration lands in the next #480 follow-up.
     array_fn_names = {
-        "array_filter", "array_filter_go",
         "array_fold", "array_fold_go",
     }
     array_alias_names = {"ArrayMapFn", "ArrayFilterFn", "ArrayFoldFn"}

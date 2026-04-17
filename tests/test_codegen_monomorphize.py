@@ -1011,3 +1011,170 @@ public fn main(-> @Nat)
 }
 """
         assert _run(source, fn="main") == 0
+
+    # ----------------------------------------------------------------
+    # array_filter — regression tests for the iterative implementation
+    # (#480 PR 2).  The iterative filter over-allocates
+    # ``len * sizeof(T)`` (worst case, every element passes) and
+    # returns ``(dst, write_idx)``.  Focus: boundary cases and
+    # write-index correctness (separate from read-index).
+    # ----------------------------------------------------------------
+
+    def test_array_filter_large_input_no_stack_overflow(self) -> None:
+        """8,000-element filter without blowing the shadow stack.
+
+        Under the old recursive prelude each element pushed a stack
+        frame and hit the 16K ceiling (#464) around 4K elements.
+        The iterative loop is O(1) in shadow-stack depth.  Capped at
+        8K (64,000 bytes worst-case allocation) until #484 widens the
+        GC-header size field.
+        """
+        source = """\
+public fn main(-> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 8000);
+  let @Array<Int> = array_filter(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { @Int.0 < 100 });
+  array_length(@Array<Int>.0)
+}
+"""
+        # Elements 0..99 pass, rest rejected → length 100.
+        assert _run(source, fn="main") == 100
+
+    def test_array_filter_empty_input(self) -> None:
+        """Empty input → empty output; loop init/term exercised at n=0.
+
+        The loop's ``idx >= arr_len`` guard must fire on the very
+        first iteration; the predicate is never invoked; the
+        returned ``(dst, write_idx)`` has ``write_idx = 0``.
+        """
+        source = """\
+public fn main(-> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 0);
+  let @Array<Int> = array_filter(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 });
+  array_length(@Array<Int>.0)
+}
+"""
+        assert _run(source, fn="main") == 0
+
+    def test_array_filter_all_pass(self) -> None:
+        """Every element passes → ``write_idx == arr_len``.
+
+        Exercises the "no wasted tail" happy path: the dst buffer
+        is fully used and the returned length equals the input
+        length.  Reads several elements to confirm the write path
+        copied values correctly, not just that the count is right.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_filter([10, 20, 30, 40, 50], fn(@Int -> @Bool) effects(pure) { true });
+  @Array<Int>.0[0] + @Array<Int>.0[2] + @Array<Int>.0[4]
+}
+"""
+        # 10 + 30 + 50 = 90; confirms elements at idx 0, 2, 4 were copied intact.
+        assert _run(source, fn="main") == 90
+
+    def test_array_filter_none_pass(self) -> None:
+        """Predicate always false → empty output despite non-empty input.
+
+        The dst buffer is allocated at worst-case size but
+        ``write_idx`` never advances, so the returned length is 0.
+        """
+        source = """\
+public fn main(-> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_filter([1, 2, 3, 4, 5], fn(@Int -> @Bool) effects(pure) { false });
+  array_length(@Array<Int>.0)
+}
+"""
+        assert _run(source, fn="main") == 0
+
+    def test_array_filter_closure_captures_outer_variable(self) -> None:
+        """Predicate closure captures an outer binding.
+
+        Ensures the closure-env lifting path works for filter the
+        same way it does for map — the captured threshold must be
+        visible inside the predicate body.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 3;
+  let @Array<Int> = array_filter([1, 2, 3, 4, 5], fn(@Int -> @Bool) effects(pure) { @Int.0 > @Int.1 });
+  @Array<Int>.0[0] + @Array<Int>.0[1]
+}
+"""
+        # Captured threshold = 3; elements > 3 → [4, 5]; sum = 9.
+        assert _run(source, fn="main") == 9
+
+    def test_array_filter_pair_element(self) -> None:
+        """Filter Array<String> — output is pair-typed (i32_pair).
+
+        Exercises the pair-element copy path: both i32 words (ptr
+        at offset 0, len at offset 4) must be loaded from src[idx]
+        into temp locals, fed to the predicate, AND stored into
+        dst[write_idx] if the predicate passed — without re-reading
+        src.
+        """
+        source = """\
+public fn main(-> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<String> = array_filter(["a", "bb", "ccc", "d"], fn(@String -> @Bool) effects(pure) { string_length(@String.0) > 1 });
+  string_length(@Array<String>.0[0]) + string_length(@Array<String>.0[1])
+}
+"""
+        # Elements with length > 1: ["bb", "ccc"] — lengths 2 and 3; sum = 5.
+        assert _run(source, fn="main") == 5
+
+    def test_array_filter_of_array_map(self) -> None:
+        """Nested ``array_filter(array_map(...), pred)`` — output-type inference.
+
+        Regression for a latent bug exposed during PR 2 review:
+        ``_infer_concat_elem_type`` didn't handle ``array_map``
+        calls, so its output-type (the closure's return type) was
+        invisible to the enclosing filter.  The filter would bail
+        out silently and the whole module would fail to compile.
+        Now the helper consults the inner map's closure return type
+        to size the filter correctly.
+        """
+        source = """\
+public fn main(-> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Bool> = array_filter(
+    array_map([1, 2, 3, 4, 5], fn(@Int -> @Bool) effects(pure) { @Int.0 > 2 }),
+    fn(@Bool -> @Bool) effects(pure) { @Bool.0 }
+  );
+  array_length(@Array<Bool>.0)
+}
+"""
+        # map → [false, false, true, true, true]; filter trues → [true, true, true]; len 3.
+        assert _run(source, fn="main") == 3
+
+    def test_array_map_of_array_map(self) -> None:
+        """Nested ``array_map(array_map(...), fn)`` — output-type inference.
+
+        Sibling to the filter-of-map test: the outer map must see
+        the inner map's output element type (the inner closure's
+        return type), not the original array's element type.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_map(
+    array_map([1, 2, 3], fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }),
+    fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }
+  );
+  @Array<Int>.0[2]
+}
+"""
+        # [1,2,3] → [2,4,6] → [3,5,7]; [2] = 7.
+        assert _run(source, fn="main") == 7

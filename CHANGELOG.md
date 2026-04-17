@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Iterative WASM `array_filter`** ([#480](https://github.com/aallan/vera/issues/480) PR 2) — `array_filter<T>(arr, pred)` is now emitted as a single WAT `loop` with a separate `write_idx`, replacing the recursive prelude (`array_filter` / `array_filter_go`). Worst-case over-allocates `len * sizeof(T)` bytes and returns `(dst, write_idx)`; the unused tail is unreachable via the returned pair and gets reclaimed by the sweeper. Single-pass by design — the predicate is invoked exactly once per element. Shadow-stack usage is now O(1). Follows the same pattern as PR 1 (`array_map`); `array_fold` to follow in PR 3.
 - **Iterative WASM `array_map`** ([#480](https://github.com/aallan/vera/issues/480) PR 1) — `array_map<A, B>(arr, fn)` is now emitted as a single WAT `loop` driven by a `call_indirect` on the closure, replacing the recursive prelude implementation (`array_map_go`). Shadow-stack usage is now O(1) regardless of input length — the old recursive version hit the 16K shadow-stack ceiling (post-[#464](https://github.com/aallan/vera/issues/464)) around 4K elements. The generic higher-order signature (`forall<A, B>`) is preserved via a `FunctionInfo` built-in registration, so source code is unchanged. Also discovered and filed [#484](https://github.com/aallan/vera/issues/484) — a pre-existing 16-bit GC-header size-field limits allocations to 65535 bytes; the stress test caps at 8K Int elements (64,000 bytes) until that's fixed.
 
 ### Added

@@ -43,12 +43,11 @@ _PRELUDE_DATA_NAMES = {"Option", "Result", "Ordering", "UrlParts"}
 # Prelude combinator function names
 _OPTION_FN_NAMES = {"option_unwrap_or", "option_map", "option_and_then"}
 _RESULT_FN_NAMES = {"result_unwrap_or", "result_map"}
-# ``array_map`` is emitted as iterative WASM by codegen (#480);
-# it no longer has a prelude-injected recursive implementation.
-# ``array_filter`` / ``array_fold`` remain recursive prelude functions
-# until their own iterative migration lands.
+# ``array_map`` and ``array_filter`` are emitted as iterative WASM
+# by codegen (#480); they no longer have prelude-injected recursive
+# implementations.  ``array_fold`` remains a recursive prelude
+# function until its own iterative migration lands.
 _ARRAY_FN_NAMES = {
-    "array_filter", "array_filter_go",
     "array_fold", "array_fold_go",
 }
 
@@ -113,13 +112,14 @@ class TestPreludeCombinators:
         assert _RESULT_FN_NAMES.issubset(names)
 
     def test_array_operations_injected(self) -> None:
-        """Array operations always injected — except array_map.
+        """Array operations injected — except array_map and array_filter.
 
-        ``array_map`` / ``array_map_go`` are emitted as iterative WASM
-        by codegen (#480) and must NOT appear in the prelude-injected
-        function set.  The explicit negative assertion guards against
-        accidental re-injection if someone widens ``_ARRAY_FN_NAMES``
-        without updating the prelude.
+        ``array_map`` / ``array_map_go`` and ``array_filter`` /
+        ``array_filter_go`` are emitted as iterative WASM by codegen
+        (#480) and must NOT appear in the prelude-injected function
+        set.  The explicit negative assertions guard against
+        accidental re-injection if someone widens
+        ``_ARRAY_FN_NAMES`` without updating the prelude.
         """
         prog = _make_program(
             "public fn main(@Unit -> @Int)\n"
@@ -129,9 +129,11 @@ class TestPreludeCombinators:
         inject_prelude(prog)
         names = _fn_names(prog)
         assert _ARRAY_FN_NAMES.issubset(names)
-        # Regression: array_map is a built-in, not a prelude function.
+        # Regression: these are built-ins, not prelude functions.
         assert "array_map" not in names
         assert "array_map_go" not in names
+        assert "array_filter" not in names
+        assert "array_filter_go" not in names
 
     def test_combinators_with_user_option(self) -> None:
         """Option combinators still injected when user defines standard Option."""
