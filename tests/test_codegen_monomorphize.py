@@ -971,7 +971,8 @@ public fn main(-> @Int)
   @Array<Int>.0[2]
 }
 """
-        # Outer @Int.0 = 100 (captured); element 2 + captured 100 = 102
+        # Outer @Int.0 = 100 (captured); [1, 2, 3][2] = 3;
+        # closure returns element + captured = 3 + 100 = 103.
         assert _run(source, fn="main") == 103
 
     def test_array_map_pair_element_output(self) -> None:
