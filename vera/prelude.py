@@ -70,42 +70,14 @@ type ArrayFoldFn<T, U> = fn(U, T -> U) effects(pure);
 """
 
 # Array higher-order operations.
-# array_map and array_filter are emitted as iterative WASM loops by
-# codegen (#480) — removed from this prelude injection.  array_fold
-# still uses a recursive helper with an index parameter; it will
-# migrate to an iterative implementation in the next follow-up PR.
-# De Bruijn slot references are commented for clarity.
-_ARRAY_COMBINATORS = """\
-private forall<T, U> fn array_fold_go(@Array<T>, @U, @ArrayFoldFn<T, U>, @Int -> @U)
-  requires(true)
-  ensures(true)
-  decreases(array_length(@Array<T>.0) - @Int.0)
-  effects(pure)
-{
-  -- @Int.0 = index (most recent), @ArrayFoldFn<T, U>.0 = fn,
-  -- @U.0 = accumulator, @Array<T>.0 = input
-  if @Int.0 >= array_length(@Array<T>.0) then {
-    @U.0
-  } else {
-    array_fold_go(
-      @Array<T>.0,
-      apply_fn(@ArrayFoldFn<T, U>.0, @U.0, @Array<T>.0[@Int.0]),
-      @ArrayFoldFn<T, U>.0,
-      @Int.0 + 1
-    )
-  }
-}
-
-private forall<T, U> fn array_fold(@Array<T>, @U, @ArrayFoldFn<T, U> -> @U)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  -- @ArrayFoldFn<T, U>.0 = fn (most recent), @U.0 = init,
-  -- @Array<T>.0 = input
-  array_fold_go(@Array<T>.0, @U.0, @ArrayFoldFn<T, U>.0, 0)
-}
-"""
+# array_map, array_filter, and array_fold are all emitted as iterative
+# WASM loops by codegen (#480) — none of them have prelude bodies now.
+# The ``_ARRAY_COMBINATORS`` source block is empty but kept for
+# symmetry with the Option/Result injection pattern; if a future
+# combinator lands as a prelude-injected recursive helper again, this
+# is where it goes.  De Bruijn slot references are commented for
+# clarity in any future additions.
+_ARRAY_COMBINATORS = ""
 
 _JSON_COMBINATORS = """\
 private fn json_get(@Json, @String -> @Option<Json>)
@@ -524,13 +496,12 @@ def inject_prelude(program: ast.Program) -> None:
     option_alias_names = {"OptionMapFn", "OptionBindFn"}
     result_fn_names = {"result_unwrap_or", "result_map"}
     result_alias_names = {"ResultMapFn"}
-    # array_map and array_filter are built-ins emitted as iterative
-    # WASM (#480); they have no prelude body any more.  array_fold is
-    # still injected as a recursive helper until its own iterative
-    # migration lands in the next #480 follow-up.
-    array_fn_names = {
-        "array_fold", "array_fold_go",
-    }
+    # array_map, array_filter, and array_fold are all built-ins
+    # emitted as iterative WASM (#480); none of them have prelude
+    # bodies any more.  The set stays explicit (rather than becoming
+    # an empty constant) so adding future array helpers that DO need
+    # prelude injection is a one-line change.
+    array_fn_names: set[str] = set()
     array_alias_names = {"ArrayMapFn", "ArrayFilterFn", "ArrayFoldFn"}
 
     if (inject_option_combinators
@@ -549,10 +520,19 @@ def inject_prelude(program: ast.Program) -> None:
             source_parts.append(_RESULT_TYPE_ALIASES)
         source_parts.append(_RESULT_COMBINATORS)
 
-    # Array operations — always inject (no ADT prerequisites)
-    if not array_fn_names.issubset(user_names):
-        if not array_alias_names.issubset(user_names):
-            source_parts.append(_ARRAY_TYPE_ALIASES)
+    # Array operations — always inject the aliases (no ADT
+    # prerequisites); inject the combinator bodies only when needed.
+    # Decoupled after all three combinators migrated to iterative
+    # WASM (#480): ``array_fn_names`` is empty so the combinator-
+    # injection branch is a no-op for current programs, but user
+    # code may still reference ``ArrayMapFn`` / ``ArrayFilterFn`` /
+    # ``ArrayFoldFn`` in type annotations and needs those aliases
+    # defined.  When a future array helper lands as a prelude
+    # function (not a built-in), just add it to ``array_fn_names``
+    # and populate ``_ARRAY_COMBINATORS``.
+    if not array_alias_names.issubset(user_names):
+        source_parts.append(_ARRAY_TYPE_ALIASES)
+    if _ARRAY_COMBINATORS and not array_fn_names.issubset(user_names):
         source_parts.append(_ARRAY_COMBINATORS)
 
     # Json ADT and utility functions — inject only when Json is referenced

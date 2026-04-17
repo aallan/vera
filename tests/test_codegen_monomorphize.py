@@ -1205,3 +1205,122 @@ public fn main(-> @Int)
 """
         # [1,2,3] → [2,4,6] → [3,5,7]; [2] = 7.
         assert _run(source, fn="main") == 7
+
+    # ----------------------------------------------------------------
+    # array_fold — regression tests for the iterative implementation
+    # (#480 PR 3).  Structurally different from map/filter: no output
+    # allocation (returns a scalar ``U``), closure takes two value
+    # parameters (acc + elem), and pair/ADT accumulators need shadow-
+    # stack rooting that's updated in-place each iteration.
+    # ----------------------------------------------------------------
+
+    def test_array_fold_large_input_no_stack_overflow(self) -> None:
+        """10,000-element fold without blowing the shadow stack.
+
+        Regression guard analogous to the map/filter stress tests.
+        Sum of range(0, 10000) = 49,995,000.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold(
+    array_range(0, 10000),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 }
+  )
+}
+"""
+        # Sum of 0..9999 = 9999 * 10000 / 2 = 49,995,000.
+        assert _run(source, fn="main") == 49_995_000
+
+    def test_array_fold_empty_input(self) -> None:
+        """Empty input → returns init unchanged; closure never invoked.
+
+        The loop's ``idx >= arr_len`` guard must fire on iteration
+        zero so the accumulator stays at its initial value.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold(
+    array_range(0, 0),
+    42,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 }
+  )
+}
+"""
+        assert _run(source, fn="main") == 42
+
+    def test_array_fold_pair_accumulator_gc_safety(self) -> None:
+        """``String`` accumulator survives closure-allocation GC cycles.
+
+        String concat allocates a new buffer each iteration.  With
+        10 iterations and each iteration freshly concatenating a
+        3-char suffix, the accumulator grows monotonically and the
+        closure's allocations can trigger GC mid-loop.  If the
+        shadow-stack root overwrite (``global.get $gc_sp; i32.const
+        8; i32.sub; i32.store``) is wrong, the acc_ptr gets swept
+        and the final length is garbage.
+        """
+        source = """\
+public fn main(-> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @String = array_fold(
+    ["ab", "cd", "ef", "gh", "ij", "kl", "mn", "op", "qr", "st"],
+    "",
+    fn(@String, @String -> @String) effects(pure) { string_concat(@String.1, @String.0) }
+  );
+  string_length(@String.0)
+}
+"""
+        # 10 strings of length 2 concatenated → length 20.
+        assert _run(source, fn="main") == 20
+
+    def test_array_fold_closure_captures_outer_variable(self) -> None:
+        """Fold closure captures an outer binding.
+
+        The captured `bias` is added in every iteration — confirms
+        the env pointer is threaded correctly to `call_indirect`
+        and the free-variable walker lifts the capture into the
+        closure struct.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 10;
+  array_fold(
+    [1, 2, 3],
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 + @Int.2 }
+  )
+}
+"""
+        # Each iteration adds (elem + captured 10) to acc.
+        # Iter 1: 0 + 1 + 10 = 11.  Iter 2: 11 + 2 + 10 = 23.
+        # Iter 3: 23 + 3 + 10 = 36.
+        assert _run(source, fn="main") == 36
+
+    def test_array_fold_of_array_map(self) -> None:
+        """Nested ``array_fold(array_map(...), init, fn)``.
+
+        Exercises ``_infer_concat_elem_type`` seeing an ``array_map``
+        call as fold's input argument — same path PR 2 fixed for
+        filter-of-map.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold(
+    array_map([1, 2, 3, 4, 5], fn(@Int -> @Int) effects(pure) { @Int.0 * @Int.0 }),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 }
+  )
+}
+"""
+        # squares = [1, 4, 9, 16, 25]; sum = 55.
+        assert _run(source, fn="main") == 55

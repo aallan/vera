@@ -211,6 +211,10 @@ class CallsMixin:
                 return self._translate_array_filter(
                     call.args[0], call.args[1], env,
                 )
+            if call.name == "array_fold" and len(call.args) == 3:
+                return self._translate_array_fold(
+                    call.args[0], call.args[1], call.args[2], env,
+                )
             # Numeric math builtins
             if call.name == "abs" and len(call.args) == 1:
                 return self._translate_abs(call.args[0], env)

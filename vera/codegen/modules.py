@@ -252,10 +252,8 @@ class CrossModuleMixin:
         known.update({
             "array_length", "array_append", "array_range", "array_concat",
             "array_slice",
-            # Higher-order combinators — iterative WASM (#480).
-            # array_fold still uses the recursive prelude form until
-            # its own iterative migration lands.
-            "array_map", "array_filter",
+            # Higher-order combinators — all iterative WASM (#480).
+            "array_map", "array_filter", "array_fold",
             "apply_fn", "get", "put", "throw", "resume",
             "string_length", "string_concat", "string_slice",
             "string_char_code", "string_from_char_code", "string_repeat",
