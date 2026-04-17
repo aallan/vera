@@ -781,3 +781,207 @@ class CallsArraysMixin:
         instructions.append(f"local.get {dst}")
         instructions.append(f"local.get {arr_len}")
         return instructions
+
+    def _translate_array_filter(
+        self,
+        arr_arg: ast.Expr,
+        fn_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``array_filter<T>(arr, pred) -> Array<T>`` iteratively.
+
+        The output length is not known up-front, so we over-allocate
+        ``len * sizeof(T)`` bytes (worst case — every element passes),
+        walk the input once invoking the predicate, copy passing
+        elements into ``dst[write_idx]``, and return ``(dst,
+        write_idx)``.  The unused tail is unreachable via the
+        returned pair and gets reclaimed by the sweeper.
+
+        Single-pass deliberately: calling the predicate twice (once
+        to count, once to copy) would double cost and, more
+        importantly, assume purity at evaluation granularity.  A
+        single pass is also closer to what a programmer would write
+        by hand.
+
+        WAT shape::
+
+            ;; evaluate arr → (ptr, len), save + GC-root arr_ptr
+            ;; evaluate fn → i32 handle, save + GC-root fn_tmp
+            ;; call $alloc(len * sizeof(T)), save as dst, GC-root dst
+            ;; write_idx = 0
+            ;; loop idx in [0, len):
+            ;;   push fn (env); load src[idx]; push fn_idx;
+            ;;   call_indirect → i32 (Bool)
+            ;;   if result != 0:
+            ;;     compute dst_slot = dst + write_idx * sizeof(T)
+            ;;     copy src[idx] to dst[write_idx] (1 or 2 loads+stores)
+            ;;     write_idx++
+            ;; push (dst, write_idx)
+
+        Size note: subject to the pre-existing 16-bit GC-header
+        limit ([#484](https://github.com/aallan/vera/issues/484)) —
+        worst-case allocations over 65535 bytes silently corrupt.
+        The iterative codegen itself is correct; callers just need
+        to keep inputs under the ceiling until the header is widened.
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        fn_instrs = self.translate_expr(fn_arg, env)
+        if arr_instrs is None or fn_instrs is None:
+            return None
+
+        t_type = self._infer_concat_elem_type(arr_arg)
+        if t_type is None:
+            return None
+        t_size = _element_mem_size(t_type)
+        if t_size is None:
+            return None
+        t_is_pair = _is_pair_element_type(t_type)
+        t_wasm = _element_wasm_type(t_type)
+        if t_wasm is None:
+            return None
+
+        self.needs_alloc = True
+
+        arr_ptr = self.alloc_local("i32")
+        arr_len = self.alloc_local("i32")
+        fn_tmp = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        write_idx = self.alloc_local("i32")
+        src_slot = self.alloc_local("i32")
+        dst_slot = self.alloc_local("i32")
+        # Temp for the loaded source element (so we can reload it into
+        # both the call_indirect arg and the dst store without a
+        # second memory read).
+        if t_is_pair:
+            src_ptr = self.alloc_local("i32")
+            src_len = self.alloc_local("i32")
+        else:
+            src_val = self.alloc_local(t_wasm)
+
+        instructions: list[str] = []
+
+        # Evaluate arr → (ptr, len), save, shadow-push.
+        instructions.extend(arr_instrs)
+        instructions.append(f"local.set {arr_len}")
+        instructions.append(f"local.set {arr_ptr}")
+        instructions.extend(gc_shadow_push(arr_ptr))
+
+        # Evaluate fn → closure handle, save, shadow-push.
+        instructions.extend(fn_instrs)
+        instructions.append(f"local.set {fn_tmp}")
+        instructions.extend(gc_shadow_push(fn_tmp))
+
+        # Worst-case allocation: every element passes the predicate.
+        instructions.append(f"local.get {arr_len}")
+        instructions.append(f"i32.const {t_size}")
+        instructions.append("i32.mul")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {dst}")
+        instructions.extend(gc_shadow_push(dst))
+
+        # Predicate closure sig: (env:i32, T-expanded) -> Bool (i32).
+        t_param_types = ["i32", "i32"] if t_is_pair else [t_wasm]
+        param_parts = " ".join(
+            f"(param {wt})" for wt in ["i32"] + t_param_types
+        )
+        sig_key = f"{param_parts} (result i32)"
+        if sig_key not in self._closure_sigs:
+            sig_name = f"$closure_sig_{len(self._closure_sigs)}"
+            self._closure_sigs[sig_key] = sig_name
+        sig_name = self._closure_sigs[sig_key]
+
+        # write_idx = 0; loop idx in [0, arr_len).
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {write_idx}")
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+        instructions.append("block $brk_flt")
+        instructions.append("  loop $lp_flt")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    local.get {arr_len}")
+        instructions.append("    i32.ge_u")
+        instructions.append("    br_if $brk_flt")
+
+        # src_slot = arr_ptr + idx * sizeof(T).
+        instructions.append(f"    local.get {arr_ptr}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    i32.const {t_size}")
+        instructions.append("    i32.mul")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {src_slot}")
+
+        # Load src[idx] into temp local(s) — reused for the predicate
+        # call below AND the conditional store further down.
+        if t_is_pair:
+            instructions.append(f"    local.get {src_slot}")
+            instructions.append("    i32.load offset=0")
+            instructions.append(f"    local.set {src_ptr}")
+            instructions.append(f"    local.get {src_slot}")
+            instructions.append("    i32.load offset=4")
+            instructions.append(f"    local.set {src_len}")
+        else:
+            t_load = _element_load_op(t_type)
+            if t_load is None:
+                return None
+            instructions.append(f"    local.get {src_slot}")
+            instructions.append(f"    {t_load} offset=0")
+            instructions.append(f"    local.set {src_val}")
+
+        # Invoke predicate: push env, push element, push fn_idx,
+        # call_indirect → i32 (Bool).
+        instructions.append(f"    local.get {fn_tmp}")
+        if t_is_pair:
+            instructions.append(f"    local.get {src_ptr}")
+            instructions.append(f"    local.get {src_len}")
+        else:
+            instructions.append(f"    local.get {src_val}")
+        instructions.append(f"    local.get {fn_tmp}")
+        instructions.append("    i32.load offset=0")
+        instructions.append(f"    call_indirect (type {sig_name})")
+
+        # if predicate returned true: copy element, bump write_idx.
+        instructions.append("    if")
+        # dst_slot = dst + write_idx * sizeof(T).
+        instructions.append(f"      local.get {dst}")
+        instructions.append(f"      local.get {write_idx}")
+        instructions.append(f"      i32.const {t_size}")
+        instructions.append("      i32.mul")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.set {dst_slot}")
+        if t_is_pair:
+            instructions.append(f"      local.get {dst_slot}")
+            instructions.append(f"      local.get {src_ptr}")
+            instructions.append("      i32.store offset=0")
+            instructions.append(f"      local.get {dst_slot}")
+            instructions.append(f"      local.get {src_len}")
+            instructions.append("      i32.store offset=4")
+        else:
+            t_store = _element_store_op(t_type)
+            if t_store is None:
+                return None
+            instructions.append(f"      local.get {dst_slot}")
+            instructions.append(f"      local.get {src_val}")
+            instructions.append(f"      {t_store} offset=0")
+        # write_idx++.
+        instructions.append(f"      local.get {write_idx}")
+        instructions.append("      i32.const 1")
+        instructions.append("      i32.add")
+        instructions.append(f"      local.set {write_idx}")
+        instructions.append("    end")
+
+        # idx++, loop.
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.const 1")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {idx}")
+        instructions.append("    br $lp_flt")
+        instructions.append("  end")
+        instructions.append("end")
+
+        # Result: (dst, write_idx).  Tail past write_idx is unused
+        # but still inside the allocated block; sweeper reclaims it
+        # when dst itself becomes unreachable.
+        instructions.append(f"local.get {dst}")
+        instructions.append(f"local.get {write_idx}")
+        return instructions
