@@ -1,6 +1,7 @@
 """Array built-in translation mixin for WasmContext.
 
-Handles: array_length, array_append, array_range, array_concat, array_slice.
+Handles: array_length, array_append, array_range, array_concat, array_slice,
+array_map.
 """
 
 from __future__ import annotations
@@ -8,8 +9,10 @@ from __future__ import annotations
 from vera import ast
 from vera.wasm.helpers import (
     WasmSlotEnv,
+    _element_load_op,
     _element_mem_size,
     _element_store_op,
+    _element_wasm_type,
     _is_pair_element_type,
     gc_shadow_push,
 )
@@ -573,4 +576,208 @@ class CallsArraysMixin:
         instructions.append(f"  local.get {dst}")
         instructions.append(f"  local.get {slice_len}")
         instructions.append("end")
+        return instructions
+
+    def _infer_closure_return_vera_type(
+        self, closure_arg: ast.Expr,
+    ) -> str | None:
+        """Return the Vera element type name for a closure's return value.
+
+        Needed so array_map knows the size / load / store ops for the
+        output element type.  Handles the common case of an anonymous
+        function literal (``fn(...) -> T { ... }``).  Returns ``None``
+        when the return type can't be inferred from the AST alone.
+        """
+        if isinstance(closure_arg, ast.AnonFn):
+            ret = closure_arg.return_type
+            if isinstance(ret, ast.NamedType):
+                return self._resolve_type_name_to_wasm_canonical(ret.name)
+        return None
+
+    def _translate_array_map(
+        self,
+        arr_arg: ast.Expr,
+        fn_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``array_map<A, B>(arr, fn) -> Array<B>`` iteratively.
+
+        The translator emits a single WAT ``loop`` that walks the source
+        array once, invoking the closure via ``call_indirect`` at each
+        element.  This gives O(1) shadow-stack depth regardless of
+        input length — the old prelude implementation was recursive and
+        ran out of stack space past ~4K elements.
+
+        WAT shape::
+
+            ;; evaluate arr → (ptr, len), save + GC-root arr_ptr
+            ;; evaluate fn → i32 closure handle, save + GC-root fn_tmp
+            ;; call $alloc(len * sizeof(B)), save as dst, GC-root dst
+            ;; loop idx in [0, len):
+            ;;   push fn (env); load arr[idx]; push fn.func_table_idx
+            ;;   call_indirect (type $closure_sig_N)
+            ;;   save result; compute dst_slot; store
+            ;; push (dst, len)
+
+        Note: the GC's header size field is 16-bit, so allocations
+        larger than 65535 bytes currently trigger a separate (pre-
+        existing) sweeper bug.  Callers should keep output arrays
+        under ~8K elements for Int/Nat/Float64 or under ~16K for
+        Bool/Byte until that limit is raised.
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        fn_instrs = self.translate_expr(fn_arg, env)
+        if arr_instrs is None or fn_instrs is None:
+            return None
+
+        a_type = self._infer_concat_elem_type(arr_arg)
+        if a_type is None:
+            return None
+        a_size = _element_mem_size(a_type)
+        if a_size is None:
+            return None
+        a_is_pair = _is_pair_element_type(a_type)
+        a_wasm = _element_wasm_type(a_type)
+        if a_wasm is None:
+            return None
+
+        b_type = self._infer_closure_return_vera_type(fn_arg)
+        if b_type is None:
+            return None
+        b_size = _element_mem_size(b_type)
+        if b_size is None:
+            return None
+        b_is_pair = _is_pair_element_type(b_type)
+        b_wasm = _element_wasm_type(b_type)
+        if b_wasm is None:
+            return None
+
+        self.needs_alloc = True
+
+        arr_ptr = self.alloc_local("i32")
+        arr_len = self.alloc_local("i32")
+        fn_tmp = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        src_slot = self.alloc_local("i32")
+        dst_slot = self.alloc_local("i32")
+        if b_is_pair:
+            ret_ptr = self.alloc_local("i32")
+            ret_len = self.alloc_local("i32")
+        else:
+            ret_scalar = self.alloc_local(b_wasm)
+
+        instructions: list[str] = []
+
+        # Evaluate arr → (ptr, len), save.  Shadow-push arr_ptr before
+        # fn_instrs and the dst $alloc: both can trigger GC, so the
+        # input array must stay rooted across them.
+        instructions.extend(arr_instrs)
+        instructions.append(f"local.set {arr_len}")
+        instructions.append(f"local.set {arr_ptr}")
+        instructions.extend(gc_shadow_push(arr_ptr))
+
+        instructions.extend(fn_instrs)
+        instructions.append(f"local.set {fn_tmp}")
+        instructions.extend(gc_shadow_push(fn_tmp))
+
+        instructions.append(f"local.get {arr_len}")
+        instructions.append(f"i32.const {b_size}")
+        instructions.append("i32.mul")
+        instructions.append("call $alloc")
+        instructions.append(f"local.set {dst}")
+        instructions.extend(gc_shadow_push(dst))
+
+        # Register a closure signature: env (i32) + A-expanded params,
+        # B-expanded result.
+        a_param_types = ["i32", "i32"] if a_is_pair else [a_wasm]
+        param_parts = " ".join(
+            f"(param {wt})" for wt in ["i32"] + a_param_types
+        )
+        if b_is_pair:
+            result_part = " (result i32 i32)"
+        elif b_wasm:
+            result_part = f" (result {b_wasm})"
+        else:
+            result_part = ""
+        sig_key = f"{param_parts}{result_part}"
+        if sig_key not in self._closure_sigs:
+            sig_name = f"$closure_sig_{len(self._closure_sigs)}"
+            self._closure_sigs[sig_key] = sig_name
+        sig_name = self._closure_sigs[sig_key]
+
+        # Loop.
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+        instructions.append("block $brk_map")
+        instructions.append("  loop $lp_map")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    local.get {arr_len}")
+        instructions.append("    i32.ge_u")
+        instructions.append("    br_if $brk_map")
+
+        # src_slot = arr_ptr + idx * sizeof(A).
+        instructions.append(f"    local.get {arr_ptr}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    i32.const {a_size}")
+        instructions.append("    i32.mul")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {src_slot}")
+
+        # Push env; load src[idx]; push fn_idx; call_indirect.
+        instructions.append(f"    local.get {fn_tmp}")
+        if a_is_pair:
+            instructions.append(f"    local.get {src_slot}")
+            instructions.append("    i32.load offset=0")
+            instructions.append(f"    local.get {src_slot}")
+            instructions.append("    i32.load offset=4")
+        else:
+            a_load = _element_load_op(a_type)
+            if a_load is None:
+                return None
+            instructions.append(f"    local.get {src_slot}")
+            instructions.append(f"    {a_load} offset=0")
+        instructions.append(f"    local.get {fn_tmp}")
+        instructions.append("    i32.load offset=0")
+        instructions.append(f"    call_indirect (type {sig_name})")
+
+        # Save result(s); compute dst_slot = dst + idx * sizeof(B); store.
+        if b_is_pair:
+            instructions.append(f"    local.set {ret_len}")
+            instructions.append(f"    local.set {ret_ptr}")
+        else:
+            instructions.append(f"    local.set {ret_scalar}")
+        instructions.append(f"    local.get {dst}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    i32.const {b_size}")
+        instructions.append("    i32.mul")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {dst_slot}")
+        if b_is_pair:
+            instructions.append(f"    local.get {dst_slot}")
+            instructions.append(f"    local.get {ret_ptr}")
+            instructions.append("    i32.store offset=0")
+            instructions.append(f"    local.get {dst_slot}")
+            instructions.append(f"    local.get {ret_len}")
+            instructions.append("    i32.store offset=4")
+        else:
+            b_store = _element_store_op(b_type)
+            if b_store is None:
+                return None
+            instructions.append(f"    local.get {dst_slot}")
+            instructions.append(f"    local.get {ret_scalar}")
+            instructions.append(f"    {b_store} offset=0")
+
+        # idx++, loop.
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.const 1")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {idx}")
+        instructions.append("    br $lp_map")
+        instructions.append("  end")
+        instructions.append("end")
+
+        # Result: (dst, arr_len).
+        instructions.append(f"local.get {dst}")
+        instructions.append(f"local.get {arr_len}")
         return instructions

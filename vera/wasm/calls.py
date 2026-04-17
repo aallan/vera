@@ -198,6 +198,15 @@ class CallsMixin:
                 return self._translate_array_slice(
                     call.args[0], call.args[1], call.args[2], env,
                 )
+            # Higher-order array combinators — iterative WASM (#480).
+            # array_map / array_filter / array_fold were previously
+            # injected as recursive Vera functions via prelude.py.
+            # Intercepted here instead so the loop uses O(1) shadow
+            # stack space regardless of input length.
+            if call.name == "array_map" and len(call.args) == 2:
+                return self._translate_array_map(
+                    call.args[0], call.args[1], env,
+                )
             # Numeric math builtins
             if call.name == "abs" and len(call.args) == 1:
                 return self._translate_abs(call.args[0], env)
