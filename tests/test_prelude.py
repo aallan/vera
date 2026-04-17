@@ -126,7 +126,6 @@ class TestPreludeCombinators:
         )
         inject_prelude(prog)
         names = _fn_names(prog)
-        assert _ARRAY_FN_NAMES.issubset(names)  # trivially true
         for forbidden in (
             "array_map", "array_map_go",
             "array_filter", "array_filter_go",

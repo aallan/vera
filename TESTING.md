@@ -74,7 +74,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_browser.py` | 61 | 749 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
 | `test_conformance.py` | 365 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 73 programs |
-| `test_prelude.py` | 24 | 423 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
+| `test_prelude.py` | 24 | 422 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
 | `test_build_site.py` | 17 | 213 | `_abs_links` unit tests: relative link rewriting, fenced block immunity (backtick and tilde fences, inline backticks inside fences), http/https/fragment pass-through, Vera effect syntax not mis-parsed |

@@ -468,10 +468,16 @@ def inject_prelude(program: ast.Program) -> None:
     - Result combinators (``result_unwrap_or``, ``result_map``) —
       injected unless the user defines a non-standard ``Result<T, E>``
       or shadows the function names.
-    - Array operations (``array_fold``) — injected as a recursive
-      helper until its own iterative migration lands.  ``array_map``
-      and ``array_filter`` are emitted as iterative WASM by codegen
-      (#480) and have no prelude body.
+    - Array type aliases (``ArrayMapFn``, ``ArrayFilterFn``,
+      ``ArrayFoldFn``) — always injected unless the user shadows the
+      alias names, so user code can still spell closure types (e.g.
+      ``fn foo(@ArrayMapFn<Int, String>)``).
+    - Array combinator bodies — none currently.  All three
+      (``array_map``, ``array_filter``, ``array_fold``) are emitted
+      as iterative WASM by codegen (#480).  ``_ARRAY_COMBINATORS`` is
+      empty but still injected when non-empty and ``array_fn_names``
+      isn't a subset of user names, so adding a future recursive
+      helper stays a one-line change.
     """
     user_names = _user_defined_names(program)
     user_data_names = _user_defined_data_names(program)
