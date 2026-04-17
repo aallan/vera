@@ -7108,12 +7108,15 @@ public fn main(-> @Unit)
     # ----------------------------------------------------------------
 
     def test_io_time_returns_positive_nat(self) -> None:
-        """IO.time() returns current Unix time in ms — a large positive Nat.
+        """IO.time() returns current Unix time in ms — bracketed by host clock.
 
-        Doesn't assert an exact value (would be flaky) — just that the
-        result is well past epoch, confirming the host import is wired
-        up and the Unit argument is erased correctly at the WASM level.
+        Captures the Python-side time in milliseconds immediately
+        before and after execution, then asserts the Vera program's
+        reading falls inside that window.  Doesn't depend on a
+        hard-coded epoch threshold, so it can't false-negative on
+        hosts with skewed or frozen clocks.
         """
+        import time as _time_mod
         source = """\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -7123,9 +7126,14 @@ public fn main(-> @Unit)
 }
 """
         result = _compile_ok(source)
+        before_ms = int(_time_mod.time() * 1000)
         exec_result = execute(result, fn_name="main")
-        # A reasonable lower bound: 2024-01-01 = 1704067200000 ms
-        assert int(exec_result.stdout) > 1_700_000_000_000
+        after_ms = int(_time_mod.time() * 1000)
+        vera_ms = int(exec_result.stdout)
+        assert before_ms <= vera_ms <= after_ms, (
+            f"IO.time() returned {vera_ms}, expected value in "
+            f"[{before_ms}, {after_ms}]"
+        )
 
     def test_io_sleep_completes(self) -> None:
         """IO.sleep(ms) returns without trapping; program continues.
@@ -7189,7 +7197,9 @@ public fn main(-> @Unit)
         Preserves the pre-#463 ExecuteResult shape: tests that don't
         opt in to capture don't see anything in ``stderr``, even if
         the Vera program wrote to it (that output went to the real
-        sys.stderr).
+        sys.stderr).  Also asserts stdout is empty — a program that
+        only calls IO.stderr must not leak any bytes into the stdout
+        stream.
         """
         source = """\
 public fn main(-> @Unit)
@@ -7201,6 +7211,7 @@ public fn main(-> @Unit)
         result = _compile_ok(source)
         exec_result = execute(result, fn_name="main")
         assert exec_result.stderr == ""
+        assert exec_result.stdout == ""
 
     def test_alloc_exported(self) -> None:
         """WAT exports $alloc when IO ops that allocate are used."""

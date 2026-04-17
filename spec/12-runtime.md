@@ -88,7 +88,7 @@ Each execution creates a fresh engine, module, linker, and store. There is no pe
 The linker resolves all imports before instantiation. If the module imports a host function that the linker has not defined, instantiation fails with an error.
 
 The linker registers host functions before instantiation:
-1. IO host functions — registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_file`, `vera.write_file`, `vera.args`, `vera.exit`, `vera.get_env`).
+1. IO host functions — registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_file`, `vera.write_file`, `vera.args`, `vera.exit`, `vera.get_env`, `vera.sleep`, `vera.time`, `vera.stderr`).
 2. `vera.state_get_{T}` / `vera.state_put_{T}` — registered for each concrete `State<T>` type used by the program.
 
 ### 12.3.3 Entry Point Resolution
@@ -106,7 +106,7 @@ Arguments are passed as WASM values. The CLI parses string arguments to integers
 
 ### 12.4.1 IO Operations
 
-The IO effect provides seven host function bindings. Each is imported only when the program uses the corresponding `IO.*` qualified call.
+The IO effect provides ten host function bindings. Each is imported only when the program uses the corresponding `IO.*` qualified call.
 
 #### 12.4.1.1 IO.print
 

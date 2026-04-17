@@ -1,0 +1,16 @@
+-- Conformance: IO.sleep operation (Chapter 7, #463)
+-- Tests: built-in IO effect's sleep (Nat -> Unit)
+-- Verified at the "verify" level — no run assertion, because a
+-- successful run says only "the sleep returned", which depends on
+-- host wall-clock behaviour.  Contract verification (Tier 1) proves
+-- the signature and effect row are wired up correctly; the run-
+-- level behaviour is exercised by unit tests in tests/test_codegen.py.
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.sleep(0);
+  IO.sleep(1);
+  ()
+}

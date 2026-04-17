@@ -12,7 +12,8 @@
 //   node vera/browser/harness.mjs module.wasm --env "KEY=val,FOO=bar"
 //
 // Output: JSON on stdout:
-//   { "stdout": "...", "state": { "Int": 0 }, "exitCode": null, "error": null }
+//   { "stdout": "...", "stderr": "...", "state": { "Int": 0 },
+//     "exitCode": null, "error": null, "value": null, "exports": [...] }
 
 import { readFileSync } from 'fs';
 import { initFromBytes, call, getStdout, getStderr, getState, getExitCode, getExports } from './runtime.mjs';

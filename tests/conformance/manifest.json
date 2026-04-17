@@ -576,6 +576,18 @@
     ]
   },
   {
+    "id": "ch07_io_sleep",
+    "file": "ch07_io_sleep.vera",
+    "chapter": 7,
+    "title": "IO.sleep operation (#463)",
+    "level": "verify",
+    "spec_ref": "Section 7.2",
+    "features": [
+      "io_effect",
+      "io_sleep"
+    ]
+  },
+  {
     "id": "ch07_state_handler",
     "file": "ch07_state_handler.vera",
     "chapter": 7,

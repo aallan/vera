@@ -103,9 +103,13 @@ class ExecuteResult:
 
     value: int | float | None  # Return value (None for void/Unit functions)
     stdout: str  # Captured IO.print output
-    stderr: str = ""  # Captured IO.stderr output (empty unless capture_stderr=True)
     state: dict[str, int | float] = field(default_factory=dict)
     exit_code: int | None = None  # Set by IO.exit
+    # stderr is last so the positional constructor shape pre-#463
+    # (value, stdout, state, exit_code) still works for external
+    # callers.  Default "" preserves backward compatibility — only
+    # populated when execute(capture_stderr=True).
+    stderr: str = ""
 
 
 class _VeraExit(Exception):
