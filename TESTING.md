@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,356 across 28 files (~34,000 lines of test code; 3,344 passed, 11 skipped) |
+| **Tests** | 3,356 across 28 files (~34,000 lines of test code; 3,344 passed, 12 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 75 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 30, all validated through `vera check` + `vera verify` |
@@ -109,7 +109,7 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | `verify` | Type-checks and all contracts verified by Z3 | 4 |
 | `run` | Compiles to WASM and executes correctly | 67 |
 
-Almost all programs are at the `run` level — they compile and execute, producing correct results. Four programs (`ch07_cross_module_contracts_lib`, `ch09_http`, `ch09_inference`, `ch03_typed_holes`) are at the `check` level. Three programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch07_cross_module_contracts`) are at the `verify` level, using Z3-provable contracts.
+Almost all programs are at the `run` level — they compile and execute, producing correct results. Four programs (`ch07_cross_module_contracts_lib`, `ch09_http`, `ch09_inference`, `ch03_typed_holes`) are at the `check` level. Four programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch07_cross_module_contracts`, `ch07_io_sleep`) are at the `verify` level, using Z3-provable contracts.
 
 ### Skipped tests
 
@@ -180,7 +180,7 @@ The manifest is the machine-readable feature inventory — agents can query it t
 ### Running the conformance suite
 
 ```bash
-# Via pytest (parametrized — 365 tests)
+# Via pytest (parametrized — 375 tests)
 pytest tests/test_conformance.py -v
 
 # Via standalone script (used in CI and pre-commit)
@@ -374,7 +374,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-Every push is checked by 24 hooks across two stages: 23 run on every commit after `pre-commit install`, and 1 (`check-changelog-updated`) runs only at push time after `pre-commit install --hook-type pre-push`. Full list:
+Every push is checked by 25 hooks across two stages: 23 run on every commit after `pre-commit install`, and 2 (`check-changelog-updated`, `uv-lock-check`) run only at push time after `pre-commit install --hook-type pre-push`. Full list:
 
 | Hook | What it does |
 |------|-------------|
@@ -400,8 +400,10 @@ Every push is checked by 24 hooks across two stages: 23 run on every commit afte
 | `check_licenses.py` | All package licenses are MIT-compatible |
 | `build_site.py` | Regenerate AI-readable site assets (llms.txt, llms-full.txt, robots.txt, sitemap.xml, index.md) |
 | `browser parity` | Browser runtime produces identical output to Python runtime |
+| `check-changelog-updated` (pre-push) | CHANGELOG has a new entry when substantive files changed |
+| `uv-lock-check` (pre-push) | `uv.lock` is in sync with `pyproject.toml` |
 
-The validation hooks are smart about triggers -- they only run when relevant files change (`.vera`, `vera/**/*.py`, `grammar.lark`, the corresponding Markdown file, or `vera/browser/*` for browser parity).
+The validation hooks are smart about triggers -- they only run when relevant files change (`.vera`, `vera/**/*.py`, `grammar.lark`, the corresponding Markdown file, or `vera/browser/*` for browser parity). The two pre-push hooks only fire at push time.
 
 ## CI Pipeline
 

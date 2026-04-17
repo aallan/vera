@@ -57,7 +57,7 @@ Imports are only emitted when the program actually uses the corresponding effect
 
 The module exports one page (64 KiB) of linear memory as `"memory"`. The host runtime uses this export to read string data for `IO.print` and to write data returned by host functions (e.g., `IO.read_line`, `IO.read_file`).
 
-When the program uses IO operations that return strings or ADTs (any operation other than `print` and `exit`), the module also exports the `$alloc` function so the host can allocate memory in the WASM linear memory for return values.
+When the program uses IO operations that return strings or ADTs — `IO.read_line`, `IO.read_file`, `IO.write_file`, `IO.args`, `IO.get_env` — the module also exports the `$alloc` function so the host can allocate memory in the WASM linear memory for return values. The fire-and-forget operations (`IO.print`, `IO.exit`, `IO.sleep`, `IO.time`, `IO.stderr`) don't allocate: `vera.print`, `vera.stderr`, and `vera.sleep` take only primitive parameters and return nothing; `vera.time` returns an `i64` scalar; `vera.exit` traps without returning. Modules that use only these operations don't need `$alloc` exported.
 
 For the memory layout, see Section 12.5.
 
@@ -538,7 +538,7 @@ State\<T\> bindings are pattern-matched from import names: `state_get_Int` and `
 ### 12.9.2 Public API
 
 ```javascript
-import init, { call, getStdout, getState, resetState } from './vera-runtime.mjs';
+import init, { call, getStdout, getStderr, getState, resetState } from './vera-runtime.mjs';
 
 // Initialize with a WASM module (URL or ArrayBuffer)
 await init('module.wasm');
@@ -547,7 +547,8 @@ await init('module.wasm');
 call('main');
 
 // Retrieve captured output
-const output = getStdout();
+const stdout = getStdout();
+const stderr = getStderr();  // IO.stderr writes (#463)
 
 // Read/reset state
 const state = getState();
