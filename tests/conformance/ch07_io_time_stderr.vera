@@ -1,0 +1,16 @@
+-- Conformance: IO.time and IO.stderr operations (Chapter 7, #463)
+-- Tests: built-in IO effect's time (Unit -> Nat) and stderr (String -> Unit)
+-- IO.sleep is omitted from this test because wall-clock timing makes
+-- it non-deterministic — covered by unit tests in tests/test_codegen.py.
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  let @Nat = IO.time(());
+  IO.stderr("before\n");
+  IO.print(nat_to_string(@Nat.0));
+  IO.print("\n");
+  IO.stderr("after\n");
+  ()
+}

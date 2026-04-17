@@ -372,6 +372,66 @@ public fn main(-> @Unit)
         node = _run_node(wasm_path, env="MY_VAR=hello_env")
         assert node["stdout"] == "hello_env\n"
 
+    def test_stderr_captured(self, tmp_path: Path) -> None:
+        """IO.stderr writes are captured in node['stderr'], separate from stdout.
+
+        Added in #463.  Confirms the Node harness exposes a
+        `stderr` field that mirrors the Python runtime's
+        `ExecuteResult.stderr` behaviour when `capture_stderr=True`.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("to stdout");
+  IO.stderr("to stderr");
+  IO.print(" more stdout")
+}
+'''
+        wasm_path, exports = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "to stdout more stdout"
+        assert node["stderr"] == "to stderr"
+
+    def test_time_returns_positive(self, tmp_path: Path) -> None:
+        """IO.time() returns the current Unix time in ms via Date.now().
+
+        Doesn't check an exact value — just that the printed number
+        is past a sane epoch threshold, confirming the import is
+        wired up and the BigInt-to-decimal conversion works.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Nat = IO.time(());
+  IO.print(nat_to_string(@Nat.0))
+}
+'''
+        wasm_path, exports = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert int(node["stdout"]) > 1_700_000_000_000
+
+    def test_sleep_completes(self, tmp_path: Path) -> None:
+        """IO.sleep(1) returns and subsequent statements execute.
+
+        Browser runtime busy-waits on ``performance.now()`` (no
+        ``Atomics.wait`` on the main thread).  Keep the sleep tiny
+        so the test stays fast.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("before ");
+  IO.sleep(1);
+  IO.print("after")
+}
+'''
+        wasm_path, exports = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "before after"
+
     def test_file_io_returns_error(self, tmp_path: Path) -> None:
         """IO.read_file and IO.write_file return Err in the browser runtime."""
         # The file_io example tests both read and write, both should fail

@@ -39,6 +39,9 @@ The module imports host functions for effects that the program uses:
 | `vera.args` | `() -> (i32, i32)` | Program uses `IO.args` |
 | `vera.exit` | `(i64) -> ()` | Program uses `IO.exit` |
 | `vera.get_env` | `(i32, i32) -> (i32)` | Program uses `IO.get_env` |
+| `vera.sleep` | `(i64) -> ()` | Program uses `IO.sleep` |
+| `vera.time` | `() -> (i64)` | Program uses `IO.time` |
+| `vera.stderr` | `(i32, i32) -> ()` | Program uses `IO.stderr` |
 | `vera.state_get_{T}` | `() -> {wasm_t}` | Program uses `State<T>.get` |
 | `vera.state_put_{T}` | `({wasm_t}) -> ()` | Program uses `State<T>.put` |
 | `vera.contract_fail` | `(i32, i32) -> ()` | Program has runtime contracts |
@@ -211,6 +214,43 @@ The `execute()` function catches this exception and returns an `ExecuteResult` w
 2. Look up the variable in the environment (from `execute(env_vars=...)` or `os.environ`).
 3. If found: construct an `Option.Some` ADT containing the value as a String (tag=1, str\_ptr, str\_len). Return the heap pointer.
 4. If not found: construct an `Option.None` ADT (tag=0). Return the heap pointer.
+
+#### 12.4.1.8 IO.sleep
+
+**Import:** `(import "vera" "sleep" (func $vera.sleep (param i64)))`
+
+**Parameters:**
+- `ms` (i64): duration to pause, in milliseconds. Treated as `Nat` (non-negative).
+
+**Behaviour:**
+1. If `ms <= 0`, return immediately.
+2. Otherwise, block the current thread for approximately `ms` milliseconds before returning.
+
+Precision is host-dependent. The Python runtime uses `time.sleep(ms / 1000.0)`. The browser runtime busy-waits on `performance.now()` because `Atomics.wait` isn't available on the main thread — long sleeps will block rendering and should be avoided in the browser.
+
+#### 12.4.1.9 IO.time
+
+**Import:** `(import "vera" "time" (func $vera.time (result i64)))`
+
+**Parameters:** none (the `Unit` argument at the Vera level is erased at the WASM boundary).
+
+**Returns:** `i64` — the current Unix timestamp in milliseconds (non-negative, treated as `Nat` at the Vera level).
+
+**Behaviour:** Return `floor(current_time_in_milliseconds_since_1970)`. The Python runtime uses `time.time()`; the browser uses `Date.now()`.
+
+#### 12.4.1.10 IO.stderr
+
+**Import:** `(import "vera" "stderr" (func $vera.stderr (param i32 i32)))`
+
+**Parameters:**
+- `ptr` (i32): byte offset of the message in linear memory.
+- `len` (i32): length of the message in bytes.
+
+**Behaviour:**
+1. Decode `len` bytes from `ptr` as UTF-8.
+2. Write the decoded text to the runtime's stderr sink — by default the host's `sys.stderr` (Python) or `console.error`-equivalent buffer (browser). Tests can opt in to capture via `execute(capture_stderr=True)`, which routes writes to `ExecuteResult.stderr`.
+
+No line terminator is added; callers include `\n` if they want one. Mirrors `IO.print` but for the stderr stream.
 
 ### 12.4.2 State\<T\>
 
@@ -529,6 +569,9 @@ The browser runtime provides browser-appropriate implementations of IO operation
 | `IO.args` | Returns configurable array (default empty) | Returns CLI arguments |
 | `IO.exit` | Throws `VeraExit` error with exit code | Raises `_VeraExit` exception |
 | `IO.get_env` | Returns `Option.None` (configurable map) | Reads from `os.environ` |
+| `IO.sleep` | Busy-waits on `performance.now()` (main-thread blocking) | `time.sleep(ms / 1000.0)` |
+| `IO.time` | `Date.now()` as BigInt | `int(time.time() * 1000)` |
+| `IO.stderr` | Appends to internal buffer, flushed via `getStderr()` | Writes to `sys.stderr` or capture buffer |
 
 All non-IO operations (State, contracts, Markdown) produce identical results in both runtimes. This is enforced by mandatory parity tests.
 

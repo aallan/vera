@@ -413,10 +413,12 @@ class WasmContext(
         branches/the final expression are void.
         """
         if isinstance(expr, ast.QualifiedCall):
-            # IO.print returns void; IO.exit never returns (unreachable).
-            # Other IO ops (read_line, read_file, etc.) produce values.
+            # IO.print/sleep/stderr return Unit (void);
+            # IO.exit never returns (unreachable);
+            # Other IO ops (read_line, read_file, time, args, get_env)
+            # produce values.
             if expr.qualifier == "IO":
-                return expr.name in ("print", "exit")
+                return expr.name in ("print", "exit", "sleep", "stderr")
             # Http ops return Result<String, String> — not void
             if expr.qualifier == "Http":
                 return False

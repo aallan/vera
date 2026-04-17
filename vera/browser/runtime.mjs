@@ -31,6 +31,7 @@
 
 let wasm = null;       // WebAssembly instance exports
 let stdoutBuf = '';    // Captured IO.print output
+let stderrBuf = '';    // Captured IO.stderr output (#463)
 let lastViolation = ''; // Last contract violation message
 const stateCells = {}; // State<T> stacks: { TypeName: [value, ...] } — top is [-1]
 let stdinQueue = [];   // Pre-queued input lines for IO.read_line
@@ -248,6 +249,37 @@ function hostGetEnv(namePtr, nameLen) {
     return allocOptionSomeString(value);
   }
   return allocOptionNone();
+}
+
+/** vera.sleep(ms) → busy-wait (browser has no synchronous sleep). #463
+ *
+ * Vera's IO effect is synchronous: `IO.sleep(ms)` must return after
+ * roughly `ms` milliseconds without yielding the main thread.
+ * Node/Python back it with `time.sleep`; in a browser we have
+ * neither `Atomics.wait` on the main thread nor an async bridge
+ * into the linear-memory ABI, so we busy-wait on `performance.now()`.
+ * The trade is: accuracy within ~1ms, but blocks rendering for the
+ * duration.  Programs with short sleeps (animation frames, rate-
+ * limiting) work correctly; long sleeps should be avoided in the
+ * browser runtime. */
+function hostSleep(ms) {
+  if (ms <= 0) return;
+  const now = typeof performance !== 'undefined' && performance.now
+    ? () => performance.now()
+    : () => Date.now();
+  const deadline = now() + Number(ms);
+  while (now() < deadline) { /* busy-wait */ }
+}
+
+/** vera.time() → i64 Unix time in ms.  Uses Date.now(). */
+function hostTime() {
+  // BigInt conversion — WASM i64 is marshalled as BigInt in modern JS.
+  return BigInt(Date.now());
+}
+
+/** vera.stderr(ptr, len) → capture to stderr buffer. */
+function hostStderr(ptr, len) {
+  stderrBuf += readString(ptr, len);
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,6 +1068,9 @@ const IO_BINDINGS = {
   args: hostArgs,
   exit: hostExit,
   get_env: hostGetEnv,
+  sleep: hostSleep,
+  time: hostTime,
+  stderr: hostStderr,
 };
 
 const MD_BINDINGS = {
@@ -2011,6 +2046,16 @@ export function clearStdout() {
   stdoutBuf = '';
 }
 
+/** Return captured IO.stderr output (#463). */
+export function getStderr() {
+  return stderrBuf;
+}
+
+/** Clear captured IO.stderr output. */
+export function clearStderr() {
+  stderrBuf = '';
+}
+
 /** Return current State<T> top-of-stack values. */
 export function getState() {
   const result = {};
@@ -2036,6 +2081,7 @@ export function getExitCode() {
 /** Reset all runtime state for a fresh execution. */
 export function reset() {
   stdoutBuf = '';
+  stderrBuf = '';
   lastViolation = '';
   exitCode = null;
   resetState();

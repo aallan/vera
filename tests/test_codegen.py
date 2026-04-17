@@ -7103,6 +7103,105 @@ public fn main(-> @Unit)
         )
         assert exec_result.stdout == "not found"
 
+    # ----------------------------------------------------------------
+    # IO.sleep, IO.time, IO.stderr — added in #463.
+    # ----------------------------------------------------------------
+
+    def test_io_time_returns_positive_nat(self) -> None:
+        """IO.time() returns current Unix time in ms — a large positive Nat.
+
+        Doesn't assert an exact value (would be flaky) — just that the
+        result is well past epoch, confirming the host import is wired
+        up and the Unit argument is erased correctly at the WASM level.
+        """
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Nat = IO.time(());
+  IO.print(nat_to_string(@Nat.0))
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main")
+        # A reasonable lower bound: 2024-01-01 = 1704067200000 ms
+        assert int(exec_result.stdout) > 1_700_000_000_000
+
+    def test_io_sleep_completes(self) -> None:
+        """IO.sleep(ms) returns without trapping; program continues.
+
+        Doesn't test timing precision — that's host-dependent and
+        flaky under load.  The contract is just that sleep returns
+        and subsequent statements execute.
+        """
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("before ");
+  IO.sleep(1);
+  IO.print("after")
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.stdout == "before after"
+
+    def test_io_sleep_zero_is_noop(self) -> None:
+        """IO.sleep(0) is a no-op — doesn't block, doesn't error."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.sleep(0);
+  IO.print("ok")
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.stdout == "ok"
+
+    def test_io_stderr_captured_when_requested(self) -> None:
+        """IO.stderr output is captured into ExecuteResult.stderr.
+
+        Confirms the stderr/stdout separation: IO.print goes to
+        stdout, IO.stderr goes to stderr, neither crosses over.
+        """
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("to stdout");
+  IO.stderr("to stderr");
+  IO.print(" more stdout")
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(
+            result, fn_name="main", capture_stderr=True,
+        )
+        assert exec_result.stdout == "to stdout more stdout"
+        assert exec_result.stderr == "to stderr"
+
+    def test_io_stderr_default_not_captured(self) -> None:
+        """Without capture_stderr=True, stderr field is empty string.
+
+        Preserves the pre-#463 ExecuteResult shape: tests that don't
+        opt in to capture don't see anything in ``stderr``, even if
+        the Vera program wrote to it (that output went to the real
+        sys.stderr).
+        """
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.stderr("uncaptured")
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.stderr == ""
+
     def test_alloc_exported(self) -> None:
         """WAT exports $alloc when IO ops that allocate are used."""
         source = """\

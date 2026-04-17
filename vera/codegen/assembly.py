@@ -27,6 +27,13 @@ class AssemblyMixin:
             "exit": "(func $vera.exit (param i64))",
             "get_env":
                 "(func $vera.get_env (param i32 i32) (result i32))",
+            # #463 — time and flow-control.
+            # sleep: ms (i64 Nat) → no result
+            # time: no params (Unit arg erased at WASM level) → i64 Nat
+            # stderr: (ptr, len) for String → no result
+            "sleep": "(func $vera.sleep (param i64))",
+            "time": "(func $vera.time (result i64))",
+            "stderr": "(func $vera.stderr (param i32 i32))",
         }
         _IO_OPS_NEEDING_ALLOC = {
             "read_line", "read_file", "write_file", "args", "get_env",

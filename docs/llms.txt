@@ -4,7 +4,7 @@
 
 Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts statically where possible; remaining contracts become runtime assertions. All side effects (IO, Http, State, Exceptions, Async, Inference) are tracked in the type system via algebraic effects.
 
-Current version: 0.0.113. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
+Current version: 0.0.114. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
 
 ## Language Reference
 
@@ -50,4 +50,4 @@ Current version: 0.0.113. The reference compiler is written in Python. Install w
 - [TESTING.md](https://raw.githubusercontent.com/aallan/vera/main/TESTING.md): Test suite architecture, coverage data, and test conventions.
 - [KNOWN_ISSUES.md](https://raw.githubusercontent.com/aallan/vera/main/KNOWN_ISSUES.md): Known bugs and limitations.
 - [CONTRIBUTING.md](https://raw.githubusercontent.com/aallan/vera/main/CONTRIBUTING.md): Contribution guidelines.
-- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 73 programs validating every language feature against the spec.
+- [Conformance Suite](https://github.com/aallan/vera/tree/main/tests/conformance): 74 programs validating every language feature against the spec.
