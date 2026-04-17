@@ -70,38 +70,12 @@ type ArrayFoldFn<T, U> = fn(U, T -> U) effects(pure);
 """
 
 # Array higher-order operations.
-# These use recursive helpers with an index parameter to walk the array.
-# De Bruijn slot references are commented for clarity.
+# array_map is emitted as an iterative WASM loop by codegen (#480) —
+# removed from this prelude injection.  array_filter and array_fold
+# still use recursive helpers with an index parameter to walk the
+# array; they will migrate to iterative implementations in follow-up
+# PRs.  De Bruijn slot references are commented for clarity.
 _ARRAY_COMBINATORS = """\
-private forall<A, B> fn array_map_go(@Array<A>, @ArrayMapFn<A, B>, @Int, @Array<B> -> @Array<B>)
-  requires(true)
-  ensures(true)
-  decreases(array_length(@Array<A>.0) - @Int.0)
-  effects(pure)
-{
-  -- @Array<B>.0 = acc (most recent), @Int.0 = index,
-  -- @ArrayMapFn<A, B>.0 = fn, @Array<A>.0 = input
-  if @Int.0 >= array_length(@Array<A>.0) then {
-    @Array<B>.0
-  } else {
-    array_map_go(
-      @Array<A>.0,
-      @ArrayMapFn<A, B>.0,
-      @Int.0 + 1,
-      array_append(@Array<B>.0, apply_fn(@ArrayMapFn<A, B>.0, @Array<A>.0[@Int.0]))
-    )
-  }
-}
-
-private forall<A, B> fn array_map(@Array<A>, @ArrayMapFn<A, B> -> @Array<B>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  -- @ArrayMapFn<A, B>.0 = fn (most recent), @Array<A>.0 = input
-  array_map_go(@Array<A>.0, @ArrayMapFn<A, B>.0, 0, [])
-}
-
 private forall<T> fn array_filter_go(@Array<T>, @ArrayFilterFn<T>, @Int, @Array<T> -> @Array<T>)
   requires(true)
   ensures(true)
@@ -586,8 +560,11 @@ def inject_prelude(program: ast.Program) -> None:
     option_alias_names = {"OptionMapFn", "OptionBindFn"}
     result_fn_names = {"result_unwrap_or", "result_map"}
     result_alias_names = {"ResultMapFn"}
+    # array_map is a built-in emitted as iterative WASM (#480); it has
+    # no prelude body any more.  array_filter / array_fold are still
+    # injected as recursive helpers until their own iterative migration
+    # lands.
     array_fn_names = {
-        "array_map", "array_map_go",
         "array_filter", "array_filter_go",
         "array_fold", "array_fold_go",
     }

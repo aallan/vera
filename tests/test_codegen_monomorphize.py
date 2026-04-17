@@ -895,3 +895,99 @@ public fn main(-> @Int)
 }
 """
         _compile_ok(source)
+
+    # ----------------------------------------------------------------
+    # array_map — regression tests for the iterative implementation
+    # (#480).  These exercise paths the existing tests above don't:
+    # large inputs (stress the loop, not the recursion), closures
+    # that capture outer variables, A != B with pair output, and
+    # scalar Int → scalar Bool type change.
+    # ----------------------------------------------------------------
+
+    def test_array_map_large_input_no_stack_overflow(self) -> None:
+        """8,000-element map without blowing the shadow stack.
+
+        Regression guard: under the old recursive prelude implementation
+        this would allocate 8,000 stack frames and hit the 16K shadow
+        stack ceiling (post-#464).  The iterative implementation uses a
+        single WAT ``loop`` with O(1) stack depth regardless of input
+        size.
+
+        Size note: the GC's object-header size field is currently 16-bit
+        (max 65535 bytes) — see #484.  Output allocations must stay
+        under that limit or the sweep corrupts the payload.  8,000 Int
+        elements = 64,000 bytes — just under the ceiling.  Once #484
+        lands this test can grow to 100K+.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 8000);
+  let @Array<Int> = array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 * 2 });
+  @Array<Int>.0[7999]
+}
+"""
+        # Last element: 7999 * 2 = 15998
+        assert _run(source, fn="main") == 15998
+
+    def test_array_map_type_change_int_to_bool(self) -> None:
+        """Map Int → Bool — exercises the distinct-A-and-B codegen path.
+
+        All the existing tests keep the element type (Int → Int).  This
+        one converts to Bool, which has a different WASM type (i32) and
+        different element width (1 byte vs 8) from Int.  The store ops
+        must pick up the B-sized layout, not reuse A's.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Bool> = array_map([0, 1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 1 });
+  -- [false, false, true, true] → sum of true-indices = 2 + 3 = 5
+  if @Array<Bool>.0[0] then { 1 } else { 0 } +
+  if @Array<Bool>.0[1] then { 1 } else { 0 } +
+  if @Array<Bool>.0[2] then { 1 } else { 0 } +
+  if @Array<Bool>.0[3] then { 1 } else { 0 }
+}
+"""
+        assert _run(source, fn="main") == 2
+
+    def test_array_map_closure_captures_outer_variable(self) -> None:
+        """Closure passed to array_map references a captured outer value.
+
+        Ensures the iterative loop body correctly sets up the closure
+        environment — the free-variable walker must lift the captured
+        binding into the closure struct, and the inside-the-loop
+        ``call_indirect`` must pass the env pointer so captures
+        resolve.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 100;
+  let @Array<Int> = array_map([1, 2, 3], fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 });
+  @Array<Int>.0[2]
+}
+"""
+        # Outer @Int.0 = 100 (captured); element 2 + captured 100 = 102
+        assert _run(source, fn="main") == 103
+
+    def test_array_map_pair_element_output(self) -> None:
+        """Map Int → String — output is a pair-typed element (i32_pair).
+
+        This exercises the pair-output path in the iterative
+        translator: the store sequence must lay down ptr at offset 0
+        and len at offset 4, keyed off an 8-byte stride.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<String> = array_map([1, 2, 3], fn(@Int -> @String) effects(pure) { to_string(@Int.0) });
+  string_length(@Array<String>.0[2])
+}
+"""
+        # "3" has length 1
+        assert _run(source, fn="main") == 1

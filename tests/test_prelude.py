@@ -43,8 +43,11 @@ _PRELUDE_DATA_NAMES = {"Option", "Result", "Ordering", "UrlParts"}
 # Prelude combinator function names
 _OPTION_FN_NAMES = {"option_unwrap_or", "option_map", "option_and_then"}
 _RESULT_FN_NAMES = {"result_unwrap_or", "result_map"}
+# ``array_map`` is emitted as iterative WASM by codegen (#480);
+# it no longer has a prelude-injected recursive implementation.
+# ``array_filter`` / ``array_fold`` remain recursive prelude functions
+# until their own iterative migration lands.
 _ARRAY_FN_NAMES = {
-    "array_map", "array_map_go",
     "array_filter", "array_filter_go",
     "array_fold", "array_fold_go",
 }
