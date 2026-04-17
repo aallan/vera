@@ -973,3 +973,242 @@ class CallsArraysMixin:
         instructions.append(f"local.get {dst}")
         instructions.append(f"local.get {write_idx}")
         return instructions
+
+    def _infer_fold_init_vera_type(
+        self, init_arg: ast.Expr, fn_arg: ast.Expr,
+    ) -> str | None:
+        """Infer the Vera type name for a fold's accumulator (U).
+
+        Strategy: first try the closure's return type (same helper
+        the other combinators use); fall back to inspecting the init
+        argument directly for common shapes (SlotRef, primitive
+        literals, to_string-style calls).
+        """
+        # Primary: closure return type — most reliable for AnonFn
+        # literals.
+        ret = self._infer_closure_return_vera_type(fn_arg)
+        if ret is not None:
+            return ret
+        # Fallback: inspect the init expression.
+        if isinstance(init_arg, ast.SlotRef):
+            return init_arg.type_name
+        if isinstance(init_arg, ast.StringLit):
+            return "String"
+        if isinstance(init_arg, ast.IntLit):
+            return "Int"
+        if isinstance(init_arg, ast.BoolLit):
+            return "Bool"
+        return None
+
+    def _translate_array_fold(
+        self,
+        arr_arg: ast.Expr,
+        init_arg: ast.Expr,
+        fn_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``array_fold<T, U>(arr, init, fn) -> U`` iteratively.
+
+        Structurally different from map/filter: the result is a
+        scalar ``U``, not an ``Array<U>``, so there's no output
+        allocation and no write-index bookkeeping — just a running
+        accumulator updated in-place each iteration.
+
+        Closure signature: ``(env, U, T) -> U``.  Each iteration
+        pushes env + current acc + loaded element, call_indirects,
+        and stores the result back into the accumulator local(s).
+
+        GC rooting: for scalar ``U`` (Int/Nat/Float64/Bool/Byte),
+        the accumulator lives in a plain WASM local — not scanned
+        by the conservative GC, but also not a heap reference so
+        it doesn't need to be.  For pair-typed ``U`` (String,
+        ``Array<T>``) and ADT ``U`` (i32 heap handles), the
+        accumulator's pointer part IS a live heap reference and
+        must survive closure-invocation GC cycles.  We shadow-push
+        the pointer once before the loop and OVERWRITE that slot
+        in place each iteration with the new pointer returned by
+        the closure.  This keeps ``gc_sp`` stable across iterations
+        (no per-iteration push/pop) and keeps exactly one root for
+        the accumulator on the shadow stack.
+
+        WAT shape::
+
+            ;; eval arr → (ptr, len), save + shadow-push arr_ptr
+            ;; eval init → acc (1 or 2 vals), save to acc local(s)
+            ;;   if U is pair/ADT: shadow-push acc_ptr
+            ;; eval fn → handle, save + shadow-push fn_tmp
+            ;; loop idx in [0, len):
+            ;;   push env; push acc; load src[idx]; push fn_idx;
+            ;;   call_indirect (env:i32, U-expanded, T-expanded) -> U
+            ;;   local.set acc from result
+            ;;   if U is pair/ADT: overwrite shadow slot with new acc_ptr
+            ;; push acc (1 or 2 vals)
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        init_instrs = self.translate_expr(init_arg, env)
+        fn_instrs = self.translate_expr(fn_arg, env)
+        if arr_instrs is None or init_instrs is None or fn_instrs is None:
+            return None
+
+        t_type = self._infer_concat_elem_type(arr_arg)
+        if t_type is None:
+            return None
+        t_size = _element_mem_size(t_type)
+        if t_size is None:
+            return None
+        t_is_pair = _is_pair_element_type(t_type)
+        t_wasm = _element_wasm_type(t_type)
+        if t_wasm is None:
+            return None
+
+        u_type = self._infer_fold_init_vera_type(init_arg, fn_arg)
+        if u_type is None:
+            return None
+        u_is_pair = _is_pair_element_type(u_type)
+        u_wasm = _element_wasm_type(u_type)
+        if u_wasm is None:
+            return None
+
+        # Pair-U and ADT-U (4-byte i32 handle) are both "heap ptr"
+        # from the GC's perspective — rooting required.  The
+        # ``_element_wasm_type`` helper returns ``"i32_pair"`` for
+        # pair types and ``"i32"`` for ADT handles.  Primitives
+        # (i64/f64/i32 for Bool-Byte) don't need rooting.
+        u_is_adt = (
+            u_wasm == "i32"
+            and u_type not in ("Bool", "Byte")
+            and not u_is_pair
+        )
+        u_needs_root = u_is_pair or u_is_adt
+
+        arr_ptr = self.alloc_local("i32")
+        arr_len = self.alloc_local("i32")
+        fn_tmp = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        src_slot = self.alloc_local("i32")
+        if u_is_pair:
+            acc_ptr = self.alloc_local("i32")
+            acc_len = self.alloc_local("i32")
+        else:
+            acc = self.alloc_local(u_wasm)
+
+        instructions: list[str] = []
+
+        # 1. Evaluate arr → (ptr, len), save, shadow-push arr_ptr.
+        instructions.extend(arr_instrs)
+        instructions.append(f"local.set {arr_len}")
+        instructions.append(f"local.set {arr_ptr}")
+        instructions.extend(gc_shadow_push(arr_ptr))
+
+        # 2. Evaluate init → U, save.  For pair U, stack order is
+        # (ptr, len) from most recent push; pop len then ptr.
+        instructions.extend(init_instrs)
+        if u_is_pair:
+            instructions.append(f"local.set {acc_len}")
+            instructions.append(f"local.set {acc_ptr}")
+            instructions.extend(gc_shadow_push(acc_ptr))
+        else:
+            instructions.append(f"local.set {acc}")
+            if u_needs_root:
+                instructions.extend(gc_shadow_push(acc))
+
+        # 3. Evaluate fn → handle, save, shadow-push.
+        instructions.extend(fn_instrs)
+        instructions.append(f"local.set {fn_tmp}")
+        instructions.extend(gc_shadow_push(fn_tmp))
+
+        # 4. Register the closure signature.
+        u_param_types = ["i32", "i32"] if u_is_pair else [u_wasm]
+        t_param_types = ["i32", "i32"] if t_is_pair else [t_wasm]
+        param_parts = " ".join(
+            f"(param {wt})" for wt in ["i32"] + u_param_types + t_param_types
+        )
+        if u_is_pair:
+            result_part = " (result i32 i32)"
+        else:
+            result_part = f" (result {u_wasm})"
+        sig_key = f"{param_parts}{result_part}"
+        if sig_key not in self._closure_sigs:
+            sig_name = f"$closure_sig_{len(self._closure_sigs)}"
+            self._closure_sigs[sig_key] = sig_name
+        sig_name = self._closure_sigs[sig_key]
+
+        # 5. Loop.
+        instructions.append("i32.const 0")
+        instructions.append(f"local.set {idx}")
+        instructions.append("block $brk_fold")
+        instructions.append("  loop $lp_fold")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    local.get {arr_len}")
+        instructions.append("    i32.ge_u")
+        instructions.append("    br_if $brk_fold")
+
+        # src_slot = arr_ptr + idx * sizeof(T).
+        instructions.append(f"    local.get {arr_ptr}")
+        instructions.append(f"    local.get {idx}")
+        instructions.append(f"    i32.const {t_size}")
+        instructions.append("    i32.mul")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {src_slot}")
+
+        # Push env, current acc, loaded element, fn_idx.
+        instructions.append(f"    local.get {fn_tmp}")
+        if u_is_pair:
+            instructions.append(f"    local.get {acc_ptr}")
+            instructions.append(f"    local.get {acc_len}")
+        else:
+            instructions.append(f"    local.get {acc}")
+        if t_is_pair:
+            instructions.append(f"    local.get {src_slot}")
+            instructions.append("    i32.load offset=0")
+            instructions.append(f"    local.get {src_slot}")
+            instructions.append("    i32.load offset=4")
+        else:
+            t_load = _element_load_op(t_type)
+            if t_load is None:
+                return None
+            instructions.append(f"    local.get {src_slot}")
+            instructions.append(f"    {t_load} offset=0")
+        instructions.append(f"    local.get {fn_tmp}")
+        instructions.append("    i32.load offset=0")
+        instructions.append(f"    call_indirect (type {sig_name})")
+
+        # Save new acc from result.  Pair: result stack is (ptr, len);
+        # pop len first then ptr.
+        if u_is_pair:
+            instructions.append(f"    local.set {acc_len}")
+            instructions.append(f"    local.set {acc_ptr}")
+            # Overwrite shadow-stack root with the new acc_ptr.
+            # The slot was pushed second-to-last (after arr_ptr and
+            # before fn_tmp), so its address is gc_sp - 8.
+            instructions.append("    global.get $gc_sp")
+            instructions.append("    i32.const 8")
+            instructions.append("    i32.sub")
+            instructions.append(f"    local.get {acc_ptr}")
+            instructions.append("    i32.store")
+        else:
+            instructions.append(f"    local.set {acc}")
+            if u_needs_root:
+                # ADT handle acc: slot is at gc_sp - 8 (same layout).
+                instructions.append("    global.get $gc_sp")
+                instructions.append("    i32.const 8")
+                instructions.append("    i32.sub")
+                instructions.append(f"    local.get {acc}")
+                instructions.append("    i32.store")
+
+        # idx++, loop.
+        instructions.append(f"    local.get {idx}")
+        instructions.append("    i32.const 1")
+        instructions.append("    i32.add")
+        instructions.append(f"    local.set {idx}")
+        instructions.append("    br $lp_fold")
+        instructions.append("  end")
+        instructions.append("end")
+
+        # Result: push acc.
+        if u_is_pair:
+            instructions.append(f"local.get {acc_ptr}")
+            instructions.append(f"local.get {acc_len}")
+        else:
+            instructions.append(f"local.get {acc}")
+        return instructions

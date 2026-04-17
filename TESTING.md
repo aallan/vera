@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,333 across 28 files (~34,000 lines of test code; 3,322 passed, 11 skipped) |
+| **Tests** | 3,338 across 28 files (~34,000 lines of test code; 3,327 passed, 11 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 73 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 30, all validated through `vera check` + `vera verify` |
@@ -57,7 +57,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_verifier.py` | 132 | 1,886 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion, refined Bool/String/Float64 param sorts |
 | `test_codegen.py` | 862 | 10,563 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, example round-trips, GC shadow stack overflow |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
-| `test_codegen_monomorphize.py` | 66 | 1,207 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
+| `test_codegen_monomorphize.py` | 71 | 1,326 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 19 | 473 | Closure lifting, captured variables, higher-order functions |
 | `test_codegen_modules.py` | 19 | 565 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
@@ -74,7 +74,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_browser.py` | 61 | 749 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
 | `test_conformance.py` | 365 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 73 programs |
-| `test_prelude.py` | 24 | 421 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
+| `test_prelude.py` | 24 | 422 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
 | `test_build_site.py` | 17 | 213 | `_abs_links` unit tests: relative link rewriting, fenced block immunity (backtick and tilde fences, inline backticks inside fences), http/https/fragment pass-through, Vera effect syntax not mis-parsed |

@@ -43,13 +43,12 @@ _PRELUDE_DATA_NAMES = {"Option", "Result", "Ordering", "UrlParts"}
 # Prelude combinator function names
 _OPTION_FN_NAMES = {"option_unwrap_or", "option_map", "option_and_then"}
 _RESULT_FN_NAMES = {"result_unwrap_or", "result_map"}
-# ``array_map`` and ``array_filter`` are emitted as iterative WASM
-# by codegen (#480); they no longer have prelude-injected recursive
-# implementations.  ``array_fold`` remains a recursive prelude
-# function until its own iterative migration lands.
-_ARRAY_FN_NAMES = {
-    "array_fold", "array_fold_go",
-}
+# ``array_map``, ``array_filter``, and ``array_fold`` are all
+# emitted as iterative WASM by codegen (#480); none of them have
+# prelude-injected recursive implementations.  The set is empty but
+# kept around so adding a future array helper that DOES need prelude
+# injection is a one-line change.
+_ARRAY_FN_NAMES: set[str] = set()
 
 
 class TestPreludeADTs:
@@ -111,15 +110,14 @@ class TestPreludeCombinators:
         names = _fn_names(prog)
         assert _RESULT_FN_NAMES.issubset(names)
 
-    def test_array_operations_injected(self) -> None:
-        """Array operations injected — except array_map and array_filter.
+    def test_array_operations_not_injected(self) -> None:
+        """No array combinators injected as prelude functions.
 
-        ``array_map`` / ``array_map_go`` and ``array_filter`` /
-        ``array_filter_go`` are emitted as iterative WASM by codegen
-        (#480) and must NOT appear in the prelude-injected function
-        set.  The explicit negative assertions guard against
-        accidental re-injection if someone widens
-        ``_ARRAY_FN_NAMES`` without updating the prelude.
+        All three combinators (``array_map``, ``array_filter``,
+        ``array_fold``) are emitted as iterative WASM by codegen
+        (#480).  The explicit absence assertions guard against
+        accidental re-injection — especially ``*_go`` helpers that
+        used to be paired with each recursive implementation.
         """
         prog = _make_program(
             "public fn main(@Unit -> @Int)\n"
@@ -128,12 +126,15 @@ class TestPreludeCombinators:
         )
         inject_prelude(prog)
         names = _fn_names(prog)
-        assert _ARRAY_FN_NAMES.issubset(names)
-        # Regression: these are built-ins, not prelude functions.
-        assert "array_map" not in names
-        assert "array_map_go" not in names
-        assert "array_filter" not in names
-        assert "array_filter_go" not in names
+        for forbidden in (
+            "array_map", "array_map_go",
+            "array_filter", "array_filter_go",
+            "array_fold", "array_fold_go",
+        ):
+            assert forbidden not in names, (
+                f"{forbidden} should not be prelude-injected — it's "
+                f"emitted as iterative WASM by codegen (#480)."
+            )
 
     def test_combinators_with_user_option(self) -> None:
         """Option combinators still injected when user defines standard Option."""
