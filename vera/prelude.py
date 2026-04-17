@@ -534,8 +534,10 @@ def inject_prelude(program: ast.Program) -> None:
     - Result combinators (``result_unwrap_or``, ``result_map``) —
       injected unless the user defines a non-standard ``Result<T, E>``
       or shadows the function names.
-    - Array operations (``array_map``, ``array_filter``,
-      ``array_fold``) — always injected.
+    - Array operations (``array_filter``, ``array_fold``) — always
+      injected as recursive helpers until their own iterative
+      migration lands.  ``array_map`` is emitted as iterative WASM
+      by codegen (#480) and has no prelude body.
     """
     user_names = _user_defined_names(program)
     user_data_names = _user_defined_data_names(program)

@@ -944,7 +944,7 @@ public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
   let @Array<Bool> = array_map([0, 1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 1 });
-  -- [false, false, true, true] → sum of true-indices = 2 + 3 = 5
+  -- [false, false, true, true] → sum of 1-for-each-true = 0+0+1+1 = 2
   if @Array<Bool>.0[0] then { 1 } else { 0 } +
   if @Array<Bool>.0[1] then { 1 } else { 0 } +
   if @Array<Bool>.0[2] then { 1 } else { 0 } +
@@ -991,3 +991,22 @@ public fn main(-> @Int)
 """
         # "3" has length 1
         assert _run(source, fn="main") == 1
+
+    def test_array_map_empty_input(self) -> None:
+        """Empty input → empty output; loop init/term exercised at n=0.
+
+        Exercises the zero-length boundary: the loop's ``idx >= arr_len``
+        guard must fire on the very first iteration so the body never
+        runs, the closure is never invoked, and the allocated output
+        array has length 0.
+        """
+        source = """\
+public fn main(-> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 0);
+  let @Array<Int> = array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 * 2 });
+  array_length(@Array<Int>.0)
+}
+"""
+        assert _run(source, fn="main") == 0
