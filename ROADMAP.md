@@ -14,6 +14,44 @@ Significant progress has been made towards Vera being a viable agent target. [Ve
 
 ---
 
+## What's next — short-term priorities
+
+This section captures the concrete **implementation order** for the next few weeks of work. The phase numbering in the milestones below (Phase 4a/4b/4c etc.) reflects **strategic grouping** — what kind of feature it is and which broader goal it serves — and is stable across releases. Implementation order shifts as empirical evidence arrives, so it lives here rather than as a reordering of the milestones.
+
+### The ordering principle
+
+The near-term queue mixes issues from two categories:
+
+- **Capability-expansion** — unlocks *new kinds of programs that aren't possible today*. No hand-rolled workaround exists; the language literally can't do the thing. Examples: [#463](https://github.com/aallan/vera/issues/463) (`IO.sleep` / `IO.time` / `IO.stderr`), [#465](https://github.com/aallan/vera/issues/465) (Random effect), [#467](https://github.com/aallan/vera/issues/467) (log/sin/cos/constants).
+- **Error-reduction / ergonomic** — the program is already possible but verbose, bug-prone, or fragile. Hand-rolled recursive accumulators, manual ASCII range checks, nested Option/Json unwraps. Examples: [#466](https://github.com/aallan/vera/issues/466) (array utilities), [#470](https://github.com/aallan/vera/issues/470) / [#471](https://github.com/aallan/vera/issues/471) (string + char), [#366](https://github.com/aallan/vera/issues/366) (JSON accessors).
+
+Both matter, but they're asymmetric in timing: capability gaps are *blocking* (entire program categories don't exist), ergonomic gaps are *annoying* (programs compound verbosity). Blocking issues front-load more value per hour because they unlock whole genres of program. The current state of the language is "most programs possible, some categories blocked" — so capability-expansion goes first, ergonomic polish follows.
+
+Empirical confirmation from a model writing Conway's Game of Life in Vera while this queue was being planned:
+
+> "The bug fix plus `IO.sleep` and Random are transformative. With `IO.sleep` I can write a proper animation loop… With Random I can generate a random soup initial state instead of hardcoding a glider and blinker, which is dramatically more interesting to watch. The program goes from 'dump 20 static frames' to 'animated random cellular automaton that runs in your terminal.' From [#466](https://github.com/aallan/vera/issues/466), `array_any` is useful for detecting extinction, and `array_contains` could simplify some checks, but neither is essential. From [#470](https://github.com/aallan/vera/issues/470), `string_pad_start` would let me right-align the generation counter — minor polish."
+
+This reshaped the ordering: capability issues move up, ergonomic issues move down, and the prerequisite structural refactor [#480](https://github.com/aallan/vera/issues/480) stays at the top.
+
+### Implementation order
+
+| Order | Issue | Why now |
+|:---:|---|---|
+| 1 | [#480](https://github.com/aallan/vera/issues/480) — Reimplement higher-order array ops as iterative WASM | **Structural prerequisite.** If the new combinators in [#466](https://github.com/aallan/vera/issues/466) ship before this, they inherit recursive-Vera implementations that hit the same class of bugs as [#464](https://github.com/aallan/vera/issues/464) and have to be migrated later. Establishing the iterative pattern first means [#466](https://github.com/aallan/vera/issues/466)'s new combinators follow it from day one. |
+| 2 | [#463](https://github.com/aallan/vera/issues/463) — `IO.sleep` / `IO.time` / `IO.stderr` | **Capability unlock, smallest scope.** Three one-row additions to an existing effect. Enables animation loops, elapsed-time measurement, and stderr-separated CLI tools. Lowest risk, highest capability-per-hour of work. |
+| 3 | [#465](https://github.com/aallan/vera/issues/465) — Random effect | **Capability unlock, larger scope.** New effect (requires `EffectInfo` registration, grammar-level checks, handler plumbing, browser runtime). Unlocks non-determinism, simulation, randomised testing. |
+| 4 | [#467](https://github.com/aallan/vera/issues/467) — Math built-ins (log, sin, cos, …) | **Capability unlock, bulk addition.** ~14 pure host imports following the same pattern. Unlocks graphics, physics, statistics. |
+| 5 | [#466](https://github.com/aallan/vera/issues/466) — Array utilities (sort, mapi, reverse, …) | **Highest benchmark-score win.** Eliminates the recursive-accumulator-with-indexed-state pattern — the dominant LLM failure mode per VeraBench. Requires [#480](https://github.com/aallan/vera/issues/480) done first. |
+| 6 | [#470](https://github.com/aallan/vera/issues/470) — String utilities | `string_chars` is a bridge primitive (unlocks array-combinator approach to string processing). Rest is polish. |
+| 7 | [#471](https://github.com/aallan/vera/issues/471) — Character classification | Tiny, can ship alongside any of the above. Eliminates brittle ASCII range checks. |
+| 8 | [#366](https://github.com/aallan/vera/issues/366) — JSON typed accessors | Replaces nested Option/Json unwrap ceremony. Polish tier for the Inference/Http pipeline. |
+
+### What moves when
+
+Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md) as usual. When the table shrinks to ~3 items the section should be re-evaluated and repopulated from the next batch of priorities — it's intended to be a rolling view of the next few weeks, not a permanent roadmap layer.
+
+---
+
 ## Milestone 1: Prove the thesis
 
 *Goal: answer the fundamental question — do LLMs write better code in Vera than in existing languages? Build the evidence base and fix the friction points that block honest evaluation.*
@@ -152,7 +190,7 @@ These are not strictly required for the MCP demo but would make it more compelli
 - [#270](https://github.com/aallan/vera/issues/270) **`handle[Async]`** — custom scheduling strategies for async effect handlers.
 - [#228](https://github.com/aallan/vera/issues/228) **WebSocket/SSE** — streaming clients for real-time data feeds and LLM streaming responses.
 - [#227](https://github.com/aallan/vera/issues/227) **Timeout effect** — `<Timeout>` for cancellation and deadline management.
-- [#463](https://github.com/aallan/vera/issues/463) **`IO.sleep` operation** — millisecond delay via `IO.sleep(@Nat)`. Essential for animation loops, rate limiting, and polling. Discovered missing while writing Conway's Game of Life.
+- [#463](https://github.com/aallan/vera/issues/463) **`IO.sleep`, `IO.time`, `IO.stderr` operations** — millisecond delay (`IO.sleep(@Nat) -> Unit`), current time (`IO.time(@Unit) -> @Nat`), and stderr output (`IO.stderr(@String) -> Unit`). Three one-row additions to the `IO` effect. Enables animation loops, elapsed-time measurement, frame-budget computation, and stderr-separated CLI tools. Discovered missing while writing Conway's Game of Life.
 
 ### Phase 4b: Ecosystem
 
