@@ -927,6 +927,36 @@ public fn main(-> @Int)
         # Last element: 9999 * 2 = 19998
         assert _run(source, fn="main") == 19998
 
+    def test_array_map_exact_65536_byte_boundary(self) -> None:
+        """Output allocation of exactly 65,536 bytes — the first size
+        corrupted under the old 16-bit header mask (#484).
+
+        Precise regression guard: 8,192 Int elements × 8 bytes =
+        65,536 bytes — the first size past the old ``0xFFFF`` ceiling.
+        Under the pre-fix GC, the sweep would read the size as
+        ``(131072 >> 1) & 0xFFFF = 0`` and treat the payload as an
+        empty block, linking each 8-byte chunk into the free list and
+        overwriting live data.  Any future regression that
+        reintroduces a partial mask (e.g., 0x1FFFF) could still pass
+        the 10K stress test but trip this one.
+
+        The 65,535-byte boundary (CodeRabbit's matching case) isn't
+        cleanly reachable with Int elements (which are 8-byte aligned)
+        and Byte-element support is independently broken, so only the
+        65,536-byte case is tested here.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 8192);
+  let @Array<Int> = array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 + 7 });
+  @Array<Int>.0[8191]
+}
+"""
+        # Last element: 8191 + 7 = 8198.
+        assert _run(source, fn="main") == 8198
+
     def test_array_map_type_change_int_to_bool(self) -> None:
         """Map Int → Bool — exercises the distinct-A-and-B codegen path.
 
