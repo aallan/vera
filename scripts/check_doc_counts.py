@@ -196,7 +196,7 @@ def main() -> int:
     # ------------------------------------------------------------------
 
     check_testing(
-        r"checked by (\d+) hooks",
+        r"checked by (\d+) (?:configured )?hooks",
         live_hooks,
         "pre-commit hook count",
     )

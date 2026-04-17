@@ -113,7 +113,7 @@ Almost all programs are at the `run` level — they compile and execute, produci
 
 ### Skipped tests
 
-`pytest tests/ -v` reports 11 skipped tests across two categories:
+`pytest tests/ -v` reports 12 skipped tests across two categories:
 
 **Level-limited skips** — the conformance framework only runs tests up to the declared level; stages beyond that level are automatically skipped. These are expected and correct.
 
@@ -126,6 +126,7 @@ Almost all programs are at the `run` level — they compile and execute, produci
 | `test_run[ch07_cross_module_contracts]` | `ch07_cross_module_contracts.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 | `test_verify[ch07_cross_module_contracts_lib]` | `ch07_cross_module_contracts_lib.vera` | `check` | `verify` | `check`-level program: verify stage not run |
 | `test_run[ch07_cross_module_contracts_lib]` | `ch07_cross_module_contracts_lib.vera` | `check` | `run` | `check`-level library module: no standalone `main` |
+| `test_run[ch07_io_sleep]` | `ch07_io_sleep.vera` | `verify` | `run` | `verify`-level programs don't get a `run` test |
 
 **Environment-gated skips** — these programs require network access or a live API key that is not available in CI. They pass `vera check` (type-checking) but cannot be executed.
 
@@ -374,7 +375,7 @@ Allowlisted entries have stale-detection: when a feature lands or a spec edit sh
 
 ## Pre-commit Hooks
 
-Every push is checked by 25 hooks across two stages: 23 run on every commit after `pre-commit install`, and 2 (`check-changelog-updated`, `uv-lock-check`) run only at push time after `pre-commit install --hook-type pre-push`. Full list:
+Every push is checked by 25 configured hooks across two stages: 23 are configured at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated`, `uv-lock-check`) are configured at the push stage (after `pre-commit install --hook-type pre-push`). Many commit-stage hooks use per-hook `files:` / `types:` filters and only fire when matching files are staged — a docs-only commit triggers a small subset, a compiler-level commit triggers most. Full list:
 
 | Hook | What it does |
 |------|-------------|
