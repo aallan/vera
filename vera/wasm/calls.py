@@ -577,6 +577,11 @@ class CallsMixin:
         if isinstance(expr, ast.FnCall):
             if expr.name == "array_range":
                 return "Int"
+            # array_map output element type = closure's return type.
+            # Not the input array's element type (that's the *input*
+            # of the map, not what we hand to the next combinator).
+            if expr.name == "array_map" and len(expr.args) == 2:
+                return self._infer_closure_return_vera_type(expr.args[1])
             if expr.name in (
                 "array_concat", "array_append", "array_slice",
                 "array_filter",

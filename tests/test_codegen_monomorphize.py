@@ -1132,3 +1132,49 @@ public fn main(-> @Nat)
 """
         # Elements with length > 1: ["bb", "ccc"] — lengths 2 and 3; sum = 5.
         assert _run(source, fn="main") == 5
+
+    def test_array_filter_of_array_map(self) -> None:
+        """Nested ``array_filter(array_map(...), pred)`` — output-type inference.
+
+        Regression for a latent bug exposed during PR 2 review:
+        ``_infer_concat_elem_type`` didn't handle ``array_map``
+        calls, so its output-type (the closure's return type) was
+        invisible to the enclosing filter.  The filter would bail
+        out silently and the whole module would fail to compile.
+        Now the helper consults the inner map's closure return type
+        to size the filter correctly.
+        """
+        source = """\
+public fn main(-> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Bool> = array_filter(
+    array_map([1, 2, 3, 4, 5], fn(@Int -> @Bool) effects(pure) { @Int.0 > 2 }),
+    fn(@Bool -> @Bool) effects(pure) { @Bool.0 }
+  );
+  array_length(@Array<Bool>.0)
+}
+"""
+        # map → [false, false, true, true, true]; filter trues → [true, true, true]; len 3.
+        assert _run(source, fn="main") == 3
+
+    def test_array_map_of_array_map(self) -> None:
+        """Nested ``array_map(array_map(...), fn)`` — output-type inference.
+
+        Sibling to the filter-of-map test: the outer map must see
+        the inner map's output element type (the inner closure's
+        return type), not the original array's element type.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_map(
+    array_map([1, 2, 3], fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }),
+    fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }
+  );
+  @Array<Int>.0[2]
+}
+"""
+        # [1,2,3] → [2,4,6] → [3,5,7]; [2] = 7.
+        assert _run(source, fn="main") == 7
