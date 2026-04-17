@@ -905,31 +905,27 @@ public fn main(-> @Int)
     # ----------------------------------------------------------------
 
     def test_array_map_large_input_no_stack_overflow(self) -> None:
-        """8,000-element map without blowing the shadow stack.
+        """10,000-element map without blowing the shadow stack.
 
         Regression guard: under the old recursive prelude implementation
-        this would allocate 8,000 stack frames and hit the 16K shadow
-        stack ceiling (post-#464).  The iterative implementation uses a
-        single WAT ``loop`` with O(1) stack depth regardless of input
-        size.
-
-        Size note: the GC's object-header size field is currently 16-bit
-        (max 65535 bytes) — see #484.  Output allocations must stay
-        under that limit or the sweep corrupts the payload.  8,000 Int
-        elements = 64,000 bytes — just under the ceiling.  Once #484
-        lands this test can grow to 100K+.
+        this would allocate 10,000 stack frames and hit the 16K shadow
+        stack ceiling (post-#464).  The iterative implementation uses
+        a single WAT ``loop`` with O(1) stack depth regardless of
+        input size.  10K Int elements = 80,000 bytes of output —
+        exercises a path that previously triggered #484 (now fixed;
+        header size field is 31-bit).
         """
         source = """\
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  let @Array<Int> = array_range(0, 8000);
+  let @Array<Int> = array_range(0, 10000);
   let @Array<Int> = array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 * 2 });
-  @Array<Int>.0[7999]
+  @Array<Int>.0[9999]
 }
 """
-        # Last element: 7999 * 2 = 15998
-        assert _run(source, fn="main") == 15998
+        # Last element: 9999 * 2 = 19998
+        assert _run(source, fn="main") == 19998
 
     def test_array_map_type_change_int_to_bool(self) -> None:
         """Map Int → Bool — exercises the distinct-A-and-B codegen path.
@@ -1021,19 +1017,20 @@ public fn main(-> @Nat)
     # ----------------------------------------------------------------
 
     def test_array_filter_large_input_no_stack_overflow(self) -> None:
-        """8,000-element filter without blowing the shadow stack.
+        """10,000-element filter without blowing the shadow stack.
 
         Under the old recursive prelude each element pushed a stack
         frame and hit the 16K ceiling (#464) around 4K elements.
-        The iterative loop is O(1) in shadow-stack depth.  Capped at
-        8K (64,000 bytes worst-case allocation) until #484 widens the
-        GC-header size field.
+        The iterative loop is O(1) in shadow-stack depth.  10K Int
+        elements = 80,000 bytes of worst-case output — exercises a
+        path that previously triggered #484 (now fixed; header size
+        field is 31-bit).
         """
         source = """\
 public fn main(-> @Nat)
   requires(true) ensures(true) effects(pure)
 {
-  let @Array<Int> = array_range(0, 8000);
+  let @Array<Int> = array_range(0, 10000);
   let @Array<Int> = array_filter(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { @Int.0 < 100 });
   array_length(@Array<Int>.0)
 }

@@ -618,12 +618,6 @@ class CallsArraysMixin:
             ;;   call_indirect (type $closure_sig_N)
             ;;   save result; compute dst_slot; store
             ;; push (dst, len)
-
-        Note: the GC's header size field is 16-bit, so allocations
-        larger than 65535 bytes currently trigger a separate (pre-
-        existing) sweeper bug.  Callers should keep output arrays
-        under ~8K elements for Int/Nat/Float64 or under ~16K for
-        Bool/Byte until that limit is raised.
         """
         arr_instrs = self.translate_expr(arr_arg, env)
         fn_instrs = self.translate_expr(fn_arg, env)
@@ -817,12 +811,6 @@ class CallsArraysMixin:
             ;;     copy src[idx] to dst[write_idx] (1 or 2 loads+stores)
             ;;     write_idx++
             ;; push (dst, write_idx)
-
-        Size note: subject to the pre-existing 16-bit GC-header
-        limit ([#484](https://github.com/aallan/vera/issues/484)) —
-        worst-case allocations over 65535 bytes silently corrupt.
-        The iterative codegen itself is correct; callers just need
-        to keep inputs under the ceiling until the header is widened.
         """
         arr_instrs = self.translate_expr(arr_arg, env)
         fn_instrs = self.translate_expr(fn_arg, env)
