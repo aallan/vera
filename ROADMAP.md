@@ -190,7 +190,7 @@ These are not strictly required for the MCP demo but would make it more compelli
 - [#270](https://github.com/aallan/vera/issues/270) **`handle[Async]`** — custom scheduling strategies for async effect handlers.
 - [#228](https://github.com/aallan/vera/issues/228) **WebSocket/SSE** — streaming clients for real-time data feeds and LLM streaming responses.
 - [#227](https://github.com/aallan/vera/issues/227) **Timeout effect** — `<Timeout>` for cancellation and deadline management.
-- [#463](https://github.com/aallan/vera/issues/463) **`IO.sleep` operation** — millisecond delay via `IO.sleep(@Nat)`. Essential for animation loops, rate limiting, and polling. Discovered missing while writing Conway's Game of Life.
+- [#463](https://github.com/aallan/vera/issues/463) **`IO.sleep`, `IO.time`, `IO.stderr` operations** — millisecond delay (`IO.sleep(@Nat) -> Unit`), current time (`IO.time(@Unit) -> @Nat`), and stderr output (`IO.stderr(@String) -> Unit`). Three one-row additions to the `IO` effect. Enables animation loops, elapsed-time measurement, frame-budget computation, and stderr-separated CLI tools. Discovered missing while writing Conway's Game of Life.
 
 ### Phase 4b: Ecosystem
 
