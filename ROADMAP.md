@@ -243,6 +243,12 @@ These are not milestone-gated — they should be addressed continuously alongsid
 |------|-------|--------|--------|
 | Audit `smt.py` for soundness | [#392](https://github.com/aallan/vera/issues/392) | 4–8 hours | A bug here silently bypasses verification |
 
+### Compiler internals
+
+| Item | Issue | Effort | Impact |
+|------|-------|--------|--------|
+| Tighten GC-rooting heuristic in iterative combinators | [#490](https://github.com/aallan/vera/issues/490) | 1–2 hours | Replaces `u_wasm == "i32" and not Bool/Byte` with a positive `is_gc_managed(type)` predicate. Currently over-roots host-managed handles (Map/Set/Decimal/Regex) — safe but wasteful; spotted during #489 review. Unblocks cleaner rooting decisions for any future combinator or host-handle addition. |
+
 ### Testing gaps
 
 | Item | Issue | Effort | Impact |
