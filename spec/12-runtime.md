@@ -462,7 +462,7 @@ Source (.vera)
   → transform()            Typed AST
   → typecheck()            Type diagnostics
   → compile()              CompileResult (WAT + WASM bytes)
-  → execute()              ExecuteResult (value + stdout + state)
+  → execute()              ExecuteResult (value + stdout + stderr + state)
 ```
 
 The `compile()` step produces WAT text and assembles it to WASM bytes via `wasmtime.wat2wasm()`. The `execute()` step instantiates the WASM module and calls the specified function.
@@ -486,9 +486,11 @@ The raw WASM return value is extracted and returned as a Python `int` or `float`
 - `f64` results → Python `float`
 - Void results (Unit) → `None`
 
-### 12.6.4 Stdout Capture
+### 12.6.4 Stdout and Stderr Capture
 
 All `IO.print` calls during execution write to an in-memory buffer. The buffer contents are returned in `ExecuteResult.stdout`. This allows programmatic inspection of output without interfering with the host process's stdout.
+
+`IO.stderr` has a parallel capture path, but it's opt-in. By default, `IO.stderr` writes go directly to the host's `sys.stderr` (Python) or equivalent browser sink — this preserves the intuitive CLI behaviour where stderr reaches the terminal's stderr stream. Callers that want to capture stderr for inspection — typically tests — pass `execute(capture_stderr=True)`, which routes writes into an in-memory buffer exposed as `ExecuteResult.stderr`. When the flag is `False` (the default), `ExecuteResult.stderr` is an empty string, preserving the pre-`IO.stderr` shape of the result for backward compatibility.
 
 The CLI prints `ExecuteResult.stdout` to the terminal after execution completes. If the function also returns a value, the value is printed after the captured output.
 
