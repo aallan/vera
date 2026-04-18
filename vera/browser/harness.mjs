@@ -12,10 +12,11 @@
 //   node vera/browser/harness.mjs module.wasm --env "KEY=val,FOO=bar"
 //
 // Output: JSON on stdout:
-//   { "stdout": "...", "state": { "Int": 0 }, "exitCode": null, "error": null }
+//   { "stdout": "...", "stderr": "...", "state": { "Int": 0 },
+//     "exitCode": null, "error": null, "value": null, "exports": [...] }
 
 import { readFileSync } from 'fs';
-import { initFromBytes, call, getStdout, getState, getExitCode, getExports } from './runtime.mjs';
+import { initFromBytes, call, getStdout, getStderr, getState, getExitCode, getExports } from './runtime.mjs';
 
 function parseArgs() {
   const argv = process.argv.slice(2);
@@ -88,6 +89,7 @@ async function main() {
 
   const output = {
     stdout: getStdout(),
+    stderr: getStderr(),
     state: getState(),
     exitCode: getExitCode(),
     error,

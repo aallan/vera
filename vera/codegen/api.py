@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import struct
 import sys
+import time
 from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
@@ -104,6 +105,11 @@ class ExecuteResult:
     stdout: str  # Captured IO.print output
     state: dict[str, int | float] = field(default_factory=dict)
     exit_code: int | None = None  # Set by IO.exit
+    # stderr is last so the positional constructor shape pre-#463
+    # (value, stdout, state, exit_code) still works for external
+    # callers.  Default "" preserves backward compatibility — only
+    # populated when execute(capture_stderr=True).
+    stderr: str = ""
 
 
 class _VeraExit(Exception):
@@ -251,6 +257,7 @@ def execute(
     stdin: str | None = None,
     cli_args: list[str] | None = None,
     env_vars: dict[str, str] | None = None,
+    capture_stderr: bool = False,
 ) -> ExecuteResult:
     """Execute a function from a compiled WASM module.
 
@@ -270,6 +277,11 @@ def execute(
     env_vars : dict[str, str] | None
         Environment variables for ``IO.get_env``.  If *None*, uses
         ``os.environ``.
+    capture_stderr : bool
+        If *True*, ``IO.stderr`` writes are captured into
+        ``ExecuteResult.stderr`` (an in-memory ``StringIO``) rather
+        than forwarded to ``sys.stderr``.  Default ``False`` —
+        matches the pre-#463 behaviour where there was no stderr.
     """
     if not result.ok:
         raise RuntimeError("Cannot execute: compilation had errors")
@@ -286,6 +298,11 @@ def execute(
 
     # stdin buffer for IO.read_line
     stdin_buf = StringIO(stdin) if stdin is not None else None
+
+    # stderr buffer for IO.stderr — only captured when requested
+    # (default: fall through to real sys.stderr so CLI-style programs
+    # see error output where they expect it).
+    stderr_buf: StringIO | None = StringIO() if capture_stderr else None
 
     # -----------------------------------------------------------------
     # Memory helpers for host → WASM string/ADT allocation
@@ -534,6 +551,60 @@ def execute(
     )
     linker.define_func(
         "vera", "exit", exit_type, host_exit, access_caller=True,
+    )
+
+    # Host function: vera.sleep(ms: i64) -> ()
+    # #463 — pause execution for `ms` milliseconds.
+    def host_sleep(_caller: wasmtime.Caller, ms: int) -> None:
+        if ms > 0:
+            time.sleep(ms / 1000.0)
+
+    sleep_type = wasmtime.FuncType(
+        [wasmtime.ValType.i64()],
+        [],
+    )
+    linker.define_func(
+        "vera", "sleep", sleep_type, host_sleep, access_caller=True,
+    )
+
+    # Host function: vera.time() -> i64  (current Unix time in ms).
+    # Unit arg at the Vera level is erased at the WASM boundary, so
+    # the import takes no parameters.
+    def host_time(_caller: wasmtime.Caller) -> int:
+        return int(time.time() * 1000)
+
+    time_type = wasmtime.FuncType(
+        [],
+        [wasmtime.ValType.i64()],
+    )
+    linker.define_func(
+        "vera", "time", time_type, host_time, access_caller=True,
+    )
+
+    # Host function: vera.stderr(ptr, len) -> ()
+    # Mirrors host_print but writes to stderr instead of stdout.
+    # No line terminator added — callers include \n if they want one,
+    # exactly like IO.print.
+    def host_stderr(
+        caller: wasmtime.Caller, ptr: int, length: int,
+    ) -> None:
+        memory = caller["memory"]
+        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+        buf = memory.data_ptr(store)
+        data = bytes(buf[ptr:ptr + length])
+        text = data.decode("utf-8")
+        if stderr_buf is not None:
+            stderr_buf.write(text)
+        else:
+            sys.stderr.write(text)
+            sys.stderr.flush()
+
+    stderr_type = wasmtime.FuncType(
+        [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+        [],
+    )
+    linker.define_func(
+        "vera", "stderr", stderr_type, host_stderr, access_caller=True,
     )
 
     # Host function: vera.get_env(ptr, len) -> i32  [Option<String>]
@@ -2241,6 +2312,7 @@ def execute(
         return ExecuteResult(
             value=None,
             stdout=output_buf.getvalue(),
+            stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
             state={k: v[-1] for k, v in state_store.items()},
             exit_code=exit_exc.code,
         )
@@ -2253,6 +2325,7 @@ def execute(
                 return ExecuteResult(
                     value=None,
                     stdout=output_buf.getvalue(),
+                    stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
                     state={k: v[-1] for k, v in state_store.items()},
                     exit_code=cause.code,
                 )
@@ -2284,5 +2357,6 @@ def execute(
     return ExecuteResult(
         value=value,
         stdout=output_buf.getvalue(),
+        stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
         state={k: v[-1] for k, v in state_store.items()},
     )

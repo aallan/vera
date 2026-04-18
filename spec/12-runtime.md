@@ -39,6 +39,9 @@ The module imports host functions for effects that the program uses:
 | `vera.args` | `() -> (i32, i32)` | Program uses `IO.args` |
 | `vera.exit` | `(i64) -> ()` | Program uses `IO.exit` |
 | `vera.get_env` | `(i32, i32) -> (i32)` | Program uses `IO.get_env` |
+| `vera.sleep` | `(i64) -> ()` | Program uses `IO.sleep` |
+| `vera.time` | `() -> (i64)` | Program uses `IO.time` |
+| `vera.stderr` | `(i32, i32) -> ()` | Program uses `IO.stderr` |
 | `vera.state_get_{T}` | `() -> {wasm_t}` | Program uses `State<T>.get` |
 | `vera.state_put_{T}` | `({wasm_t}) -> ()` | Program uses `State<T>.put` |
 | `vera.contract_fail` | `(i32, i32) -> ()` | Program has runtime contracts |
@@ -54,7 +57,7 @@ Imports are only emitted when the program actually uses the corresponding effect
 
 The module exports one page (64 KiB) of linear memory as `"memory"`. The host runtime uses this export to read string data for `IO.print` and to write data returned by host functions (e.g., `IO.read_line`, `IO.read_file`).
 
-When the program uses IO operations that return strings or ADTs (any operation other than `print` and `exit`), the module also exports the `$alloc` function so the host can allocate memory in the WASM linear memory for return values.
+When the program uses IO operations that return strings or ADTs — `IO.read_line`, `IO.read_file`, `IO.write_file`, `IO.args`, `IO.get_env` — the module also exports the `$alloc` function so the host can allocate memory in the WASM linear memory for return values. The fire-and-forget operations (`IO.print`, `IO.exit`, `IO.sleep`, `IO.time`, `IO.stderr`) don't allocate: `vera.print`, `vera.stderr`, and `vera.sleep` take only primitive parameters and return nothing; `vera.time` returns an `i64` scalar; `vera.exit` traps without returning. Modules that use only these operations don't need `$alloc` exported.
 
 For the memory layout, see Section 12.5.
 
@@ -85,7 +88,7 @@ Each execution creates a fresh engine, module, linker, and store. There is no pe
 The linker resolves all imports before instantiation. If the module imports a host function that the linker has not defined, instantiation fails with an error.
 
 The linker registers host functions before instantiation:
-1. IO host functions — registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_file`, `vera.write_file`, `vera.args`, `vera.exit`, `vera.get_env`).
+1. IO host functions — registered for each IO operation the module imports (`vera.print`, `vera.read_line`, `vera.read_file`, `vera.write_file`, `vera.args`, `vera.exit`, `vera.get_env`, `vera.sleep`, `vera.time`, `vera.stderr`).
 2. `vera.state_get_{T}` / `vera.state_put_{T}` — registered for each concrete `State<T>` type used by the program.
 
 ### 12.3.3 Entry Point Resolution
@@ -103,7 +106,7 @@ Arguments are passed as WASM values. The CLI parses string arguments to integers
 
 ### 12.4.1 IO Operations
 
-The IO effect provides seven host function bindings. Each is imported only when the program uses the corresponding `IO.*` qualified call.
+The IO effect provides ten host function bindings. Each is imported only when the program uses the corresponding `IO.*` qualified call.
 
 #### 12.4.1.1 IO.print
 
@@ -211,6 +214,43 @@ The `execute()` function catches this exception and returns an `ExecuteResult` w
 2. Look up the variable in the environment (from `execute(env_vars=...)` or `os.environ`).
 3. If found: construct an `Option.Some` ADT containing the value as a String (tag=1, str\_ptr, str\_len). Return the heap pointer.
 4. If not found: construct an `Option.None` ADT (tag=0). Return the heap pointer.
+
+#### 12.4.1.8 IO.sleep
+
+**Import:** `(import "vera" "sleep" (func $vera.sleep (param i64)))`
+
+**Parameters:**
+- `ms` (i64): duration to pause, in milliseconds. Treated as `Nat` (non-negative).
+
+**Behaviour:**
+1. If `ms <= 0`, return immediately.
+2. Otherwise, block the current thread for approximately `ms` milliseconds before returning.
+
+Precision is host-dependent. The Python runtime uses `time.sleep(ms / 1000.0)`. The browser runtime busy-waits on `performance.now()` because `Atomics.wait` isn't available on the main thread — long sleeps will block rendering and should be avoided in the browser.
+
+#### 12.4.1.9 IO.time
+
+**Import:** `(import "vera" "time" (func $vera.time (result i64)))`
+
+**Parameters:** none (the `Unit` argument at the Vera level is erased at the WASM boundary).
+
+**Returns:** `i64` — the current Unix timestamp in milliseconds (non-negative, treated as `Nat` at the Vera level).
+
+**Behaviour:** Return `floor(current_time_in_milliseconds_since_1970)`. The Python runtime uses `time.time()`; the browser uses `Date.now()`.
+
+#### 12.4.1.10 IO.stderr
+
+**Import:** `(import "vera" "stderr" (func $vera.stderr (param i32 i32)))`
+
+**Parameters:**
+- `ptr` (i32): byte offset of the message in linear memory.
+- `len` (i32): length of the message in bytes.
+
+**Behaviour:**
+1. Decode `len` bytes from `ptr` as UTF-8.
+2. Write the decoded text to the runtime's stderr sink — by default the host's `sys.stderr` (Python) or `console.error`-equivalent buffer (browser). Tests can opt in to capture via `execute(capture_stderr=True)`, which routes writes to `ExecuteResult.stderr`.
+
+No line terminator is added; callers include `\n` if they want one. Mirrors `IO.print` but for the stderr stream.
 
 ### 12.4.2 State\<T\>
 
@@ -422,7 +462,7 @@ Source (.vera)
   → transform()            Typed AST
   → typecheck()            Type diagnostics
   → compile()              CompileResult (WAT + WASM bytes)
-  → execute()              ExecuteResult (value + stdout + state)
+  → execute()              ExecuteResult (value + stdout + stderr + state)
 ```
 
 The `compile()` step produces WAT text and assembles it to WASM bytes via `wasmtime.wat2wasm()`. The `execute()` step instantiates the WASM module and calls the specified function.
@@ -446,9 +486,11 @@ The raw WASM return value is extracted and returned as a Python `int` or `float`
 - `f64` results → Python `float`
 - Void results (Unit) → `None`
 
-### 12.6.4 Stdout Capture
+### 12.6.4 Stdout and Stderr Capture
 
 All `IO.print` calls during execution write to an in-memory buffer. The buffer contents are returned in `ExecuteResult.stdout`. This allows programmatic inspection of output without interfering with the host process's stdout.
+
+`IO.stderr` has a parallel capture path, but it's opt-in. By default, `IO.stderr` writes go directly to the host's `sys.stderr` (Python) or equivalent browser sink — this preserves the intuitive CLI behaviour where stderr reaches the terminal's stderr stream. Callers that want to capture stderr for inspection — typically tests — pass `execute(capture_stderr=True)`, which routes writes into an in-memory buffer exposed as `ExecuteResult.stderr`. When the flag is `False` (the default), `ExecuteResult.stderr` is an empty string, preserving the pre-`IO.stderr` shape of the result for backward compatibility.
 
 The CLI prints `ExecuteResult.stdout` to the terminal after execution completes. If the function also returns a value, the value is printed after the captured output.
 
@@ -498,7 +540,7 @@ State\<T\> bindings are pattern-matched from import names: `state_get_Int` and `
 ### 12.9.2 Public API
 
 ```javascript
-import init, { call, getStdout, getState, resetState } from './vera-runtime.mjs';
+import init, { call, getStdout, getStderr, getState, resetState } from './vera-runtime.mjs';
 
 // Initialize with a WASM module (URL or ArrayBuffer)
 await init('module.wasm');
@@ -507,7 +549,8 @@ await init('module.wasm');
 call('main');
 
 // Retrieve captured output
-const output = getStdout();
+const stdout = getStdout();
+const stderr = getStderr();  // IO.stderr writes (#463)
 
 // Read/reset state
 const state = getState();
@@ -529,6 +572,9 @@ The browser runtime provides browser-appropriate implementations of IO operation
 | `IO.args` | Returns configurable array (default empty) | Returns CLI arguments |
 | `IO.exit` | Throws `VeraExit` error with exit code | Raises `_VeraExit` exception |
 | `IO.get_env` | Returns `Option.None` (configurable map) | Reads from `os.environ` |
+| `IO.sleep` | Busy-waits on `performance.now()` (main-thread blocking) | `time.sleep(ms / 1000.0)` |
+| `IO.time` | `Date.now()` as BigInt | `int(time.time() * 1000)` |
+| `IO.stderr` | Appends to internal buffer, flushed via `getStderr()` | Writes to `sys.stderr` or capture buffer |
 
 All non-IO operations (State, contracts, Markdown) produce identical results in both runtimes. This is enforced by mandatory parity tests.
 

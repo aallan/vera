@@ -79,7 +79,7 @@ vera compile --target browser file.vera -o dist/   # Output to dist/
 
 This generates three files: `module.wasm` (the compiled binary), `vera-runtime.mjs` (self-contained JavaScript runtime with all host bindings), and `index.html` (loads and runs the program). Serve the output directory with any HTTP server (`python -m http.server`) and open `index.html` — ES module imports require HTTP, not `file://`.
 
-The JavaScript runtime provides browser-appropriate implementations: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, file IO returns `Result.Err`, and all other operations (State, contracts, Markdown) work identically to the Python runtime.
+The JavaScript runtime provides browser-appropriate implementations: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, `IO.stderr` captures into a separate buffer, `IO.time` uses `Date.now()`, `IO.sleep` busy-waits (main-thread blocking — best kept short in the browser), and file IO returns `Result.Err`. All other operations (State, contracts, Markdown) work identically to the Python runtime.
 
 To run the WASM directly in Node.js:
 
@@ -1020,7 +1020,7 @@ effect row signals that the function may not terminate. Functions without
 
 ### Effect declarations
 
-The IO effect is built-in — no declaration is needed. It provides seven operations:
+The IO effect is built-in — no declaration is needed. It provides ten operations:
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
@@ -1031,10 +1031,13 @@ The IO effect is built-in — no declaration is needed. It provides seven operat
 | `IO.args` | `Unit -> Array<String>` | Get command-line arguments |
 | `IO.exit` | `Int -> Never` | Exit with status code |
 | `IO.get_env` | `String -> Option<String>` | Read environment variable |
+| `IO.sleep` | `Nat -> Unit` | Pause execution for N milliseconds |
+| `IO.time` | `Unit -> Nat` | Current Unix time in milliseconds |
+| `IO.stderr` | `String -> Unit` | Print a string to stderr |
 
 If you declare `effect IO { op print(String -> Unit); }` explicitly, that overrides the built-in and only the declared operations are available. Most examples do this — declaring only `print` — because it follows the principle of least privilege: a program that only declares `op print` cannot accidentally perform file I/O or call `exit`.
 
-**Why IO works differently from State and Async:** IO has 7 operations and programs choose which ones they need. State and Async have fixed, minimal operation sets (State: `get`/`put`; Async: no operations, it is a marker effect), so there is nothing to restrict.
+**Why IO works differently from State and Async:** IO has 10 operations and programs choose which ones they need. State and Async have fixed, minimal operation sets (State: `get`/`put`; Async: no operations, it is a marker effect), so there is nothing to restrict.
 
 ### Performing effects
 
@@ -1915,7 +1918,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 73 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 75 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 

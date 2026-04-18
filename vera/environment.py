@@ -376,6 +376,12 @@ class TypeEnv:
                     "get_env", (STRING,),
                     AdtType("Option", (STRING,)), "IO",
                 ),
+                # Time and flow-control ops — added for animation
+                # loops, rate limiting, elapsed-time measurement
+                # (#463).
+                "sleep": OpInfo("sleep", (NAT,), UNIT, "IO"),
+                "time": OpInfo("time", (UNIT,), NAT, "IO"),
+                "stderr": OpInfo("stderr", (STRING,), UNIT, "IO"),
             },
         )
 

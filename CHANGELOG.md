@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+(no entries yet)
+
+## [0.0.114] - 2026-04-17
+
+### Added
+- **`IO.sleep`, `IO.time`, `IO.stderr` operations** ([#463](https://github.com/aallan/vera/issues/463)) — three new operations on the built-in `IO` effect. `IO.sleep(@Nat) -> Unit` pauses execution for N milliseconds (used for animation frame budgets and rate-limiting). `IO.time(@Unit) -> @Nat` returns the current Unix time in milliseconds (used for elapsed-time measurement and timestamps). `IO.stderr(@String) -> Unit` writes to stderr separate from stdout (used for CLI tools that pipe stdout as data). Python runtime delegates to `time.sleep`, `time.time`, and `sys.stderr`; browser runtime busy-waits on `performance.now()` (no `Atomics.wait` on the main thread), uses `Date.now()`, and captures stderr into a separate buffer exposed via `getStderr()`. `execute()` gains a `capture_stderr: bool = False` parameter; `ExecuteResult` gains a `stderr: str` field (empty string by default to preserve the pre-#463 shape). Discovered missing while writing a Conway's Game of Life program. Conformance: `ch07_io_time_stderr.vera`.
+
 ### Fixed
 - **GC object header size field widened from 16-bit to 31-bit** ([#484](https://github.com/aallan/vera/issues/484)) — `$alloc` has always stored the object size as `(size << 1) | mark` (bit 0 = mark, remaining bits = size), but the GC's sweep and free-list code was masking the size readback with `0xFFFF`, silently truncating any allocation ≥ 65536 bytes. The sweeper would then interpret middle-of-payload bytes as tiny zero-size headers and link each 8-byte chunk into the free list, shredding the live object. Removed the `0xFFFF` mask at all five read sites in `vera/codegen/assembly.py` (two in `$alloc` free-list walks, three in `$gc_collect` sweep/mark). Max single allocation is now ~2 GB (bounded by WASM's 4 GB memory ceiling and the leading mark bit). Stress tests for `array_map` and `array_filter` uncapped from 8K back to 10K elements. Discovered a separate memory-grow bug while testing the fix — filed as [#487](https://github.com/aallan/vera/issues/487).
 
@@ -1576,7 +1583,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.113...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.114...HEAD
+[0.0.114]: https://github.com/aallan/vera/compare/v0.0.113...v0.0.114
 [0.0.113]: https://github.com/aallan/vera/compare/v0.0.112...v0.0.113
 [0.0.112]: https://github.com/aallan/vera/compare/v0.0.111...v0.0.112
 [0.0.111]: https://github.com/aallan/vera/compare/v0.0.110...v0.0.111

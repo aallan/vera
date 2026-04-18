@@ -85,9 +85,9 @@ dependencies. CI enforces that `uv.lock` stays current.
 
 ### Pre-commit Hooks
 
-Every push is checked by 24 hooks across two stages: 23 run on every commit after `pre-commit install`, and 1 (`check-changelog-updated`, described below) runs only at push time after `pre-commit install --hook-type pre-push`.
+Every push is checked by 25 configured hooks across two stages: 23 are configured at the commit stage (run after `pre-commit install`), and 2 (`check-changelog-updated` and `uv-lock-check`, described below) are configured at the push stage (run after `pre-commit install --hook-type pre-push`). Most commit-stage hooks have per-hook `files:` / `types:` filters — the `python` type-check only runs when Python files are staged; `check_readme_examples.py` only runs when `README.md` or Vera sources change, etc. A plain-text commit touching only one markdown file triggers a small subset; a compiler-level commit triggers most of them.
 
-The **commit-time** hooks (23) include:
+The **commit-stage** hooks (23, each gated to relevant files) include:
 
 - Trailing whitespace and file endings
 - YAML/TOML validity
@@ -119,6 +119,12 @@ A separate `pre-push` hook runs once before each `git push` (not per-commit — 
 - Add the `skip-changelog` label to the PR on GitHub (CI-only).
 
 **Configuration:** Override the base ref with `CHANGELOG_CHECK_BASE=<ref>` if you're working on a non-`main` release branch.
+
+### Pre-push hook: uv.lock sync
+
+A second pre-push hook runs `uv lock --check` to confirm `uv.lock` is in sync with `pyproject.toml`. The same check already runs in CI's `lint` job; the local hook catches it before the push so you don't pay the CI round-trip. The common trigger is a version bump in `pyproject.toml` that didn't rerun `uv lock` — the lockfile's project entry drifts and CI fails. Running `uv lock` regenerates the file; re-push.
+
+**To enable locally:** same command as the CHANGELOG hook — `pre-commit install --hook-type pre-push` installs both.
 
 ### Running Tests
 

@@ -8,7 +8,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,338 tests, 73 conformance programs, 30 examples, and a 13-chapter specification.
+The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 122 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,356 tests, 75 conformance programs, 30 examples, and a 13-chapter specification.
 
 Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers — now covers 6 models across 3 providers (v0.0.7). The headline result: Kimi K2.5 achieves 100% run_correct on Vera, beating both Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera. The flagship tier averages 93% Vera run_correct vs 93% Python — essentially parity. These are single-run results with high variance; stable rates will require pass@k evaluation. The remaining gaps are empirical breadth (repeated trials, more models), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
 
@@ -22,7 +22,7 @@ This section captures the concrete **implementation order** for the next few wee
 
 The near-term queue mixes issues from two categories:
 
-- **Capability-expansion** — unlocks *new kinds of programs that aren't possible today*. No hand-rolled workaround exists; the language literally can't do the thing. Examples: [#463](https://github.com/aallan/vera/issues/463) (`IO.sleep` / `IO.time` / `IO.stderr`), [#465](https://github.com/aallan/vera/issues/465) (Random effect), [#467](https://github.com/aallan/vera/issues/467) (log/sin/cos/constants).
+- **Capability-expansion** — unlocks *new kinds of programs that aren't possible today*. No hand-rolled workaround exists; the language literally can't do the thing. Examples: [#465](https://github.com/aallan/vera/issues/465) (Random effect), [#467](https://github.com/aallan/vera/issues/467) (log/sin/cos/constants).
 - **Error-reduction / ergonomic** — the program is already possible but verbose, bug-prone, or fragile. Hand-rolled recursive accumulators, manual ASCII range checks, nested Option/Json unwraps. Examples: [#466](https://github.com/aallan/vera/issues/466) (array utilities), [#470](https://github.com/aallan/vera/issues/470) / [#471](https://github.com/aallan/vera/issues/471) (string + char), [#366](https://github.com/aallan/vera/issues/366) (JSON accessors).
 
 Both matter, but they're asymmetric in timing: capability gaps are *blocking* (entire program categories don't exist), ergonomic gaps are *annoying* (programs compound verbosity). Blocking issues front-load more value per hour because they unlock whole genres of program. The current state of the language is "most programs possible, some categories blocked" — so capability-expansion goes first, ergonomic polish follows.
@@ -31,20 +31,18 @@ Empirical confirmation from a model writing Conway's Game of Life in Vera while 
 
 > "The bug fix plus `IO.sleep` and Random are transformative. With `IO.sleep` I can write a proper animation loop… With Random I can generate a random soup initial state instead of hardcoding a glider and blinker, which is dramatically more interesting to watch. The program goes from 'dump 20 static frames' to 'animated random cellular automaton that runs in your terminal.' From [#466](https://github.com/aallan/vera/issues/466), `array_any` is useful for detecting extinction, and `array_contains` could simplify some checks, but neither is essential. From [#470](https://github.com/aallan/vera/issues/470), `string_pad_start` would let me right-align the generation counter — minor polish."
 
-This reshaped the ordering: capability issues move up, ergonomic issues move down, and the prerequisite structural refactor [#480](https://github.com/aallan/vera/issues/480) stays at the top.
+This reshaped the ordering: capability issues move up, ergonomic issues move down. Completed items are noted in [HISTORY.md](HISTORY.md).
 
 ### Implementation order
 
 | Order | Issue | Why now |
 |:---:|---|---|
-| 1 | [#480](https://github.com/aallan/vera/issues/480) — Reimplement higher-order array ops as iterative WASM | **Structural prerequisite.** If the new combinators in [#466](https://github.com/aallan/vera/issues/466) ship before this, they inherit recursive-Vera implementations that hit the same class of bugs as [#464](https://github.com/aallan/vera/issues/464) and have to be migrated later. Establishing the iterative pattern first means [#466](https://github.com/aallan/vera/issues/466)'s new combinators follow it from day one. |
-| 2 | [#463](https://github.com/aallan/vera/issues/463) — `IO.sleep` / `IO.time` / `IO.stderr` | **Capability unlock, smallest scope.** Three one-row additions to an existing effect. Enables animation loops, elapsed-time measurement, and stderr-separated CLI tools. Lowest risk, highest capability-per-hour of work. |
-| 3 | [#465](https://github.com/aallan/vera/issues/465) — Random effect | **Capability unlock, larger scope.** New effect (requires `EffectInfo` registration, grammar-level checks, handler plumbing, browser runtime). Unlocks non-determinism, simulation, randomised testing. |
-| 4 | [#467](https://github.com/aallan/vera/issues/467) — Math built-ins (log, sin, cos, …) | **Capability unlock, bulk addition.** ~14 pure host imports following the same pattern. Unlocks graphics, physics, statistics. |
-| 5 | [#466](https://github.com/aallan/vera/issues/466) — Array utilities (sort, mapi, reverse, …) | **Highest benchmark-score win.** Eliminates the recursive-accumulator-with-indexed-state pattern — the dominant LLM failure mode per VeraBench. Requires [#480](https://github.com/aallan/vera/issues/480) done first. |
-| 6 | [#470](https://github.com/aallan/vera/issues/470) — String utilities | `string_chars` is a bridge primitive (unlocks array-combinator approach to string processing). Rest is polish. |
-| 7 | [#471](https://github.com/aallan/vera/issues/471) — Character classification | Tiny, can ship alongside any of the above. Eliminates brittle ASCII range checks. |
-| 8 | [#366](https://github.com/aallan/vera/issues/366) — JSON typed accessors | Replaces nested Option/Json unwrap ceremony. Polish tier for the Inference/Http pipeline. |
+| 1 | [#465](https://github.com/aallan/vera/issues/465) — Random effect | **Capability unlock, larger scope.** New effect (requires `EffectInfo` registration, grammar-level checks, handler plumbing, browser runtime). Unlocks non-determinism, simulation, randomised testing. |
+| 2 | [#467](https://github.com/aallan/vera/issues/467) — Math built-ins (log, sin, cos, …) | **Capability unlock, bulk addition.** ~14 pure host imports following the same pattern. Unlocks graphics, physics, statistics. |
+| 3 | [#466](https://github.com/aallan/vera/issues/466) — Array utilities (sort, mapi, reverse, …) | **Highest benchmark-score win.** Eliminates the recursive-accumulator-with-indexed-state pattern — the dominant LLM failure mode per VeraBench. New combinators follow the iterative WASM pattern shared by `array_map` / `array_filter` / `array_fold`. |
+| 4 | [#470](https://github.com/aallan/vera/issues/470) — String utilities | `string_chars` is a bridge primitive (unlocks array-combinator approach to string processing). Rest is polish. |
+| 5 | [#471](https://github.com/aallan/vera/issues/471) — Character classification | Tiny, can ship alongside any of the above. Eliminates brittle ASCII range checks. |
+| 6 | [#366](https://github.com/aallan/vera/issues/366) — JSON typed accessors | Replaces nested Option/Json unwrap ceremony. Polish tier for the Inference/Http pipeline. |
 
 ### What moves when
 
@@ -190,7 +188,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 - [#270](https://github.com/aallan/vera/issues/270) **`handle[Async]`** — custom scheduling strategies for async effect handlers.
 - [#228](https://github.com/aallan/vera/issues/228) **WebSocket/SSE** — streaming clients for real-time data feeds and LLM streaming responses.
 - [#227](https://github.com/aallan/vera/issues/227) **Timeout effect** — `<Timeout>` for cancellation and deadline management.
-- [#463](https://github.com/aallan/vera/issues/463) **`IO.sleep`, `IO.time`, `IO.stderr` operations** — millisecond delay (`IO.sleep(@Nat) -> Unit`), current time (`IO.time(@Unit) -> @Nat`), and stderr output (`IO.stderr(@String) -> Unit`). Three one-row additions to the `IO` effect. Enables animation loops, elapsed-time measurement, frame-budget computation, and stderr-separated CLI tools. Discovered missing while writing Conway's Game of Life.
 
 ### Phase 4b: Ecosystem
 
@@ -205,8 +202,7 @@ These are not strictly required for the MCP demo but would make it more compelli
 - [#366](https://github.com/aallan/vera/issues/366) **JSON typed accessors** — `json_as_string`, `json_get_number`, etc. Eliminates the two-level pattern match every JSON API consumer currently writes.
 - [#367](https://github.com/aallan/vera/issues/367) **Markdown content extractors** — `md_blocks`, `md_inline_text`, `md_extract_headings`, `md_extract_links`, `md_filter_blocks`.
 - [#368](https://github.com/aallan/vera/issues/368) **HTML convenience accessors** — `html_query_one`, `html_tag`, `html_children`.
-- [#466](https://github.com/aallan/vera/issues/466) **Array utility built-ins** — `array_sort`, `array_reverse`, `array_mapi`, `array_contains`, `array_find`, `array_any`, `array_all`, `array_index_of`, `array_sort_by`, `array_flatten`. Highest-impact gap — sorting requires a hand-written merge sort today, and the lack of `array_mapi` forces recursive-accumulator-with-index patterns (the dominant LLM failure mode, and the one that triggered #464).
-- [#480](https://github.com/aallan/vera/issues/480) **Reimplement higher-order array ops as iterative WASM** — the existing `array_map` / `array_filter` / `array_fold` (in `prelude.py`) and the new combinators from [#466](https://github.com/aallan/vera/issues/466) should compile to iterative WASM loops or host imports rather than recursive Vera functions, so shadow stack usage is O(1) per call instead of O(n). Prerequisite for scaling [#466](https://github.com/aallan/vera/issues/466) to large inputs without re-exposing the class of bugs that caused [#464](https://github.com/aallan/vera/issues/464).
+- [#466](https://github.com/aallan/vera/issues/466) **Array utility built-ins** — `array_sort`, `array_reverse`, `array_mapi`, `array_contains`, `array_find`, `array_any`, `array_all`, `array_index_of`, `array_sort_by`, `array_flatten`. Highest-impact gap — sorting requires a hand-written merge sort today, and the lack of `array_mapi` forces recursive-accumulator-with-index patterns (the dominant LLM failure mode, and the one that triggered #464). New combinators should follow the iterative WASM pattern shared by `array_map` / `array_filter` / `array_fold` rather than recursive prelude helpers.
 - [#467](https://github.com/aallan/vera/issues/467) **Math built-ins** — `log`, `log2`, `log10`, `sin`, `cos`, `tan`, `atan2`, `pi`, `e`, `sign`, `clamp`. Standard numeric library functions.
 - [#470](https://github.com/aallan/vera/issues/470) **String utility built-ins** — `string_reverse`, `string_pad_start`, `string_pad_end`, `string_chars`, `string_trim_start`, `string_trim_end`.
 - [#471](https://github.com/aallan/vera/issues/471) **Character classification built-ins** — `is_digit`, `is_alpha`, `is_alphanumeric`, `is_whitespace`, `is_upper`, `is_lower`. Operate on first character of a string (Vera has no `Char` type).
@@ -223,7 +219,7 @@ These are not milestone-gated — they should be addressed continuously alongsid
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
 | Add property-based testing with Hypothesis | [#386](https://github.com/aallan/vera/issues/386) | 2–4 hours | Catches parser/formatter edge cases via round-trip properties |
-| Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether 3,338 tests catch real bugs, not just execute paths |
+| Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether 3,356 tests catch real bugs, not just execute paths |
 | Investigate parser fuzzing with Atheris | [#402](https://github.com/aallan/vera/issues/402) | 4–8 hours | Crash-inducing inputs for parser and type checker |
 | Improve browser runtime test coverage to >80% | [#349](https://github.com/aallan/vera/issues/349) | 2–4 hours | Parity with Python-side coverage gate |
 | Add `check_changelog_updated.py` pre-push hook + CI check | [#478](https://github.com/aallan/vera/issues/478) | 30–60 min | Fails PRs that touch `vera/`/`spec/`/`SKILL.md` without a CHANGELOG entry; prevents the #474 miss from recurring |
@@ -274,4 +270,4 @@ The compiler was built through ten development phases from February to March 202
 | C8.5 | v0.0.66–v0.0.88 | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
 | C9 | v0.0.89–v0.0.101 | **Abilities, standard library, data types, effects** — Eq/Ord/Hash/Show, Map/Set, JSON, HTML, Markdown, Http, Decimal, Inference, standard prelude, combinators, higher-order array ops | Done |
 
-**810+ commits, 113 tagged releases, 3,338 tests, 96% coverage, 73 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.
+**810+ commits, 113 tagged releases, 3,356 tests, 96% coverage, 75 conformance programs, 30 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.

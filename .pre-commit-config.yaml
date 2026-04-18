@@ -146,3 +146,21 @@ repos:
         pass_filenames: false
         stages: [pre-push]
         always_run: true
+
+      # Pre-push stage: catches stale uv.lock locally instead of in CI.
+      # CI runs `uv lock --check` in the lint job; if it fails after a
+      # push, you pay ~2 minutes of CI time plus an amend+force-push.
+      # Version bumps in pyproject.toml are the common trigger — the
+      # lockfile gains a new `version = "..."` line for the project
+      # package and `uv lock --check` fails.  Running the same check
+      # pre-push catches it before the push goes out.  Costs well
+      # under a second when the lockfile is fresh.  Added after the
+      # v0.0.114 bump on #491 tripped CI lint — issue #463's review
+      # cycle included this as a hygiene bump.
+      - id: uv-lock-check
+        name: check uv.lock is in sync with pyproject.toml
+        entry: uv lock --check
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+        always_run: true
