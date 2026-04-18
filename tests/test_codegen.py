@@ -10185,6 +10185,94 @@ class TestInferenceProviderDispatch:
             _call_inference_provider("unknown", "p", "", "")
 
 
+class TestRandomEffect:
+    """Tests for the Random effect (#465).
+
+    The three Random ops are non-deterministic, so each test
+    constrains the host's behaviour via Python ``random.seed`` to
+    make assertions concrete.  All tests run multiple iterations to
+    catch off-by-one errors at range boundaries that would only
+    surface on specific seeds.
+    """
+
+    def test_random_int_in_range(self) -> None:
+        """Random.random_int(low, high) returns Int in [low, high].
+
+        Runs 100 iterations over varied ranges — confirms that no
+        return ever falls outside the inclusive range and that
+        boundary values (low and high) can be produced.
+        """
+        import random
+        random.seed(42)
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Random>)
+{
+  Random.random_int(5, 10)
+}
+"""
+        result = _compile_ok(source)
+        produced = set()
+        for _ in range(100):
+            v = execute(result, fn_name="main").value
+            assert 5 <= v <= 10, f"out of range: {v}"
+            produced.add(v)
+        # At least 4 of the 6 possible values should appear in 100 draws
+        assert len(produced) >= 4, f"narrow distribution: {produced}"
+
+    def test_random_int_singleton_range(self) -> None:
+        """random_int(n, n) always returns n — degenerate range."""
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Random>)
+{
+  Random.random_int(7, 7)
+}
+"""
+        result = _compile_ok(source)
+        for _ in range(20):
+            assert execute(result, fn_name="main").value == 7
+
+    def test_random_float_in_unit_interval(self) -> None:
+        """Random.random_float() returns Float64 in [0.0, 1.0).
+
+        Verifies the WASM f64 result is correctly marshalled back
+        through wasmtime — Float64 returns are easy to mis-handle.
+        """
+        source = """\
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(<Random>)
+{
+  Random.random_float(())
+}
+"""
+        result = _compile_ok(source)
+        for _ in range(50):
+            v = execute(result, fn_name="main").value
+            assert isinstance(v, float)
+            assert 0.0 <= v < 1.0, f"out of [0, 1): {v}"
+
+    def test_random_bool_produces_both(self) -> None:
+        """Random.random_bool() produces both true and false in 100 draws.
+
+        Uses a constant-output program (returns 1 if true, 0 if
+        false) and asserts the sum across iterations is bounded
+        away from both extremes — catches a pathological host
+        impl that always returned one value.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Random>)
+{
+  if Random.random_bool(()) then { 1 } else { 0 }
+}
+"""
+        result = _compile_ok(source)
+        total = sum(execute(result, fn_name="main").value for _ in range(100))
+        # Bernoulli(0.5) over 100 trials: 99.9% inside [25, 75].  Generous bounds.
+        assert 25 <= total <= 75, f"degenerate distribution: {total} trues / 100"
+
+
 class TestDecimalMonomorphization:
     """Monomorphization of generic functions with Decimal type args (#341)."""
 

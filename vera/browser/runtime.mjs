@@ -1724,6 +1724,34 @@ function buildImportObject(module) {
     };
   }
 
+  // ── Random host imports (#465) ─────────────────────────────────
+  // All three back onto Math.random() — fast, non-cryptographic,
+  // adequate for games and simulations.  No determinism / seeding
+  // is offered yet (would require a separate `Random.seed` op
+  // tracked as future work in #465).
+
+  if (needed.has("random_int")) {
+    // random_int(low: i64, high: i64) -> i64.  Inclusive range.
+    // Math.random() returns [0, 1); scale to (high - low + 1)
+    // values then offset by low.  BigInt arithmetic keeps i64
+    // semantics on the WASM boundary.
+    imports.vera.random_int = (lowBig, highBig) => {
+      const low = Number(lowBig);
+      const high = Number(highBig);
+      const span = high - low + 1;
+      const r = Math.floor(Math.random() * span);
+      return BigInt(low + r);
+    };
+  }
+  if (needed.has("random_float")) {
+    // random_float() -> f64 in [0.0, 1.0)
+    imports.vera.random_float = () => Math.random();
+  }
+  if (needed.has("random_bool")) {
+    // random_bool() -> i32 (0 or 1)
+    imports.vera.random_bool = () => (Math.random() < 0.5 ? 1 : 0);
+  }
+
   // ── Html host imports ──────────────────────────────────────────
   // Lenient HTML parser using DOMParser (browser) or returning Err
   // in non-browser runtimes (Node.js).

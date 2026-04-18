@@ -42,6 +42,9 @@ The module imports host functions for effects that the program uses:
 | `vera.sleep` | `(i64) -> ()` | Program uses `IO.sleep` |
 | `vera.time` | `() -> (i64)` | Program uses `IO.time` |
 | `vera.stderr` | `(i32, i32) -> ()` | Program uses `IO.stderr` |
+| `vera.random_int` | `(i64, i64) -> (i64)` | Program uses `Random.random_int` |
+| `vera.random_float` | `() -> (f64)` | Program uses `Random.random_float` |
+| `vera.random_bool` | `() -> (i32)` | Program uses `Random.random_bool` |
 | `vera.state_get_{T}` | `() -> {wasm_t}` | Program uses `State<T>.get` |
 | `vera.state_put_{T}` | `({wasm_t}) -> ()` | Program uses `State<T>.put` |
 | `vera.contract_fail` | `(i32, i32) -> ()` | Program has runtime contracts |
@@ -371,6 +374,42 @@ The host allocates all tree nodes (including nested `MdBlock` and `MdInline` val
 2. Recursively find all fenced code blocks whose language matches the given string.
 3. Allocate backing storage for the result array via `$alloc`.
 4. Return `(backing_ptr, count)`.
+
+### 12.4.5 Random Operations
+
+The `Random` effect provides three host-backed operations for non-deterministic value generation. None allocate or return heap data, so modules that use only `Random` (alongside e.g. arithmetic) don't need `$alloc` exported.
+
+#### 12.4.5.1 Random.random\_int
+
+**Import:** `(import "vera" "random_int" (func $vera.random_int (param i64 i64) (result i64)))`
+
+**Parameters:**
+- `low` (i64): inclusive lower bound.
+- `high` (i64): inclusive upper bound.
+
+**Returns:** `i64` — an integer drawn uniformly from `[low, high]`.
+
+**Behaviour:** The Python runtime calls `random.randint(low, high)`; the browser runtime computes `floor(Math.random() * (high - low + 1)) + low`. Caller is required by contract (`requires(@Int.0 <= @Int.1)`) to ensure `low <= high`; the host does not double-check.
+
+#### 12.4.5.2 Random.random\_float
+
+**Import:** `(import "vera" "random_float" (func $vera.random_float (result f64)))`
+
+**Parameters:** none (the `Unit` argument at the Vera level is erased at the WASM boundary).
+
+**Returns:** `f64` — a value in `[0.0, 1.0)`.
+
+**Behaviour:** The Python runtime calls `random.random()`; the browser runtime calls `Math.random()`.
+
+#### 12.4.5.3 Random.random\_bool
+
+**Import:** `(import "vera" "random_bool" (func $vera.random_bool (result i32)))`
+
+**Parameters:** none (Unit erased).
+
+**Returns:** `i32` — `0` or `1`, each with probability ≈ 0.5.
+
+**Behaviour:** Both runtimes derive the bit from a uniform draw (`random.random() < 0.5` and `Math.random() < 0.5` respectively). No determinism / seeding API is offered; future work tracked alongside #465.
 
 ## 12.5 Memory Model
 

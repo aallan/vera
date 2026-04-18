@@ -177,6 +177,27 @@ class AssemblyMixin:
             self._needs_alloc = True
             self._needs_memory = True
 
+        # Random effect host imports (#465).  None of these allocate
+        # or return heap data — `random_int` returns a scalar i64,
+        # `random_float` returns f64, `random_bool` returns i32 (0/1).
+        # Unit arguments at the Vera level are erased, so
+        # `random_float()` and `random_bool()` take no parameters.
+        if "random_int" in self._random_ops_used:
+            parts.append(
+                '  (import "vera" "random_int" '
+                "(func $vera.random_int (param i64 i64) (result i64)))"
+            )
+        if "random_float" in self._random_ops_used:
+            parts.append(
+                '  (import "vera" "random_float" '
+                "(func $vera.random_float (result f64)))"
+            )
+        if "random_bool" in self._random_ops_used:
+            parts.append(
+                '  (import "vera" "random_bool" '
+                "(func $vera.random_bool (result i32)))"
+            )
+
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:
             parts.append(

@@ -134,6 +134,8 @@ class WasmContext(
         self._http_ops_used: set[str] = set()
         # Inference host-import tracking (propagated to codegen core)
         self._inference_ops_used: set[str] = set()
+        # Random host-import tracking (propagated to codegen core, #465)
+        self._random_ops_used: set[str] = set()
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}
@@ -421,6 +423,12 @@ class WasmContext(
                 return expr.name in ("print", "exit", "sleep", "stderr")
             # Http ops return Result<String, String> — not void
             if expr.qualifier == "Http":
+                return False
+            # Inference.complete returns Result<String, String> — not void
+            if expr.qualifier == "Inference":
+                return False
+            # All Random ops produce values (Int, Float64, or Bool); never void. (#465)
+            if expr.qualifier == "Random":
                 return False
             # State ops are desugared to FnCall, not QualifiedCall.
             # Future qualified effects should be added explicitly above.

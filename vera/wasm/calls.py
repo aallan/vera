@@ -393,7 +393,7 @@ class CallsMixin:
         # "get"/"post" with possible user effect ops; the qualifier check prevents
         # misrouting Http.get into _effect_ops when inside a handle[State<T>] body
         # where _effect_ops["get"] is populated.
-        _host_import_qualifiers = {"Http", "Inference", "IO"}
+        _host_import_qualifiers = {"Http", "Inference", "IO", "Random"}
         if call.qualifier not in _host_import_qualifiers and call.name in self._effect_ops:
             target_name, _is_void = self._effect_ops[call.name]
             if call.name == "throw":
@@ -412,6 +412,14 @@ class CallsMixin:
             self._inference_ops_used.add(wasm_name)
             self.needs_alloc = True
             instructions.append(f"call $vera.{wasm_name}")
+        elif call.qualifier == "Random":
+            # #465 — op names already begin with `random_`, so the
+            # WASM import keeps the same name (`vera.random_int`,
+            # `vera.random_float`, `vera.random_bool`).  None of the
+            # Random ops allocate or return heap data, so $alloc is
+            # not required.
+            self._random_ops_used.add(call.name)
+            instructions.append(f"call $vera.{call.name}")
         else:
             instructions.append(f"call $vera.{call.name}")
         # IO.exit never returns — add unreachable to satisfy WASM validation

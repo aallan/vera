@@ -1010,6 +1010,7 @@ effects(<State<Int>>)            -- uses integer state
 effects(<State<Int>, IO>)        -- multiple effects
 effects(<Http, IO>)              -- network + IO
 effects(<Async>)                 -- async computation
+effects(<Random>)                -- non-deterministic (random number generation)
 effects(<Diverge>)               -- may not terminate
 effects(<Diverge, IO>)           -- divergent with IO
 ```
@@ -1227,6 +1228,40 @@ public fn safe_classify(@String -> @String)
 ```
 
 Like `Http`, `Inference` is host-backed. The browser runtime returns a detailed `Err` explaining that API keys cannot be safely embedded in client-side JavaScript; use a server-side proxy with `Http` instead.
+
+### Random effect
+
+The `Random` effect provides non-deterministic number generation. Like `IO` and `Http`, it is built-in — no `effect Random { ... }` declaration is needed. Functions that draw random values must declare `effects(<Random>)`, making the non-determinism visible in the type signature.
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `Random.random_int` | `Int, Int -> Int` | Random integer in inclusive range `[low, high]` (caller ensures `low <= high`) |
+| `Random.random_float` | `Unit -> Float64` | Uniform random in `[0.0, 1.0)` |
+| `Random.random_bool` | `Unit -> Bool` | Coin flip |
+
+```vera
+private fn pick_card(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 1 && @Int.result <= 52)
+  effects(<Random>)
+{
+  Random.random_int(1, 52)
+}
+```
+
+The Python runtime backs Random onto the `random` module (`random.randint`, `random.random()`). The browser runtime backs all three onto `Math.random()` — fast, non-cryptographic, adequate for games and simulations. There is no seeding API yet (deterministic testing via `handle[Random]` is future work).
+
+Functions that mix randomness with other effects compose normally:
+
+```vera
+public fn print_random_card(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO, Random>)
+{
+  IO.print(int_to_string(pick_card(())))
+}
+```
 
 ### Effect handlers
 
@@ -1918,7 +1953,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 75 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 76 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 

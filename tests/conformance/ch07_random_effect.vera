@@ -1,0 +1,19 @@
+-- Conformance: Random effect (Chapter 7, #465)
+-- Tests: built-in Random effect's three ops:
+--   random_int(Int, Int) -> Int  (inclusive range)
+--   random_float(Unit) -> Float64  (uniform [0.0, 1.0))
+--   random_bool(Unit) -> Bool      (coin flip)
+-- Verified at "verify" level — no run assertion because randomness
+-- is non-deterministic.  The signatures and effect-row plumbing
+-- are checked here; runtime behaviour is exercised by unit tests
+-- in tests/test_codegen.py.
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<Random>)
+{
+  let @Int = Random.random_int(1, 10);
+  let @Float64 = Random.random_float(());
+  let @Bool = Random.random_bool(());
+  ()
+}

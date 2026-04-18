@@ -187,6 +187,8 @@ class FunctionCompilationMixin:
         self._http_ops_used.update(ctx._http_ops_used)
         # Propagate Inference host-import tracking
         self._inference_ops_used.update(ctx._inference_ops_used)
+        # Propagate Random host-import tracking (#465)
+        self._random_ops_used.update(ctx._random_ops_used)
 
         # Coerce body result if return type is i32 but body produces i64
         # (e.g. IntLit in a Byte-returning function)

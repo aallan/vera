@@ -42,13 +42,18 @@ class CompilabilityMixin:
                         pass  # Sequential execution, no host imports
                     elif eff.name == "Inference":
                         self._needs_memory = True
+                    elif eff.name == "Random":
+                        # #465 — host-import effect, no memory need
+                        # (no allocations or heap returns).
+                        pass
                     else:
                         self._warning(
                             decl,
                             f"Function '{decl.name}' uses unsupported "
                             f"effect '{eff.name}' — skipped.",
-                            rationale="Only pure, IO, Http, Inference, State<T>, "
-                            "Exn<E>, and Async effects are compilable.",
+                            rationale="Only pure, IO, Http, Inference, "
+                            "Random, State<T>, Exn<E>, and Async "
+                            "effects are compilable.",
                             error_code="E603",
                         )
                         return False
@@ -200,6 +205,13 @@ class CompilabilityMixin:
                 self._http_ops_used.add(f"http_{node.name}")
             elif node.qualifier == "Inference":
                 self._inference_ops_used.add(f"inference_{node.name}")
+            elif node.qualifier == "Random":
+                # #465 — op names already begin with `random_`
+                # (`random_int`/`random_float`/`random_bool`), which
+                # both reads naturally at the call site and prevents
+                # collision with bare `int`/`float`/`bool` user
+                # effect ops.  Track the name directly.
+                self._random_ops_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
             return
