@@ -238,7 +238,7 @@ def main() -> int:
 
     contrib_md = (root / "CONTRIBUTING.md").read_text()
 
-    m = re.search(r"checked by (\d+) hooks", contrib_md)
+    m = re.search(r"checked by (\d+) (?:configured )?hooks", contrib_md)
     if m:
         doc_hooks = int(m.group(1))
         if doc_hooks != live_hooks:
