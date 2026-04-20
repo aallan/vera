@@ -444,6 +444,62 @@ public fn main(-> @Unit)
         # Just verify the Node runtime doesn't crash.
         assert node["error"] is None
 
+    def test_random_int_in_range(self, tmp_path: Path) -> None:
+        """Random.random_int(low, high) is in inclusive range under Math.random.
+
+        Browser runtime backs all three Random ops onto Math.random.
+        Doesn't depend on a seed (no hook for one in the JS impl);
+        covers the i64 ↔ BigInt boundary by returning the value
+        and asserting on parsed stdout.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO, Random>)
+{
+  let @Int = Random.random_int(20, 25);
+  IO.print(int_to_string(@Int.0))
+}
+'''
+        wasm_path, exports = _compile_vera(source, tmp_path)
+        # 30 runs to catch any range violations
+        for _ in range(30):
+            node = _run_node(wasm_path)
+            v = int(node["stdout"])
+            assert 20 <= v <= 25, f"out of range: {v}"
+
+    def test_random_float_in_unit_interval(self, tmp_path: Path) -> None:
+        """Random.random_float() returns f64 in [0.0, 1.0) via Math.random."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO, Random>)
+{
+  let @Float64 = Random.random_float(());
+  IO.print(float_to_string(@Float64.0))
+}
+'''
+        wasm_path, exports = _compile_vera(source, tmp_path)
+        for _ in range(20):
+            node = _run_node(wasm_path)
+            v = float(node["stdout"])
+            assert 0.0 <= v < 1.0, f"out of [0, 1): {v}"
+
+    def test_random_bool_produces_both(self, tmp_path: Path) -> None:
+        """Random.random_bool() produces both true and false in 50 draws."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO, Random>)
+{
+  if Random.random_bool(()) then { IO.print("1") } else { IO.print("0") }
+}
+'''
+        wasm_path, exports = _compile_vera(source, tmp_path)
+        total = 0
+        for _ in range(50):
+            node = _run_node(wasm_path)
+            total += int(node["stdout"])
+        # Bernoulli(0.5) over 50 trials: 99.9% inside [10, 40]. Generous bounds.
+        assert 10 <= total <= 40, f"degenerate: {total}/50 trues"
+
 
 # =====================================================================
 # TestBrowserState — State<T> host bindings

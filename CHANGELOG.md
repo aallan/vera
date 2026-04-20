@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 (no entries yet)
 
+## [0.0.115] - 2026-04-18
+
+### Added
+- **`Random` effect for non-deterministic value generation** ([#465](https://github.com/aallan/vera/issues/465)) — new built-in `Random` effect with three operations: `Random.random_int(@Int, @Int) -> @Int` (inclusive range), `Random.random_float(@Unit) -> @Float64` (uniform `[0.0, 1.0)`), `Random.random_bool(@Unit) -> @Bool`. Functions drawing random values must declare `effects(<Random>)`, making non-determinism visible in the type signature. Python runtime backs onto `random.randint` / `random.random()`; browser runtime backs all three onto `Math.random()` (fast, non-cryptographic, adequate for games and simulations). No seeding API yet — `handle[Random]`-based deterministic testing is future work. Unblocks games, simulations, shuffling, Monte Carlo methods, and randomized initial states (Conway's Life soup, etc.). Conformance: `ch07_random_effect.vera`. Closes [#465](https://github.com/aallan/vera/issues/465).
+
 ## [0.0.114] - 2026-04-17
 
 ### Added
@@ -1583,7 +1588,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.114...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.115...HEAD
+[0.0.115]: https://github.com/aallan/vera/compare/v0.0.114...v0.0.115
 [0.0.114]: https://github.com/aallan/vera/compare/v0.0.113...v0.0.114
 [0.0.113]: https://github.com/aallan/vera/compare/v0.0.112...v0.0.113
 [0.0.112]: https://github.com/aallan/vera/compare/v0.0.111...v0.0.112

@@ -1724,6 +1724,55 @@ function buildImportObject(module) {
     };
   }
 
+  // ── Random host imports (#465) ─────────────────────────────────
+  // All three back onto Math.random() — fast, non-cryptographic,
+  // adequate for games and simulations.  No determinism / seeding
+  // is offered yet (would require a separate `Random.seed` op
+  // tracked as future work in #465).
+
+  if (needed.has("random_int")) {
+    // random_int(low: i64, high: i64) -> i64.  Inclusive range.
+    // Math.random() returns [0, 1); scale to (high - low + 1)
+    // values then offset by low.  BigInt arithmetic keeps i64
+    // semantics on the WASM boundary.
+    imports.vera.random_int = (lowBig, highBig) => {
+      // Guard: i64 can hold values outside JS's 53-bit safe integer
+      // range.  Silently coercing a BigInt like 2^60 to Number loses
+      // precision and the returned span/result can be off by
+      // thousands.  Throw a clear error instead so callers see a
+      // real failure instead of subtle wrong numbers.  The WASM
+      // runtime turns this into a trap the host can surface.
+      const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER);
+      const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+      if (lowBig < MIN_SAFE || highBig > MAX_SAFE) {
+        throw new Error(
+          `random_int bounds exceed JavaScript safe integer range ` +
+          `[${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}]; ` +
+          `got [${lowBig}, ${highBig}]. ` +
+          `Use smaller bounds or adjust the runtime to use BigInt arithmetic.`
+        );
+      }
+      if (highBig < lowBig) {
+        throw new Error(
+          `random_int requires low <= high; got low=${lowBig}, high=${highBig}.`
+        );
+      }
+      const low = Number(lowBig);
+      const high = Number(highBig);
+      const span = high - low + 1;
+      const r = Math.floor(Math.random() * span);
+      return BigInt(low + r);
+    };
+  }
+  if (needed.has("random_float")) {
+    // random_float() -> f64 in [0.0, 1.0)
+    imports.vera.random_float = () => Math.random();
+  }
+  if (needed.has("random_bool")) {
+    // random_bool() -> i32 (0 or 1)
+    imports.vera.random_bool = () => (Math.random() < 0.5 ? 1 : 0);
+  }
+
   // ── Html host imports ──────────────────────────────────────────
   // Lenient HTML parser using DOMParser (browser) or returning Err
   // in non-browser runtimes (Node.js).

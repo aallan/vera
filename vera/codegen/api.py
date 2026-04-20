@@ -89,6 +89,7 @@ class CompileResult:
     html_ops_used: set[str] = field(default_factory=set)
     http_ops_used: set[str] = field(default_factory=set)
     inference_ops_used: set[str] = field(default_factory=set)
+    random_ops_used: set[str] = field(default_factory=set)  # #465
     fn_param_types: dict[str, list[str]] = field(default_factory=dict)
 
     @property
@@ -2194,6 +2195,60 @@ def execute(
                     [wasmtime.ValType.i32()],
                 ),
                 host_inference_complete, access_caller=True,
+            )
+
+    # ---------------------------------------------------------------
+    # Random host functions (#465).  Lazy import — `random` is
+    # stdlib so the import is cheap, but only pull it in when needed.
+    # ---------------------------------------------------------------
+    if result.random_ops_used:
+        import random as _random_mod
+
+        if "random_int" in result.random_ops_used:
+            # vera.random_int(low: i64, high: i64) -> i64
+            # Inclusive range [low, high].  Caller is required by
+            # contract to ensure low <= high; we don't double-check.
+            def host_random_int(
+                _caller: wasmtime.Caller, low: int, high: int,
+            ) -> int:
+                # S311 — Random effect is for games / simulations /
+                # Monte Carlo, not crypto.  #465 explicitly scopes
+                # the effect that way; secure randomness would
+                # warrant a separate `Crypto` effect with
+                # `secrets.randbelow`.
+                return _random_mod.randint(low, high)  # noqa: S311
+
+            linker.define_func(
+                "vera", "random_int",
+                wasmtime.FuncType(
+                    [wasmtime.ValType.i64(), wasmtime.ValType.i64()],
+                    [wasmtime.ValType.i64()],
+                ),
+                host_random_int, access_caller=True,
+            )
+
+        if "random_float" in result.random_ops_used:
+            # vera.random_float() -> f64 in [0.0, 1.0)
+            def host_random_float(_caller: wasmtime.Caller) -> float:
+                # S311 — see host_random_int; non-crypto by design.
+                return _random_mod.random()  # noqa: S311
+
+            linker.define_func(
+                "vera", "random_float",
+                wasmtime.FuncType([], [wasmtime.ValType.f64()]),
+                host_random_float, access_caller=True,
+            )
+
+        if "random_bool" in result.random_ops_used:
+            # vera.random_bool() -> i32 (0 or 1)
+            def host_random_bool(_caller: wasmtime.Caller) -> int:
+                # S311 — see host_random_int; non-crypto by design.
+                return 1 if _random_mod.random() < 0.5 else 0  # noqa: S311
+
+            linker.define_func(
+                "vera", "random_bool",
+                wasmtime.FuncType([], [wasmtime.ValType.i32()]),
+                host_random_bool, access_caller=True,
             )
 
     instance = linker.instantiate(store, module)

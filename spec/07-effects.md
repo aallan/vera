@@ -286,7 +286,7 @@ This function always performs `IO` (for the logging), plus whatever effects `E` 
 
 ### 7.7.1 `IO`
 
-The `IO` effect is built-in and provides seven operations for interacting with the outside world:
+The `IO` effect is built-in and provides ten operations for interacting with the outside world:
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
@@ -297,6 +297,9 @@ The `IO` effect is built-in and provides seven operations for interacting with t
 | `args` | `Unit -> Array<String>` | Get command-line arguments |
 | `exit` | `Int -> Never` | Exit process with status code |
 | `get_env` | `String -> Option<String>` | Look up environment variable |
+| `sleep` | `Nat -> Unit` | Pause execution for N milliseconds |
+| `time` | `Unit -> Nat` | Current Unix time in milliseconds |
+| `stderr` | `String -> Unit` | Write a UTF-8 string to stderr |
 
 IO operations are handled by the runtime (see Chapter 12, Section 12.4.1). Programs do not need to declare `effect IO { ... }` — the operations are available automatically when `effects(<IO>)` is specified. See Chapter 9, Section 9.5.1 for detailed documentation and examples.
 
@@ -317,6 +320,26 @@ effect Diverge {}
 ```
 
 The `Diverge` effect has no operations. Declaring `effects(<Diverge>)` means the function may not terminate. Functions without `Diverge` in their effect row MUST be proven to terminate (via `decreases` clauses on recursion).
+
+### 7.7.4 `Random`
+
+```
+effect Random {
+  op random_int(Int, Int -> Int);
+  op random_float(Unit -> Float64);
+  op random_bool(Unit -> Bool);
+}
+```
+
+The `Random` effect models non-deterministic value generation. Functions that draw random values must declare `effects(<Random>)`, making the non-determinism visible in the type signature so callers can audit which functions can produce different outputs across calls.
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `random_int` | `Int, Int -> Int` | Random integer in inclusive range `[low, high]` (caller ensures `low <= high`) |
+| `random_float` | `Unit -> Float64` | Uniform random in `[0.0, 1.0)` |
+| `random_bool` | `Unit -> Bool` | Coin flip |
+
+Like `IO`, `Random` is built-in — no `effect Random { ... }` declaration is needed. Random results are unconstrained in Z3 (no useful axioms beyond the explicit range bound on `random_int`); contracts that depend on specific random values fall to runtime checking. Operations are host-backed (see Chapter 12, Section 12.4.5). No determinism / seeding API is offered yet — handler-based seeding via `handle[Random]` is future work.
 
 ## 7.8 Effect Subtyping
 

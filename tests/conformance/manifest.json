@@ -588,6 +588,20 @@
     ]
   },
   {
+    "id": "ch07_random_effect",
+    "file": "ch07_random_effect.vera",
+    "chapter": 7,
+    "title": "Random effect (#465)",
+    "level": "verify",
+    "spec_ref": "Section 7.2",
+    "features": [
+      "random_effect",
+      "random_int",
+      "random_float",
+      "random_bool"
+    ]
+  },
+  {
     "id": "ch07_state_handler",
     "file": "ch07_state_handler.vera",
     "chapter": 7,

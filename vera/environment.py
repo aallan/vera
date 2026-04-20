@@ -421,6 +421,31 @@ class TypeEnv:
             operations={},
         )
 
+        # Random effect — non-determinism via host imports.
+        # Functions using Random.* must declare effects(<Random>); the
+        # type signature carries the non-determinism explicitly so
+        # callers can audit it.  See #465.
+        self.effects["Random"] = EffectInfo(
+            name="Random",
+            type_params=None,
+            operations={
+                # random_int(low, high) → Int in inclusive range
+                # [low, high].  Caller must ensure low <= high.
+                "random_int": OpInfo(
+                    "random_int", (INT, INT), INT, "Random",
+                ),
+                # random_float() → Float64 in [0.0, 1.0).  Unit
+                # argument erased at the WASM boundary.
+                "random_float": OpInfo(
+                    "random_float", (UNIT,), FLOAT64, "Random",
+                ),
+                # random_bool() → Bool.  Coin flip.
+                "random_bool": OpInfo(
+                    "random_bool", (UNIT,), BOOL, "Random",
+                ),
+            },
+        )
+
         # Inference effect — LLM calls via host imports.
         # Functions using Inference.complete must declare effects(<Inference>).
         self.effects["Inference"] = EffectInfo(

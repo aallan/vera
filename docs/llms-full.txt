@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.114. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.115. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -1016,6 +1016,7 @@ effects(<State<Int>>)            -- uses integer state
 effects(<State<Int>, IO>)        -- multiple effects
 effects(<Http, IO>)              -- network + IO
 effects(<Async>)                 -- async computation
+effects(<Random>)                -- non-deterministic (random number generation)
 effects(<Diverge>)               -- may not terminate
 effects(<Diverge, IO>)           -- divergent with IO
 ```
@@ -1233,6 +1234,40 @@ public fn safe_classify(@String -> @String)
 ```
 
 Like `Http`, `Inference` is host-backed. The browser runtime returns a detailed `Err` explaining that API keys cannot be safely embedded in client-side JavaScript; use a server-side proxy with `Http` instead.
+
+### Random effect
+
+The `Random` effect provides non-deterministic number generation. Like `IO` and `Http`, it is built-in — no `effect Random { ... }` declaration is needed. Functions that draw random values must declare `effects(<Random>)`, making the non-determinism visible in the type signature.
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `Random.random_int` | `Int, Int -> Int` | Random integer in inclusive range `[low, high]` (caller ensures `low <= high`) |
+| `Random.random_float` | `Unit -> Float64` | Uniform random in `[0.0, 1.0)` |
+| `Random.random_bool` | `Unit -> Bool` | Coin flip |
+
+```vera
+private fn pick_card(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 1 && @Int.result <= 52)
+  effects(<Random>)
+{
+  Random.random_int(1, 52)
+}
+```
+
+The Python runtime backs Random onto the `random` module (`random.randint`, `random.random()`). The browser runtime backs all three onto `Math.random()` — fast, non-cryptographic, adequate for games and simulations. There is no seeding API yet (deterministic testing via `handle[Random]` is future work).
+
+Functions that mix randomness with other effects compose normally:
+
+```vera
+public fn print_random_card(-> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO, Random>)
+{
+  IO.print(int_to_string(pick_card(())))
+}
+```
 
 ### Effect handlers
 
@@ -1924,7 +1959,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 75 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 76 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -1986,7 +2021,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 75 small, self-contained programs — one per language feature — that serve as minimal working examples. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 76 small, self-contained programs — one per language feature — that serve as minimal working examples. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -2139,7 +2174,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 75 conformance programs must pass
+python scripts/check_conformance.py    # All 76 conformance programs must pass
 python scripts/check_examples.py       # All 30 examples must pass
 ```
 
@@ -2149,7 +2184,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 75 conformance programs in `tests/conformance/` must pass their declared level
+- All 76 conformance programs in `tests/conformance/` must pass their declared level
 - All 30 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
@@ -2328,7 +2363,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (75 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (76 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -2369,14 +2404,14 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 13-chapter formal specification
-- Over 3,000 unit tests plus a 75-program conformance suite
+- Over 3,000 unit tests plus a 76-program conformance suite
 - 30 working example programs
 - 122 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
 - Full IO operations (print, read_line, read_file, write_file, args, exit, get_env, sleep, time, stderr)
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
 - Algebraic effect handlers with resume and state
-- Built-in `<Http>`, `<Inference>`, `<State>`, `<IO>`, `<Async>` effects
+- Built-in `<Http>`, `<Inference>`, `<State>`, `<IO>`, `<Async>`, `<Random>` effects
 - `<Inference>` dispatches to Anthropic, OpenAI, Kimi (Moonshot), or Mistral via env vars
 - Collection types: `Map<K,V>`, `Set<T>`, `Array<T>`, `Decimal`, `Json`, `HtmlNode`, `Markdown`
 - String interpolation with auto-conversion for primitive types

@@ -181,11 +181,11 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.0.114 — 810+ commits, 114 releases, 3,348 tests, 96% code coverage, 75 conformance programs, 30 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.0.115 — 810+ commits, 115 releases, 3,368 tests, 96% code coverage, 76 conformance programs, 30 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [13 chapters](spec/).
 
-**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, algebraic effects (IO, Http, State, Exceptions, Async, Inference), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 122 built-in functions (strings, arrays, maps, sets, decimals, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, canonical formatter, browser runtime, and three-tier verification (Z3 static, guided, runtime fallback).
+**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 122 built-in functions (strings, arrays, maps, sets, decimals, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, canonical formatter, browser runtime, and three-tier verification (Z3 static, guided, runtime fallback).
 
 **What's next:** the path from "working language" to "the language agents actually use" — see **[ROADMAP.md](ROADMAP.md)** for the four strategic milestones. The flagship goal is a verified MCP tool server where contracts guarantee tool schemas at compile time. **[VeraBench](https://github.com/aallan/vera-bench)** — a 50-problem benchmark across 5 difficulty tiers — now covers 6 models across 3 providers (v0.0.7). The headline result: Kimi K2.5 achieves 100% run_correct on Vera, beating both Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera; the flagship tier averages 93% Vera vs 93% Python — essentially parity. These are single-run results with high variance — see the [full report](https://github.com/aallan/vera-bench) for details.
 

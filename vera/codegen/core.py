@@ -105,6 +105,7 @@ class CodeGenerator(
         self._html_ops_used: set[str] = set()  # Html host-import builtins
         self._http_ops_used: set[str] = set()  # Http host-import builtins
         self._inference_ops_used: set[str] = set()  # Inference host-import builtins
+        self._random_ops_used: set[str] = set()  # Random host-import builtins (#465)
 
         # ADT layout metadata (populated during registration)
         self._adt_layouts: dict[str, dict[str, ConstructorLayout]] = {}
@@ -217,6 +218,7 @@ class CodeGenerator(
                 html_ops_used=set(),
                 http_ops_used=set(),
                 inference_ops_used=set(),
+                random_ops_used=set(),
             )
 
         # Pass 0: register imported module declarations (C7e)
@@ -273,6 +275,7 @@ class CodeGenerator(
                 html_ops_used=set(self._html_ops_used),
                 http_ops_used=set(self._http_ops_used),
                 inference_ops_used=set(self._inference_ops_used),
+                random_ops_used=set(self._random_ops_used),
             )
 
         # Pass 2: compile function bodies
@@ -360,6 +363,7 @@ class CodeGenerator(
                 html_ops_used=set(self._html_ops_used),
                 http_ops_used=set(self._http_ops_used),
                 inference_ops_used=set(self._inference_ops_used),
+                random_ops_used=set(self._random_ops_used),
             )
 
         fn_param_types = {
@@ -381,6 +385,7 @@ class CodeGenerator(
             html_ops_used=set(self._html_ops_used),
             http_ops_used=set(self._http_ops_used),
             inference_ops_used=set(self._inference_ops_used),
+            random_ops_used=set(self._random_ops_used),
             fn_param_types=fn_param_types,
         )
 
