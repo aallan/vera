@@ -10,6 +10,8 @@ Test helpers follow the established pattern:
 
 from __future__ import annotations
 
+import re
+
 import pytest
 import wasmtime
 
@@ -10356,6 +10358,262 @@ public fn main(-> @Int)
             f"random_bool didn't produce both outcomes in 100 seeded "
             f"draws; observed {observed}"
         )
+
+
+class TestMathBuiltins:
+    """Tests for math built-ins (#467).
+
+    Fifteen functions across four groups:
+    - Logarithmic (host-imported): ``log``, ``log2``, ``log10``
+    - Trigonometric (host-imported): ``sin``, ``cos``, ``tan``,
+      ``asin``, ``acos``, ``atan``, ``atan2``
+    - Constants (inlined as ``f64.const``): ``pi``, ``e``
+    - Utilities (inlined WAT): ``sign``, ``clamp``, ``float_clamp``
+
+    Tests focus on exact identities (``log(e()) == 1``, ``sin(0)
+    == 0``), boundary / domain edge cases, and WAT
+    import-gating — the 10 host-imported ops must appear in
+    ``result.wat`` only when used.
+    """
+
+    def test_log_identities(self) -> None:
+        """log(e()) == 1; log2(2) == 1; log10(10) == 1."""
+        source = """\
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{
+  log(e()) + log2(2.0) + log10(10.0)
+}
+"""
+        result = _compile_ok(source)
+        # Only the three log imports, no trig imports emitted.
+        # Use regex with a trailing non-digit requirement so the
+        # substring ``$vera.log`` doesn't false-match on
+        # ``$vera.log2`` or ``$vera.log10``.
+        assert re.search(r"\$vera\.log(?!\d)", result.wat)
+        assert "$vera.log2" in result.wat
+        assert "$vera.log10" in result.wat
+        assert "$vera.sin" not in result.wat
+        assert "$vera.atan2" not in result.wat
+        # Each identity = 1.0; sum = 3.0.
+        v = execute(result, fn_name="main").value
+        assert abs(v - 3.0) < 1e-10, f"expected ≈3.0, got {v}"
+
+    def test_sin_cos_tan_at_zero(self) -> None:
+        """sin(0) == 0, cos(0) == 1, tan(0) == 0."""
+        source = """\
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{
+  sin(0.0) + cos(0.0) + tan(0.0)
+}
+"""
+        result = _compile_ok(source)
+        assert "$vera.sin" in result.wat
+        assert "$vera.cos" in result.wat
+        assert "$vera.tan" in result.wat
+        assert "$vera.log" not in result.wat
+        v = execute(result, fn_name="main").value
+        # 0 + 1 + 0 = 1
+        assert abs(v - 1.0) < 1e-10
+
+    def test_inverse_trig_at_known_points(self) -> None:
+        """asin(0)==0, acos(1)==0, atan2(0.5, 1.0) == atan(0.5).
+
+        Each expression exercises a distinct host import.  The final
+        identity uses *asymmetric* arguments — `atan2(0.5, 1.0)`
+        equals `atan(0.5/1.0) = atan(0.5)` only when the POSIX
+        `atan2(y, x)` argument order is respected.  A swapped
+        implementation that treated the Vera call as `atan2(x, y)`
+        internally would compute `atan(1.0/0.5) = atan(2.0)`, which
+        differs from `atan(0.5)` by about 0.6 radians and fails the
+        assertion immediately.  Symmetric inputs (`atan2(1, 1)`)
+        would mask this bug.
+        """
+        source = """\
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{
+  asin(0.0) + acos(1.0) + (atan2(0.5, 1.0) - atan(0.5))
+}
+"""
+        result = _compile_ok(source)
+        assert "$vera.asin" in result.wat
+        assert "$vera.acos" in result.wat
+        assert "$vera.atan" in result.wat
+        assert "$vera.atan2" in result.wat
+        v = execute(result, fn_name="main").value
+        # asin(0) = 0, acos(1) = 0,
+        # atan2(0.5, 1.0) - atan(0.5) = 0 in exact arithmetic (POSIX
+        # argument order).  The host implementations round
+        # independently, so the final sum is within one ULP of zero
+        # rather than bit-exact — still small enough to catch a
+        # swapped `atan2(x, y)` implementation, which would miss by
+        # roughly 0.6 radians.
+        assert abs(v) < 1e-15, (
+            f"inverse-trig identity broken (possible swapped atan2 args): {v}"
+        )
+
+    def test_pi_and_e_constants(self) -> None:
+        """pi() and e() return known high-precision constants.
+
+        Values must round-trip to 17 digits so Python and browser
+        runtimes produce identical results.  pi() is inlined as
+        ``f64.const 3.141592653589793`` — no host call, no import.
+        """
+        import math
+        source_pi = """\
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ pi() }
+"""
+        source_e = """\
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{ e() }
+"""
+        pi_result = _compile_ok(source_pi)
+        e_result = _compile_ok(source_e)
+        # Inlined — no host import should be emitted.
+        assert "$vera.pi" not in pi_result.wat
+        assert "$vera.e" not in e_result.wat
+        assert execute(pi_result, fn_name="main").value == math.pi
+        assert execute(e_result, fn_name="main").value == math.e
+
+    def test_sign(self) -> None:
+        """sign(x) returns -1 for negative, 0 for zero, 1 for positive.
+
+        Covers all three branches of the inline
+        ``(x > 0) - (x < 0)`` encoding.  No host import needed.
+        """
+        for x, expected in [(-42, -1), (-1, -1), (0, 0), (1, 1), (9999, 1)]:
+            source = f"""\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{{ sign({x}) }}
+"""
+            result = _compile_ok(source)
+            assert "$vera.sign" not in result.wat  # inlined
+            v = execute(result, fn_name="main").value
+            assert v == expected, f"sign({x}): expected {expected}, got {v}"
+
+    def test_clamp_int(self) -> None:
+        """clamp(v, lo, hi) = min(max(v, lo), hi).
+
+        Covers the three branches (below lo / in range / above hi)
+        plus the signed-integer handling that clamp's `gt_s`/`lt_s`
+        comparisons depend on.  `clamp(-10, -5, 5) == -5` checks
+        negative inputs work.
+        """
+        cases = [
+            # (v, lo, hi, expected)
+            (5, 0, 10, 5),      # within range → v
+            (-3, 0, 10, 0),     # below lo → lo
+            (15, 0, 10, 10),    # above hi → hi
+            (-10, -5, 5, -5),   # negative range, below
+            (100, -5, 5, 5),    # negative range, above
+            (7, 7, 7, 7),       # singleton (lo == hi == v)
+            (0, 0, 0, 0),       # zero singleton
+            # Inverted bounds (lo > hi): the min(max()) formulation
+            # pins to ``hi`` regardless of ``v``.  Callers passing
+            # ``lo > hi`` are outside the contract, but we document
+            # the fallthrough behavior so changes to the WAT
+            # sequence get caught.
+            (5, 10, 0, 0),      # v in [hi, lo] → hi
+            (-5, 10, 0, 0),     # v below hi → hi
+            (100, 10, 0, 0),    # v above lo → hi
+        ]
+        for v, lo, hi, expected in cases:
+            source = f"""\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{{ clamp({v}, {lo}, {hi}) }}
+"""
+            result = _compile_ok(source)
+            got = execute(result, fn_name="main").value
+            assert got == expected, (
+                f"clamp({v}, {lo}, {hi}): expected {expected}, got {got}"
+            )
+
+    def test_float_clamp(self) -> None:
+        """float_clamp covers floating-point clamp semantics.
+
+        Uses ``f64.max`` / ``f64.min`` natively (no host call).
+        Worth testing: out-of-range, in-range, and that the
+        ordering isn't flipped by IEEE-754 quirks.
+        """
+        cases = [
+            (0.5, 0.0, 1.0, 0.5),
+            (3.5, 0.0, 1.0, 1.0),
+            (-3.5, 0.0, 1.0, 0.0),
+            (-1.5, -2.0, -1.0, -1.5),  # negative in-range
+            # Inverted bounds (lo > hi): mirrors the integer case —
+            # ``f64.min(f64.max(v, lo), hi) == hi`` whenever lo > hi.
+            (0.5, 1.0, 0.0, 0.0),
+            (-1.0, 1.0, 0.0, 0.0),
+            (5.0, 1.0, 0.0, 0.0),
+        ]
+        for v, lo, hi, expected in cases:
+            source = f"""\
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{{ float_clamp({v}, {lo}, {hi}) }}
+"""
+            result = _compile_ok(source)
+            got = execute(result, fn_name="main").value
+            assert got == expected, (
+                f"float_clamp({v}, {lo}, {hi}): expected {expected}, got {got}"
+            )
+
+    def test_math_domain_nan(self) -> None:
+        """Out-of-domain inputs return NaN under the Python wasmtime target.
+
+        Mirrors the browser-side ``test_domain_edges_nan`` parity check
+        so the two runtimes can be compared directly.  The Python host
+        wrapper in ``vera/codegen/api.py::_math_unary_host`` catches
+        ``math.log``'s ``ValueError`` and returns ``float("nan")``;
+        without that translation this test would trap with a host-
+        callback error and fail loudly rather than producing NaN.
+        """
+        import math as _math
+
+        cases = [
+            ("log(-1.0)",  "log"),
+            ("asin(2.0)",  "asin"),
+            ("acos(2.0)",  "acos"),
+        ]
+        for expr, _op in cases:
+            source = f"""\
+public fn main(-> @Float64)
+  requires(true) ensures(true) effects(pure)
+{{ {expr} }}
+"""
+            result = _compile_ok(source)
+            v = execute(result, fn_name="main").value
+            assert _math.isnan(v), f"{expr}: expected NaN, got {v}"
+
+    def test_math_ops_gated_when_unused(self) -> None:
+        """A module that uses no math builtins emits no math imports.
+
+        Regression for the gating: if ``_math_ops_used`` was ever
+        populated unconditionally, every compiled module would
+        import all 10 host functions — a 10% size bloat for
+        programs that don't use them.  Compile a trivial pure
+        program and assert none of the 10 math imports appear.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+"""
+        result = _compile_ok(source)
+        for op in (
+            "log", "log2", "log10", "sin", "cos", "tan",
+            "asin", "acos", "atan", "atan2",
+        ):
+            assert f"$vera.{op}" not in result.wat, (
+                f"${op} import leaked into unrelated program"
+            )
 
 
 class TestDecimalMonomorphization:

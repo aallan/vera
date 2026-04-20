@@ -260,6 +260,33 @@ class CallsMixin:
                 return self._translate_nan()
             if call.name == "infinity" and len(call.args) == 0:
                 return self._translate_infinity()
+            # Math builtins (#467) — log/trig via host imports,
+            # constants and sign/clamp inlined as WAT.
+            if call.name in (
+                "log", "log2", "log10",
+                "sin", "cos", "tan", "asin", "acos", "atan",
+            ) and len(call.args) == 1:
+                return self._translate_math_unary_host(
+                    call.name, call.args[0], env,
+                )
+            if call.name == "atan2" and len(call.args) == 2:
+                return self._translate_atan2(
+                    call.args[0], call.args[1], env,
+                )
+            if call.name == "pi" and len(call.args) == 0:
+                return self._translate_pi()
+            if call.name == "e" and len(call.args) == 0:
+                return self._translate_e()
+            if call.name == "sign" and len(call.args) == 1:
+                return self._translate_sign(call.args[0], env)
+            if call.name == "clamp" and len(call.args) == 3:
+                return self._translate_clamp(
+                    call.args[0], call.args[1], call.args[2], env,
+                )
+            if call.name == "float_clamp" and len(call.args) == 3:
+                return self._translate_float_clamp(
+                    call.args[0], call.args[1], call.args[2], env,
+                )
             # Ability operations dispatched at WASM level (§9.8)
             if call.name == "show" and len(call.args) == 1:
                 return self._translate_show(call.args[0], env)

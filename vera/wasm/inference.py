@@ -325,6 +325,17 @@ class InferenceMixin:
             return "i64"
         if expr.name in ("sqrt", "pow"):
             return "f64"
+        # Math builtins (#467).  Log/trig/constants all return
+        # Float64.  sign returns Int (i64); clamp returns Int;
+        # float_clamp returns Float64.
+        if expr.name in (
+            "log", "log2", "log10",
+            "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+            "pi", "e", "float_clamp",
+        ):
+            return "f64"
+        if expr.name in ("sign", "clamp"):
+            return "i64"
         # Numeric type conversions
         if expr.name == "int_to_float":
             return "f64"
@@ -656,6 +667,20 @@ class InferenceMixin:
             return "Int"
         if call.name in ("sqrt", "pow"):
             return "Float64"
+        # Math builtins (#467) — mirror the WASM-type branches
+        # above so Vera-level type inference also handles these.
+        # Without these, code that nests a math call inside an
+        # expression whose Vera type is needed upstream (e.g.
+        # generics inference, `show`, `hash`) falls back to None
+        # and triggers mis-compiles.
+        if call.name in (
+            "log", "log2", "log10",
+            "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+            "pi", "e", "float_clamp",
+        ):
+            return "Float64"
+        if call.name in ("sign", "clamp"):
+            return "Int"
         # Numeric type conversions
         if call.name == "int_to_float":
             return "Float64"

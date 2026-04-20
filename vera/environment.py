@@ -1413,6 +1413,92 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # Logarithmic functions (#467).  All three go through host
+        # imports (`vera.log` / `vera.log2` / `vera.log10`) because
+        # WASM has no native logarithm instructions.  Return `NaN`
+        # for inputs <= 0 — JavaScript's `Math.log` returns NaN
+        # natively, and the Python host wrapper translates
+        # `math.log`'s `ValueError` ("math domain error") to NaN
+        # (see `vera/codegen/api.py::_math_unary_host`), so both
+        # runtimes expose the same IEEE 754 behaviour to Vera code.
+        for _log_name in ("log", "log2", "log10"):
+            self.functions[_log_name] = FunctionInfo(
+                name=_log_name,
+                forall_vars=None,
+                param_types=(FLOAT64,),
+                return_type=FLOAT64,
+                effect=PureEffectRow(),
+            )
+
+        # Trigonometric functions (#467).  Unary: sin/cos/tan plus
+        # their inverses asin/acos/atan (all Float64 → Float64).
+        # atan2 is binary (y, x) → Float64 for quadrant-correct
+        # angle-from-coordinates.  All go through host imports.
+        for _trig_name in ("sin", "cos", "tan", "asin", "acos", "atan"):
+            self.functions[_trig_name] = FunctionInfo(
+                name=_trig_name,
+                forall_vars=None,
+                param_types=(FLOAT64,),
+                return_type=FLOAT64,
+                effect=PureEffectRow(),
+            )
+        self.functions["atan2"] = FunctionInfo(
+            name="atan2",
+            forall_vars=None,
+            param_types=(FLOAT64, FLOAT64),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+
+        # Mathematical constants (#467).  Zero-arg FunctionInfos —
+        # user-facing syntax is `pi()` / `e()`.  Inlined in WAT as
+        # `f64.const 3.141592653589793` etc., no host call needed.
+        self.functions["pi"] = FunctionInfo(
+            name="pi",
+            forall_vars=None,
+            param_types=(),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+        self.functions["e"] = FunctionInfo(
+            name="e",
+            forall_vars=None,
+            param_types=(),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+
+        # Numeric utilities (#467).  sign/clamp/float_clamp are
+        # simple enough to inline in WAT rather than route through
+        # the host.  sign(x) returns -1/0/1.  Both clamp variants
+        # evaluate `min(max(v, lo), hi)` — so when `lo <= hi` the
+        # result is pinned to `[lo, hi]`, but when `lo > hi` the
+        # outer `min` dominates and the result equals `hi`.  This
+        # fallthrough is intentional; tests/test_codegen.py asserts
+        # it for both `clamp` (Int) and `float_clamp` (Float64).
+        self.functions["sign"] = FunctionInfo(
+            name="sign",
+            forall_vars=None,
+            param_types=(INT,),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["clamp"] = FunctionInfo(
+            name="clamp",
+            forall_vars=None,
+            # (value, min, max) → value clamped to [min, max]
+            param_types=(INT, INT, INT),
+            return_type=INT,
+            effect=PureEffectRow(),
+        )
+        self.functions["float_clamp"] = FunctionInfo(
+            name="float_clamp",
+            forall_vars=None,
+            param_types=(FLOAT64, FLOAT64, FLOAT64),
+            return_type=FLOAT64,
+            effect=PureEffectRow(),
+        )
+
         # Numeric type conversions
         self.functions["int_to_float"] = FunctionInfo(
             name="int_to_float",

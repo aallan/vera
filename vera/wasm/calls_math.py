@@ -1,8 +1,10 @@
 """Math and numeric conversion translation mixin for WasmContext.
 
 Handles: abs, min, max, floor, ceil, round, sqrt, pow, float_is_nan,
-float_is_infinite, nan, infinity, and numeric conversions (int_to_float,
-float_to_int, nat_to_int, int_to_nat, byte_to_int, int_to_byte).
+float_is_infinite, nan, infinity; log/log2/log10, sin/cos/tan/asin/
+acos/atan/atan2, pi/e constants, sign/clamp/float_clamp (#467);
+and numeric conversions (int_to_float, float_to_int, nat_to_int,
+int_to_nat, byte_to_int, int_to_byte).
 """
 
 from __future__ import annotations
@@ -455,3 +457,179 @@ class CallsMathMixin:
         WASM: ``f64.const inf`` pushes positive infinity onto the stack.
         """
         return ["f64.const inf"]
+
+    # -----------------------------------------------------------------
+    # Math built-ins — #467: log, trig, constants, numeric utilities.
+    # -----------------------------------------------------------------
+
+    def _translate_math_unary_host(
+        self, op_name: str, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate log/log2/log10/sin/cos/tan/asin/acos/atan → host call.
+
+        These aren't expressible as WASM instructions — there's no
+        ``f64.log`` or ``f64.sin``.  We emit a host import call
+        (``call $vera.{op_name}``) and add the op to
+        ``_math_ops_used`` so ``codegen/assembly.py`` emits the
+        matching ``(import "vera" "{op_name}" ...)`` declaration.
+        IEEE 754 semantics (NaN for out-of-domain, ±inf for
+        overflow) are preserved by the underlying Python ``math``
+        or JS ``Math`` implementations.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self._math_ops_used.add(op_name)
+        return [*arg_instrs, f"call $vera.{op_name}"]
+
+    def _translate_atan2(
+        self, y_arg: ast.Expr, x_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``atan2(y, x) → Float64`` — quadrant-correct angle.
+
+        Host-imported two-arg version.  Unlike ``atan(x)`` which is
+        single-arg and ambiguous about quadrant, ``atan2(y, x)``
+        returns the angle from `+x` to the vector `(x, y)` in
+        ``[-π, π]``.  The argument order mirrors POSIX / IEEE /
+        Python / JS conventions: `atan2(y, x)`, not `atan2(x, y)`.
+        """
+        y_instrs = self.translate_expr(y_arg, env)
+        x_instrs = self.translate_expr(x_arg, env)
+        if y_instrs is None or x_instrs is None:
+            return None
+        self._math_ops_used.add("atan2")
+        return [*y_instrs, *x_instrs, "call $vera.atan2"]
+
+    def _translate_pi(self) -> list[str]:
+        """Translate ``pi() → Float64`` as ``f64.const 3.14…``.
+
+        Inlined rather than host-imported — a host call round trip
+        just to return a constant would waste a dozen nanoseconds
+        per call.  Uses the same 17-digit representation as
+        ``math.pi`` / ``Math.PI`` so the value round-trips exactly
+        across Python / browser runtimes.
+        """
+        return ["f64.const 3.141592653589793"]
+
+    def _translate_e(self) -> list[str]:
+        """Translate ``e() → Float64`` as ``f64.const 2.71…``.
+
+        Same rationale as ``_translate_pi``.
+        """
+        return ["f64.const 2.718281828459045"]
+
+    def _translate_sign(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``sign(@Int) → @Int`` inline as `(x > 0) - (x < 0)`.
+
+        Returns `-1`, `0`, or `+1`.  Encoded as two comparisons and
+        a subtraction: `i64.gt_s` minus `i64.lt_s`, widened back to
+        i64 via ``i64.extend_i32_s``.  No branches.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        tmp = self.alloc_local("i64")
+        return [
+            *arg_instrs,
+            f"local.set {tmp}",
+            # (x > 0)
+            f"local.get {tmp}",
+            "i64.const 0",
+            "i64.gt_s",
+            "i64.extend_i32_s",
+            # (x < 0)
+            f"local.get {tmp}",
+            "i64.const 0",
+            "i64.lt_s",
+            "i64.extend_i32_s",
+            # gt - lt  ∈ {-1, 0, +1}
+            "i64.sub",
+        ]
+
+    def _translate_clamp(
+        self,
+        val_arg: ast.Expr,
+        min_arg: ast.Expr,
+        max_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``clamp(@Int, @Int, @Int) → @Int`` inline.
+
+        `clamp(v, lo, hi)` = `min(max(v, lo), hi)`.  Uses two
+        ``select`` sequences — no branches.  When ``lo > hi`` the
+        outer ``min`` wins, so the result is ``hi`` (consistent
+        with Rust's `i64::clamp` before its 1.50 panic was added).
+        Callers with strict ordering expectations should pre-check.
+
+        WASM ``select`` pops `[val1, val2, cond]` and pushes
+        ``val1`` if ``cond != 0`` else ``val2``.  For ``max(v, lo)``
+        we want ``v`` when ``v > lo``: stack = ``v; lo; (v > lo)``.
+        Saving the intermediate into a local keeps the second
+        ``select`` readable.
+        """
+        val_instrs = self.translate_expr(val_arg, env)
+        min_instrs = self.translate_expr(min_arg, env)
+        max_instrs = self.translate_expr(max_arg, env)
+        if val_instrs is None or min_instrs is None or max_instrs is None:
+            return None
+        v = self.alloc_local("i64")
+        lo = self.alloc_local("i64")
+        hi = self.alloc_local("i64")
+        mx = self.alloc_local("i64")  # max(v, lo) — intermediate
+        return [
+            *val_instrs, f"local.set {v}",
+            *min_instrs, f"local.set {lo}",
+            *max_instrs, f"local.set {hi}",
+            # max(v, lo): select v if (v > lo) else lo.
+            f"local.get {v}",
+            f"local.get {lo}",
+            f"local.get {v}",
+            f"local.get {lo}",
+            "i64.gt_s",
+            "select",
+            f"local.set {mx}",
+            # min(mx, hi): select mx if (mx < hi) else hi.
+            f"local.get {mx}",
+            f"local.get {hi}",
+            f"local.get {mx}",
+            f"local.get {hi}",
+            "i64.lt_s",
+            "select",
+        ]
+
+    def _translate_float_clamp(
+        self,
+        val_arg: ast.Expr,
+        min_arg: ast.Expr,
+        max_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``float_clamp(@Float64, @Float64, @Float64) → @Float64``.
+
+        Uses ``f64.max`` and ``f64.min`` which have native WASM
+        instructions.  IEEE 754 semantics: NaN propagates through
+        both ``f64.max`` and ``f64.min`` (result is NaN if any
+        input is NaN) — intentional, matches Python / JS fallbacks.
+        """
+        val_instrs = self.translate_expr(val_arg, env)
+        min_instrs = self.translate_expr(min_arg, env)
+        max_instrs = self.translate_expr(max_arg, env)
+        if val_instrs is None or min_instrs is None or max_instrs is None:
+            return None
+        v = self.alloc_local("f64")
+        lo = self.alloc_local("f64")
+        hi = self.alloc_local("f64")
+        return [
+            *val_instrs, f"local.set {v}",
+            *min_instrs, f"local.set {lo}",
+            *max_instrs, f"local.set {hi}",
+            # max(v, lo)
+            f"local.get {v}",
+            f"local.get {lo}",
+            "f64.max",
+            # min(that, hi)
+            f"local.get {hi}",
+            "f64.min",
+        ]

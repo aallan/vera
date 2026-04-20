@@ -131,7 +131,7 @@ data UrlParts {
 Constructors:
 - `UrlParts(@String, @String, @String, @String, @String)` — scheme, authority, path, query, fragment.
 
-See §9.6.13 for the `url_parse` and `url_join` function specifications.
+See §9.6.18 for the `url_parse` and `url_join` function specifications.
 
 ### 9.3.4 Future\<T\>
 
@@ -845,7 +845,42 @@ pow(2.0, 10)
 
 This expression evaluates to `1024.0`.
 
-### 9.6.10 Type Conversions
+### 9.6.10 Logarithmic, Trigonometric, and Numeric Utility Functions
+
+Fifteen additional math functions cover common scientific computing needs: three logarithms, seven trigonometric functions, two constants, and three numeric utilities. All are pure and (where applicable) defer to IEEE 754 semantics — returning `NaN` for out-of-domain inputs (`log(-1.0)`, `asin(2.0)`) and `±Infinity` for overflow.
+
+Most log and trig functions are uninterpreted in Z3's real-arithmetic fragment, so contracts that depend on their specific values fall to Tier 3 (runtime check). Call-site type checking and effect inference still apply.
+
+| Function | Signature | Description |
+|---|---|---|
+| `log` | `Float64 -> Float64` | Natural logarithm (base *e*) |
+| `log2` | `Float64 -> Float64` | Base-2 logarithm |
+| `log10` | `Float64 -> Float64` | Base-10 logarithm |
+| `sin` | `Float64 -> Float64` | Sine (radians) |
+| `cos` | `Float64 -> Float64` | Cosine (radians) |
+| `tan` | `Float64 -> Float64` | Tangent (radians) |
+| `asin` | `Float64 -> Float64` | Inverse sine, returns `[-π/2, π/2]` |
+| `acos` | `Float64 -> Float64` | Inverse cosine, returns `[0, π]` |
+| `atan` | `Float64 -> Float64` | Inverse tangent, returns `(-π/2, π/2)` |
+| `atan2` | `Float64, Float64 -> Float64` | Quadrant-correct angle from `(y, x)` — returns `[-π, π]` |
+| `pi` | `() -> Float64` | `3.141592653589793` |
+| `e` | `() -> Float64` | `2.718281828459045` |
+| `sign` | `Int -> Int` | `-1` for negative, `0` for zero, `1` for positive |
+| `clamp` | `Int, Int, Int -> Int` | `clamp(v, lo, hi)` restricts `v` to `[lo, hi]` |
+| `float_clamp` | `Float64, Float64, Float64 -> Float64` | Float64 variant of `clamp` |
+
+The argument order for `atan2` is `(y, x)`, matching POSIX, Python's `math.atan2`, and JavaScript's `Math.atan2` — `atan2(1.0, 1.0)` is `π/4`, `atan2(1.0, -1.0)` is `3π/4`.
+
+```vera
+let @Float64 = log(e())          -- evaluates to 1.0
+let @Float64 = atan2(1.0, 1.0)   -- evaluates to π/4 ≈ 0.785
+let @Int = sign(-42)              -- evaluates to -1
+let @Int = clamp(15, 0, 10)       -- evaluates to 10
+```
+
+Clamp is defined as `min(max(v, lo), hi)`; when `lo > hi` the outer `min` dominates and the result equals `hi`. This is intentional — callers with strict ordering expectations should pre-check their bounds.
+
+### 9.6.11 Type Conversions
 
 Vera has no implicit numeric conversions. The following built-in functions provide explicit conversions between numeric types.
 
@@ -947,7 +982,7 @@ match int_to_byte(65) {
 
 This expression evaluates to `65`.
 
-### 9.6.11 Float64 Predicates
+### 9.6.12 Float64 Predicates
 
 Vera provides built-in functions for testing and constructing IEEE 754 special float values (NaN and infinity).
 
@@ -1019,7 +1054,7 @@ public fn test_infinity(@Unit -> @Float64)
 { infinity() }
 ```
 
-### 9.6.12 String Search
+### 9.6.13 String Search
 
 String search functions test for the presence or position of substrings. All are pure, take `String` arguments, and operate on raw bytes (ASCII). All are Tier 3 for verification (String is not modeled in Z3).
 
@@ -1085,7 +1120,7 @@ match string_index_of("hello world", "world") {
 -- evaluates to 6
 ```
 
-### 9.6.13 String Transformation
+### 9.6.14 String Transformation
 
 String transformation functions produce new strings by modifying characters or structure. All allocate heap memory for the result and register it with the GC shadow stack. All are pure and Tier 3.
 
@@ -1226,7 +1261,7 @@ string_repeat("hello", 0)                -- "" (empty)
 string_repeat("", 100)                   -- "" (empty)
 ```
 
-### 9.6.14 Parsing Functions
+### 9.6.15 Parsing Functions
 
 Parsing functions convert strings to typed values, returning `Result<T, String>` to represent success or failure. All strip leading and trailing ASCII whitespace (spaces, tabs, `\r`, `\n`) before parsing. All are pure and Tier 3 for verification.
 
@@ -1326,7 +1361,7 @@ parse_bool("yes")          -- Err("expected true or false")
 parse_bool("")             -- Err("expected true or false")
 ```
 
-### 9.6.15 Base64
+### 9.6.16 Base64
 
 #### base64\_encode
 
@@ -1372,7 +1407,7 @@ base64_decode("ABC")                   -- Err("invalid base64 length")
 base64_decode("QQ!!")                  -- Err("invalid base64")
 ```
 
-### 9.6.16 URL Encoding
+### 9.6.17 URL Encoding
 
 #### url\_encode
 
@@ -1417,7 +1452,7 @@ url_decode("%ZZ")                  -- Err("invalid percent-encoding")
 url_decode("%4")                   -- Err("invalid percent-encoding")
 ```
 
-### 9.6.17 URL Parsing
+### 9.6.18 URL Parsing
 
 The `UrlParts` ADT is defined in §9.3.3 and injected by the standard prelude (§9.1.2).
 
@@ -1457,7 +1492,7 @@ url_join(UrlParts("", "", "", "", ""))
   -- ""
 ```
 
-### 9.6.18 similarity (Future)
+### 9.6.19 similarity (Future)
 
 > **Status: Not yet implemented.** Requires `Inference.embed` (returning `Array<Float64>`) which is deferred to a follow-up release. `Inference.complete` was implemented in v0.0.101 ([#61](https://github.com/aallan/vera/issues/61)); `embed` is tracked separately ([#371](https://github.com/aallan/vera/issues/371)).
 
@@ -1472,7 +1507,7 @@ Computes the cosine similarity between two vectors (embeddings). The arrays must
 
 This function is pure — it performs no effects. It is intended for use with the `Inference.embed` operation to compare semantic similarity of text.
 
-### 9.6.19 Regular Expressions
+### 9.6.20 Regular Expressions
 
 Four pure functions for pattern matching on strings using regular expressions. All accept patterns in standard regex syntax and return `Result` types to safely handle invalid patterns.
 

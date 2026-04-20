@@ -268,6 +268,11 @@ class CrossModuleMixin:
             "string_upper", "string_lower", "string_replace",
             "string_split", "string_join",
             "abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow",
+            # Math builtins (#467) — log/trig via host imports,
+            # pi/e/sign/clamp/float_clamp inlined as WAT.
+            "log", "log2", "log10",
+            "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+            "pi", "e", "sign", "clamp", "float_clamp",
             "int_to_float", "float_to_int", "nat_to_int", "int_to_nat",
             "byte_to_int", "int_to_byte",
             "float_is_nan", "float_is_infinite", "nan", "infinity",
