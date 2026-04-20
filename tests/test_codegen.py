@@ -10196,32 +10196,54 @@ class TestRandomEffect:
     """
 
     def test_random_int_in_range(self) -> None:
-        """Random.random_int(low, high) returns Int in [low, high].
+        """Random.random_int(low, high) returns Int in inclusive [low, high].
 
-        Runs 100 iterations over varied ranges — confirms that no
-        return ever falls outside the inclusive range and that
-        boundary values (low and high) can be produced.
+        Seeded with ``random.seed(0)`` so the test is deterministic
+        — not just \"probably covers the range.\"  After 100 draws
+        the produced set must:
+          (a) stay strictly within [low, high] on every draw,
+          (b) include both boundary values (enforces the inclusive
+              semantics — the original `len(produced) >= 4` check
+              didn't actually verify that `low` and `high` were hit),
+          (c) hit at least 4 of the 6 possible values (distribution
+              sanity).
+        Also asserts the WAT imports `$vera.random_int` and does
+        NOT import `$vera.random_float` or `$vera.random_bool` —
+        confirms ``_random_ops_used`` gating is working.
         """
         import random
-        random.seed(42)
-        source = """\
+        random.seed(0)
+        low, high = 5, 10
+        source = f"""\
 public fn main(-> @Int)
   requires(true) ensures(true) effects(<Random>)
-{
-  Random.random_int(5, 10)
-}
+{{
+  Random.random_int({low}, {high})
+}}
 """
         result = _compile_ok(source)
+        # WAT import-gating: only random_int should be imported.
+        assert "$vera.random_int" in result.wat
+        assert "$vera.random_float" not in result.wat
+        assert "$vera.random_bool" not in result.wat
+
         produced = set()
         for _ in range(100):
             v = execute(result, fn_name="main").value
-            assert 5 <= v <= 10, f"out of range: {v}"
+            assert low <= v <= high, f"out of range: {v}"
             produced.add(v)
-        # At least 4 of the 6 possible values should appear in 100 draws
+        # Inclusive-range contract: both boundary values must appear.
+        assert low in produced, f"low boundary {low} missing from {produced}"
+        assert high in produced, f"high boundary {high} missing from {produced}"
+        # Distribution sanity: at least 4 of 6 possible values in 100 draws.
         assert len(produced) >= 4, f"narrow distribution: {produced}"
 
     def test_random_int_singleton_range(self) -> None:
-        """random_int(n, n) always returns n — degenerate range."""
+        """random_int(n, n) always returns n — degenerate range.
+
+        Also asserts WAT gating: only `random_int` imported, not
+        `random_float` or `random_bool`.
+        """
         source = """\
 public fn main(-> @Int)
   requires(true) ensures(true) effects(<Random>)
@@ -10230,6 +10252,9 @@ public fn main(-> @Int)
 }
 """
         result = _compile_ok(source)
+        assert "$vera.random_int" in result.wat
+        assert "$vera.random_float" not in result.wat
+        assert "$vera.random_bool" not in result.wat
         for _ in range(20):
             assert execute(result, fn_name="main").value == 7
 
@@ -10238,6 +10263,8 @@ public fn main(-> @Int)
 
         Verifies the WASM f64 result is correctly marshalled back
         through wasmtime — Float64 returns are easy to mis-handle.
+        Also asserts WAT gating: only `random_float` imported, not
+        `random_int` or `random_bool`.
         """
         source = """\
 public fn main(-> @Float64)
@@ -10247,6 +10274,9 @@ public fn main(-> @Float64)
 }
 """
         result = _compile_ok(source)
+        assert "$vera.random_float" in result.wat
+        assert "$vera.random_int" not in result.wat
+        assert "$vera.random_bool" not in result.wat
         for _ in range(50):
             v = execute(result, fn_name="main").value
             assert isinstance(v, float)
@@ -10255,11 +10285,18 @@ public fn main(-> @Float64)
     def test_random_bool_produces_both(self) -> None:
         """Random.random_bool() produces both true and false in 100 draws.
 
-        Uses a constant-output program (returns 1 if true, 0 if
-        false) and asserts the sum across iterations is bounded
-        away from both extremes — catches a pathological host
-        impl that always returned one value.
+        Deterministic via ``random.seed(0)``: asserts both `0` and
+        `1` appear in the observed set (stronger than the previous
+        probabilistic ``25 <= total <= 75`` bound, which could
+        flake).  With a fixed seed the set is reproducible and the
+        test fails deterministically if the host impl becomes
+        degenerate.
+
+        Also asserts WAT gating: only `random_bool` imported, not
+        `random_int` or `random_float`.
         """
+        import random
+        random.seed(0)
         source = """\
 public fn main(-> @Int)
   requires(true) ensures(true) effects(<Random>)
@@ -10268,9 +10305,14 @@ public fn main(-> @Int)
 }
 """
         result = _compile_ok(source)
-        total = sum(execute(result, fn_name="main").value for _ in range(100))
-        # Bernoulli(0.5) over 100 trials: 99.9% inside [25, 75].  Generous bounds.
-        assert 25 <= total <= 75, f"degenerate distribution: {total} trues / 100"
+        assert "$vera.random_bool" in result.wat
+        assert "$vera.random_int" not in result.wat
+        assert "$vera.random_float" not in result.wat
+        observed = {execute(result, fn_name="main").value for _ in range(100)}
+        assert {0, 1}.issubset(observed), (
+            f"random_bool didn't produce both outcomes in 100 seeded "
+            f"draws; observed {observed}"
+        )
 
 
 class TestDecimalMonomorphization:

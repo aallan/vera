@@ -1736,6 +1736,27 @@ function buildImportObject(module) {
     // values then offset by low.  BigInt arithmetic keeps i64
     // semantics on the WASM boundary.
     imports.vera.random_int = (lowBig, highBig) => {
+      // Guard: i64 can hold values outside JS's 53-bit safe integer
+      // range.  Silently coercing a BigInt like 2^60 to Number loses
+      // precision and the returned span/result can be off by
+      // thousands.  Throw a clear error instead so callers see a
+      // real failure instead of subtle wrong numbers.  The WASM
+      // runtime turns this into a trap the host can surface.
+      const MIN_SAFE = BigInt(Number.MIN_SAFE_INTEGER);
+      const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+      if (lowBig < MIN_SAFE || highBig > MAX_SAFE) {
+        throw new Error(
+          `random_int bounds exceed JavaScript safe integer range ` +
+          `[${Number.MIN_SAFE_INTEGER}, ${Number.MAX_SAFE_INTEGER}]; ` +
+          `got [${lowBig}, ${highBig}]. ` +
+          `Use smaller bounds or adjust the runtime to use BigInt arithmetic.`
+        );
+      }
+      if (highBig < lowBig) {
+        throw new Error(
+          `random_int requires low <= high; got low=${lowBig}, high=${highBig}.`
+        );
+      }
       const low = Number(lowBig);
       const high = Number(highBig);
       const span = high - low + 1;
