@@ -10238,6 +10238,49 @@ public fn main(-> @Int)
         # Distribution sanity: at least 4 of 6 possible values in 100 draws.
         assert len(produced) >= 4, f"narrow distribution: {produced}"
 
+    def test_random_int_zero_crossing_range(self) -> None:
+        """random_int with a negative-to-positive range straddles zero.
+
+        Covers signed-integer handling paths that all-positive ranges
+        don't exercise: the Python `random.randint` accepts negative
+        bounds transparently, but the WASM i64 marshalling and
+        (browser-side) BigInt→Number conversion could in principle
+        mishandle the sign bit or the zero crossing.  A `[-2, 2]`
+        range forces every one of those 5 distinct values to appear
+        to satisfy the boundary+distribution assertions.
+
+        Also asserts WAT gating: only `random_int` imported.
+        """
+        import random
+        random.seed(0)
+        low, high = -2, 2
+        source = f"""\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(<Random>)
+{{
+  Random.random_int({low}, {high})
+}}
+"""
+        result = _compile_ok(source)
+        assert "$vera.random_int" in result.wat
+        assert "$vera.random_float" not in result.wat
+        assert "$vera.random_bool" not in result.wat
+
+        produced = set()
+        for _ in range(100):
+            v = execute(result, fn_name="main").value
+            assert low <= v <= high, f"out of range: {v}"
+            produced.add(v)
+        # Both boundaries must appear across the signed range.
+        assert low in produced, f"low boundary {low} missing from {produced}"
+        assert high in produced, f"high boundary {high} missing from {produced}"
+        # Zero specifically must be reachable — catches a bug where
+        # the zero value gets dropped or treated as a sentinel.
+        assert 0 in produced, f"zero missing from {produced}"
+        # Distribution sanity: the range has 5 values; seeded draws
+        # of 100 should comfortably cover at least 4.
+        assert len(produced) >= 4, f"narrow distribution: {produced}"
+
     def test_random_int_singleton_range(self) -> None:
         """random_int(n, n) always returns n — degenerate range.
 
