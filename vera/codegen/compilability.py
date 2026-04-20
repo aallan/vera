@@ -190,6 +190,14 @@ class CompilabilityMixin:
         "html_parse", "html_to_string", "html_query", "html_text",
     })
 
+    # Math host-imported builtins (#467).  Only the log/trig ops —
+    # pi/e and sign/clamp/float_clamp are inlined as WAT, no
+    # host import needed.
+    _MATH_BUILTINS = frozenset({
+        "log", "log2", "log10",
+        "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+    })
+
     def _scan_io_ops(self, node: ast.Node) -> None:
         """Walk a function body looking for IO, Markdown, and Regex builtins.
 
@@ -237,6 +245,8 @@ class CompilabilityMixin:
                 self._json_ops_used.add(node.name)
             if node.name in self._HTML_BUILTINS:
                 self._html_ops_used.add(node.name)
+            if node.name in self._MATH_BUILTINS:
+                self._math_ops_used.add(node.name)
             for arg in node.args:
                 self._scan_io_ops(arg)
         elif isinstance(node, ast.ConstructorCall):

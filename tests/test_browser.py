@@ -13,6 +13,7 @@ Requirements:
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -499,6 +500,224 @@ public fn main(-> @Unit)
             total += int(node["stdout"])
         # Bernoulli(0.5) over 50 trials: 99.9% inside [10, 40]. Generous bounds.
         assert 10 <= total <= 40, f"degenerate: {total}/50 trues"
+
+
+class TestBrowserMathBuiltins:
+    """Browser parity for math built-ins (#467).
+
+    All log/trig ops are host-imported in the browser runtime as
+    thin wrappers over `Math.log`, `Math.sin`, etc.  These tests
+    exercise the same identities as the Python-side unit tests,
+    confirming both runtimes produce equivalent Float64 values.
+    """
+
+    def test_log_identity(self, tmp_path: Path) -> None:
+        """log(e()) ≈ 1.0 in the browser runtime."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(log(e())))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        # Parse and compare — Math.log of Math.E should be very close to 1.
+        v = float(node["stdout"])
+        assert abs(v - 1.0) < 1e-10, f"log(e()) = {v}"
+
+    def test_sin_cos_at_zero(self, tmp_path: Path) -> None:
+        """sin(0) + cos(0) == 1 via the browser Math API."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(sin(0.0) + cos(0.0)))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert float(node["stdout"]) == 1.0
+
+    def test_atan2_quadrant(self, tmp_path: Path) -> None:
+        """atan2(1, 1) ≈ π/4 across the browser boundary.
+
+        Argument ordering matters: atan2(y, x) must match POSIX.
+        If the runtime accidentally inverted to atan2(x, y) the
+        value would still be π/4 for (1, 1), so use (1, -1) which
+        disambiguates (3π/4 vs -π/4).
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(atan2(1.0, -1.0)))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        # atan2(1, -1) = 3π/4 ≈ 2.356194...
+        v = float(node["stdout"])
+        assert abs(v - 3 * math.pi / 4) < 1e-6, f"atan2(1, -1) = {v}"
+
+    def test_pi_constant(self, tmp_path: Path) -> None:
+        """pi() returns π — inlined, no host import.
+
+        Browser runtime shouldn't emit a `vera.pi` binding; the
+        value comes from the WAT `f64.const`.  ``float_to_string``
+        truncates to 6 decimal digits, so the cross-runtime parity
+        check is "agrees to 6 digits" rather than bit-for-bit —
+        more precision is exercised by the Python-side unit test
+        which reads the raw `ExecuteResult.value`.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(pi()))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert abs(float(node["stdout"]) - math.pi) < 1e-5
+
+    def test_clamp_int(self, tmp_path: Path) -> None:
+        """Integer clamp is inlined WAT; browser should match Python."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(int_to_string(clamp(15, 0, 10)));
+  IO.print(",");
+  IO.print(int_to_string(clamp(-10, -5, 5)))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "10,-5"
+
+    def test_float_clamp(self, tmp_path: Path) -> None:
+        """``float_clamp`` round-trips through the browser's `f64.max`/`f64.min`.
+
+        Uses native WASM instructions (no host import), but the
+        browser still has to agree with Python on the `min(max(v, lo),
+        hi)` semantics.  Cases cover: inside-range, below-min,
+        above-max, and an exact bound where the result should equal
+        the bound bit-for-bit (no FP drift).  ``float_to_string``
+        truncates to 6 digits, so the inside-range case uses a value
+        that round-trips exactly at that precision.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(float_clamp(0.5, 0.0, 1.0)));   -- inside range
+  IO.print(",");
+  IO.print(float_to_string(float_clamp(-3.5, 0.0, 1.0)));  -- below min
+  IO.print(",");
+  IO.print(float_to_string(float_clamp(3.5, 0.0, 1.0)));   -- above max
+  IO.print(",");
+  IO.print(float_to_string(float_clamp(1.0, 0.0, 1.0)))    -- exact bound
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        parts = node["stdout"].split(",")
+        assert len(parts) == 4, f"unexpected stdout shape: {node['stdout']!r}"
+        expected = [0.5, 0.0, 1.0, 1.0]
+        for got_str, want in zip(parts, expected):
+            got = float(got_str)
+            assert abs(got - want) < 1e-6, (
+                f"float_clamp parity: got {got}, want {want}"
+            )
+
+    def test_sign(self, tmp_path: Path) -> None:
+        """``sign`` is inlined WAT; browser should match Python.
+
+        ``sign`` takes ``Int`` and returns ``Int`` (-1 / 0 / 1), so
+        the three distinguishing cases are positive, negative, and
+        zero.  There is no NaN case — NaN is a Float64 concept and
+        ``sign`` doesn't accept floats.  (``float_is_nan`` is
+        exercised in ``test_domain_edges_nan`` on the log/trig ops
+        that do return Float64.)
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(int_to_string(sign(42)));
+  IO.print(",");
+  IO.print(int_to_string(sign(-7)));
+  IO.print(",");
+  IO.print(int_to_string(sign(0)))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "1,-1,0"
+
+    @pytest.mark.parametrize(
+        "vera_expr, py_expected",
+        [
+            ("log2(8.0)",     3.0),           # Math.log2 parity
+            ("log10(1000.0)", 3.0),           # Math.log10 parity
+            ("tan(1.0)",      math.tan(1.0)),
+            ("atan(2.0)",     math.atan(2.0)),
+        ],
+    )
+    def test_unary_host_parity(
+        self, tmp_path: Path, vera_expr: str, py_expected: float,
+    ) -> None:
+        """Each log/trig host wrapper round-trips through the browser runtime.
+
+        The original browser suite only exercised `log`, `sin`, `cos`,
+        and `atan2`; `log2`, `log10`, `tan`, and `atan` went unverified
+        end-to-end even though each has its own `imports.vera.*`
+        binding in `runtime.mjs`.  A typo in any of those bindings
+        would have silently shipped.  This test compiles one call per
+        op, runs it under Node.js, and compares to the matching
+        `math.*` value with a tolerance that accommodates
+        `float_to_string`'s 6-digit truncation.
+        """
+        source = f'''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{{
+  IO.print(float_to_string({vera_expr}))
+}}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        v = float(node["stdout"])
+        assert abs(v - py_expected) < 1e-5, (
+            f"{vera_expr}: expected {py_expected}, got {v}"
+        )
+
+    def test_domain_edges_nan(self, tmp_path: Path) -> None:
+        """Out-of-domain inputs return NaN, matching IEEE 754 semantics.
+
+        `log(-1.0)`, `asin(2.0)`, `acos(2.0)` are all mathematically
+        undefined.  `Math.log`, `Math.asin`, `Math.acos` in JavaScript
+        all return `NaN` for these inputs, and the browser host wrapper
+        passes that through unchanged.  We verify the result via
+        ``float_is_nan`` (true/false instead of string-comparing "NaN"
+        which varies across runtimes) and cross the boundary once per
+        function to confirm the wrapper doesn't throw or coerce.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(bool_to_string(float_is_nan(log(-1.0))));
+  IO.print(",");
+  IO.print(bool_to_string(float_is_nan(asin(2.0))));
+  IO.print(",");
+  IO.print(bool_to_string(float_is_nan(acos(2.0))))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "true,true,true"
 
 
 # =====================================================================

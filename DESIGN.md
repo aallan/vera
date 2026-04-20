@@ -29,7 +29,7 @@ Technical decisions, rationale, and prior art. For the design philosophy and FAQ
 | Polymorphism | Monomorphized generics (`forall<T where Eq<T>>`) | No runtime dispatch; four built-in abilities (`Eq`, `Ord`, `Hash`, `Show`); types fully specialised at compile time |
 | Refinement types | `{ @T \| predicate }` checked by Z3 | Encode value-level constraints in the type system; rejected statically or at runtime |
 | Collections | `Array<T>`, `Map<K,V>`, `Set<T>` | Functional, immutable; no mutation, no loops; `array_map`/`filter`/`fold`/`slice` as built-ins |
-| Standard library | 122 built-in functions | Strings, arrays, maps, sets, decimals, JSON, HTML, Markdown, regex, base64, URL — no external deps |
+| Standard library | 137 built-in functions | Strings, arrays, maps, sets, decimals, math (log/trig/constants/utilities), JSON, HTML, Markdown, regex, base64, URL — no external deps |
 | Modules | `module`/`import` with explicit re-exports | Programs split across files; `vera check` resolves the module graph |
 | Recursion | Explicit termination measures (`decreases`) | Compiler verifies termination via Z3; no unbounded loops |
 | Evaluation | Strict (call-by-value) | Simpler for models to reason about; no lazy evaluation to track |

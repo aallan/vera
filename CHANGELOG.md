@@ -8,6 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 (no entries yet)
 
+## [0.0.116] - 2026-04-20
+
+### Added
+- **Math built-ins: log, trig, constants, numeric utilities** ([#467](https://github.com/aallan/vera/issues/467)) — fifteen new pure functions across four groups. Logarithmic: `log`, `log2`, `log10`. Trigonometric: `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` (quadrant-correct `(y, x)` argument order matching POSIX / Python / JS). Constants: `pi()` and `e()` (inlined as `f64.const 3.141592653589793` / `f64.const 2.718281828459045`, no host call). Numeric utilities: `sign(@Int)` returns `-1`/`0`/`1`; `clamp(@Int, @Int, @Int)` and `float_clamp(@Float64, @Float64, @Float64)` enforce `min(max(v, lo), hi)`. The 10 log/trig functions use host imports (wrapped Python `math.*` in the Python runtime, `Math.*` in the browser); the 5 constants/utilities are inlined as WAT for zero host-call overhead. Gated emission — modules that don't use a given op don't import it. Unlocks scientific computing, graphics, audio, physics, statistics. Conformance: `ch09_math_builtins.vera`. Closes [#467](https://github.com/aallan/vera/issues/467).
+
 ## [0.0.115] - 2026-04-18
 
 ### Added
@@ -1588,7 +1593,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.115...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.116...HEAD
+[0.0.116]: https://github.com/aallan/vera/compare/v0.0.115...v0.0.116
 [0.0.115]: https://github.com/aallan/vera/compare/v0.0.114...v0.0.115
 [0.0.114]: https://github.com/aallan/vera/compare/v0.0.113...v0.0.114
 [0.0.113]: https://github.com/aallan/vera/compare/v0.0.112...v0.0.113

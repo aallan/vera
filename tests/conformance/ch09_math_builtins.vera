@@ -1,0 +1,39 @@
+-- Conformance: math built-ins (Chapter 9, #467)
+-- Tests: 15 new math functions split across four groups:
+--   Logarithmic: log, log2, log10
+--   Trigonometric: sin, cos, tan, asin, acos, atan, atan2
+--   Constants:   pi, e
+--   Utilities:   sign, clamp, float_clamp
+--
+-- Verified at "verify" level — Z3's real-arithmetic fragment
+-- doesn't decide log/trig (they're uninterpreted), so run-level
+-- contracts that depend on specific values would fall to Tier 3.
+-- Contract plumbing and effect inference are what this test
+-- exercises; runtime behaviour is covered by unit tests in
+-- tests/test_codegen.py.
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- Logarithmic: `log(e()) == 1.0` identities type-check.
+  let @Float64 = log(e());
+  let @Float64 = log2(2.0);
+  let @Float64 = log10(10.0);
+  -- Trigonometric: all Float64 → Float64.
+  let @Float64 = sin(0.0);
+  let @Float64 = cos(0.0);
+  let @Float64 = tan(0.0);
+  let @Float64 = asin(0.0);
+  let @Float64 = acos(1.0);
+  let @Float64 = atan(1.0);
+  let @Float64 = atan2(1.0, 1.0);
+  -- Constants: zero-arg.
+  let @Float64 = pi();
+  let @Float64 = e();
+  -- Numeric utilities.
+  let @Int = sign(-42);
+  let @Int = clamp(15, 0, 10);
+  let @Float64 = float_clamp(3.5, 0.0, 1.0);
+  ()
+}

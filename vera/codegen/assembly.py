@@ -198,6 +198,27 @@ class AssemblyMixin:
                 "(func $vera.random_bool (result i32)))"
             )
 
+        # Math host imports (#467).  All log/trig ops share the
+        # same Float64 → Float64 unary shape, except atan2 which is
+        # (Float64, Float64) → Float64.  Mathematical constants
+        # pi()/e() and sign/clamp/float_clamp are inlined — no
+        # host import needed.
+        _MATH_UNARY = (
+            "log", "log2", "log10",
+            "sin", "cos", "tan", "asin", "acos", "atan",
+        )
+        for op_name in _MATH_UNARY:
+            if op_name in self._math_ops_used:
+                parts.append(
+                    f'  (import "vera" "{op_name}" '
+                    f"(func $vera.{op_name} (param f64) (result f64)))"
+                )
+        if "atan2" in self._math_ops_used:
+            parts.append(
+                '  (import "vera" "atan2" '
+                "(func $vera.atan2 (param f64 f64) (result f64)))"
+            )
+
         # Import contract_fail for informative violation messages
         if self._needs_contract_fail:
             parts.append(

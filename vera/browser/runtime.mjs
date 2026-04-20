@@ -1773,6 +1773,34 @@ function buildImportObject(module) {
     imports.vera.random_bool = () => (Math.random() < 0.5 ? 1 : 0);
   }
 
+  // ── Math host imports (#467) ───────────────────────────────────
+  // Log/trig families — all Float64 → Float64 except atan2 which
+  // is (y, x) → angle.  Constants pi/e and sign/clamp/float_clamp
+  // are inlined in WAT by the compiler, so they don't appear here.
+  // `Math.log`, `Math.log2`, `Math.log10` and the trig functions
+  // follow IEEE 754: NaN for out-of-domain inputs, ±Infinity for
+  // overflow.  Matches the Python runtime's `math.*` semantics.
+  const _mathUnary = {
+    log:   Math.log,
+    log2:  Math.log2,
+    log10: Math.log10,
+    sin:   Math.sin,
+    cos:   Math.cos,
+    tan:   Math.tan,
+    asin:  Math.asin,
+    acos:  Math.acos,
+    atan:  Math.atan,
+  };
+  for (const [name, fn] of Object.entries(_mathUnary)) {
+    if (needed.has(name)) {
+      imports.vera[name] = fn;
+    }
+  }
+  if (needed.has("atan2")) {
+    // Note argument order: (y, x), matching POSIX / Math.atan2.
+    imports.vera.atan2 = Math.atan2;
+  }
+
   // ── Html host imports ──────────────────────────────────────────
   // Lenient HTML parser using DOMParser (browser) or returning Err
   // in non-browser runtimes (Node.js).

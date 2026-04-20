@@ -28,7 +28,7 @@ Functions whose parameter or return types have no WASM representation (e.g., `Ar
 
 ### 12.2.2 Imports
 
-The module imports host functions for effects that the program uses:
+The module imports host functions from the runtime for two distinct reasons. The first is effect operations: `IO.print`, `Http.get`, `State.put`, and so on bind to host-provided implementations. The second is pure host-backed built-ins such as `log`, `sin`, `cos`, `atan2` — these have no WASM instruction equivalent and so are routed through host imports (`vera.log`, `vera.sin`, …) even though the Vera-level functions are pure. Each entry in the table below lists its condition; a module only imports what it actually uses.
 
 | Import | Signature | Condition |
 |--------|-----------|-----------|
@@ -45,6 +45,16 @@ The module imports host functions for effects that the program uses:
 | `vera.random_int` | `(i64, i64) -> (i64)` | Program uses `Random.random_int` |
 | `vera.random_float` | `() -> (f64)` | Program uses `Random.random_float` |
 | `vera.random_bool` | `() -> (i32)` | Program uses `Random.random_bool` |
+| `vera.log` | `(f64) -> (f64)` | Program uses `log` |
+| `vera.log2` | `(f64) -> (f64)` | Program uses `log2` |
+| `vera.log10` | `(f64) -> (f64)` | Program uses `log10` |
+| `vera.sin` | `(f64) -> (f64)` | Program uses `sin` |
+| `vera.cos` | `(f64) -> (f64)` | Program uses `cos` |
+| `vera.tan` | `(f64) -> (f64)` | Program uses `tan` |
+| `vera.asin` | `(f64) -> (f64)` | Program uses `asin` |
+| `vera.acos` | `(f64) -> (f64)` | Program uses `acos` |
+| `vera.atan` | `(f64) -> (f64)` | Program uses `atan` |
+| `vera.atan2` | `(f64, f64) -> (f64)` | Program uses `atan2` |
 | `vera.state_get_{T}` | `() -> {wasm_t}` | Program uses `State<T>.get` |
 | `vera.state_put_{T}` | `({wasm_t}) -> ()` | Program uses `State<T>.put` |
 | `vera.contract_fail` | `(i32, i32) -> ()` | Program has runtime contracts |
@@ -54,7 +64,7 @@ The module imports host functions for effects that the program uses:
 | `vera.md_has_code_block` | `(i32, i32, i32) -> (i32)` | Program uses `md_has_code_block` |
 | `vera.md_extract_code_blocks` | `(i32, i32, i32) -> (i32, i32)` | Program uses `md_extract_code_blocks` |
 
-Imports are only emitted when the program actually uses the corresponding effect operations. A pure program produces a module with no imports.
+Imports are only emitted when the program actually uses the corresponding host-backed feature — either an effect operation (`IO.*`, `Http.*`, `State.*`, `Random.*`, …) or a pure host-backed built-in (`vera.log`, `vera.sin`, `vera.atan2`, …). A pure program that uses only inlined built-ins (`pi()`, `sign`, `clamp`, arithmetic operators) produces a module with no imports.
 
 ### 12.2.3 Linear Memory
 

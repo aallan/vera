@@ -881,6 +881,28 @@ pow(@Float64.0, @Int.0)             -- returns Float64 (exponentiation)
 
 `abs` returns `Nat` because absolute values are non-negative. `floor`, `ceil`, and `round` convert `Float64` to `Int`; they trap on NaN or out-of-range values (WASM semantics). `round` uses IEEE 754 roundTiesToEven (banker's rounding): `round(2.5)` is `2`, not `3`. `pow` takes an `Int` exponent — negative exponents produce reciprocals (`pow(2.0, -1)` is `0.5`). The integer builtins (`abs`, `min`, `max`) are fully verifiable by the SMT solver (Tier 1). The float builtins fall to Tier 3 (runtime).
 
+### Logarithmic, trigonometric, and numeric utility functions
+
+```vera
+log(@Float64.0)                     -- natural logarithm (base e)
+log2(@Float64.0)                    -- base-2 logarithm
+log10(@Float64.0)                   -- base-10 logarithm
+sin(@Float64.0)                     -- sine (radians)
+cos(@Float64.0)                     -- cosine (radians)
+tan(@Float64.0)                     -- tangent (radians)
+asin(@Float64.0)                    -- inverse sine, returns [-π/2, π/2]
+acos(@Float64.0)                    -- inverse cosine, returns [0, π]
+atan(@Float64.0)                    -- inverse tangent, returns (-π/2, π/2)
+atan2(@Float64.0, @Float64.1)       -- quadrant-correct angle from (y, x)
+pi()                                -- 3.141592653589793
+e()                                 -- 2.718281828459045
+sign(@Int.0)                        -- returns Int: -1, 0, or 1
+clamp(@Int.0, @Int.1, @Int.2)       -- clamp(v, lo, hi) -> Int
+float_clamp(@Float64.0, @Float64.1, @Float64.2)  -- Float64 clamp
+```
+
+All log and trig functions follow IEEE 754 semantics: `NaN` for out-of-domain inputs (e.g. `log(-1.0)`, `asin(2.0)`), `±Infinity` for overflow. The argument order for `atan2` is `(y, x)`, matching POSIX / Python / JavaScript — `atan2(1.0, 1.0)` is `π/4`. `sign` and `clamp` are inlined as WAT (no host call). `pi()` and `e()` inline as `f64.const` constants. The log and trig functions fall to Tier 3 verification (they're uninterpreted in Z3's real-arithmetic fragment).
+
 ### Type conversions
 
 ```vera
@@ -1953,7 +1975,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 76 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 77 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 

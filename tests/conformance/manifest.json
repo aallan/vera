@@ -801,6 +801,31 @@
     ]
   },
   {
+    "id": "ch09_math_builtins",
+    "file": "ch09_math_builtins.vera",
+    "chapter": 9,
+    "title": "Math built-ins: log, trig, constants, utilities (#467)",
+    "level": "verify",
+    "spec_ref": "Section 9.6.10",
+    "features": [
+      "log",
+      "log2",
+      "log10",
+      "sin",
+      "cos",
+      "tan",
+      "asin",
+      "acos",
+      "atan",
+      "atan2",
+      "pi",
+      "e",
+      "sign",
+      "clamp",
+      "float_clamp"
+    ]
+  },
+  {
     "id": "ch09_type_conversions",
     "file": "ch09_type_conversions.vera",
     "chapter": 9,
