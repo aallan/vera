@@ -2211,7 +2211,12 @@ def execute(
             def host_random_int(
                 _caller: wasmtime.Caller, low: int, high: int,
             ) -> int:
-                return _random_mod.randint(low, high)
+                # S311 — Random effect is for games / simulations /
+                # Monte Carlo, not crypto.  #465 explicitly scopes
+                # the effect that way; secure randomness would
+                # warrant a separate `Crypto` effect with
+                # `secrets.randbelow`.
+                return _random_mod.randint(low, high)  # noqa: S311
 
             linker.define_func(
                 "vera", "random_int",
@@ -2225,7 +2230,8 @@ def execute(
         if "random_float" in result.random_ops_used:
             # vera.random_float() -> f64 in [0.0, 1.0)
             def host_random_float(_caller: wasmtime.Caller) -> float:
-                return _random_mod.random()
+                # S311 — see host_random_int; non-crypto by design.
+                return _random_mod.random()  # noqa: S311
 
             linker.define_func(
                 "vera", "random_float",
@@ -2236,7 +2242,8 @@ def execute(
         if "random_bool" in result.random_ops_used:
             # vera.random_bool() -> i32 (0 or 1)
             def host_random_bool(_caller: wasmtime.Caller) -> int:
-                return 1 if _random_mod.random() < 0.5 else 0
+                # S311 — see host_random_int; non-crypto by design.
+                return 1 if _random_mod.random() < 0.5 else 0  # noqa: S311
 
             linker.define_func(
                 "vera", "random_bool",
