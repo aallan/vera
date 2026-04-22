@@ -34,7 +34,7 @@ dev = [
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "mypy>=1.0",
-    "ruff>=0.9",
+    "ruff>=0.15.11",
     "pre-commit>=3.0",
     "pip-licenses>=5.0",
 ]
