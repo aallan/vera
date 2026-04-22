@@ -16,6 +16,8 @@ If the venv does not exist, create it first:
 python -m venv .venv && source .venv/bin/activate && pip install -e ".[dev]"
 ```
 
+If you prefer `uv`, use `uv sync --extra dev` (not plain `uv sync`). The `[dev]` extras group holds pytest, mypy, ruff, pre-commit, and pip-licenses; `uv sync` without `--extra dev` will quietly uninstall those and make `pytest` fall through to a non-venv copy that can't import `vera`.
+
 ## Key commands
 
 ```bash
