@@ -1,0 +1,91 @@
+# Auto-regenerate uv.lock on dependabot PRs that bump pyproject.toml.
+#
+# Why: dependabot updates pyproject.toml in place but does not always
+# regenerate uv.lock — depending on the ecosystem (`pip` vs `uv`) and
+# the version of dependabot in service. CI's `uv lock --check` step
+# fails whenever the two drift apart, so without this workflow every
+# Python dependency PR needs a manual `uv lock` commit before it can
+# land. This workflow does that automatically.
+#
+# Belt-and-braces with `.github/dependabot.yml`'s `package-ecosystem:
+# "uv"` setting. If GitHub's uv-ecosystem support regenerates the
+# lockfile itself, this workflow no-ops (uv lock produces no diff).
+# If it doesn't, this workflow fills the gap.
+#
+# Security: all values derived from PR metadata (title, head ref) are
+# passed through `env:` rather than interpolated directly into shell
+# `run:` blocks. This prevents command injection via crafted PR
+# titles. See:
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+name: Auto-regenerate uv.lock on dependabot PRs
+
+on:
+  pull_request:
+    paths:
+      - 'pyproject.toml'
+
+permissions:
+  # Only contents: write — the workflow checks out the branch, runs
+  # uv lock, and pushes the resulting uv.lock back. It does not
+  # comment, label, approve, or merge, so pull-requests: write would
+  # be unused privilege.
+  contents: write
+
+jobs:
+  refresh-lock:
+    # Serialize runs for the same PR. If dependabot pushes a second
+    # commit while an earlier run is mid-flight, both would compute
+    # uv.lock against different inputs and race the `git push` step,
+    # producing a non-fast-forward error. cancel-in-progress: true
+    # is correct here because uv.lock is *snapshot output* — derived
+    # entirely from the current pyproject.toml — so only the run
+    # against the newest commit produces a useful result.
+    concurrency:
+      group: dependabot-uv-lock-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+
+    # Gate on the *PR author*, not on the user who triggered the
+    # current run. Using github.actor would block "Re-run failed
+    # jobs" by a human (a common debugging path) because actor
+    # becomes the human on rerun while user.login stays as
+    # dependabot. See https://docs.github.com/en/actions/learn-github-actions/contexts#github-context
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out PR branch
+        uses: actions/checkout@v6
+        with:
+          # The `ref` input is parsed by actions/checkout itself, not
+          # interpreted as shell, so it's safe to pass directly here.
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: pip install 'uv>=0.5,<2'
+
+      - name: Regenerate uv.lock
+        run: uv lock
+
+      - name: Commit and push if uv.lock changed
+        # PR title is bound through env so a crafted title cannot
+        # inject shell into the commit message construction.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if git diff --quiet uv.lock; then
+            echo "uv.lock already in sync with pyproject.toml — nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uv.lock
+          git commit -m "chore: regenerate uv.lock for ${PR_TITLE}"
+          git push
