@@ -4,8 +4,13 @@
 version: 2
 
 updates:
-  # Python pip dependencies (pyproject.toml)
-  - package-ecosystem: "pip"
+  # Python dependencies — managed via uv.
+  # The "uv" ecosystem updates pyproject.toml AND regenerates uv.lock
+  # in the same PR so the lockfile stays in sync with manifest bumps.
+  # Using "pip" leaves uv.lock stale and breaks the `uv lock --check`
+  # step in CI lint (see PR #493 for the failure mode).
+  # https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file#package-ecosystem
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
