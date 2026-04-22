@@ -826,6 +826,23 @@
     ]
   },
   {
+    "id": "ch09_array_utilities",
+    "file": "ch09_array_utilities.vera",
+    "chapter": 9,
+    "title": "Array utility built-ins phase 1 (#466)",
+    "level": "run",
+    "spec_ref": "Section 9.6.21",
+    "features": [
+      "array_mapi",
+      "array_reverse",
+      "array_find",
+      "array_any",
+      "array_all",
+      "array_flatten",
+      "array_sort_by"
+    ]
+  },
+  {
     "id": "ch09_type_conversions",
     "file": "ch09_type_conversions.vera",
     "chapter": 9,

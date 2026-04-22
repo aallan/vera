@@ -212,6 +212,18 @@ class InferenceMixin:
         # array_range(start, end) → Array<Int> (i32_pair)
         if expr.name in ("array_range", "array_slice"):
             return "i32_pair"
+        # Array utilities (#466 phase 1):
+        # array_mapi / array_reverse / array_flatten / array_sort_by
+        # → Array<T> (i32_pair). array_find → Option<T> (i32 pointer).
+        # array_any / array_all → Bool (i32).
+        if expr.name in (
+            "array_mapi", "array_reverse", "array_flatten", "array_sort_by",
+        ):
+            return "i32_pair"
+        if expr.name == "array_find":
+            return "i32"
+        if expr.name in ("array_any", "array_all"):
+            return "i32"
         # string_length(string) → Int (i64)
         if expr.name == "string_length":
             return "i64"
@@ -515,6 +527,15 @@ class InferenceMixin:
             return "Int"
         if call.name in ("array_range", "array_slice"):
             return "Array"
+        # Array utilities (#466 phase 1).
+        if call.name in (
+            "array_mapi", "array_reverse", "array_flatten", "array_sort_by",
+        ):
+            return "Array"
+        if call.name == "array_find":
+            return "Option"
+        if call.name in ("array_any", "array_all"):
+            return "Bool"
         if call.name == "string_length":
             return "Int"
         if call.name in ("string_concat", "string_slice", "string_strip",

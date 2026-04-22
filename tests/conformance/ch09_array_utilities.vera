@@ -1,0 +1,153 @@
+-- Conformance: Array utility built-ins (Chapter 9, Section 9.6.21)
+-- Tests: array_mapi, array_reverse, array_find, array_any, array_all,
+--        array_flatten, array_sort_by
+--
+-- Phase 1 of #466: covers the seven array combinators that do not
+-- require Eq/Ord ability dispatch on the polymorphic element type.
+-- (array_sort, array_contains, and array_index_of are tracked
+-- separately; they need a way to invoke compare$T / eq$T as a
+-- first-class operation from inside the iterative WASM loop.)
+--
+-- Each test exercises one built-in via a small, self-contained
+-- program with a postcondition strong enough for Tier 1 verification
+-- where possible.
+-- ================================================================
+-- test_array_mapi
+-- array_mapi<A, B>(arr, fn(elem, idx)) -> Array<B>: map with index.
+-- ================================================================
+public fn test_array_mapi(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  let @Array<Int> = array_mapi(array_range(10, 13), fn(@Int, @Nat -> @Int) effects(pure) { @Int.0 + nat_to_int(@Nat.0) });
+  array_length(@Array<Int>.0)
+}
+
+-- ================================================================
+-- test_array_reverse
+-- array_reverse<T>(arr) -> Array<T>: reverse element order, length
+-- preserved.
+-- ================================================================
+public fn test_array_reverse(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  let @Array<Int> = array_reverse(array_range(1, 6));
+  array_length(@Array<Int>.0)
+}
+
+-- ================================================================
+-- test_array_find_some
+-- array_find<T>(arr, pred) -> Option<T>: first element matching.
+-- Returns Some when at least one element passes the predicate.
+-- ================================================================
+public fn test_array_find_some(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Int> = array_find(array_range(1, 10), fn(@Int -> @Bool) effects(pure) { @Int.0 > 5 });
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_array_find_none
+-- array_find returns None when no element passes the predicate.
+-- ================================================================
+public fn test_array_find_none(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Option<Int> = array_find(array_range(1, 5), fn(@Int -> @Bool) effects(pure) { @Int.0 > 100 });
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+
+-- ================================================================
+-- test_array_any_true
+-- array_any<T>(arr, pred) -> Bool: existential predicate, returns
+-- true if at least one element passes.
+-- ================================================================
+public fn test_array_any_true(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_any(array_range(-3, 3), fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 })
+}
+
+-- ================================================================
+-- test_array_any_false
+-- array_any returns false when no element passes.
+-- ================================================================
+public fn test_array_any_false(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_any(array_range(-3, 0), fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 })
+}
+
+-- ================================================================
+-- test_array_all_true
+-- array_all<T>(arr, pred) -> Bool: universal predicate, returns
+-- true when every element passes.
+-- ================================================================
+public fn test_array_all_true(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_all(array_range(1, 6), fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 })
+}
+
+-- ================================================================
+-- test_array_all_false
+-- array_all returns false when at least one element fails.
+-- ================================================================
+public fn test_array_all_false(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_all(array_range(-3, 3), fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 })
+}
+
+-- ================================================================
+-- test_array_flatten
+-- array_flatten<T>(Array<Array<T>>) -> Array<T>: concatenate one
+-- level of nested arrays.  Three sub-arrays of two elements each
+-- → length 6.
+-- ================================================================
+public fn test_array_flatten(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 6)
+  effects(pure)
+{
+  let @Array<Array<Int>> = array_map(array_range(0, 3), fn(@Int -> @Array<Int>) effects(pure) { array_range(@Int.0, @Int.0 + 2) });
+  let @Array<Int> = array_flatten(@Array<Array<Int>>.0);
+  array_length(@Array<Int>.0)
+}
+
+-- ================================================================
+-- test_array_sort_by
+-- array_sort_by<T>(arr, cmp) -> Array<T>: sort with custom
+-- comparator.  The comparator returns @Ordering (Less / Equal /
+-- Greater).  Sort an unsorted concatenation and check length.
+-- ================================================================
+public fn test_array_sort_by(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 9)
+  effects(pure)
+{
+  let @Array<Int> = array_sort_by(array_concat(array_concat(array_range(7, 10), array_range(1, 4)), array_range(4, 7)), fn(@Int, @Int -> @Ordering) effects(pure) { if @Int.1 < @Int.0 then { Less } else { if @Int.1 > @Int.0 then { Greater } else { Equal } } });
+  array_length(@Array<Int>.0)
+}

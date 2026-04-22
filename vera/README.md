@@ -97,7 +97,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ inference.py` | 1,055 | | Type inference, slot/type utilities, operator tables | |
 | ` ├ operators.py` | 712 | | Binary/unary operators, if, quantifiers, assert/assume, old/new | |
 | ` ├ calls.py` | 572 | | Core dispatcher for `_translate_call` / `_translate_qualified_call`, generic resolution, shared element-type inference (domain mixins below) | |
-| ` ├ calls_arrays.py` | 576 | | `array_length` / `append` / `range` / `concat` / `slice` | |
+| ` ├ calls_arrays.py` | 2,291 | | `array_length` / `append` / `range` / `concat` / `slice` / `map` / `filter` / `fold` / `mapi` / `reverse` / `find` / `any` / `all` / `flatten` / `sort_by` | |
 | ` ├ calls_containers.py` | 627 | | Map, Set, Decimal (opaque-handle types) | |
 | ` ├ calls_encoding.py` | 2,047 | | Base64 and URL encoding/decoding/parsing | |
 | ` ├ calls_handlers.py` | 379 | | Show/Hash ability dispatch, `handle[State<T>]` and `handle[Exn<E>]` | |
@@ -301,7 +301,7 @@ Context flags (`in_ensures`, `in_contract`, `current_return_type`, `current_effe
 
 `TypeEnv._register_builtins()` registers the built-in types and operations. Function names follow the `domain_verb` convention (see spec §9.1.1): `string_` prefix for string ops, `float_` prefix for float predicates, `source_to_target` for conversions, prefix-less for math universals only (`abs`, `min`, `max`, etc.). New built-in functions must follow these patterns.
 
-The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` in every program without explicit `data` declarations, along with Option/Result combinators and array operations (`array_slice`, `array_map`, `array_filter`, `array_fold`). User-defined `data` declarations with the same name shadow the prelude.
+The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` in every program without explicit `data` declarations, along with Option/Result combinators and the array built-ins (including `array_length`, `array_append`, `array_range`, `array_concat`, `array_slice`, `array_map`, `array_filter`, `array_fold`, `array_mapi`, `array_reverse`, `array_find`, `array_any`, `array_all`, `array_flatten`, `array_sort_by`). User-defined `data` declarations with the same name shadow the prelude.
 
 | Built-in | Kind | Details |
 |----------|------|---------|
@@ -318,6 +318,17 @@ The **standard prelude** automatically provides `Option<T>`, `Result<T, E>`, `Or
 | `array_append` | Function | `forall<T> Array<T>, T → Array<T>`, pure |
 | `array_range` | Function | `Int, Int → Array<Int>`, pure |
 | `array_concat` | Function | `forall<T> Array<T>, Array<T> → Array<T>`, pure |
+| `array_slice` | Function | `forall<T> Array<T>, Int, Int → Array<T>`, pure |
+| `array_map` | Function | `forall<A, B> Array<A>, fn(A → B) pure → Array<B>`, pure |
+| `array_filter` | Function | `forall<T> Array<T>, fn(T → Bool) pure → Array<T>`, pure |
+| `array_fold` | Function | `forall<T, U> Array<T>, U, fn(U, T → U) pure → U`, pure |
+| `array_mapi` | Function | `forall<A, B> Array<A>, fn(A, Nat → B) pure → Array<B>`, pure |
+| `array_reverse` | Function | `forall<T> Array<T> → Array<T>`, pure |
+| `array_find` | Function | `forall<T> Array<T>, fn(T → Bool) pure → Option<T>`, pure |
+| `array_any` | Function | `forall<T> Array<T>, fn(T → Bool) pure → Bool`, pure |
+| `array_all` | Function | `forall<T> Array<T>, fn(T → Bool) pure → Bool`, pure |
+| `array_flatten` | Function | `forall<T> Array<Array<T>> → Array<T>`, pure |
+| `array_sort_by` | Function | `forall<T> Array<T>, fn(T, T → Ordering) pure → Array<T>`, pure |
 | `string_length` | Function | `String → Nat`, pure |
 | `string_concat` | Function | `String, String → String`, pure |
 | `string_slice` | Function | `String, Nat, Nat → String`, pure |

@@ -597,6 +597,101 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # Array utility built-ins (#466 phase 1).  Mirrors the
+        # array_map/filter/fold pattern: iterative WASM over a
+        # call_indirect callback, no prelude recursion.  Phase 1
+        # covers the operations that do not require ability
+        # dispatch on a polymorphic element type; array_sort,
+        # array_contains, and array_index_of (all of which need
+        # compare$T / eq$T dispatch from inside a WASM loop) are
+        # tracked separately.
+        self.functions["array_mapi"] = FunctionInfo(
+            name="array_mapi",
+            forall_vars=("A", "B"),
+            param_types=(
+                AdtType("Array", (TypeVar("A"),)),
+                FunctionType(
+                    params=(TypeVar("A"), NAT),
+                    return_type=TypeVar("B"),
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=AdtType("Array", (TypeVar("B"),)),
+            effect=PureEffectRow(),
+        )
+        self.functions["array_reverse"] = FunctionInfo(
+            name="array_reverse",
+            forall_vars=("T",),
+            param_types=(AdtType("Array", (TypeVar("T"),)),),
+            return_type=AdtType("Array", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+        )
+        self.functions["array_find"] = FunctionInfo(
+            name="array_find",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Array", (TypeVar("T"),)),
+                FunctionType(
+                    params=(TypeVar("T"),),
+                    return_type=BOOL,
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=AdtType("Option", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+        )
+        self.functions["array_any"] = FunctionInfo(
+            name="array_any",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Array", (TypeVar("T"),)),
+                FunctionType(
+                    params=(TypeVar("T"),),
+                    return_type=BOOL,
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+        self.functions["array_all"] = FunctionInfo(
+            name="array_all",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Array", (TypeVar("T"),)),
+                FunctionType(
+                    params=(TypeVar("T"),),
+                    return_type=BOOL,
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=BOOL,
+            effect=PureEffectRow(),
+        )
+        self.functions["array_flatten"] = FunctionInfo(
+            name="array_flatten",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Array", (AdtType("Array", (TypeVar("T"),)),)),
+            ),
+            return_type=AdtType("Array", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+        )
+        self.functions["array_sort_by"] = FunctionInfo(
+            name="array_sort_by",
+            forall_vars=("T",),
+            param_types=(
+                AdtType("Array", (TypeVar("T"),)),
+                FunctionType(
+                    params=(TypeVar("T"), TypeVar("T")),
+                    return_type=AdtType("Ordering", ()),
+                    effect=PureEffectRow(),
+                ),
+            ),
+            return_type=AdtType("Array", (TypeVar("T"),)),
+            effect=PureEffectRow(),
+        )
+
         # Map<K, V> operations (host-import builtins)
         # Require Eq<K> + Hash<K> ability constraints.
         from vera.ast import AbilityConstraint

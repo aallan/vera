@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (`@T.n`) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-**Current version:** [0.0.116](https://github.com/aallan/vera/releases/tag/v0.0.116)
+**Current version:** [0.0.117](https://github.com/aallan/vera/releases/tag/v0.0.117)
 
 ## Why?
 
@@ -50,7 +50,7 @@ vera run examples/hello_world.vera
 - [EXAMPLES.md](https://raw.githubusercontent.com/aallan/vera/main/EXAMPLES.md) — Language tour with code examples
 - [FAQ](https://raw.githubusercontent.com/aallan/vera/main/FAQ.md) — Design rationale and comparisons
 - [Specification](https://github.com/aallan/vera/tree/main/spec) — 13-chapter formal spec
-- [Examples](https://github.com/aallan/vera/tree/main/examples) — 30 verified programs
+- [Examples](https://github.com/aallan/vera/tree/main/examples) — 31 verified programs
 
 ## Links
 
