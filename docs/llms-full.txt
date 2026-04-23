@@ -648,16 +648,21 @@ Use `vera check --explain-slots file.vera` if you need the resolved index table 
 
 ```vera
 -- BROKEN: capturing a heap type fails WASM validation.
-let @Array<Int> = [10, 20, 30];
+let @Array<Int> = [10, 20, 30];        -- captured (outer) @Array<Int>.0 = this
+let @Array<Int> = [1, 2, 3];           -- iterated (inner) @Array<Int>.0 = this
+                                       --             outer shifts to .1
 array_fold(
-  some_array,
+  @Array<Int>.0,
   0,
   fn(@Int, @Int -> @Int) effects(pure) {
-    @Int.1 + @Int.0 + nat_to_int(array_length(@Array<Int>.1))  -- can't capture this
+    -- Inside the closure: @Int.0 = element, @Int.1 = acc.
+    -- @Array<Int>.1 refers to the OUTER (captured) array — heap capture.
+    @Int.1 + @Int.0 + nat_to_int(array_length(@Array<Int>.1))
   }
 )
--- Fails at WASM validation: "unknown table 0: table index out of bounds"
--- or "type mismatch: expected i32, found i64" depending on the exact shape.
+-- Fails at WASM validation: "unknown local 3: local index out of bounds"
+-- or "type mismatch: expected i32, found i64" depending on the exact
+-- mix of captured types (see #514 for the minimal reproductions).
 ```
 
 Heap types that currently fail to capture:
