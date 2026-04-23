@@ -20,18 +20,15 @@ This section captures the concrete **implementation order** for the next few wee
 
 ### The ordering principle
 
-The near-term queue mixes issues from two categories:
+The current near-term queue is a **bug-killing campaign**. After the Stage 11 stdlib push closed most of the ergonomic gaps (missing primitives, typed accessors, ASCII character utilities — see [HISTORY.md](HISTORY.md) for the release history), the dominant source of agent friction shifted from "the language can't do this" to "the language compiles and verifies my program but the compiled artefact misbehaves at runtime."
 
-- **Capability-expansion** — unlocks *new kinds of programs that aren't possible today*. No hand-rolled workaround exists; the language literally can't do the thing.
-- **Error-reduction / ergonomic** — the program is already possible but verbose, bug-prone, or fragile. Hand-rolled recursive accumulators, manual ASCII range checks, nested Option/Json unwraps. Examples: [#466](https://github.com/aallan/vera/issues/466) (array utilities), [#470](https://github.com/aallan/vera/issues/470) / [#471](https://github.com/aallan/vera/issues/471) (string + char), [#366](https://github.com/aallan/vera/issues/366) (JSON accessors).
+A second Game of Life agent run against v0.0.119 surfaced four fresh compiler bugs in a single afternoon ([#514](https://github.com/aallan/vera/issues/514), [#515](https://github.com/aallan/vera/issues/515), [#516](https://github.com/aallan/vera/issues/516), [#517](https://github.com/aallan/vera/issues/517)), plus [#520](https://github.com/aallan/vera/issues/520) from targeted testing. Combined with the pre-existing GC and translator bugs ([#346](https://github.com/aallan/vera/issues/346), [#347](https://github.com/aallan/vera/issues/347), [#348](https://github.com/aallan/vera/issues/348), [#475](https://github.com/aallan/vera/issues/475), [#487](https://github.com/aallan/vera/issues/487), [#490](https://github.com/aallan/vera/issues/490)), that's eleven open bug issues — all listed below, in priority order — and one enhancement ([#507](https://github.com/aallan/vera/issues/507)) at the tail.
 
-Both matter, but they're asymmetric in timing: capability gaps are *blocking* (entire program categories don't exist), ergonomic gaps are *annoying* (programs compound verbosity). Blocking issues front-load more value per hour because they unlock whole genres of program. The current state of the language is "most programs possible, some categories blocked" — so capability-expansion goes first, ergonomic polish follows.
+The agent's self-observation on why this matters:
 
-Empirical confirmation from a model writing Conway's Game of Life in Vera while this queue was being planned:
+> *The gap between "the type system is happy" and "the compiled artefact actually runs" is wider than you'd expect from a language with SMT-verified contracts. The verifier can prove your termination argument is sound while the codegen silently miscompiles your closure environment out from under you.*
 
-> "The bug fix plus `IO.sleep` and Random are transformative. With `IO.sleep` I can write a proper animation loop… With Random I can generate a random soup initial state instead of hardcoding a glider and blinker, which is dramatically more interesting to watch. The program goes from 'dump 20 static frames' to 'animated random cellular automaton that runs in your terminal.' From [#466](https://github.com/aallan/vera/issues/466), `array_any` is useful for detecting extinction, and `array_contains` could simplify some checks, but neither is essential. From [#470](https://github.com/aallan/vera/issues/470), `string_pad_start` would let me right-align the generation counter — minor polish."
-
-This reshaped the ordering: capability issues move up, ergonomic issues move down. Completed items are noted in [HISTORY.md](HISTORY.md).
+Closing that gap is the highest-leverage agent-adoption work available. Priority order below is by "impact on an agent trying to write a non-trivial program today," not by implementation difficulty.
 
 ### Implementation order
 
