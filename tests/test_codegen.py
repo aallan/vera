@@ -12296,12 +12296,14 @@ class TestJsonTypedAccessors:
     functions (no new WASM translators).  Six Layer-1 type-coercion
     accessors (Json → Option<T>) and five Layer-2 compound field
     accessors (Json, String → Option<T> = json_get + json_as_T
-    composed).  ``json_as_int`` specifically guards against all four
-    ``float_to_int`` (i.e. ``i64.trunc_f64_s``) trap paths — NaN,
-    +infinity, -infinity, and finite overflow (|f| >= 2^63) — via
-    ``float_is_nan`` / ``float_is_infinite`` plus explicit bounds
-    checks against ±9223372036854775808.0, returning ``None`` for
-    every non-representable-as-Int input.
+    composed).  ``json_as_int`` specifically guards every
+    ``float_to_int`` (i.e. ``i64.trunc_f64_s``) trap path — NaN,
+    +infinity, -infinity, and any finite float outside the
+    closed-open i64 range ``[-2^63, 2^63)`` (that is,
+    ``f >= 2^63`` or ``f < -2^63``; ``-2^63 = INT64_MIN`` is itself
+    representable) — via ``float_is_nan`` / ``float_is_infinite``
+    plus explicit bounds against ±9223372036854775808.0, returning
+    ``None`` for every non-representable-as-Int input.
     """
 
     # ----- Layer 1: json_as_* -----
@@ -12421,8 +12423,12 @@ public fn main(-> @Int)
         assert _run(src) == 1
 
     def test_json_as_int_infinity_returns_none(self) -> None:
-        """JNumber(inf) → None — mirror of NaN guard for infinity."""
-        src = """\
+        """JNumber(±inf) → None.  Both signs of infinity are trap
+        inputs for ``i64.trunc_f64_s`` (distinct from the finite
+        out-of-range case below) and the guard covers them via
+        ``float_is_infinite``, which is sign-agnostic.
+        """
+        src_pos = """\
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -12432,7 +12438,18 @@ public fn main(-> @Int)
   }
 }
 """
-        assert _run(src) == 1
+        assert _run(src_pos) == 1
+        src_neg = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_int(JNumber(0.0 - infinity())) {
+    Some(@Int) -> 0,
+    None -> 1
+  }
+}
+"""
+        assert _run(src_neg) == 1
 
     def test_json_as_int_finite_overflow_returns_none(self) -> None:
         """JNumber with |f| >= 2^63 → None — the guard also covers
