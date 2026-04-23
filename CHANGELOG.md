@@ -10,11 +10,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **SKILL.md documentation sweep** ([#513](https://github.com/aallan/vera/issues/513)) — eight sections added or rewritten to close agent-surfaced documentation gaps: Array literals (`[]` / `[1, 2, 3]` / type inference), Closures and captured bindings (syntax + De Bruijn shift rule + the primitives-only capture limitation + tail-recursion-with-explicit-parameters workaround), full string escape-sequence table (`\n` / `\t` / `\r` / `\0` / `\\` / `\"` / `\u{XXXX}`) with explicit unsupported list and fallback notes, Nullary vs Unit-taking function signature variants, Stored function values and `apply_fn`, Known Bugs and Workarounds section pointing at KNOWN_ISSUES.md. Additions validated against `scripts/check_skill_examples.py`; ALLOWLIST regenerated (68 unique entries, AST-verified zero duplicate keys).
 
 ### Tracked bugs
-- Four compiler bugs surfaced by an agent writing Conway's Game of Life against v0.0.119, filed + added to KNOWN_ISSUES.md + reprioritised in ROADMAP.md's implementation-order table:
+- Five compiler/runtime bugs surfaced by an agent writing Conway's Game of Life against v0.0.119, filed + added to KNOWN_ISSUES.md + reprioritised in ROADMAP.md's implementation-order table:
   - [#514](https://github.com/aallan/vera/issues/514) — closure codegen mis-emits environment when capturing heap-allocated outer bindings (Array, String, ADT). Primitive captures work; any heap capture fails at WASM validation. Root cause refined from earlier "nested closures" symptom.
   - [#515](https://github.com/aallan/vera/issues/515) — `$gc_collect` walks past `$heap_ptr` to the linear-memory bound and traps mid-sweep.
   - [#516](https://github.com/aallan/vera/issues/516) — runtime traps bubble up as raw wasmtime stack traces; CLI mis-labels every trap as "Runtime contract violation".
   - [#517](https://github.com/aallan/vera/issues/517) — no tail-call optimization; the documented tail-recursion iteration idiom blows the WASM call stack at ~tens of thousands of frames.
+  - [#522](https://github.com/aallan/vera/issues/522) — `IO.print` output lost on trap: host-side stdout is fully buffered, so prints preceding a runtime trap are discarded before reaching the terminal. Fix is line-buffering (flush on `\n`) in the host `IO.print` impl. Paired with #516 in the ROADMAP queue (both are crash-debugging UX). SKILL.md Known Bugs table extended accordingly.
 
 ## [0.0.119] - 2026-04-23
 
