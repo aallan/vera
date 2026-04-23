@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Planned
+- **`vera context` — token-budgeted project context export** ([#523](https://github.com/aallan/vera/issues/523)) — new CLI command that walks a project's dependency graph and emits a compact summary of public signatures, contracts, effects, ADTs, and imports for LLM consumption. Directly inspired by [Aver](https://averlang.dev)'s [`aver context`](https://github.com/jasisz/aver#context-export); credit retained through implementation, commit messages, and CLI help text. Placed in Milestone 3 Phase 3a alongside the LSP server and Plumbing integration.
+
 ### Documentation
 - **SKILL.md documentation sweep** ([#513](https://github.com/aallan/vera/issues/513)) — eight sections added or rewritten to close agent-surfaced documentation gaps: Array literals (`[]` / `[1, 2, 3]` / type inference), Closures and captured bindings (syntax + De Bruijn shift rule + the primitives-only capture limitation + tail-recursion-with-explicit-parameters workaround), full string escape-sequence table (`\n` / `\t` / `\r` / `\0` / `\\` / `\"` / `\u{XXXX}`) with explicit unsupported list and fallback notes, Nullary vs Unit-taking function signature variants, Stored function values and `apply_fn`, Known Bugs and Workarounds section pointing at KNOWN_ISSUES.md. Additions validated against `scripts/check_skill_examples.py`; ALLOWLIST regenerated (68 unique entries, AST-verified zero duplicate keys).
 
