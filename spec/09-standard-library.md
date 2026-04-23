@@ -1838,7 +1838,7 @@ public fn json_as_object(@Json -> @Option<Map<String, Json>>)
 
 Each `json_as_*` returns `Some(value)` when the Json's constructor matches the requested type, `None` otherwise. The accessors are disjoint — at most one returns `Some` for any given Json value.
 
-`json_as_int` is the one asymmetric case: it applies `float_to_int` to the underlying `Float64`, truncating toward zero. Because `float_to_int` traps on NaN and infinity, `json_as_int` guards the conversion with `float_is_nan` and `float_is_infinite` and returns `None` for those inputs. Bounded finite floats that would overflow `Int` (`|f| >= 2^63`) still trap — this is a deliberate choice to keep the accessor's body simple; users who need bounded-range handling can pre-clamp or fall back to `json_as_number` and convert explicitly.
+`json_as_int` is the one asymmetric case: it applies `float_to_int` to the underlying `Float64`, truncating toward zero. `float_to_int` (aka WASM's `i64.trunc_f64_s`) traps on four inputs: NaN, ±infinity, and any finite float with `|f| >= 2^63` (outside the i64 range). `json_as_int` guards all four cases (`float_is_nan`, `float_is_infinite`, plus explicit range checks against ±9223372036854775808.0) and returns `None` for every non-representable-as-Int input.
 
 ```vera
 json_as_string(JString("hi"))              -- Some("hi")

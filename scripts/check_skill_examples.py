@@ -120,8 +120,13 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     1867: ("FRAGMENT", "Wrong: non-exhaustive match (missing None)"),
     1845: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
 
-    # Import syntax — intentionally unsupported
-    1845: ("FRAGMENT", "Wrong: import aliasing not supported"),
+    # Import syntax — intentionally unsupported.  The "import aliasing"
+    # and "import hiding" blocks are at four distinct line numbers
+    # (1878 / 1893), not duplicated at 1845 / 1893 as the ALLOWLIST
+    # originally claimed — that was a stale-dict-key issue that
+    # silently shadowed two of the four entries.  The four blocks
+    # are now allowlisted at their actual fence line numbers.
+    1878: ("FRAGMENT", "Wrong: import aliasing not supported"),
     1883: ("FRAGMENT", "Correct: import syntax example"),
     1893: ("FRAGMENT", "Wrong: import hiding not supported"),
 
@@ -135,7 +140,7 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
 
     # Map/Set common mistakes — bare let bindings
     1920: ("FRAGMENT", "Wrong: standalone map_new/set_new without type context"),
-    1893: ("FRAGMENT", "Correct: map_new/set_new with type context"),
+    1926: ("FRAGMENT", "Correct: map_new/set_new with type context"),
 
     # Effect disambiguation — qualified calls
     1410: ("FRAGMENT", "Qualified effect calls (State.put, Logger.put)"),
@@ -157,10 +162,6 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # JSON typed accessors (#366) — bare function-call signatures
     714: ("FRAGMENT", "JSON Layer 1 accessor signatures, bare function calls"),
     733: ("FRAGMENT", "JSON Layer 2 accessor signatures, bare function calls"),
-
-    # Import / Map-Set blocks shifted by JSON section insertion in #366
-    1878: ("FRAGMENT", "Wrong: import aliasing not supported (shifted by #366)"),
-    1926: ("FRAGMENT", "Correct: map_new/set_new with type context (shifted by #366)"),
 
     # =================================================================
     # MISMATCH — uses syntax the parser doesn't handle in isolation.

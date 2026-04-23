@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,527 across 28 files (~34,000 lines of test code; 3,513 passed, 14 skipped) |
+| **Tests** | 3,532 across 28 files (~34,000 lines of test code; 3,518 passed, 14 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 80 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 32, all validated through `vera check` + `vera verify` |
@@ -55,7 +55,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_ast.py` | 125 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
 | `test_checker.py` | 508 | 5,656 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, removed legacy name regression |
 | `test_verifier.py` | 134 | 1,894 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion, refined Bool/String/Float64 param sorts |
-| `test_codegen.py` | 968 | 12,743 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env, sleep, time, stderr), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, Random effect, example round-trips, GC shadow stack overflow |
+| `test_codegen.py` | 973 | 12,853 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env, sleep, time, stderr), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, Random effect, example round-trips, GC shadow stack overflow |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 71 | 1,326 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 19 | 473 | Closure lifting, captured variables, higher-order functions |
@@ -72,7 +72,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_tester.py` | 14 | 369 | Contract-driven testing: tier classification, input generation, test execution, skip message content |
 | `test_tester_coverage.py` | 34 | 901 | Tester coverage gaps: String/Float64/ADT parameter input generation, Bool/Byte parameters, unsatisfiable preconditions, type expression edge cases |
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
-| `test_browser.py` | 99 | 1,729 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
+| `test_browser.py` | 99 | 1,783 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
 | `test_conformance.py` | 400 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 80 programs |
 | `test_prelude.py` | 24 | 422 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |

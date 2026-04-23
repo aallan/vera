@@ -12431,6 +12431,42 @@ public fn main(-> @Int)
 """
         assert _run(src) == 1
 
+    def test_json_as_int_finite_overflow_returns_none(self) -> None:
+        """JNumber with |f| >= 2^63 → None — the guard also covers
+        finite-but-out-of-range values, not just NaN/infinity.
+
+        ``i64.trunc_f64_s`` (emitted by ``float_to_int``) traps when
+        the float exceeds the i64 range.  9223372036854775808.0 is
+        exactly 2^63 in Float64 — representable but one above the
+        maximum i64.  Without the range guard, this would trap.
+        """
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_int(JNumber(9223372036854775808.0)) {
+    Some(@Int) -> 0,
+    None -> 1
+  }
+}
+"""
+        assert _run(src) == 1
+
+    def test_json_as_int_finite_negative_overflow_returns_none(self) -> None:
+        """JNumber with f < -2^63 → None (mirror of positive overflow)."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  -- -2^64 is well outside i64 range.
+  match json_as_int(JNumber(0.0 - 18446744073709551616.0)) {
+    Some(@Int) -> 0,
+    None -> 1
+  }
+}
+"""
+        assert _run(src) == 1
+
     def test_json_as_array(self) -> None:
         """JArray([1,2,3]) → Some(array of length 3)."""
         src = """\
@@ -12643,6 +12679,80 @@ public fn main(-> @Int)
 }
 """
         assert _run(src) == 1
+
+    # ----- Import gating: accessors are pure-Vera, not host imports -----
+
+    def test_accessors_do_not_force_json_parse_import(self) -> None:
+        """A program that uses only json_as_* / json_get_* accessors
+        must NOT import vera.json_parse or vera.json_stringify.  These
+        accessors are pure-Vera prelude functions; the host imports
+        are only for the parse/serialise boundary.
+
+        Regression test: a future refactor that accidentally routes an
+        accessor through a host import would make the compiled module
+        pull in unused imports.  Caught here by the import table.
+        """
+        src = """\
+public fn test(@Json -> @Option<String>)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_get_string(@Json.0, "k") {
+    Some(@String) -> Some(@String.0),
+    None -> json_as_string(@Json.0)
+  }
+}
+"""
+        result = _compile_ok(src)
+        assert '(import "vera" "json_parse"' not in result.wat, (
+            "json_as_* / json_get_* must not force the json_parse host "
+            "import — they are pure-Vera prelude functions."
+        )
+        assert '(import "vera" "json_stringify"' not in result.wat, (
+            "json_as_* / json_get_* must not force the json_stringify "
+            "host import."
+        )
+
+    def test_layer2_accessors_do_not_force_json_imports(self) -> None:
+        """Mirror: json_get_int / json_get_array also pure.  Separate
+        test because the accessors have slightly different return-type
+        shapes (i64 payload vs i32_pair Array) and codegen might
+        conceivably diverge between them.
+        """
+        src = """\
+public fn test(@Json -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_get_int(@Json.0, "age") {
+    Some(@Int) -> Some(@Int.0),
+    None ->
+      match json_get_array(@Json.0, "tags") {
+        Some(@Array<Json>) -> Some(nat_to_int(array_length(@Array<Json>.0))),
+        None -> None
+      }
+  }
+}
+"""
+        result = _compile_ok(src)
+        assert '(import "vera" "json_parse"' not in result.wat
+        assert '(import "vera" "json_stringify"' not in result.wat
+
+    def test_json_parse_does_force_its_host_import(self) -> None:
+        """Complementary test: json_parse IS a host import, so a
+        program using it SHOULD emit the corresponding import.  Pins
+        the direction of the invariant — if this test ever fails
+        without the previous two also failing, the check is wrong,
+        not the implementation.
+        """
+        src = """\
+public fn test(@String -> @Result<Json, String>)
+  requires(true) ensures(true) effects(pure)
+{ json_parse(@String.0) }
+"""
+        result = _compile_ok(src)
+        assert '(import "vera" "json_parse"' in result.wat, (
+            "json_parse IS a host import and its import table entry "
+            "must be present when the function is referenced."
+        )
 
 
 class TestGCShadowStackOverflow:

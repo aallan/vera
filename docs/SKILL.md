@@ -716,7 +716,7 @@ For the common case of "unwrap `Option<Json>` and match on a specific constructo
 json_as_string(@Json.0)   -- Option<String>
 json_as_number(@Json.0)   -- Option<Float64>
 json_as_bool(@Json.0)     -- Option<Bool>
-json_as_int(@Json.0)      -- Option<Int>     (truncates; None for NaN/inf)
+json_as_int(@Json.0)      -- Option<Int>     (truncates; None for NaN/inf/|f| >= 2^63)
 json_as_array(@Json.0)    -- Option<Array<Json>>
 json_as_object(@Json.0)   -- Option<Map<String, Json>>
 

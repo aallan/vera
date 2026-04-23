@@ -1309,12 +1309,40 @@ public fn main(-> @Unit)
   match json_as_int(JNumber(0.0 / 0.0)) {
     Some(@Int) -> IO.print("!"),
     None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_int on +inf returns None
+  match json_as_int(JNumber(infinity())) {
+    Some(@Int) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_int on -inf returns None
+  match json_as_int(JNumber(0.0 - infinity())) {
+    Some(@Int) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_array matches JArray
+  match json_as_array(JArray([JNumber(1.0), JNumber(2.0)])) {
+    Some(@Array<Json>) -> IO.print(int_to_string(nat_to_int(array_length(@Array<Json>.0)))),
+    None -> IO.print("?")
+  };
+  IO.print(",");
+  -- json_as_object matches JObject (parsed so we get a real Map)
+  match json_parse("{\\"k\\":1}") {
+    Err(@String) -> IO.print("ERR"),
+    Ok(@Json) ->
+      match json_as_object(@Json.0) {
+        Some(@Map<String, Json>) -> IO.print("obj"),
+        None -> IO.print("?")
+      }
   }
 }
 '''
         wasm_path, _ = _compile_vera(source, tmp_path)
         node = _run_node(wasm_path)
-        assert node["stdout"] == "hi,none,3.14,true,42,none"
+        assert node["stdout"] == "hi,none,3.14,true,42,none,none,none,2,obj"
 
     def test_layer2_compound_accessors(self, tmp_path: Path) -> None:
         """Layer-2: every json_get_* accessor against a parsed object."""
@@ -1362,12 +1390,38 @@ public fn main(-> @Unit)
         None -> IO.print("none")
       }
     }
+  };
+  IO.print(",");
+  -- json_get_* on a non-object Json: every accessor returns None
+  -- because the underlying json_get returns None for non-JObject.
+  let @Json = JArray([JNumber(1.0)]);
+  match json_get_string(@Json.0, "x") {
+    Some(@String) -> IO.print("!"), None -> IO.print("none")
+  };
+  IO.print(",");
+  match json_get_int(@Json.0, "x") {
+    Some(@Int) -> IO.print("!"), None -> IO.print("none")
+  };
+  IO.print(",");
+  match json_get_bool(@Json.0, "x") {
+    Some(@Bool) -> IO.print("!"), None -> IO.print("none")
+  };
+  IO.print(",");
+  match json_get_number(@Json.0, "x") {
+    Some(@Float64) -> IO.print("!"), None -> IO.print("none")
+  };
+  IO.print(",");
+  match json_get_array(@Json.0, "x") {
+    Some(@Array<Json>) -> IO.print("!"), None -> IO.print("none")
   }
 }
 '''
         wasm_path, _ = _compile_vera(source, tmp_path)
         node = _run_node(wasm_path)
-        assert node["stdout"] == "Alice,30,true,3.14,3,none,none"
+        # Object accessors hit, then the non-object run (5 Nones).
+        assert node["stdout"] == (
+            "Alice,30,true,3.14,3,none,none,none,none,none,none,none"
+        )
 
 
 class TestBrowserState:

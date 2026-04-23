@@ -229,7 +229,10 @@ private fn json_as_int(@Json -> @Option<Int>)
     JNull -> None,
     JBool(@Bool) -> None,
     JNumber(@Float64) ->
-      if float_is_nan(@Float64.0) || float_is_infinite(@Float64.0) then {
+      if float_is_nan(@Float64.0)
+        || float_is_infinite(@Float64.0)
+        || @Float64.0 >= 9223372036854775808.0
+        || @Float64.0 < -9223372036854775808.0 then {
         None
       } else {
         Some(float_to_int(@Float64.0))
