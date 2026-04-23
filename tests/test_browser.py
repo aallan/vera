@@ -1028,6 +1028,29 @@ public fn main(-> @Unit)
         node = _run_node(wasm_path)
         assert node["stdout"] == "hi  |  hi|hi  |  hi|"
 
+    def test_string_strip_vt_ff(self, tmp_path: Path) -> None:
+        """Browser regression: ``string_strip`` (which delegates to
+        ``_translate_trim`` after PR #510) must treat VT (\\u{0B}) and
+        FF (\\u{0C}) as whitespace identically to the trim functions.
+
+        This pins the strip→trim delegation contract under the
+        browser runtime: if a future refactor accidentally re-opens
+        the old narrow {space, tab, LF, CR} predicate for strip, the
+        leading and trailing VT/FF would survive and break this
+        assertion.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_strip("\\u{0B}\\u{0C}hi \\u{0B}"));
+  IO.print("|")
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "hi|"
+
     def test_string_pad(self, tmp_path: Path) -> None:
         """pad_start/pad_end cycle the fill; pad of longer string is
         a no-op; empty fill is a no-op (cannot infinitely loop).

@@ -16,7 +16,11 @@ char_to_upper, char_to_lower).
 from __future__ import annotations
 
 from vera import ast
-from vera.wasm.helpers import WasmSlotEnv, gc_shadow_push
+from vera.wasm.helpers import (
+    WasmSlotEnv,
+    emit_is_ascii_whitespace,
+    gc_shadow_push,
+)
 
 
 class CallsStringsMixin:
@@ -2616,17 +2620,13 @@ class CallsStringsMixin:
         ins.append(f"  local.get {ptr}")
         ins.append("  i32.load8_u offset=0")
         ins.append(f"  local.set {byte}")
-        # space(32) check
-        ins.append(f"  local.get {byte}")
-        ins.append("  i32.const 32")
-        ins.append("  i32.eq")
-        # 9..=13 contiguous range: (byte - 9) < 5
-        ins.append(f"  local.get {byte}")
-        ins.append("  i32.const 9")
-        ins.append("  i32.sub")
-        ins.append("  i32.const 5")
-        ins.append("  i32.lt_u")
-        ins.append("  i32.or")
+        # Canonical ASCII whitespace predicate — see emit_is_ascii_whitespace
+        # in helpers.py.  All four whitespace-test sites in this file
+        # (this one + _translate_trim + the two passes inside
+        # _translate_structural_split) MUST go through that helper to
+        # stay in sync.  PR #510 round 2 caught the divergent open-coded
+        # copy in _translate_strip; PR #510 round 4 hoisted the helper.
+        ins.extend(emit_is_ascii_whitespace(byte, indent="  "))
         ins.append(f"  local.set {result}")
         ins.append("end")
 
@@ -2894,15 +2894,15 @@ class CallsStringsMixin:
         ins.append(f"local.set {end}")
 
         def _is_ws_inline() -> list[str]:
-            # ASCII whitespace per Python's str.isspace():
-            # {tab(9), LF(10), VT(11), FF(12), CR(13), space(32)}.
-            # 9..=13 collapses to (byte - 9) < 5 for branchless emit.
+            """Caller has just emitted ``i32.load8_u offset=0`` (byte
+            on stack); we ``local.set`` it then run the canonical
+            ASCII-whitespace predicate.  See
+            ``emit_is_ascii_whitespace`` in helpers.py for the
+            single-source-of-truth predicate emitter.
+            """
             return [
                 f"    local.set {byte}",
-                f"    local.get {byte}", "    i32.const 32", "    i32.eq",
-                f"    local.get {byte}", "    i32.const 9",  "    i32.sub",
-                "    i32.const 5", "    i32.lt_u",
-                "    i32.or",
+                *emit_is_ascii_whitespace(byte, indent="    "),
             ]
 
         if trim_start:
@@ -3637,15 +3637,9 @@ class CallsStringsMixin:
             ins.append("    i32.add")
             ins.append("    i32.load8_u offset=0")
             ins.append(f"    local.set {byte}")
-            # is_ws(byte) → stack: Python's str.isspace() set
-            # {tab(9), LF(10), VT(11), FF(12), CR(13), space(32)}.
-            # 9..=13 collapses to (byte - 9) < 5 for branchless emit.
-            ins.extend([
-                f"    local.get {byte}", "    i32.const 32", "    i32.eq",
-                f"    local.get {byte}", "    i32.const 9",  "    i32.sub",
-                "    i32.const 5", "    i32.lt_u",
-                "    i32.or",
-            ])
+            # is_ws(byte) → stack: canonical ASCII whitespace
+            # predicate.  See emit_is_ascii_whitespace in helpers.py.
+            ins.extend(emit_is_ascii_whitespace(byte, indent="    "))
             ins.append("    if")  # is ws
             ins.append(f"      local.get {in_word}")
             ins.append("      if")
@@ -3829,15 +3823,8 @@ class CallsStringsMixin:
             ins.append("    i32.add")
             ins.append("    i32.load8_u offset=0")
             ins.append(f"    local.set {byte}")
-            # is_ws(byte): Python str.isspace() set
-            # {tab(9), LF(10), VT(11), FF(12), CR(13), space(32)};
-            # 9..=13 collapses to (byte - 9) < 5.
-            ins.extend([
-                f"    local.get {byte}", "    i32.const 32", "    i32.eq",
-                f"    local.get {byte}", "    i32.const 9",  "    i32.sub",
-                "    i32.const 5", "    i32.lt_u",
-                "    i32.or",
-            ])
+            # is_ws(byte): canonical ASCII whitespace predicate.
+            ins.extend(emit_is_ascii_whitespace(byte, indent="    "))
             ins.append("    if")  # ws
             ins.append(f"      local.get {in_word}")
             ins.append("      if")
