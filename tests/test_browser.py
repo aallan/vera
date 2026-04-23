@@ -1332,13 +1332,18 @@ public fn main(-> @Unit)
   IO.print(",");
   -- json_as_int on -2^63 (i64 lower bound is inclusive) returns
   -- Some(INT64_MIN).  Note the asymmetry: upper bound exclusive,
-  -- lower bound inclusive, matching WASM's i64 range.  We don't
-  -- print @Int.0 directly because int_to_string(INT64_MIN) hits a
-  -- pre-existing bug (pending fix in #475): the negation of
-  -- INT64_MIN overflows i64.  Use `@Int.0 < 0` to probe the value
-  -- without triggering the bug.
+  -- lower bound inclusive, matching WASM's i64 range.  Two indirect
+  -- probes pin the value to INT64_MIN without hitting #475 bug 9
+  -- (int_to_string(INT64_MIN) negation overflow):
+  --   (a) @Int.0 < 0 is true;
+  --   (b) @Int.0 + 1 prints as "-9223372036854775807", which IS
+  --       representable and serialisable without hitting the bug.
   match json_as_int(JNumber(0.0 - 9223372036854775808.0)) {
-    Some(@Int) -> IO.print(bool_to_string(@Int.0 < 0)),
+    Some(@Int) -> {
+      IO.print(bool_to_string(@Int.0 < 0));
+      IO.print(";");
+      IO.print(int_to_string(@Int.0 + 1))
+    },
     None -> IO.print("none")
   };
   IO.print(",");
@@ -1370,11 +1375,11 @@ public fn main(-> @Unit)
         node = _run_node(wasm_path)
         assert node["stdout"] == (
             # hi, none (mismatch), 3.14, true, 42, none (NaN),
-            # none (+inf), none (-inf), none (+2^63), true
-            # (Some branch taken for -2^63, and the value is
-            # negative), none (below -2^63), 2 (array length), obj.
+            # none (+inf), none (-inf), none (+2^63),
+            # (-2^63 branch: "true;" + INT64_MIN+1 = "-9223372036854775807"),
+            # none (below -2^63), 2 (array length), obj.
             "hi,none,3.14,true,42,none,none,none,none,"
-            "true,none,2,obj"
+            "true;-9223372036854775807,none,2,obj"
         )
 
     def test_layer2_compound_accessors(self, tmp_path: Path) -> None:

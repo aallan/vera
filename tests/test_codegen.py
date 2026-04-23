@@ -12475,23 +12475,38 @@ public fn main(-> @Int)
 
         The i64 range is closed on the low end (``[-2^63, 2^63)``):
         ``-2^63 = -9223372036854775808`` IS a valid Int.  This test
-        pins that the guard uses a strict ``f < -2^63`` comparison,
-        not ``f <= -2^63`` — off-by-one here would reject a valid
-        value.  Mirror the positive side's existing ``f = 2^63``
-        test which IS out of range (upper end is exclusive).
+        pins both that ``Some`` is taken AND that the observed value
+        is INT64_MIN (negative, and equal to itself under +1 overflow
+        arithmetic).
+
+        We probe the value indirectly because ``int_to_string(INT64_MIN)``
+        hits a pre-existing bug (#475 bug 9: the negation step overflows
+        i64, leaving an empty number body).  Two indirect probes pinpoint
+        INT64_MIN without tripping that bug:
+          (a) the value is negative: ``@Int.0 < 0`` holds,
+          (b) ``@Int.0 + 1`` equals -9223372036854775807 (INT64_MIN + 1),
+              which IS printable via ``int_to_string``.
+        Off-by-one on the guard (``f <= -2^63`` instead of ``f < -2^63``)
+        would reject this valid value; an accidental truncation to zero
+        or positive value would fail probe (a).
         """
         src = """\
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
 {
   match json_as_int(JNumber(0.0 - 9223372036854775808.0)) {
-    Some(@Int) -> 1,
-    None -> 0
+    Some(@Int) -> {
+      -- Probe (a): value is negative.
+      IO.print(bool_to_string(@Int.0 < 0));
+      IO.print(",");
+      -- Probe (b): value + 1 = INT64_MIN + 1 = -9223372036854775807.
+      IO.print(int_to_string(@Int.0 + 1))
+    },
+    None -> IO.print("none")
   }
 }
 """
-        # Exactly representable — expect Some(INT64_MIN), so we see 1.
-        assert _run(src) == 1
+        assert _run_io(src) == "true,-9223372036854775807"
 
     def test_json_as_int_boundary_just_below_minus_2_63(self) -> None:
         """The Float64 value strictly below -2^63 must return None.

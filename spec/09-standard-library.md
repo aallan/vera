@@ -1838,7 +1838,7 @@ public fn json_as_object(@Json -> @Option<Map<String, Json>>)
 
 Each `json_as_*` returns `Some(value)` when the Json's constructor matches the requested type, `None` otherwise. The accessors are disjoint — at most one returns `Some` for any given Json value.
 
-`json_as_int` is the one asymmetric case: it applies `float_to_int` to the underlying `Float64`, truncating toward zero. `float_to_int` (aka WASM's `i64.trunc_f64_s`) traps on four inputs: NaN, ±infinity, and any finite float with `|f| >= 2^63` (outside the i64 range). `json_as_int` guards all four cases (`float_is_nan`, `float_is_infinite`, plus explicit range checks against ±9223372036854775808.0) and returns `None` for every non-representable-as-Int input.
+`json_as_int` is the one asymmetric case: it applies `float_to_int` to the underlying `Float64`, truncating toward zero. `float_to_int` (aka WASM's `i64.trunc_f64_s`) traps on NaN, ±infinity, and any finite float outside the closed-open i64 range `[-2^63, 2^63)` — that is, `f < -2^63` or `f >= 2^63`. The range is asymmetric because two's-complement i64 can represent `-2^63 = INT64_MIN` exactly but not `+2^63`. `json_as_int` guards all four trap paths (`float_is_nan`, `float_is_infinite`, plus explicit bounds `f >= 9223372036854775808.0` and `f < -9223372036854775808.0`) and returns `None` for every non-representable-as-Int input. At the inclusive lower bound, `json_as_int(JNumber(-9223372036854775808.0))` correctly returns `Some(INT64_MIN)`.
 
 ```vera
 json_as_string(JString("hi"))              -- Some("hi")
