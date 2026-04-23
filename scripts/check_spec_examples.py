@@ -67,6 +67,11 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1190): "FRAGMENT",  # string_replace signature (no body)
     ("09-standard-library.md", 1221): "FRAGMENT",  # string_join signature (no body)
     ("09-standard-library.md", 1250): "FRAGMENT",  # string_repeat signature (no body)
+    ("09-standard-library.md", 1682): "FRAGMENT",  # string_chars/lines/words signatures (no body, #470)
+    ("09-standard-library.md", 1711): "FRAGMENT",  # string_reverse/trim_start/trim_end signatures (no body, #470)
+    ("09-standard-library.md", 1734): "FRAGMENT",  # string_pad_start/pad_end signatures (no body, #470)
+    ("09-standard-library.md", 1757): "FRAGMENT",  # char_to_upper/char_to_lower signatures (no body, #471)
+    ("09-standard-library.md", 1778): "FRAGMENT",  # is_digit/alpha/... signatures (no body, #471)
 
     # Chapter 9 — Array builtin signatures (no body)
     ("09-standard-library.md", 570): "FRAGMENT",  # array_length signature (no body)
