@@ -976,6 +976,187 @@ public fn main(-> @Unit)
         assert node["stdout"] == "100101104202203"
 
 
+class TestBrowserStringUtilities:
+    """Browser parity for string utility built-ins (#470).
+
+    All eight ops are pure-WASM byte-level loops with no host imports,
+    so the Python (wasmtime) and browser (Node.js) runtimes should
+    produce bit-identical output.  When an op returns ``Array<String>``
+    (``string_chars``/``string_lines``/``string_words``) we fold it
+    back to a single integer count or join it to a single ``String`` to
+    keep cross-runtime comparisons exact.
+    """
+
+    def test_string_reverse(self, tmp_path: Path) -> None:
+        """reverse("hello") → "olleh"; empty string round-trips."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_reverse("hello"));
+  IO.print(",");
+  IO.print(string_reverse(""))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "olleh,"
+
+    def test_string_trim(self, tmp_path: Path) -> None:
+        """trim_start keeps trailing spaces; trim_end keeps leading spaces."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_trim_start("  hi  "));
+  IO.print("|");
+  IO.print(string_trim_end("  hi  "));
+  IO.print("|")
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "hi  |  hi|"
+
+    def test_string_pad(self, tmp_path: Path) -> None:
+        """pad_start/pad_end cycle the fill; pad of longer string is a no-op."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_pad_start("x", 5, "0"));
+  IO.print(",");
+  IO.print(string_pad_end("x", 5, "0"));
+  IO.print(",");
+  IO.print(string_pad_start("x", 7, "ab"));
+  IO.print(",");
+  IO.print(string_pad_start("hello", 3, "*"))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        # Fill cycles "ab" left-aligned → "ababab" truncated to len 6
+        # then "x" appended → "ababab" + "x" = "abababx"? No:
+        # pad_start target=7, slen=1, pad_len=6; fill="ab" cycled
+        # for 6 bytes starting at pos 0: a,b,a,b,a,b → "ababab" + "x"
+        assert node["stdout"] == "0000x,x0000,abababx,hello"
+
+    def test_string_chars_count(self, tmp_path: Path) -> None:
+        """string_chars("abc") has length 3; empty → 0."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(int_to_string(nat_to_int(array_length(string_chars("abc")))));
+  IO.print(",");
+  IO.print(int_to_string(nat_to_int(array_length(string_chars("")))))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "3,0"
+
+    def test_string_chars_join(self, tmp_path: Path) -> None:
+        """Round-trip: split "abc" into chars, join with "-" → "a-b-c"."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_join(string_chars("abc"), "-"))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "a-b-c"
+
+    def test_string_lines(self, tmp_path: Path) -> None:
+        """lines splits on \\n, \\r\\n, \\r (Python splitlines semantics)."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_join(string_lines("a\\nb\\nc"), "|"));
+  IO.print(",");
+  IO.print(string_join(string_lines("a\\r\\nb\\rc"), "|"));
+  IO.print(",");
+  IO.print(int_to_string(nat_to_int(array_length(string_lines("a\\n")))))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        # Trailing newline does NOT create empty final segment.
+        assert node["stdout"] == "a|b|c,a|b|c,1"
+
+    def test_string_words(self, tmp_path: Path) -> None:
+        """words splits on runs of whitespace; empty segments discarded."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_join(string_words("  foo  bar "), "|"));
+  IO.print(",");
+  IO.print(int_to_string(nat_to_int(array_length(string_words("   ")))))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "foo|bar,0"
+
+
+class TestBrowserCharClassification:
+    """Browser parity for character classification built-ins (#471).
+
+    All eight classifiers are single-byte ASCII range checks with no
+    host imports — inline WAT identical in the Python and browser
+    runtimes.  We pack multiple calls into one program to minimize
+    compile latency while still exercising each predicate against at
+    least one passing and one failing byte.
+    """
+
+    def test_classifiers(self, tmp_path: Path) -> None:
+        """Every classifier over a spread of representative bytes."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(bool_to_string(is_digit("5")));         IO.print(",");
+  IO.print(bool_to_string(is_digit("x")));         IO.print(",");
+  IO.print(bool_to_string(is_alpha("A")));         IO.print(",");
+  IO.print(bool_to_string(is_alpha("9")));         IO.print(",");
+  IO.print(bool_to_string(is_alphanumeric(" ")));  IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\t")));  IO.print(",");
+  IO.print(bool_to_string(is_upper("A")));         IO.print(",");
+  IO.print(bool_to_string(is_lower("a")));         IO.print(",");
+  IO.print(bool_to_string(is_digit("")))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == (
+            "true,false,true,false,false,true,true,true,false"
+        )
+
+    def test_char_case(self, tmp_path: Path) -> None:
+        """char_to_upper/lower: only the first byte is transformed."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(char_to_upper("abc"));
+  IO.print(",");
+  IO.print(char_to_lower("ABC"));
+  IO.print(",");
+  IO.print(char_to_upper(""));
+  IO.print("|");
+  IO.print(char_to_upper("5xyz"))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        # Empty string round-trips; non-letter first byte passes through.
+        assert node["stdout"] == "Abc,aBC,|5xyz"
+
+
 class TestBrowserState:
     """Test State<T> host bindings in the Node.js runtime."""
 

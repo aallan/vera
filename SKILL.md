@@ -561,7 +561,7 @@ All built-in functions follow predictable naming patterns. When guessing a funct
 | `domain_is_predicate` | Boolean predicates | `float_is_nan`, `float_is_infinite` |
 | Prefix-less | Math universals and float constants only | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, `infinity` |
 
-**String operations always use `string_` prefix** — `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`. **Float64 predicates use `float_` prefix** — `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`** — `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) and float constants (`nan`, `infinity`) are the **only** exceptions — they need no prefix because they are universally understood mathematical names.
+**String operations always use `string_` prefix** — `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`, `string_chars`, `string_lines`, `string_words`, `string_reverse`, `string_trim_start`, `string_trim_end`, `string_pad_start`, `string_pad_end`. **Character classifiers use `is_` prefix** — `is_digit`, `is_alpha`, `is_alphanumeric`, `is_whitespace`, `is_upper`, `is_lower`. **First-character conversion uses `char_` prefix** — `char_to_upper`, `char_to_lower`. **Float64 predicates use `float_` prefix** — `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`** — `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) and float constants (`nan`, `infinity`) are the **only** exceptions — they need no prefix because they are universally understood mathematical names.
 
 **If `vera check` reports an unresolved function name, apply these patterns to derive the correct name before giving up.** The convention is strict and consistent — the right name is always derivable. Do not invent names that don't follow the pattern; they will not exist.
 
@@ -785,6 +785,40 @@ string_join(@Array<String>.0, @String.0)        -- returns String (join with sep
 ```
 
 `string_upper` and `string_lower` convert ASCII letters only (a-z ↔ A-Z). `string_replace` substitutes all non-overlapping occurrences; an empty needle returns the original string unchanged. `string_split` returns an array of segments; an empty delimiter returns a single-element array. `string_join` concatenates array elements with the separator between each pair.
+
+#### String utilities and character classification
+
+```vera
+-- Splits (bridge to the array combinators)
+string_chars(@String.0)                            -- returns Array<String> (one byte each)
+string_lines(@String.0)                            -- returns Array<String> (\n, \r\n, \r)
+string_words(@String.0)                            -- returns Array<String> (whitespace runs)
+
+-- Transformations
+string_reverse(@String.0)                          -- returns String (byte reverse)
+string_trim_start(@String.0)                       -- returns String (lstrip whitespace)
+string_trim_end(@String.0)                         -- returns String (rstrip whitespace)
+string_pad_start(@String.0, @Nat.0, @String.1)     -- returns String (left-pad to length, JS padStart)
+string_pad_end(@String.0, @Nat.0, @String.1)       -- returns String (right-pad to length)
+
+-- Case conversion (first byte only)
+char_to_upper(@String.0)                           -- returns String
+char_to_lower(@String.0)                           -- returns String
+
+-- Character classifiers (first byte; false for empty)
+is_digit(@String.0)                                -- returns Bool ('0'..'9')
+is_alpha(@String.0)                                -- returns Bool ('A'..'Z', 'a'..'z')
+is_alphanumeric(@String.0)                         -- returns Bool
+is_whitespace(@String.0)                           -- returns Bool (tab, LF, CR, space)
+is_upper(@String.0)                                -- returns Bool
+is_lower(@String.0)                                -- returns Bool
+```
+
+`string_chars` is the canonical bridge from `String` to `Array<String>` — combine with `array_map`, `array_filter`, `array_fold` to thread per-byte logic through the array combinators. `string_lines` follows Python's `splitlines()` (trailing `\n` does not add an empty segment). `string_words` follows Python's `split()` with no args (runs collapse, empty segments discarded).
+
+`string_pad_start` and `string_pad_end` cycle the fill left-to-right and truncate to exactly the padding length, matching JavaScript's `padStart` / `padEnd`. If the input is already at least `n` bytes, the input is returned unchanged. An empty `fill` is a no-op.
+
+`char_to_upper` / `char_to_lower` convert only the **first byte** of the string; remaining bytes pass through unchanged. Useful for title-casing a token. The six classifiers all inspect only the first byte and return `false` for the empty string. All sixteen are ASCII-only — no Unicode awareness.
 
 String functions use the heap allocator (`$alloc`). Memory is managed automatically by a conservative mark-sweep garbage collector — there is no manual allocation or deallocation. All four parse functions return `Result<T, String>`: `parse_nat`, `parse_int`, `parse_float64`, and `parse_bool`. They return `Ok(value)` on valid input and `Err(msg)` on empty or invalid input; leading and trailing spaces are tolerated. `parse_int` accepts an optional `+` or `-` sign. `parse_bool` is strict: only `"true"` and `"false"` (lowercase) are valid. `base64_encode` encodes a string to standard Base64 (RFC 4648); `base64_decode` returns `Result<String, String>`, failing on invalid length or characters. `url_encode` percent-encodes a string for use in URLs (RFC 3986), leaving unreserved characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`) unchanged; `url_decode` returns `Result<String, String>`, failing on invalid `%XX` sequences. `url_parse` decomposes a URL into its RFC 3986 components, returning `Result<UrlParts, String>` where `UrlParts(scheme, authority, path, query, fragment)` is a built-in ADT with five String fields; it returns `Err("missing scheme")` if no `:` is found. `url_join` reassembles a `UrlParts` value into a URL string. Programs must redefine `UrlParts` locally (like `Result`) to use it in match expressions.
 
@@ -1987,7 +2021,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 78 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 79 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 

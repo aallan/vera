@@ -843,6 +843,32 @@
     ]
   },
   {
+    "id": "ch09_string_char_utilities",
+    "file": "ch09_string_char_utilities.vera",
+    "chapter": 9,
+    "title": "String utilities + character classification (#470, #471)",
+    "level": "run",
+    "spec_ref": "Section 9.6.22",
+    "features": [
+      "string_chars",
+      "string_lines",
+      "string_words",
+      "string_pad_start",
+      "string_pad_end",
+      "string_reverse",
+      "string_trim_start",
+      "string_trim_end",
+      "is_digit",
+      "is_alpha",
+      "is_alphanumeric",
+      "is_whitespace",
+      "is_upper",
+      "is_lower",
+      "char_to_upper",
+      "char_to_lower"
+    ]
+  },
+  {
     "id": "ch09_type_conversions",
     "file": "ch09_type_conversions.vera",
     "chapter": 9,

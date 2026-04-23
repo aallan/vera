@@ -1450,6 +1450,95 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # String utility built-ins (#470).  Six string transformations
+        # plus the bridge primitive ``string_chars`` and the two
+        # structural splits ``string_lines`` / ``string_words`` that
+        # ``string_split`` cannot express because it only takes a
+        # single delimiter character.
+        self.functions["string_chars"] = FunctionInfo(
+            name="string_chars",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType("Array", (STRING,)),
+            effect=PureEffectRow(),
+        )
+        self.functions["string_lines"] = FunctionInfo(
+            name="string_lines",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType("Array", (STRING,)),
+            effect=PureEffectRow(),
+        )
+        self.functions["string_words"] = FunctionInfo(
+            name="string_words",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=AdtType("Array", (STRING,)),
+            effect=PureEffectRow(),
+        )
+        self.functions["string_pad_start"] = FunctionInfo(
+            name="string_pad_start",
+            forall_vars=None,
+            param_types=(STRING, NAT, STRING),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["string_pad_end"] = FunctionInfo(
+            name="string_pad_end",
+            forall_vars=None,
+            param_types=(STRING, NAT, STRING),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["string_reverse"] = FunctionInfo(
+            name="string_reverse",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["string_trim_start"] = FunctionInfo(
+            name="string_trim_start",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+        self.functions["string_trim_end"] = FunctionInfo(
+            name="string_trim_end",
+            forall_vars=None,
+            param_types=(STRING,),
+            return_type=STRING,
+            effect=PureEffectRow(),
+        )
+
+        # Character classification + single-character case conversion
+        # (#471).  All operate on the first character of the input
+        # string (Vera has no Char type — characters are
+        # single-character strings, same as Elm / PureScript).
+        # Empty-string convention: classifiers return false; case
+        # converters return the empty string.  Classifiers are
+        # ASCII-only by design (matches the issue's spec).
+        for _classifier in (
+            "is_digit", "is_alpha", "is_alphanumeric",
+            "is_whitespace", "is_upper", "is_lower",
+        ):
+            self.functions[_classifier] = FunctionInfo(
+                name=_classifier,
+                forall_vars=None,
+                param_types=(STRING,),
+                return_type=BOOL,
+                effect=PureEffectRow(),
+            )
+        for _case_fn in ("char_to_upper", "char_to_lower"):
+            self.functions[_case_fn] = FunctionInfo(
+                name=_case_fn,
+                forall_vars=None,
+                param_types=(STRING,),
+                return_type=STRING,
+                effect=PureEffectRow(),
+            )
+
         # Numeric math builtins
         self.functions["abs"] = FunctionInfo(
             name="abs",

@@ -1,0 +1,284 @@
+-- String utility + character classification built-ins
+-- (#470 phase 1 + #471): all sixteen new operations exercised in a
+-- coherent scenario.
+--
+-- Scenario: a tiny log-line processor that takes raw user input,
+-- classifies tokens, normalizes case, and formats a summary table.
+--
+--   1. Split the log into lines                   (string_lines)
+--   2. Split a single line into words             (string_words)
+--   3. Classify characters (digit/alpha/etc.)     (is_digit, is_alpha,
+--                                                  is_alphanumeric,
+--                                                  is_whitespace,
+--                                                  is_upper, is_lower)
+--   4. Normalize the first char of a token        (char_to_upper,
+--                                                  char_to_lower)
+--   5. Trim stray whitespace                      (string_trim_start,
+--                                                  string_trim_end)
+--   6. Pad numeric cells for a right-aligned
+--      table view                                 (string_pad_start,
+--                                                  string_pad_end)
+--   7. Reverse a string (palindrome check)        (string_reverse)
+--   8. Iterate through every byte of a string     (string_chars)
+-- ---------------------------------------------------------------
+-- ---------------------------------------------------------------
+-- How many lines in a small multi-line log?
+-- ---------------------------------------------------------------
+public fn line_count(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  nat_to_int(array_length(string_lines("first\nsecond\nthird")))
+}
+
+-- ---------------------------------------------------------------
+-- How many whitespace-separated words in a line, with messy
+-- internal runs of spaces and tabs?  Python split() semantics:
+-- runs collapse, empty segments discarded.
+-- ---------------------------------------------------------------
+public fn word_count(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 4)
+  effects(pure)
+{
+  nat_to_int(array_length(string_words("  the   quick  brown\tfox ")))
+}
+
+-- ---------------------------------------------------------------
+-- Byte length via the chars-array bridge.  `string_chars` turns a
+-- string into a ``Array<String>`` of 1-byte strings — useful when
+-- you want to thread each byte through the array combinators.
+-- ---------------------------------------------------------------
+public fn char_count(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  nat_to_int(array_length(string_chars("hello")))
+}
+
+-- ---------------------------------------------------------------
+-- Is the first character of a token a letter?  The six classifiers
+-- only look at the first byte; they're byte-level ASCII predicates,
+-- not grapheme-level Unicode ones.
+-- ---------------------------------------------------------------
+public fn first_is_letter(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if is_alpha("Hello") then {
+    if is_alpha("42abc") then {
+      false
+    } else {
+      true
+    }
+  } else {
+    false
+  }
+}
+
+-- ---------------------------------------------------------------
+-- Does a token look like a non-negative integer literal?
+-- All the six classifiers compose naturally via short-circuit
+-- boolean combinators.
+-- ---------------------------------------------------------------
+public fn looks_numeric(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- `is_digit` checks the first byte only, so this is an
+  -- approximation, not a full regex.  Good enough for a demo.
+  if is_digit("5x") then {
+    if is_digit("x5") then {
+      false
+    } else {
+      true
+    }
+  } else {
+    false
+  }
+}
+
+-- ---------------------------------------------------------------
+-- Is the first char uppercase?  Lowercase?
+-- ---------------------------------------------------------------
+public fn case_of_first(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if is_upper("Hello") then {
+    if is_lower("hello") then {
+      if is_upper("hello") then {
+        false
+      } else {
+        true
+      }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+-- ---------------------------------------------------------------
+-- Title-case the first letter of a word (leaves the rest alone).
+-- Only the first byte is converted; others pass through untouched.
+-- ---------------------------------------------------------------
+public fn title_case_demo(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  char_to_upper("alice") == "Alice"
+}
+
+-- ---------------------------------------------------------------
+-- Shout-to-whisper: lower the first character.
+-- ---------------------------------------------------------------
+public fn whisper_demo(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  char_to_lower("Alice") == "alice"
+}
+
+-- ---------------------------------------------------------------
+-- Trim stray leading spaces without losing trailing ones.
+-- ---------------------------------------------------------------
+public fn trim_start_demo(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_trim_start("   hello  ") == "hello  "
+}
+
+-- ---------------------------------------------------------------
+-- ...and the mirror image.
+-- ---------------------------------------------------------------
+public fn trim_end_demo(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_trim_end("   hello  ") == "   hello"
+}
+
+-- ---------------------------------------------------------------
+-- Pad an ID on the left so all IDs line up in a right-aligned
+-- column.  Fill cycles, left-to-right, matching JS padStart.
+-- ---------------------------------------------------------------
+public fn padded_id(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_pad_start("7", 5, "0") == "00007"
+}
+
+-- ---------------------------------------------------------------
+-- Pad a status string on the right so all statuses line up in a
+-- left-aligned column.
+-- ---------------------------------------------------------------
+public fn padded_status(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_pad_end("ok", 8, ".") == "ok......"
+}
+
+-- ---------------------------------------------------------------
+-- Pad by a multi-byte fill: the fill cycles left-to-right, getting
+-- truncated to exactly the padding length.
+-- ---------------------------------------------------------------
+public fn padded_cycle(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- target=7, input="x" (len 1), pad_len=6; fill "ab" cycled:
+  -- "ababab" prefix + "x" → "abababx".
+  string_pad_start("x", 7, "ab") == "abababx"
+}
+
+-- ---------------------------------------------------------------
+-- Palindrome check via string_reverse.
+-- ---------------------------------------------------------------
+public fn is_palindrome_racecar(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  string_reverse("racecar") == "racecar"
+}
+
+-- ---------------------------------------------------------------
+-- Empty-string edge case for every transform: they all round-trip
+-- the empty string without allocation fuss.
+-- ---------------------------------------------------------------
+public fn empty_round_trip(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if string_reverse("") == "" then {
+    if string_trim_start("") == "" then {
+      if string_trim_end("") == "" then {
+        if char_to_upper("") == "" then {
+          char_to_lower("") == ""
+        } else {
+          false
+        }
+      } else {
+        false
+      }
+    } else {
+      false
+    }
+  } else {
+    false
+  }
+}
+
+-- ---------------------------------------------------------------
+-- All six classifiers return false for the empty string.  A useful
+-- anchor when threading classifiers through possibly-empty input.
+-- ---------------------------------------------------------------
+public fn empty_rejects_all(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if is_digit("") then {
+    false
+  } else {
+    if is_alpha("") then {
+      false
+    } else {
+      if is_alphanumeric("") then {
+        false
+      } else {
+        if is_whitespace("") then {
+          false
+        } else {
+          if is_upper("") then {
+            false
+          } else {
+            if is_lower("") then {
+              false
+            } else {
+              true
+            }
+          }
+        }
+      }
+    }
+  }
+}

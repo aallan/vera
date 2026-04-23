@@ -10,6 +10,7 @@ Test helpers follow the established pattern:
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
@@ -11734,6 +11735,354 @@ public fn main(-> @Int)
         #                    * 1000 + 202       = 100101104202
         #                    * 1000 + 203       = 100101104202203
         assert _run(src) == 100101104202203
+
+
+class TestCharClassification:
+    """#471 — the six ASCII classifiers + two case converters.
+
+    Each classifier loads the first byte and tests against one or
+    more ASCII ranges (subtract + unsigned-less-than trick for
+    ``is_digit``/`is_alpha`/`is_upper`/`is_lower`; direct equality
+    OR for ``is_whitespace``; OR'd pair for ``is_alphanumeric``).
+    Empty-string convention: always false.
+    """
+
+    def _run_bool(self, src: str) -> int:
+        """Compile a classifier call and return the i32 result."""
+        return _run(src)
+
+    def test_is_digit(self) -> None:
+        """is_digit: '5' true, 'x' false, '' false, '9' true, '0' true."""
+        for s, expected in [("5", 1), ("x", 0), ("", 0), ("9", 1), ("0", 1)]:
+            src = f"""\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{{ if is_digit({json.dumps(s)}) then {{ 1 }} else {{ 0 }} }}
+"""
+            assert _run(src) == expected, f"is_digit({json.dumps(s)}) != {expected}"
+
+    def test_is_alpha(self) -> None:
+        """is_alpha: ASCII A-Z and a-z only."""
+        for s, expected in [("a", 1), ("Z", 1), ("0", 0), ("!", 0), ("", 0)]:
+            src = f"""\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{{ if is_alpha({json.dumps(s)}) then {{ 1 }} else {{ 0 }} }}
+"""
+            assert _run(src) == expected, f"is_alpha({json.dumps(s)}) != {expected}"
+
+    def test_is_alphanumeric(self) -> None:
+        """is_alphanumeric: letter OR digit."""
+        for s, expected in [("a", 1), ("5", 1), ("Z", 1), (" ", 0), ("", 0)]:
+            src = f"""\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{{ if is_alphanumeric({json.dumps(s)}) then {{ 1 }} else {{ 0 }} }}
+"""
+            assert _run(src) == expected, f"is_alphanumeric({json.dumps(s)}) != {expected}"
+
+    def test_is_whitespace(self) -> None:
+        """is_whitespace: space(32), tab(9), LF(10), CR(13) only."""
+        for s, expected in [(" ", 1), ("\t", 1), ("\n", 1), ("a", 0), ("", 0)]:
+            src = f"""\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{{ if is_whitespace({json.dumps(s)}) then {{ 1 }} else {{ 0 }} }}
+"""
+            assert _run(src) == expected, f"is_whitespace({json.dumps(s)}) != {expected}"
+
+    def test_is_upper(self) -> None:
+        """is_upper: 'A'..'Z' only."""
+        for s, expected in [("A", 1), ("Z", 1), ("a", 0), ("5", 0), ("", 0)]:
+            src = f"""\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{{ if is_upper({json.dumps(s)}) then {{ 1 }} else {{ 0 }} }}
+"""
+            assert _run(src) == expected, f"is_upper({json.dumps(s)}) != {expected}"
+
+    def test_is_lower(self) -> None:
+        """is_lower: 'a'..'z' only."""
+        for s, expected in [("a", 1), ("z", 1), ("A", 0), ("5", 0), ("", 0)]:
+            src = f"""\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{{ if is_lower({json.dumps(s)}) then {{ 1 }} else {{ 0 }} }}
+"""
+            assert _run(src) == expected, f"is_lower({json.dumps(s)}) != {expected}"
+
+    def test_char_to_upper_first_only(self) -> None:
+        """char_to_upper converts first char only; others untouched."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(char_to_upper("abc")) }
+"""
+        assert _run_io(src) == "Abc"
+
+    def test_char_to_upper_non_letter_pass_through(self) -> None:
+        """char_to_upper on non-letter first char: pass through."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(char_to_upper("5xy")) }
+"""
+        assert _run_io(src) == "5xy"
+
+    def test_char_to_lower_first_only(self) -> None:
+        """char_to_lower converts first char only; others untouched."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(char_to_lower("ABC")) }
+"""
+        assert _run_io(src) == "aBC"
+
+    def test_char_to_upper_empty(self) -> None:
+        """Empty string passes through."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(char_to_upper("")) }
+"""
+        assert _run_io(src) == ""
+
+
+class TestStringUtilities:
+    """#470 — string_chars, lines, words, pad_start, pad_end, reverse,
+    trim_start, trim_end.
+
+    All inline WAT; the Array<String>-returning ones (chars, lines,
+    words) use a shared-data-buffer pattern (copy once, point outer
+    array slots into the shared buffer).
+    """
+
+    def test_string_reverse(self) -> None:
+        """Reverse bytes."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_reverse("hello")) }
+"""
+        assert _run_io(src) == "olleh"
+
+    def test_string_reverse_empty(self) -> None:
+        """Empty reverses to empty."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_reverse("")) }
+"""
+        assert _run_io(src) == ""
+
+    def test_string_trim_start(self) -> None:
+        """Strip leading whitespace only."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_trim_start("  hi  ")) }
+"""
+        assert _run_io(src) == "hi  "
+
+    def test_string_trim_end(self) -> None:
+        """Strip trailing whitespace only."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_trim_end("  hi  ")) }
+"""
+        assert _run_io(src) == "  hi"
+
+    def test_string_trim_all_whitespace(self) -> None:
+        """A string of only whitespace → empty (either variant).
+
+        Check via length since an IO.print of an empty string leaves
+        stdout empty too (indistinguishable from "print was never
+        called" at the assertion layer).
+        """
+        src_start = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(string_length(string_trim_start("   "))) }
+"""
+        src_end = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(string_length(string_trim_end("   "))) }
+"""
+        assert _run(src_start) == 0
+        assert _run(src_end) == 0
+
+    def test_string_pad_start(self) -> None:
+        """Left-pad with fill, cycling if needed."""
+        # single-char fill
+        src1 = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_pad_start("x", 5, "0")) }
+"""
+        assert _run_io(src1) == "0000x"
+        # multi-char fill cycles
+        src2 = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_pad_start("xx", 7, "ab")) }
+"""
+        # pad_len = 5, fill pattern a,b,a,b,a
+        assert _run_io(src2) == "ababaxx"
+
+    def test_string_pad_end(self) -> None:
+        """Right-pad with fill, cycling."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_pad_end("xx", 7, "ab")) }
+"""
+        assert _run_io(src) == "xxababa"
+
+    def test_string_pad_no_change_when_longer(self) -> None:
+        """If input is already >= target, no pad."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_pad_start("hello", 3, "*")) }
+"""
+        assert _run_io(src) == "hello"
+
+    def test_string_pad_empty_fill(self) -> None:
+        """Empty fill string: no pad, input returned."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_pad_start("x", 5, "")) }
+"""
+        assert _run_io(src) == "x"
+
+    def test_string_chars_length(self) -> None:
+        """chars length == byte length."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_chars("abcde"))) }
+"""
+        assert _run(src) == 5
+
+    def test_string_chars_empty(self) -> None:
+        """chars of empty string is empty array."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_chars(""))) }
+"""
+        assert _run(src) == 0
+
+    def test_string_chars_content(self) -> None:
+        """Reassemble via join — chars + join should be identity."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_join(string_chars("abc"), "-")) }
+"""
+        assert _run_io(src) == "a-b-c"
+
+    def test_string_lines_simple(self) -> None:
+        """Basic \\n-separated lines."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_lines("a\\nb\\nc"))) }
+"""
+        assert _run(src) == 3
+
+    def test_string_lines_crlf(self) -> None:
+        """\\r\\n is one terminator (not two)."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_lines("a\\r\\nb\\r\\nc"))) }
+"""
+        assert _run(src) == 3
+
+    def test_string_lines_cr_only(self) -> None:
+        """Bare \\r is a terminator."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_lines("a\\rb\\rc"))) }
+"""
+        assert _run(src) == 3
+
+    def test_string_lines_trailing_newline(self) -> None:
+        """Trailing \\n does not add an empty final segment (splitlines)."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_lines("a\\nb\\n"))) }
+"""
+        assert _run(src) == 2
+
+    def test_string_lines_empty(self) -> None:
+        """Empty input → empty array (length 0)."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_lines(""))) }
+"""
+        assert _run(src) == 0
+
+    def test_string_lines_content_via_join(self) -> None:
+        """Lines + join with \\n should give back the source (modulo trailing \\n)."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_join(string_lines("foo\\nbar\\nbaz"), ",")) }
+"""
+        assert _run_io(src) == "foo,bar,baz"
+
+    def test_string_words_simple(self) -> None:
+        """Basic split on whitespace runs."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_words("foo bar baz"))) }
+"""
+        assert _run(src) == 3
+
+    def test_string_words_runs(self) -> None:
+        """Multiple whitespace chars count as one separator."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_words("  foo    bar  baz  "))) }
+"""
+        assert _run(src) == 3
+
+    def test_string_words_empty(self) -> None:
+        """Empty input → empty array."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_words(""))) }
+"""
+        assert _run(src) == 0
+
+    def test_string_words_only_whitespace(self) -> None:
+        """All-whitespace input → empty array (no words to emit)."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_words("   \\t\\n  "))) }
+"""
+        assert _run(src) == 0
+
+    def test_string_words_content_via_join(self) -> None:
+        """Words + join should give a canonicalised single-space-separated version."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_join(string_words("  foo\\tbar\\n\\nbaz  "), "|")) }
+"""
+        assert _run_io(src) == "foo|bar|baz"
 
 
 class TestGCShadowStackOverflow:

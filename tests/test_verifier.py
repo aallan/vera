@@ -1592,8 +1592,10 @@ private fn sum(@List<Int> -> @Int)
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  The increment from 172/19/191 to
-        184/23/207 reflects the addition of `array_utilities.vera`
-        (#466 phase 1) which contributes 12 T1 + 4 T3 + 16 contracts.
+        213/26/239 reflects the addition of `string_utilities.vera`
+        (#470 + #471 phase 1) which contributes 29 T1 + 3 T3 + 32
+        contracts on top of the 184/23/207 baseline that already
+        included `array_utilities.vera` from v0.0.117.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -1604,9 +1606,9 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 184, f"Expected 184 T1, got {t1}"
-        assert t3 == 23, f"Expected 23 T3, got {t3}"
-        assert total == 207, f"Expected 207 total, got {total}"
+        assert t1 == 213, f"Expected 213 T1, got {t1}"
+        assert t3 == 26, f"Expected 26 T3, got {t3}"
+        assert total == 239, f"Expected 239 total, got {total}"
 
 
 # =====================================================================

@@ -254,6 +254,24 @@ class InferenceMixin:
             return "i32_pair"
         if expr.name == "string_split":
             return "i32_pair"
+        # String utility built-ins (#470).  string_chars / lines /
+        # words return Array<String> (i32_pair); pad / reverse /
+        # trim_start / trim_end return String (i32_pair).
+        if expr.name in (
+            "string_chars", "string_lines", "string_words",
+            "string_pad_start", "string_pad_end",
+            "string_reverse", "string_trim_start", "string_trim_end",
+        ):
+            return "i32_pair"
+        # Character classification (#471) → Bool (i32).
+        if expr.name in (
+            "is_digit", "is_alpha", "is_alphanumeric",
+            "is_whitespace", "is_upper", "is_lower",
+        ):
+            return "i32"
+        # Single-character case conversion (#471) → String (i32_pair).
+        if expr.name in ("char_to_upper", "char_to_lower"):
+            return "i32_pair"
         # parse/decode builtins → Result<T, String> (i32 heap pointer)
         if expr.name in (
             "parse_nat", "parse_int", "parse_float64", "parse_bool",
@@ -561,6 +579,21 @@ class InferenceMixin:
             return "String"
         if call.name == "string_split":
             return "Array"
+        # String utility built-ins (#470).
+        if call.name in (
+            "string_pad_start", "string_pad_end",
+            "string_reverse", "string_trim_start", "string_trim_end",
+            "char_to_upper", "char_to_lower",
+        ):
+            return "String"
+        if call.name in ("string_chars", "string_lines", "string_words"):
+            return "Array"
+        # Character classification (#471) → Bool.
+        if call.name in (
+            "is_digit", "is_alpha", "is_alphanumeric",
+            "is_whitespace", "is_upper", "is_lower",
+        ):
+            return "Bool"
         if call.name in (
             "parse_nat", "parse_int", "parse_float64", "parse_bool",
             "base64_decode", "url_decode",

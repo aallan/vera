@@ -1,6 +1,6 @@
 # Vera Examples
 
-28 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
+32 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
 
 ## Running Examples
 
@@ -62,6 +62,7 @@ vera run examples/factorial.vera --fn factorial -- 10
 | Example | Run | Demonstrates |
 |---------|-----|-------------|
 | `string_ops.vera` | `vera run examples/string_ops.vera` | String search, transform, split, join |
+| `string_utilities.vera` | `vera run examples/string_utilities.vera --fn padded_id` | string_chars, string_lines, string_words, string_pad_*, string_trim_*, string_reverse, char_to_*, is_digit/alpha/alphanumeric/whitespace/upper/lower |
 | `regex.vera` | `vera run examples/regex.vera` | regex_match, regex_find, regex_find_all, regex_replace |
 | `markdown.vera` | `vera run examples/markdown.vera` | md_parse, pattern matching on MdBlock ADT |
 | `json.vera` | `vera run examples/json.vera` | json_parse, json_get, Json ADT, API response handling |

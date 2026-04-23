@@ -104,7 +104,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls_markup.py` | 315 | | JSON, HTML, Markdown, Regex, async/await (host-import wrappers) | |
 | ` ├ calls_math.py` | 457 | | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, Float64 predicates, numeric conversions | |
 | ` ├ calls_parsing.py` | 970 | | `parse_nat` / `parse_int` / `parse_bool` / `parse_float64` state machines | |
-| ` ├ calls_strings.py` | 2,588 | | All string ops (length, concat, slice, search, transform, split, join) + to-string conversions | |
+| ` ├ calls_strings.py` | 3,979 | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions | |
 | ` ├ closures.py` | 254 | | Closures, anonymous functions, free variable analysis | |
 | ` ├ data.py` | 739 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
 | ` ├ markdown.py` | 537 | | WASM memory marshalling for MdInline/MdBlock ADTs | |
