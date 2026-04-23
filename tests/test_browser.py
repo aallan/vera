@@ -1089,7 +1089,13 @@ public fn main(-> @Unit)
         assert node["stdout"] == "a-b-c"
 
     def test_string_lines(self, tmp_path: Path) -> None:
-        """lines splits on \\n, \\r\\n, \\r (Python splitlines semantics)."""
+        """lines splits on \\n, \\r\\n, \\r (Python splitlines
+        semantics).  Also exercises the empty-input path
+        (``string_lines("")``) so the ``$alloc(0)`` branch in
+        ``_translate_structural_split`` is covered under the browser
+        runtime — Node's WASM linker has stricter zero-size handling
+        than wasmtime in some past versions.
+        """
         source = '''\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -1098,13 +1104,17 @@ public fn main(-> @Unit)
   IO.print(",");
   IO.print(string_join(string_lines("a\\r\\nb\\rc"), "|"));
   IO.print(",");
-  IO.print(int_to_string(nat_to_int(array_length(string_lines("a\\n")))))
+  IO.print(int_to_string(nat_to_int(array_length(string_lines("a\\n")))));
+  IO.print(",");
+  -- empty input → empty array (length 0)
+  IO.print(int_to_string(nat_to_int(array_length(string_lines("")))))
 }
 '''
         wasm_path, _ = _compile_vera(source, tmp_path)
         node = _run_node(wasm_path)
-        # Trailing newline does NOT create empty final segment.
-        assert node["stdout"] == "a|b|c,a|b|c,1"
+        # Trailing newline does NOT create empty final segment;
+        # empty input → empty array.
+        assert node["stdout"] == "a|b|c,a|b|c,1,0"
 
     def test_string_words(self, tmp_path: Path) -> None:
         """words splits on runs of whitespace; empty segments

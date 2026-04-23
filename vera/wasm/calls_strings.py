@@ -2878,6 +2878,15 @@ class CallsStringsMixin:
         ins.extend(arg_instrs)
         ins.append(f"local.set {slen}")
         ins.append(f"local.set {ptr}")
+        # Root the source string across the destination $alloc below.
+        # Without this, if the input is a heap-allocated string (e.g.
+        # the result of string_concat or another non-literal producer),
+        # GC triggered by the alloc could free it and leave the copy
+        # loop reading from a freed buffer — Vera's WASM locals are
+        # not GC roots, only the shadow stack is.  Per the byte-literal
+        # / GC-root review heuristics, any pointer read after a
+        # ``call $alloc`` must be on the shadow stack first.
+        ins.extend(gc_shadow_push(ptr))
 
         ins.append("i32.const 0")
         ins.append(f"local.set {start}")
