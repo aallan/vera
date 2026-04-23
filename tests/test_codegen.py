@@ -11737,6 +11737,41 @@ public fn main(-> @Int)
         assert _run(src) == 100101104202203
 
 
+_INLINE_BUILTIN_NAMES = (
+    # #471 — character classifiers + first-byte case conversion
+    "is_digit", "is_alpha", "is_alphanumeric", "is_whitespace",
+    "is_upper", "is_lower", "char_to_upper", "char_to_lower",
+    # #470 — string utilities
+    "string_chars", "string_lines", "string_words",
+    "string_reverse", "string_trim_start", "string_trim_end",
+    "string_pad_start", "string_pad_end",
+)
+
+
+def _assert_no_host_imports_for_inline_builtins(wat: str) -> None:
+    """Assert the compiled WAT has no host imports for the 16 inline
+    built-ins added by #470 + #471.
+
+    These functions are documented as being implemented entirely
+    inline in WAT (no host imports — bit-identical Python/browser
+    output by construction).  If a future refactor accidentally
+    routes one through a host import, the import would appear as
+    ``(import "vera" "<name>" ...)`` in the module's import section
+    and this assertion would catch it.
+
+    The check tolerates other unrelated imports (`IO.print`,
+    `gc_collect` host helpers, etc.) — it scans only for our 16
+    names.
+    """
+    for name in _INLINE_BUILTIN_NAMES:
+        marker = f'(import "vera" "{name}"'
+        assert marker not in wat, (
+            f"Expected no host import for inline built-in {name!r}, "
+            f"but found {marker!r} in the WAT.  This contradicts the "
+            f"#470/#471 design contract."
+        )
+
+
 class TestCharClassification:
     """#471 — the six ASCII classifiers + two case converters.
 
@@ -11750,6 +11785,41 @@ class TestCharClassification:
     def _run_bool(self, src: str) -> int:
         """Compile a classifier call and return the i32 result."""
         return _run(src)
+
+    def test_no_host_imports_for_inline_builtins(self) -> None:
+        """Compile a program that uses all 16 #470/#471 built-ins and
+        assert none of them is routed through a host import.
+
+        Catches regressions in either direction: a refactor that
+        adds a host import for one of these (the documented
+        contract is "inline WAT, no host calls"), or a sibling
+        builtin renamed to collide with one of our 16 names.
+        """
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Bool = is_digit("5");
+  let @Bool = is_alpha("A");
+  let @Bool = is_alphanumeric("0");
+  let @Bool = is_whitespace(" ");
+  let @Bool = is_upper("A");
+  let @Bool = is_lower("a");
+  let @String = char_to_upper("a");
+  let @String = char_to_lower("A");
+  let @String = string_reverse("ab");
+  let @String = string_trim_start("  x");
+  let @String = string_trim_end("x  ");
+  let @String = string_pad_start("x", 3, "0");
+  let @String = string_pad_end("x", 3, "0");
+  let @Array<String> = string_chars("ab");
+  let @Array<String> = string_lines("a\\nb");
+  let @Array<String> = string_words("a b");
+  0
+}
+"""
+        result = _compile_ok(src)
+        _assert_no_host_imports_for_inline_builtins(result.wat)
 
     def test_is_digit(self) -> None:
         """is_digit: '5' true, 'x' false, '' false, '9' true, '0' true."""
@@ -11782,14 +11852,34 @@ public fn main(-> @Int)
             assert _run(src) == expected, f"is_alphanumeric({json.dumps(s)}) != {expected}"
 
     def test_is_whitespace(self) -> None:
-        """is_whitespace: space(32), tab(9), LF(10), CR(13) only."""
-        for s, expected in [(" ", 1), ("\t", 1), ("\n", 1), ("a", 0), ("", 0)]:
+        """is_whitespace: Python str.isspace() ASCII set — space(32),
+        tab(9), LF(10), VT(11), FF(12), CR(13).  Non-whitespace and
+        empty string return 0.
+
+        Vera's lexer only recognizes \\n / \\t / \\r / \\0 as simple
+        escapes (see `_SIMPLE_ESCAPES` in vera/transform.py); VT and
+        FF are written as `\\u{0B}` / `\\u{0C}` unicode escapes.
+        """
+        cases = [
+            (" ", 1),
+            ("\t", 1),
+            ("\n", 1),
+            ("\u000b", 1),  # VT — spelled "\u{0B}" in Vera source
+            ("\u000c", 1),  # FF — spelled "\u{0C}" in Vera source
+            ("\r", 1),
+            ("a", 0),
+            ("0", 0),
+            ("", 0),
+        ]
+        _VERA_ESCAPES = {"\u000b": '"\\u{0B}"', "\u000c": '"\\u{0C}"'}
+        for s, expected in cases:
+            literal = _VERA_ESCAPES.get(s, json.dumps(s))
             src = f"""\
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
-{{ if is_whitespace({json.dumps(s)}) then {{ 1 }} else {{ 0 }} }}
+{{ if is_whitespace({literal}) then {{ 1 }} else {{ 0 }} }}
 """
-            assert _run(src) == expected, f"is_whitespace({json.dumps(s)}) != {expected}"
+            assert _run(src) == expected, f"is_whitespace({literal}) != {expected}"
 
     def test_is_upper(self) -> None:
         """is_upper: 'A'..'Z' only."""
@@ -12038,6 +12128,52 @@ public fn main(-> @Unit)
 { IO.print(string_join(string_lines("foo\\nbar\\nbaz"), ",")) }
 """
         assert _run_io(src) == "foo,bar,baz"
+
+    def test_string_lines_trailing_cr(self) -> None:
+        """Trailing \\r: splitlines semantics — no empty trailing segment."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_lines("a\\r"))) }
+"""
+        # Just "a\r" → ["a"], length 1.
+        assert _run(src) == 1
+
+    def test_string_lines_trailing_crlf(self) -> None:
+        """Trailing \\r\\n: splitlines semantics — no empty trailing segment.
+
+        Distinct from ``test_string_lines_trailing_newline`` because
+        CRLF is a two-byte terminator and the scanner advances past
+        both in a single step.  Ensures that optimisation doesn't
+        accidentally yield an extra empty segment.
+        """
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_lines("a\\r\\nb\\r\\n"))) }
+"""
+        # ["a", "b"] — length 2, no empty trailing.
+        assert _run(src) == 2
+
+    def test_string_lines_interior_blank_lf(self) -> None:
+        """Consecutive \\n preserves the empty interior line."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_join(string_lines("a\\n\\nb"), "|")) }
+"""
+        # "a\n\nb" → ["a", "", "b"] — join with "|" → "a||b".
+        assert _run_io(src) == "a||b"
+
+    def test_string_lines_interior_blank_cr(self) -> None:
+        """Consecutive \\r also preserves an empty interior line."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_join(string_lines("a\\r\\rb"), "|")) }
+"""
+        # "a\r\rb" → ["a", "", "b"] — join with "|" → "a||b".
+        assert _run_io(src) == "a||b"
 
     def test_string_words_simple(self) -> None:
         """Basic split on whitespace runs."""

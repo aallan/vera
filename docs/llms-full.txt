@@ -815,7 +815,7 @@ char_to_lower(@String.0)                           -- returns String
 is_digit(@String.0)                                -- returns Bool ('0'..'9')
 is_alpha(@String.0)                                -- returns Bool ('A'..'Z', 'a'..'z')
 is_alphanumeric(@String.0)                         -- returns Bool
-is_whitespace(@String.0)                           -- returns Bool (tab, LF, CR, space)
+is_whitespace(@String.0)                           -- returns Bool (tab, LF, VT, FF, CR, space — Python isspace() ASCII)
 is_upper(@String.0)                                -- returns Bool
 is_lower(@String.0)                                -- returns Bool
 ```

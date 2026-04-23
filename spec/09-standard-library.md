@@ -1694,7 +1694,7 @@ public fn string_words(@String -> @Array<String>)
 
 `string_lines` follows Python's `str.splitlines()`: splits on `\n`, `\r\n`, and `\r` line terminators. A trailing line terminator does **not** produce an empty trailing segment.
 
-`string_words` follows Python's `str.split()` with no arguments: splits on runs of ASCII whitespace (space, tab, `\n`, `\r`), and discards empty segments. `string_words("  ")` returns the empty array.
+`string_words` follows Python's `str.split()` with no arguments: splits on runs of ASCII whitespace (the same set as `is_whitespace` — space, tab, `\n`, `\v`, `\f`, `\r`), and discards empty segments. `string_words("  ")` returns the empty array.
 
 ```vera
 string_chars("abc")           -- ["a", "b", "c"]
@@ -1721,7 +1721,7 @@ public fn string_trim_end(@String -> @String)
 
 `string_reverse` reverses the byte order of the input. ASCII-safe; for multi-byte UTF-8 sequences the result is not a valid UTF-8 string. The empty string round-trips.
 
-`string_trim_start` strips leading ASCII whitespace (space, tab, `\n`, `\r`); `string_trim_end` strips trailing whitespace. Each preserves the opposite end exactly. The all-whitespace input returns the empty string.
+`string_trim_start` strips leading ASCII whitespace (the same set as `is_whitespace` — space, tab, `\n`, `\v`, `\f`, `\r`); `string_trim_end` strips trailing whitespace. Each preserves the opposite end exactly. The all-whitespace input returns the empty string.
 
 ```vera
 string_reverse("hello")       -- "olleh"
@@ -1771,7 +1771,7 @@ char_to_lower("ALICE")  -- "aLICE"
 char_to_upper("")       -- ""
 ```
 
-A future `string_upper` / `string_lower`-aware whole-string version is tracked alongside Unicode handling.
+For whole-string ASCII case conversion, see `string_upper` / `string_lower` in §9.6.14. Unicode-aware variants of all four operations are tracked alongside Unicode handling.
 
 #### Character classifiers
 
@@ -1791,7 +1791,7 @@ Each classifier inspects the **first byte** of the input string and returns a `@
 | `is_digit` | `0x30..0x39` (`'0'..'9'`) |
 | `is_alpha` | `0x41..0x5A` or `0x61..0x7A` (`'A'..'Z'`, `'a'..'z'`) |
 | `is_alphanumeric` | union of `is_digit` and `is_alpha` |
-| `is_whitespace` | `0x09` (tab), `0x0A` (`\n`), `0x0D` (`\r`), `0x20` (space) |
+| `is_whitespace` | `0x09` (tab), `0x0A` (`\n`), `0x0B` (`\v`), `0x0C` (`\f`), `0x0D` (`\r`), `0x20` (space) — Python `str.isspace()` ASCII set |
 | `is_upper` | `0x41..0x5A` (`'A'..'Z'`) |
 | `is_lower` | `0x61..0x7A` (`'a'..'z'`) |
 

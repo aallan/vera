@@ -1114,26 +1114,66 @@ class TestBrowserCharClassification:
     """
 
     def test_classifiers(self, tmp_path: Path) -> None:
-        """Every classifier over a spread of representative bytes."""
+        """Every classifier exercised with both a passing and a failing
+        byte, plus the empty-string rejection shared by all six.
+
+        The `is_whitespace` block also covers the full Python
+        `str.isspace()` ASCII set — tab, LF, VT (0x0B), FF (0x0C), CR,
+        and space — because those two control codes are easy to miss
+        in an ASCII-range check that collapses to a contiguous
+        subrange.
+        """
         source = '''\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print(bool_to_string(is_digit("5")));         IO.print(",");
-  IO.print(bool_to_string(is_digit("x")));         IO.print(",");
-  IO.print(bool_to_string(is_alpha("A")));         IO.print(",");
-  IO.print(bool_to_string(is_alpha("9")));         IO.print(",");
-  IO.print(bool_to_string(is_alphanumeric(" ")));  IO.print(",");
-  IO.print(bool_to_string(is_whitespace("\\t")));  IO.print(",");
-  IO.print(bool_to_string(is_upper("A")));         IO.print(",");
-  IO.print(bool_to_string(is_lower("a")));         IO.print(",");
-  IO.print(bool_to_string(is_digit("")))
+  -- is_digit: pass + fail
+  IO.print(bool_to_string(is_digit("5"))); IO.print(",");
+  IO.print(bool_to_string(is_digit("x"))); IO.print(",");
+  -- is_alpha: pass + fail
+  IO.print(bool_to_string(is_alpha("A"))); IO.print(",");
+  IO.print(bool_to_string(is_alpha("9"))); IO.print(",");
+  -- is_alphanumeric: pass (letter), pass (digit), fail
+  IO.print(bool_to_string(is_alphanumeric("a"))); IO.print(",");
+  IO.print(bool_to_string(is_alphanumeric("7"))); IO.print(",");
+  IO.print(bool_to_string(is_alphanumeric(" "))); IO.print(",");
+  -- is_whitespace: full Python isspace() ASCII set + non-ws
+  IO.print(bool_to_string(is_whitespace(" ")));   IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\t"))); IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\n"))); IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\u{0B}"))); IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\u{0C}"))); IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\r"))); IO.print(",");
+  IO.print(bool_to_string(is_whitespace("x")));   IO.print(",");
+  -- is_upper / is_lower: pass + fail (not just pass)
+  IO.print(bool_to_string(is_upper("A"))); IO.print(",");
+  IO.print(bool_to_string(is_upper("a"))); IO.print(",");
+  IO.print(bool_to_string(is_lower("a"))); IO.print(",");
+  IO.print(bool_to_string(is_lower("A"))); IO.print(",");
+  -- Empty string rejects every predicate
+  IO.print(bool_to_string(is_digit("")));        IO.print(",");
+  IO.print(bool_to_string(is_alpha("")));        IO.print(",");
+  IO.print(bool_to_string(is_alphanumeric("")));  IO.print(",");
+  IO.print(bool_to_string(is_whitespace("")));    IO.print(",");
+  IO.print(bool_to_string(is_upper("")));        IO.print(",");
+  IO.print(bool_to_string(is_lower("")))
 }
 '''
         wasm_path, _ = _compile_vera(source, tmp_path)
         node = _run_node(wasm_path)
         assert node["stdout"] == (
-            "true,false,true,false,false,true,true,true,false"
+            # is_digit
+            "true,false,"
+            # is_alpha
+            "true,false,"
+            # is_alphanumeric
+            "true,true,false,"
+            # is_whitespace: 6 passes + 1 fail
+            "true,true,true,true,true,true,false,"
+            # is_upper + is_lower
+            "true,false,true,false,"
+            # 6 empty-string rejections
+            "false,false,false,false,false,false"
         )
 
     def test_char_case(self, tmp_path: Path) -> None:

@@ -2729,7 +2729,11 @@ class CallsStringsMixin:
     def _translate_is_whitespace(
         self, arg: ast.Expr, env: WasmSlotEnv,
     ) -> list[str] | None:
-        """is_whitespace: byte in {space(32), tab(9), LF(10), CR(13)}."""
+        """is_whitespace: byte in the ASCII whitespace set per Python's
+        ``str.isspace()`` — {tab(9), LF(10), VT(11), FF(12), CR(13),
+        space(32)}.  The four contiguous control codes 9..13 collapse
+        into one range check ``(byte - 9) < 5`` for branchless emit.
+        """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
@@ -2753,20 +2757,16 @@ class CallsStringsMixin:
         ins.append(f"  local.get {ptr}")
         ins.append("  i32.load8_u offset=0")
         ins.append(f"  local.set {byte}")
+        # space(32) check
         ins.append(f"  local.get {byte}")
         ins.append("  i32.const 32")
         ins.append("  i32.eq")
+        # 9..=13 contiguous range: (byte - 9) < 5
         ins.append(f"  local.get {byte}")
         ins.append("  i32.const 9")
-        ins.append("  i32.eq")
-        ins.append("  i32.or")
-        ins.append(f"  local.get {byte}")
-        ins.append("  i32.const 10")
-        ins.append("  i32.eq")
-        ins.append("  i32.or")
-        ins.append(f"  local.get {byte}")
-        ins.append("  i32.const 13")
-        ins.append("  i32.eq")
+        ins.append("  i32.sub")
+        ins.append("  i32.const 5")
+        ins.append("  i32.lt_u")
         ins.append("  i32.or")
         ins.append(f"  local.set {result}")
         ins.append("end")
@@ -3026,14 +3026,14 @@ class CallsStringsMixin:
         ins.append(f"local.set {end}")
 
         def _is_ws_inline() -> list[str]:
+            # ASCII whitespace per Python's str.isspace():
+            # {tab(9), LF(10), VT(11), FF(12), CR(13), space(32)}.
+            # 9..=13 collapses to (byte - 9) < 5 for branchless emit.
             return [
                 f"    local.set {byte}",
                 f"    local.get {byte}", "    i32.const 32", "    i32.eq",
-                f"    local.get {byte}", "    i32.const 9",  "    i32.eq",
-                "    i32.or",
-                f"    local.get {byte}", "    i32.const 10", "    i32.eq",
-                "    i32.or",
-                f"    local.get {byte}", "    i32.const 13", "    i32.eq",
+                f"    local.get {byte}", "    i32.const 9",  "    i32.sub",
+                "    i32.const 5", "    i32.lt_u",
                 "    i32.or",
             ]
 
@@ -3377,6 +3377,16 @@ class CallsStringsMixin:
         ASCII semantics — multi-byte characters are split per byte.
         Matches Vera's byte-oriented string model (same as
         string_char_code, string_slice etc.).
+
+        GC note: each 1-byte slice gets its own ``$alloc`` rather
+        than slicing into a shared buffer.  Interior pointers
+        (``shared_buf + offset``) fail the GC mark phase's alignment
+        check (``(val - gc_heap_start) % 8 == 4``) at every offset
+        that isn't on an object boundary, so interior pointers
+        cannot keep the underlying buffer alive across a collection
+        triggered after this function returns.  See
+        ``_emit_gc_collect`` in ``vera/codegen/assembly.py``.
+        Per-slice allocation keeps every element a valid root.
         """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
@@ -3385,45 +3395,15 @@ class CallsStringsMixin:
 
         ptr_s = self.alloc_local("i32")
         slen = self.alloc_local("i32")
-        data = self.alloc_local("i32")
         outer = self.alloc_local("i32")
         idx = self.alloc_local("i32")
+        slice_ptr = self.alloc_local("i32")
 
         ins: list[str] = []
         ins.extend(arg_instrs)
         ins.append(f"local.set {slen}")
         ins.append(f"local.set {ptr_s}")
         ins.extend(gc_shadow_push(ptr_s))
-
-        # data = $alloc(slen); copy s -> data
-        ins.append(f"local.get {slen}")
-        ins.append("call $alloc")
-        ins.append(f"local.set {data}")
-        ins.extend(gc_shadow_push(data))
-
-        ins.append("i32.const 0")
-        ins.append(f"local.set {idx}")
-        ins.append("block $brk_sc_cp")
-        ins.append("  loop $lp_sc_cp")
-        ins.append(f"    local.get {idx}")
-        ins.append(f"    local.get {slen}")
-        ins.append("    i32.ge_u")
-        ins.append("    br_if $brk_sc_cp")
-        ins.append(f"    local.get {data}")
-        ins.append(f"    local.get {idx}")
-        ins.append("    i32.add")
-        ins.append(f"    local.get {ptr_s}")
-        ins.append(f"    local.get {idx}")
-        ins.append("    i32.add")
-        ins.append("    i32.load8_u offset=0")
-        ins.append("    i32.store8 offset=0")
-        ins.append(f"    local.get {idx}")
-        ins.append("    i32.const 1")
-        ins.append("    i32.add")
-        ins.append(f"    local.set {idx}")
-        ins.append("    br $lp_sc_cp")
-        ins.append("  end")
-        ins.append("end")
 
         # outer = $alloc(slen * 8)
         ins.append(f"local.get {slen}")
@@ -3433,7 +3413,11 @@ class CallsStringsMixin:
         ins.append(f"local.set {outer}")
         ins.extend(gc_shadow_push(outer))
 
-        # for idx in [0, slen): outer[idx*8] = (data + idx, 1)
+        # For each idx in [0, slen):
+        #   slice_ptr = $alloc(1)
+        #   slice_ptr[0] = ptr_s[idx]
+        #   outer[idx*8 + 0] = slice_ptr
+        #   outer[idx*8 + 4] = 1
         ins.append("i32.const 0")
         ins.append(f"local.set {idx}")
         ins.append("block $brk_sc_fill")
@@ -3442,15 +3426,24 @@ class CallsStringsMixin:
         ins.append(f"    local.get {slen}")
         ins.append("    i32.ge_u")
         ins.append("    br_if $brk_sc_fill")
-        # outer[idx*8 + 0] = data + idx
+        # slice_ptr = $alloc(1)
+        ins.append("    i32.const 1")
+        ins.append("    call $alloc")
+        ins.append(f"    local.set {slice_ptr}")
+        # slice_ptr[0] = ptr_s[idx]
+        ins.append(f"    local.get {slice_ptr}")
+        ins.append(f"    local.get {ptr_s}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=0")
+        # outer[idx*8 + 0] = slice_ptr
         ins.append(f"    local.get {outer}")
         ins.append(f"    local.get {idx}")
         ins.append("    i32.const 8")
         ins.append("    i32.mul")
         ins.append("    i32.add")
-        ins.append(f"    local.get {data}")
-        ins.append(f"    local.get {idx}")
-        ins.append("    i32.add")
+        ins.append(f"    local.get {slice_ptr}")
         ins.append("    i32.store offset=0")
         # outer[idx*8 + 4] = 1
         ins.append(f"    local.get {outer}")
@@ -3504,12 +3497,25 @@ class CallsStringsMixin:
     ) -> list[str] | None:
         """Shared scaffold for string_lines / string_words.
 
-        Both do a two-pass count-then-emit over a shared data buffer.
-        The *predicate* for "this byte is a segment boundary" differs
-        (line-terminator set vs any-whitespace set) and the
-        *empty-segment handling* differs (lines preserves empty
-        segments from consecutive terminators; words discards them),
-        but the loop skeleton is identical.
+        Both do a two-pass count-then-emit walk.  The *predicate* for
+        "this byte is a segment boundary" differs (line-terminator
+        set vs any-whitespace set) and the *empty-segment handling*
+        differs (lines preserves empty segments from consecutive
+        terminators; words discards them), but the loop skeleton is
+        identical.
+
+        GC note: each segment gets its own ``$alloc`` rather than
+        slicing into a shared backing buffer.  The GC mark phase's
+        alignment check (``(val - gc_heap_start) % 8 == 4`` in
+        ``vera/codegen/assembly.py``) rejects interior pointers, so
+        ``shared_buf + offset`` slot values in the result array
+        would not keep the underlying buffer alive across a
+        collection triggered after this function returns.  Per-slice
+        allocation gives every element a valid object-start root.
+        ``data`` (the temporary byte buffer copied from the input)
+        is kept rooted on the shadow stack only for the duration of
+        this call; the allocator may reclaim it after we return,
+        but the per-slice copies survive.
         """
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
@@ -3526,8 +3532,66 @@ class CallsStringsMixin:
         seg_len = self.alloc_local("i32")
         byte = self.alloc_local("i32")
         slot = self.alloc_local("i32")
+        slice_ptr = self.alloc_local("i32")
+        copy_i = self.alloc_local("i32")
         write_idx = self.alloc_local("i32")
         in_word = self.alloc_local("i32")
+
+        emit_slice_serial = [0]
+
+        def _emit_slice(indent: str) -> list[str]:
+            """Emit alloc+copy+store-into-outer for one segment.
+
+            Pre-conditions:
+              - ``slot`` already holds the destination address inside
+                ``outer`` (i.e., ``outer + write_idx*8``).
+              - ``seg_start`` and ``seg_len`` already hold the slice
+                bounds within ``data``.
+              - ``data`` is rooted on the shadow stack.
+            Side effect:
+              - ``slice_ptr`` and ``copy_i`` are clobbered.
+            """
+            emit_slice_serial[0] += 1
+            n = emit_slice_serial[0]
+            return [
+                # slice_ptr = $alloc(seg_len)
+                f"{indent}local.get {seg_len}",
+                f"{indent}call $alloc",
+                f"{indent}local.set {slice_ptr}",
+                # Copy data[seg_start .. seg_start+seg_len] -> slice_ptr
+                f"{indent}i32.const 0",
+                f"{indent}local.set {copy_i}",
+                f"{indent}block $brk_cp{n}",
+                f"{indent}  loop $lp_cp{n}",
+                f"{indent}    local.get {copy_i}",
+                f"{indent}    local.get {seg_len}",
+                f"{indent}    i32.ge_u",
+                f"{indent}    br_if $brk_cp{n}",
+                f"{indent}    local.get {slice_ptr}",
+                f"{indent}    local.get {copy_i}",
+                f"{indent}    i32.add",
+                f"{indent}    local.get {data}",
+                f"{indent}    local.get {seg_start}",
+                f"{indent}    i32.add",
+                f"{indent}    local.get {copy_i}",
+                f"{indent}    i32.add",
+                f"{indent}    i32.load8_u offset=0",
+                f"{indent}    i32.store8 offset=0",
+                f"{indent}    local.get {copy_i}",
+                f"{indent}    i32.const 1",
+                f"{indent}    i32.add",
+                f"{indent}    local.set {copy_i}",
+                f"{indent}    br $lp_cp{n}",
+                f"{indent}  end",
+                f"{indent}end",
+                # Store (slice_ptr, seg_len) at slot
+                f"{indent}local.get {slot}",
+                f"{indent}local.get {slice_ptr}",
+                f"{indent}i32.store offset=0",
+                f"{indent}local.get {slot}",
+                f"{indent}local.get {seg_len}",
+                f"{indent}i32.store offset=4",
+            ]
 
         ins: list[str] = []
         ins.extend(arg_instrs)
@@ -3692,14 +3756,13 @@ class CallsStringsMixin:
             ins.append("    i32.add")
             ins.append("    i32.load8_u offset=0")
             ins.append(f"    local.set {byte}")
-            # is_ws(byte) → stack
+            # is_ws(byte) → stack: Python's str.isspace() set
+            # {tab(9), LF(10), VT(11), FF(12), CR(13), space(32)}.
+            # 9..=13 collapses to (byte - 9) < 5 for branchless emit.
             ins.extend([
                 f"    local.get {byte}", "    i32.const 32", "    i32.eq",
-                f"    local.get {byte}", "    i32.const 9",  "    i32.eq",
-                "    i32.or",
-                f"    local.get {byte}", "    i32.const 10", "    i32.eq",
-                "    i32.or",
-                f"    local.get {byte}", "    i32.const 13", "    i32.eq",
+                f"    local.get {byte}", "    i32.const 9",  "    i32.sub",
+                "    i32.const 5", "    i32.lt_u",
                 "    i32.or",
             ])
             ins.append("    if")  # is ws
@@ -3767,23 +3830,19 @@ class CallsStringsMixin:
             ins.append("    i32.const 10")
             ins.append("    i32.eq")
             ins.append("    if")
-            # emit (data+seg_start, i - seg_start)
+            # Site 1 (LF): emit slice for [seg_start, i), then advance.
             ins.append(f"      local.get {outer}")
             ins.append(f"      local.get {write_idx}")
             ins.append("      i32.const 8")
             ins.append("      i32.mul")
             ins.append("      i32.add")
             ins.append(f"      local.set {slot}")
-            ins.append(f"      local.get {slot}")
-            ins.append(f"      local.get {data}")
-            ins.append(f"      local.get {seg_start}")
-            ins.append("      i32.add")
-            ins.append("      i32.store offset=0")
-            ins.append(f"      local.get {slot}")
+            # seg_len = i - seg_start
             ins.append(f"      local.get {i}")
             ins.append(f"      local.get {seg_start}")
             ins.append("      i32.sub")
-            ins.append("      i32.store offset=4")
+            ins.append(f"      local.set {seg_len}")
+            ins.extend(_emit_slice("      "))
             ins.append(f"      local.get {write_idx}")
             ins.append("      i32.const 1")
             ins.append("      i32.add")
@@ -3801,23 +3860,18 @@ class CallsStringsMixin:
             ins.append("    i32.const 13")
             ins.append("    i32.eq")
             ins.append("    if")
-            # emit segment
+            # Site 2 (CR): emit slice for [seg_start, i).
             ins.append(f"      local.get {outer}")
             ins.append(f"      local.get {write_idx}")
             ins.append("      i32.const 8")
             ins.append("      i32.mul")
             ins.append("      i32.add")
             ins.append(f"      local.set {slot}")
-            ins.append(f"      local.get {slot}")
-            ins.append(f"      local.get {data}")
-            ins.append(f"      local.get {seg_start}")
-            ins.append("      i32.add")
-            ins.append("      i32.store offset=0")
-            ins.append(f"      local.get {slot}")
             ins.append(f"      local.get {i}")
             ins.append(f"      local.get {seg_start}")
             ins.append("      i32.sub")
-            ins.append("      i32.store offset=4")
+            ins.append(f"      local.set {seg_len}")
+            ins.extend(_emit_slice("      "))
             ins.append(f"      local.get {write_idx}")
             ins.append("      i32.const 1")
             ins.append("      i32.add")
@@ -3861,7 +3915,8 @@ class CallsStringsMixin:
             ins.append("    br $lp_et")
             ins.append("  end")
             ins.append("end")
-            # Trailing content
+            # Site 3 (lines trailing content): emit slice for
+            # [seg_start, slen) if any content remains.
             ins.append(f"local.get {seg_start}")
             ins.append(f"local.get {slen}")
             ins.append("i32.lt_u")
@@ -3872,16 +3927,11 @@ class CallsStringsMixin:
             ins.append("  i32.mul")
             ins.append("  i32.add")
             ins.append(f"  local.set {slot}")
-            ins.append(f"  local.get {slot}")
-            ins.append(f"  local.get {data}")
-            ins.append(f"  local.get {seg_start}")
-            ins.append("  i32.add")
-            ins.append("  i32.store offset=0")
-            ins.append(f"  local.get {slot}")
             ins.append(f"  local.get {slen}")
             ins.append(f"  local.get {seg_start}")
             ins.append("  i32.sub")
-            ins.append("  i32.store offset=4")
+            ins.append(f"  local.set {seg_len}")
+            ins.extend(_emit_slice("  "))
             ins.append("end")
         else:
             # words
@@ -3898,36 +3948,30 @@ class CallsStringsMixin:
             ins.append("    i32.add")
             ins.append("    i32.load8_u offset=0")
             ins.append(f"    local.set {byte}")
-            # is_ws(byte)
+            # is_ws(byte): Python str.isspace() set
+            # {tab(9), LF(10), VT(11), FF(12), CR(13), space(32)};
+            # 9..=13 collapses to (byte - 9) < 5.
             ins.extend([
                 f"    local.get {byte}", "    i32.const 32", "    i32.eq",
-                f"    local.get {byte}", "    i32.const 9",  "    i32.eq",
-                "    i32.or",
-                f"    local.get {byte}", "    i32.const 10", "    i32.eq",
-                "    i32.or",
-                f"    local.get {byte}", "    i32.const 13", "    i32.eq",
+                f"    local.get {byte}", "    i32.const 9",  "    i32.sub",
+                "    i32.const 5", "    i32.lt_u",
                 "    i32.or",
             ])
             ins.append("    if")  # ws
             ins.append(f"      local.get {in_word}")
             ins.append("      if")
-            # emit (data + seg_start, i - seg_start)
+            # Site 4 (words mid-string): emit slice for [seg_start, i).
             ins.append(f"        local.get {outer}")
             ins.append(f"        local.get {write_idx}")
             ins.append("        i32.const 8")
             ins.append("        i32.mul")
             ins.append("        i32.add")
             ins.append(f"        local.set {slot}")
-            ins.append(f"        local.get {slot}")
-            ins.append(f"        local.get {data}")
-            ins.append(f"        local.get {seg_start}")
-            ins.append("        i32.add")
-            ins.append("        i32.store offset=0")
-            ins.append(f"        local.get {slot}")
             ins.append(f"        local.get {i}")
             ins.append(f"        local.get {seg_start}")
             ins.append("        i32.sub")
-            ins.append("        i32.store offset=4")
+            ins.append(f"        local.set {seg_len}")
+            ins.extend(_emit_slice("        "))
             ins.append(f"        local.get {write_idx}")
             ins.append("        i32.const 1")
             ins.append("        i32.add")
@@ -3953,7 +3997,7 @@ class CallsStringsMixin:
             ins.append("    br $lp_ew")
             ins.append("  end")
             ins.append("end")
-            # Trailing word?
+            # Site 5 (words trailing word): emit slice for [seg_start, slen).
             ins.append(f"local.get {in_word}")
             ins.append("if")
             ins.append(f"  local.get {outer}")
@@ -3962,16 +4006,11 @@ class CallsStringsMixin:
             ins.append("  i32.mul")
             ins.append("  i32.add")
             ins.append(f"  local.set {slot}")
-            ins.append(f"  local.get {slot}")
-            ins.append(f"  local.get {data}")
-            ins.append(f"  local.get {seg_start}")
-            ins.append("  i32.add")
-            ins.append("  i32.store offset=0")
-            ins.append(f"  local.get {slot}")
             ins.append(f"  local.get {slen}")
             ins.append(f"  local.get {seg_start}")
             ins.append("  i32.sub")
-            ins.append("  i32.store offset=4")
+            ins.append(f"  local.set {seg_len}")
+            ins.extend(_emit_slice("  "))
             ins.append("end")
 
         ins.append(f"local.get {outer}")
