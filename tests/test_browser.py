@@ -725,6 +725,257 @@ public fn main(-> @Unit)
 # =====================================================================
 
 
+class TestBrowserArrayUtilities:
+    """Browser parity for array utility built-ins (#466 phase 1).
+
+    All seven ops are pure-WASM iterative loops with no host imports,
+    so the Python (wasmtime) and browser (Node.js) runtimes should
+    produce bit-identical output.  These tests fold array results
+    back to a single Int/Bool/String to keep cross-runtime comparisons
+    exact rather than relying on float_to_string truncation.
+    """
+
+    def test_array_mapi(self, tmp_path: Path) -> None:
+        """mapi(range(10,15), |x,i| x + i*100) → [10, 111, 212, 313, 414], sum 1060.
+
+        Uses a non-identity input range so element values and indices
+        differ; a host implementation that swapped the (elem, idx)
+        callback arguments would produce sum 6010 instead, failing
+        loudly.  Mirrors the swap-detection fix made on the codegen
+        side in test_array_mapi_passes_index.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<Int> = array_mapi(
+    array_range(10, 15),
+    fn(@Int, @Nat -> @Int) effects(pure) {
+      @Int.0 + nat_to_int(@Nat.0) * 100
+    }
+  );
+  let @Int = array_fold(
+    @Array<Int>.0, 0,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 }
+  );
+  IO.print(int_to_string(@Int.0))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        # 10 + 111 + 212 + 313 + 414 = 1060.
+        # Swapped (idx, elem): 0 + 1*1000 + 2*1100 ... = 6010.
+        assert node["stdout"] == "1060"
+
+    def test_array_reverse(self, tmp_path: Path) -> None:
+        """reverse + digit-pack fold: [1..5] reversed → 54321."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<Int> = array_reverse(array_range(1, 6));
+  let @Int = array_fold(
+    @Array<Int>.0, 0,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.1 * 10 + @Int.0 }
+  );
+  IO.print(int_to_string(@Int.0))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "54321"
+
+    def test_array_find_some(self, tmp_path: Path) -> None:
+        """find returns first match; matches on Some(@Int)."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Option<Int> = array_find(
+    array_range(1, 10),
+    fn(@Int -> @Bool) effects(pure) { @Int.0 > 5 }
+  );
+  match @Option<Int>.0 {
+    Some(@Int) -> IO.print(int_to_string(@Int.0)),
+    None -> IO.print("none")
+  }
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "6"
+
+    def test_array_find_none(self, tmp_path: Path) -> None:
+        """find returns None when no element matches; matches on the None arm.
+
+        Mirror-image of ``test_array_find_some`` but with a predicate
+        that's always false.  Exercises the Option<T>=None tag path
+        (tag 0 at offset 0 of the 16-byte heap box) end-to-end in the
+        browser runtime.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Option<Int> = array_find(
+    array_range(1, 10),
+    fn(@Int -> @Bool) effects(pure) { @Int.0 > 1000 }
+  );
+  match @Option<Int>.0 {
+    Some(@Int) -> IO.print(int_to_string(@Int.0)),
+    None -> IO.print("none")
+  }
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "none"
+
+    def test_array_any_and_all(self, tmp_path: Path) -> None:
+        """any/all — non-empty short-circuit + empty-array vacuous-truth.
+
+        Four outputs in a single wasm program so we exercise all
+        four branches against the browser runtime:
+
+          any([-3..3], >0)  = true   (short-circuits on first match)
+          all([-3..3], >0)  = false  (short-circuits on first failure)
+          any([],      >0)  = false  (empty = no element satisfies)
+          all([],      >0)  = true   (empty = vacuously satisfied)
+
+        The empty-array cases are a conventional gotcha (some
+        languages get the vacuous-truth of ``all([])`` wrong) and
+        Vera's contract is to follow the mathematical reading.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(bool_to_string(array_any(
+    array_range(-3, 3),
+    fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 }
+  )));
+  IO.print(",");
+  IO.print(bool_to_string(array_all(
+    array_range(-3, 3),
+    fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 }
+  )));
+  IO.print(",");
+  let @Array<Int> = [];
+  IO.print(bool_to_string(array_any(
+    @Array<Int>.0,
+    fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 }
+  )));
+  IO.print(",");
+  IO.print(bool_to_string(array_all(
+    @Array<Int>.0,
+    fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 }
+  )))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "true,false,false,true"
+
+    def test_array_flatten(self, tmp_path: Path) -> None:
+        """flatten [[1,2],[3,4],[5,6]] → 123456."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_range(@Int.0 * 2 + 1, @Int.0 * 2 + 3)
+    }
+  );
+  let @Array<Int> = array_flatten(@Array<Array<Int>>.0);
+  let @Int = array_fold(
+    @Array<Int>.0, 0,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.1 * 10 + @Int.0 }
+  );
+  IO.print(int_to_string(@Int.0))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "123456"
+
+    def test_array_sort_by(self, tmp_path: Path) -> None:
+        """sort ascending [3,1,2] → 123 across the browser boundary."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<Int> = [3, 1, 2];
+  let @Array<Int> = array_sort_by(
+    @Array<Int>.0,
+    fn(@Int, @Int -> @Ordering) effects(pure) {
+      if @Int.1 < @Int.0 then { Less } else {
+        if @Int.1 > @Int.0 then { Greater } else { Equal }
+      }
+    }
+  );
+  let @Int = array_fold(
+    @Array<Int>.0, 0,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.1 * 10 + @Int.0 }
+  );
+  IO.print(int_to_string(@Int.0))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "123"
+
+    def test_array_sort_by_stability(self, tmp_path: Path) -> None:
+        """Browser parity for the stability fingerprint test.
+
+        Mirrors ``test_array_sort_by_stability`` from ``test_codegen.py``
+        — same input ``[100, 101, 202, 203, 104]`` (keys 10, 10, 20,
+        20, 10 with payloads encoded in the units digit), same
+        comparator that ignores the payload, same position-weighted
+        fold fingerprint.  Stable expected output is the exact
+        15-digit string ``100101104202203``; any instability would
+        produce a different fingerprint.
+
+        The Node.js wasmtime here uses the same WAT as the Python
+        wasmtime, so the test is really verifying that nothing in
+        the browser host's call_indirect / GC interaction perturbs
+        the comparator's relative-order semantics.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<Int> = array_concat(
+    array_concat(
+      array_concat(
+        array_concat(array_range(100, 101), array_range(101, 102)),
+        array_range(202, 203)
+      ),
+      array_range(203, 204)
+    ),
+    array_range(104, 105)
+  );
+  let @Array<Int> = array_sort_by(
+    @Array<Int>.0,
+    fn(@Int, @Int -> @Ordering) effects(pure) {
+      if @Int.1 / 10 < @Int.0 / 10 then { Less } else {
+        if @Int.1 / 10 > @Int.0 / 10 then { Greater } else { Equal }
+      }
+    }
+  );
+  let @Int = array_fold(
+    @Array<Int>.0, 0,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.1 * 1000 + @Int.0 }
+  );
+  IO.print(int_to_string(@Int.0))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "100101104202203"
+
+
 class TestBrowserState:
     """Test State<T> host bindings in the Node.js runtime."""
 

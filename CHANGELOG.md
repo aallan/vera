@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 (no entries yet)
 
+## [0.0.117] - 2026-04-22
+
+### Added
+- **Array utility built-ins (phase 1)** ([#466](https://github.com/aallan/vera/issues/466)) — seven new array combinators that complete the higher-order array operations suite without requiring ability dispatch on the polymorphic element type. `array_mapi<A, B>(arr, fn(A, Nat → B))` maps with a zero-based index — collapses the recursive-accumulator-with-index pattern that had been a leading source of De Bruijn indexing mistakes. `array_reverse<T>(arr)` reverses element order. `array_find<T>(arr, pred) → Option<T>` returns the first match, short-circuiting. `array_any<T>` and `array_all<T>` are existential / universal predicates with short-circuit evaluation and correct vacuous-truth on empty input (`any([], _) == false`, `all([], _) == true`). `array_flatten<T>(Array<Array<T>>)` concatenates one level of nesting via a two-pass length-then-copy. `array_sort_by<T>(arr, cmp)` returns a stable insertion sort using a caller-supplied `Ordering`-returning comparator. All seven are iterative WASM with O(1) shadow-stack depth, mirroring the `array_map`/`filter`/`fold` pattern from [#480](https://github.com/aallan/vera/issues/480). Conformance: `ch09_array_utilities.vera`. Example: `examples/array_utilities.vera` exercises every operation in a single coherent gradebook scenario. Phase 1 of [#466](https://github.com/aallan/vera/issues/466); `array_sort<T> where Ord<T>`, `array_contains<T> where Eq<T>`, and `array_index_of<T> where Eq<T>` are tracked separately as a phase 2 follow-up that requires reifying monomorphized `compare$T`/`eq$T` as first-class function handles.
+
+### Compiler
+- `vera/wasm/calls_arrays.py` grew from 1,214 → 2,291 lines with the seven new translators, all following the existing `_translate_array_filter` shape (call_indirect callback, GC-shadow-pushed pointers across every `$alloc`, pair-typed element handling for `String` and nested `Array`).
+- `vera/wasm/inference.py` extended for the new return types (Array, Option, Bool).
+- `vera/wasm/calls.py` dispatch table extended with seven new branches.
+- `vera/codegen/modules.py` known-names allowlist extended.
+
+### Bug fix during implementation
+- Discovered and fixed an `Ordering`-tag dispatch bug in the initial `array_sort_by` WAT: niladic ADT variants (`Less` / `Equal` / `Greater`) are heap-allocated boxes with the tag at offset 0, not raw i32 tags. The first version of the sort compared the comparator's return value (a heap pointer) directly against the literal `2`, causing every comparison to evaluate as "not Greater" and the sort to no-op. Caught by the `test_array_sort_by_ascending_ints` unit test before the conformance suite could run; fix is a single `i32.load offset=0` to dereference the box before tag comparison.
+
 ## [0.0.116] - 2026-04-20
 
 ### Added
@@ -1593,7 +1607,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.116...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.117...HEAD
+[0.0.117]: https://github.com/aallan/vera/compare/v0.0.116...v0.0.117
 [0.0.116]: https://github.com/aallan/vera/compare/v0.0.115...v0.0.116
 [0.0.115]: https://github.com/aallan/vera/compare/v0.0.114...v0.0.115
 [0.0.114]: https://github.com/aallan/vera/compare/v0.0.113...v0.0.114

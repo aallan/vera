@@ -606,10 +606,22 @@ array_slice(@Array<Int>.0, @Int.0, @Int.1)  -- returns Array<Int> (elements [sta
 array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { ... })     -- returns Array<Int>
 array_filter(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { ... }) -- returns Array<Int>
 array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.1 + @Int.0 }) -- returns Int
+array_mapi(@Array<Int>.0, fn(@Int, @Nat -> @Int) effects(pure) { ... }) -- returns Array<Int> (map with index)
+array_reverse(@Array<Int>.0)                                         -- returns Array<Int> (element order reversed)
+array_find(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { ... })   -- returns Option<Int> (first match)
+array_any(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { ... })    -- returns Bool (at least one match)
+array_all(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { ... })    -- returns Bool (every element matches)
+array_flatten(@Array<Array<Int>>.0)                                  -- returns Array<Int> (one level)
+array_sort_by(@Array<Int>.0, fn(@Int, @Int -> @Ordering) effects(pure) { ... }) -- returns Array<Int>
 ```
 
-`array_map` is generic: the element type can change (e.g. `array_map(@Array<Int>.0, fn(@Int -> @String) ...)`).
+`array_map` / `array_mapi` are generic: the element type can change (e.g. `array_map(@Array<Int>.0, fn(@Int -> @String) ...)`).
 `array_fold` is generic: the accumulator type can differ from the element type.
+`array_mapi` passes the zero-based index as a `@Nat` second argument — use this rather than hand-rolling a recursive accumulator with an index counter.
+`array_find` short-circuits on the first match; `array_any` and `array_all` do the same and observe the standard vacuous-truth convention on empty input (`any([], _) == false`, `all([], _) == true`).
+`array_sort_by`'s comparator returns `@Ordering` (`Less` / `Equal` / `Greater`); insertion sort, stable.
+
+`array_sort<T> where Ord<T>`, `array_contains<T> where Eq<T>`, and `array_index_of<T> where Eq<T>` (operations that would dispatch on the element type's built-in ability) are not yet implemented — use `array_sort_by` with an explicit comparator, or `array_any` / `array_find` with an equality predicate, until that infrastructure lands.
 
 ### Map operations
 
@@ -1975,7 +1987,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 77 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 78 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 

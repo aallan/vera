@@ -1577,6 +1577,100 @@ let @Result<String, String> = regex_replace("hello world", "world", "vera");
 
 **Implementation note:** These functions are implemented as host imports — they delegate to the runtime's native regex engine (Python's `re` module for wasmtime, JavaScript's `RegExp` for the browser runtime). This avoids embedding a regex engine in WASM while providing access to mature, well-tested implementations.
 
+### 9.6.21 Array Utilities
+
+Vera provides seven additional array combinators beyond `array_map` / `array_filter` / `array_fold`. All are implemented as iterative WASM loops with O(1) shadow-stack depth, mirroring the architecture established by [#480](https://github.com/aallan/vera/issues/480). None require ability dispatch on the polymorphic element type — `array_sort`, `array_contains`, and `array_index_of` (which would need to invoke `compare<T>` / `eq<T>` from inside the loop) are tracked separately and implemented in a future release.
+
+```vera
+public forall<A, B> fn array_mapi(@Array<A>, fn(A, Nat -> B) effects(pure) -> @Array<B>)
+  requires(true) ensures(true) effects(pure)
+```
+
+`array_mapi` maps a function over the array, passing each element along with its zero-based position as the second argument. Same return shape as `array_map`; the index is provided so the caller can avoid the recursive-accumulator-with-index pattern that has historically been a leading source of De Bruijn indexing mistakes. Matches `mapi` from OCaml's `List`, `enumerate().map()` from Rust, and `arr.map((x, i) => ...)` from JavaScript.
+
+```vera
+array_mapi([10, 20, 30], fn(@Int, @Nat -> @Int) effects(pure) {
+  @Int.0 + nat_to_int(@Nat.0)
+})
+-- [10, 21, 32]
+```
+
+```vera
+public forall<T> fn array_reverse(@Array<T> -> @Array<T>)
+  requires(true) ensures(true) effects(pure)
+```
+
+`array_reverse` returns a new array with the elements in reverse order. Length and element values are preserved. Single-pass O(n).
+
+```vera
+array_reverse([1, 2, 3, 4, 5])  -- [5, 4, 3, 2, 1]
+```
+
+```vera
+public forall<T> fn array_find(@Array<T>, fn(T -> Bool) effects(pure) -> @Option<T>)
+  requires(true) ensures(true) effects(pure)
+```
+
+`array_find` returns `Some(x)` for the first element where the predicate is `true`, or `None` if no element matches. Short-circuits on the first match — the predicate is not invoked for elements past the match.
+
+```vera
+array_find([1, 3, 5, 7, 9], fn(@Int -> @Bool) effects(pure) { @Int.0 > 4 })
+-- Some(5)
+```
+
+```vera
+public forall<T> fn array_any(@Array<T>, fn(T -> Bool) effects(pure) -> @Bool)
+  requires(true) ensures(true) effects(pure)
+
+public forall<T> fn array_all(@Array<T>, fn(T -> Bool) effects(pure) -> @Bool)
+  requires(true) ensures(true) effects(pure)
+```
+
+`array_any` returns `true` if at least one element satisfies the predicate, `false` otherwise. `array_all` returns `true` only when every element satisfies the predicate. Both short-circuit: `array_any` exits on the first true result, `array_all` exits on the first false. Empty-array convention follows the standard mathematical reading: `array_any([], _) == false` (no element to satisfy), `array_all([], _) == true` (vacuously true).
+
+```vera
+array_any([1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 2 })  -- true
+array_all([1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 0 })  -- true
+array_all([1, 2, 3], fn(@Int -> @Bool) effects(pure) { @Int.0 > 2 })  -- false
+```
+
+```vera
+public forall<T> fn array_flatten(@Array<Array<T>> -> @Array<T>)
+  requires(true) ensures(true) effects(pure)
+```
+
+`array_flatten` concatenates one level of nested arrays. Two-pass: the first pass sums the inner lengths to size the destination, the second pass copies each inner array contiguously. Empty inner arrays are skipped without overhead.
+
+```vera
+array_flatten([[1, 2], [3, 4], [5, 6]])  -- [1, 2, 3, 4, 5, 6]
+array_flatten([[1, 2], [], [3]])         -- [1, 2, 3]
+```
+
+```vera
+public forall<T> fn array_sort_by(@Array<T>, fn(T, T -> Ordering) effects(pure) -> @Array<T>)
+  requires(true) ensures(true) effects(pure)
+```
+
+`array_sort_by` returns a new array sorted using a caller-supplied comparator. The comparator receives two elements and returns an `@Ordering` value (`Less`, `Equal`, or `Greater`); the convention `cmp(a, b) == Less when a < b` produces ascending order. Implementation is insertion sort — stable, O(n²) worst-case, well-suited to the small-to-medium arrays Vera programs typically handle. A future release will add `array_sort<T> where Ord<T>` so the comparator can be inferred from the element type's `Ord` ability rather than supplied explicitly.
+
+```vera
+array_sort_by(
+  [3, 1, 4, 1, 5, 9, 2, 6],
+  fn(@Int, @Int -> @Ordering) effects(pure) {
+    if @Int.1 < @Int.0 then { Less } else {
+      if @Int.1 > @Int.0 then { Greater } else { Equal }
+    }
+  }
+)
+-- [1, 1, 2, 3, 4, 5, 6, 9]
+```
+
+**Verification:** all seven utilities have signatures verifiable by the type checker; their bodies fall to Tier 3 (runtime) verification, but for two distinct reasons.
+
+The callback-based combinators — `array_mapi`, `array_find`, `array_any`, `array_all`, and `array_sort_by` — are Tier 3 because their semantics iterate a user-supplied closure whose effects, returns, and termination behaviour are not statically modelled in the verifier's encoding. This category cannot move to Tier 1 without a substantial extension to the SMT translation that reasons about higher-order functions.
+
+`array_reverse` and `array_flatten` are Tier 3 for a different and narrower reason: they have no closure callback at all and their behaviour is entirely structural (length-preserving / length-summing respectively). They could in principle support stronger Tier 1 contracts such as `ensures(array_length(@result) == array_length(@input))` for `array_reverse` or `ensures(array_length(@result) == sum_inner_lengths(@input))` for `array_flatten`. The underlying SMT encoding for those properties is not yet implemented; once it is, both functions become candidates for Tier 1 promotion without any change to their signatures.
+
 ## 9.7 Built-in Types
 
 ### 9.7.1 Json

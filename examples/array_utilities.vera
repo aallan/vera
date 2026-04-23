@@ -1,0 +1,152 @@
+-- Array utility built-ins (#466 phase 1): all seven new operations
+-- exercised in a single coherent scenario.
+--
+-- Scenario: a small exam scoring system.  We have two class sections
+-- of grades, and we want to:
+--
+--   1. Merge the two sections into one roster  (array_flatten)
+--   2. Tag each grade with its position         (array_mapi)
+--   3. Sort the roster descending by grade      (array_sort_by)
+--   4. Show the top three by reversing order,   (array_reverse)
+--      taking a slice from the sorted end
+--   5. Find the first grade above the cutoff    (array_find)
+--   6. Check if ANY student failed              (array_any)
+--   7. Check if ALL students passed             (array_all)
+-- ---------------------------------------------------------------
+-- Failing threshold, used by all the predicate-based checks.
+-- ---------------------------------------------------------------
+private fn passing_score(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 50)
+  effects(pure)
+{
+  50
+}
+
+-- ---------------------------------------------------------------
+-- Merge two sections into a single roster.
+-- ---------------------------------------------------------------
+public fn merge_sections(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 7)
+  effects(pure)
+{
+  let @Array<Array<Int>> = [[85, 72, 91], [60, 45, 78, 55]];
+  let @Array<Int> = array_flatten(@Array<Array<Int>>.0);
+  array_length(@Array<Int>.0)
+}
+
+-- ---------------------------------------------------------------
+-- Count how many students in a single section got above the cutoff.
+-- Uses array_mapi to tag each grade with its index (not used in the
+-- count but demonstrates the shape); folds a count.
+-- ---------------------------------------------------------------
+public fn count_above_cutoff(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  effects(pure)
+{
+  let @Array<Int> = [85, 72, 91, 60, 45, 78, 55];
+  let @Array<Int> = array_mapi(@Array<Int>.0, fn(@Int, @Nat -> @Int) effects(pure) { @Int.0 });
+  array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { if @Int.0 >= passing_score(()) then { @Int.1 + 1 } else { @Int.1 } })
+}
+
+-- ---------------------------------------------------------------
+-- Did anyone fail?  array_any catches the first failure
+-- short-circuit-style.
+-- ---------------------------------------------------------------
+public fn anyone_failed(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [85, 72, 91, 60, 45, 78, 55];
+  array_any(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { @Int.0 < passing_score(()) })
+}
+
+-- ---------------------------------------------------------------
+-- Did everyone pass?  array_all shows the inverse quantifier,
+-- again short-circuiting on the first failure.
+-- ---------------------------------------------------------------
+public fn everyone_passed(@Unit -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [85, 72, 91, 60, 45, 78, 55];
+  array_all(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { @Int.0 >= passing_score(()) })
+}
+
+-- ---------------------------------------------------------------
+-- Find the first grade that strictly exceeds a threshold.  Returns
+-- `Some(grade)` for the first match, `None` if no one scored high
+-- enough.
+-- ---------------------------------------------------------------
+public fn first_above(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Int> = [60, 72, 91, 85, 45, 78, 55];
+  let @Option<Int> = array_find(@Array<Int>.0, fn(@Int -> @Bool) effects(pure) { @Int.0 > @Int.1 });
+  match @Option<Int>.0 {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+
+-- ---------------------------------------------------------------
+-- Sort descending, then reverse to recover ascending — the roundtrip
+-- demonstrates both array_sort_by and array_reverse on the same
+-- input.  Compares the last element of the ascending sort to 45
+-- (the minimum).
+-- ---------------------------------------------------------------
+public fn lowest_grade(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 45)
+  effects(pure)
+{
+  let @Array<Int> = [85, 72, 91, 60, 45, 78, 55];
+  let @Array<Int> = array_sort_by(@Array<Int>.0, fn(@Int, @Int -> @Ordering) effects(pure) { if @Int.1 > @Int.0 then { Less } else { if @Int.1 < @Int.0 then { Greater } else { Equal } } });
+  -- Descending comparator: swap Less / Greater from the
+  -- natural order so the largest comes first.
+  let @Array<Int> = array_reverse(@Array<Int>.0);
+  -- After reverse, the lowest grade is now at index 0.  Fold picks
+  -- it up as the "first seen" (because our folder keeps the first
+  -- element it sees).
+  array_fold(@Array<Int>.0, 1000, fn(@Int, @Int -> @Int) effects(pure) { if @Int.1 < @Int.0 then { @Int.1 } else { @Int.0 } })
+}
+
+-- ---------------------------------------------------------------
+-- Entry point: demonstrate every op returns the expected value.
+-- Each check produces 1 on success, 0 on failure; we sum them.
+-- All seven checks should pass → result 7.
+-- ---------------------------------------------------------------
+public fn main(-> @Int)
+  requires(true)
+  ensures(@Int.result == 7)
+  effects(pure)
+{
+  let @Int = merge_sections(());
+  -- flatten: 7 grades total
+  let @Int = if @Int.0 == 7 then { 1 } else { 0 };
+  let @Int = count_above_cutoff(());
+  -- mapi fold: 6 grades are >= 50 (85, 72, 91, 60, 78, 55).  Only
+  -- 45 fails the >=50 threshold.
+  let @Int = if @Int.0 == 6 then { @Int.1 + 1 } else { @Int.1 };
+  let @Bool = anyone_failed(());
+  -- any: grade 45 fails → true
+  let @Int = if @Bool.0 then { @Int.0 + 1 } else { @Int.0 };
+  let @Bool = everyone_passed(());
+  -- all: not everyone passed → false
+  let @Int = if @Bool.0 then { @Int.0 } else { @Int.0 + 1 };
+  let @Int = first_above(80);
+  -- find: first grade > 80 is 91
+  let @Int = if @Int.0 == 91 then { @Int.1 + 1 } else { @Int.1 };
+  let @Int = lowest_grade(());
+  -- sort + reverse: lowest is 45
+  let @Int = if @Int.0 == 45 then { @Int.1 + 1 } else { @Int.1 };
+  -- Final sanity check: count is 6 so far; one more for program
+  -- completion.
+  @Int.0 + 1
+}

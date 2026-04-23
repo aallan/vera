@@ -1,7 +1,8 @@
 """Array built-in translation mixin for WasmContext.
 
 Handles: array_length, array_append, array_range, array_concat, array_slice,
-array_map.
+array_map, array_filter, array_fold, array_mapi, array_reverse, array_find,
+array_any, array_all, array_flatten, array_sort_by.
 """
 
 from __future__ import annotations
@@ -1212,3 +1213,1177 @@ class CallsArraysMixin:
         else:
             instructions.append(f"local.get {acc}")
         return instructions
+
+    # ===================================================================
+    # #466 phase 1: iterative array utilities without ability dispatch.
+    # ===================================================================
+    # Shared pattern, mirroring _translate_array_map / _filter / _fold:
+    #   - Evaluate arr (and callback, if any), save into locals
+    #   - GC-shadow-push live pointers before any $alloc that might GC
+    #   - Emit a WAT block/loop over idx in [0, len)
+    #   - Invoke the callback via call_indirect, typed by a registered
+    #     closure signature
+    #   - Build the result (new array, Option, or Bool)
+    #
+    # Element types flow through _element_mem_size, _element_wasm_type,
+    # _element_load_op, _element_store_op, _is_pair_element_type, and
+    # self._infer_concat_elem_type / _infer_closure_return_vera_type,
+    # so pair-typed elements (String, Array<X>) and scalar-typed
+    # elements share a single translator body with minor branching.
+
+    def _translate_array_reverse(
+        self, arr_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``array_reverse<T>(arr) -> Array<T>`` iteratively.
+
+        Walks the source once writing element ``src[i]`` into
+        ``dst[len - 1 - i]``.  Single pass, O(n) time, O(n) space.  No
+        callback, so no closure signature needed.
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        if arr_instrs is None:
+            return None
+        t_type = self._infer_concat_elem_type(arr_arg)
+        if t_type is None:
+            return None
+        t_size = _element_mem_size(t_type)
+        if t_size is None:
+            return None
+        t_is_pair = _is_pair_element_type(t_type)
+        t_wasm = _element_wasm_type(t_type)
+        if t_wasm is None:
+            return None
+
+        self.needs_alloc = True
+
+        arr_ptr = self.alloc_local("i32")
+        arr_len = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        src_slot = self.alloc_local("i32")
+        dst_slot = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arr_instrs)
+        ins.append(f"local.set {arr_len}")
+        ins.append(f"local.set {arr_ptr}")
+        ins.extend(gc_shadow_push(arr_ptr))
+
+        # dst = $alloc(len * sizeof(T))
+        ins.append(f"local.get {arr_len}")
+        ins.append(f"i32.const {t_size}")
+        ins.append("i32.mul")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        # Loop idx in [0, len).
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        ins.append("block $brk_rev")
+        ins.append("  loop $lp_rev")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {arr_len}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_rev")
+
+        # src_slot = arr_ptr + idx * sizeof(T)
+        ins.append(f"    local.get {arr_ptr}")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    i32.const {t_size}")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {src_slot}")
+
+        # dst_slot = dst + (len - 1 - idx) * sizeof(T)
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {arr_len}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.sub")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.sub")
+        ins.append(f"    i32.const {t_size}")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {dst_slot}")
+
+        # Copy src[idx] → dst[len-1-idx]
+        if t_is_pair:
+            ins.append(f"    local.get {dst_slot}")
+            ins.append(f"    local.get {src_slot}")
+            ins.append("    i32.load offset=0")
+            ins.append("    i32.store offset=0")
+            ins.append(f"    local.get {dst_slot}")
+            ins.append(f"    local.get {src_slot}")
+            ins.append("    i32.load offset=4")
+            ins.append("    i32.store offset=4")
+        else:
+            t_load = _element_load_op(t_type)
+            t_store = _element_store_op(t_type)
+            if t_load is None or t_store is None:
+                return None
+            ins.append(f"    local.get {dst_slot}")
+            ins.append(f"    local.get {src_slot}")
+            ins.append(f"    {t_load} offset=0")
+            ins.append(f"    {t_store} offset=0")
+
+        # idx++, loop
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_rev")
+        ins.append("  end")
+        ins.append("end")
+
+        # Result (dst, len)
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {arr_len}")
+        return ins
+
+    def _translate_array_mapi(
+        self,
+        arr_arg: ast.Expr,
+        fn_arg: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``array_mapi<A, B>(arr, fn) -> Array<B>``.
+
+        Identical to ``array_map`` except the callback receives a
+        second argument, the zero-based index as a ``Nat`` (i64).
+        Signature: ``fn(elem: A, idx: Nat) -> B``.
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        fn_instrs = self.translate_expr(fn_arg, env)
+        if arr_instrs is None or fn_instrs is None:
+            return None
+
+        a_type = self._infer_concat_elem_type(arr_arg)
+        if a_type is None:
+            return None
+        a_size = _element_mem_size(a_type)
+        if a_size is None:
+            return None
+        a_is_pair = _is_pair_element_type(a_type)
+        a_wasm = _element_wasm_type(a_type)
+        if a_wasm is None:
+            return None
+
+        b_type = self._infer_closure_return_vera_type(fn_arg)
+        if b_type is None:
+            return None
+        b_size = _element_mem_size(b_type)
+        if b_size is None:
+            return None
+        b_is_pair = _is_pair_element_type(b_type)
+        b_wasm = _element_wasm_type(b_type)
+        if b_wasm is None:
+            return None
+
+        self.needs_alloc = True
+
+        arr_ptr = self.alloc_local("i32")
+        arr_len = self.alloc_local("i32")
+        fn_tmp = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        src_slot = self.alloc_local("i32")
+        dst_slot = self.alloc_local("i32")
+        if b_is_pair:
+            ret_ptr = self.alloc_local("i32")
+            ret_len = self.alloc_local("i32")
+        else:
+            ret_scalar = self.alloc_local(b_wasm)
+
+        ins: list[str] = []
+        ins.extend(arr_instrs)
+        ins.append(f"local.set {arr_len}")
+        ins.append(f"local.set {arr_ptr}")
+        ins.extend(gc_shadow_push(arr_ptr))
+
+        ins.extend(fn_instrs)
+        ins.append(f"local.set {fn_tmp}")
+        ins.extend(gc_shadow_push(fn_tmp))
+
+        ins.append(f"local.get {arr_len}")
+        ins.append(f"i32.const {b_size}")
+        ins.append("i32.mul")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        # Closure signature: env + A params + i64 (Nat idx) → B
+        a_param_types = ["i32", "i32"] if a_is_pair else [a_wasm]
+        param_parts = " ".join(
+            f"(param {wt})" for wt in ["i32"] + a_param_types + ["i64"]
+        )
+        if b_is_pair:
+            result_part = " (result i32 i32)"
+        elif b_wasm:
+            result_part = f" (result {b_wasm})"
+        else:
+            result_part = ""
+        sig_key = f"{param_parts}{result_part}"
+        if sig_key not in self._closure_sigs:
+            sig_name = f"$closure_sig_{len(self._closure_sigs)}"
+            self._closure_sigs[sig_key] = sig_name
+        sig_name = self._closure_sigs[sig_key]
+
+        # Loop
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        ins.append("block $brk_mapi")
+        ins.append("  loop $lp_mapi")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {arr_len}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_mapi")
+
+        # src_slot = arr_ptr + idx * sizeof(A)
+        ins.append(f"    local.get {arr_ptr}")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    i32.const {a_size}")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {src_slot}")
+
+        # Push env, src[idx] (scalar or pair), idx (widened to i64), fn_idx,
+        # then call_indirect.
+        ins.append(f"    local.get {fn_tmp}")
+        if a_is_pair:
+            ins.append(f"    local.get {src_slot}")
+            ins.append("    i32.load offset=0")
+            ins.append(f"    local.get {src_slot}")
+            ins.append("    i32.load offset=4")
+        else:
+            a_load = _element_load_op(a_type)
+            if a_load is None:
+                return None
+            ins.append(f"    local.get {src_slot}")
+            ins.append(f"    {a_load} offset=0")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i64.extend_i32_u")
+        ins.append(f"    local.get {fn_tmp}")
+        ins.append("    i32.load offset=0")
+        ins.append(f"    call_indirect (type {sig_name})")
+
+        # Save result, store in dst[idx]
+        if b_is_pair:
+            ins.append(f"    local.set {ret_len}")
+            ins.append(f"    local.set {ret_ptr}")
+        else:
+            ins.append(f"    local.set {ret_scalar}")
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    i32.const {b_size}")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {dst_slot}")
+        if b_is_pair:
+            ins.append(f"    local.get {dst_slot}")
+            ins.append(f"    local.get {ret_ptr}")
+            ins.append("    i32.store offset=0")
+            ins.append(f"    local.get {dst_slot}")
+            ins.append(f"    local.get {ret_len}")
+            ins.append("    i32.store offset=4")
+        else:
+            b_store = _element_store_op(b_type)
+            if b_store is None:
+                return None
+            ins.append(f"    local.get {dst_slot}")
+            ins.append(f"    local.get {ret_scalar}")
+            ins.append(f"    {b_store} offset=0")
+
+        # idx++, loop
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_mapi")
+        ins.append("  end")
+        ins.append("end")
+
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {arr_len}")
+        return ins
+
+    def _translate_array_any(
+        self, arr_arg: ast.Expr, fn_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``array_any<T>(arr, pred) -> Bool`` with short-circuit.
+
+        Walks until ``pred`` returns true, then breaks out returning 1.
+        If the loop completes, returns 0.  No dst allocation (the
+        result is a scalar); no $alloc call needed at all.
+        """
+        return self._translate_array_any_all_common(
+            arr_arg, fn_arg, env,
+            short_circuit_on_true=True,
+        )
+
+    def _translate_array_all(
+        self, arr_arg: ast.Expr, fn_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``array_all<T>(arr, pred) -> Bool`` with short-circuit.
+
+        Mirror of ``array_any``: breaks on first FALSE and returns 0,
+        else returns 1.
+        """
+        return self._translate_array_any_all_common(
+            arr_arg, fn_arg, env,
+            short_circuit_on_true=False,
+        )
+
+    def _translate_array_any_all_common(
+        self,
+        arr_arg: ast.Expr,
+        fn_arg: ast.Expr,
+        env: WasmSlotEnv,
+        *,
+        short_circuit_on_true: bool,
+    ) -> list[str] | None:
+        """Shared body for array_any / array_all.
+
+        The two differ only in: which predicate result short-circuits
+        the loop, and what the loop's sentinel return value is.  They
+        are otherwise identical iterative scans.
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        fn_instrs = self.translate_expr(fn_arg, env)
+        if arr_instrs is None or fn_instrs is None:
+            return None
+
+        t_type = self._infer_concat_elem_type(arr_arg)
+        if t_type is None:
+            return None
+        t_size = _element_mem_size(t_type)
+        if t_size is None:
+            return None
+        t_is_pair = _is_pair_element_type(t_type)
+        t_wasm = _element_wasm_type(t_type)
+        if t_wasm is None:
+            return None
+
+        arr_ptr = self.alloc_local("i32")
+        arr_len = self.alloc_local("i32")
+        fn_tmp = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        src_slot = self.alloc_local("i32")
+        result = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arr_instrs)
+        ins.append(f"local.set {arr_len}")
+        ins.append(f"local.set {arr_ptr}")
+        ins.extend(gc_shadow_push(arr_ptr))
+
+        ins.extend(fn_instrs)
+        ins.append(f"local.set {fn_tmp}")
+        ins.extend(gc_shadow_push(fn_tmp))
+
+        # Default result: 0 for any (no true found), 1 for all (no
+        # false found).  Overwritten on short-circuit.
+        ins.append(f"i32.const {0 if short_circuit_on_true else 1}")
+        ins.append(f"local.set {result}")
+
+        # Closure signature: env + T params → i32 (Bool)
+        t_param_types = ["i32", "i32"] if t_is_pair else [t_wasm]
+        param_parts = " ".join(
+            f"(param {wt})" for wt in ["i32"] + t_param_types
+        )
+        sig_key = f"{param_parts} (result i32)"
+        if sig_key not in self._closure_sigs:
+            sig_name = f"$closure_sig_{len(self._closure_sigs)}"
+            self._closure_sigs[sig_key] = sig_name
+        sig_name = self._closure_sigs[sig_key]
+
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        label = "anyall"
+        ins.append(f"block $brk_{label}")
+        ins.append(f"  loop $lp_{label}")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {arr_len}")
+        ins.append("    i32.ge_u")
+        ins.append(f"    br_if $brk_{label}")
+
+        # src_slot
+        ins.append(f"    local.get {arr_ptr}")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    i32.const {t_size}")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {src_slot}")
+
+        # Call pred
+        ins.append(f"    local.get {fn_tmp}")
+        if t_is_pair:
+            ins.append(f"    local.get {src_slot}")
+            ins.append("    i32.load offset=0")
+            ins.append(f"    local.get {src_slot}")
+            ins.append("    i32.load offset=4")
+        else:
+            t_load = _element_load_op(t_type)
+            if t_load is None:
+                return None
+            ins.append(f"    local.get {src_slot}")
+            ins.append(f"    {t_load} offset=0")
+        ins.append(f"    local.get {fn_tmp}")
+        ins.append("    i32.load offset=0")
+        ins.append(f"    call_indirect (type {sig_name})")
+
+        # Short-circuit: if pred_result == short_circuit_value, set
+        # result to short_circuit_value and break.
+        if short_circuit_on_true:
+            # array_any: if pred returns 1, result=1 and break
+            ins.append("    if")
+            ins.append("      i32.const 1")
+            ins.append(f"      local.set {result}")
+            ins.append(f"      br $brk_{label}")
+            ins.append("    end")
+        else:
+            # array_all: if pred returns 0, result=0 and break
+            ins.append("    i32.eqz")
+            ins.append("    if")
+            ins.append("      i32.const 0")
+            ins.append(f"      local.set {result}")
+            ins.append(f"      br $brk_{label}")
+            ins.append("    end")
+
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append(f"    br $lp_{label}")
+        ins.append("  end")
+        ins.append("end")
+
+        ins.append(f"local.get {result}")
+        return ins
+
+    def _translate_array_find(
+        self, arr_arg: ast.Expr, fn_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``array_find<T>(arr, pred) -> Option<T>``.
+
+        Walks the array invoking ``pred``.  On the first element where
+        ``pred(elem)`` is true, builds ``Some(elem)`` and returns.  If
+        the loop completes, returns ``None``.
+
+        Option<T> layout (16 bytes, uniform across variants):
+          None:     [tag=0 : i32] [pad 12]
+          Some(T):  [tag=1 : i32] [pad 4] [payload at offset 8]
+
+        For scalar T, payload is the value (i32/i64/f64) at offset 8.
+        For pair T (String, Array<X>), payload is (i32 ptr, i32 len)
+        at offsets 8 and 12.  Both fit cleanly in the 16-byte box.
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        fn_instrs = self.translate_expr(fn_arg, env)
+        if arr_instrs is None or fn_instrs is None:
+            return None
+
+        t_type = self._infer_concat_elem_type(arr_arg)
+        if t_type is None:
+            return None
+        t_size = _element_mem_size(t_type)
+        if t_size is None:
+            return None
+        t_is_pair = _is_pair_element_type(t_type)
+        t_wasm = _element_wasm_type(t_type)
+        if t_wasm is None:
+            return None
+
+        self.needs_alloc = True
+
+        arr_ptr = self.alloc_local("i32")
+        arr_len = self.alloc_local("i32")
+        fn_tmp = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        src_slot = self.alloc_local("i32")
+        out = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arr_instrs)
+        ins.append(f"local.set {arr_len}")
+        ins.append(f"local.set {arr_ptr}")
+        ins.extend(gc_shadow_push(arr_ptr))
+
+        ins.extend(fn_instrs)
+        ins.append(f"local.set {fn_tmp}")
+        ins.extend(gc_shadow_push(fn_tmp))
+
+        # Allocate the Option<T> box (always 16 bytes).  Default to
+        # None; overwrite to Some on match.
+        ins.append("i32.const 16")
+        ins.append("call $alloc")
+        ins.append(f"local.set {out}")
+        ins.extend(gc_shadow_push(out))
+        ins.append(f"local.get {out}")
+        ins.append("i32.const 0")
+        ins.append("i32.store")  # tag = 0 (None)
+
+        # Closure signature: env + T params → i32 (Bool)
+        t_param_types = ["i32", "i32"] if t_is_pair else [t_wasm]
+        param_parts = " ".join(
+            f"(param {wt})" for wt in ["i32"] + t_param_types
+        )
+        sig_key = f"{param_parts} (result i32)"
+        if sig_key not in self._closure_sigs:
+            sig_name = f"$closure_sig_{len(self._closure_sigs)}"
+            self._closure_sigs[sig_key] = sig_name
+        sig_name = self._closure_sigs[sig_key]
+
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        ins.append("block $brk_find")
+        ins.append("  loop $lp_find")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {arr_len}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_find")
+
+        ins.append(f"    local.get {arr_ptr}")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    i32.const {t_size}")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {src_slot}")
+
+        ins.append(f"    local.get {fn_tmp}")
+        if t_is_pair:
+            ins.append(f"    local.get {src_slot}")
+            ins.append("    i32.load offset=0")
+            ins.append(f"    local.get {src_slot}")
+            ins.append("    i32.load offset=4")
+        else:
+            t_load = _element_load_op(t_type)
+            if t_load is None:
+                return None
+            ins.append(f"    local.get {src_slot}")
+            ins.append(f"    {t_load} offset=0")
+        ins.append(f"    local.get {fn_tmp}")
+        ins.append("    i32.load offset=0")
+        ins.append(f"    call_indirect (type {sig_name})")
+
+        # If pred true: build Some(src[idx]), store at out + 8, break.
+        ins.append("    if")
+        ins.append(f"      local.get {out}")
+        ins.append("      i32.const 1")
+        ins.append("      i32.store")  # tag = 1 (Some)
+        if t_is_pair:
+            ins.append(f"      local.get {out}")
+            ins.append(f"      local.get {src_slot}")
+            ins.append("      i32.load offset=0")
+            ins.append("      i32.store offset=8")
+            ins.append(f"      local.get {out}")
+            ins.append(f"      local.get {src_slot}")
+            ins.append("      i32.load offset=4")
+            ins.append("      i32.store offset=12")
+        else:
+            t_load2 = _element_load_op(t_type)
+            t_store = _element_store_op(t_type)
+            if t_load2 is None or t_store is None:
+                return None
+            ins.append(f"      local.get {out}")
+            ins.append(f"      local.get {src_slot}")
+            ins.append(f"      {t_load2} offset=0")
+            ins.append(f"      {t_store} offset=8")
+        ins.append("      br $brk_find")
+        ins.append("    end")
+
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_find")
+        ins.append("  end")
+        ins.append("end")
+
+        ins.append(f"local.get {out}")
+        return ins
+
+    def _translate_array_flatten(
+        self, arr_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``array_flatten<T>(Array<Array<T>>) -> Array<T>``.
+
+        Two-pass: first pass sums the inner lengths to size the
+        destination, second pass copies each inner array contiguously.
+
+        The outer array's element type is ``Array<T>`` which is a
+        pair (i32 ptr, i32 len) of size 8.  The inner element type
+        is T with its own size — we extract it from the AST rather
+        than relying on ``_infer_concat_elem_type`` because that
+        helper drops nested type parameters (returns ``"Array"`` not
+        ``"Array<Int>"`` for an ``Array<Array<Int>>`` slot).
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        if arr_instrs is None:
+            return None
+
+        # Pull T out of Array<Array<T>>.
+        #
+        # First resolution probe: ``_infer_concat_elem_type`` tells
+        # us the outer element type, which for a valid
+        # ``Array<Array<T>>`` input is always ``"Array"`` (the
+        # helper collapses the outer layer but drops nested type
+        # parameters, so T itself is not recoverable from the helper
+        # alone).  If the probe returns anything else (or None), the
+        # input is not array-of-array shaped and we bail.
+        #
+        # Second pass: AST walk to recover T.
+        #   - SlotRef typed ``@Array<Array<T>>``: walk type_args twice.
+        #   - Other expressions (FnCall returning Array<Array<T>>,
+        #     array literals, etc.): deferred — recovering T for
+        #     those requires teaching the inference helpers about
+        #     nested generics, which is broader infrastructure work
+        #     tracked separately.  Until then those inputs emit
+        #     "unsupported expressions" at codegen, which is the
+        #     same behaviour as for any other codegen gap.
+        outer_elem = self._infer_concat_elem_type(arr_arg)
+        if outer_elem != "Array":
+            return None
+
+        t_type: str | None = None
+        if isinstance(arr_arg, ast.SlotRef):
+            if (arr_arg.type_name == "Array"
+                and arr_arg.type_args
+                and isinstance(arr_arg.type_args[0], ast.NamedType)
+                and arr_arg.type_args[0].name == "Array"
+                and arr_arg.type_args[0].type_args
+                and isinstance(arr_arg.type_args[0].type_args[0], ast.NamedType)):
+                t_type = arr_arg.type_args[0].type_args[0].name
+        if t_type is None:
+            return None
+        t_size = _element_mem_size(t_type)
+        if t_size is None:
+            return None
+        t_is_pair = _is_pair_element_type(t_type)
+
+        self.needs_alloc = True
+
+        arr_ptr = self.alloc_local("i32")
+        arr_len = self.alloc_local("i32")
+        total = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        inner_slot = self.alloc_local("i32")
+        inner_ptr = self.alloc_local("i32")
+        inner_len = self.alloc_local("i32")
+        write_idx = self.alloc_local("i32")
+        j = self.alloc_local("i32")
+        src_slot = self.alloc_local("i32")
+        dst_slot = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arr_instrs)
+        ins.append(f"local.set {arr_len}")
+        ins.append(f"local.set {arr_ptr}")
+        ins.extend(gc_shadow_push(arr_ptr))
+
+        # Pass 1: total = sum of inner lengths.
+        ins.append("i32.const 0")
+        ins.append(f"local.set {total}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        ins.append("block $brk_flat1")
+        ins.append("  loop $lp_flat1")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {arr_len}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_flat1")
+        # inner_slot = arr_ptr + idx * 8
+        ins.append(f"    local.get {arr_ptr}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 8")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {inner_slot}")
+        # total += inner_slot[4] (inner len)
+        ins.append(f"    local.get {total}")
+        ins.append(f"    local.get {inner_slot}")
+        ins.append("    i32.load offset=4")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {total}")
+        # idx++
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_flat1")
+        ins.append("  end")
+        ins.append("end")
+
+        # dst = $alloc(total * sizeof(T))
+        ins.append(f"local.get {total}")
+        ins.append(f"i32.const {t_size}")
+        ins.append("i32.mul")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        # Pass 2: copy each inner array's bytes into dst.
+        ins.append("i32.const 0")
+        ins.append(f"local.set {write_idx}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        ins.append("block $brk_flat2")
+        ins.append("  loop $lp_flat2")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {arr_len}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_flat2")
+        # inner_slot, inner_ptr, inner_len
+        ins.append(f"    local.get {arr_ptr}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 8")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {inner_slot}")
+        ins.append(f"    local.get {inner_slot}")
+        ins.append("    i32.load offset=0")
+        ins.append(f"    local.set {inner_ptr}")
+        ins.append(f"    local.get {inner_slot}")
+        ins.append("    i32.load offset=4")
+        ins.append(f"    local.set {inner_len}")
+        # Inner loop: j in [0, inner_len) copy inner[j] → dst[write_idx + j]
+        ins.append("    i32.const 0")
+        ins.append(f"    local.set {j}")
+        ins.append("    block $brk_flat_inner")
+        ins.append("      loop $lp_flat_inner")
+        ins.append(f"        local.get {j}")
+        ins.append(f"        local.get {inner_len}")
+        ins.append("        i32.ge_u")
+        ins.append("        br_if $brk_flat_inner")
+        # src_slot = inner_ptr + j * sizeof(T)
+        ins.append(f"        local.get {inner_ptr}")
+        ins.append(f"        local.get {j}")
+        ins.append(f"        i32.const {t_size}")
+        ins.append("        i32.mul")
+        ins.append("        i32.add")
+        ins.append(f"        local.set {src_slot}")
+        # dst_slot = dst + (write_idx + j) * sizeof(T)
+        ins.append(f"        local.get {dst}")
+        ins.append(f"        local.get {write_idx}")
+        ins.append(f"        local.get {j}")
+        ins.append("        i32.add")
+        ins.append(f"        i32.const {t_size}")
+        ins.append("        i32.mul")
+        ins.append("        i32.add")
+        ins.append(f"        local.set {dst_slot}")
+        # Copy src_slot[0..sizeof(T)) → dst_slot
+        if t_is_pair:
+            ins.append(f"        local.get {dst_slot}")
+            ins.append(f"        local.get {src_slot}")
+            ins.append("        i32.load offset=0")
+            ins.append("        i32.store offset=0")
+            ins.append(f"        local.get {dst_slot}")
+            ins.append(f"        local.get {src_slot}")
+            ins.append("        i32.load offset=4")
+            ins.append("        i32.store offset=4")
+        else:
+            t_load = _element_load_op(t_type)
+            t_store = _element_store_op(t_type)
+            if t_load is None or t_store is None:
+                return None
+            ins.append(f"        local.get {dst_slot}")
+            ins.append(f"        local.get {src_slot}")
+            ins.append(f"        {t_load} offset=0")
+            ins.append(f"        {t_store} offset=0")
+        # j++
+        ins.append(f"        local.get {j}")
+        ins.append("        i32.const 1")
+        ins.append("        i32.add")
+        ins.append(f"        local.set {j}")
+        ins.append("        br $lp_flat_inner")
+        ins.append("      end")
+        ins.append("    end")
+        # write_idx += inner_len
+        ins.append(f"    local.get {write_idx}")
+        ins.append(f"    local.get {inner_len}")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {write_idx}")
+        # idx++
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_flat2")
+        ins.append("  end")
+        ins.append("end")
+
+        # Result: (dst, total)
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {total}")
+        return ins
+
+    def _translate_array_sort_by(
+        self, arr_arg: ast.Expr, fn_arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """Translate ``array_sort_by<T>(arr, cmp) -> Array<T>``.
+
+        Iterative in-place insertion sort on a freshly-allocated copy
+        of the input array.
+
+        **Comparator ABI.**  The comparator is declared as
+        ``fn(T, T -> Ordering)`` at the Vera level.  ``Ordering`` is
+        a niladic ADT (``Less`` / ``Equal`` / ``Greater``) but it is
+        *heap-allocated* like every other ADT: the comparator
+        returns an i32 **pointer to an 8-byte Ordering box**, with
+        the tag (0=Less, 1=Equal, 2=Greater) stored at offset 0.
+        This translator therefore performs ``i32.load offset=0`` on
+        the comparator's return before comparing against the
+        Greater tag.  Treating the return value as a raw i32 tag
+        (as an earlier version did) results in a silent no-op sort
+        — the pointer is never equal to the literal ``2``, so the
+        "not Greater" branch always fires and no shifts happen.
+
+        **Stability.**  Equal elements preserve their relative
+        order because the inner loop shifts only when the
+        comparator returns strictly Greater; on Equal (tag 1) we
+        fall through to break, leaving the later element in its
+        later slot.  Verified by ``test_array_sort_by_stability``.
+
+        **GC rooting.**  For pair-typed ``T`` (String, Array<X>)
+        the ``tmp_a`` pointer, and for ADT / host-handle ``T``
+        (Map, Set, Regex, Decimal, user ADTs) the ``tmp`` handle,
+        are live heap references across the comparator's
+        ``call_indirect``.  The comparator may allocate (to build
+        the Ordering box), triggering GC, so these pointers need a
+        shadow-stack root.  See the ``t_needs_root`` block below
+        for the single-slot-updated-in-place pattern that mirrors
+        ``_translate_array_fold``.
+
+        **Complexity.**  Insertion sort is O(n²) worst-case.
+        Acceptable for the small-to-medium arrays Vera programs
+        typically deal with; a switch to merge/heap sort is a
+        future optimisation tracked alongside the larger
+        ``array_sort`` (Ord-dispatched) story in issue #507.
+
+        Insertion sort sketch (T scalar, ascending)::
+
+            dst = $alloc(n * sizeof(T))
+            copy arr → dst
+            for i in 1..n:
+                tmp = dst[i]
+                j = i
+                while j > 0 and cmp_tag(dst[j-1], tmp) == Greater:
+                    dst[j] = dst[j-1]
+                    j -= 1
+                dst[j] = tmp
+            return (dst, n)
+
+        where ``cmp_tag(a, b)`` denotes ``i32.load offset=0`` on
+        the comparator's returned Ordering-box pointer.
+        """
+        arr_instrs = self.translate_expr(arr_arg, env)
+        fn_instrs = self.translate_expr(fn_arg, env)
+        if arr_instrs is None or fn_instrs is None:
+            return None
+
+        t_type = self._infer_concat_elem_type(arr_arg)
+        if t_type is None:
+            return None
+        t_size = _element_mem_size(t_type)
+        if t_size is None:
+            return None
+        t_is_pair = _is_pair_element_type(t_type)
+        t_wasm = _element_wasm_type(t_type)
+        if t_wasm is None:
+            return None
+
+        self.needs_alloc = True
+
+        arr_ptr = self.alloc_local("i32")
+        arr_len = self.alloc_local("i32")
+        fn_tmp = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        i = self.alloc_local("i32")
+        j = self.alloc_local("i32")
+        cur_slot = self.alloc_local("i32")
+        prev_slot = self.alloc_local("i32")
+        # tmp holds the element being inserted; storage shape depends
+        # on T's representation.
+        if t_is_pair:
+            tmp_a = self.alloc_local("i32")
+            tmp_b = self.alloc_local("i32")
+        else:
+            tmp = self.alloc_local(t_wasm)
+
+        ins: list[str] = []
+        ins.extend(arr_instrs)
+        ins.append(f"local.set {arr_len}")
+        ins.append(f"local.set {arr_ptr}")
+        ins.extend(gc_shadow_push(arr_ptr))
+
+        ins.extend(fn_instrs)
+        ins.append(f"local.set {fn_tmp}")
+        ins.extend(gc_shadow_push(fn_tmp))
+
+        # dst = $alloc(arr_len * sizeof(T))
+        ins.append(f"local.get {arr_len}")
+        ins.append(f"i32.const {t_size}")
+        ins.append("i32.mul")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        # GC rooting for heap-referencing element types:
+        # ----------------------------------------------
+        # The comparator's ``call_indirect`` can trigger GC mid-call
+        # (it may allocate an Ordering box).  Any heap pointer held
+        # in a local across that call must be rooted on the shadow
+        # stack or the pointee can be collected even though the
+        # local still holds the address.
+        #
+        # Three element-type categories, matching the classification
+        # in ``_translate_array_fold`` (`u_needs_root`):
+        #
+        #   - Pair types (String, Array<X>): ``tmp_a`` carries the
+        #     ptr half, needs rooting.  ``tmp_b`` is a length int,
+        #     no rooting.
+        #   - ADT / host-handle types (Map, Set, Regex, Decimal,
+        #     user ADTs, Option/Result payloads): ``tmp`` is an i32
+        #     heap handle, needs rooting.
+        #   - Primitive values (Int=i64, Nat=i64, Float64=f64,
+        #     Bool=i32-0-or-1, Byte=i32-0-to-255): ``tmp`` is a
+        #     pure value, no rooting needed.
+        #
+        # Detection for the ADT/handle case mirrors the fold's
+        # ``u_is_adt`` check: ``t_wasm == "i32"`` (scalar, not pair)
+        # and T is not one of the known primitive-as-i32 types.
+        t_is_adt = (
+            t_wasm == "i32"
+            and t_type not in ("Bool", "Byte")
+            and not t_is_pair
+        )
+        t_needs_root = t_is_pair or t_is_adt
+        #
+        # Reserve one shadow-stack slot right after the dst slot.
+        # Initialised to 0 (null — the conservative GC ignores it)
+        # and overwritten at the top of each outer iteration once
+        # tmp / tmp_a is loaded.  No per-iteration push/pop — a
+        # single slot lives across the whole sort, updated in place,
+        # mirroring ``_translate_array_fold``'s accumulator rooting.
+        if t_needs_root:
+            root_local = tmp_a if t_is_pair else tmp
+            ins.extend(gc_shadow_push(root_local))
+
+        # Initial copy: dst[k] = arr[k] for k in [0, arr_len).  Reuse
+        # the i local as the loop counter.
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+        ins.append("block $brk_sort_copy")
+        ins.append("  loop $lp_sort_copy")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.get {arr_len}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_sort_copy")
+        ins.append(f"    local.get {arr_ptr}")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    i32.const {t_size}")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {prev_slot}")  # reuse as src_slot
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    i32.const {t_size}")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {cur_slot}")  # reuse as dst_slot
+        if t_is_pair:
+            ins.append(f"    local.get {cur_slot}")
+            ins.append(f"    local.get {prev_slot}")
+            ins.append("    i32.load offset=0")
+            ins.append("    i32.store offset=0")
+            ins.append(f"    local.get {cur_slot}")
+            ins.append(f"    local.get {prev_slot}")
+            ins.append("    i32.load offset=4")
+            ins.append("    i32.store offset=4")
+        else:
+            t_load = _element_load_op(t_type)
+            t_store = _element_store_op(t_type)
+            if t_load is None or t_store is None:
+                return None
+            ins.append(f"    local.get {cur_slot}")
+            ins.append(f"    local.get {prev_slot}")
+            ins.append(f"    {t_load} offset=0")
+            ins.append(f"    {t_store} offset=0")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append("    br $lp_sort_copy")
+        ins.append("  end")
+        ins.append("end")
+
+        # Closure signature: env + 2*T params → i32 (Ordering tag)
+        t_param_types = ["i32", "i32"] if t_is_pair else [t_wasm]
+        param_parts = " ".join(
+            f"(param {wt})" for wt in ["i32"] + t_param_types + t_param_types
+        )
+        sig_key = f"{param_parts} (result i32)"
+        if sig_key not in self._closure_sigs:
+            sig_name = f"$closure_sig_{len(self._closure_sigs)}"
+            self._closure_sigs[sig_key] = sig_name
+        sig_name = self._closure_sigs[sig_key]
+
+        t_load2 = _element_load_op(t_type) if not t_is_pair else None
+        t_store2 = _element_store_op(t_type) if not t_is_pair else None
+        if not t_is_pair and (t_load2 is None or t_store2 is None):
+            return None
+
+        # Outer loop: i = 1; while i < arr_len.
+        ins.append("i32.const 1")
+        ins.append(f"local.set {i}")
+        ins.append("block $brk_sort_outer")
+        ins.append("  loop $lp_sort_outer")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.get {arr_len}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_sort_outer")
+
+        # tmp = dst[i]
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    i32.const {t_size}")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {cur_slot}")
+        if t_is_pair:
+            ins.append(f"    local.get {cur_slot}")
+            ins.append("    i32.load offset=0")
+            ins.append(f"    local.set {tmp_a}")
+            ins.append(f"    local.get {cur_slot}")
+            ins.append("    i32.load offset=4")
+            ins.append(f"    local.set {tmp_b}")
+        else:
+            ins.append(f"    local.get {cur_slot}")
+            ins.append(f"    {t_load2} offset=0")
+            ins.append(f"    local.set {tmp}")
+        # Refresh the shadow-stack root with the newly-loaded
+        # pointer.  The slot is the most recently-pushed one
+        # (gc_sp - 4) for pair tmp_a / ADT tmp alike; no-op for
+        # primitive T where no slot was reserved.
+        if t_needs_root:
+            root_local = tmp_a if t_is_pair else tmp
+            ins.append("    global.get $gc_sp")
+            ins.append("    i32.const 4")
+            ins.append("    i32.sub")
+            ins.append(f"    local.get {root_local}")
+            ins.append("    i32.store")
+
+        # j = i
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.set {j}")
+
+        # Inner loop: while j > 0:
+        #   if cmp(dst[j-1], tmp) != Greater: break
+        #   dst[j] = dst[j-1]
+        #   j -= 1
+        ins.append("    block $brk_sort_inner")
+        ins.append("      loop $lp_sort_inner")
+        # j > 0 ?
+        ins.append(f"        local.get {j}")
+        ins.append("        i32.eqz")
+        ins.append("        br_if $brk_sort_inner")
+        # prev_slot = dst + (j-1) * sizeof(T)
+        ins.append(f"        local.get {dst}")
+        ins.append(f"        local.get {j}")
+        ins.append("        i32.const 1")
+        ins.append("        i32.sub")
+        ins.append(f"        i32.const {t_size}")
+        ins.append("        i32.mul")
+        ins.append("        i32.add")
+        ins.append(f"        local.set {prev_slot}")
+        # cur_slot = dst + j * sizeof(T) (so we can write to it
+        # later; stays valid through the comparator call because we
+        # do not reallocate)
+        ins.append(f"        local.get {dst}")
+        ins.append(f"        local.get {j}")
+        ins.append(f"        i32.const {t_size}")
+        ins.append("        i32.mul")
+        ins.append("        i32.add")
+        ins.append(f"        local.set {cur_slot}")
+        # Call cmp(dst[j-1], tmp); push (env, dst[j-1], tmp, fn_idx)
+        ins.append(f"        local.get {fn_tmp}")
+        if t_is_pair:
+            ins.append(f"        local.get {prev_slot}")
+            ins.append("        i32.load offset=0")
+            ins.append(f"        local.get {prev_slot}")
+            ins.append("        i32.load offset=4")
+            ins.append(f"        local.get {tmp_a}")
+            ins.append(f"        local.get {tmp_b}")
+        else:
+            ins.append(f"        local.get {prev_slot}")
+            ins.append(f"        {t_load2} offset=0")
+            ins.append(f"        local.get {tmp}")
+        ins.append(f"        local.get {fn_tmp}")
+        ins.append("        i32.load offset=0")
+        ins.append(f"        call_indirect (type {sig_name})")
+        # The comparator returns a *pointer* to a heap-allocated
+        # Ordering box (tag stored at offset 0).  Dereference to
+        # get the tag before comparing against Greater=2.
+        ins.append("        i32.load offset=0")
+        ins.append("        i32.const 2")
+        ins.append("        i32.ne")
+        ins.append("        br_if $brk_sort_inner")
+        # dst[j] = dst[j-1]
+        if t_is_pair:
+            ins.append(f"        local.get {cur_slot}")
+            ins.append(f"        local.get {prev_slot}")
+            ins.append("        i32.load offset=0")
+            ins.append("        i32.store offset=0")
+            ins.append(f"        local.get {cur_slot}")
+            ins.append(f"        local.get {prev_slot}")
+            ins.append("        i32.load offset=4")
+            ins.append("        i32.store offset=4")
+        else:
+            ins.append(f"        local.get {cur_slot}")
+            ins.append(f"        local.get {prev_slot}")
+            ins.append(f"        {t_load2} offset=0")
+            ins.append(f"        {t_store2} offset=0")
+        # j -= 1
+        ins.append(f"        local.get {j}")
+        ins.append("        i32.const 1")
+        ins.append("        i32.sub")
+        ins.append(f"        local.set {j}")
+        ins.append("        br $lp_sort_inner")
+        ins.append("      end")
+        ins.append("    end")
+
+        # dst[j] = tmp.  Recompute slot in case we never entered the
+        # inner loop (then cur_slot still points at dst[i], which is
+        # correct since j == i).
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {j}")
+        ins.append(f"    i32.const {t_size}")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {cur_slot}")
+        if t_is_pair:
+            ins.append(f"    local.get {cur_slot}")
+            ins.append(f"    local.get {tmp_a}")
+            ins.append("    i32.store offset=0")
+            ins.append(f"    local.get {cur_slot}")
+            ins.append(f"    local.get {tmp_b}")
+            ins.append("    i32.store offset=4")
+        else:
+            ins.append(f"    local.get {cur_slot}")
+            ins.append(f"    local.get {tmp}")
+            ins.append(f"    {t_store2} offset=0")
+
+        # i++, outer loop
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append("    br $lp_sort_outer")
+        ins.append("  end")
+        ins.append("end")
+
+        # Result: (dst, arr_len)
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {arr_len}")
+        return ins

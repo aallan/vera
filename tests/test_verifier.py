@@ -1588,7 +1588,13 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 172 T1 / 19 T3 / 191 total without module resolution."""
+        """All examples together: 184 T1 / 23 T3 / 207 total without module resolution.
+
+        Counts move when examples are added or their contracts become
+        more / less verifiable.  The increment from 172/19/191 to
+        184/23/207 reflects the addition of `array_utilities.vera`
+        (#466 phase 1) which contributes 12 T1 + 4 T3 + 16 contracts.
+        """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
             text = f.read_text()
@@ -1598,9 +1604,9 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 172, f"Expected 172 T1, got {t1}"
-        assert t3 == 19, f"Expected 19 T3, got {t3}"
-        assert total == 191, f"Expected 191 total, got {total}"
+        assert t1 == 184, f"Expected 184 T1, got {t1}"
+        assert t3 == 23, f"Expected 23 T3, got {t3}"
+        assert total == 207, f"Expected 207 total, got {total}"
 
 
 # =====================================================================

@@ -254,6 +254,9 @@ class CrossModuleMixin:
             "array_slice",
             # Higher-order combinators — all iterative WASM (#480).
             "array_map", "array_filter", "array_fold",
+            # Array utilities (#466 phase 1) — also iterative WASM.
+            "array_mapi", "array_reverse", "array_find",
+            "array_any", "array_all", "array_flatten", "array_sort_by",
             "apply_fn", "get", "put", "throw", "resume",
             "string_length", "string_concat", "string_slice",
             "string_char_code", "string_from_char_code", "string_repeat",
