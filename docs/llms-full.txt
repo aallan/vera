@@ -614,9 +614,12 @@ Inside the closure body, `@Int.0` is the closure's own parameter (index 0 = most
 
 ### Capturing outer bindings
 
-**Closures capture their enclosing scope's bindings.** Inside the closure body, outer bindings are available at higher De Bruijn indices — the closure's own parameters are pushed on top of the slot stack, so outer `@T` bindings shift up by the number of inner `@T` parameters.
+**Closures can capture primitive outer bindings (`Int`, `Nat`, `Bool`, `Byte`, `Float64`) but cannot capture heap-allocated types (`String`, any `Array<T>`, any ADT like `Option<T>` or user-defined `data`).** This is a codegen limitation tracked in [#514](https://github.com/aallan/vera/issues/514), not a language-design choice — the intended semantics is full capture, but the current reference compiler mis-emits the closure environment for anything other than scalar i32/i64/f64 values.
+
+When capture works, outer bindings are available at higher De Bruijn indices — the closure's own parameters are pushed on top of the slot stack, so outer `@T` bindings shift up by the number of inner `@T` parameters.
 
 ```vera
+-- WORKS: capturing a primitive @Int.
 public fn sum_plus_offset(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
@@ -629,17 +632,70 @@ public fn sum_plus_offset(@Unit -> @Int)
       -- Inside this closure body, two @Int params are in scope:
       --   @Int.0 = element (most recent, the iterator's current value)
       --   @Int.1 = accumulator
-      --   @Int.2 = outer `let @Int = 100`  (captured!)
+      --   @Int.2 = outer `let @Int = 100`  (captured — primitive, OK)
       @Int.1 + @Int.0 + @Int.2
     }
   )
 }
--- (0 + 1 + 100) + 2 + 100) + 3 + 100 = 306
+-- 0+1+100 + 2+100 + 3+100 = 306
 ```
 
-The rule: count the closure's own `@T` parameters, and the outermost captured `@T` binding sits at that index. A closure with no `@Int` parameters of its own would see the outer `let @Int` as `@Int.0`; a closure with two `@Int` parameters sees it as `@Int.2`. Types are independent — a closure's `@Int` parameter does not shift outer `@String` bindings.
+The rule when capture IS safe: count the closure's own `@T` parameters, and the outermost captured `@T` binding sits at that index. A closure with no `@Int` parameters of its own would see the outer `let @Int` as `@Int.0`; a closure with two `@Int` parameters sees it as `@Int.2`. Types are independent — a closure's `@Int` parameter does not shift outer `@String` bindings.
 
 Use `vera check --explain-slots file.vera` if you need the resolved index table printed for a specific function (including closures).
+
+### What you cannot capture
+
+```vera
+-- BROKEN: capturing a heap type fails WASM validation.
+let @Array<Int> = [10, 20, 30];
+array_fold(
+  some_array,
+  0,
+  fn(@Int, @Int -> @Int) effects(pure) {
+    @Int.1 + @Int.0 + nat_to_int(array_length(@Array<Int>.1))  -- can't capture this
+  }
+)
+-- Fails at WASM validation: "unknown table 0: table index out of bounds"
+-- or "type mismatch: expected i32, found i64" depending on the exact shape.
+```
+
+Heap types that currently fail to capture:
+
+- Any `Array<T>` (including `Array<Bool>`, `Array<Array<Int>>`, etc.)
+- `String`
+- Any user-defined ADT
+- Built-in ADT values (`Option<T>`, `Result<T, E>`, `Json`, `HtmlNode`, `MdBlock`, …)
+- Opaque handles (`Map<K, V>`, `Set<T>`, `Decimal`, `Regex`) — same i32 representation at WASM level, but they trigger the same validation failure
+
+### Workaround: tail recursion with explicit parameters
+
+When a combinator-based transformation needs access to a heap value, lift it to a top-level recursive function that takes everything as explicit parameters rather than capturing anything:
+
+```vera
+-- Instead of: array_map(grid_rows, fn(row) { ...uses captured grid... })
+-- Write a tail-recursive row builder:
+
+private fn transform_rows(@Array<Array<Bool>>, @Array<Array<Bool>>, @Int, @Int -> @Array<Array<Bool>>)
+  requires(@Int.0 >= 0 && @Int.0 <= @Int.1)
+  ensures(true)
+  decreases(@Int.1 - @Int.0)
+  effects(pure)
+{
+  -- Parameters: grid, acc, total_rows, current_row.
+  if @Int.0 >= @Int.1 then {
+    @Array<Array<Bool>>.0
+  } else {
+    let @Array<Bool> = transform_single_row(@Array<Array<Bool>>.1, @Int.0);
+    let @Array<Array<Bool>> = array_append(@Array<Array<Bool>>.0, @Array<Bool>.0);
+    transform_rows(@Array<Array<Bool>>.1, @Array<Array<Bool>>.0, @Int.1, @Int.0 + 1)
+  }
+}
+```
+
+The grid threads through as parameter `@Array<Array<Bool>>.1` — no capture. `transform_single_row` can safely use `array_map` or `array_mapi` internally because it takes the row as its own parameter (not a capture).
+
+`examples/life.vera` (Conway's Game of Life) uses this pattern end-to-end for both `initial_grid` and `next_gen` because the natural `array_map(rows, fn(row) { array_map(cols, fn(col) { next_cell(grid, row, col) }) })` hits [#514](https://github.com/aallan/vera/issues/514) on both the nested-closure and the heap-capture axes.
 
 ### When to use recursion instead
 
