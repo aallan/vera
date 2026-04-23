@@ -742,29 +742,6 @@ public fn build_grid(@Unit -> @Array<Array<Int>>)
 }
 ```
 
-```vera
--- BROKEN: nested closures fail at WASM validation.
-let @Array<Array<Int>> = array_map(
-  array_range(0, 3),
-  fn(@Int -> @Array<Int>) effects(pure) {
-    array_map(array_range(0, 3), fn(@Int -> @Int) effects(pure) { @Int.0 })
-  }
-);
-
--- WORKING: inner array_map lives in a named helper.
-private fn fill_row(@Int -> @Array<Int>)
-  requires(true) ensures(true) effects(pure)
-{
-  array_map(array_range(0, 3), fn(@Int -> @Int) effects(pure) { @Int.0 })
-}
-
-public fn build_grid(@Unit -> @Array<Array<Int>>)
-  requires(true) ensures(true) effects(pure)
-{
-  array_map(array_range(0, 3), fill_row)
-}
-```
-
 ## Built-in Functions
 
 ### Naming convention
