@@ -1259,6 +1259,117 @@ public fn main(-> @Unit)
         assert node["stdout"] == "Abc,aBC,|5xyz"
 
 
+class TestBrowserJsonAccessors:
+    """Browser parity for JSON typed accessors (#366).
+
+    All eleven accessors are pure-Vera prelude functions (no new host
+    imports; `json_parse` is the only one that routes through a host
+    and already has browser parity coverage elsewhere).  These tests
+    assert the Python (wasmtime) and browser (Node.js) runtimes agree
+    on the Option<T> shape returned by each accessor.
+    """
+
+    def test_layer1_coercions(self, tmp_path: Path) -> None:
+        """Layer-1: every json_as_* accessor, matched and mismatched."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  -- json_as_string matches JString
+  match json_as_string(JString("hi")) {
+    Some(@String) -> IO.print(@String.0),
+    None -> IO.print("?")
+  };
+  IO.print(",");
+  -- mismatch on JNumber
+  match json_as_string(JNumber(1.0)) {
+    Some(@String) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_number on JNumber
+  match json_as_number(JNumber(3.14)) {
+    Some(@Float64) -> IO.print(float_to_string(@Float64.0)),
+    None -> IO.print("?")
+  };
+  IO.print(",");
+  -- json_as_bool true/false
+  match json_as_bool(JBool(true)) {
+    Some(@Bool) -> IO.print(bool_to_string(@Bool.0)),
+    None -> IO.print("?")
+  };
+  IO.print(",");
+  -- json_as_int truncates
+  match json_as_int(JNumber(42.7)) {
+    Some(@Int) -> IO.print(int_to_string(@Int.0)),
+    None -> IO.print("?")
+  };
+  IO.print(",");
+  -- json_as_int on NaN returns None
+  match json_as_int(JNumber(0.0 / 0.0)) {
+    Some(@Int) -> IO.print("!"),
+    None -> IO.print("none")
+  }
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "hi,none,3.14,true,42,none"
+
+    def test_layer2_compound_accessors(self, tmp_path: Path) -> None:
+        """Layer-2: every json_get_* accessor against a parsed object."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match json_parse("{\\"name\\":\\"Alice\\",\\"age\\":30,\\"active\\":true,\\"score\\":3.14,\\"tags\\":[1,2,3]}") {
+    Err(@String) -> IO.print("ERR"),
+    Ok(@Json) -> {
+      match json_get_string(@Json.0, "name") {
+        Some(@String) -> IO.print(@String.0),
+        None -> IO.print("?")
+      };
+      IO.print(",");
+      match json_get_int(@Json.0, "age") {
+        Some(@Int) -> IO.print(int_to_string(@Int.0)),
+        None -> IO.print("?")
+      };
+      IO.print(",");
+      match json_get_bool(@Json.0, "active") {
+        Some(@Bool) -> IO.print(bool_to_string(@Bool.0)),
+        None -> IO.print("?")
+      };
+      IO.print(",");
+      match json_get_number(@Json.0, "score") {
+        Some(@Float64) -> IO.print(float_to_string(@Float64.0)),
+        None -> IO.print("?")
+      };
+      IO.print(",");
+      match json_get_array(@Json.0, "tags") {
+        Some(@Array<Json>) -> IO.print(int_to_string(nat_to_int(array_length(@Array<Json>.0)))),
+        None -> IO.print("?")
+      };
+      IO.print(",");
+      -- missing field → None
+      match json_get_int(@Json.0, "nope") {
+        Some(@Int) -> IO.print("!"),
+        None -> IO.print("none")
+      };
+      IO.print(",");
+      -- wrong type → None
+      match json_get_int(@Json.0, "name") {
+        Some(@Int) -> IO.print("!"),
+        None -> IO.print("none")
+      }
+    }
+  }
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "Alice,30,true,3.14,3,none,none"
+
+
 class TestBrowserState:
     """Test State<T> host bindings in the Node.js runtime."""
 

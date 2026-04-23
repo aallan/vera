@@ -1808,6 +1808,82 @@ is_whitespace("\t")  -- true
 
 **Verification:** all sixteen functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 (runtime) verification because the SMT encoding does not yet model byte-level string operations. Their `requires(true)` / `ensures(true)` contracts are total, so Tier 3 reduces to runtime trap-freedom — every input is accepted.
 
+### 9.6.23 JSON Typed Accessors
+
+Vera provides eleven additional JSON accessor functions that eliminate the two-level pattern-match boilerplate (`match option ... { Some(@Json) -> match @Json.0 { JNumber(@Float64) -> ... } }`) that every JSON API consumer would otherwise write. Tracked in [#366](https://github.com/aallan/vera/issues/366).
+
+Unlike the rest of the chapter-9 built-ins, these are **pure-Vera prelude functions**, not WASM translators. The compiler injects them into every module that references `Json` values, alongside the existing `json_get` / `json_keys` / `json_type` combinators. No new host imports; no new WASM emit.
+
+#### Layer 1 — type-coercion accessors
+
+```vera
+public fn json_as_string(@Json -> @Option<String>)
+  requires(true) ensures(true) effects(pure)
+
+public fn json_as_number(@Json -> @Option<Float64>)
+  requires(true) ensures(true) effects(pure)
+
+public fn json_as_bool(@Json -> @Option<Bool>)
+  requires(true) ensures(true) effects(pure)
+
+public fn json_as_int(@Json -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+
+public fn json_as_array(@Json -> @Option<Array<Json>>)
+  requires(true) ensures(true) effects(pure)
+
+public fn json_as_object(@Json -> @Option<Map<String, Json>>)
+  requires(true) ensures(true) effects(pure)
+```
+
+Each `json_as_*` returns `Some(value)` when the Json's constructor matches the requested type, `None` otherwise. The accessors are disjoint — at most one returns `Some` for any given Json value.
+
+`json_as_int` is the one asymmetric case: it applies `float_to_int` to the underlying `Float64`, truncating toward zero. Because `float_to_int` traps on NaN and infinity, `json_as_int` guards the conversion with `float_is_nan` and `float_is_infinite` and returns `None` for those inputs. Bounded finite floats that would overflow `Int` (`|f| >= 2^63`) still trap — this is a deliberate choice to keep the accessor's body simple; users who need bounded-range handling can pre-clamp or fall back to `json_as_number` and convert explicitly.
+
+```vera
+json_as_string(JString("hi"))              -- Some("hi")
+json_as_string(JNumber(1.0))               -- None
+json_as_int(JNumber(42.7))                 -- Some(42)
+json_as_int(JNumber(-3.9))                 -- Some(-3)   -- toward-zero truncation
+json_as_int(JNumber(0.0 / 0.0))            -- None       -- NaN guard
+json_as_int(JNumber(infinity()))           -- None       -- infinity guard
+```
+
+#### Layer 2 — compound field accessors
+
+```vera
+public fn json_get_string(@Json, @String -> @Option<String>)
+  requires(true) ensures(true) effects(pure)
+
+public fn json_get_number(@Json, @String -> @Option<Float64>)
+  requires(true) ensures(true) effects(pure)
+
+public fn json_get_bool(@Json, @String -> @Option<Bool>)
+  requires(true) ensures(true) effects(pure)
+
+public fn json_get_int(@Json, @String -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+
+public fn json_get_array(@Json, @String -> @Option<Array<Json>>)
+  requires(true) ensures(true) effects(pure)
+```
+
+Each `json_get_X(j, key)` is definitionally equivalent to chaining `json_get(j, key)` with the matching `json_as_X` coercion: it returns `None` both when the field is missing and when the field is present but of the wrong type. This is the accessor shape that 90% of real API-consuming code wants — field lookup and type coercion collapsed into one call.
+
+There is no `json_get_object` — chained field access is handled by `json_get` returning `Option<Json>`, then letting the caller recurse.
+
+```vera
+-- Assume parsed: {"name":"Alice","age":30,"active":true,"tags":[1,2,3]}
+json_get_string(obj, "name")               -- Some("Alice")
+json_get_int(obj, "age")                   -- Some(30)
+json_get_bool(obj, "active")               -- Some(true)
+json_get_array(obj, "tags")                -- Some([JNumber(1), ...])
+json_get_int(obj, "nope")                  -- None (missing)
+json_get_int(obj, "name")                  -- None (wrong type)
+```
+
+**Verification:** all eleven functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 runtime verification because the SMT encoding does not yet model the `Json` ADT match expressions or `Map<String, Json>` operations.
+
 ## 9.7 Built-in Types
 
 ### 9.7.1 Json

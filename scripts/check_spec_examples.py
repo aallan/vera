@@ -72,6 +72,8 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1734): "FRAGMENT",  # string_pad_start/pad_end signatures (no body, #470)
     ("09-standard-library.md", 1757): "FRAGMENT",  # char_to_upper/char_to_lower signatures (no body, #471)
     ("09-standard-library.md", 1778): "FRAGMENT",  # is_digit/alpha/... signatures (no body, #471)
+    ("09-standard-library.md", 1819): "FRAGMENT",  # json_as_* Layer-1 signatures (no body, #366)
+    ("09-standard-library.md", 1854): "FRAGMENT",  # json_get_* Layer-2 signatures (no body, #366)
 
     # Chapter 9 — Array builtin signatures (no body)
     ("09-standard-library.md", 570): "FRAGMENT",  # array_length signature (no body)
@@ -200,19 +202,19 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1479): "FRAGMENT",  # url_join signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 1997): "FUTURE",   # md_parse
-    ("09-standard-library.md", 2006): "FUTURE",   # md_render
-    ("09-standard-library.md", 2017): "FUTURE",   # md_has_heading
-    ("09-standard-library.md", 2026): "FUTURE",   # md_has_code_block
-    ("09-standard-library.md", 2035): "FUTURE",   # md_extract_code_blocks
-    ("09-standard-library.md", 2059): "FUTURE",   # convert_to_markdown
+    ("09-standard-library.md", 2073): "FUTURE",   # md_parse
+    ("09-standard-library.md", 2082): "FUTURE",   # md_render
+    ("09-standard-library.md", 2093): "FUTURE",   # md_has_heading
+    ("09-standard-library.md", 2102): "FUTURE",   # md_has_code_block
+    ("09-standard-library.md", 2111): "FUTURE",   # md_extract_code_blocks
+    ("09-standard-library.md", 2135): "FUTURE",   # convert_to_markdown
 
     # Chapter 9 — Html stdlib type (function signatures without bodies)
-    ("09-standard-library.md", 2108): "FUTURE",   # html_parse
-    ("09-standard-library.md", 2117): "FUTURE",   # html_to_string
-    ("09-standard-library.md", 2128): "FUTURE",   # html_query
-    ("09-standard-library.md", 2137): "FUTURE",   # html_text
-    ("09-standard-library.md", 2146): "FUTURE",   # html_attr
+    ("09-standard-library.md", 2184): "FUTURE",   # html_parse
+    ("09-standard-library.md", 2193): "FUTURE",   # html_to_string
+    ("09-standard-library.md", 2204): "FUTURE",   # html_query
+    ("09-standard-library.md", 2213): "FUTURE",   # html_text
+    ("09-standard-library.md", 2222): "FUTURE",   # html_attr
 
     # Chapter 9 — Http + Async composition (future Async effect, not yet compilable)
     ("09-standard-library.md", 473): "FUTURE",    # fetch_both uses async(Http.get(...))

@@ -12291,6 +12291,360 @@ public fn main(-> @Unit)
         assert _run_io(src) == "foo|bar|baz"
 
 
+class TestJsonTypedAccessors:
+    """#366 — 11 new Json typed accessors shipped as pure-Vera prelude
+    functions (no new WASM translators).  Six Layer-1 type-coercion
+    accessors (Json → Option<T>) and five Layer-2 compound field
+    accessors (Json, String → Option<T> = json_get + json_as_T
+    composed).  ``json_as_int`` specifically guards against the
+    ``float_to_int`` trap on NaN/Infinity via ``float_is_nan`` /
+    ``float_is_infinite``.
+    """
+
+    # ----- Layer 1: json_as_* -----
+
+    def test_json_as_string_match(self) -> None:
+        """JString("hi") → Some("hi")."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match json_as_string(JString("hi")) {
+    Some(@String) -> IO.print(@String.0),
+    None -> IO.print("?")
+  }
+}
+"""
+        assert _run_io(src) == "hi"
+
+    def test_json_as_string_mismatch(self) -> None:
+        """JNumber(1.0) has no JString coercion → None."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_string(JNumber(1.0)) {
+    Some(@String) -> 0,
+    None -> 1
+  }
+}
+"""
+        assert _run(src) == 1
+
+    def test_json_as_number_match(self) -> None:
+        """JNumber(3.14) → Some(3.14)."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match json_as_number(JNumber(3.14)) {
+    Some(@Float64) -> IO.print(float_to_string(@Float64.0)),
+    None -> IO.print("?")
+  }
+}
+"""
+        assert _run_io(src) == "3.14"
+
+    def test_json_as_bool_match(self) -> None:
+        """JBool(true) → Some(true); JBool(false) → Some(false)."""
+        src_true = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_bool(JBool(true)) {
+    Some(@Bool) -> if @Bool.0 then { 1 } else { 0 },
+    None -> -1
+  }
+}
+"""
+        assert _run(src_true) == 1
+        src_false = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_bool(JBool(false)) {
+    Some(@Bool) -> if @Bool.0 then { 1 } else { 0 },
+    None -> -1
+  }
+}
+"""
+        assert _run(src_false) == 0
+
+    def test_json_as_int_truncates(self) -> None:
+        """JNumber(42.7) → Some(42) via float_to_int truncation."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_int(JNumber(42.7)) {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+"""
+        assert _run(src) == 42
+
+    def test_json_as_int_negative(self) -> None:
+        """JNumber(-3.9) → Some(-3) — i64.trunc_f64_s is toward-zero."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_int(JNumber(-3.9)) {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+"""
+        assert _run(src) == -3
+
+    def test_json_as_int_nan_returns_none(self) -> None:
+        """JNumber(NaN) → None — guard prevents float_to_int trap.
+
+        Without the `float_is_nan || float_is_infinite` guard in the
+        prelude body, `float_to_int(NaN)` would trap.  This test
+        pins that the accessor returns None cleanly instead.
+        """
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_int(JNumber(0.0 / 0.0)) {
+    Some(@Int) -> 0,
+    None -> 1
+  }
+}
+"""
+        assert _run(src) == 1
+
+    def test_json_as_int_infinity_returns_none(self) -> None:
+        """JNumber(inf) → None — mirror of NaN guard for infinity."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_int(JNumber(infinity())) {
+    Some(@Int) -> 0,
+    None -> 1
+  }
+}
+"""
+        assert _run(src) == 1
+
+    def test_json_as_array(self) -> None:
+        """JArray([1,2,3]) → Some(array of length 3)."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = JArray([JNumber(1.0), JNumber(2.0), JNumber(3.0)]);
+  match json_as_array(@Json.0) {
+    Some(@Array<Json>) -> nat_to_int(array_length(@Array<Json>.0)),
+    None -> 0
+  }
+}
+"""
+        assert _run(src) == 3
+
+    def test_json_as_object_from_parse(self) -> None:
+        """JObject value via json_parse → Some(map); Map is opaque
+        handle so we only assert round-trip, not contents."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_parse("{\\"k\\":1}") {
+    Err(@String) -> 0,
+    Ok(@Json) ->
+      match json_as_object(@Json.0) {
+        Some(@Map<String, Json>) -> 1,
+        None -> 0
+      }
+  }
+}
+"""
+        assert _run(src) == 1
+
+    def test_json_as_coercions_are_disjoint(self) -> None:
+        """Every Layer-1 accessor returns None for every constructor
+        except its own.  This is the invariant callers rely on when
+        chaining coercions.
+        """
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  -- JString has no bool coercion
+  let @Int = match json_as_bool(JString("true")) {
+    Some(@Bool) -> -1,
+    None -> 0
+  };
+  -- JBool has no number coercion
+  let @Int = match json_as_number(JBool(true)) {
+    Some(@Float64) -> -1,
+    None -> @Int.0
+  };
+  -- JNumber has no string coercion
+  let @Int = match json_as_string(JNumber(1.0)) {
+    Some(@String) -> -1,
+    None -> @Int.0
+  };
+  -- JNull has no array coercion
+  let @Int = match json_as_array(JNull) {
+    Some(@Array<Json>) -> -1,
+    None -> @Int.0
+  };
+  @Int.0
+}
+"""
+        assert _run(src) == 0
+
+    # ----- Layer 2: json_get_* -----
+
+    def test_json_get_string_hit(self) -> None:
+        """{"name":"Alice"}/name → Some("Alice")."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match json_parse("{\\"name\\":\\"Alice\\"}") {
+    Err(@String) -> IO.print("ERR"),
+    Ok(@Json) ->
+      match json_get_string(@Json.0, "name") {
+        Some(@String) -> IO.print(@String.0),
+        None -> IO.print("?")
+      }
+  }
+}
+"""
+        assert _run_io(src) == "Alice"
+
+    def test_json_get_int_hit(self) -> None:
+        """{"age":30}/age → Some(30)."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_parse("{\\"age\\":30}") {
+    Err(@String) -> -1,
+    Ok(@Json) ->
+      match json_get_int(@Json.0, "age") {
+        Some(@Int) -> @Int.0,
+        None -> -1
+      }
+  }
+}
+"""
+        assert _run(src) == 30
+
+    def test_json_get_number_hit(self) -> None:
+        """{"score":3.14}/score → Some(3.14)."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match json_parse("{\\"score\\":3.14}") {
+    Err(@String) -> IO.print("ERR"),
+    Ok(@Json) ->
+      match json_get_number(@Json.0, "score") {
+        Some(@Float64) -> IO.print(float_to_string(@Float64.0)),
+        None -> IO.print("?")
+      }
+  }
+}
+"""
+        assert _run_io(src) == "3.14"
+
+    def test_json_get_bool_hit(self) -> None:
+        """{"active":true}/active → Some(true)."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_parse("{\\"active\\":true}") {
+    Err(@String) -> -1,
+    Ok(@Json) ->
+      match json_get_bool(@Json.0, "active") {
+        Some(@Bool) -> if @Bool.0 then { 1 } else { 0 },
+        None -> -1
+      }
+  }
+}
+"""
+        assert _run(src) == 1
+
+    def test_json_get_array_hit(self) -> None:
+        """{"tags":[1,2,3]}/tags → Some(array of length 3)."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_parse("{\\"tags\\":[1,2,3]}") {
+    Err(@String) -> -1,
+    Ok(@Json) ->
+      match json_get_array(@Json.0, "tags") {
+        Some(@Array<Json>) -> nat_to_int(array_length(@Array<Json>.0)),
+        None -> -1
+      }
+  }
+}
+"""
+        assert _run(src) == 3
+
+    def test_json_get_missing_field(self) -> None:
+        """Missing field → None."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_parse("{\\"name\\":\\"Alice\\"}") {
+    Err(@String) -> -1,
+    Ok(@Json) ->
+      match json_get_int(@Json.0, "nope") {
+        Some(@Int) -> -1,
+        None -> 1
+      }
+  }
+}
+"""
+        assert _run(src) == 1
+
+    def test_json_get_wrong_type(self) -> None:
+        """Present field with wrong type → None (not trap)."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_parse("{\\"name\\":\\"Alice\\"}") {
+    Err(@String) -> -1,
+    Ok(@Json) ->
+      match json_get_int(@Json.0, "name") {
+        Some(@Int) -> -1,
+        None -> 1
+      }
+  }
+}
+"""
+        assert _run(src) == 1
+
+    def test_json_get_on_non_object(self) -> None:
+        """json_get_X on a non-JObject Json returns None (because the
+        underlying json_get returns None for non-objects).
+        """
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  -- JArray is a valid Json but not an object, so json_get_int returns None.
+  match json_get_int(JArray([JNumber(1.0)]), "any") {
+    Some(@Int) -> -1,
+    None -> 1
+  }
+}
+"""
+        assert _run(src) == 1
+
+
 class TestGCShadowStackOverflow:
     """Regression tests for #464: deep recursive array accumulation
     overflowing the GC shadow stack into the worklist region.

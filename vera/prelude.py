@@ -174,6 +174,156 @@ private fn json_type(@Json -> @String)
     JObject(@Map<String, Json>) -> "object"
   }
 }
+
+private fn json_as_string(@Json -> @Option<String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> None,
+    JBool(@Bool) -> None,
+    JNumber(@Float64) -> None,
+    JString(@String) -> Some(@String.0),
+    JArray(@Array<Json>) -> None,
+    JObject(@Map<String, Json>) -> None
+  }
+}
+
+private fn json_as_number(@Json -> @Option<Float64>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> None,
+    JBool(@Bool) -> None,
+    JNumber(@Float64) -> Some(@Float64.0),
+    JString(@String) -> None,
+    JArray(@Array<Json>) -> None,
+    JObject(@Map<String, Json>) -> None
+  }
+}
+
+private fn json_as_bool(@Json -> @Option<Bool>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> None,
+    JBool(@Bool) -> Some(@Bool.0),
+    JNumber(@Float64) -> None,
+    JString(@String) -> None,
+    JArray(@Array<Json>) -> None,
+    JObject(@Map<String, Json>) -> None
+  }
+}
+
+private fn json_as_int(@Json -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> None,
+    JBool(@Bool) -> None,
+    JNumber(@Float64) ->
+      if float_is_nan(@Float64.0) || float_is_infinite(@Float64.0) then {
+        None
+      } else {
+        Some(float_to_int(@Float64.0))
+      },
+    JString(@String) -> None,
+    JArray(@Array<Json>) -> None,
+    JObject(@Map<String, Json>) -> None
+  }
+}
+
+private fn json_as_array(@Json -> @Option<Array<Json>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> None,
+    JBool(@Bool) -> None,
+    JNumber(@Float64) -> None,
+    JString(@String) -> None,
+    JArray(@Array<Json>) -> Some(@Array<Json>.0),
+    JObject(@Map<String, Json>) -> None
+  }
+}
+
+private fn json_as_object(@Json -> @Option<Map<String, Json>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Json.0 {
+    JNull -> None,
+    JBool(@Bool) -> None,
+    JNumber(@Float64) -> None,
+    JString(@String) -> None,
+    JArray(@Array<Json>) -> None,
+    JObject(@Map<String, Json>) -> Some(@Map<String, Json>.0)
+  }
+}
+
+private fn json_get_string(@Json, @String -> @Option<String>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match json_get(@Json.0, @String.0) {
+    None -> None,
+    Some(@Json) -> json_as_string(@Json.0)
+  }
+}
+
+private fn json_get_number(@Json, @String -> @Option<Float64>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match json_get(@Json.0, @String.0) {
+    None -> None,
+    Some(@Json) -> json_as_number(@Json.0)
+  }
+}
+
+private fn json_get_bool(@Json, @String -> @Option<Bool>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match json_get(@Json.0, @String.0) {
+    None -> None,
+    Some(@Json) -> json_as_bool(@Json.0)
+  }
+}
+
+private fn json_get_int(@Json, @String -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match json_get(@Json.0, @String.0) {
+    None -> None,
+    Some(@Json) -> json_as_int(@Json.0)
+  }
+}
+
+private fn json_get_array(@Json, @String -> @Option<Array<Json>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match json_get(@Json.0, @String.0) {
+    None -> None,
+    Some(@Json) -> json_as_array(@Json.0)
+  }
+}
 """
 
 _OPTION_COMBINATORS = """\
@@ -362,6 +512,11 @@ def _source_mentions_json(program: ast.Program) -> bool:
         "json_parse", "json_stringify",
         "json_get", "json_has_field", "json_type",
         "json_keys", "json_array_get", "json_array_length",
+        # #366 — typed accessors and compound field accessors
+        "json_as_string", "json_as_number", "json_as_bool", "json_as_int",
+        "json_as_array", "json_as_object",
+        "json_get_string", "json_get_number", "json_get_bool",
+        "json_get_int", "json_get_array",
     })
     for tld in program.declarations:
         decl = tld.decl
@@ -546,6 +701,11 @@ def inject_prelude(program: ast.Program) -> None:
     json_fn_names = {
         "json_get", "json_array_get", "json_array_length",
         "json_keys", "json_has_field", "json_type",
+        # #366 — typed accessors and compound field accessors
+        "json_as_string", "json_as_number", "json_as_bool", "json_as_int",
+        "json_as_array", "json_as_object",
+        "json_get_string", "json_get_number", "json_get_bool",
+        "json_get_int", "json_get_array",
     }
     _json_ctors = {"JNull", "JBool", "JNumber", "JString", "JArray", "JObject"}
     _json_builtins = {"json_parse", "json_stringify"}

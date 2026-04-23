@@ -741,6 +741,27 @@
     ]
   },
   {
+    "id": "ch09_json_accessors",
+    "file": "ch09_json_accessors.vera",
+    "chapter": 9,
+    "title": "JSON typed accessors (#366)",
+    "level": "run",
+    "spec_ref": "Section 9.6.23",
+    "features": [
+      "json_as_string",
+      "json_as_number",
+      "json_as_bool",
+      "json_as_int",
+      "json_as_array",
+      "json_as_object",
+      "json_get_string",
+      "json_get_number",
+      "json_get_bool",
+      "json_get_int",
+      "json_get_array"
+    ]
+  },
+  {
     "id": "ch09_html",
     "file": "ch09_html.vera",
     "chapter": 9,

@@ -1,0 +1,236 @@
+-- Conformance: JSON typed accessors (Chapter 9, #366).
+-- Tests: json_as_string, json_as_number, json_as_bool, json_as_int,
+--        json_as_array, json_as_object, json_get_string,
+--        json_get_number, json_get_bool, json_get_int, json_get_array.
+--
+-- Eleven new pure-Vera prelude functions.  Layer 1 are type-coercion
+-- accessors (Json -> Option<T>) — Some when the Json constructor
+-- matches, None otherwise.  Layer 2 compound the coercion with
+-- json_get, unwrapping both the field lookup and the type match
+-- in a single call.
+-- ================================================================
+-- test_json_as_string_match
+-- JString("hi") → Some("hi") of length 2.
+-- ================================================================
+public fn test_json_as_string_match(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 2)
+  effects(pure)
+{
+  match json_as_string(JString("hi")) {
+    Some(@String) -> string_length(@String.0),
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_as_string_mismatch
+-- JNumber(1.0) → None (type doesn't match).
+-- ================================================================
+public fn test_json_as_string_mismatch(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match json_as_string(JNumber(1.0)) {
+    Some(@String) -> 0,
+    None -> 1
+  }
+}
+
+-- ================================================================
+-- test_json_as_bool_match
+-- JBool(true) → Some(true).
+-- ================================================================
+public fn test_json_as_bool_match(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match json_as_bool(JBool(true)) {
+    Some(@Bool) -> if @Bool.0 then { 1 } else { 0 },
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_as_int_match
+-- JNumber(42.7) → Some(42) — truncates toward zero.
+-- ================================================================
+public fn test_json_as_int_match(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  match json_as_int(JNumber(42.7)) {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_as_int_nan
+-- JNumber(NaN) → None — json_as_int guards against trap.
+-- ================================================================
+public fn test_json_as_int_nan(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  -- 0.0 / 0.0 is NaN
+  match json_as_int(JNumber(0.0 / 0.0)) {
+    Some(@Int) -> 0,
+    None -> 1
+  }
+}
+
+-- ================================================================
+-- test_json_as_array
+-- JArray([JNumber(1), JNumber(2), JNumber(3)]) → Some(len 3).
+-- ================================================================
+public fn test_json_as_array(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  let @Json = JArray([JNumber(1.0), JNumber(2.0), JNumber(3.0)]);
+  match json_as_array(@Json.0) {
+    Some(@Array<Json>) -> nat_to_int(array_length(@Array<Json>.0)),
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_as_number_match
+-- JNumber(3.14) → Some(3.14).
+-- ================================================================
+public fn test_json_as_number_match(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match json_as_number(JNumber(3.14)) {
+    Some(@Float64) -> if @Float64.0 > 3.0 && @Float64.0 < 4.0 then { 1 } else { 0 },
+    None -> 0
+  }
+}
+
+-- ================================================================
+-- test_json_get_string
+-- {"name":"Alice"} → json_get_string "name" → Some("Alice").
+-- ================================================================
+public fn test_json_get_string(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 5)
+  effects(pure)
+{
+  match json_parse("{\"name\":\"Alice\"}") {
+    Err(@String) -> 0,
+    Ok(@Json) -> match json_get_string(@Json.0, "name") { Some(@String) -> string_length(@String.0), None -> 0 }
+  }
+}
+
+-- ================================================================
+-- test_json_get_int
+-- {"age":30} → json_get_int "age" → Some(30).
+-- ================================================================
+public fn test_json_get_int(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 30)
+  effects(pure)
+{
+  match json_parse("{\"age\":30}") {
+    Err(@String) -> 0,
+    Ok(@Json) -> match json_get_int(@Json.0, "age") { Some(@Int) -> @Int.0, None -> 0 }
+  }
+}
+
+-- ================================================================
+-- test_json_get_bool
+-- {"active":true} → json_get_bool "active" → Some(true).
+-- ================================================================
+public fn test_json_get_bool(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match json_parse("{\"active\":true}") {
+    Err(@String) -> 0,
+    Ok(@Json) -> match json_get_bool(@Json.0, "active") { Some(@Bool) -> if @Bool.0 then { 1 } else { 0 }, None -> 0 }
+  }
+}
+
+-- ================================================================
+-- test_json_get_missing_field
+-- Missing field → None regardless of typed accessor used.
+-- ================================================================
+public fn test_json_get_missing_field(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match json_parse("{\"name\":\"Alice\"}") {
+    Err(@String) -> 0,
+    Ok(@Json) -> match json_get_int(@Json.0, "nonexistent") { Some(@Int) -> 0, None -> 1 }
+  }
+}
+
+-- ================================================================
+-- test_json_get_wrong_type
+-- {"name":"Alice"} + json_get_int "name" → None (string is not int).
+-- ================================================================
+public fn test_json_get_wrong_type(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match json_parse("{\"name\":\"Alice\"}") {
+    Err(@String) -> 0,
+    Ok(@Json) -> match json_get_int(@Json.0, "name") { Some(@Int) -> 0, None -> 1 }
+  }
+}
+
+-- ================================================================
+-- test_json_get_array_length
+-- {"tags":[1,2,3]} + json_get_array "tags" → Some(len 3).
+-- ================================================================
+public fn test_json_get_array_length(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 3)
+  effects(pure)
+{
+  match json_parse("{\"tags\":[1,2,3]}") {
+    Err(@String) -> 0,
+    Ok(@Json) -> match json_get_array(@Json.0, "tags") { Some(@Array<Json>) -> nat_to_int(array_length(@Array<Json>.0)), None -> 0 }
+  }
+}
+
+-- ================================================================
+-- test_json_as_object
+-- JObject({...}) → Some(map); other constructors → None.
+-- ================================================================
+public fn test_json_as_object(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match json_parse("{\"k\":1}") {
+    Err(@String) -> 0,
+    Ok(@Json) -> match json_as_object(@Json.0) { Some(@Map<String, Json>) -> 1, None -> 0 }
+  }
+}
+
+-- ================================================================
+-- test_json_get_number_float
+-- {"score":3.14} + json_get_number "score" → Some(3.14).
+-- ================================================================
+public fn test_json_get_number_float(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match json_parse("{\"score\":3.14}") {
+    Err(@String) -> 0,
+    Ok(@Json) -> match json_get_number(@Json.0, "score") { Some(@Float64) -> if @Float64.0 > 3.0 && @Float64.0 < 4.0 then { 1 } else { 0 }, None -> 0 }
+  }
+}

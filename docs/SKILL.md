@@ -561,7 +561,7 @@ All built-in functions follow predictable naming patterns. When guessing a funct
 | `domain_is_predicate` | Boolean predicates | `float_is_nan`, `float_is_infinite` |
 | Prefix-less | Math universals and float constants only | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, `nan`, `infinity` |
 
-**String operations always use `string_` prefix** — `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`, `string_chars`, `string_lines`, `string_words`, `string_reverse`, `string_trim_start`, `string_trim_end`, `string_pad_start`, `string_pad_end`. **Character classifiers use `is_` prefix** — `is_digit`, `is_alpha`, `is_alphanumeric`, `is_whitespace`, `is_upper`, `is_lower`. **First-character conversion uses `char_` prefix** — `char_to_upper`, `char_to_lower`. **Float64 predicates use `float_` prefix** — `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`** — `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) and float constants (`nan`, `infinity`) are the **only** exceptions — they need no prefix because they are universally understood mathematical names.
+**String operations always use `string_` prefix** — `string_contains`, `string_starts_with`, `string_split`, `string_join`, `string_strip`, `string_upper`, `string_lower`, `string_replace`, `string_index_of`, `string_char_code`, `string_from_char_code`, `string_chars`, `string_lines`, `string_words`, `string_reverse`, `string_trim_start`, `string_trim_end`, `string_pad_start`, `string_pad_end`. **Character classifiers use `is_` prefix** — `is_digit`, `is_alpha`, `is_alphanumeric`, `is_whitespace`, `is_upper`, `is_lower`. **First-character conversion uses `char_` prefix** — `char_to_upper`, `char_to_lower`. **JSON typed accessors use `json_as_` and `json_get_` prefixes** — `json_as_string`/`number`/`bool`/`int`/`array`/`object` for Layer-1 coercions; `json_get_string`/`number`/`bool`/`int`/`array` for Layer-2 compound field accessors. **Float64 predicates use `float_` prefix** — `float_is_nan`, `float_is_infinite`. **Type conversions use `source_to_target`** — `int_to_float` (not `to_float`), `float_to_int`, `int_to_nat`. Math functions (`abs`, `min`, `max`, etc.) and float constants (`nan`, `infinity`) are the **only** exceptions — they need no prefix because they are universally understood mathematical names.
 
 **If `vera check` reports an unresolved function name, apply these patterns to derive the correct name before giving up.** The convention is strict and consistent — the right name is always derivable. Do not invent names that don't follow the pattern; they will not exist.
 
@@ -703,6 +703,39 @@ match json_parse("{\"x\":42}") {
       JNumber(@Float64) -> Ok(float_to_int(@Float64.0)),
       _ -> Err("x is not a number")
     }
+  }
+}
+```
+
+#### Typed accessors (Layer 1 and Layer 2)
+
+For the common case of "unwrap `Option<Json>` and match on a specific constructor", use the typed accessors instead of the two-level match above:
+
+```vera
+-- Layer 1: Json -> Option<T>.  Some when the constructor matches.
+json_as_string(@Json.0)   -- Option<String>
+json_as_number(@Json.0)   -- Option<Float64>
+json_as_bool(@Json.0)     -- Option<Bool>
+json_as_int(@Json.0)      -- Option<Int>     (truncates; None for NaN/inf)
+json_as_array(@Json.0)    -- Option<Array<Json>>
+json_as_object(@Json.0)   -- Option<Map<String, Json>>
+
+-- Layer 2: json_get + json_as_* composed (the common pattern).
+json_get_string(@Json.0, "name")   -- Option<String>
+json_get_number(@Json.0, "score")  -- Option<Float64>
+json_get_bool(@Json.0, "active")   -- Option<Bool>
+json_get_int(@Json.0, "age")       -- Option<Int>
+json_get_array(@Json.0, "tags")    -- Option<Array<Json>>
+```
+
+The Layer-2 accessors return `None` both when the field is missing AND when the field is present but of the wrong type — exactly what 90% of real API-consuming code wants. The example above collapses to:
+
+```vera
+match json_parse("{\"x\":42}") {
+  Err(@String) -> Err(@String.0),
+  Ok(@Json) -> match json_get_int(@Json.0, "x") {
+    Some(@Int) -> Ok(@Int.0),
+    None -> Err("x missing or not a number")
   }
 }
 ```
@@ -2021,7 +2054,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 79 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 80 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
