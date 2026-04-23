@@ -365,6 +365,22 @@ Fn(Int -> Int) effects(pure)              -- function type
 { @Int | @Int.0 > 0 }                   -- refinement type
 ```
 
+### Array literals
+
+Write `[1, 2, 3]` for a populated array and `[]` for an empty one. The element type is inferred from the elements when present, and from the surrounding type annotation when the literal is empty:
+
+```vera
+let @Array<Int> = [1, 2, 3];              -- populated: elements determine type
+let @Array<Bool> = [true, false];          -- populated, any element type
+let @Array<Int> = [];                      -- empty: annotation determines type
+let @Array<Array<Int>> = [[1, 2], [3, 4]]; -- nested arrays
+let @Array<Json> = [JNumber(1.0), JNull];   -- ADT elements
+```
+
+Empty arrays **must** appear in a position with a known type — a `let` binding with a type annotation, a function argument whose parameter type is known, or the branch of a match arm whose type is fixed by another arm. An empty literal with no surrounding type context is a type error. When the element type is polymorphic in the context (e.g. returning `Array<T>` from a `forall<T>` function body), annotate the `let` or thread through a concrete instantiation.
+
+`[` and `]` are context-disambiguated: in expression position (`let @Array<Int> = []`) they delimit an array literal; in postfix position (`@Array<Int>.0[@Int.0]`) they are the index operator — see the operator precedence table at the bottom of this file. The parser resolves the two by lookahead; there is no ambiguity you need to work around.
+
 ### Type aliases
 
 ```vera
@@ -547,6 +563,61 @@ Here `@Nat.0` is the counter (De Bruijn index 0 = most recent, i.e. the second p
 Call with the limit first and counter second: `loop(100, 1)`.
 
 For pure recursive functions that need termination proofs, add a `decreases` clause (see [Recursion](#recursion)). Effectful recursive functions like the loop above do not require `decreases`.
+
+## Closures and captured bindings
+
+Anonymous functions are written `fn(@ParamType1, @ParamType2 -> @ReturnType) effects(effect_row) { body_expression }`. They are first-class values and can be passed to higher-order built-ins (`array_map`, `array_filter`, `array_fold`, `array_any`, `array_find`, `array_sort_by`, …) or stored in `let` bindings.
+
+```vera
+let @Array<Int> = [1, 2, 3, 4, 5];
+let @Array<Int> = array_map(
+  @Array<Int>.0,
+  fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }
+);
+-- Result: [2, 4, 6, 8, 10]
+```
+
+Inside the closure body, `@Int.0` is the closure's own parameter (index 0 = most recent binding). This matches how slot indices work in top-level `fn` declarations.
+
+### Capturing outer bindings
+
+**Closures capture their enclosing scope's bindings.** Inside the closure body, outer bindings are available at higher De Bruijn indices — the closure's own parameters are pushed on top of the slot stack, so outer `@T` bindings shift up by the number of inner `@T` parameters.
+
+```vera
+public fn sum_plus_offset(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 100;                      -- outer binding: @Int.0 = 100
+  let @Array<Int> = [1, 2, 3];
+  array_fold(
+    @Array<Int>.0,
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      -- Inside this closure body, two @Int params are in scope:
+      --   @Int.0 = element (most recent, the iterator's current value)
+      --   @Int.1 = accumulator
+      --   @Int.2 = outer `let @Int = 100`  (captured!)
+      @Int.1 + @Int.0 + @Int.2
+    }
+  )
+}
+-- (0 + 1 + 100) + 2 + 100) + 3 + 100 = 306
+```
+
+The rule: count the closure's own `@T` parameters, and the outermost captured `@T` binding sits at that index. A closure with no `@Int` parameters of its own would see the outer `let @Int` as `@Int.0`; a closure with two `@Int` parameters sees it as `@Int.2`. Types are independent — a closure's `@Int` parameter does not shift outer `@String` bindings.
+
+Use `vera check --explain-slots file.vera` if you need the resolved index table printed for a specific function (including closures).
+
+### When to use recursion instead
+
+Closures cover pure, self-contained transformations and simple captured constants. Prefer a top-level recursive function when any of these hold:
+
+- The body needs an effect row other than `pure` that doesn't match the combinator's expected effect signature.
+- The body needs to early-return or short-circuit in a way the combinator doesn't provide (`array_find` / `array_any` / `array_all` short-circuit; `array_map` / `array_fold` do not).
+- The iteration shape isn't one-pass left-to-right (e.g. you need to look ahead, or process in reverse while mutating a different data structure).
+- Termination requires a `decreases` clause that proves non-trivial progress — closures cannot carry `decreases`.
+
+For counted iteration with IO, use the recursive `loop` pattern from the Iteration section above; for array transformations, use the array combinators with closures.
 
 ## Built-in Functions
 
