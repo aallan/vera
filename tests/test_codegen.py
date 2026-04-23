@@ -12296,9 +12296,12 @@ class TestJsonTypedAccessors:
     functions (no new WASM translators).  Six Layer-1 type-coercion
     accessors (Json → Option<T>) and five Layer-2 compound field
     accessors (Json, String → Option<T> = json_get + json_as_T
-    composed).  ``json_as_int`` specifically guards against the
-    ``float_to_int`` trap on NaN/Infinity via ``float_is_nan`` /
-    ``float_is_infinite``.
+    composed).  ``json_as_int`` specifically guards against all four
+    ``float_to_int`` (i.e. ``i64.trunc_f64_s``) trap paths — NaN,
+    +infinity, -infinity, and finite overflow (|f| >= 2^63) — via
+    ``float_is_nan`` / ``float_is_infinite`` plus explicit bounds
+    checks against ±9223372036854775808.0, returning ``None`` for
+    every non-representable-as-Int input.
     """
 
     # ----- Layer 1: json_as_* -----
@@ -12460,6 +12463,53 @@ public fn main(-> @Int)
 {
   -- -2^64 is well outside i64 range.
   match json_as_int(JNumber(0.0 - 18446744073709551616.0)) {
+    Some(@Int) -> 0,
+    None -> 1
+  }
+}
+"""
+        assert _run(src) == 1
+
+    def test_json_as_int_boundary_minus_2_63_is_representable(self) -> None:
+        """JNumber(-2^63) → Some(INT64_MIN).
+
+        The i64 range is closed on the low end (``[-2^63, 2^63)``):
+        ``-2^63 = -9223372036854775808`` IS a valid Int.  This test
+        pins that the guard uses a strict ``f < -2^63`` comparison,
+        not ``f <= -2^63`` — off-by-one here would reject a valid
+        value.  Mirror the positive side's existing ``f = 2^63``
+        test which IS out of range (upper end is exclusive).
+        """
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_int(JNumber(0.0 - 9223372036854775808.0)) {
+    Some(@Int) -> 1,
+    None -> 0
+  }
+}
+"""
+        # Exactly representable — expect Some(INT64_MIN), so we see 1.
+        assert _run(src) == 1
+
+    def test_json_as_int_boundary_just_below_minus_2_63(self) -> None:
+        """The Float64 value strictly below -2^63 must return None.
+
+        Float64 precision at magnitude ~2^63 has ulp = 2^(63-52) =
+        2048, so the next representable double below -2^63 is
+        -2^63 - 2048 = -9223372036854777856.0.  A literal like
+        -9223372036854776832.0 (= -2^63 - 1024) is *not*
+        representable: it's exactly halfway between -2^63 and the
+        next-lower double, and round-to-nearest-even rounds it back
+        to -2^63.  Using the true next-lower value pins the guard's
+        strict-less-than behaviour at the boundary.
+        """
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match json_as_int(JNumber(0.0 - 9223372036854777856.0)) {
     Some(@Int) -> 0,
     None -> 1
   }

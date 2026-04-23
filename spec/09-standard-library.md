@@ -1812,7 +1812,7 @@ is_whitespace("\t")  -- true
 
 Vera provides eleven additional JSON accessor functions that eliminate the two-level pattern-match boilerplate (`match option ... { Some(@Json) -> match @Json.0 { JNumber(@Float64) -> ... } }`) that every JSON API consumer would otherwise write. Tracked in [#366](https://github.com/aallan/vera/issues/366).
 
-Unlike the rest of the chapter-9 built-ins, these are **pure-Vera prelude functions**, not WASM translators. The compiler injects them into every module that references `Json` values, alongside the existing `json_get` / `json_keys` / `json_type` combinators. No new host imports; no new WASM emit.
+Unlike the rest of the chapter-9 built-ins, these are **pure-Vera prelude functions**, not WASM translators. The compiler injects them into every module that references `Json` values, alongside the existing `json_get` / `json_keys` / `json_type` combinators. No new host imports and no dedicated WASM translator paths — but the accessors are still compiled as ordinary WASM functions (via the standard AST-to-WAT pipeline) whenever a module actually references them. A module that never calls any of the eleven accessors pays zero compiled-WASM cost for them.
 
 #### Layer 1 — type-coercion accessors
 

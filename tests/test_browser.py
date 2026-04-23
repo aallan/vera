@@ -1323,6 +1323,32 @@ public fn main(-> @Unit)
     None -> IO.print("none")
   };
   IO.print(",");
+  -- json_as_int on +2^63 (finite overflow; i64 upper bound is
+  -- exclusive) returns None
+  match json_as_int(JNumber(9223372036854775808.0)) {
+    Some(@Int) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_int on -2^63 (i64 lower bound is inclusive) returns
+  -- Some(INT64_MIN).  Note the asymmetry: upper bound exclusive,
+  -- lower bound inclusive, matching WASM's i64 range.  We don't
+  -- print @Int.0 directly because int_to_string(INT64_MIN) hits a
+  -- pre-existing bug (pending fix in #475): the negation of
+  -- INT64_MIN overflows i64.  Use `@Int.0 < 0` to probe the value
+  -- without triggering the bug.
+  match json_as_int(JNumber(0.0 - 9223372036854775808.0)) {
+    Some(@Int) -> IO.print(bool_to_string(@Int.0 < 0)),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_int on strictly below -2^63 returns None.  Next
+  -- representable Float64 below -2^63 is -2^63 - 2048.
+  match json_as_int(JNumber(0.0 - 9223372036854777856.0)) {
+    Some(@Int) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
   -- json_as_array matches JArray
   match json_as_array(JArray([JNumber(1.0), JNumber(2.0)])) {
     Some(@Array<Json>) -> IO.print(int_to_string(nat_to_int(array_length(@Array<Json>.0)))),
@@ -1342,7 +1368,14 @@ public fn main(-> @Unit)
 '''
         wasm_path, _ = _compile_vera(source, tmp_path)
         node = _run_node(wasm_path)
-        assert node["stdout"] == "hi,none,3.14,true,42,none,none,none,2,obj"
+        assert node["stdout"] == (
+            # hi, none (mismatch), 3.14, true, 42, none (NaN),
+            # none (+inf), none (-inf), none (+2^63), true
+            # (Some branch taken for -2^63, and the value is
+            # negative), none (below -2^63), 2 (array length), obj.
+            "hi,none,3.14,true,42,none,none,none,none,"
+            "true,none,2,obj"
+        )
 
     def test_layer2_compound_accessors(self, tmp_path: Path) -> None:
         """Layer-2: every json_get_* accessor against a parsed object."""

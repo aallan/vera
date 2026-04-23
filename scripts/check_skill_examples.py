@@ -120,12 +120,13 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     1867: ("FRAGMENT", "Wrong: non-exhaustive match (missing None)"),
     1845: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
 
-    # Import syntax — intentionally unsupported.  The "import aliasing"
-    # and "import hiding" blocks are at four distinct line numbers
-    # (1878 / 1893), not duplicated at 1845 / 1893 as the ALLOWLIST
-    # originally claimed — that was a stale-dict-key issue that
-    # silently shadowed two of the four entries.  The four blocks
-    # are now allowlisted at their actual fence line numbers.
+    # Import syntax — intentionally unsupported.  The four match/import
+    # Common-Mistakes blocks live at four distinct line numbers (1845,
+    # 1878, 1883, 1893) in the current SKILL.md, each with its own
+    # explicit entry here.  Prior versions of the ALLOWLIST mis-used
+    # the same key (1845, 1893) for two different blocks each, which
+    # silently shadowed half the entries via dict last-write-wins.
+    # Fixed in PR #511 after CR caught the duplicate-key pattern.
     1878: ("FRAGMENT", "Wrong: import aliasing not supported"),
     1883: ("FRAGMENT", "Correct: import syntax example"),
     1893: ("FRAGMENT", "Wrong: import hiding not supported"),
