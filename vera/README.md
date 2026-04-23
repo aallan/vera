@@ -91,7 +91,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `resolver.py` | 213 | Resolve | Module path resolution, parse cache | `ModuleResolver` |
 | `smt.py` | 1,026 | Verify | Z3 translation layer | `SmtContext`, `SlotEnv` |
 | `verifier.py` | 1,005 | Verify | Contract verification | `verify()` |
-| `wasm/` | 16,608 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
+| `wasm/` | 16,521 | Compile | WASM translation layer (package) | `WasmContext`, `WasmSlotEnv`, `StringPool` |
 | ` ├ context.py` | 468 | | Composed WasmContext, expression dispatcher, block translation | |
 | ` ├ helpers.py` | 296 | | WasmSlotEnv, StringPool, type mapping, array element helpers | |
 | ` ├ inference.py` | 1,055 | | Type inference, slot/type utilities, operator tables | |
@@ -104,7 +104,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ calls_markup.py` | 315 | | JSON, HTML, Markdown, Regex, async/await (host-import wrappers) | |
 | ` ├ calls_math.py` | 457 | | `abs`, `min`, `max`, `floor`, `ceil`, `round`, `sqrt`, `pow`, Float64 predicates, numeric conversions | |
 | ` ├ calls_parsing.py` | 970 | | `parse_nat` / `parse_int` / `parse_bool` / `parse_float64` state machines | |
-| ` ├ calls_strings.py` | 3,977 | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions | |
+| ` ├ calls_strings.py` | 3,890 | | All string ops (length, concat, slice, search, transform, split, join, chars/lines/words, reverse, trim_start/end, pad_start/end, char_to_upper/lower, classifiers) + to-string conversions; `_translate_strip` delegates to the trim helper to keep the whitespace predicate consistent | |
 | ` ├ closures.py` | 254 | | Closures, anonymous functions, free variable analysis | |
 | ` ├ data.py` | 739 | | Constructors, match expressions (incl. nested patterns), arrays, indexing | |
 | ` ├ markdown.py` | 537 | | WASM memory marshalling for MdInline/MdBlock ADTs | |

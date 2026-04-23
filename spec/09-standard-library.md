@@ -1704,7 +1704,7 @@ string_words("  foo  bar ")   -- ["foo", "bar"]
 string_words("   ")           -- []
 ```
 
-All three return a fresh `@Array<String>` whose elements share a single backing data buffer for cache locality.
+All three return a fresh `@Array<String>` whose elements are each independently allocated and copied. (The implementation does not share a backing buffer between elements: the GC mark phase rejects interior pointers — see `_emit_gc_collect` in `vera/codegen/assembly.py` — so a shared-buffer scheme cannot keep the elements rooted across a collection triggered after the function returns.)
 
 #### String transformations
 

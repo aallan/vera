@@ -11937,14 +11937,26 @@ public fn main(-> @Unit)
 """
         assert _run_io(src) == ""
 
+    def test_char_to_lower_empty(self) -> None:
+        """Empty string passes through (mirror of char_to_upper)."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(char_to_lower("")) }
+"""
+        assert _run_io(src) == ""
+
 
 class TestStringUtilities:
     """#470 — string_chars, lines, words, pad_start, pad_end, reverse,
     trim_start, trim_end.
 
-    All inline WAT; the Array<String>-returning ones (chars, lines,
-    words) use a shared-data-buffer pattern (copy once, point outer
-    array slots into the shared buffer).
+    All inline WAT.  The Array<String>-returning ones (chars, lines,
+    words) allocate each slice independently via ``$alloc`` rather
+    than slicing into a shared backing buffer; the GC mark phase
+    rejects interior pointers, so per-slice allocation is required
+    for elements to stay reachable across collections triggered
+    after the function returns.
     """
 
     def test_string_reverse(self) -> None:
@@ -11982,6 +11994,28 @@ public fn main(-> @Unit)
 { IO.print(string_trim_end("  hi  ")) }
 """
         assert _run_io(src) == "  hi"
+
+    def test_string_trim_vt_ff_full_set(self) -> None:
+        """Full Python isspace() ASCII set is recognised by both trim
+        ends — exercises the same predicate _translate_trim shares
+        with is_whitespace and string_strip.  VT (0x0B) and FF (0x0C)
+        are spelled with unicode escapes since Vera's lexer doesn't
+        recognise \\v / \\f as simple escapes.
+        """
+        # trim_start drops " \t\n\v\f\r" prefix; trim_end keeps only
+        # the leading whitespace.
+        src_start = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_trim_start(" \\t\\n\\u{0B}\\u{0C}\\rhi ")) }
+"""
+        assert _run_io(src_start) == "hi "
+        src_end = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_trim_end(" hi \\t\\n\\u{0B}\\u{0C}\\r")) }
+"""
+        assert _run_io(src_end) == " hi"
 
     def test_string_trim_all_whitespace(self) -> None:
         """A string of only whitespace → empty (either variant).
@@ -12039,12 +12073,30 @@ public fn main(-> @Unit)
 """
         assert _run_io(src) == "hello"
 
+    def test_string_pad_end_no_change_when_longer(self) -> None:
+        """Mirror: pad_end also returns input unchanged when too long."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_pad_end("hello", 3, "*")) }
+"""
+        assert _run_io(src) == "hello"
+
     def test_string_pad_empty_fill(self) -> None:
         """Empty fill string: no pad, input returned."""
         src = """\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 { IO.print(string_pad_start("x", 5, "")) }
+"""
+        assert _run_io(src) == "x"
+
+    def test_string_pad_end_empty_fill(self) -> None:
+        """Mirror: pad_end with empty fill is a no-op too."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_pad_end("x", 5, "")) }
 """
         assert _run_io(src) == "x"
 
@@ -12208,6 +12260,24 @@ public fn main(-> @Int)
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 { nat_to_int(array_length(string_words("   \\t\\n  "))) }
+"""
+        assert _run(src) == 0
+
+    def test_string_words_vt_ff_separators(self) -> None:
+        """VT (0x0B) and FF (0x0C) act as word separators too."""
+        src = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{ IO.print(string_join(string_words(" \\u{0B}foo\\u{0C}bar "), "|")) }
+"""
+        assert _run_io(src) == "foo|bar"
+
+    def test_string_words_only_vt_ff(self) -> None:
+        """All VT/FF input → empty array (matches Python str.split())."""
+        src = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ nat_to_int(array_length(string_words(" \\u{0B}\\u{0C} "))) }
 """
         assert _run(src) == 0
 

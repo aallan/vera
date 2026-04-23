@@ -933,161 +933,20 @@ class CallsStringsMixin:
     ) -> list[str] | None:
         """Translate strip(s) → String (i32_pair).
 
-        Trims leading and trailing ASCII whitespace (space, tab, CR, LF).
-        Allocates a new buffer and copies the trimmed content to avoid
-        returning an interior pointer (which conservative GC cannot track).
+        ``string_strip(s)`` is exactly the composition of
+        ``string_trim_start`` and ``string_trim_end``, so this
+        delegates to ``_translate_trim`` with both flags set.
+        Routing through one shared implementation guarantees the
+        whitespace predicate (Python's ``str.isspace()`` ASCII set —
+        tab(9), LF(10), VT(11), FF(12), CR(13), space(32)) stays in
+        sync between strip and the two one-sided trim functions.
+        Previously this method open-coded a narrower set
+        ({tab, LF, CR, space}) that diverged from ``_translate_trim``
+        once VT/FF were added in the #470 series.  Allocates a new
+        buffer and copies the trimmed content (so no interior
+        pointer is returned).
         """
-        arg_instrs = self.translate_expr(arg, env)
-        if arg_instrs is None:
-            return None
-
-        self.needs_alloc = True
-
-        ptr = self.alloc_local("i32")
-        slen = self.alloc_local("i32")
-        start = self.alloc_local("i32")
-        end = self.alloc_local("i32")
-        byte = self.alloc_local("i32")
-        new_len = self.alloc_local("i32")
-        dst = self.alloc_local("i32")
-        idx = self.alloc_local("i32")
-
-        instructions: list[str] = []
-
-        # Evaluate string -> (ptr, len)
-        instructions.extend(arg_instrs)
-        instructions.append(f"local.set {slen}")
-        instructions.append(f"local.set {ptr}")
-
-        # start = 0
-        instructions.append("i32.const 0")
-        instructions.append(f"local.set {start}")
-
-        # Scan forward: skip leading whitespace
-        instructions.append("block $brk_lw")
-        instructions.append("  loop $lp_lw")
-        instructions.append(f"    local.get {start}")
-        instructions.append(f"    local.get {slen}")
-        instructions.append("    i32.ge_u")
-        instructions.append("    br_if $brk_lw")
-        instructions.append(f"    local.get {ptr}")
-        instructions.append(f"    local.get {start}")
-        instructions.append("    i32.add")
-        instructions.append("    i32.load8_u offset=0")
-        instructions.append(f"    local.set {byte}")
-        # Check if whitespace: space(32), tab(9), CR(13), LF(10)
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 32")
-        instructions.append("    i32.eq")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 9")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 10")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 13")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append("    i32.eqz")
-        instructions.append("    br_if $brk_lw")
-        instructions.append(f"    local.get {start}")
-        instructions.append("    i32.const 1")
-        instructions.append("    i32.add")
-        instructions.append(f"    local.set {start}")
-        instructions.append("    br $lp_lw")
-        instructions.append("  end")
-        instructions.append("end")
-
-        # end = len
-        instructions.append(f"local.get {slen}")
-        instructions.append(f"local.set {end}")
-
-        # Scan backward: skip trailing whitespace
-        instructions.append("block $brk_tw")
-        instructions.append("  loop $lp_tw")
-        instructions.append(f"    local.get {end}")
-        instructions.append(f"    local.get {start}")
-        instructions.append("    i32.le_u")
-        instructions.append("    br_if $brk_tw")
-        instructions.append(f"    local.get {ptr}")
-        instructions.append(f"    local.get {end}")
-        instructions.append("    i32.const 1")
-        instructions.append("    i32.sub")
-        instructions.append("    i32.add")
-        instructions.append("    i32.load8_u offset=0")
-        instructions.append(f"    local.set {byte}")
-        # Check if whitespace
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 32")
-        instructions.append("    i32.eq")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 9")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 10")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 13")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append("    i32.eqz")
-        instructions.append("    br_if $brk_tw")
-        instructions.append(f"    local.get {end}")
-        instructions.append("    i32.const 1")
-        instructions.append("    i32.sub")
-        instructions.append(f"    local.set {end}")
-        instructions.append("    br $lp_tw")
-        instructions.append("  end")
-        instructions.append("end")
-
-        # new_len = end - start
-        instructions.append(f"local.get {end}")
-        instructions.append(f"local.get {start}")
-        instructions.append("i32.sub")
-        instructions.append(f"local.set {new_len}")
-
-        # Allocate new buffer and copy trimmed content
-        instructions.append(f"local.get {new_len}")
-        instructions.append("call $alloc")
-        instructions.append(f"local.set {dst}")
-        instructions.extend(gc_shadow_push(dst))
-
-        # Copy loop: dst[i] = ptr[start + i] for i in 0..new_len
-        instructions.append("i32.const 0")
-        instructions.append(f"local.set {idx}")
-        instructions.append("block $brk_st")
-        instructions.append("loop $lp_st")
-        instructions.append(f"  local.get {idx}")
-        instructions.append(f"  local.get {new_len}")
-        instructions.append("  i32.ge_u")
-        instructions.append("  br_if $brk_st")
-        instructions.append(f"  local.get {dst}")
-        instructions.append(f"  local.get {idx}")
-        instructions.append("  i32.add")
-        instructions.append(f"  local.get {ptr}")
-        instructions.append(f"  local.get {start}")
-        instructions.append("  i32.add")
-        instructions.append(f"  local.get {idx}")
-        instructions.append("  i32.add")
-        instructions.append("  i32.load8_u offset=0")
-        instructions.append("  i32.store8 offset=0")
-        instructions.append(f"  local.get {idx}")
-        instructions.append("  i32.const 1")
-        instructions.append("  i32.add")
-        instructions.append(f"  local.set {idx}")
-        instructions.append("  br $lp_st")
-        instructions.append("end")
-        instructions.append("end")
-
-        # Result: (dst, new_len)
-        instructions.append(f"local.get {dst}")
-        instructions.append(f"local.get {new_len}")
-        return instructions
+        return self._translate_trim(arg, env, trim_start=True, trim_end=True)
 
     # -----------------------------------------------------------------
     # String search builtins
@@ -3356,17 +3215,29 @@ class CallsStringsMixin:
     # #470 — Array<String>-returning splits: string_chars, string_lines,
     # string_words.
     #
-    # Shared shape: allocate one "data" buffer (a copy of s), allocate
-    # one "outer" buffer of count * 8 bytes, then walk s populating
-    # outer[k] = (data_ptr + start_k, end_k - start_k).  All slices
-    # share the single data buffer so the memory cost is O(slen) for
-    # the data plus O(count) for the outer — not O(slen + count*slen).
+    # Shared shape: allocate one "outer" buffer of count * 8 bytes,
+    # then walk s and for each segment k allocate a fresh slice
+    # buffer, copy the bytes into it, and store
+    # outer[k] = (slice_ptr_k, len_k).
+    #
+    # Per-slice allocation (rather than slicing into a single shared
+    # data buffer) is required for GC correctness: the mark phase
+    # rejects interior pointers via the alignment check
+    # ``(val - gc_heap_start) % 8 == 4`` in ``_emit_gc_collect``
+    # (vera/codegen/assembly.py), so a ``shared_buf + offset``
+    # element cannot keep the underlying buffer alive across a
+    # collection triggered after this function returns.  Memory cost
+    # is O(slen + count) — same as a shared-buffer scheme, since the
+    # bytes are copied exactly once total — at the price of one
+    # ``$alloc`` per segment instead of one ``$alloc`` overall.
     #
     # Each function differs only in: (a) how it counts segments in
     # the first pass, and (b) how it advances through the data in
-    # the second pass.  A shared helper would abstract the allocation
-    # / outer-write mechanics but the per-function pass bodies are
-    # simple enough inlined.
+    # the second pass.  ``_translate_structural_split`` (used by
+    # string_lines and string_words) factors out the per-slice
+    # alloc+copy+store via a closure ``_emit_slice``;
+    # ``_translate_string_chars`` inlines the same shape because its
+    # 1-byte slices don't need a copy loop.
     # ==================================================================
 
     def _translate_string_chars(
@@ -3599,7 +3470,8 @@ class CallsStringsMixin:
         ins.append(f"local.set {ptr_s}")
         ins.extend(gc_shadow_push(ptr_s))
 
-        # data = $alloc(slen); copy s -> data (shared buffer for slices)
+        # data = $alloc(slen); copy s -> data (stable byte-source kept
+        # rooted on the shadow stack while we emit per-slice copies)
         ins.append(f"local.get {slen}")
         ins.append("call $alloc")
         ins.append(f"local.set {data}")

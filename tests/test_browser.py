@@ -1003,7 +1003,12 @@ public fn main(-> @Unit)
         assert node["stdout"] == "olleh,"
 
     def test_string_trim(self, tmp_path: Path) -> None:
-        """trim_start keeps trailing spaces; trim_end keeps leading spaces."""
+        """trim_start keeps trailing spaces; trim_end keeps leading
+        spaces.  Also exercises VT (\\u{0B}) and FF (\\u{0C}) at both
+        ends — the new whitespace predicate (Python's str.isspace()
+        ASCII set) must treat them as whitespace identically across
+        the Python and browser runtimes.
+        """
         source = '''\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -1011,15 +1016,22 @@ public fn main(-> @Unit)
   IO.print(string_trim_start("  hi  "));
   IO.print("|");
   IO.print(string_trim_end("  hi  "));
+  IO.print("|");
+  -- VT/FF mixed in with regular whitespace.
+  IO.print(string_trim_start(" \\u{0B}\\u{0C}hi  "));
+  IO.print("|");
+  IO.print(string_trim_end("  hi\\u{0B}\\u{0C} "));
   IO.print("|")
 }
 '''
         wasm_path, _ = _compile_vera(source, tmp_path)
         node = _run_node(wasm_path)
-        assert node["stdout"] == "hi  |  hi|"
+        assert node["stdout"] == "hi  |  hi|hi  |  hi|"
 
     def test_string_pad(self, tmp_path: Path) -> None:
-        """pad_start/pad_end cycle the fill; pad of longer string is a no-op."""
+        """pad_start/pad_end cycle the fill; pad of longer string is
+        a no-op; empty fill is a no-op (cannot infinitely loop).
+        """
         source = '''\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
@@ -1030,16 +1042,23 @@ public fn main(-> @Unit)
   IO.print(",");
   IO.print(string_pad_start("x", 7, "ab"));
   IO.print(",");
-  IO.print(string_pad_start("hello", 3, "*"))
+  IO.print(string_pad_start("hello", 3, "*"));
+  IO.print(",");
+  -- empty-fill no-op: both sides should return input unchanged
+  IO.print(string_pad_start("x", 5, ""));
+  IO.print(",");
+  IO.print(string_pad_end("x", 5, ""));
+  IO.print(",");
+  IO.print(string_pad_start("hello", 10, ""))
 }
 '''
         wasm_path, _ = _compile_vera(source, tmp_path)
         node = _run_node(wasm_path)
-        # Fill cycles "ab" left-aligned → "ababab" truncated to len 6
-        # then "x" appended → "ababab" + "x" = "abababx"? No:
         # pad_start target=7, slen=1, pad_len=6; fill="ab" cycled
-        # for 6 bytes starting at pos 0: a,b,a,b,a,b → "ababab" + "x"
-        assert node["stdout"] == "0000x,x0000,abababx,hello"
+        # for 6 bytes starting at pos 0: a,b,a,b,a,b → "ababab" + "x".
+        assert node["stdout"] == (
+            "0000x,x0000,abababx,hello,x,x,hello"
+        )
 
     def test_string_chars_count(self, tmp_path: Path) -> None:
         """string_chars("abc") has length 3; empty → 0."""
@@ -1088,19 +1107,29 @@ public fn main(-> @Unit)
         assert node["stdout"] == "a|b|c,a|b|c,1"
 
     def test_string_words(self, tmp_path: Path) -> None:
-        """words splits on runs of whitespace; empty segments discarded."""
+        """words splits on runs of whitespace; empty segments
+        discarded.  Also exercises VT (\\u{0B}) and FF (\\u{0C}) as
+        word separators — they're part of Python's str.split()
+        whitespace set and the browser runtime must agree.
+        """
         source = '''\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
   IO.print(string_join(string_words("  foo  bar "), "|"));
   IO.print(",");
-  IO.print(int_to_string(nat_to_int(array_length(string_words("   ")))))
+  IO.print(int_to_string(nat_to_int(array_length(string_words("   ")))));
+  IO.print(",");
+  -- VT/FF act as separators
+  IO.print(string_join(string_words(" \\u{0B}foo\\u{0C}bar "), "|"));
+  IO.print(",");
+  -- A string of only VT/FF yields zero words
+  IO.print(int_to_string(nat_to_int(array_length(string_words(" \\u{0B}\\u{0C} ")))))
 }
 '''
         wasm_path, _ = _compile_vera(source, tmp_path)
         node = _run_node(wasm_path)
-        assert node["stdout"] == "foo|bar,0"
+        assert node["stdout"] == "foo|bar,0,foo|bar,0"
 
 
 class TestBrowserCharClassification:
