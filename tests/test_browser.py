@@ -1259,6 +1259,209 @@ public fn main(-> @Unit)
         assert node["stdout"] == "Abc,aBC,|5xyz"
 
 
+class TestBrowserJsonAccessors:
+    """Browser parity for JSON typed accessors (#366).
+
+    All eleven accessors are pure-Vera prelude functions (no new host
+    imports; `json_parse` is the only one that routes through a host
+    and already has browser parity coverage elsewhere).  These tests
+    assert the Python (wasmtime) and browser (Node.js) runtimes agree
+    on the Option<T> shape returned by each accessor.
+    """
+
+    def test_layer1_coercions(self, tmp_path: Path) -> None:
+        """Layer-1: every json_as_* accessor, matched and mismatched."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  -- json_as_string matches JString
+  match json_as_string(JString("hi")) {
+    Some(@String) -> IO.print(@String.0),
+    None -> IO.print("?")
+  };
+  IO.print(",");
+  -- mismatch on JNumber
+  match json_as_string(JNumber(1.0)) {
+    Some(@String) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_number on JNumber
+  match json_as_number(JNumber(3.14)) {
+    Some(@Float64) -> IO.print(float_to_string(@Float64.0)),
+    None -> IO.print("?")
+  };
+  IO.print(",");
+  -- json_as_bool true/false
+  match json_as_bool(JBool(true)) {
+    Some(@Bool) -> IO.print(bool_to_string(@Bool.0)),
+    None -> IO.print("?")
+  };
+  IO.print(",");
+  -- json_as_int truncates
+  match json_as_int(JNumber(42.7)) {
+    Some(@Int) -> IO.print(int_to_string(@Int.0)),
+    None -> IO.print("?")
+  };
+  IO.print(",");
+  -- json_as_int on NaN returns None
+  match json_as_int(JNumber(0.0 / 0.0)) {
+    Some(@Int) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_int on +inf returns None
+  match json_as_int(JNumber(infinity())) {
+    Some(@Int) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_int on -inf returns None
+  match json_as_int(JNumber(0.0 - infinity())) {
+    Some(@Int) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_int on +2^63 (finite overflow; i64 upper bound is
+  -- exclusive) returns None
+  match json_as_int(JNumber(9223372036854775808.0)) {
+    Some(@Int) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_int on -2^63 (i64 lower bound is inclusive) returns
+  -- Some(INT64_MIN).  Note the asymmetry: upper bound exclusive,
+  -- lower bound inclusive, matching WASM's i64 range.  Two indirect
+  -- probes pin the value to INT64_MIN without hitting #475 bug 9
+  -- (int_to_string(INT64_MIN) negation overflow):
+  --   (a) @Int.0 < 0 is true;
+  --   (b) @Int.0 + 1 prints as "-9223372036854775807", which IS
+  --       representable and serialisable without hitting the bug.
+  match json_as_int(JNumber(0.0 - 9223372036854775808.0)) {
+    Some(@Int) -> {
+      IO.print(bool_to_string(@Int.0 < 0));
+      IO.print(";");
+      IO.print(int_to_string(@Int.0 + 1))
+    },
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_int on strictly below -2^63 returns None.  Next
+  -- representable Float64 below -2^63 is -2^63 - 2048.
+  match json_as_int(JNumber(0.0 - 9223372036854777856.0)) {
+    Some(@Int) -> IO.print("!"),
+    None -> IO.print("none")
+  };
+  IO.print(",");
+  -- json_as_array matches JArray
+  match json_as_array(JArray([JNumber(1.0), JNumber(2.0)])) {
+    Some(@Array<Json>) -> IO.print(int_to_string(nat_to_int(array_length(@Array<Json>.0)))),
+    None -> IO.print("?")
+  };
+  IO.print(",");
+  -- json_as_object matches JObject (parsed so we get a real Map)
+  match json_parse("{\\"k\\":1}") {
+    Err(@String) -> IO.print("ERR"),
+    Ok(@Json) ->
+      match json_as_object(@Json.0) {
+        Some(@Map<String, Json>) -> IO.print("obj"),
+        None -> IO.print("?")
+      }
+  }
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == (
+            # hi, none (mismatch), 3.14, true, 42, none (NaN),
+            # none (+inf), none (-inf), none (+2^63),
+            # (-2^63 branch: "true;" + INT64_MIN+1 = "-9223372036854775807"),
+            # none (below -2^63), 2 (array length), obj.
+            "hi,none,3.14,true,42,none,none,none,none,"
+            "true;-9223372036854775807,none,2,obj"
+        )
+
+    def test_layer2_compound_accessors(self, tmp_path: Path) -> None:
+        """Layer-2: every json_get_* accessor against a parsed object."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match json_parse("{\\"name\\":\\"Alice\\",\\"age\\":30,\\"active\\":true,\\"score\\":3.14,\\"tags\\":[1,2,3]}") {
+    Err(@String) -> IO.print("ERR"),
+    Ok(@Json) -> {
+      match json_get_string(@Json.0, "name") {
+        Some(@String) -> IO.print(@String.0),
+        None -> IO.print("?")
+      };
+      IO.print(",");
+      match json_get_int(@Json.0, "age") {
+        Some(@Int) -> IO.print(int_to_string(@Int.0)),
+        None -> IO.print("?")
+      };
+      IO.print(",");
+      match json_get_bool(@Json.0, "active") {
+        Some(@Bool) -> IO.print(bool_to_string(@Bool.0)),
+        None -> IO.print("?")
+      };
+      IO.print(",");
+      match json_get_number(@Json.0, "score") {
+        Some(@Float64) -> IO.print(float_to_string(@Float64.0)),
+        None -> IO.print("?")
+      };
+      IO.print(",");
+      match json_get_array(@Json.0, "tags") {
+        Some(@Array<Json>) -> IO.print(int_to_string(nat_to_int(array_length(@Array<Json>.0)))),
+        None -> IO.print("?")
+      };
+      IO.print(",");
+      -- missing field → None
+      match json_get_int(@Json.0, "nope") {
+        Some(@Int) -> IO.print("!"),
+        None -> IO.print("none")
+      };
+      IO.print(",");
+      -- wrong type → None
+      match json_get_int(@Json.0, "name") {
+        Some(@Int) -> IO.print("!"),
+        None -> IO.print("none")
+      }
+    }
+  };
+  IO.print(",");
+  -- json_get_* on a non-object Json: every accessor returns None
+  -- because the underlying json_get returns None for non-JObject.
+  let @Json = JArray([JNumber(1.0)]);
+  match json_get_string(@Json.0, "x") {
+    Some(@String) -> IO.print("!"), None -> IO.print("none")
+  };
+  IO.print(",");
+  match json_get_int(@Json.0, "x") {
+    Some(@Int) -> IO.print("!"), None -> IO.print("none")
+  };
+  IO.print(",");
+  match json_get_bool(@Json.0, "x") {
+    Some(@Bool) -> IO.print("!"), None -> IO.print("none")
+  };
+  IO.print(",");
+  match json_get_number(@Json.0, "x") {
+    Some(@Float64) -> IO.print("!"), None -> IO.print("none")
+  };
+  IO.print(",");
+  match json_get_array(@Json.0, "x") {
+    Some(@Array<Json>) -> IO.print("!"), None -> IO.print("none")
+  }
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        # Object accessors hit, then the non-object run (5 Nones).
+        assert node["stdout"] == (
+            "Alice,30,true,3.14,3,none,none,none,none,none,none,none"
+        )
+
+
 class TestBrowserState:
     """Test State<T> host bindings in the Node.js runtime."""
 

@@ -1,6 +1,6 @@
 # Roadmap
 
-Vera v0.0.118 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 153 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
+Vera v0.0.119 delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 164 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. What follows is the path from "working language" to "the language agents actually use."
 
 This roadmap is organised around four strategic milestones. Each milestone makes Vera meaningfully more useful to a concrete audience. Within each milestone, work is grouped into phases that can be executed roughly sequentially, though independent items can be interleaved.
 
@@ -8,7 +8,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 153 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,501 tests, 79 conformance programs, 32 examples, and a 13-chapter specification.
+The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 164 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,534 tests, 80 conformance programs, 32 examples, and a 13-chapter specification.
 
 Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers — now covers 6 models across 3 providers (v0.0.7). The headline result: Kimi K2.5 achieves 100% run_correct on Vera, beating both Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera. The flagship tier averages 93% Vera run_correct vs 93% Python — essentially parity. These are single-run results with high variance; stable rates will require pass@k evaluation. The remaining gaps are empirical breadth (repeated trials, more models), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
 
@@ -37,7 +37,7 @@ This reshaped the ordering: capability issues move up, ergonomic issues move dow
 
 | Order | Issue | Why now |
 |:---:|---|---|
-| 1 | [#366](https://github.com/aallan/vera/issues/366) — JSON typed accessors | Replaces nested Option/Json unwrap ceremony. Polish tier for the Inference/Http pipeline. |
+| 1 | [#475](https://github.com/aallan/vera/issues/475) — WASM call translator bug cleanup | Three Critical severity pre-existing bugs from the v0.0.113 calls.py decomposition: `_translate_handle_exn` missing catch-arm result type for expression-bodied handlers; `_translate_string_slice` i64→i32 narrowing before clamping (wraps to negative, then clamps to 0); `_translate_char_code` missing bounds check (out-of-range index reads arbitrary memory — real safety hole). Plus 7 Major-severity bugs. Correctness debt sitting since mid-April. Small, focused, independent fixes. |
 | 2 | [#507](https://github.com/aallan/vera/issues/507) — Eq/Ord-dispatched array ops (`array_sort`, `array_contains`, `array_index_of`) | Phase 2 of [#466](https://github.com/aallan/vera/issues/466) (phase 1 mapi/reverse/find/any/all/flatten/sort_by shipped in v0.0.117). Needs the dispatch infrastructure to invoke `compare$T`/`eq$T` from inside an iterative WASM loop. Lower urgency than the other entries because explicit-callback alternatives (`array_sort_by`, `array_any` + equality predicate) already work. |
 
 ### What moves when
@@ -194,7 +194,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 
 ### Phase 4c: Standard library completeness
 
-- [#366](https://github.com/aallan/vera/issues/366) **JSON typed accessors** — `json_as_string`, `json_get_number`, etc. Eliminates the two-level pattern match every JSON API consumer currently writes.
 - [#367](https://github.com/aallan/vera/issues/367) **Markdown content extractors** — `md_blocks`, `md_inline_text`, `md_extract_headings`, `md_extract_links`, `md_filter_blocks`.
 - [#368](https://github.com/aallan/vera/issues/368) **HTML convenience accessors** — `html_query_one`, `html_tag`, `html_children`.
 - [#507](https://github.com/aallan/vera/issues/507) **Array utility built-ins (phase 2)** — `array_sort` (with `Ord<T>` ability dispatch), `array_contains`, `array_index_of` (both with `Eq<T>` dispatch). Phase 1 of [#466](https://github.com/aallan/vera/issues/466) (the seven combinators that don't need ability dispatch — `array_mapi`, `array_reverse`, `array_find`, `array_any`, `array_all`, `array_flatten`, `array_sort_by`) shipped in v0.0.117. Phase 2 needs the dispatch infrastructure to invoke `compare$T` / `eq$T` from inside an iterative WASM loop — see issue body for the architectural sketch.
@@ -212,7 +211,7 @@ These are not milestone-gated — they should be addressed continuously alongsid
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
 | Add property-based testing with Hypothesis | [#386](https://github.com/aallan/vera/issues/386) | 2–4 hours | Catches parser/formatter edge cases via round-trip properties |
-| Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether 3,501 tests catch real bugs, not just execute paths |
+| Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether 3,534 tests catch real bugs, not just execute paths |
 | Investigate parser fuzzing with Atheris | [#402](https://github.com/aallan/vera/issues/402) | 4–8 hours | Crash-inducing inputs for parser and type checker |
 | Improve browser runtime test coverage to >80% | [#349](https://github.com/aallan/vera/issues/349) | 2–4 hours | Parity with Python-side coverage gate |
 | Add `check_changelog_updated.py` pre-push hook + CI check | [#478](https://github.com/aallan/vera/issues/478) | 30–60 min | Fails PRs that touch `vera/`/`spec/`/`SKILL.md` without a CHANGELOG entry; prevents the #474 miss from recurring |
@@ -263,4 +262,4 @@ The compiler was built through ten development phases from February to March 202
 | C8.5 | v0.0.66–v0.0.88 | **Completeness** — builtins, IO runtime, types, effects, browser target | Done |
 | C9 | v0.0.89–v0.0.101 | **Abilities, standard library, data types, effects** — Eq/Ord/Hash/Show, Map/Set, JSON, HTML, Markdown, Http, Decimal, Inference, standard prelude, combinators, higher-order array ops | Done |
 
-**810+ commits, 118 tagged releases (as of v0.0.118), 3,501 tests, 96% coverage, 79 conformance programs, 32 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.
+**810+ commits, 119 tagged releases (as of v0.0.119), 3,534 tests, 96% coverage, 80 conformance programs, 32 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the full narrative of how the compiler was built.

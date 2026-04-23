@@ -1244,6 +1244,44 @@ class TypeEnv:
             effect=PureEffectRow(),
         )
 
+        # #366 — typed accessors (Json -> Option<T>) and compound field
+        # accessors (Json, String -> Option<T>).  All pure-Vera prelude
+        # functions; bodies live in vera/prelude.py _JSON_COMBINATORS.
+        _ARR_JSON = AdtType("Array", (_JSON_T,))
+        _MAP_STR_JSON_T = AdtType("Map", (STRING, _JSON_T))
+        # Layer 1: type coercion accessors
+        for _name, _ret in [
+            ("json_as_string", STRING),
+            ("json_as_number", FLOAT64),
+            ("json_as_bool", BOOL),
+            ("json_as_int", INT),
+            ("json_as_array", _ARR_JSON),
+            ("json_as_object", _MAP_STR_JSON_T),
+        ]:
+            self.functions[_name] = FunctionInfo(
+                name=_name,
+                forall_vars=None,
+                param_types=(_JSON_T,),
+                return_type=AdtType("Option", (_ret,)),
+                effect=PureEffectRow(),
+            )
+        # Layer 2: compound field accessors (skip the array variant —
+        # see json_get_array below; the FLOAT64 list mirrors json_as_*)
+        for _name, _ret in [
+            ("json_get_string", STRING),
+            ("json_get_number", FLOAT64),
+            ("json_get_bool", BOOL),
+            ("json_get_int", INT),
+            ("json_get_array", _ARR_JSON),
+        ]:
+            self.functions[_name] = FunctionInfo(
+                name=_name,
+                forall_vars=None,
+                param_types=(_JSON_T, STRING),
+                return_type=AdtType("Option", (_ret,)),
+                effect=PureEffectRow(),
+            )
+
         # Html builtins (§9.7.4) — host-imported parse/to_string/query/text
         _HTML_T = AdtType("HtmlNode", ())
         _ARR_HTML_T = AdtType("Array", (_HTML_T,))

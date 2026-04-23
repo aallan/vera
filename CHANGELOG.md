@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 (no entries yet)
 
+## [0.0.119] - 2026-04-23
+
+### Added
+- **JSON typed accessors** ([#366](https://github.com/aallan/vera/issues/366)) — eleven new accessor functions for the built-in `Json` ADT that eliminate the two-level pattern-match boilerplate every JSON API consumer would otherwise write (`match option ... { Some(@Json) -> match @Json.0 { JNumber(@Float64) -> ... } }`). Six Layer-1 type-coercion accessors (`Json → Option<T>`): `json_as_string`, `json_as_number`, `json_as_bool`, `json_as_int`, `json_as_array`, `json_as_object`. Five Layer-2 compound field accessors (`Json, String → Option<T>`): `json_get_string`, `json_get_number`, `json_get_bool`, `json_get_int`, `json_get_array` — each collapses `json_get` + the matching `json_as_*` into one call, so missing fields and wrong-typed fields both return `None`. `json_as_int` guards every `float_to_int` trap path — NaN, infinity, AND finite overflow (|f| ≥ 2^63) — returning `None` for all four non-representable-as-Int cases. Closes [#366](https://github.com/aallan/vera/issues/366).
+
+### Implementation
+- Unlike the v0.0.118 batch, these are **pure-Vera prelude functions**, not WASM translators. All eleven bodies live in `vera/prelude.py` `_JSON_COMBINATORS` as match expressions over `Json`; the compiler already injects the prelude into every module that references `Json` values. No new host imports, no new WASM emit, no new WASM bytes in compiled modules that don't use them.
+- `vera/environment.py` registers the eleven new `FunctionInfo` entries next to the existing `json_get` / `json_type` registrations. Layer-1 accessors emitted from a tight Python loop (six identical `Json → Option<T>` shapes differ only in element type).
+- `vera/prelude.py` extended in three places: `_JSON_COMBINATORS` (bodies), `_source_mentions_json` (detection names set), and the injection site's `json_fn_names` shadow-check set.
+
+### Example rewrite
+- `examples/json.vera` rewritten to showcase the new accessors — the gradebook weather-API scenario that previously used a helper-per-field pattern now uses Layer-2 accessors directly. Line count stayed roughly similar (the rewrite is a style change, not a pure reduction) but the per-field boilerplate disappeared: `json_get_array(obj, "hourly")` replaces the two-level `match json_get(obj, "hourly") { Some(@Json) -> match @Json.0 { JArray(@Array<Json>) -> ... } }` pattern.
+
+### Tests
+- 19 new unit tests in `tests/test_codegen.py::TestJsonTypedAccessors` covering every Layer-1 accessor (matching + mismatched constructors), every Layer-2 accessor (hit + missing field + wrong type), plus targeted edge cases: `json_as_int` NaN guard, `json_as_int` infinity guard, `json_as_int` toward-zero truncation for negative floats, and `json_as_coercions_are_disjoint` pinning the invariant that at most one Layer-1 accessor returns `Some` for any given Json.
+- 2 new browser parity tests in `tests/test_browser.py::TestBrowserJsonAccessors` — one exhaustive Layer-1 sweep, one exhaustive Layer-2 sweep.
+- New conformance program `tests/conformance/ch09_json_accessors.vera` (level: `run`) with 15 test functions.
+
 ## [0.0.118] - 2026-04-23
 
 ### Added
@@ -1626,7 +1644,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.118...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.119...HEAD
+[0.0.119]: https://github.com/aallan/vera/compare/v0.0.118...v0.0.119
 [0.0.118]: https://github.com/aallan/vera/compare/v0.0.117...v0.0.118
 [0.0.117]: https://github.com/aallan/vera/compare/v0.0.116...v0.0.117
 [0.0.116]: https://github.com/aallan/vera/compare/v0.0.115...v0.0.116
