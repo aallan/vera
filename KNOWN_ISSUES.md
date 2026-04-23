@@ -12,6 +12,7 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | WASM call translators: 10 pre-existing bugs (INT64_MIN to_string, string/array slice i64→i32 narrowing, char_code no bounds check, expression-bodied Exn handler result type, Map<K, Array<T>> lowering, url_parse/url_join round-trip, base64 `=` validation, parse_nat/int embedded spaces, float fractional carry) | [#475](https://github.com/aallan/vera/issues/475) |
 | GC `$alloc` grows memory by only 1 page — single allocations more than ~64 KB larger than free heap space trap (out-of-bounds memory access) | [#487](https://github.com/aallan/vera/issues/487) |
 | `array_fold` heuristic over-roots host-managed opaque handles (Map, Set, Regex, Decimal) as if they were Vera heap pointers — safe (conservative GC rejects out-of-range values) but wastes work and can cause spurious mark retention | [#490](https://github.com/aallan/vera/issues/490) |
+| Nested closures fail WASM codegen in two shapes: (a) directly nesting one closure inside another fails at compile time with a type-mismatch error; (b) a closure capturing a scalar that flows through a function boundary into `array_map` traps at runtime (`undefined element: out of bounds table access`). Workaround: extract the inner closure to a named `private fn` and pass captured scalars as explicit parameters | [#514](https://github.com/aallan/vera/issues/514) |
 
 ## Limitations
 

@@ -152,6 +152,33 @@ public fn safe_divide(@Int, @Int -> @Int)
 }
 ```
 
+### Nullary and Unit-taking functions
+
+Vera accepts two equivalent shapes for functions that take no meaningful argument:
+
+```vera
+public fn a(-> @Int)        requires(true) ensures(true) effects(pure) { 42 }
+public fn b(@Unit -> @Int)  requires(true) ensures(true) effects(pure) { 42 }
+```
+
+At every call site the arity must match the declaration: `a()` calls the nullary form, `b(())` passes a `Unit` value to the Unit-taking form. They cannot be mixed — `a(())` and `b()` are both type errors. Use the nullary form for constants and computations that have no conceptual input; use the Unit-taking form when you want to match the shape of a combinator that expects a `Fn(T -> U)` (the callee side of `apply_fn`, see below) or when the program's entry point traditionally takes `Unit`. `main` works either way; all examples in this file use `main(@Unit -> @Unit)` for consistency with the broader spec.
+
+### Stored function values and `apply_fn`
+
+Functions passed as arguments or stored in `let` bindings use the type form `Fn(T -> U) effects(...)`. To invoke such a stored value, use `apply_fn`:
+
+```vera
+type IntToInt = Fn(Int -> Int) effects(pure)
+
+private fn use_fn(@IntToInt, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  apply_fn(@IntToInt.0, @Int.0)
+}
+```
+
+`apply_fn(f, x)` is the only way to call a function that's stored as a value — direct application syntax (`f(x)`) is reserved for declared names. The prelude uses this pattern for `option_map`, `option_and_then`, `result_map` etc., where the mapping function is a parameter. See `examples/closures.vera` and `tests/conformance/ch05_closures.vera` for worked examples.
+
 ## Function Visibility
 
 Every top-level `fn` and `data` declaration **must** have an explicit visibility modifier. There is no default visibility -- omitting it is an error.
@@ -624,6 +651,63 @@ Closures cover pure, self-contained transformations and simple captured constant
 - Termination requires a `decreases` clause that proves non-trivial progress — closures cannot carry `decreases`.
 
 For counted iteration with IO, use the recursive `loop` pattern from the Iteration section above; for array transformations, use the array combinators with closures.
+
+### Known limitation: nested closures and captured-scalar indirection
+
+Two related codegen bugs, both tracked in [#514](https://github.com/aallan/vera/issues/514):
+
+1. **Compile-time failure**: a closure directly nested inside another closure fails WASM validation with a type-mismatch error. The natural two-dimensional-map shape `array_map(rows, fn(row) { array_map(cols, fn(col) { ... }) })` hits this every time.
+2. **Runtime failure**: a closure that **captures an outer `@Int` binding** and **passes it as an argument to a helper that uses `array_map` internally** traps at runtime with `undefined element: out of bounds table access`. `vera check` and `vera compile` both succeed for this shape — the bug only surfaces at `vera run`. Captured-value-flowed-through-indirect-call is the specific trigger; the same shape with a literal argument instead of a captured binding works correctly.
+
+**Workaround for (1)**: extract the inner closure into a named top-level `private fn` that does the inner `array_map` itself, then pass the helper by name to the outer combinator. Each combinator call then nests at most one closure deep.
+
+**Workaround for (2)**: thread the captured scalar as an explicit parameter to the helper rather than relying on closure capture. The helper then receives the value directly; no captured-binding-flowing-through-call-site for the codegen to mishandle.
+
+```vera
+-- BROKEN (1): nested closures fail at compile time.
+let @Array<Array<Int>> = array_map(
+  array_range(0, 3),
+  fn(@Int -> @Array<Int>) effects(pure) {
+    array_map(array_range(0, 3), fn(@Int -> @Int) effects(pure) { @Int.0 })
+  }
+);
+
+-- WORKING (1): inner array_map lives in a named helper.
+private fn fill_row(@Int -> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  array_map(array_range(0, 3), fn(@Int -> @Int) effects(pure) { @Int.0 })
+}
+
+public fn build_grid(@Unit -> @Array<Array<Int>>)
+  requires(true) ensures(true) effects(pure)
+{
+  array_map(array_range(0, 3), fill_row)
+}
+```
+
+```vera
+-- BROKEN: nested closures fail at WASM validation.
+let @Array<Array<Int>> = array_map(
+  array_range(0, 3),
+  fn(@Int -> @Array<Int>) effects(pure) {
+    array_map(array_range(0, 3), fn(@Int -> @Int) effects(pure) { @Int.0 })
+  }
+);
+
+-- WORKING: inner array_map lives in a named helper.
+private fn fill_row(@Int -> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  array_map(array_range(0, 3), fn(@Int -> @Int) effects(pure) { @Int.0 })
+}
+
+public fn build_grid(@Unit -> @Array<Array<Int>>)
+  requires(true) ensures(true) effects(pure)
+{
+  array_map(array_range(0, 3), fill_row)
+}
+```
 
 ## Built-in Functions
 
@@ -1672,7 +1756,30 @@ Module-qualified calls use `::` between the module path and the function name: `
 
 There is no import aliasing (`import m(abs as math_abs)`) and no wildcard exclusion (`import m hiding(x)`). These are intentional design decisions, not limitations. When names clash across modules, rename the conflicting declaration in one of the source modules. This preserves the one-canonical-form principle — every function has exactly one name.
 
-There are no raw strings (`r"..."`) or multi-line string literals. Use escape sequences (`\\`, `\n`, `\t`, `\"`) for special characters. This is by design — alternative string syntaxes would create two representations for the same value.
+There are no raw strings (`r"..."`) or multi-line string literals. Use escape sequences for special characters; this is by design — alternative string syntaxes would create two representations for the same value.
+
+The full set of escape sequences Vera's lexer accepts:
+
+| Escape | Produces | Notes |
+|---|---|---|
+| `\n` | LF (0x0A) | |
+| `\t` | TAB (0x09) | |
+| `\r` | CR (0x0D) | |
+| `\0` | NUL (0x00) | |
+| `\\` | backslash | |
+| `\"` | double-quote | |
+| `\u{XXXX}` | Unicode code point | 1–6 hex digits, up to U+10FFFF |
+
+`\v` / `\f` / `\x..` / `\a` / `\b` are **not** recognised — Vera's rule is "one canonical form per value". For ASCII control bytes outside the simple-escape set (e.g. ESC 0x1B, VT 0x0B, FF 0x0C), either use the unicode escape (`"\u{1B}"`, `"\u{0B}"`, `"\u{0C}"`) or call `string_from_char_code(N)` at runtime:
+
+```vera
+-- ANSI cursor-home sequence (ESC [ H):
+let @String = string_concat(string_from_char_code(27), "[H");
+-- or equivalently using the unicode escape:
+let @String = "\u{1B}[H";
+```
+
+Raw UTF-8 bytes in string literals are supported — the lexer reads the source as UTF-8 and stores the bytes unchanged. `"██ hello ██"` compiles and prints the six UTF-8 bytes of each block character. `string_length`, indexing, and the classifiers operate on bytes, not grapheme clusters; see the #509 roadmap entry for tracked Unicode-aware variants.
 
 See: spec Chapter 8 for the full module system specification.
 
@@ -2158,6 +2265,18 @@ These are known limitations in the current reference implementation. Most are tr
 | `map_new()` / `set_new()` require type context | The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();` | — |
 | `Inference.complete` has no `max_tokens` or temperature controls | The host implementation uses provider defaults. Custom parameters (max tokens, temperature, top-p, system prompt) are not yet supported at the Vera level. | [#370](https://github.com/aallan/vera/issues/370) |
 | `Inference` effect has no user-defined handlers | In the current implementation, `Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not yet supported. | [#372](https://github.com/aallan/vera/issues/372) |
+
+## Known Bugs and Workarounds
+
+Current reference-implementation bugs that an agent writing Vera code is likely to hit. Every entry has a confirmed reproducer and a known workaround. The full curated list is in [KNOWN_ISSUES.md](https://github.com/aallan/vera/blob/main/KNOWN_ISSUES.md); the issue tracker is the source of truth.
+
+| Shape | Bug summary | Workaround | Issue |
+|---|---|---|---|
+| Nested closures | A closure directly nested inside another closure (`fn { array_map(..., fn { ... }) }`) fails at compile time; a closure capturing an outer scalar and passing it to a helper that uses `array_map` internally traps at runtime with `undefined element: out of bounds table access`. | Extract the inner closure into a named `private fn`. Pass captured scalars as explicit parameters to the helper rather than relying on capture. See [Closures and captured bindings → Known limitation](#known-limitation-nested-closures-and-captured-scalar-indirection) above. | [#514](https://github.com/aallan/vera/issues/514) |
+| WASM call translators | 10 pre-existing bugs in the decomposed `vera/wasm/calls_*.py` modules. The ones most likely to trip code up: `to_string(INT64_MIN)` produces `-` (negation overflow); `string_slice` / `array_slice` with indices `\|i\| > i32.MAX` wrap to negative then clamp to 0 silently; `string_char_code` with an out-of-range index reads arbitrary memory; `parse_nat` / `parse_int` accept embedded spaces (`"12 34"` parses as 1234). | For now: avoid those edge cases, or convert via alternate paths (e.g. `@Int.0 + 1` works for serialising INT64_MIN+1 when INT64_MIN itself would hit the bug). | [#475](https://github.com/aallan/vera/issues/475) |
+| Large single allocations | `$alloc` grows the WASM memory by one page (64 KB) when the free list is exhausted. A single request larger than that traps with an out-of-bounds memory access even though the WASM max-memory limit is much higher. | Avoid single `$alloc` calls > 64 KB. For big arrays, pre-size or build via append loops that grow gradually. | [#487](https://github.com/aallan/vera/issues/487) |
+
+When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, the `undefined element` or i32/i64 mismatch class of failures is very likely [#514](https://github.com/aallan/vera/issues/514) surfacing in a new shape.
 
 ## Specification Reference
 
