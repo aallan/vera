@@ -67,6 +67,11 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1190): "FRAGMENT",  # string_replace signature (no body)
     ("09-standard-library.md", 1221): "FRAGMENT",  # string_join signature (no body)
     ("09-standard-library.md", 1250): "FRAGMENT",  # string_repeat signature (no body)
+    ("09-standard-library.md", 1682): "FRAGMENT",  # string_chars/lines/words signatures (no body, #470)
+    ("09-standard-library.md", 1711): "FRAGMENT",  # string_reverse/trim_start/trim_end signatures (no body, #470)
+    ("09-standard-library.md", 1734): "FRAGMENT",  # string_pad_start/pad_end signatures (no body, #470)
+    ("09-standard-library.md", 1757): "FRAGMENT",  # char_to_upper/char_to_lower signatures (no body, #471)
+    ("09-standard-library.md", 1778): "FRAGMENT",  # is_digit/alpha/... signatures (no body, #471)
 
     # Chapter 9 — Array builtin signatures (no body)
     ("09-standard-library.md", 570): "FRAGMENT",  # array_length signature (no body)
@@ -195,19 +200,19 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("09-standard-library.md", 1479): "FRAGMENT",  # url_join signature (no body)
 
     # Chapter 9 — Markdown stdlib type (future, uses MdBlock/MdInline types)
-    ("09-standard-library.md", 1860): "FUTURE",   # md_parse
-    ("09-standard-library.md", 1869): "FUTURE",   # md_render
-    ("09-standard-library.md", 1880): "FUTURE",   # md_has_heading
-    ("09-standard-library.md", 1889): "FUTURE",   # md_has_code_block
-    ("09-standard-library.md", 1898): "FUTURE",   # md_extract_code_blocks
-    ("09-standard-library.md", 1922): "FUTURE",   # convert_to_markdown
+    ("09-standard-library.md", 1997): "FUTURE",   # md_parse
+    ("09-standard-library.md", 2006): "FUTURE",   # md_render
+    ("09-standard-library.md", 2017): "FUTURE",   # md_has_heading
+    ("09-standard-library.md", 2026): "FUTURE",   # md_has_code_block
+    ("09-standard-library.md", 2035): "FUTURE",   # md_extract_code_blocks
+    ("09-standard-library.md", 2059): "FUTURE",   # convert_to_markdown
 
     # Chapter 9 — Html stdlib type (function signatures without bodies)
-    ("09-standard-library.md", 1971): "FUTURE",   # html_parse
-    ("09-standard-library.md", 1980): "FUTURE",   # html_to_string
-    ("09-standard-library.md", 1991): "FUTURE",   # html_query
-    ("09-standard-library.md", 2000): "FUTURE",   # html_text
-    ("09-standard-library.md", 2009): "FUTURE",   # html_attr
+    ("09-standard-library.md", 2108): "FUTURE",   # html_parse
+    ("09-standard-library.md", 2117): "FUTURE",   # html_to_string
+    ("09-standard-library.md", 2128): "FUTURE",   # html_query
+    ("09-standard-library.md", 2137): "FUTURE",   # html_text
+    ("09-standard-library.md", 2146): "FUTURE",   # html_attr
 
     # Chapter 9 — Http + Async composition (future Async effect, not yet compilable)
     ("09-standard-library.md", 473): "FUTURE",    # fetch_both uses async(Http.get(...))

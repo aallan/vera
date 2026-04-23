@@ -5,12 +5,22 @@ string_from_char_code, string_repeat, string_contains, string_starts_with,
 string_ends_with, string_strip, string_upper, string_lower, string_index_of,
 string_replace, string_split, string_join, plus to-string conversions
 (to_string, bool_to_string, byte_to_string, float_to_string).
+
+Also handles #470 utilities (string_chars, string_lines, string_words,
+string_pad_start, string_pad_end, string_reverse, string_trim_start,
+string_trim_end) and #471 character classification + case conversion
+(is_digit, is_alpha, is_alphanumeric, is_whitespace, is_upper, is_lower,
+char_to_upper, char_to_lower).
 """
 
 from __future__ import annotations
 
 from vera import ast
-from vera.wasm.helpers import WasmSlotEnv, gc_shadow_push
+from vera.wasm.helpers import (
+    WasmSlotEnv,
+    emit_is_ascii_whitespace,
+    gc_shadow_push,
+)
 
 
 class CallsStringsMixin:
@@ -927,161 +937,20 @@ class CallsStringsMixin:
     ) -> list[str] | None:
         """Translate strip(s) → String (i32_pair).
 
-        Trims leading and trailing ASCII whitespace (space, tab, CR, LF).
-        Allocates a new buffer and copies the trimmed content to avoid
-        returning an interior pointer (which conservative GC cannot track).
+        ``string_strip(s)`` is exactly the composition of
+        ``string_trim_start`` and ``string_trim_end``, so this
+        delegates to ``_translate_trim`` with both flags set.
+        Routing through one shared implementation guarantees the
+        whitespace predicate (Python's ``str.isspace()`` ASCII set —
+        tab(9), LF(10), VT(11), FF(12), CR(13), space(32)) stays in
+        sync between strip and the two one-sided trim functions.
+        Previously this method open-coded a narrower set
+        ({tab, LF, CR, space}) that diverged from ``_translate_trim``
+        once VT/FF were added in the #470 series.  Allocates a new
+        buffer and copies the trimmed content (so no interior
+        pointer is returned).
         """
-        arg_instrs = self.translate_expr(arg, env)
-        if arg_instrs is None:
-            return None
-
-        self.needs_alloc = True
-
-        ptr = self.alloc_local("i32")
-        slen = self.alloc_local("i32")
-        start = self.alloc_local("i32")
-        end = self.alloc_local("i32")
-        byte = self.alloc_local("i32")
-        new_len = self.alloc_local("i32")
-        dst = self.alloc_local("i32")
-        idx = self.alloc_local("i32")
-
-        instructions: list[str] = []
-
-        # Evaluate string -> (ptr, len)
-        instructions.extend(arg_instrs)
-        instructions.append(f"local.set {slen}")
-        instructions.append(f"local.set {ptr}")
-
-        # start = 0
-        instructions.append("i32.const 0")
-        instructions.append(f"local.set {start}")
-
-        # Scan forward: skip leading whitespace
-        instructions.append("block $brk_lw")
-        instructions.append("  loop $lp_lw")
-        instructions.append(f"    local.get {start}")
-        instructions.append(f"    local.get {slen}")
-        instructions.append("    i32.ge_u")
-        instructions.append("    br_if $brk_lw")
-        instructions.append(f"    local.get {ptr}")
-        instructions.append(f"    local.get {start}")
-        instructions.append("    i32.add")
-        instructions.append("    i32.load8_u offset=0")
-        instructions.append(f"    local.set {byte}")
-        # Check if whitespace: space(32), tab(9), CR(13), LF(10)
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 32")
-        instructions.append("    i32.eq")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 9")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 10")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 13")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append("    i32.eqz")
-        instructions.append("    br_if $brk_lw")
-        instructions.append(f"    local.get {start}")
-        instructions.append("    i32.const 1")
-        instructions.append("    i32.add")
-        instructions.append(f"    local.set {start}")
-        instructions.append("    br $lp_lw")
-        instructions.append("  end")
-        instructions.append("end")
-
-        # end = len
-        instructions.append(f"local.get {slen}")
-        instructions.append(f"local.set {end}")
-
-        # Scan backward: skip trailing whitespace
-        instructions.append("block $brk_tw")
-        instructions.append("  loop $lp_tw")
-        instructions.append(f"    local.get {end}")
-        instructions.append(f"    local.get {start}")
-        instructions.append("    i32.le_u")
-        instructions.append("    br_if $brk_tw")
-        instructions.append(f"    local.get {ptr}")
-        instructions.append(f"    local.get {end}")
-        instructions.append("    i32.const 1")
-        instructions.append("    i32.sub")
-        instructions.append("    i32.add")
-        instructions.append("    i32.load8_u offset=0")
-        instructions.append(f"    local.set {byte}")
-        # Check if whitespace
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 32")
-        instructions.append("    i32.eq")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 9")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 10")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append(f"    local.get {byte}")
-        instructions.append("    i32.const 13")
-        instructions.append("    i32.eq")
-        instructions.append("    i32.or")
-        instructions.append("    i32.eqz")
-        instructions.append("    br_if $brk_tw")
-        instructions.append(f"    local.get {end}")
-        instructions.append("    i32.const 1")
-        instructions.append("    i32.sub")
-        instructions.append(f"    local.set {end}")
-        instructions.append("    br $lp_tw")
-        instructions.append("  end")
-        instructions.append("end")
-
-        # new_len = end - start
-        instructions.append(f"local.get {end}")
-        instructions.append(f"local.get {start}")
-        instructions.append("i32.sub")
-        instructions.append(f"local.set {new_len}")
-
-        # Allocate new buffer and copy trimmed content
-        instructions.append(f"local.get {new_len}")
-        instructions.append("call $alloc")
-        instructions.append(f"local.set {dst}")
-        instructions.extend(gc_shadow_push(dst))
-
-        # Copy loop: dst[i] = ptr[start + i] for i in 0..new_len
-        instructions.append("i32.const 0")
-        instructions.append(f"local.set {idx}")
-        instructions.append("block $brk_st")
-        instructions.append("loop $lp_st")
-        instructions.append(f"  local.get {idx}")
-        instructions.append(f"  local.get {new_len}")
-        instructions.append("  i32.ge_u")
-        instructions.append("  br_if $brk_st")
-        instructions.append(f"  local.get {dst}")
-        instructions.append(f"  local.get {idx}")
-        instructions.append("  i32.add")
-        instructions.append(f"  local.get {ptr}")
-        instructions.append(f"  local.get {start}")
-        instructions.append("  i32.add")
-        instructions.append(f"  local.get {idx}")
-        instructions.append("  i32.add")
-        instructions.append("  i32.load8_u offset=0")
-        instructions.append("  i32.store8 offset=0")
-        instructions.append(f"  local.get {idx}")
-        instructions.append("  i32.const 1")
-        instructions.append("  i32.add")
-        instructions.append(f"  local.set {idx}")
-        instructions.append("  br $lp_st")
-        instructions.append("end")
-        instructions.append("end")
-
-        # Result: (dst, new_len)
-        instructions.append(f"local.get {dst}")
-        instructions.append(f"local.get {new_len}")
-        return instructions
+        return self._translate_trim(arg, env, trim_start=True, trim_end=True)
 
     # -----------------------------------------------------------------
     # String search builtins
@@ -2585,4 +2454,1433 @@ class CallsStringsMixin:
         # Result: (dst, total_len)
         ins.append(f"local.get {dst}")
         ins.append(f"local.get {total_len}")
+        return ins
+
+    # ==================================================================
+    # #471 — character classification.  Each classifier loads the first
+    # byte of the input string (or returns false for empty) and tests
+    # against a small set of ASCII ranges / literals.
+    #
+    # All six share scaffolding via ``_translate_classifier`` — a
+    # helper that emits the empty-check and the byte-load, then takes
+    # an inline "body" list that performs the range test on the loaded
+    # byte and leaves an i32 (0 or 1) on the stack.
+    # ==================================================================
+
+    def _translate_classifier(
+        self, arg: ast.Expr, env: WasmSlotEnv, *, body: list[str],
+    ) -> list[str] | None:
+        """Shared scaffold for ``is_*`` classifiers.
+
+        ``body`` is a list of WAT instructions that assumes the loaded
+        first byte is on the stack and must leave an i32 (0 or 1) on
+        the stack.  Empty-string convention: returns 0 (false).
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        result = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+
+        ins.append("i32.const 0")
+        ins.append(f"local.set {result}")
+
+        ins.append(f"local.get {slen}")
+        ins.append("i32.eqz")
+        ins.append("if")
+        ins.append("else")
+        ins.append(f"  local.get {ptr}")
+        ins.append("  i32.load8_u offset=0")
+        ins.extend(f"  {line}" for line in body)
+        ins.append(f"  local.set {result}")
+        ins.append("end")
+
+        ins.append(f"local.get {result}")
+        return ins
+
+    def _translate_is_digit(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """is_digit: byte in 48..=57 ('0'..='9').
+
+        Unsigned range trick: (byte - 48) < 10.
+        """
+        return self._translate_classifier(arg, env, body=[
+            "i32.const 48",
+            "i32.sub",
+            "i32.const 10",
+            "i32.lt_u",
+        ])
+
+    def _translate_is_alpha(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """is_alpha: byte in 65..=90 OR 97..=122 (A-Z or a-z).
+
+        Optimisation: OR the byte with 0x20 to fold the case, then
+        single range check for 97..=122.  Works because the ASCII
+        letter ranges differ by exactly bit 5 (0x20).
+        """
+        return self._translate_classifier(arg, env, body=[
+            "i32.const 32",
+            "i32.or",
+            "i32.const 97",
+            "i32.sub",
+            "i32.const 26",
+            "i32.lt_u",
+        ])
+
+    def _translate_is_alphanumeric(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """is_alphanumeric: digit OR alpha.
+
+        Load byte once; save to local; run digit check + alpha check;
+        OR results.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        result = self.alloc_local("i32")
+        byte = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {result}")
+
+        ins.append(f"local.get {slen}")
+        ins.append("i32.eqz")
+        ins.append("if")
+        ins.append("else")
+        ins.append(f"  local.get {ptr}")
+        ins.append("  i32.load8_u offset=0")
+        ins.append(f"  local.set {byte}")
+        # digit check
+        ins.append(f"  local.get {byte}")
+        ins.append("  i32.const 48")
+        ins.append("  i32.sub")
+        ins.append("  i32.const 10")
+        ins.append("  i32.lt_u")
+        # alpha check (case-folded)
+        ins.append(f"  local.get {byte}")
+        ins.append("  i32.const 32")
+        ins.append("  i32.or")
+        ins.append("  i32.const 97")
+        ins.append("  i32.sub")
+        ins.append("  i32.const 26")
+        ins.append("  i32.lt_u")
+        ins.append("  i32.or")
+        ins.append(f"  local.set {result}")
+        ins.append("end")
+
+        ins.append(f"local.get {result}")
+        return ins
+
+    def _translate_is_whitespace(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """is_whitespace: byte in the ASCII whitespace set per Python's
+        ``str.isspace()`` — {tab(9), LF(10), VT(11), FF(12), CR(13),
+        space(32)}.  The four contiguous control codes 9..13 collapse
+        into one range check ``(byte - 9) < 5`` for branchless emit.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        result = self.alloc_local("i32")
+        byte = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {result}")
+
+        ins.append(f"local.get {slen}")
+        ins.append("i32.eqz")
+        ins.append("if")
+        ins.append("else")
+        ins.append(f"  local.get {ptr}")
+        ins.append("  i32.load8_u offset=0")
+        ins.append(f"  local.set {byte}")
+        # Canonical ASCII whitespace predicate — see emit_is_ascii_whitespace
+        # in helpers.py.  All four whitespace-test sites in this file
+        # (this one + _translate_trim + the two passes inside
+        # _translate_structural_split) MUST go through that helper to
+        # stay in sync.  PR #510 round 2 caught the divergent open-coded
+        # copy in _translate_strip; PR #510 round 4 hoisted the helper.
+        ins.extend(emit_is_ascii_whitespace(byte, indent="  "))
+        ins.append(f"  local.set {result}")
+        ins.append("end")
+
+        ins.append(f"local.get {result}")
+        return ins
+
+    def _translate_is_upper(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """is_upper: byte in 65..=90 ('A'..='Z')."""
+        return self._translate_classifier(arg, env, body=[
+            "i32.const 65",
+            "i32.sub",
+            "i32.const 26",
+            "i32.lt_u",
+        ])
+
+    def _translate_is_lower(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """is_lower: byte in 97..=122 ('a'..='z')."""
+        return self._translate_classifier(arg, env, body=[
+            "i32.const 97",
+            "i32.sub",
+            "i32.const 26",
+            "i32.lt_u",
+        ])
+
+    # ==================================================================
+    # #471 — single-character case conversion.  Copy the whole string
+    # and flip the case of the first byte if it's an ASCII letter.
+    # ==================================================================
+
+    def _translate_char_to_upper(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """char_to_upper(s): if s[0] is a-z, uppercase it; else leave alone."""
+        return self._translate_char_case(arg, env, to_upper=True)
+
+    def _translate_char_to_lower(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """char_to_lower(s): if s[0] is A-Z, lowercase it; else leave alone."""
+        return self._translate_char_case(arg, env, to_upper=False)
+
+    def _translate_char_case(
+        self, arg: ast.Expr, env: WasmSlotEnv, *, to_upper: bool,
+    ) -> list[str] | None:
+        """Shared scaffold for char_to_upper / char_to_lower.
+
+        Allocates a new buffer the same size as the input, copies
+        every byte, then conditionally flips the first byte's case.
+        Empty strings pass through unchanged.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        byte = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+        ins.extend(gc_shadow_push(ptr))
+
+        ins.append(f"local.get {slen}")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        # Copy all bytes
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        ins.append("block $brk_ccp")
+        ins.append("  loop $lp_ccp")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_ccp")
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=0")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_ccp")
+        ins.append("  end")
+        ins.append("end")
+
+        # If slen > 0: conditionally flip first byte's case
+        ins.append(f"local.get {slen}")
+        ins.append("i32.eqz")
+        ins.append("if")
+        ins.append("else")
+        ins.append(f"  local.get {dst}")
+        ins.append("  i32.load8_u offset=0")
+        ins.append(f"  local.set {byte}")
+        if to_upper:
+            # if 97 <= byte <= 122: dst[0] = byte - 32
+            ins.append(f"  local.get {byte}")
+            ins.append("  i32.const 97")
+            ins.append("  i32.sub")
+            ins.append("  i32.const 26")
+            ins.append("  i32.lt_u")
+            ins.append("  if")
+            ins.append(f"    local.get {dst}")
+            ins.append(f"    local.get {byte}")
+            ins.append("    i32.const 32")
+            ins.append("    i32.sub")
+            ins.append("    i32.store8 offset=0")
+            ins.append("  end")
+        else:
+            # if 65 <= byte <= 90: dst[0] = byte + 32
+            ins.append(f"  local.get {byte}")
+            ins.append("  i32.const 65")
+            ins.append("  i32.sub")
+            ins.append("  i32.const 26")
+            ins.append("  i32.lt_u")
+            ins.append("  if")
+            ins.append(f"    local.get {dst}")
+            ins.append(f"    local.get {byte}")
+            ins.append("    i32.const 32")
+            ins.append("    i32.add")
+            ins.append("    i32.store8 offset=0")
+            ins.append("  end")
+        ins.append("end")
+
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {slen}")
+        return ins
+
+    # ==================================================================
+    # #470 — string_reverse.  Copy bytes in reverse order.  ASCII only
+    # (matches the rest of Vera's byte-oriented string library).
+    # ==================================================================
+
+    def _translate_string_reverse(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """string_reverse(s): new string with bytes in reverse order."""
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+        ins.extend(gc_shadow_push(ptr))
+
+        ins.append(f"local.get {slen}")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        ins.append("block $brk_rev")
+        ins.append("  loop $lp_rev")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_rev")
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.sub")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.sub")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=0")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_rev")
+        ins.append("  end")
+        ins.append("end")
+
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {slen}")
+        return ins
+
+    # ==================================================================
+    # #470 — string_trim_start / string_trim_end.  One-sided variants
+    # of string_strip.  ASCII whitespace only.
+    # ==================================================================
+
+    def _translate_string_trim_start(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """string_trim_start(s): drop leading whitespace."""
+        return self._translate_trim(arg, env, trim_start=True, trim_end=False)
+
+    def _translate_string_trim_end(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """string_trim_end(s): drop trailing whitespace."""
+        return self._translate_trim(arg, env, trim_start=False, trim_end=True)
+
+    def _translate_trim(
+        self,
+        arg: ast.Expr,
+        env: WasmSlotEnv,
+        *,
+        trim_start: bool,
+        trim_end: bool,
+    ) -> list[str] | None:
+        """Shared trim scaffold — adjusts start/end pointers then
+        copies the trimmed slice to a fresh buffer.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+
+        ptr = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        start = self.alloc_local("i32")
+        end = self.alloc_local("i32")
+        byte = self.alloc_local("i32")
+        new_len = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr}")
+        # Root the source string across the destination $alloc below.
+        # Without this, if the input is a heap-allocated string (e.g.
+        # the result of string_concat or another non-literal producer),
+        # GC triggered by the alloc could free it and leave the copy
+        # loop reading from a freed buffer — Vera's WASM locals are
+        # not GC roots, only the shadow stack is.  Per the byte-literal
+        # / GC-root review heuristics, any pointer read after a
+        # ``call $alloc`` must be on the shadow stack first.
+        ins.extend(gc_shadow_push(ptr))
+
+        ins.append("i32.const 0")
+        ins.append(f"local.set {start}")
+        ins.append(f"local.get {slen}")
+        ins.append(f"local.set {end}")
+
+        def _is_ws_inline() -> list[str]:
+            """Caller has just emitted ``i32.load8_u offset=0`` (byte
+            on stack); we ``local.set`` it then run the canonical
+            ASCII-whitespace predicate.  See
+            ``emit_is_ascii_whitespace`` in helpers.py for the
+            single-source-of-truth predicate emitter.
+            """
+            return [
+                f"    local.set {byte}",
+                *emit_is_ascii_whitespace(byte, indent="    "),
+            ]
+
+        if trim_start:
+            ins.append("block $brk_ls")
+            ins.append("  loop $lp_ls")
+            ins.append(f"    local.get {start}")
+            ins.append(f"    local.get {end}")
+            ins.append("    i32.ge_u")
+            ins.append("    br_if $brk_ls")
+            ins.append(f"    local.get {ptr}")
+            ins.append(f"    local.get {start}")
+            ins.append("    i32.add")
+            ins.append("    i32.load8_u offset=0")
+            ins.extend(_is_ws_inline())
+            ins.append("    i32.eqz")
+            ins.append("    br_if $brk_ls")
+            ins.append(f"    local.get {start}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.add")
+            ins.append(f"    local.set {start}")
+            ins.append("    br $lp_ls")
+            ins.append("  end")
+            ins.append("end")
+
+        if trim_end:
+            ins.append("block $brk_le")
+            ins.append("  loop $lp_le")
+            ins.append(f"    local.get {end}")
+            ins.append(f"    local.get {start}")
+            ins.append("    i32.le_u")
+            ins.append("    br_if $brk_le")
+            ins.append(f"    local.get {ptr}")
+            ins.append(f"    local.get {end}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.sub")
+            ins.append("    i32.add")
+            ins.append("    i32.load8_u offset=0")
+            ins.extend(_is_ws_inline())
+            ins.append("    i32.eqz")
+            ins.append("    br_if $brk_le")
+            ins.append(f"    local.get {end}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.sub")
+            ins.append(f"    local.set {end}")
+            ins.append("    br $lp_le")
+            ins.append("  end")
+            ins.append("end")
+
+        ins.append(f"local.get {end}")
+        ins.append(f"local.get {start}")
+        ins.append("i32.sub")
+        ins.append(f"local.set {new_len}")
+
+        ins.append(f"local.get {new_len}")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        ins.append("block $brk_cp")
+        ins.append("  loop $lp_cp")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {new_len}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_cp")
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {start}")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=0")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_cp")
+        ins.append("  end")
+        ins.append("end")
+
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {new_len}")
+        return ins
+
+    # ==================================================================
+    # #470 — string_pad_start / string_pad_end.  Pad the input string
+    # to a target length by prepending (start) or appending (end) the
+    # fill string.  Fill cycles if the required padding is longer
+    # than the fill string (JavaScript padStart/padEnd semantics).
+    # Target length less than input length: input returned unchanged.
+    # Empty fill string: input returned unchanged (avoids a division-
+    # by-zero modulo).
+    # ==================================================================
+
+    def _translate_string_pad_start(
+        self,
+        arg_s: ast.Expr,
+        arg_target: ast.Expr,
+        arg_fill: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """string_pad_start(s, target_len, fill)."""
+        return self._translate_pad(
+            arg_s, arg_target, arg_fill, env, pad_start=True,
+        )
+
+    def _translate_string_pad_end(
+        self,
+        arg_s: ast.Expr,
+        arg_target: ast.Expr,
+        arg_fill: ast.Expr,
+        env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """string_pad_end(s, target_len, fill)."""
+        return self._translate_pad(
+            arg_s, arg_target, arg_fill, env, pad_start=False,
+        )
+
+    def _translate_pad(
+        self,
+        arg_s: ast.Expr,
+        arg_target: ast.Expr,
+        arg_fill: ast.Expr,
+        env: WasmSlotEnv,
+        *,
+        pad_start: bool,
+    ) -> list[str] | None:
+        """Shared scaffold for pad_start / pad_end.
+
+        Algorithm:
+          1. target_i32 = wrap_i64(target_len)
+          2. if target_i32 <= slen: allocate slen bytes, copy s, return
+          3. if fill_len == 0: allocate slen bytes, copy s, return
+          4. pad_len = target_i32 - slen
+          5. allocate target_i32 bytes
+          6. if pad_start: fill dst[0..pad_len], then copy s into dst[pad_len..]
+             if pad_end:   copy s into dst[0..slen], then fill dst[slen..]
+          7. return (dst, target_i32)
+        """
+        s_instrs = self.translate_expr(arg_s, env)
+        target_instrs = self.translate_expr(arg_target, env)
+        fill_instrs = self.translate_expr(arg_fill, env)
+        if s_instrs is None or target_instrs is None or fill_instrs is None:
+            return None
+        self.needs_alloc = True
+
+        ptr_s = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        target = self.alloc_local("i32")
+        ptr_f = self.alloc_local("i32")
+        flen = self.alloc_local("i32")
+        dst = self.alloc_local("i32")
+        out_len = self.alloc_local("i32")
+        pad_len = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(s_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr_s}")
+        ins.extend(gc_shadow_push(ptr_s))
+
+        # target = wrap(i64)
+        ins.extend(target_instrs)
+        ins.append("i32.wrap_i64")
+        ins.append(f"local.set {target}")
+
+        ins.extend(fill_instrs)
+        ins.append(f"local.set {flen}")
+        ins.append(f"local.set {ptr_f}")
+        ins.extend(gc_shadow_push(ptr_f))
+
+        # If target <= slen OR flen == 0: no padding — out_len = slen.
+        # Otherwise: out_len = target.
+        ins.append(f"local.get {target}")
+        ins.append(f"local.get {slen}")
+        ins.append("i32.le_u")
+        ins.append(f"local.get {flen}")
+        ins.append("i32.eqz")
+        ins.append("i32.or")
+        ins.append("if (result i32)")
+        ins.append(f"  local.get {slen}")
+        ins.append("else")
+        ins.append(f"  local.get {target}")
+        ins.append("end")
+        ins.append(f"local.set {out_len}")
+
+        # pad_len = out_len - slen  (zero in the no-pad case)
+        ins.append(f"local.get {out_len}")
+        ins.append(f"local.get {slen}")
+        ins.append("i32.sub")
+        ins.append(f"local.set {pad_len}")
+
+        # dst = $alloc(out_len)
+        ins.append(f"local.get {out_len}")
+        ins.append("call $alloc")
+        ins.append(f"local.set {dst}")
+        ins.extend(gc_shadow_push(dst))
+
+        if pad_start:
+            # Fill phase: dst[i] = fill[i % flen] for i in [0, pad_len).
+            # Guarded against flen == 0 (pad_len is 0 in that case).
+            ins.append("i32.const 0")
+            ins.append(f"local.set {idx}")
+            ins.append("block $brk_pf")
+            ins.append("  loop $lp_pf")
+            ins.append(f"    local.get {idx}")
+            ins.append(f"    local.get {pad_len}")
+            ins.append("    i32.ge_u")
+            ins.append("    br_if $brk_pf")
+            ins.append(f"    local.get {dst}")
+            ins.append(f"    local.get {idx}")
+            ins.append("    i32.add")
+            ins.append(f"    local.get {ptr_f}")
+            ins.append(f"    local.get {idx}")
+            ins.append(f"    local.get {flen}")
+            ins.append("    i32.rem_u")
+            ins.append("    i32.add")
+            ins.append("    i32.load8_u offset=0")
+            ins.append("    i32.store8 offset=0")
+            ins.append(f"    local.get {idx}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.add")
+            ins.append(f"    local.set {idx}")
+            ins.append("    br $lp_pf")
+            ins.append("  end")
+            ins.append("end")
+
+            # Copy s into dst[pad_len..]
+            ins.append("i32.const 0")
+            ins.append(f"local.set {idx}")
+            ins.append("block $brk_ps")
+            ins.append("  loop $lp_ps")
+            ins.append(f"    local.get {idx}")
+            ins.append(f"    local.get {slen}")
+            ins.append("    i32.ge_u")
+            ins.append("    br_if $brk_ps")
+            ins.append(f"    local.get {dst}")
+            ins.append(f"    local.get {pad_len}")
+            ins.append("    i32.add")
+            ins.append(f"    local.get {idx}")
+            ins.append("    i32.add")
+            ins.append(f"    local.get {ptr_s}")
+            ins.append(f"    local.get {idx}")
+            ins.append("    i32.add")
+            ins.append("    i32.load8_u offset=0")
+            ins.append("    i32.store8 offset=0")
+            ins.append(f"    local.get {idx}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.add")
+            ins.append(f"    local.set {idx}")
+            ins.append("    br $lp_ps")
+            ins.append("  end")
+            ins.append("end")
+        else:
+            # pad_end: copy s first, then fill.
+            ins.append("i32.const 0")
+            ins.append(f"local.set {idx}")
+            ins.append("block $brk_ps")
+            ins.append("  loop $lp_ps")
+            ins.append(f"    local.get {idx}")
+            ins.append(f"    local.get {slen}")
+            ins.append("    i32.ge_u")
+            ins.append("    br_if $brk_ps")
+            ins.append(f"    local.get {dst}")
+            ins.append(f"    local.get {idx}")
+            ins.append("    i32.add")
+            ins.append(f"    local.get {ptr_s}")
+            ins.append(f"    local.get {idx}")
+            ins.append("    i32.add")
+            ins.append("    i32.load8_u offset=0")
+            ins.append("    i32.store8 offset=0")
+            ins.append(f"    local.get {idx}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.add")
+            ins.append(f"    local.set {idx}")
+            ins.append("    br $lp_ps")
+            ins.append("  end")
+            ins.append("end")
+
+            # Fill dst[slen..slen+pad_len]
+            ins.append("i32.const 0")
+            ins.append(f"local.set {idx}")
+            ins.append("block $brk_pf")
+            ins.append("  loop $lp_pf")
+            ins.append(f"    local.get {idx}")
+            ins.append(f"    local.get {pad_len}")
+            ins.append("    i32.ge_u")
+            ins.append("    br_if $brk_pf")
+            ins.append(f"    local.get {dst}")
+            ins.append(f"    local.get {slen}")
+            ins.append("    i32.add")
+            ins.append(f"    local.get {idx}")
+            ins.append("    i32.add")
+            ins.append(f"    local.get {ptr_f}")
+            ins.append(f"    local.get {idx}")
+            ins.append(f"    local.get {flen}")
+            ins.append("    i32.rem_u")
+            ins.append("    i32.add")
+            ins.append("    i32.load8_u offset=0")
+            ins.append("    i32.store8 offset=0")
+            ins.append(f"    local.get {idx}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.add")
+            ins.append(f"    local.set {idx}")
+            ins.append("    br $lp_pf")
+            ins.append("  end")
+            ins.append("end")
+
+        ins.append(f"local.get {dst}")
+        ins.append(f"local.get {out_len}")
+        return ins
+
+    # ==================================================================
+    # #470 — Array<String>-returning splits: string_chars, string_lines,
+    # string_words.
+    #
+    # Shared shape: allocate one "outer" buffer of count * 8 bytes,
+    # then walk s and for each segment k allocate a fresh slice
+    # buffer, copy the bytes into it, and store
+    # outer[k] = (slice_ptr_k, len_k).
+    #
+    # Per-slice allocation (rather than slicing into a single shared
+    # data buffer) is required for GC correctness: the mark phase
+    # rejects interior pointers via the alignment check
+    # ``(val - gc_heap_start) % 8 == 4`` in ``_emit_gc_collect``
+    # (vera/codegen/assembly.py), so a ``shared_buf + offset``
+    # element cannot keep the underlying buffer alive across a
+    # collection triggered after this function returns.  Memory cost
+    # is O(slen + count) — same as a shared-buffer scheme, since the
+    # bytes are copied exactly once total — at the price of one
+    # ``$alloc`` per segment instead of one ``$alloc`` overall.
+    #
+    # Each function differs only in: (a) how it counts segments in
+    # the first pass, and (b) how it advances through the data in
+    # the second pass.  ``_translate_structural_split`` (used by
+    # string_lines and string_words) factors out the per-slice
+    # alloc+copy+store via a closure ``_emit_slice``;
+    # ``_translate_string_chars`` inlines the same shape because its
+    # 1-byte slices don't need a copy loop.
+    # ==================================================================
+
+    def _translate_string_chars(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """string_chars(s): Array of one-byte strings, one per byte of s.
+
+        ASCII semantics — multi-byte characters are split per byte.
+        Matches Vera's byte-oriented string model (same as
+        string_char_code, string_slice etc.).
+
+        GC note: each 1-byte slice gets its own ``$alloc`` rather
+        than slicing into a shared buffer.  Interior pointers
+        (``shared_buf + offset``) fail the GC mark phase's alignment
+        check (``(val - gc_heap_start) % 8 == 4``) at every offset
+        that isn't on an object boundary, so interior pointers
+        cannot keep the underlying buffer alive across a collection
+        triggered after this function returns.  See
+        ``_emit_gc_collect`` in ``vera/codegen/assembly.py``.
+        Per-slice allocation keeps every element a valid root.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+
+        ptr_s = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        outer = self.alloc_local("i32")
+        idx = self.alloc_local("i32")
+        slice_ptr = self.alloc_local("i32")
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr_s}")
+        ins.extend(gc_shadow_push(ptr_s))
+
+        # outer = $alloc(slen * 8)
+        ins.append(f"local.get {slen}")
+        ins.append("i32.const 8")
+        ins.append("i32.mul")
+        ins.append("call $alloc")
+        ins.append(f"local.set {outer}")
+        ins.extend(gc_shadow_push(outer))
+
+        # For each idx in [0, slen):
+        #   slice_ptr = $alloc(1)
+        #   slice_ptr[0] = ptr_s[idx]
+        #   outer[idx*8 + 0] = slice_ptr
+        #   outer[idx*8 + 4] = 1
+        ins.append("i32.const 0")
+        ins.append(f"local.set {idx}")
+        ins.append("block $brk_sc_fill")
+        ins.append("  loop $lp_sc_fill")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_sc_fill")
+        # slice_ptr = $alloc(1)
+        ins.append("    i32.const 1")
+        ins.append("    call $alloc")
+        ins.append(f"    local.set {slice_ptr}")
+        # slice_ptr[0] = ptr_s[idx]
+        ins.append(f"    local.get {slice_ptr}")
+        ins.append(f"    local.get {ptr_s}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=0")
+        # outer[idx*8 + 0] = slice_ptr
+        ins.append(f"    local.get {outer}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 8")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {slice_ptr}")
+        ins.append("    i32.store offset=0")
+        # outer[idx*8 + 4] = 1
+        ins.append(f"    local.get {outer}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 8")
+        ins.append("    i32.mul")
+        ins.append("    i32.add")
+        ins.append("    i32.const 1")
+        ins.append("    i32.store offset=4")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_sc_fill")
+        ins.append("  end")
+        ins.append("end")
+
+        ins.append(f"local.get {outer}")
+        ins.append(f"local.get {slen}")
+        return ins
+
+    # ==================================================================
+    # string_lines — split on \n, \r\n, \r.  Python's splitlines()
+    # semantics: trailing newline does NOT produce an empty final
+    # element; empty input produces an empty array.
+    #
+    # Pass 1: count lines by walking the byte stream and counting
+    # terminators, treating \r\n as one terminator.
+    # Pass 2: walk again emitting (data_ptr + start, end - start) for
+    # each line.
+    # ==================================================================
+
+    def _translate_string_lines(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """string_lines(s)."""
+        return self._translate_structural_split(
+            arg, env, mode="lines",
+        )
+
+    def _translate_string_words(
+        self, arg: ast.Expr, env: WasmSlotEnv,
+    ) -> list[str] | None:
+        """string_words(s)."""
+        return self._translate_structural_split(
+            arg, env, mode="words",
+        )
+
+    def _translate_structural_split(
+        self, arg: ast.Expr, env: WasmSlotEnv, *, mode: str,
+    ) -> list[str] | None:
+        """Shared scaffold for string_lines / string_words.
+
+        Both do a two-pass count-then-emit walk.  The *predicate* for
+        "this byte is a segment boundary" differs (line-terminator
+        set vs any-whitespace set) and the *empty-segment handling*
+        differs (lines preserves empty segments from consecutive
+        terminators; words discards them), but the loop skeleton is
+        identical.
+
+        GC note: each segment gets its own ``$alloc`` rather than
+        slicing into a shared backing buffer.  The GC mark phase's
+        alignment check (``(val - gc_heap_start) % 8 == 4`` in
+        ``vera/codegen/assembly.py``) rejects interior pointers, so
+        ``shared_buf + offset`` slot values in the result array
+        would not keep the underlying buffer alive across a
+        collection triggered after this function returns.  Per-slice
+        allocation gives every element a valid object-start root.
+        ``data`` (the temporary byte buffer copied from the input)
+        is kept rooted on the shadow stack only for the duration of
+        this call; the allocator may reclaim it after we return,
+        but the per-slice copies survive.
+        """
+        arg_instrs = self.translate_expr(arg, env)
+        if arg_instrs is None:
+            return None
+        self.needs_alloc = True
+
+        ptr_s = self.alloc_local("i32")
+        slen = self.alloc_local("i32")
+        data = self.alloc_local("i32")
+        outer = self.alloc_local("i32")
+        count = self.alloc_local("i32")
+        i = self.alloc_local("i32")
+        seg_start = self.alloc_local("i32")
+        seg_len = self.alloc_local("i32")
+        byte = self.alloc_local("i32")
+        slot = self.alloc_local("i32")
+        slice_ptr = self.alloc_local("i32")
+        copy_i = self.alloc_local("i32")
+        write_idx = self.alloc_local("i32")
+        in_word = self.alloc_local("i32")
+
+        emit_slice_serial = [0]
+
+        def _emit_slice(indent: str) -> list[str]:
+            """Emit alloc+copy+store-into-outer for one segment.
+
+            Pre-conditions:
+              - ``slot`` already holds the destination address inside
+                ``outer`` (i.e., ``outer + write_idx*8``).
+              - ``seg_start`` and ``seg_len`` already hold the slice
+                bounds within ``data``.
+              - ``data`` is rooted on the shadow stack.
+            Side effect:
+              - ``slice_ptr`` and ``copy_i`` are clobbered.
+            """
+            emit_slice_serial[0] += 1
+            n = emit_slice_serial[0]
+            return [
+                # slice_ptr = $alloc(seg_len)
+                f"{indent}local.get {seg_len}",
+                f"{indent}call $alloc",
+                f"{indent}local.set {slice_ptr}",
+                # Copy data[seg_start .. seg_start+seg_len] -> slice_ptr
+                f"{indent}i32.const 0",
+                f"{indent}local.set {copy_i}",
+                f"{indent}block $brk_cp{n}",
+                f"{indent}  loop $lp_cp{n}",
+                f"{indent}    local.get {copy_i}",
+                f"{indent}    local.get {seg_len}",
+                f"{indent}    i32.ge_u",
+                f"{indent}    br_if $brk_cp{n}",
+                f"{indent}    local.get {slice_ptr}",
+                f"{indent}    local.get {copy_i}",
+                f"{indent}    i32.add",
+                f"{indent}    local.get {data}",
+                f"{indent}    local.get {seg_start}",
+                f"{indent}    i32.add",
+                f"{indent}    local.get {copy_i}",
+                f"{indent}    i32.add",
+                f"{indent}    i32.load8_u offset=0",
+                f"{indent}    i32.store8 offset=0",
+                f"{indent}    local.get {copy_i}",
+                f"{indent}    i32.const 1",
+                f"{indent}    i32.add",
+                f"{indent}    local.set {copy_i}",
+                f"{indent}    br $lp_cp{n}",
+                f"{indent}  end",
+                f"{indent}end",
+                # Store (slice_ptr, seg_len) at slot
+                f"{indent}local.get {slot}",
+                f"{indent}local.get {slice_ptr}",
+                f"{indent}i32.store offset=0",
+                f"{indent}local.get {slot}",
+                f"{indent}local.get {seg_len}",
+                f"{indent}i32.store offset=4",
+            ]
+
+        ins: list[str] = []
+        ins.extend(arg_instrs)
+        ins.append(f"local.set {slen}")
+        ins.append(f"local.set {ptr_s}")
+        ins.extend(gc_shadow_push(ptr_s))
+
+        # data = $alloc(slen); copy s -> data (stable byte-source kept
+        # rooted on the shadow stack while we emit per-slice copies)
+        ins.append(f"local.get {slen}")
+        ins.append("call $alloc")
+        ins.append(f"local.set {data}")
+        ins.extend(gc_shadow_push(data))
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+        ins.append("block $brk_ss_cp")
+        ins.append("  loop $lp_ss_cp")
+        ins.append(f"    local.get {i}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_ss_cp")
+        ins.append(f"    local.get {data}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {ptr_s}")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.store8 offset=0")
+        ins.append(f"    local.get {i}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {i}")
+        ins.append("    br $lp_ss_cp")
+        ins.append("  end")
+        ins.append("end")
+
+        # Pass 1: count segments
+        ins.append("i32.const 0")
+        ins.append(f"local.set {count}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+
+        if mode == "lines":
+            # Count: number of terminator runs (\n, \r\n, or \r).
+            # splitlines semantics: trailing terminator does not add
+            # an empty final segment.  So count = (sum of terminator
+            # events) + (1 if slen > 0 and last byte was not a
+            # terminator else 0).  Implemented by checking if final
+            # segment has non-zero length at the end.
+            #
+            # Simpler: walk bytes, every time we hit a terminator
+            # increment count; at the end if i != seg_start, count++
+            # (for the trailing non-terminator content).
+            ins.append("i32.const 0")
+            ins.append(f"local.set {seg_start}")
+            ins.append("block $brk_ct")
+            ins.append("  loop $lp_ct")
+            ins.append(f"    local.get {i}")
+            ins.append(f"    local.get {slen}")
+            ins.append("    i32.ge_u")
+            ins.append("    br_if $brk_ct")
+            ins.append(f"    local.get {ptr_s}")
+            ins.append(f"    local.get {i}")
+            ins.append("    i32.add")
+            ins.append("    i32.load8_u offset=0")
+            ins.append(f"    local.set {byte}")
+            # if byte == '\n': count++, seg_start = i+1, i++
+            ins.append(f"    local.get {byte}")
+            ins.append("    i32.const 10")
+            ins.append("    i32.eq")
+            ins.append("    if")
+            ins.append(f"      local.get {count}")
+            ins.append("      i32.const 1")
+            ins.append("      i32.add")
+            ins.append(f"      local.set {count}")
+            ins.append(f"      local.get {i}")
+            ins.append("      i32.const 1")
+            ins.append("      i32.add")
+            ins.append(f"      local.set {seg_start}")
+            ins.append(f"      local.get {i}")
+            ins.append("      i32.const 1")
+            ins.append("      i32.add")
+            ins.append(f"      local.set {i}")
+            ins.append("      br $lp_ct")
+            ins.append("    end")
+            # if byte == '\r': count++, seg_start = i+1 (or i+2 if
+            # followed by '\n'), advance i accordingly
+            ins.append(f"    local.get {byte}")
+            ins.append("    i32.const 13")
+            ins.append("    i32.eq")
+            ins.append("    if")
+            ins.append(f"      local.get {count}")
+            ins.append("      i32.const 1")
+            ins.append("      i32.add")
+            ins.append(f"      local.set {count}")
+            # Peek next byte if available
+            ins.append(f"      local.get {i}")
+            ins.append("      i32.const 1")
+            ins.append("      i32.add")
+            ins.append(f"      local.get {slen}")
+            ins.append("      i32.lt_u")
+            ins.append("      if (result i32)")
+            ins.append(f"        local.get {ptr_s}")
+            ins.append(f"        local.get {i}")
+            ins.append("        i32.const 1")
+            ins.append("        i32.add")
+            ins.append("        i32.add")
+            ins.append("        i32.load8_u offset=0")
+            ins.append("        i32.const 10")
+            ins.append("        i32.eq")
+            ins.append("      else")
+            ins.append("        i32.const 0")
+            ins.append("      end")
+            ins.append("      if (result i32)")
+            ins.append(f"        local.get {i}")
+            ins.append("        i32.const 2")
+            ins.append("        i32.add")
+            ins.append("      else")
+            ins.append(f"        local.get {i}")
+            ins.append("        i32.const 1")
+            ins.append("        i32.add")
+            ins.append("      end")
+            ins.append(f"      local.set {seg_start}")
+            ins.append(f"      local.get {seg_start}")
+            ins.append(f"      local.set {i}")
+            ins.append("      br $lp_ct")
+            ins.append("    end")
+            # Regular byte: i++
+            ins.append(f"    local.get {i}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.add")
+            ins.append(f"    local.set {i}")
+            ins.append("    br $lp_ct")
+            ins.append("  end")
+            ins.append("end")
+            # Trailing non-terminator content? count++ if seg_start < slen
+            ins.append(f"local.get {seg_start}")
+            ins.append(f"local.get {slen}")
+            ins.append("i32.lt_u")
+            ins.append("if")
+            ins.append(f"  local.get {count}")
+            ins.append("  i32.const 1")
+            ins.append("  i32.add")
+            ins.append(f"  local.set {count}")
+            ins.append("end")
+
+        else:
+            # words mode: count runs of non-whitespace.  A run begins
+            # when we transition from ws to non-ws; at the end, if
+            # in_word is true, count it.
+            # in_word = 0
+            ins.append("i32.const 0")
+            ins.append(f"local.set {in_word}")
+            ins.append("block $brk_cw")
+            ins.append("  loop $lp_cw")
+            ins.append(f"    local.get {i}")
+            ins.append(f"    local.get {slen}")
+            ins.append("    i32.ge_u")
+            ins.append("    br_if $brk_cw")
+            ins.append(f"    local.get {ptr_s}")
+            ins.append(f"    local.get {i}")
+            ins.append("    i32.add")
+            ins.append("    i32.load8_u offset=0")
+            ins.append(f"    local.set {byte}")
+            # is_ws(byte) → stack: canonical ASCII whitespace
+            # predicate.  See emit_is_ascii_whitespace in helpers.py.
+            ins.extend(emit_is_ascii_whitespace(byte, indent="    "))
+            ins.append("    if")  # is ws
+            ins.append(f"      local.get {in_word}")
+            ins.append("      if")
+            # end of a word
+            ins.append(f"        local.get {count}")
+            ins.append("        i32.const 1")
+            ins.append("        i32.add")
+            ins.append(f"        local.set {count}")
+            ins.append("        i32.const 0")
+            ins.append(f"        local.set {in_word}")
+            ins.append("      end")
+            ins.append("    else")
+            # non-ws byte
+            ins.append("      i32.const 1")
+            ins.append(f"      local.set {in_word}")
+            ins.append("    end")
+            ins.append(f"    local.get {i}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.add")
+            ins.append(f"    local.set {i}")
+            ins.append("    br $lp_cw")
+            ins.append("  end")
+            ins.append("end")
+            # trailing word?
+            ins.append(f"local.get {in_word}")
+            ins.append("if")
+            ins.append(f"  local.get {count}")
+            ins.append("  i32.const 1")
+            ins.append("  i32.add")
+            ins.append(f"  local.set {count}")
+            ins.append("end")
+
+        # Allocate outer array buffer (count * 8 bytes)
+        ins.append(f"local.get {count}")
+        ins.append("i32.const 8")
+        ins.append("i32.mul")
+        ins.append("call $alloc")
+        ins.append(f"local.set {outer}")
+        ins.extend(gc_shadow_push(outer))
+
+        # Pass 2: walk again and emit (ptr, len) pairs into outer
+        ins.append("i32.const 0")
+        ins.append(f"local.set {i}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {seg_start}")
+        ins.append("i32.const 0")
+        ins.append(f"local.set {write_idx}")
+
+        if mode == "lines":
+            ins.append("block $brk_et")
+            ins.append("  loop $lp_et")
+            ins.append(f"    local.get {i}")
+            ins.append(f"    local.get {slen}")
+            ins.append("    i32.ge_u")
+            ins.append("    br_if $brk_et")
+            ins.append(f"    local.get {ptr_s}")
+            ins.append(f"    local.get {i}")
+            ins.append("    i32.add")
+            ins.append("    i32.load8_u offset=0")
+            ins.append(f"    local.set {byte}")
+            # byte == '\n'?
+            ins.append(f"    local.get {byte}")
+            ins.append("    i32.const 10")
+            ins.append("    i32.eq")
+            ins.append("    if")
+            # Site 1 (LF): emit slice for [seg_start, i), then advance.
+            ins.append(f"      local.get {outer}")
+            ins.append(f"      local.get {write_idx}")
+            ins.append("      i32.const 8")
+            ins.append("      i32.mul")
+            ins.append("      i32.add")
+            ins.append(f"      local.set {slot}")
+            # seg_len = i - seg_start
+            ins.append(f"      local.get {i}")
+            ins.append(f"      local.get {seg_start}")
+            ins.append("      i32.sub")
+            ins.append(f"      local.set {seg_len}")
+            ins.extend(_emit_slice("      "))
+            ins.append(f"      local.get {write_idx}")
+            ins.append("      i32.const 1")
+            ins.append("      i32.add")
+            ins.append(f"      local.set {write_idx}")
+            ins.append(f"      local.get {i}")
+            ins.append("      i32.const 1")
+            ins.append("      i32.add")
+            ins.append(f"      local.set {seg_start}")
+            ins.append(f"      local.get {seg_start}")
+            ins.append(f"      local.set {i}")
+            ins.append("      br $lp_et")
+            ins.append("    end")
+            # byte == '\r'?
+            ins.append(f"    local.get {byte}")
+            ins.append("    i32.const 13")
+            ins.append("    i32.eq")
+            ins.append("    if")
+            # Site 2 (CR): emit slice for [seg_start, i).
+            ins.append(f"      local.get {outer}")
+            ins.append(f"      local.get {write_idx}")
+            ins.append("      i32.const 8")
+            ins.append("      i32.mul")
+            ins.append("      i32.add")
+            ins.append(f"      local.set {slot}")
+            ins.append(f"      local.get {i}")
+            ins.append(f"      local.get {seg_start}")
+            ins.append("      i32.sub")
+            ins.append(f"      local.set {seg_len}")
+            ins.extend(_emit_slice("      "))
+            ins.append(f"      local.get {write_idx}")
+            ins.append("      i32.const 1")
+            ins.append("      i32.add")
+            ins.append(f"      local.set {write_idx}")
+            # Determine next seg_start (skip \r\n if applicable)
+            ins.append(f"      local.get {i}")
+            ins.append("      i32.const 1")
+            ins.append("      i32.add")
+            ins.append(f"      local.get {slen}")
+            ins.append("      i32.lt_u")
+            ins.append("      if (result i32)")
+            ins.append(f"        local.get {ptr_s}")
+            ins.append(f"        local.get {i}")
+            ins.append("        i32.const 1")
+            ins.append("        i32.add")
+            ins.append("        i32.add")
+            ins.append("        i32.load8_u offset=0")
+            ins.append("        i32.const 10")
+            ins.append("        i32.eq")
+            ins.append("      else")
+            ins.append("        i32.const 0")
+            ins.append("      end")
+            ins.append("      if (result i32)")
+            ins.append(f"        local.get {i}")
+            ins.append("        i32.const 2")
+            ins.append("        i32.add")
+            ins.append("      else")
+            ins.append(f"        local.get {i}")
+            ins.append("        i32.const 1")
+            ins.append("        i32.add")
+            ins.append("      end")
+            ins.append(f"      local.set {seg_start}")
+            ins.append(f"      local.get {seg_start}")
+            ins.append(f"      local.set {i}")
+            ins.append("      br $lp_et")
+            ins.append("    end")
+            ins.append(f"    local.get {i}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.add")
+            ins.append(f"    local.set {i}")
+            ins.append("    br $lp_et")
+            ins.append("  end")
+            ins.append("end")
+            # Site 3 (lines trailing content): emit slice for
+            # [seg_start, slen) if any content remains.
+            ins.append(f"local.get {seg_start}")
+            ins.append(f"local.get {slen}")
+            ins.append("i32.lt_u")
+            ins.append("if")
+            ins.append(f"  local.get {outer}")
+            ins.append(f"  local.get {write_idx}")
+            ins.append("  i32.const 8")
+            ins.append("  i32.mul")
+            ins.append("  i32.add")
+            ins.append(f"  local.set {slot}")
+            ins.append(f"  local.get {slen}")
+            ins.append(f"  local.get {seg_start}")
+            ins.append("  i32.sub")
+            ins.append(f"  local.set {seg_len}")
+            ins.extend(_emit_slice("  "))
+            ins.append("end")
+        else:
+            # words
+            ins.append("i32.const 0")
+            ins.append(f"local.set {in_word}")
+            ins.append("block $brk_ew")
+            ins.append("  loop $lp_ew")
+            ins.append(f"    local.get {i}")
+            ins.append(f"    local.get {slen}")
+            ins.append("    i32.ge_u")
+            ins.append("    br_if $brk_ew")
+            ins.append(f"    local.get {ptr_s}")
+            ins.append(f"    local.get {i}")
+            ins.append("    i32.add")
+            ins.append("    i32.load8_u offset=0")
+            ins.append(f"    local.set {byte}")
+            # is_ws(byte): canonical ASCII whitespace predicate.
+            ins.extend(emit_is_ascii_whitespace(byte, indent="    "))
+            ins.append("    if")  # ws
+            ins.append(f"      local.get {in_word}")
+            ins.append("      if")
+            # Site 4 (words mid-string): emit slice for [seg_start, i).
+            ins.append(f"        local.get {outer}")
+            ins.append(f"        local.get {write_idx}")
+            ins.append("        i32.const 8")
+            ins.append("        i32.mul")
+            ins.append("        i32.add")
+            ins.append(f"        local.set {slot}")
+            ins.append(f"        local.get {i}")
+            ins.append(f"        local.get {seg_start}")
+            ins.append("        i32.sub")
+            ins.append(f"        local.set {seg_len}")
+            ins.extend(_emit_slice("        "))
+            ins.append(f"        local.get {write_idx}")
+            ins.append("        i32.const 1")
+            ins.append("        i32.add")
+            ins.append(f"        local.set {write_idx}")
+            ins.append("        i32.const 0")
+            ins.append(f"        local.set {in_word}")
+            ins.append("      end")
+            ins.append("    else")
+            # non-ws
+            ins.append(f"      local.get {in_word}")
+            ins.append("      i32.eqz")
+            ins.append("      if")
+            ins.append(f"        local.get {i}")
+            ins.append(f"        local.set {seg_start}")
+            ins.append("        i32.const 1")
+            ins.append(f"        local.set {in_word}")
+            ins.append("      end")
+            ins.append("    end")
+            ins.append(f"    local.get {i}")
+            ins.append("    i32.const 1")
+            ins.append("    i32.add")
+            ins.append(f"    local.set {i}")
+            ins.append("    br $lp_ew")
+            ins.append("  end")
+            ins.append("end")
+            # Site 5 (words trailing word): emit slice for [seg_start, slen).
+            ins.append(f"local.get {in_word}")
+            ins.append("if")
+            ins.append(f"  local.get {outer}")
+            ins.append(f"  local.get {write_idx}")
+            ins.append("  i32.const 8")
+            ins.append("  i32.mul")
+            ins.append("  i32.add")
+            ins.append(f"  local.set {slot}")
+            ins.append(f"  local.get {slen}")
+            ins.append(f"  local.get {seg_start}")
+            ins.append("  i32.sub")
+            ins.append(f"  local.set {seg_len}")
+            ins.extend(_emit_slice("  "))
+            ins.append("end")
+
+        ins.append(f"local.get {outer}")
+        ins.append(f"local.get {count}")
         return ins

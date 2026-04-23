@@ -1,0 +1,260 @@
+-- Conformance: String utilities + character classification (Chapter 9)
+-- Tests: string_chars, string_lines, string_words, string_pad_start,
+--        string_pad_end, string_reverse, string_trim_start,
+--        string_trim_end, is_digit, is_alpha, is_alphanumeric,
+--        is_whitespace, is_upper, is_lower, char_to_upper,
+--        char_to_lower.
+--
+-- Phase 1 of #470 + full scope of #471: 16 new built-ins.  All
+-- inline WAT (no host imports); classifiers are ASCII-range checks,
+-- transformations copy bytes to fresh buffers.
+-- ================================================================
+-- test_is_digit
+-- ================================================================
+public fn test_is_digit(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if is_digit("5") then {
+    if is_digit("x") then {
+      0
+    } else {
+      1
+    }
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_is_alpha
+-- ================================================================
+public fn test_is_alpha(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if is_alpha("A") then {
+    if is_alpha("z") then {
+      if is_alpha("1") then {
+        0
+      } else {
+        1
+      }
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_is_alphanumeric
+-- ================================================================
+public fn test_is_alphanumeric(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if is_alphanumeric("a") then {
+    if is_alphanumeric("9") then {
+      if is_alphanumeric(" ") then {
+        0
+      } else {
+        1
+      }
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_is_whitespace
+-- ================================================================
+public fn test_is_whitespace(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if is_whitespace(" ") then {
+    if is_whitespace("x") then {
+      0
+    } else {
+      1
+    }
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_is_upper_lower
+-- ================================================================
+public fn test_is_upper_lower(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if is_upper("A") then {
+    if is_lower("a") then {
+      if is_upper("a") then {
+        0
+      } else {
+        1
+      }
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_empty_string_classifier
+-- All classifiers return false for empty string.
+-- ================================================================
+public fn test_empty_string_classifier(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if is_digit("") then {
+    0
+  } else {
+    if is_alpha("") then {
+      0
+    } else {
+      if is_whitespace("") then {
+        0
+      } else {
+        1
+      }
+    }
+  }
+}
+
+-- ================================================================
+-- test_char_to_upper_lower
+-- ================================================================
+public fn test_char_to_upper_lower(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- Only first char is converted.
+  if char_to_upper("abc") == "Abc" then {
+    if char_to_lower("ABC") == "aBC" then {
+      1
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_string_reverse
+-- ================================================================
+public fn test_string_reverse(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if string_reverse("hello") == "olleh" then {
+    if string_reverse("") == "" then {
+      1
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_string_trim_variants
+-- ================================================================
+public fn test_string_trim_variants(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if string_trim_start("  hi  ") == "hi  " then {
+    if string_trim_end("  hi  ") == "  hi" then {
+      1
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_string_pad
+-- ================================================================
+public fn test_string_pad(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if string_pad_start("x", 5, "0") == "0000x" then {
+    if string_pad_end("x", 5, "0") == "x0000" then {
+      -- target shorter than input returns input unchanged
+      if string_pad_start("hello", 3, "*") == "hello" then {
+        1
+      } else {
+        0
+      }
+    } else {
+      0
+    }
+  } else {
+    0
+  }
+}
+
+-- ================================================================
+-- test_string_chars
+-- ================================================================
+public fn test_string_chars(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- chars("abc") has length 3
+  nat_to_int(array_length(string_chars("abc")))
+}
+
+-- ================================================================
+-- test_string_lines
+-- Splits on \n, \r\n, \r — Python splitlines semantics.
+-- ================================================================
+public fn test_string_lines(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- "a\nb\nc" has 3 lines
+  nat_to_int(array_length(string_lines("a\nb\nc")))
+}
+
+-- ================================================================
+-- test_string_words
+-- Splits on whitespace runs; discards empty segments.
+-- ================================================================
+public fn test_string_words(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- "  foo  bar " has 2 words
+  nat_to_int(array_length(string_words("  foo  bar ")))
+}

@@ -1671,6 +1671,143 @@ The callback-based combinators — `array_mapi`, `array_find`, `array_any`, `arr
 
 `array_reverse` and `array_flatten` are Tier 3 for a different and narrower reason: they have no closure callback at all and their behaviour is entirely structural (length-preserving / length-summing respectively). They could in principle support stronger Tier 1 contracts such as `ensures(array_length(@result) == array_length(@input))` for `array_reverse` or `ensures(array_length(@result) == sum_inner_lengths(@input))` for `array_flatten`. The underlying SMT encoding for those properties is not yet implemented; once it is, both functions become candidates for Tier 1 promotion without any change to their signatures.
 
+### 9.6.22 String Utilities and Character Classification
+
+Vera provides eight additional string utilities and eight character classification primitives. All sixteen are implemented as inline WAT — no host imports — so they execute identically under the Python (`wasmtime`) and browser (Node.js / web) runtimes. Tracked in [#470](https://github.com/aallan/vera/issues/470) (utilities) and [#471](https://github.com/aallan/vera/issues/471) (classifiers).
+
+All operations use **ASCII byte semantics**: classifiers test the first byte of the input string; case-conversion functions transform the first byte and pass remaining bytes through unchanged; structural splits work at the byte level. Unicode-aware variants are tracked separately and intentionally deferred.
+
+#### String splits — bridges to the array combinators
+
+```vera
+public fn string_chars(@String -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+
+public fn string_lines(@String -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+
+public fn string_words(@String -> @Array<String>)
+  requires(true) ensures(true) effects(pure)
+```
+
+`string_chars` returns one 1-byte string per byte of the input, in order. This is the canonical bridge from string to array: combine with `array_map`, `array_filter`, `array_fold`, etc. to thread per-byte logic through the array combinators.
+
+`string_lines` follows Python's `str.splitlines()`: splits on `\n`, `\r\n`, and `\r` line terminators. A trailing line terminator does **not** produce an empty trailing segment.
+
+`string_words` follows Python's `str.split()` with no arguments: splits on runs of ASCII whitespace (the same set as `is_whitespace` — space, tab, `\n`, `\v`, `\f`, `\r`), and discards empty segments. `string_words("  ")` returns the empty array.
+
+```vera
+string_chars("abc")           -- ["a", "b", "c"]
+string_lines("a\nb\r\nc\rd")  -- ["a", "b", "c", "d"]
+string_lines("a\n")           -- ["a"]      -- not ["a", ""]
+string_words("  foo  bar ")   -- ["foo", "bar"]
+string_words("   ")           -- []
+```
+
+All three return a fresh `@Array<String>` whose elements are each independently allocated and copied. (The implementation does not share a backing buffer between elements: the GC mark phase rejects interior pointers — see `_emit_gc_collect` in `vera/codegen/assembly.py` — so a shared-buffer scheme cannot keep the elements rooted across a collection triggered after the function returns.)
+
+#### String transformations
+
+```vera
+public fn string_reverse(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+
+public fn string_trim_start(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+
+public fn string_trim_end(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+`string_reverse` reverses the byte order of the input. ASCII-safe; for multi-byte UTF-8 sequences the result is not a valid UTF-8 string. The empty string round-trips.
+
+`string_trim_start` strips leading ASCII whitespace (the same set as `is_whitespace` — space, tab, `\n`, `\v`, `\f`, `\r`); `string_trim_end` strips trailing whitespace. Each preserves the opposite end exactly. The all-whitespace input returns the empty string.
+
+```vera
+string_reverse("hello")       -- "olleh"
+string_trim_start("  hi  ")   -- "hi  "
+string_trim_end("  hi  ")     -- "  hi"
+```
+
+#### Padding
+
+```vera
+public fn string_pad_start(@String, @Nat, @String -> @String)
+  requires(true) ensures(true) effects(pure)
+
+public fn string_pad_end(@String, @Nat, @String -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+`string_pad_start(s, n, fill)` returns `s` left-padded with `fill` so the result has length at least `n` bytes. `string_pad_end(s, n, fill)` pads on the right. Semantics match JavaScript's `padStart` / `padEnd`:
+
+- If `string_length(s) >= n` the input is returned unchanged.
+- The fill cycles left-to-right and is truncated to exactly the padding length, not the next multiple of `string_length(fill)`.
+- An empty `fill` is a no-op (returns the input unchanged) — `pad_start` cannot infinitely loop.
+
+```vera
+string_pad_start("7", 5, "0")     -- "00007"
+string_pad_end("ok", 8, ".")      -- "ok......"
+string_pad_start("x", 7, "ab")    -- "abababx"
+string_pad_start("hello", 3, "*") -- "hello"
+```
+
+#### Case conversion
+
+```vera
+public fn char_to_upper(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+
+public fn char_to_lower(@String -> @String)
+  requires(true) ensures(true) effects(pure)
+```
+
+`char_to_upper` converts the first byte of the input to uppercase if it is an ASCII lowercase letter (`a..z`); other bytes pass through unchanged. `char_to_lower` is the dual. Only the first byte is transformed — these are deliberately first-character operations, useful for title-casing tokens.
+
+```vera
+char_to_upper("alice")  -- "Alice"
+char_to_upper("5xyz")   -- "5xyz"
+char_to_lower("ALICE")  -- "aLICE"
+char_to_upper("")       -- ""
+```
+
+For whole-string ASCII case conversion, see `string_upper` / `string_lower` in §9.6.14. Unicode-aware variants of all four operations are tracked alongside Unicode handling.
+
+#### Character classifiers
+
+```vera
+public fn is_digit(@String -> @Bool)         requires(true) ensures(true) effects(pure)
+public fn is_alpha(@String -> @Bool)         requires(true) ensures(true) effects(pure)
+public fn is_alphanumeric(@String -> @Bool)  requires(true) ensures(true) effects(pure)
+public fn is_whitespace(@String -> @Bool)    requires(true) ensures(true) effects(pure)
+public fn is_upper(@String -> @Bool)         requires(true) ensures(true) effects(pure)
+public fn is_lower(@String -> @Bool)         requires(true) ensures(true) effects(pure)
+```
+
+Each classifier inspects the **first byte** of the input string and returns a `@Bool`. ASCII range definitions:
+
+| Predicate | Returns true for byte values |
+|---|---|
+| `is_digit` | `0x30..0x39` (`'0'..'9'`) |
+| `is_alpha` | `0x41..0x5A` or `0x61..0x7A` (`'A'..'Z'`, `'a'..'z'`) |
+| `is_alphanumeric` | union of `is_digit` and `is_alpha` |
+| `is_whitespace` | `0x09` (tab), `0x0A` (`\n`), `0x0B` (`\v`), `0x0C` (`\f`), `0x0D` (`\r`), `0x20` (space) — Python `str.isspace()` ASCII set |
+| `is_upper` | `0x41..0x5A` (`'A'..'Z'`) |
+| `is_lower` | `0x61..0x7A` (`'a'..'z'`) |
+
+Every classifier returns `false` for the empty string — there is no first byte to inspect, so no predicate can hold.
+
+```vera
+is_digit("5")   -- true
+is_digit("x")   -- false
+is_digit("")    -- false
+is_alpha("A")   -- true
+is_alpha("9")   -- false
+is_whitespace("\t")  -- true
+```
+
+**Verification:** all sixteen functions have Tier-1-verifiable signatures; their bodies fall to Tier 3 (runtime) verification because the SMT encoding does not yet model byte-level string operations. Their `requires(true)` / `ensures(true)` contracts are total, so Tier 3 reduces to runtime trap-freedom — every input is accepted.
+
 ## 9.7 Built-in Types
 
 ### 9.7.1 Json

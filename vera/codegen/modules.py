@@ -270,6 +270,15 @@ class CrossModuleMixin:
             "string_index_of",
             "string_upper", "string_lower", "string_replace",
             "string_split", "string_join",
+            # String utilities (#470) — all iterative WAT.
+            "string_chars", "string_lines", "string_words",
+            "string_pad_start", "string_pad_end",
+            "string_reverse", "string_trim_start", "string_trim_end",
+            # Character classification + case conversion (#471) — all
+            # ASCII-range checks inlined as WAT.
+            "is_digit", "is_alpha", "is_alphanumeric",
+            "is_whitespace", "is_upper", "is_lower",
+            "char_to_upper", "char_to_lower",
             "abs", "min", "max", "floor", "ceil", "round", "sqrt", "pow",
             # Math builtins (#467) — log/trig via host imports,
             # pi/e/sign/clamp/float_clamp inlined as WAT.

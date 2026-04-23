@@ -182,6 +182,44 @@ class CallsMixin:
                 return self._translate_join(
                     call.args[0], call.args[1], env,
                 )
+            # String utilities (#470)
+            if call.name == "string_chars" and len(call.args) == 1:
+                return self._translate_string_chars(call.args[0], env)
+            if call.name == "string_lines" and len(call.args) == 1:
+                return self._translate_string_lines(call.args[0], env)
+            if call.name == "string_words" and len(call.args) == 1:
+                return self._translate_string_words(call.args[0], env)
+            if call.name == "string_pad_start" and len(call.args) == 3:
+                return self._translate_string_pad_start(
+                    call.args[0], call.args[1], call.args[2], env,
+                )
+            if call.name == "string_pad_end" and len(call.args) == 3:
+                return self._translate_string_pad_end(
+                    call.args[0], call.args[1], call.args[2], env,
+                )
+            if call.name == "string_reverse" and len(call.args) == 1:
+                return self._translate_string_reverse(call.args[0], env)
+            if call.name == "string_trim_start" and len(call.args) == 1:
+                return self._translate_string_trim_start(call.args[0], env)
+            if call.name == "string_trim_end" and len(call.args) == 1:
+                return self._translate_string_trim_end(call.args[0], env)
+            # Character classification + case conversion (#471)
+            if call.name == "is_digit" and len(call.args) == 1:
+                return self._translate_is_digit(call.args[0], env)
+            if call.name == "is_alpha" and len(call.args) == 1:
+                return self._translate_is_alpha(call.args[0], env)
+            if call.name == "is_alphanumeric" and len(call.args) == 1:
+                return self._translate_is_alphanumeric(call.args[0], env)
+            if call.name == "is_whitespace" and len(call.args) == 1:
+                return self._translate_is_whitespace(call.args[0], env)
+            if call.name == "is_upper" and len(call.args) == 1:
+                return self._translate_is_upper(call.args[0], env)
+            if call.name == "is_lower" and len(call.args) == 1:
+                return self._translate_is_lower(call.args[0], env)
+            if call.name == "char_to_upper" and len(call.args) == 1:
+                return self._translate_char_to_upper(call.args[0], env)
+            if call.name == "char_to_lower" and len(call.args) == 1:
+                return self._translate_char_to_lower(call.args[0], env)
             if call.name == "array_append" and len(call.args) == 2:
                 return self._translate_array_append(
                     call.args[0], call.args[1], env,
@@ -661,4 +699,13 @@ class CallsMixin:
                 outer = self._infer_concat_elem_type(expr.args[0])
                 if outer and outer.startswith("Array<") and outer.endswith(">"):
                     return outer[len("Array<"):-len(">")]
+            # Array<String>-returning string operations: split, chars,
+            # lines, words.  Element type is always String — useful so
+            # downstream array combinators (array_map, array_filter)
+            # can resolve T to String when chaining off these calls.
+            if expr.name in (
+                "string_split", "string_chars",
+                "string_lines", "string_words",
+            ):
+                return "String"
         return None

@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 (no entries yet)
 
+## [0.0.118] - 2026-04-23
+
+### Added
+- **String utility built-ins** ([#470](https://github.com/aallan/vera/issues/470)) — eight pure string operations implemented entirely as inline WAT. Splits: `string_chars` (1-byte strings, the canonical bridge from `String` to `Array<String>`), `string_lines` (`\n` / `\r\n` / `\r` terminators, Python `splitlines()` semantics — trailing terminator does not add empty segment), `string_words` (whitespace-run splits, Python `split()` semantics — runs collapse, empty segments discarded). Transformations: `string_reverse`, `string_trim_start`, `string_trim_end`. Padding: `string_pad_start(s, n, fill)` / `string_pad_end(s, n, fill)` with JavaScript `padStart`/`padEnd` semantics — fill cycles left-to-right and is truncated to exactly the padding length, empty fill is a no-op, target shorter than input returns input unchanged. The three split operations return `Array<String>` whose elements are each independently `$alloc`-ed and copied — interior pointers into a shared backing buffer would fail the GC mark phase's alignment check (`(val - gc_heap_start) % 8 == 4` in `_emit_gc_collect`) and become unreachable after the function returns. Conformance: `ch09_string_char_utilities.vera`. Example: `examples/string_utilities.vera` exercises every operation in a coherent log-line-processor scenario. Closes [#470](https://github.com/aallan/vera/issues/470).
+- **Character classification built-ins** ([#471](https://github.com/aallan/vera/issues/471)) — eight pure first-byte ASCII operations implemented as inline WAT (no host calls). Six classifiers: `is_digit` (`'0'..'9'`), `is_alpha` (`'A'..'Z'`, `'a'..'z'`), `is_alphanumeric` (union), `is_whitespace` (Python `str.isspace()` ASCII set — tab/LF/VT/FF/CR/space), `is_upper`, `is_lower`. Each inspects the **first byte** of the input and returns `false` for the empty string. Two case-conversion: `char_to_upper` / `char_to_lower` transform only the first byte, leaving remaining bytes untouched (useful for title-casing tokens). Eliminates the brittle hand-rolled `byte == 48 || byte == 49 || ...` patterns. ASCII-only — Unicode-aware variants tracked separately. Closes [#471](https://github.com/aallan/vera/issues/471).
+
+### Compiler
+- `vera/wasm/calls_strings.py` grew with sixteen new translators (~600 lines added). Shared helpers: `_translate_classifier(arg, env, *, body)` factors the predicate scaffolding for the six classifiers; `_translate_char_case(arg, env, *, to_upper)` factors `char_to_upper`/`char_to_lower`; `_translate_trim(arg, env, *, trim_start, trim_end)` factors both trim variants; `_translate_pad(...)` factors both pad variants; `_translate_structural_split(arg, env, *, mode)` factors `string_lines` and `string_words` via a two-pass count-then-emit shape that mirrors the existing `string_split` implementation.
+- ASCII range tricks reused throughout: `(byte - 48) < 10` for digit, `((byte | 0x20) - 97) < 26` for case-folded alpha. Branchless and idiomatic across the classifiers.
+- `vera/wasm/calls.py` dispatch table extended with sixteen new branches, plus `_infer_concat_elem_type` now returns `"String"` for `string_chars` / `string_lines` / `string_words` so monomorphization picks up the array element type correctly.
+- `vera/wasm/inference.py` extended in both `_infer_fncall_wasm_type` and `_infer_fncall_vera_type` for the new return-type shapes (`i32_pair` for the string and array returns, `i32` for the bool returns).
+- `vera/codegen/modules.py` known-names allowlist extended.
+- `vera/environment.py` registers the sixteen new `FunctionInfo` entries in a tight block — the six classifiers are emitted via a Python loop because their `(STRING,) -> BOOL` signatures are identical.
+
+### Tests
+- 33 new unit tests across `TestCharClassification` and `TestStringUtilities` in `tests/test_codegen.py`.
+- 9 new browser parity tests across `TestBrowserStringUtilities` and `TestBrowserCharClassification` in `tests/test_browser.py`. All sixteen built-ins produce bit-identical output under `wasmtime` and Node.js — they're inline WAT, no host imports.
+- New conformance program `tests/conformance/ch09_string_char_utilities.vera` (level: `run`) with 14 test functions covering classifier, transform, pad, and split semantics including all the empty-string and edge-case shapes.
+
 ## [0.0.117] - 2026-04-22
 
 ### Added
@@ -1607,7 +1626,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.117...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.118...HEAD
+[0.0.118]: https://github.com/aallan/vera/compare/v0.0.117...v0.0.118
 [0.0.117]: https://github.com/aallan/vera/compare/v0.0.116...v0.0.117
 [0.0.116]: https://github.com/aallan/vera/compare/v0.0.115...v0.0.116
 [0.0.115]: https://github.com/aallan/vera/compare/v0.0.114...v0.0.115

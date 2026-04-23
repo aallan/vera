@@ -976,6 +976,289 @@ public fn main(-> @Unit)
         assert node["stdout"] == "100101104202203"
 
 
+class TestBrowserStringUtilities:
+    """Browser parity for string utility built-ins (#470).
+
+    All eight ops are pure-WASM byte-level loops with no host imports,
+    so the Python (wasmtime) and browser (Node.js) runtimes should
+    produce bit-identical output.  When an op returns ``Array<String>``
+    (``string_chars``/``string_lines``/``string_words``) we fold it
+    back to a single integer count or join it to a single ``String`` to
+    keep cross-runtime comparisons exact.
+    """
+
+    def test_string_reverse(self, tmp_path: Path) -> None:
+        """reverse("hello") → "olleh"; empty string round-trips."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_reverse("hello"));
+  IO.print(",");
+  IO.print(string_reverse(""))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "olleh,"
+
+    def test_string_trim(self, tmp_path: Path) -> None:
+        """trim_start keeps trailing spaces; trim_end keeps leading
+        spaces.  Also exercises VT (\\u{0B}) and FF (\\u{0C}) at both
+        ends — the new whitespace predicate (Python's str.isspace()
+        ASCII set) must treat them as whitespace identically across
+        the Python and browser runtimes.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_trim_start("  hi  "));
+  IO.print("|");
+  IO.print(string_trim_end("  hi  "));
+  IO.print("|");
+  -- VT/FF mixed in with regular whitespace.
+  IO.print(string_trim_start(" \\u{0B}\\u{0C}hi  "));
+  IO.print("|");
+  IO.print(string_trim_end("  hi\\u{0B}\\u{0C} "));
+  IO.print("|")
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "hi  |  hi|hi  |  hi|"
+
+    def test_string_strip_vt_ff(self, tmp_path: Path) -> None:
+        """Browser regression: ``string_strip`` (which delegates to
+        ``_translate_trim`` after PR #510) must treat VT (\\u{0B}) and
+        FF (\\u{0C}) as whitespace identically to the trim functions.
+
+        This pins the strip→trim delegation contract under the
+        browser runtime: if a future refactor accidentally re-opens
+        the old narrow {space, tab, LF, CR} predicate for strip, the
+        leading and trailing VT/FF would survive and break this
+        assertion.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_strip("\\u{0B}\\u{0C}hi \\u{0B}"));
+  IO.print("|")
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "hi|"
+
+    def test_string_pad(self, tmp_path: Path) -> None:
+        """pad_start/pad_end cycle the fill; pad of longer string is
+        a no-op; empty fill is a no-op (cannot infinitely loop).
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_pad_start("x", 5, "0"));
+  IO.print(",");
+  IO.print(string_pad_end("x", 5, "0"));
+  IO.print(",");
+  IO.print(string_pad_start("x", 7, "ab"));
+  IO.print(",");
+  IO.print(string_pad_start("hello", 3, "*"));
+  IO.print(",");
+  -- empty-fill no-op: both sides should return input unchanged
+  IO.print(string_pad_start("x", 5, ""));
+  IO.print(",");
+  IO.print(string_pad_end("x", 5, ""));
+  IO.print(",");
+  IO.print(string_pad_start("hello", 10, ""))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        # pad_start target=7, slen=1, pad_len=6; fill="ab" cycled
+        # for 6 bytes starting at pos 0: a,b,a,b,a,b → "ababab" + "x".
+        assert node["stdout"] == (
+            "0000x,x0000,abababx,hello,x,x,hello"
+        )
+
+    def test_string_chars_count(self, tmp_path: Path) -> None:
+        """string_chars("abc") has length 3; empty → 0."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(int_to_string(nat_to_int(array_length(string_chars("abc")))));
+  IO.print(",");
+  IO.print(int_to_string(nat_to_int(array_length(string_chars("")))))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "3,0"
+
+    def test_string_chars_join(self, tmp_path: Path) -> None:
+        """Round-trip: split "abc" into chars, join with "-" → "a-b-c"."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_join(string_chars("abc"), "-"))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "a-b-c"
+
+    def test_string_lines(self, tmp_path: Path) -> None:
+        """lines splits on \\n, \\r\\n, \\r (Python splitlines
+        semantics).  Also exercises the empty-input path
+        (``string_lines("")``) so the ``$alloc(0)`` branch in
+        ``_translate_structural_split`` is covered under the browser
+        runtime — Node's WASM linker has stricter zero-size handling
+        than wasmtime in some past versions.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_join(string_lines("a\\nb\\nc"), "|"));
+  IO.print(",");
+  IO.print(string_join(string_lines("a\\r\\nb\\rc"), "|"));
+  IO.print(",");
+  IO.print(int_to_string(nat_to_int(array_length(string_lines("a\\n")))));
+  IO.print(",");
+  -- empty input → empty array (length 0)
+  IO.print(int_to_string(nat_to_int(array_length(string_lines("")))))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        # Trailing newline does NOT create empty final segment;
+        # empty input → empty array.
+        assert node["stdout"] == "a|b|c,a|b|c,1,0"
+
+    def test_string_words(self, tmp_path: Path) -> None:
+        """words splits on runs of whitespace; empty segments
+        discarded.  Also exercises VT (\\u{0B}) and FF (\\u{0C}) as
+        word separators — they're part of Python's str.split()
+        whitespace set and the browser runtime must agree.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_join(string_words("  foo  bar "), "|"));
+  IO.print(",");
+  IO.print(int_to_string(nat_to_int(array_length(string_words("   ")))));
+  IO.print(",");
+  -- VT/FF act as separators
+  IO.print(string_join(string_words(" \\u{0B}foo\\u{0C}bar "), "|"));
+  IO.print(",");
+  -- A string of only VT/FF yields zero words
+  IO.print(int_to_string(nat_to_int(array_length(string_words(" \\u{0B}\\u{0C} ")))))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == "foo|bar,0,foo|bar,0"
+
+
+class TestBrowserCharClassification:
+    """Browser parity for character classification built-ins (#471).
+
+    All eight classifiers are single-byte ASCII range checks with no
+    host imports — inline WAT identical in the Python and browser
+    runtimes.  We pack multiple calls into one program to minimize
+    compile latency while still exercising each predicate against at
+    least one passing and one failing byte.
+    """
+
+    def test_classifiers(self, tmp_path: Path) -> None:
+        """Every classifier exercised with both a passing and a failing
+        byte, plus the empty-string rejection shared by all six.
+
+        The `is_whitespace` block also covers the full Python
+        `str.isspace()` ASCII set — tab, LF, VT (0x0B), FF (0x0C), CR,
+        and space — because those two control codes are easy to miss
+        in an ASCII-range check that collapses to a contiguous
+        subrange.
+        """
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  -- is_digit: pass + fail
+  IO.print(bool_to_string(is_digit("5"))); IO.print(",");
+  IO.print(bool_to_string(is_digit("x"))); IO.print(",");
+  -- is_alpha: pass + fail
+  IO.print(bool_to_string(is_alpha("A"))); IO.print(",");
+  IO.print(bool_to_string(is_alpha("9"))); IO.print(",");
+  -- is_alphanumeric: pass (letter), pass (digit), fail
+  IO.print(bool_to_string(is_alphanumeric("a"))); IO.print(",");
+  IO.print(bool_to_string(is_alphanumeric("7"))); IO.print(",");
+  IO.print(bool_to_string(is_alphanumeric(" "))); IO.print(",");
+  -- is_whitespace: full Python isspace() ASCII set + non-ws
+  IO.print(bool_to_string(is_whitespace(" ")));   IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\t"))); IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\n"))); IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\u{0B}"))); IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\u{0C}"))); IO.print(",");
+  IO.print(bool_to_string(is_whitespace("\\r"))); IO.print(",");
+  IO.print(bool_to_string(is_whitespace("x")));   IO.print(",");
+  -- is_upper / is_lower: pass + fail (not just pass)
+  IO.print(bool_to_string(is_upper("A"))); IO.print(",");
+  IO.print(bool_to_string(is_upper("a"))); IO.print(",");
+  IO.print(bool_to_string(is_lower("a"))); IO.print(",");
+  IO.print(bool_to_string(is_lower("A"))); IO.print(",");
+  -- Empty string rejects every predicate
+  IO.print(bool_to_string(is_digit("")));        IO.print(",");
+  IO.print(bool_to_string(is_alpha("")));        IO.print(",");
+  IO.print(bool_to_string(is_alphanumeric("")));  IO.print(",");
+  IO.print(bool_to_string(is_whitespace("")));    IO.print(",");
+  IO.print(bool_to_string(is_upper("")));        IO.print(",");
+  IO.print(bool_to_string(is_lower("")))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        assert node["stdout"] == (
+            # is_digit
+            "true,false,"
+            # is_alpha
+            "true,false,"
+            # is_alphanumeric
+            "true,true,false,"
+            # is_whitespace: 6 passes + 1 fail
+            "true,true,true,true,true,true,false,"
+            # is_upper + is_lower
+            "true,false,true,false,"
+            # 6 empty-string rejections
+            "false,false,false,false,false,false"
+        )
+
+    def test_char_case(self, tmp_path: Path) -> None:
+        """char_to_upper/lower: only the first byte is transformed."""
+        source = '''\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(char_to_upper("abc"));
+  IO.print(",");
+  IO.print(char_to_lower("ABC"));
+  IO.print(",");
+  IO.print(char_to_upper(""));
+  IO.print("|");
+  IO.print(char_to_upper("5xyz"))
+}
+'''
+        wasm_path, _ = _compile_vera(source, tmp_path)
+        node = _run_node(wasm_path)
+        # Empty string round-trips; non-letter first byte passes through.
+        assert node["stdout"] == "Abc,aBC,|5xyz"
+
+
 class TestBrowserState:
     """Test State<T> host bindings in the Node.js runtime."""
 

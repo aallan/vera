@@ -136,6 +136,48 @@ def gc_shadow_push(local_idx: int) -> list[str]:
 
 
 # =====================================================================
+# Whitespace predicate emitter
+# =====================================================================
+
+def emit_is_ascii_whitespace(byte_local: int, indent: str = "") -> list[str]:
+    """Generate WAT instructions for the canonical ASCII-whitespace
+    predicate.
+
+    Reads the byte value from ``byte_local`` and leaves a 0/1 i32 on
+    the operand stack.  Matches Python's ``str.isspace()`` ASCII set:
+    ``{tab(9), LF(10), VT(11), FF(12), CR(13), space(32)}``.  The
+    four contiguous control codes 9..=13 collapse into a single
+    branchless range check ``(byte - 9) < 5``.
+
+    All four sites that test for ASCII whitespace
+    (``_translate_is_whitespace``, ``_translate_trim``'s
+    ``_is_ws_inline`` closure, and the count and emit passes inside
+    ``_translate_structural_split`` for ``string_words``) MUST go
+    through this helper rather than re-encoding the byte literals.
+    Open-coded copies will silently diverge — see PR #510 round 2,
+    where ``_translate_strip`` open-coded a narrower set
+    {32, 9, 10, 13} that lacked VT/FF.
+
+    The helper does NOT load the byte from memory (callers vary on
+    whether they read via ``i32.load8_u`` then ``local.set`` or are
+    handed the byte some other way) and does NOT consume the result
+    (callers may ``i32.eqz`` it for early-exit, ``if``-test it, or
+    OR it into a running accumulator).
+    """
+    return [
+        f"{indent}local.get {byte_local}",
+        f"{indent}i32.const 32",
+        f"{indent}i32.eq",
+        f"{indent}local.get {byte_local}",
+        f"{indent}i32.const 9",
+        f"{indent}i32.sub",
+        f"{indent}i32.const 5",
+        f"{indent}i32.lt_u",
+        f"{indent}i32.or",
+    ]
+
+
+# =====================================================================
 # Type mapping helpers
 # =====================================================================
 
