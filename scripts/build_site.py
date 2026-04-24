@@ -82,6 +82,12 @@ tracked in the type system via algebraic effects.
 Current version: {version}. The reference compiler is written in Python. \
 Install with `pip install -e .` from the repository.
 
+## Homepage
+
+- [Vera]({SITE}/index.md): Markdown companion to veralang.dev — project \
+overview, thesis, design principles, key features, quick install, and links \
+to the full documentation set.
+
 ## Language Reference
 
 - [SKILL.md]({SITE}/SKILL.md): Complete language reference — syntax, types, \
@@ -328,94 +334,262 @@ def build_sitemap_xml() -> str:
 
 
 def build_index_md(version: str) -> str:
-    """Build a Markdown companion of the landing page."""
+    """Build a Markdown companion of the landing page.
+
+    Mirrors the structure and substance of docs/index.html so agents that
+    fetch the .md alternate see the same content that human readers see —
+    thesis, code samples, VeraBench data, runtime story, install steps, and
+    the agent-facing documents. Kept in sync with the HTML hand-edited by a
+    human designer; if the HTML's substance changes, update this too.
+    """
     n_examples = _count_examples()
     return f"""\
 # Vera — A language designed for machines to write
 
-> Vera is a statically typed, purely functional programming language \
-designed for large language models to write. It uses typed slot references \
-(`@T.n`) instead of variable names, requires contracts on every function, \
-and compiles to WebAssembly.
+> Vera is a programming language designed for large language models to write, not humans. It uses typed slot references (`@T.n`) instead of variable names, requires contracts on every function, and compiles to WebAssembly. Programs run at the command line via wasmtime or in any browser with a self-contained JavaScript runtime.
 
-**Current version:** [{version}]({REPO}/releases/tag/v{version})
+From the Latin *veritas* — truth. In Vera, verification is a first-class citizen.
+
+**Current version:** [{version}]({REPO}/releases/tag/v{version})  ·  [GitHub]({REPO})  ·  [SKILL.md]({SITE}/SKILL.md) (agent language reference)
 
 ## Why?
 
-Programming languages have always co-evolved with their users. Assembly \
-emerged from hardware constraints. C from operating systems. Python from \
-productivity needs. If models become the primary authors of code, it \
-follows that languages should adapt to that too.
+Programming languages have always co-evolved with their users. Assembly emerged from hardware constraints. C from operating systems. Python from productivity needs. If models become the primary authors of code, it follows that languages should adapt to that too.
 
-The evidence suggests the biggest problem models face isn't syntax — it's \
-coherence over scale. Models struggle with maintaining invariants across a \
-codebase, understanding the ripple effects of changes, and reasoning about \
-state over time.
+> The biggest problem models face isn't syntax — it's coherence over scale. Models are pattern matchers optimising for local plausibility, not architects holding the entire system in mind.
+
+The [empirical literature](https://arxiv.org/abs/2307.12488) shows models are particularly vulnerable to naming-related errors: choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value. Vera addresses this by making everything explicit and verifiable.
+
+The model doesn't need to be right. It needs to be *checkable*. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler verifies against its implementation.
+
+For deeper questions about the design — why no variable names, what gets verified, how Vera compares to Dafny, Lean, and Koka — see the [FAQ]({RAW}/FAQ.md).
+
+## What Vera Looks Like
+
+Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. The compiler verifies the contract via SMT solver. Division by zero is not a runtime error — it is a type error.
+
+```vera
+public fn safe_divide(@Int, @Int -> @Int)
+  requires(@Int.1 != 0)
+  ensures(@Int.result == @Int.0 / @Int.1)
+  effects(pure)
+{{
+  @Int.0 / @Int.1
+}}
+```
+
+Read the slots: `@Int.1` is the first parameter, `@Int.0` is the second — De Bruijn indexing, most-recent first. No variable names means no naming bug is possible. The `requires` clause is what lifts divide-by-zero from a runtime crash to a compile-time error.
+
+```vera
+public fn fizzbuzz(@Nat -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{{
+  if @Nat.0 % 15 == 0 then {{
+    "FizzBuzz"
+  }} else {{
+    if @Nat.0 % 3 == 0 then {{
+      "Fizz"
+    }} else {{
+      if @Nat.0 % 5 == 0 then {{
+        "Buzz"
+      }} else {{
+        "\\(@Nat.0)"
+      }}
+    }}
+  }}
+}}
+```
+
+A program everyone knows. Interpolation uses `"\\(@Nat.0)"` — the slot reference substitutes in directly with auto-conversion. There are no naming decisions to make, and none to hallucinate.
+
+```vera
+public fn classify_sentiment(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Inference>)
+{{
+  let @String = string_concat("Classify as Positive, Negative, or Neutral: ", @String.0);
+  Inference.complete(@String.0)
+}}
+```
+
+LLM calls are effects. Where the two functions above are `effects(pure)`, this one declares `<Inference>`. A caller that does not permit `<Inference>` cannot invoke it. The effect system makes model calls visible in every signature that uses them, all the way up.
+
+```vera
+public fn research_topic(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Http, Inference>)
+{{
+  let @Result<String, String> = Http.get(string_concat("https://api.duckduckgo.com/?format=json&q=", @String.0));
+  match @Result<String, String>.0 {{
+    Ok(@String) -> Inference.complete(string_concat("Summarise this in one paragraph:\\n\\n", @String.0)),
+    Err(@String) -> Err(@String.0)
+  }}
+}}
+```
+
+Effects compose. `<Http, Inference>` is the row — both must be permitted. `Inference` auto-detects the provider (Anthropic, OpenAI, Moonshot) from whichever API key is set. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
+
+When you get it wrong, every error is an instruction for the model that wrote the code:
+
+```
+[E001] Error at main.vera, line 14, column 1:
+
+    {{
+    ^
+
+  Function is missing its contract block. Every function in Vera must declare
+  requires(), ensures(), and effects() clauses between the signature and the body.
+
+  Vera requires all functions to have explicit contracts so that every function's
+  behaviour is mechanically checkable.
+
+  Fix:
+
+    Add a contract block after the signature:
+
+      private fn example(@Int -> @Int)
+        requires(true)
+        ensures(@Int.result >= 0)
+        effects(pure)
+      {{
+        ...
+      }}
+
+  See: Chapter 5, Section 5.1 "Function Structure"
+```
+
+Parse errors, type errors, effect mismatches, verification failures, and contract violations all produce the same shape: what went wrong, why, how to fix it, and a spec reference.
+
+## VeraBench
+
+**Kimi K2.5 writes 100% correct Vera — beating its own 86% on Python and 91% on TypeScript.**
+
+A 60-problem benchmark across 5 difficulty tiers — pure arithmetic, ADTs, recursion, closures, multi-function effect propagation. Six models, three providers, four modes each. The numbers below are run-correct rates.
+
+| Model | Mode | Vera | Python | TypeScript |
+|---|---|---|---|---|
+| Kimi K2.5 | flagship | **100%** | 86% | 91% |
+| GPT-4.1 | flagship | 91% | 96% | 96% |
+| Claude Opus 4 | flagship | 88% | 96% | 96% |
+| Kimi K2 Turbo | sonnet | **83%** | 88% | 79% |
+| Claude Sonnet 4 | sonnet | 79% | 96% | 88% |
+| GPT-4o | sonnet | 78% | 93% | 83% |
+
+In our latest results **Kimi K2.5 writes perfect Vera code** — 100% run_correct, beating both Python (86%) and TypeScript (91%); Kimi K2 Turbo also writes better Vera than TypeScript. In the previous [v0.0.4]({REPO}-bench/releases/tag/v0.0.4) benchmark Claude Sonnet 4 wrote Vera better than TypeScript (83% vs 79%); the latest v0.0.7 re-run flipped that result, illustrating the variance inherent in single-run evaluation and model non-determinism.
+
+Mandatory contracts and typed slot references appear to provide enough structure to compensate for zero training data. Still early days — 60 problems, single run per model. Stable rates will require pass@k evaluation with multiple trials. Results from [VeraBench v0.0.7]({REPO}-bench/releases/tag/v0.0.7) against [Vera v0.0.108]({REPO}/releases/tag/v0.0.108). Inspired by [HumanEval](https://github.com/openai/human-eval), [MBPP](https://github.com/google-research/google-research/tree/master/mbpp), and [DafnyBench](https://github.com/sun-wendy/DafnyBench).
+
+Full source and data: [{REPO}-bench]({REPO}-bench).
 
 ## Design Principles
 
-1. **Checkability over correctness** — Every program is machine-verifiable. \
-The compiler proves properties via Z3, not just checks syntax.
-2. **Explicitness over convenience** — No implicit state, no hidden control \
-flow. Every effect is declared, every contract is visible.
-3. **One canonical form** — The formatter produces a single representation. \
-No style debates, no ambiguity.
-4. **Structural references over names** — Typed De Bruijn indices (`@Int.0`) \
-eliminate naming errors entirely.
-5. **Contracts as the source of truth** — Preconditions, postconditions, \
-and effect declarations are the specification. The compiler enforces them.
-6. **Constrained expressiveness** — Fewer ways to write the same thing means \
-fewer ways to get it wrong.
+1. **Checkability over correctness** — Code the compiler can mechanically check. Every diagnostic carries a concrete fix in natural language.
+2. **Explicitness over convenience** — All state changes declared. All effects typed. All contracts mandatory. No implicit behaviour.
+3. **One canonical form** — Every construct has exactly one textual representation. `vera fmt` settles it.
+4. **Structural references over names** — Bindings referenced by type and positional index (`@T.n`), not arbitrary names.
+5. **Contracts as the source of truth** — Every function declares what it requires and guarantees. The compiler verifies statically where possible.
+6. **Constrained expressiveness** — Fewer valid programs means fewer opportunities for the model to be wrong.
 
 ## Key Features
 
-- **No variable names** — Typed slot references (`@Int.0`, `@String.1`) \
-using De Bruijn indexing
-- **Mandatory contracts** — `requires(...)`, `ensures(...)`, `effects(...)` \
-on every function
-- **Algebraic effects** — IO, Http, State, Exceptions, Async, Inference \
-tracked in the type system
-- **LLM inference** — `Inference.complete` as a first-class algebraic \
-effect; model calls are typed, contract-verifiable, and mockable
-- **Z3 verification** — Contracts proved statically by the Z3 SMT solver
-- **Contract-driven testing** — Z3 generates test inputs from contracts
-- **WebAssembly** — Compiles to WASM, runs via wasmtime or in the browser
-- **Built-in data types** — JSON, HTML, Markdown, Map, Set, Decimal with \
-typed parse/query/serialize operations
-- **HTTP** — `Http.get` and `Http.post` as algebraic effects, composing \
-with JSON for verified API access
-- **String interpolation** — `"value: \\(@Int.0)"` with auto-conversion
-- **Pattern matching** — Exhaustive ADT matching with nested patterns
-- **Constrained generics** — Four built-in abilities (Eq, Ord, Hash, Show) \
-with monomorphization
+- **No variable names** — Typed [De Bruijn indices]({RAW}/DE_BRUIJN.md) (`@T.n`) replace variable names: `@Int.0` is the most-recent `Int` binding, `@Int.1` the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.
+- **Full contracts** — Mandatory preconditions, postconditions, invariants, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM — no manual test cases.
+- **Algebraic effects** — IO, Http, State, Exceptions, Async, Inference — declared, typed, and handled explicitly. Pure by default.
+- **Refinement types** — Types that express constraints like "a list of positive integers of length `n`".
+- **Three-tier verification** — Static via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), guided with hints, runtime fallback for the rest.
+- **Diagnostics as instructions** — Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.
+- **LLM inference as effect** — `Inference.complete` is an algebraic effect — typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot.
+- **Typed stdlib** — JSON, HTML, Markdown, HTTP, Regex, Decimal — built-in ADTs with parse/query/serialize.
+- **Async / Future<T>** — Futures carry an `<Async>` effect and compose with the rest of the effect system.
 
-## Quick Start
+## Runs Everywhere
+
+Vera compiles to WebAssembly. The same `.wasm` runs at the command line via [wasmtime](https://wasmtime.dev/) or in any browser with a self-contained JS runtime.
+
+### Command line
 
 ```bash
-git clone {REPO}.git && cd vera
-python -m venv .venv && source .venv/bin/activate
-pip install -e .
-vera run examples/hello_world.vera
+$ vera run examples/hello_world.vera
+Hello, World!
+
+$ vera run examples/factorial.vera --fn factorial -- 10
+3628800
 ```
 
-## Documentation
+`vera run` compiles to WASM and executes via wasmtime. `--fn` picks any public function; arguments follow `--`.
 
-- [SKILL.md]({SITE}/SKILL.md) — Complete language reference
-- [AGENTS.md]({RAW}/AGENTS.md) — Instructions for AI agents
-- [EXAMPLES.md]({RAW}/EXAMPLES.md) — Language tour with code examples
-- [FAQ]({RAW}/FAQ.md) — Design rationale and comparisons
-- [Specification]({REPO}/tree/main/spec) — 13-chapter formal spec
-- [Examples]({REPO}/tree/main/examples) — {n_examples} verified programs
+### Browser
+
+```bash
+$ vera compile --target browser examples/hello_world.vera
+Browser bundle: examples/hello_world_browser/
+  module.wasm
+  runtime.mjs
+  index.html
+```
+
+Self-contained — no bundler. Serve with any HTTP server (`python -m http.server`). `IO.print` writes to the page; all other operations work identically to the CLI. Parity tests enforce this on every PR. *Note: `Inference.complete` errors in the browser — use a server-side proxy via `Http`.*
+
+## Get Started
+
+Python 3.11+ and Git. Everything else installs into a virtual environment.
+
+```bash
+# Clone and install
+git clone {REPO}.git
+cd vera
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Check, verify, run, compile
+vera check examples/absolute_value.vera
+vera verify examples/safe_divide.vera
+vera run examples/hello_world.vera
+vera compile --target browser examples/hello_world.vera
+```
+
+Editor support: [TextMate `.tmbundle`]({REPO}/tree/main/editors/textmate), [VS Code extension]({REPO}/tree/main/editors/vscode).
+
+## For Agents
+
+This page is also a machine-readable specification. Every document here has an alternate in markdown, served on the same domain, discoverable through standard `<link rel="alternate">`, `llms.txt`, and the Mintlify `llms-txt` / `llms-full-txt` conventions.
+
+- [`SKILL.md`]({SITE}/SKILL.md) — Complete language reference for writing Vera code: syntax, slots, contracts, effects, common mistakes, working examples.
+- [`AGENTS.md`]({RAW}/AGENTS.md) — Setup instructions for any agent system (Copilot, Cursor, Windsurf, custom). Writing Vera code and working on the compiler.
+- [`CLAUDE.md`]({RAW}/CLAUDE.md) — Project orientation for Claude Code. Key commands, repo layout, workflows, invariants.
+
+Claude Code discovers `SKILL.md` and `CLAUDE.md` automatically when working inside the repo. For other projects, install the skill manually:
+
+```bash
+mkdir -p ~/.claude/skills/vera-language
+cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
+```
+
+For other models: point them at [`SKILL.md`]({SITE}/SKILL.md) via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown.
+
+## Status
+
+Vera is under [active development]({RAW}/ROADMAP.md). A complete compiler with 164 built-in functions, six algebraic effects (IO, Http, State, Exceptions, Async, Inference), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 13-chapter specification. A 77-program conformance suite and {n_examples} worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub]({REPO}) and released under the MIT licence.
 
 ## Links
 
 - [GitHub]({REPO})
+- [README]({RAW}/README.md)
+- [SKILL.md]({SITE}/SKILL.md)
+- [AGENTS.md]({RAW}/AGENTS.md)
+- [Specification]({REPO}/tree/main/spec)
 - [Roadmap]({RAW}/ROADMAP.md)
-- [Changelog]({RAW}/CHANGELOG.md)
 - [History]({RAW}/HISTORY.md)
-- [Releases]({REPO}/releases)
+- [Changelog]({RAW}/CHANGELOG.md)
+- [Contributing]({RAW}/CONTRIBUTING.md)
 - [Issues]({REPO}/issues)
-- [MIT License]({REPO}/blob/main/LICENSE)
+- [VeraBench]({REPO}-bench)
+- [MIT Licence]({REPO}/blob/main/LICENSE)
 """
 
 

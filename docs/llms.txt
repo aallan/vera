@@ -6,6 +6,10 @@ Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` bin
 
 Current version: 0.0.119. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
 
+## Homepage
+
+- [Vera](https://veralang.dev/index.md): Markdown companion to veralang.dev — project overview, thesis, design principles, key features, quick install, and links to the full documentation set.
+
 ## Language Reference
 
 - [SKILL.md](https://veralang.dev/SKILL.md): Complete language reference — syntax, types, slot references, contracts, effects, built-in functions, common mistakes, and working examples. This is the primary document for writing Vera code.
