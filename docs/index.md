@@ -123,7 +123,7 @@ Parse errors, type errors, effect mismatches, verification failures, and contrac
 
 **Kimi K2.5 writes 100% correct Vera — beating its own 86% on Python and 91% on TypeScript.**
 
-A 60-problem benchmark across 5 difficulty tiers — pure arithmetic, ADTs, recursion, closures, multi-function effect propagation. Six models, three providers, four modes each. The numbers below are run-correct rates.
+A 50-problem benchmark across 5 difficulty tiers — pure arithmetic, ADTs, recursion, closures, multi-function effect propagation. Six models, three providers, four modes each. The numbers below are run-correct rates.
 
 | Model | Mode | Vera | Python | TypeScript |
 |---|---|---|---|---|
@@ -136,7 +136,7 @@ A 60-problem benchmark across 5 difficulty tiers — pure arithmetic, ADTs, recu
 
 In our latest results **Kimi K2.5 writes perfect Vera code** — 100% run_correct, beating both Python (86%) and TypeScript (91%); Kimi K2 Turbo also writes better Vera than TypeScript. In the previous [v0.0.4](https://github.com/aallan/vera-bench/releases/tag/v0.0.4) benchmark Claude Sonnet 4 wrote Vera better than TypeScript (83% vs 79%); the latest v0.0.7 re-run flipped that result, illustrating the variance inherent in single-run evaluation and model non-determinism.
 
-Mandatory contracts and typed slot references appear to provide enough structure to compensate for zero training data. Still early days — 60 problems, single run per model. Stable rates will require pass@k evaluation with multiple trials. Results from [VeraBench v0.0.7](https://github.com/aallan/vera-bench/releases/tag/v0.0.7) against [Vera v0.0.108](https://github.com/aallan/vera/releases/tag/v0.0.108). Inspired by [HumanEval](https://github.com/openai/human-eval), [MBPP](https://github.com/google-research/google-research/tree/master/mbpp), and [DafnyBench](https://github.com/sun-wendy/DafnyBench).
+Mandatory contracts and typed slot references appear to provide enough structure to compensate for zero training data. Still early days — 50 problems, single run per model. Stable rates will require pass@k evaluation with multiple trials. Results from [VeraBench v0.0.7](https://github.com/aallan/vera-bench/releases/tag/v0.0.7) against [Vera v0.0.108](https://github.com/aallan/vera/releases/tag/v0.0.108). Inspired by [HumanEval](https://github.com/openai/human-eval), [MBPP](https://github.com/google-research/google-research/tree/master/mbpp), and [DafnyBench](https://github.com/sun-wendy/DafnyBench).
 
 Full source and data: [https://github.com/aallan/vera-bench](https://github.com/aallan/vera-bench).
 
