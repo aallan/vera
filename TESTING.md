@@ -76,7 +76,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_conformance.py` | 400 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 80 programs |
 | `test_prelude.py` | 24 | 422 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
-| `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
+| `test_html.py` | 4 | 166 | HTML landing page code samples: parse, check, verify |
 | `test_build_site.py` | 17 | 213 | `_abs_links` unit tests: relative link rewriting, fenced block immunity (backtick and tilde fences, inline backticks inside fences), http/https/fragment pass-through, Vera effect syntax not mis-parsed |
 | `test_check_changelog_updated.py` | 66 | 638 | `check_changelog_updated.py` unit + end-to-end tests: file classification (incl. file-style exact-match vs directory-style prefix-match), CHANGELOG diff parsing with `[Unreleased]` section tracking, bare-heading rejection, and full-file context (regression test for bullets far below the heading), `Skip-changelog:` trailer detection, temp-repo integration covering substantive/exempt/label/trailer paths |
 

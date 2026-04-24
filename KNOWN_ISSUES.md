@@ -55,3 +55,12 @@ Files that have grown beyond a comfortable size and need decomposition. None of 
 | `tests/test_codegen.py` | 10,019 | Split into feature-focused test files (literals, arithmetic, control flow, strings, arrays, collections, effects, data types) | [#419](https://github.com/aallan/vera/issues/419) |
 | `tests/test_checker.py` | 5,522 | Split into phase-focused test files (types, functions, effects, contracts, modules, errors) | [#420](https://github.com/aallan/vera/issues/420) |
 | `vera/codegen/api.py` | 2,228 | Extract memory layout utilities → `memory.py`; extract host runtime → `runtime.py` | [#421](https://github.com/aallan/vera/issues/421) |
+
+## CI ignores
+
+CVEs currently suppressed in the `dependency-audit` CI job. Each entry has a removal trigger — these are bridges, not permanent exceptions.
+
+| Ignored CVE | Package | Rationale | Remove when | Issue |
+|-------------|---------|-----------|-------------|-------|
+| [CVE-2026-4539](https://nvd.nist.gov/vuln/detail/CVE-2026-4539) | pygments 2.19.2 (transitive via pytest/rich) | No fix release exists yet. | pygments > 2.19.2 ships with the fix. | — |
+| [CVE-2026-3219](https://nvd.nist.gov/vuln/detail/CVE-2026-3219) ([GHSA-58qw-9mgm-455v](https://github.com/advisories/GHSA-58qw-9mgm-455v)) | pip 26.0.1 (archive-handling: concatenated tar+ZIP interpretation) | Upstream fix merged in [pypa/pip#13870](https://github.com/pypa/pip/pull/13870), milestone pip 26.1, not yet released. Threat model (untrusted ambiguous archives) does not apply to our CI. | pip 26.1 lands on PyPI and GitHub Actions runners pick it up. | [#527](https://github.com/aallan/vera/issues/527) |
