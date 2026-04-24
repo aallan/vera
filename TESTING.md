@@ -13,7 +13,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **Spec code blocks** | 164 parseable blocks from 13 spec chapters: 86 parse, 72 type-check, 71 verify |
 | **README code blocks** | 13 Vera blocks (12 validated, 1 allowlisted future syntax) |
 | **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 allowlisted snippet) |
-| **HTML code blocks** | 5 Vera blocks in docs/index.html (5 validated: parse + check + verify) |
+| **HTML code blocks** | 4 Vera blocks in docs/index.html (4 validated: parse + check + verify) |
 | **Contract verification** | 162 of 179 contracts (90.5%) verified statically (Tier 1) |
 | **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) + browser parity (Node.js 22) |
 
@@ -76,7 +76,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_conformance.py` | 400 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 80 programs |
 | `test_prelude.py` | 24 | 422 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
-| `test_html.py` | 4 | 164 | HTML landing page code samples: parse, check, verify |
+| `test_html.py` | 4 | 166 | HTML landing page code samples: parse, check, verify |
 | `test_build_site.py` | 17 | 213 | `_abs_links` unit tests: relative link rewriting, fenced block immunity (backtick and tilde fences, inline backticks inside fences), http/https/fragment pass-through, Vera effect syntax not mis-parsed |
 | `test_check_changelog_updated.py` | 66 | 638 | `check_changelog_updated.py` unit + end-to-end tests: file classification (incl. file-style exact-match vs directory-style prefix-match), CHANGELOG diff parsing with `[Unreleased]` section tracking, bare-heading rejection, and full-file context (regression test for bullets far below the heading), `Skip-changelog:` trailer detection, temp-repo integration covering substantive/exempt/label/trailer paths |
 
@@ -419,7 +419,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs sev
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
 | **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_examples_readme.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_site_assets.py`, `check_licenses.py`, `ruff check --select S vera/` (security rules) |
 | **security** | Ubuntu | [Gitleaks](https://github.com/gitleaks/gitleaks-action) secret scanning on full history |
-| **dependency-audit** | Python 3.12 x Ubuntu | `pip-audit --skip-editable --ignore-vuln CVE-2026-4539` — checks all installed packages against the OSV vulnerability database (skips the local editable `vera` package; `CVE-2026-4539` suppressed pending a pygments fix release) |
+| **dependency-audit** | Python 3.12 x Ubuntu | `pip-audit --skip-editable --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-3219` — checks all installed packages against the OSV vulnerability database (skips the local editable `vera` package; `CVE-2026-4539` suppressed pending a pygments fix release; `CVE-2026-3219` suppressed pending pip 26.1 release — tracked in [#527](https://github.com/aallan/vera/issues/527)) |
 | **sbom** | Python 3.12 x Ubuntu | `cyclonedx-py environment` — generates a [CycloneDX](https://cyclonedx.org) JSON SBOM of the full installed dependency tree and uploads it as a 90-day CI artifact |
 | **browser-parity** | Python 3.12 + Node.js 22 x Ubuntu | `pytest tests/test_browser.py -v` — verifies JS runtime matches Python runtime; collects V8 coverage via `NODE_V8_COVERAGE` and uploads to Codecov |
 

@@ -176,7 +176,10 @@ jobs:
         # --skip-editable: vera itself is a local editable install, not on PyPI
         # --ignore-vuln CVE-2026-4539: pygments 2.19.2 (transitive via pytest/rich);
         #   no fix release exists yet — revisit when pygments >2.19.2 ships
-        run: pip-audit --skip-editable --ignore-vuln CVE-2026-4539
+        # --ignore-vuln CVE-2026-3219: pip 26.0.1 archive-handling (GHSA-58qw-9mgm-455v);
+        #   upstream fix merged in pypa/pip#13870, milestone pip 26.1, not yet released.
+        #   Remove this ignore once pip 26.1 is on PyPI. Tracked in #527.
+        run: pip-audit --skip-editable --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-3219
 
   sbom:
     permissions:

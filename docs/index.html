@@ -15,908 +15,279 @@
   <link rel="icon" href="favicon-32.png" type="image/png" sizes="32x32">
   <link rel="icon" href="favicon-192.png" type="image/png" sizes="192x192">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="alternate" type="text/markdown" href="/index.md" title="Markdown version of this page">
   <link rel="alternate" type="text/markdown" href="/llms.txt" title="LLM documentation index">
   <link rel="alternate" type="text/markdown" href="/llms-full.txt" title="Full LLM documentation">
-  <link rel="alternate" type="text/markdown" href="/index.md" title="Markdown version">
-  <!-- Agent skill file discovery -->
-  <link rel="alternate" type="text/markdown"
-        title="Vera SKILL.md — Complete agent language reference"
-        href="/SKILL.md" />
-  <!-- llms.txt discovery (Mintlify convention) -->
-  <link rel="llms-txt" href="/llms.txt" />
-  <link rel="llms-full-txt" href="/llms-full.txt" />
+  <link rel="alternate" type="text/markdown" href="/SKILL.md" title="Vera SKILL.md — Complete agent language reference">
+  <link rel="llms-txt" href="/llms.txt">
+  <link rel="llms-full-txt" href="/llms-full.txt">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>
-    /* === Reset & Base === */
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    :root{
+      --paper:#FFECD1;--paper-hi:#FFE2CE;--paper-lo:#FFF4E6;
+      --ink-900:#1A0B00;--ink-700:#421C00;--ink-500:#5E2C08;--ink-300:#975526;
+      --flame-500:#B24400;--flame-400:#E05600;--flame-300:#FF6200;--flame-100:#FFB080;
+      --rule:rgba(26,11,0,.08);--rule-hi:rgba(26,11,0,.14);
+      --serif:'DM Serif Display',Georgia,serif;
+      --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      --mono:'JetBrains Mono','SF Mono','Fira Code',monospace;
+    }
+    html{scroll-behavior:smooth;-webkit-text-size-adjust:100%}
+    body{font-family:var(--sans);background:var(--paper);color:var(--ink-900);line-height:1.6;-webkit-font-smoothing:antialiased}
+    h1,h2,h3,h4{font-family:var(--serif);font-weight:400;line-height:1.15;letter-spacing:-.01em}
+    code,pre,.mono{font-family:var(--mono);font-variant-ligatures:none}
+    a{color:var(--flame-400);text-decoration:none;transition:color .15s}
+    a:hover{color:var(--flame-300)}
+    img{max-width:100%;height:auto;display:block}
 
-    :root {
-      --cream:       #FFECD1;
-      --cream-light: #FFF4E6;
-      --brown-900:   #1A0B00;
-      --brown-700:   #421C00;
-      --brown-500:   #5E2C08;
-      --brown-300:   #975526;
-      --orange-400:  #E05600;
-      --orange-300:  #FF6200;
-      --orange-100:  #FFB080;
-      --white:       #FFFFFF;
-    }
+    /* Columns */
+    .col{margin:0 auto;padding:0 1.5rem;width:100%}
+    .col-prose{max-width:680px}
+    .col-wide{max-width:980px}
+    .col-full{max-width:1180px}
 
-    html { scroll-behavior: smooth; }
+    /* Section rhythm */
+    section{padding:5rem 0;border-top:1px solid var(--rule)}
+    section:first-of-type{border-top:0}
+    .eyebrow{font-family:var(--mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-300);margin-bottom:1.25rem}
+    .eyebrow .slot{color:var(--flame-400)}
+    h2{font-size:clamp(2rem,4vw,2.75rem);color:var(--ink-900);margin-bottom:1.5rem}
+    h2 .accent{color:var(--flame-400);font-style:italic}
+    h3{font-family:var(--sans);font-weight:600;font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:var(--flame-400);margin-bottom:.75rem}
+    .lead{font-size:1.175rem;color:var(--ink-700);line-height:1.55}
+    p + p{margin-top:1rem}
+    hr.rule{border:0;border-top:1px solid var(--rule);margin:2.5rem 0}
 
-    body {
-      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: var(--cream);
-      color: var(--brown-900);
-      line-height: 1.6;
-      -webkit-font-smoothing: antialiased;
-    }
+    /* Reading path strip — the bilingual device */
+    .readpath{background:var(--paper)}
+    .readpath-inner{display:flex;gap:1.5rem;align-items:center;justify-content:space-between;padding:.75rem 1.5rem .25rem;max-width:1180px;margin:0 auto;font-family:var(--mono);font-size:.72rem;letter-spacing:.04em;color:var(--ink-500);flex-wrap:wrap}
+    .readpath .slot{color:var(--flame-400)}
+    .readpath a{color:var(--ink-500);text-decoration:underline;text-decoration-color:var(--rule-hi);text-underline-offset:3px}
+    .readpath a:hover{color:var(--flame-400);text-decoration-color:var(--flame-300)}
+    .readpath-group{display:flex;gap:1.25rem;flex-wrap:wrap}
 
-    /* === Typography === */
-    h1, h2, h3 {
-      font-family: 'DM Serif Display', Georgia, serif;
-      font-weight: 400;
-      line-height: 1.2;
-    }
+    /* Hero */
+    .hero{padding:2.5rem 0 1rem;text-align:center;border-top:0}
+    .hero-image{max-width:640px;margin:0 auto;border-radius:10px}
+    .hero-tagline{font-family:var(--serif);font-size:clamp(1.5rem,3.5vw,2.25rem);line-height:1.15;color:var(--ink-900);margin:1.75rem auto 0;max-width:620px;letter-spacing:-.015em}
+    .hero-etymology{font-size:.95rem;color:var(--ink-300);margin-top:.65rem;font-style:italic}
+    .cta-bar{display:flex;justify-content:center;gap:.75rem;flex-wrap:wrap;margin-top:2rem}
+    .btn{display:inline-flex;align-items:center;gap:.5rem;padding:.7rem 1.25rem;border-radius:7px;font-size:.9rem;font-weight:500;transition:transform .15s,background .15s,color .15s,border-color .15s}
+    .btn svg{width:16px;height:16px;flex-shrink:0}
+    .btn:hover{transform:translateY(-1px)}
+    .btn-primary{background:var(--ink-900);color:var(--paper)}
+    .btn-primary:hover{background:var(--ink-700);color:var(--paper)}
+    .btn-accent{background:var(--flame-400);color:#fff}
+    .btn-accent:hover{background:var(--flame-300);color:#fff}
+    .btn-ghost{border:1.5px solid var(--ink-300);color:var(--ink-500)}
+    .btn-ghost:hover{border-color:var(--flame-400);color:var(--flame-400)}
+    .version{display:flex;justify-content:center;align-items:center;gap:.6rem;margin-top:1.1rem;font-family:var(--mono);font-size:.78rem;color:var(--ink-500)}
+    .version a{color:var(--ink-900)}
 
-    code, pre, .mono {
-      font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
-    }
+    /* Why — the thesis */
+    .why{background:linear-gradient(var(--paper) 0%,var(--paper-hi) 100%)}
+    .why h2{font-size:clamp(2.25rem,5vw,3.5rem);line-height:1.05;margin-bottom:2rem;max-width:10ch}
+    .why p{font-size:1.125rem;color:var(--ink-700);line-height:1.6}
+    .why .thesis{font-family:var(--serif);font-size:clamp(1.4rem,2.4vw,1.7rem);line-height:1.35;color:var(--ink-900);padding:1.5rem 0 1.5rem 1.5rem;border-left:3px solid var(--flame-300);margin:2rem 0}
 
-    a {
-      color: var(--orange-400);
-      text-decoration: none;
-      transition: color 0.2s;
-    }
-    a:hover { color: var(--orange-300); }
+    /* Code showcase */
+    .showcase{background:var(--ink-700);color:var(--paper-hi);border-top:0}
+    .showcase h2{color:var(--paper-hi)}
+    .showcase h2 .accent{color:var(--flame-100)}
+    .showcase h3{color:var(--flame-100)}
+    .showcase .eyebrow{color:var(--flame-100)}
+    .showcase .eyebrow .slot{color:var(--flame-300)}
+    .showcase .lead{color:var(--paper-hi);opacity:.9}
 
-    /* === Layout === */
-    .container {
-      max-width: 960px;
-      margin: 0 auto;
-      padding: 0 1.5rem;
-    }
-
-    section {
-      padding: 4rem 0;
-    }
-
-    /* === Hero === */
-    .hero {
-      text-align: center;
-      padding: 2rem 0 0;
-    }
-
-    .hero-image {
-      width: 100%;
-      max-width: 720px;
-      height: auto;
-      border-radius: 12px;
-      margin: 0 auto;
-      display: block;
-    }
-
-    .hero-tagline {
-      font-size: 1.125rem;
-      color: var(--brown-500);
-      margin-top: 1.5rem;
-      letter-spacing: 0.02em;
-    }
-
-    .hero-etymology {
-      font-size: 0.95rem;
-      color: var(--brown-300);
-      margin-top: 0.5rem;
-      font-style: italic;
-    }
-
-    /* === CTA Bar === */
-    .cta-bar {
-      display: flex;
-      justify-content: center;
-      gap: 1rem;
-      flex-wrap: wrap;
-      padding: 2.5rem 0 1rem;
-    }
-
-    .cta-btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.75rem 1.5rem;
-      border-radius: 8px;
-      font-size: 0.95rem;
-      font-weight: 500;
-      transition: all 0.2s;
-      text-decoration: none;
-    }
-
-    .cta-btn.primary {
-      background: var(--brown-900);
-      color: var(--cream);
-    }
-    .cta-btn.primary:hover {
-      background: var(--brown-700);
-      color: var(--cream);
-    }
-
-    .cta-btn.secondary {
-      background: var(--orange-400);
-      color: var(--white);
-    }
-    .cta-btn.secondary:hover {
-      background: var(--orange-300);
-      color: var(--white);
-    }
-
-    .cta-btn.outline {
-      border: 2px solid var(--brown-300);
-      color: var(--brown-500);
-      background: transparent;
-    }
-    .cta-btn.outline:hover {
-      border-color: var(--orange-400);
-      color: var(--orange-400);
-    }
-
-    .cta-icon {
-      width: 18px;
-      height: 18px;
-      flex-shrink: 0;
-    }
-
-    /* === Section Headings === */
-    .section-heading {
-      font-size: 2rem;
-      color: var(--brown-900);
-      margin-bottom: 1.5rem;
-    }
-
-    .section-heading::after {
-      content: '';
-      display: block;
-      width: 48px;
-      height: 3px;
-      background: var(--orange-400);
-      margin-top: 0.75rem;
-      border-radius: 2px;
-    }
-
-    /* === Why Section === */
-    .why p {
-      font-size: 1.05rem;
-      color: var(--brown-700);
-      margin-bottom: 1.25rem;
-    }
-
-    .why p:last-child { margin-bottom: 0; }
-
-    /* === Principles === */
-    .principles-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 1.5rem;
-    }
-
-    .principle {
-      padding: 1.25rem;
-      border-radius: 8px;
-      background: var(--cream-light);
-      border: 1px solid rgba(26, 11, 0, 0.06);
-    }
-
-    .principle-number {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.8rem;
-      color: var(--orange-400);
-      letter-spacing: 0.05em;
-      text-transform: uppercase;
-      margin-bottom: 0.4rem;
-    }
-
-    .principle-title {
-      font-family: 'DM Serif Display', Georgia, serif;
-      font-size: 1.1rem;
-      color: var(--brown-900);
-      margin-bottom: 0.5rem;
-    }
-
-    .principle-desc {
-      font-size: 0.9rem;
-      color: var(--brown-500);
-      line-height: 1.5;
-    }
-
-    /* === Features === */
-    .features-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-      gap: 1.25rem;
-    }
-
-    .feature {
-      display: flex;
-      align-items: flex-start;
-      gap: 0.75rem;
-    }
-
-    .feature-marker {
-      flex-shrink: 0;
-      width: 8px;
-      height: 8px;
-      background: var(--orange-400);
-      border-radius: 50%;
-      margin-top: 0.55rem;
-    }
-
-    .feature-title {
-      font-weight: 600;
-      font-size: 0.95rem;
-      color: var(--brown-900);
-    }
-
-    .feature-desc {
-      font-size: 0.875rem;
-      color: var(--brown-500);
-      margin-top: 0.2rem;
-    }
-
-    /* === Code Example === */
-    .code-section {
-      background: var(--brown-700);
-      padding: 4rem 0;
-    }
-
-    .code-section .section-heading {
-      color: var(--cream);
-    }
-
-    .code-section .section-heading::after {
-      background: var(--orange-300);
-    }
-
-    .code-intro {
-      color: var(--orange-100);
-      font-size: 0.95rem;
-      margin-bottom: 1.5rem;
-    }
-
-    .code-block {
-      background: var(--brown-900);
-      border-radius: 8px;
-      padding: 1.5rem;
-      overflow-x: auto;
-      border: 1px solid rgba(255, 226, 206, 0.1);
-    }
-
-    .code-block pre {
-      font-size: 0.875rem;
-      line-height: 1.7;
-      color: var(--cream);
-      white-space: pre;
-      margin: 0;
-      font-variant-ligatures: none;         /* prevent != → ≠ and == → ≡ ligatures */
-    }
+    .sample{display:grid;gap:1.25rem;margin:2.25rem 0;grid-template-columns:1fr}
+    .sample .code{background:#0e0500;border-radius:9px;padding:1.5rem;overflow-x:auto;border:1px solid rgba(255,226,206,.08);box-shadow:0 16px 40px -18px rgba(0,0,0,.5)}
+    .sample pre{font-size:.82rem;line-height:1.75;color:var(--paper-hi);white-space:pre;margin:0}
+    .sample .aside{font-size:.95rem;line-height:1.6;color:var(--paper-hi);opacity:.85;max-width:72ch;padding-left:1rem;border-left:2px solid rgba(255,176,128,.3)}
+    .sample .aside strong{color:var(--flame-100);font-weight:500}
+    .sample .aside code{background:rgba(255,226,206,.08);padding:.1rem .35rem;border-radius:3px;font-size:.82rem}
 
     /* Syntax highlighting */
-    .kw  { color: #FF8C4B; }           /* keywords: fn, effect, op, if, then, else, let */
-    .ct  { color: #FFAB1A; }           /* contract keywords: requires, ensures, effects */
-    .ty  { color: #79ECB2; }           /* types: Int, Nat, Unit, String, IO */
-    .str { color: #F9E1B8; }           /* strings */
-    .cm  { color: #975526; font-style: italic; }  /* comments */
-    .sl  { color: #FFB080; }           /* slot refs: @Int.0, @Nat.result */
-    .op  { color: #FFE2CE; }           /* operators */
-    .num { color: #79ECB2; }           /* numbers */
+    .kw{color:#FF8C4B}
+    .ct{color:#FFAB1A}
+    .ty{color:#79ECB2}
+    .str{color:#F9E1B8}
+    .cm{color:#975526;font-style:italic}
+    .sl{color:#FFB080}
+    .op{color:#FFE2CE}
+    .num{color:#79ECB2}
 
-    .code-subsection {
-      margin-top: 2.5rem;
-    }
+    .err-head{color:#FF6B6B;font-weight:500}
+    .err-code{color:#FFB080}
+    .err-caret{color:#FF6B6B}
+    .err-msg{color:#FFECD1}
+    .err-fix{color:#79ECB2}
+    .err-ref{color:#975526;font-style:italic}
 
-    .code-subtitle {
-      font-family: 'DM Serif Display', Georgia, serif;
-      font-size: 1.35rem;
-      color: var(--cream);
-      margin-bottom: 0.75rem;
-    }
+    /* VeraBench — background matches the cream baked into the chart and mascot assets */
+    .verabench{background:#FEEAD1}
+    .bench-stat{font-family:var(--serif);font-size:clamp(2rem,4.5vw,3.25rem);line-height:1.1;color:var(--ink-900);letter-spacing:-.015em;margin:0;max-width:22ch}
+    .bench-stat b{color:var(--flame-400);font-style:normal;font-weight:400}
+    /* Masthead: stat + mascot as a locked-up unit, baseline-aligned */
+    .bench-masthead{display:grid;gap:1.5rem;grid-template-columns:1fr;align-items:end;margin:.5rem 0 2.5rem}
+    @media(min-width:820px){.bench-masthead{grid-template-columns:auto 220px;justify-content:start;gap:1.5rem}}
+    .bench-meerkat{justify-self:center;width:100%;max-width:220px;display:block}
+    .bench-table{width:100%;border-collapse:collapse;font-size:.85rem;margin:1rem 0 1.5rem}
+    .bench-table th{font-family:var(--mono);font-size:.7rem;font-weight:500;color:var(--ink-300);text-align:left;padding:.5rem .75rem;border-bottom:2px solid var(--ink-300);letter-spacing:.05em;text-transform:uppercase}
+    .bench-table td{padding:.6rem .75rem;color:var(--ink-700);border-bottom:1px solid var(--rule);font-family:var(--mono);font-size:.8rem}
+    .bench-table tbody tr:last-child td{border-bottom:0}
+    .bench-table .lang{font-family:var(--sans);font-weight:500;color:var(--ink-900);font-size:.88rem}
+    .bench-table .win{color:#1A7F45;font-weight:600}
+    .bench-table .flip{color:#C0392B;font-weight:500}
+    .bench-table .tag{font-family:var(--mono);font-size:.62rem;color:var(--ink-300);margin-left:.35rem;text-transform:uppercase;letter-spacing:.05em}
+    .bench-table tr.sep td{border-top:2px solid var(--rule-hi)}
+    .bench-chart{margin:2rem 0 1rem;display:block}
+    .bench-caveat{font-size:.925rem;color:var(--ink-500);line-height:1.55}
 
-    /* Error output styling */
-    .err-head { color: #FF6B6B; font-weight: 500; }
-    .err-code { color: #FFB080; }
-    .err-caret { color: #FF6B6B; }
-    .err-msg  { color: #FFECD1; }
-    .err-fix  { color: #79ECB2; }
-    .err-ref  { color: #975526; font-style: italic; }
+    /* Principles + Features (condensed reference grid) */
+    .reference{background:var(--paper-hi)}
+    .ref-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.25rem 2rem;margin-top:1.5rem}
+    .ref-item{padding-left:0}
+    .ref-item .num{font-family:var(--mono);font-size:.7rem;color:var(--flame-400);letter-spacing:.05em;text-transform:uppercase;margin-bottom:.3rem}
+    .ref-item .title{font-family:var(--serif);font-size:1.1rem;color:var(--ink-900);margin-bottom:.3rem;line-height:1.25}
+    .ref-item .desc{font-size:.895rem;color:var(--ink-500);line-height:1.55}
+    .ref-item .desc code{background:var(--paper);padding:.05rem .3rem;border-radius:3px;font-size:.82em}
+    .ref-subhead{font-family:var(--mono);font-size:.75rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-300);margin:2.5rem 0 .75rem}
+    .ref-subhead:first-of-type{margin-top:2rem}
 
-    /* === Install Section === */
-    .install {
-      background: var(--cream-light);
-    }
+    /* Runs Everywhere + Install */
+    .runs{background:var(--paper-lo)}
+    .install{background:var(--paper)}
+    .code-block{background:#0e0500;color:var(--paper-hi);border-radius:8px;padding:1.25rem;overflow-x:auto;border:1px solid rgba(255,226,206,.08);margin:1rem 0}
+    .code-block pre{font-size:.82rem;line-height:1.75;white-space:pre;margin:0}
+    .code-block .cm{color:#975526;font-style:italic}
+    .code-block .str{color:#F9E1B8}
+    .twocol{display:grid;gap:2.5rem;grid-template-columns:1fr}
+    .twocol h3{color:var(--flame-400)}
+    .twocol p{font-size:.925rem;color:var(--ink-500);line-height:1.55;margin-top:.75rem}
+    .twocol p code, .install p code, .agents p code{background:var(--paper-hi);padding:.05rem .3rem;border-radius:3px;font-size:.85em}
+    .agents p code, .agents .lead code{color:var(--ink-900)}
 
-    /* === Runs Everywhere Section === */
-    .runs-everywhere {
-      background: var(--cream-light);
-      border-bottom: 1px solid rgba(26, 11, 0, 0.06);
-    }
+    .editor-row{display:flex;align-items:center;gap:.5rem;margin-top:.18rem}
+    .editor-row:first-of-type{margin-top:1.25rem}
+    .editor-row img{height:20px;flex-shrink:0}
+    .editor-row .text{font-size:.85rem;color:var(--ink-500)}
 
-    .runs-block {
-      margin-top: 1.5rem;
-    }
+    /* Agents — the bilingual declaration */
+    .agents{background:var(--ink-900);color:var(--paper-hi);border-top:0}
+    .agents h2{color:var(--paper-hi)}
+    .agents h2 .accent{color:var(--flame-100)}
+    .agents h3{color:var(--flame-100)}
+    .agents .eyebrow{color:var(--flame-100)}
+    .agents .eyebrow .slot{color:var(--flame-300)}
+    .agents .lead{color:var(--paper-hi);opacity:.9}
+    .agents p{color:var(--paper-hi);opacity:.85;font-size:.95rem;line-height:1.6}
+    .agents a{color:var(--flame-100);text-decoration:underline;text-decoration-color:rgba(255,176,128,.35);text-underline-offset:3px}
+    .agents a:hover{color:var(--flame-300);text-decoration-color:var(--flame-300)}
+    .agents .code-block{background:#000;border-color:rgba(255,226,206,.12)}
+    .agents-files{display:grid;gap:1rem;grid-template-columns:1fr;margin:1.5rem 0}
+    @media(min-width:780px){.agents-files{grid-template-columns:repeat(3,1fr)}}
+    .agent-card{padding:1.15rem;border:1px solid rgba(255,226,206,.12);border-radius:8px;background:rgba(255,226,206,.03)}
+    .agent-card .fname{font-family:var(--mono);font-size:.82rem;color:var(--flame-100);margin-bottom:.35rem}
+    .agent-card .fdesc{font-size:.87rem;color:var(--paper-hi);opacity:.8;line-height:1.5}
 
-    .runs-block h3 {
-      font-family: 'DM Serif Display', Georgia, serif;
-      font-size: 1.2rem;
-      color: var(--brown-900);
-      margin-bottom: 0.75rem;
-    }
+    /* Status + footer */
+    .status{text-align:center;padding:3.5rem 0}
+    .status-badge{display:inline-flex;align-items:center;gap:.55rem;padding:.5rem 1.15rem;background:var(--paper-lo);border:1px solid var(--rule);border-radius:999px;font-family:var(--mono);font-size:.82rem;color:var(--ink-500)}
+    .status-dot{width:8px;height:8px;background:var(--flame-300);border-radius:50%;animation:pulse 2.2s infinite}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+    .status-text{font-size:.92rem;color:var(--ink-500);margin-top:1rem;line-height:1.7}
+    .status-text a{color:var(--ink-500);text-decoration:underline;text-decoration-color:var(--rule-hi);text-underline-offset:2px}
+    .status-text a:hover{color:var(--flame-400);text-decoration-color:var(--flame-300)}
 
-    .runs-note {
-      font-size: 0.95rem;
-      color: var(--brown-500);
-      margin-top: 1rem;
-      line-height: 1.6;
-    }
+    footer{border-top:1px solid var(--rule);padding:.85rem 0 1.25rem}
+    .footer-inner{display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+    .footer-copy{font-size:.82rem;color:var(--ink-300)}
+    .footer-repo{display:inline-flex;align-items:center;gap:.5rem;font-size:.82rem;color:var(--ink-300)}
+    .footer-repo:hover{color:var(--flame-400)}
+    .footer-repo svg{width:16px;height:16px;flex-shrink:0}
 
-    .runs-code {
-      background: var(--brown-900);
-      border-radius: 8px;
-      padding: 1.25rem;
-      overflow-x: auto;
-      border: 1px solid rgba(255, 226, 206, 0.1);
-    }
-
-    .runs-code pre {
-      font-size: 0.85rem;
-      line-height: 1.7;
-      color: var(--cream);
-      white-space: pre;
-      margin: 0;
-    }
-
-    .runs-code .cm { color: #975526; font-style: italic; }
-    .runs-code .str { color: #F9E1B8; }
-
-    .install-steps {
-      background: var(--brown-900);
-      border-radius: 8px;
-      padding: 1.5rem;
-      overflow-x: auto;
-      border: 1px solid rgba(255, 226, 206, 0.1);
-    }
-
-    .install-steps pre {
-      font-size: 0.875rem;
-      line-height: 1.7;
-      color: var(--cream);
-      white-space: pre;
-      margin: 0;
-    }
-
-    .install-steps .cm { color: #975526; }
-
-    /* === Status === */
-    .status-banner {
-      text-align: center;
-      padding: 3rem 0;
-    }
-
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.5rem 1.25rem;
-      background: var(--cream-light);
-      border: 1px solid rgba(26, 11, 0, 0.08);
-      border-radius: 100px;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.85rem;
-      color: var(--brown-500);
-    }
-
-    .status-link {
-      color: var(--brown-500);
-      text-decoration: underline;
-      text-decoration-color: var(--orange-400);
-      text-underline-offset: 2px;
-    }
-
-    .status-link:hover {
-      color: var(--orange-300);
-    }
-
-    .status-dot {
-      width: 8px;
-      height: 8px;
-      background: var(--orange-400);
-      border-radius: 50%;
-      animation: pulse 2s infinite;
-    }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.4; }
-    }
-
-    .status-text {
-      font-size: 0.95rem;
-      color: var(--brown-500);
-      margin-top: 1rem;
-    }
-
-    .status-text a {
-      font-weight: 500;
-    }
-
-    /* === Footer === */
-    footer {
-      border-top: 1px solid rgba(26, 11, 0, 0.08);
-      padding: 2rem 0;
-      text-align: center;
-    }
-
-    .footer-links {
-      display: flex;
-      justify-content: center;
-      gap: 2rem;
-      margin-bottom: 1rem;
-      flex-wrap: wrap;
-    }
-
-    .footer-links a {
-      font-size: 0.875rem;
-      color: var(--brown-300);
-    }
-
-    .footer-copy {
-      font-size: 0.8rem;
-      color: var(--brown-300);
-    }
-
-    /* === VeraBench === */
-    .verabench {
-      background: #FEEAD1;
-      padding: 4rem 0;
-      border-top: 1px solid rgba(26, 11, 0, 0.06);
-    }
-
-    .verabench .section-heading {
-      color: var(--brown-900);
-    }
-
-    .verabench-layout {
-      display: flex;
-      align-items: flex-start;
-      gap: 2.5rem;
-    }
-
-    .verabench-meerkat {
-      flex-shrink: 0;
-      width: 320px;
-    }
-
-    .verabench-meerkat img {
-      width: 100%;
-      height: auto;
-    }
-
-    .verabench-content {
-      flex: 1;
-      min-width: 0;
-    }
-
-    .verabench-intro {
-      color: var(--brown-500);
-      font-size: 0.95rem;
-      margin-bottom: 1.25rem;
-      line-height: 1.6;
-    }
-
-    .verabench-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 0.875rem;
-      margin-bottom: 1.5rem;
-    }
-
-    .verabench-table thead th {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.75rem;
-      font-weight: 500;
-      color: var(--brown-300);
-      text-align: left;
-      padding: 0.5rem 0.75rem;
-      border-bottom: 2px solid var(--brown-300);
-      letter-spacing: 0.04em;
-      text-transform: uppercase;
-    }
-
-    .verabench-table tbody td {
-      padding: 0.6rem 0.75rem;
-      color: var(--brown-700);
-      border-bottom: 1px solid rgba(26, 11, 0, 0.06);
-    }
-
-    .verabench-table tbody tr:last-child td {
-      border-bottom: none;
-    }
-
-    .verabench-table .lang-label {
-      font-weight: 500;
-      color: var(--brown-900);
-    }
-
-    .verabench-table .metric-val {
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.85rem;
-      color: var(--brown-700);
-    }
-
-    .verabench-table .highlight {
-      color: #1A7F45;
-      font-weight: 600;
-    }
-
-    .verabench-expanded {
-      margin-top: 2rem;
-    }
-
-    .verabench-desc {
-      color: var(--brown-500);
-      font-size: 0.9rem;
-      line-height: 1.6;
-      margin-bottom: 0.75rem;
-    }
-
-    .verabench-cta {
-      margin-top: 1.25rem;
-    }
-
-    .mode-tag {
-      font-size: 0.7rem;
-      font-family: 'JetBrains Mono', monospace;
-      color: var(--brown-300);
-    }
-
-    .mode-tag.dim {
-      color: var(--brown-300);
-      opacity: 0.6;
-    }
-
-    .verabench-table .metric-val.dim {
-      opacity: 0.3;
-    }
-
-    .verabench-table .metric-val.surprise {
-      color: #C0392B;
-      font-weight: 600;
-    }
-
-    .verabench-table .dim-row {
-      opacity: 0.4;
-      font-size: 0.8rem;
-    }
-
-    .verabench-table tr.baseline-separator td {
-      border-top: 2px solid rgba(26, 11, 0, 0.08);
-    }
-
-    @media (max-width: 640px) {
-      .verabench-layout {
-        flex-direction: column;
-        align-items: center;
-        text-align: center;
-      }
-      .verabench-meerkat { width: 220px; }
-      .verabench-table { font-size: 0.8rem; }
-      .verabench-table thead th { font-size: 0.7rem; padding: 0.4rem 0.5rem; }
-      .verabench-table tbody td { padding: 0.5rem; }
-    }
-
-    /* === Responsive === */
-    @media (max-width: 640px) {
-      section { padding: 3rem 0; }
-      .section-heading { font-size: 1.625rem; }
-      .cta-bar { flex-direction: column; align-items: center; }
-      .cta-btn { width: 100%; max-width: 280px; justify-content: center; }
-      .hero-image { border-radius: 8px; }
-      .code-section { padding: 3rem 0; }
-      .code-block { padding: 1rem; }
-      .code-block pre { font-size: 0.8rem; }
-      .principles-grid { grid-template-columns: 1fr; }
-      .features-grid { grid-template-columns: 1fr; }
-      .verabench-layout { text-align: center; }
-      .verabench-meerkat { width: 220px; margin: 0 auto; }
-      .verabench-table { font-size: 0.8rem; }
-      .verabench-table thead th, .verabench-table tbody td { padding: 0.4rem 0.5rem; }
+    /* Mobile */
+    @media(max-width:640px){
+      section{padding:3.5rem 0}
+      .hero{padding:1.5rem 0 .5rem}
+      .btn{width:100%;max-width:280px;justify-content:center}
+      .cta-bar{flex-direction:column;align-items:center}
+      .sample .code{padding:1.1rem}
+      .sample pre{font-size:.76rem}
+      .bench-table{font-size:.78rem}
+      .bench-table th,.bench-table td{padding:.45rem .55rem}
+      .readpath-inner{font-size:.68rem;padding:.5rem 1.25rem;gap:1rem}
     }
   </style>
   <script type="application/ld+json">
-  {
-    "@context": "https://schema.org",
-    "@graph": [
-      {
-        "@type": "WebSite",
-        "name": "Vera",
-        "url": "https://veralang.dev",
-        "description": "A programming language designed for large language models to write.",
-        "publisher": {
-          "@type": "Person",
-          "name": "Alasdair Allan"
-        }
-      },
-      {
-        "@type": "ComputerLanguage",
-        "name": "Vera",
-        "url": "https://veralang.dev",
-        "alternateName": "veralang",
-        "description": "A statically typed, purely functional programming language with algebraic effects, mandatory contracts, and typed slot references. Designed for LLMs to write. Compiles to WebAssembly.",
-        "documentation": "https://veralang.dev/llms.txt"
-      },
-      {
-        "@type": "SoftwareSourceCode",
-        "name": "Vera Reference Compiler",
-        "codeRepository": "https://github.com/aallan/vera",
-        "programmingLanguage": "Python",
-        "runtimePlatform": "WebAssembly",
-        "license": "https://github.com/aallan/vera/blob/main/LICENSE",
-        "targetProduct": {
-          "@type": "SoftwareApplication",
-          "name": "vera",
-          "applicationCategory": "DeveloperApplication",
-          "operatingSystem": "Linux, macOS, Windows"
-        }
-      },
-      {
-        "@type": "TechArticle",
-        "name": "SKILL.md",
-        "description": "Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.",
-        "url": "https://veralang.dev/SKILL.md",
-        "encodingFormat": "text/markdown",
-        "isPartOf": { "@id": "https://veralang.dev" },
-        "audience": {
-          "@type": "Audience",
-          "audienceType": "AI agents and LLMs"
-        }
-      },
-      {
-        "@type": "TechArticle",
-        "name": "AGENTS.md",
-        "description": "Setup instructions for any agent system (Copilot, Cursor, Windsurf, custom). Covers writing Vera code and working on the compiler.",
-        "url": "https://github.com/aallan/vera/blob/main/AGENTS.md",
-        "encodingFormat": "text/markdown",
-        "isPartOf": { "@id": "https://veralang.dev" },
-        "audience": {
-          "@type": "Audience",
-          "audienceType": "AI agents and LLMs"
-        }
-      }
-    ]
-  }
+  {"@context":"https://schema.org","@graph":[
+    {"@type":"WebSite","name":"Vera","url":"https://veralang.dev","description":"A programming language designed for large language models to write.","publisher":{"@type":"Person","name":"Alasdair Allan"}},
+    {"@type":"ComputerLanguage","name":"Vera","url":"https://veralang.dev","alternateName":"veralang","description":"A statically typed, purely functional programming language with algebraic effects, mandatory contracts, and typed slot references. Designed for LLMs to write. Compiles to WebAssembly.","documentation":"https://veralang.dev/llms.txt"},
+    {"@type":"SoftwareSourceCode","name":"Vera Reference Compiler","codeRepository":"https://github.com/aallan/vera","programmingLanguage":"Python","runtimePlatform":"WebAssembly","license":"https://github.com/aallan/vera/blob/main/LICENSE","targetProduct":{"@type":"SoftwareApplication","name":"vera","applicationCategory":"DeveloperApplication","operatingSystem":"Linux, macOS, Windows"}},
+    {"@type":"TechArticle","name":"SKILL.md","description":"Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.","url":"https://veralang.dev/SKILL.md","encodingFormat":"text/markdown","isPartOf":{"@id":"https://veralang.dev"},"audience":{"@type":"Audience","audienceType":"AI agents and LLMs"}},
+    {"@type":"TechArticle","name":"AGENTS.md","description":"Setup instructions for any agent system (Copilot, Cursor, Windsurf, custom). Covers writing Vera code and working on the compiler.","url":"https://github.com/aallan/vera/blob/main/AGENTS.md","encodingFormat":"text/markdown","isPartOf":{"@id":"https://veralang.dev"},"audience":{"@type":"Audience","audienceType":"AI agents and LLMs"}}
+  ]}
   </script>
 </head>
 <body>
 
+  <!-- Bilingual reading-path strip — quiet structural acknowledgement -->
+  <div class="readpath" aria-label="Reading paths">
+    <div class="readpath-inner">
+      <div class="readpath-group">
+        <span><span class="slot">@reader.0</span> → humans <span style="color:var(--ink-300)">· scroll</span></span>
+        <span><span class="slot">@reader.1</span> → agents · <a href="/SKILL.md" rel="agent-instructions" type="text/markdown">SKILL.md</a> · <a href="/llms.txt">llms.txt</a> · <a href="/index.md">.md</a></span>
+      </div>
+      <span style="color:var(--ink-300)">veralang.dev</span>
+    </div>
+  </div>
+
   <!-- Hero -->
   <section class="hero">
-    <div class="container">
-      <img
-        src="vera-hero.jpg"
-        alt="Vera — A language designed for machines to write"
-        class="hero-image"
-        width="1280"
-        height="640"
-      >
-      <p class="hero-tagline">A programming language designed for LLMs to write, not humans.</p>
+    <div class="col col-wide">
+      <img src="vera-hero.jpg" alt="Vera — A language designed for machines to write" class="hero-image" width="1280" height="640">
+      <h1 class="hero-tagline">A programming language designed for LLMs to write, not humans.</h1>
       <p class="hero-etymology">From the Latin <em>veritas</em> — truth. In Vera, verification is a first-class citizen.</p>
+      <div class="cta-bar">
+        <a href="https://github.com/aallan/vera" class="btn btn-primary">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          GitHub
+        </a>
+        <a href="#install" class="btn btn-accent">Install</a>
+        <a href="/SKILL.md" rel="agent-instructions" type="text/markdown" class="btn btn-ghost">For Agents → SKILL.md</a>
+      </div>
+      <p class="version">
+        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.0.119">0.0.119</a></span>
+        <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" aria-label="CI status"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height:18px"></a>
+      </p>
     </div>
   </section>
-
-  <!-- CTA Bar -->
-  <div class="container">
-    <div class="cta-bar">
-      <a href="https://github.com/aallan/vera" class="cta-btn primary">
-        <svg class="cta-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-        GitHub
-      </a>
-      <a href="#install" class="cta-btn secondary">Install</a>
-      <a href="/SKILL.md"
-         rel="agent-instructions"
-         type="text/markdown"
-         data-agent-role="skill"
-         data-agent-description="Complete language reference for writing Vera code. Covers syntax, slot references, contracts, effects, and working examples."
-         class="cta-btn outline">
-        For Agents → SKILL.md
-      </a>
-    </div>
-    <p style="display: flex; justify-content: center; align-items: center; gap: 0.5rem; margin-top: 1rem; font-size: 0.9rem; color: var(--brown-400);">Current Version: <a href="https://github.com/aallan/vera/releases/tag/v0.0.119" style="color: var(--brown-500); font-weight: 500;">v0.0.119</a> <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" style="display: flex;"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height: 20px;"></a></p>
-  </div>
 
   <!-- Why -->
   <section class="why">
-    <div class="container">
-      <h2 class="section-heading">Why?</h2>
+    <div class="col col-wide">
+      <div class="eyebrow"><span class="slot">@section.01</span> · the thesis</div>
+      <h2>Why?</h2>
       <p>Programming languages have always co-evolved with their users. Assembly emerged from hardware constraints. C from operating systems. Python from productivity needs. If models become the primary authors of code, it follows that languages should adapt to that too.</p>
-      <p>The evidence suggests the biggest problem models face isn't syntax, instead it's coherence over scale. Models struggle with maintaining invariants across a codebase, understanding the ripple effects of changes, and reasoning about state over time. They're pattern matchers optimising for local plausibility, not architects holding the entire system in mind. The <a href="https://arxiv.org/abs/2307.12488">empirical literature</a> shows that models are particularly vulnerable to naming-related errors &mdash; choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value.</p>
-      <p>Vera addresses this by making everything explicit and verifiable. The model doesn't need to be right, it needs to be checkable. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification that the compiler can verify against its implementation.</p>
-      <p style="margin-top: 0.75rem;">For deeper questions about the design &mdash; why no variable names, what gets verified, how Vera compares to Dafny, Lean, and Koka &mdash; see the <a href="https://github.com/aallan/vera/blob/main/FAQ.md">FAQ</a>.</p>
-    </div>
-  </section>
-
-  <!-- Design Principles -->
-  <section>
-    <div class="container">
-      <h2 class="section-heading">Design Principles</h2>
-      <div class="principles-grid">
-        <div class="principle">
-          <div class="principle-number">01</div>
-          <div class="principle-title">Checkability over correctness</div>
-          <div class="principle-desc">Code that can be mechanically checked. When wrong, the compiler provides a natural language explanation with a concrete fix.</div>
-        </div>
-        <div class="principle">
-          <div class="principle-number">02</div>
-          <div class="principle-title">Explicitness over convenience</div>
-          <div class="principle-desc">All state changes declared. All effects typed. All function contracts mandatory. No implicit behaviour.</div>
-        </div>
-        <div class="principle">
-          <div class="principle-number">03</div>
-          <div class="principle-title">One canonical form</div>
-          <div class="principle-desc">Every construct has exactly one textual representation. No style choices, no ambiguity.</div>
-        </div>
-        <div class="principle">
-          <div class="principle-number">04</div>
-          <div class="principle-title">Structural references over names</div>
-          <div class="principle-desc">Bindings referenced by type and positional index (<code>@T.n</code>), not arbitrary names.</div>
-        </div>
-        <div class="principle">
-          <div class="principle-number">05</div>
-          <div class="principle-title">Contracts as the source of truth</div>
-          <div class="principle-desc">Every function declares what it requires and guarantees. The compiler verifies statically where possible.</div>
-        </div>
-        <div class="principle">
-          <div class="principle-number">06</div>
-          <div class="principle-title">Constrained expressiveness</div>
-          <div class="principle-desc">Fewer valid programs means fewer opportunities for the model to be wrong.</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Key Features -->
-  <section>
-    <div class="container">
-      <h2 class="section-heading">Key Features</h2>
-      <div class="features-grid">
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">No variable names</div>
-            <div class="feature-desc">Typed <a href="https://github.com/aallan/vera/blob/main/DE_BRUIJN.md">De Bruijn indices</a> (<code>@T.n</code>) replace traditional variable names, eliminating naming hallucinations</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Full contracts</div>
-            <div class="feature-desc">Mandatory preconditions, postconditions, invariants, and effect declarations on all functions</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Algebraic effects</div>
-            <div class="feature-desc">Declared, typed, and handled explicitly &mdash; pure by default</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Refinement types</div>
-            <div class="feature-desc">Types that express constraints like &ldquo;a list of positive integers of length n&rdquo;</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Three-tier verification</div>
-            <div class="feature-desc">Static verification via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, guided verification with hints, runtime fallback</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Diagnostics as instructions</div>
-            <div class="feature-desc">Every error is a natural language explanation with a concrete fix, designed for LLM consumption</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">String interpolation</div>
-            <div class="feature-desc"><code>"\(@Int.0)"</code> with auto-conversion for all primitive types</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Typed Markdown</div>
-            <div class="feature-desc">Built-in <code>MdBlock</code> and <code>MdInline</code> ADTs for structured document processing</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">JSON</div>
-            <div class="feature-desc">Built-in <code>Json</code> ADT with parse, query, and serialize &mdash; typed API integration with contract-checked responses</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">HTML</div>
-            <div class="feature-desc">Built-in <code>HtmlNode</code> ADT with lenient parsing, CSS selector queries, and text extraction &mdash; typed web scraping for agents</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">HTTP</div>
-            <div class="feature-desc"><code>Http.get</code> and <code>Http.post</code> as algebraic effects &mdash; network I/O is explicit, typed, and composes with JSON for verified API access</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">LLM inference</div>
-            <div class="feature-desc"><code>Inference.complete</code> as an algebraic effect &mdash; model calls are typed, contract-verifiable, and mockable; supports Anthropic, OpenAI, and Moonshot</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Async/await</div>
-            <div class="feature-desc"><code>Future&lt;T&gt;</code> with declared <code>&lt;Async&gt;</code> effects, integrated into the effect system</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Constrained generics</div>
-            <div class="feature-desc">Four built-in abilities (<code>Eq</code>, <code>Ord</code>, <code>Hash</code>, <code>Show</code>) with <code>forall&lt;T where Eq&lt;T&gt;&gt;</code> constraint syntax and ADT auto-derivation</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Runs everywhere</div>
-            <div class="feature-desc">Compiles to WebAssembly &mdash; runs at the command line via <a href="https://wasmtime.dev/">wasmtime</a> or in any browser with a self-contained JS runtime</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Module system</div>
-            <div class="feature-desc">Cross-file imports with public/private visibility, verified contracts across module boundaries</div>
-          </div>
-        </div>
-        <div class="feature">
-          <div class="feature-marker"></div>
-          <div>
-            <div class="feature-title">Contract-driven testing</div>
-            <div class="feature-desc">Generate test inputs from contracts via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, compile and run through WASM &mdash; no manual test cases</div>
-          </div>
-        </div>
-      </div>
+      <p class="thesis">The biggest problem models face isn't syntax &mdash; it's coherence over scale. Models are pattern matchers optimising for local plausibility, not architects holding the entire system in mind.</p>
+      <p>The <a href="https://arxiv.org/abs/2307.12488">empirical literature</a> shows models are particularly vulnerable to naming-related errors: choosing misleading names, reusing names incorrectly, and losing track of which name refers to which value. Vera addresses this by making everything explicit and verifiable.</p>
+      <p>The model doesn't need to be right. It needs to be <em>checkable</em>. Names are replaced by structural references. Contracts are mandatory. Effects are typed. Every function is a specification the compiler verifies against its implementation.</p>
+      <p style="margin-top:1.5rem">For deeper questions about the design &mdash; why no variable names, what gets verified, how Vera compares to Dafny, Lean, and Koka &mdash; see the <a href="https://github.com/aallan/vera/blob/main/FAQ.md">FAQ</a>.</p>
     </div>
   </section>
 
   <!-- What Vera Looks Like -->
-  <section class="code-section">
-    <div class="container">
-      <h2 class="section-heading">What Vera Looks Like</h2>
-      <p class="code-intro">Nothing is implicit. The signature declares parameter types, return type, preconditions, postconditions, and effects. The compiler verifies the contract via SMT solver. Division by zero is not a runtime error &mdash; it is a type error.</p>
-      <div class="code-block">
+  <section class="showcase">
+    <div class="col col-wide">
+      <div class="eyebrow"><span class="slot">@section.02</span> · the syntax is the argument</div>
+      <h2>What Vera Looks Like</h2>
+      <p class="lead">Nothing is implicit. The signature declares types, preconditions, postconditions, and effects. The compiler verifies the contract via SMT solver. Division by zero is not a runtime error &mdash; it is a type error.</p>
+
+      <div class="sample">
+        <div class="code">
 <pre><span class="kw">public</span> <span class="kw">fn</span> safe_divide(<span class="sl">@Int</span>, <span class="sl">@Int</span> -> <span class="sl">@Int</span>)
   <span class="ct">requires</span>(<span class="sl">@Int.1</span> != <span class="num">0</span>)
   <span class="ct">ensures</span>(<span class="sl">@Int.result</span> == <span class="sl">@Int.0</span> / <span class="sl">@Int.1</span>)
@@ -924,11 +295,14 @@
 {
   <span class="sl">@Int.0</span> / <span class="sl">@Int.1</span>
 }</pre>
+        </div>
+        <aside class="aside">
+          <strong>Read the slots.</strong> <code>@Int.1</code> is the first parameter, <code>@Int.0</code> is the second &mdash; De Bruijn indexing, most-recent first. No variable names means no naming bug is possible. The <code>requires</code> clause is what lifts divide-by-zero from a runtime crash to a compile-time error.
+        </aside>
       </div>
 
-      <div class="code-subsection">
-        <p class="code-intro">String interpolation, conditionals, and the <code>@T.n</code> slot reference system &mdash; in <a href="https://github.com/aallan/vera/blob/main/examples/fizzbuzz.vera">a program</a> everyone recognises. There are no naming decisions to make, and none to hallucinate.</p>
-        <div class="code-block">
+      <div class="sample">
+        <div class="code">
 <pre><span class="kw">public</span> <span class="kw">fn</span> fizzbuzz(<span class="sl">@Nat</span> -> <span class="sl">@String</span>)
   <span class="ct">requires</span>(<span class="num">true</span>)
   <span class="ct">ensures</span>(<span class="num">true</span>)
@@ -949,11 +323,13 @@
   }
 }</pre>
         </div>
+        <aside class="aside">
+          <strong>A program everyone knows.</strong> Interpolation uses <code>"\(@Nat.0)"</code> &mdash; the slot reference substitutes in directly with auto-conversion. There are no naming decisions to make, and none to hallucinate. <a href="https://github.com/aallan/vera/blob/main/examples/fizzbuzz.vera">examples/fizzbuzz.vera</a>.
+        </aside>
       </div>
 
-      <div class="code-subsection">
-        <p class="code-intro">Both functions above are <code>effects(pure)</code> &mdash; the compiler has proved they perform no side effects of any kind. This matters because effects compose. When a function calls an LLM, the <code>&lt;Inference&gt;</code> effect appears in its signature. An LLM writing code that uses another LLM declares it explicitly.</p>
-        <div class="code-block">
+      <div class="sample">
+        <div class="code">
 <pre><span class="kw">public</span> <span class="kw">fn</span> classify_sentiment(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
   <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
   <span class="ct">ensures</span>(<span class="num">true</span>)
@@ -963,46 +339,33 @@
   Inference.complete(<span class="sl">@String.0</span>)
 }</pre>
         </div>
+        <aside class="aside">
+          <strong>LLM calls are effects.</strong> Where the two functions above are <code>effects(pure)</code>, this one declares <code>&lt;Inference&gt;</code>. A caller that does not permit <code>&lt;Inference&gt;</code> cannot invoke it. The effect system makes model calls visible in every signature that uses them, all the way up.
+        </aside>
       </div>
 
-      <div class="code-subsection">
-        <p class="code-intro">Postconditions can constrain the model&rsquo;s output. Z3 cannot know what a model will return at compile time, so the contract is checked at runtime &mdash; if the model returns an empty string, the program traps with a contract violation rather than silently propagating garbage.</p>
-        <div class="code-block">
-<pre><span class="kw">public</span> <span class="kw">fn</span> safe_classify(<span class="sl">@String</span> -> <span class="sl">@String</span>)
-  <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
-  <span class="ct">ensures</span>(string_length(<span class="sl">@String.result</span>) > <span class="num">0</span>)
-  <span class="ct">effects</span>(&lt;Inference&gt;)
-{
-  <span class="kw">let</span> <span class="sl">@Result&lt;String, String&gt;</span> = classify_sentiment(<span class="sl">@String.0</span>);
-  <span class="kw">match</span> <span class="sl">@Result&lt;String, String&gt;.0</span> {
-    Ok(<span class="sl">@String</span>) -> <span class="sl">@String.0</span>,
-    Err(<span class="sl">@String</span>) -> <span class="str">"Neutral"</span>
-  }
-}</pre>
-        </div>
-      </div>
-
-      <div class="code-subsection">
-        <p class="code-intro">Compose with <code>Http</code> to fetch, then reason. The <code>&lt;Http, Inference&gt;</code> annotation enforces the boundary &mdash; a caller that only permits <code>&lt;Http&gt;</code> cannot invoke this function, and a caller that only permits <code>&lt;Inference&gt;</code> cannot invoke it either. Both must declare the full effect row.</p>
-        <div class="code-block">
+      <div class="sample">
+        <div class="code">
 <pre><span class="kw">public</span> <span class="kw">fn</span> research_topic(<span class="sl">@String</span> -> <span class="sl">@Result&lt;String, String&gt;</span>)
   <span class="ct">requires</span>(string_length(<span class="sl">@String.0</span>) > <span class="num">0</span>)
   <span class="ct">ensures</span>(<span class="num">true</span>)
   <span class="ct">effects</span>(&lt;Http, Inference&gt;)
 {
-  <span class="kw">let</span> <span class="sl">@Result&lt;String, String&gt;</span> = Http.get(string_concat(<span class="str">"https://en.wikipedia.org/w/api.php?action=query&titles="</span>, <span class="sl">@String.0</span>));
+  <span class="kw">let</span> <span class="sl">@String</span> = url_encode(<span class="sl">@String.0</span>);
+  <span class="kw">let</span> <span class="sl">@Result&lt;String, String&gt;</span> = Http.get(string_concat(<span class="str">"https://api.duckduckgo.com/?format=json&q="</span>, <span class="sl">@String.0</span>));
   <span class="kw">match</span> <span class="sl">@Result&lt;String, String&gt;.0</span> {
     Ok(<span class="sl">@String</span>) -> Inference.complete(string_concat(<span class="str">"Summarise this in one paragraph:\n\n"</span>, <span class="sl">@String.0</span>)),
     Err(<span class="sl">@String</span>) -> Err(<span class="sl">@String.0</span>)
   }
 }</pre>
         </div>
-        <p class="code-intro" style="margin-top: 1rem;">Supports Anthropic, OpenAI, and Moonshot &mdash; provider auto-detected from whichever API key is set. Run with <code>VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera</code>.</p>
+        <aside class="aside">
+          <strong>Effects compose.</strong> <code>&lt;Http, Inference&gt;</code> is the row &mdash; both must be permitted. <code>Inference</code> auto-detects the provider (Anthropic, OpenAI, Moonshot) from whichever API key is set. Postconditions can constrain model output; Z3 cannot know what a model will return at compile time, so these become runtime assertions that trap on violation.
+        </aside>
       </div>
 
-      <div class="code-subsection">
-        <p class="code-intro">When you get it wrong, every error is an instruction for the model that wrote the code &mdash; what went wrong, why, how to fix it, and a spec reference.</p>
-        <div class="code-block">
+      <div class="sample">
+        <div class="code">
 <pre><span class="err-head">[E001] Error at main.vera, line 14, column 1:</span>
 
     <span class="err-code">{</span>
@@ -1028,48 +391,145 @@
 
   <span class="err-ref">See: Chapter 5, Section 5.1 "Function Structure"</span></pre>
         </div>
-        <p class="code-intro" style="margin-top: 1rem;">This principle applies at every stage: parse errors, type errors, effect mismatches, verification failures, and contract violations all produce natural language explanations with actionable fixes.</p>
+        <aside class="aside">
+          <strong>Diagnostics as instructions.</strong> Every error is an instruction for the model that wrote the code: what went wrong, why, how to fix it, and a spec reference. Parse errors, type errors, effect mismatches, verification failures, and contract violations all produce the same shape.
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- VeraBench — lifted, with headline stat -->
+  <section class="verabench">
+    <div class="col col-wide">
+      <div class="eyebrow"><span class="slot">@section.03</span> · empirical evidence</div>
+      <h2>VeraBench</h2>
+      <div class="bench-masthead">
+        <p class="bench-stat">Kimi K2.5 writes <b>100% correct</b> Vera &mdash; beating its own <b>86%</b> on Python and <b>91%</b> on TypeScript.</p>
+        <img src="vera-bench-meerkat-only.png" alt="VeraBench meerkat" class="bench-meerkat" width="542" height="640" loading="lazy">
+      </div>
+
+      <div class="bench-body">
+        <p style="color:var(--ink-500)">A 50-problem benchmark across 5 difficulty tiers &mdash; pure arithmetic, ADTs, recursion, closures, multi-function effect propagation. Six models, three providers, four modes each. The chart below shows run-correct rates; <span style="color:#1A7F45;font-weight:600">green shows wins for Vera</span>.</p>
+
+          <table class="bench-table">
+            <thead>
+              <tr><th>Model</th><th>Vera</th><th>Python</th><th>TypeScript</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="lang">Kimi K2.5 <span class="tag">flagship</span></td>
+                <td class="win">100%</td>
+                <td class="flip">86%</td>
+                <td class="flip">91%</td>
+              </tr>
+              <tr>
+                <td class="lang">GPT-4.1 <span class="tag">flagship</span></td>
+                <td>91%</td><td>96%</td><td>96%</td>
+              </tr>
+              <tr>
+                <td class="lang">Claude Opus 4 <span class="tag">flagship</span></td>
+                <td>88%</td><td>96%</td><td>96%</td>
+              </tr>
+              <tr class="sep">
+                <td class="lang">Kimi K2 Turbo <span class="tag">sonnet</span></td>
+                <td class="win">83%</td><td>88%</td><td class="flip">79%</td>
+              </tr>
+              <tr>
+                <td class="lang">Claude Sonnet 4 <span class="tag">sonnet</span></td>
+                <td>79%</td><td>96%</td><td>88%</td>
+              </tr>
+              <tr>
+                <td class="lang">GPT-4o <span class="tag">sonnet</span></td>
+                <td>78%</td><td>93%</td><td>83%</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <p class="bench-caveat">In our latest results <strong style="color:var(--ink-900)">Kimi K2.5 writes perfect Vera code</strong> &mdash; 100% run_correct, beating both Python (86%) and TypeScript (91%), alongside that we see that Kimi K2 Turbo also writes better Vera than TypeScript. While in our previous <a href="https://github.com/aallan/vera-bench/releases/tag/v0.0.4">v0.0.4</a> benchmark, Claude Sonnet 4 wrote Vera better than TypeScript (83% vs 79%) this result flipped in the latest v0.0.7 re-run above illustrating the variance inherent in single-run evaluation and model non-determinism.</p>
+
+          <a href="https://github.com/aallan/vera-bench"><img src="verabench-delta-chart.png" alt="Does Vera beat Python / TypeScript?" class="bench-chart" loading="lazy" width="1779" height="855"></a>
+
+          <p class="bench-caveat">Mandatory contracts and typed slot references appear to provide enough structure to compensate for zero training data. Still early days &mdash; 50 problems, single run per model. Stable rates will require pass@k evaluation with multiple trials.</p>
+          <p class="bench-caveat" style="margin-top:.75rem">Results from <a href="https://github.com/aallan/vera-bench/releases/tag/v0.0.7">VeraBench v0.0.7</a> against <a href="https://github.com/aallan/vera/releases/tag/v0.0.108">Vera v0.0.108</a>. Inspired by <a href="https://github.com/openai/human-eval">HumanEval</a>, <a href="https://github.com/google-research/google-research/tree/master/mbpp">MBPP</a>, and <a href="https://github.com/sun-wendy/DafnyBench">DafnyBench</a>.</p>
+          <p style="margin-top:1.25rem"><a href="https://github.com/aallan/vera-bench" class="btn btn-primary"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>vera-bench</a></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Reference: principles + features, condensed -->
+  <section class="reference">
+    <div class="col col-wide">
+      <div class="eyebrow"><span class="slot">@section.04</span> · reference</div>
+      <h2>Design <span class="accent">&amp;</span> Features</h2>
+
+      <p class="ref-subhead">Design principles</p>
+      <div class="ref-grid">
+        <div class="ref-item"><div class="num">01</div><div class="title">Checkability over correctness</div><div class="desc">Code the compiler can mechanically check. Every diagnostic carries a concrete fix in natural language.</div></div>
+        <div class="ref-item"><div class="num">02</div><div class="title">Explicitness over convenience</div><div class="desc">All state changes declared. All effects typed. All contracts mandatory. No implicit behaviour.</div></div>
+        <div class="ref-item"><div class="num">03</div><div class="title">One canonical form</div><div class="desc">Every construct has exactly one textual representation. <code>vera fmt</code> settles it.</div></div>
+        <div class="ref-item"><div class="num">04</div><div class="title">Structural references over names</div><div class="desc">Bindings referenced by type and positional index (<code>@T.n</code>), not arbitrary names.</div></div>
+        <div class="ref-item"><div class="num">05</div><div class="title">Contracts as the source of truth</div><div class="desc">Every function declares what it requires and guarantees. The compiler verifies statically where possible.</div></div>
+        <div class="ref-item"><div class="num">06</div><div class="title">Constrained expressiveness</div><div class="desc">Fewer valid programs means fewer opportunities for the model to be wrong.</div></div>
+      </div>
+
+      <p class="ref-subhead">Key features</p>
+      <div class="ref-grid">
+        <div class="ref-item"><div class="title">No variable names</div><div class="desc">Typed <a href="https://github.com/aallan/vera/blob/main/DE_BRUIJN.md">De Bruijn indices</a> (<code>@T.n</code>) replace variable names: <code>@Int.0</code> is the most-recent <code>Int</code> binding, <code>@Int.1</code> the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.</div></div>
+        <div class="ref-item"><div class="title">Full contracts</div><div class="desc">Mandatory preconditions, postconditions, invariants, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM &mdash; no manual test cases.</div></div>
+        <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, State, Exceptions, Async, Inference, Random &mdash; declared, typed, and handled explicitly. Pure by default.</div></div>
+        <div class="ref-item"><div class="title">Refinement types</div><div class="desc">Types that express constraints like &ldquo;a list of positive integers of length <code>n</code>&rdquo;.</div></div>
+        <div class="ref-item"><div class="title">Three-tier verification</div><div class="desc">Static via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, guided with hints, runtime fallback for the rest.</div></div>
+        <div class="ref-item"><div class="title">Diagnostics as instructions</div><div class="desc">Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.</div></div>
+        <div class="ref-item"><div class="title">LLM inference as effect</div><div class="desc"><code>Inference.complete</code> is an algebraic effect &mdash; typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot.</div></div>
+        <div class="ref-item"><div class="title">Typed stdlib</div><div class="desc">JSON, HTML, Markdown, HTTP, Regex, Decimal &mdash; built-in ADTs with parse/query/serialize.</div></div>
+        <div class="ref-item"><div class="title">Async / Future&lt;T&gt;</div><div class="desc">Futures carry an <code>&lt;Async&gt;</code> effect and compose with the rest of the effect system.</div></div>
       </div>
     </div>
   </section>
 
   <!-- Runs Everywhere -->
-  <section class="runs-everywhere">
-    <div class="container">
-      <h2 class="section-heading">Runs Everywhere</h2>
-      <p style="color: var(--brown-500); font-size: 1.05rem; margin-bottom: 1.5rem;">Vera compiles to WebAssembly. The same <code>.wasm</code> binary runs at the command line via <a href="https://wasmtime.dev/">wasmtime</a> or in any browser with a self-contained JavaScript runtime.</p>
-      <div class="runs-block">
-        <h3>Command line</h3>
-        <div class="runs-code">
+  <section class="runs">
+    <div class="col col-wide">
+      <div class="eyebrow"><span class="slot">@section.05</span> · runtime</div>
+      <h2>Runs Everywhere</h2>
+      <p class="lead" style="max-width:58ch">Vera compiles to WebAssembly. The same <code>.wasm</code> runs at the command line via <a href="https://wasmtime.dev/">wasmtime</a> or in any browser with a self-contained JS runtime.</p>
+
+      <div class="twocol" style="margin-top:1.75rem">
+        <div>
+          <h3>Command line</h3>
+          <div class="code-block">
 <pre><span class="cm">$ vera run examples/hello_world.vera</span>
 Hello, World!
 
 <span class="cm">$ vera run examples/factorial.vera --fn factorial -- 10</span>
 3628800</pre>
+          </div>
+          <p><code>vera run</code> compiles to WASM and executes via wasmtime. <code>--fn</code> picks any public function; arguments follow <code>--</code>.</p>
         </div>
-        <p class="runs-note"><code>vera run</code> compiles to WASM and executes via <a href="https://wasmtime.dev/">wasmtime</a>. Use <code>--fn</code> to call any public function and pass arguments after <code>--</code> on the command line.</p>
-      </div>
-      <div class="runs-block">
-        <h3>Browser</h3>
-        <div class="runs-code">
-<pre><span class="cm">$ vera compile --target browser examples/hello_world.vera</span>
+        <div>
+          <h3>Browser</h3>
+          <div class="code-block">
+<pre><span class="cm">$ vera compile --target browser \
+    examples/hello_world.vera</span>
 Browser bundle: examples/hello_world_browser/
   module.wasm
   runtime.mjs
   index.html</pre>
+          </div>
+          <p>Self-contained &mdash; no bundler. Serve with any HTTP server (<code>python&nbsp;-m&nbsp;http.server</code>). <code>IO.print</code> writes to the page; all other operations work identically to the CLI. Parity tests enforce this on every PR. <em>Note: <code>Inference.complete</code> errors in the browser &mdash; use a server-side proxy via <code>Http</code>.</em></p>
         </div>
-        <p class="runs-note">The browser bundle is self-contained &mdash; no build step or bundler needed. Serve the output directory with any HTTP server (<code>python&nbsp;-m&nbsp;http.server</code>) and open <code>index.html</code>. <code>IO.print</code> writes to the page, <code>IO.read_line</code> uses <code>prompt()</code>, and all other operations work identically to the CLI runtime. Mandatory parity tests enforce this on every PR.</p>
-        <p class="runs-note"><em>Note: <code>Inference.complete</code> returns an error in the browser &mdash; API keys cannot be safely embedded in client-side JavaScript. The recommended pattern is a server-side proxy called via the <code>Http</code> effect.</em></p>
       </div>
     </div>
   </section>
 
   <!-- Install -->
   <section class="install" id="install">
-    <div class="container">
-      <h2 class="section-heading">Get Started</h2>
-      <p style="color: var(--brown-500); margin-bottom: 1.25rem; font-size: 0.95rem;">Python 3.11+ and Git. Everything else installs into a virtual environment.</p>
-      <div class="install-steps">
+    <div class="col col-wide">
+      <div class="eyebrow"><span class="slot">@section.06</span> · install</div>
+      <h2>Get Started</h2>
+      <p style="color:var(--ink-500);max-width:56ch">Python 3.11+ and Git. Everything else installs into a virtual environment.</p>
+
+      <div class="code-block">
 <pre><span class="cm"># Clone and install</span>
 git clone https://github.com/aallan/vera.git
 cd vera
@@ -1077,168 +537,77 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-<span class="cm"># Check a program</span>
+<span class="cm"># Check, verify, run, compile</span>
 vera check examples/absolute_value.vera
-
-<span class="cm"># Verify contracts via Z3</span>
 vera verify examples/safe_divide.vera
-
-<span class="cm"># Compile and run</span>
 vera run examples/hello_world.vera
-
-<span class="cm"># Compile for the browser</span>
 vera compile --target browser examples/hello_world.vera</pre>
       </div>
 
-      <div style="display: flex; align-items: flex-start; gap: 0.35rem; margin-top: 1.25rem; margin-bottom: 0.75rem;">
-        <img src="textmate-icon.png" alt="TextMate" style="height: 20px; margin-top: 1px;">
-        <div>
-          <p style="font-size: 0.85rem; color: var(--brown-400); margin: 0;">Download a <a href="https://github.com/aallan/vera/tree/main/editors/textmate" style="color: var(--brown-500);">Vera <code>.tmbundle</code></a> file to add syntax highlighting to TextMate.</p>
-          <p style="font-size: 0.6rem; color: var(--brown-300); margin: 0.1rem 0 0 0;">TextMate is a trademark of <a href="https://macromates.com/" style="color: var(--brown-300);">MacroMates</a></p>
-        </div>
+      <div class="editor-row">
+        <img src="textmate-icon.png" alt="TextMate">
+        <div class="text">Syntax highlighting for TextMate: download the <a href="https://github.com/aallan/vera/tree/main/editors/textmate">Vera <code>.tmbundle</code></a>.</div>
       </div>
-      <div style="display: flex; align-items: flex-start; gap: 0.35rem; margin-bottom: 1.5rem;">
-        <img src="vscode-icon.png" alt="VS Code" style="height: 20px; margin-top: 1px;">
-        <div>
-          <p style="font-size: 0.85rem; color: var(--brown-400); margin: 0;">Install the <a href="https://github.com/aallan/vera/tree/main/editors/vscode" style="color: var(--brown-500);">Vera VS Code extension</a> for syntax highlighting in Visual Studio Code.</p>
-          <p style="font-size: 0.6rem; color: var(--brown-300); margin: 0.1rem 0 0 0;">Visual Studio Code is a trademark of <a href="https://microsoft.com/" style="color: var(--brown-300);">Microsoft</a></p>
-        </div>
+      <div class="editor-row">
+        <img src="vscode-icon.png" alt="VS Code">
+        <div class="text">Syntax highlighting for Visual Studio Code: install the <a href="https://github.com/aallan/vera/tree/main/editors/vscode">Vera extension</a>.</div>
       </div>
-
     </div>
   </section>
 
-  <!-- For Agents -->
-  <section id="agents">
-    <div class="container">
-      <h2 class="section-heading">For Agents</h2>
-      <p style="color: var(--brown-500); margin-bottom: 1rem; font-size: 0.95rem;">Vera ships with three files for LLM agents:</p>
-      <div style="margin-bottom: 1.25rem;">
-        <p style="color: var(--brown-500); font-size: 0.95rem; margin-bottom: 0.5rem;"><a href="/SKILL.md"><code>SKILL.md</code></a> &mdash; Complete language reference for agents writing Vera code. Covers syntax, slot references, contracts, effects, common mistakes, and working examples.</p>
-        <p style="color: var(--brown-500); font-size: 0.95rem; margin-bottom: 0.5rem;"><a href="https://github.com/aallan/vera/blob/main/AGENTS.md"><code>AGENTS.md</code></a> &mdash; Instructions for any agent system (Copilot, Cursor, Windsurf, custom). Covers both writing Vera code and working on the compiler.</p>
-        <p style="color: var(--brown-500); font-size: 0.95rem;"><a href="https://github.com/aallan/vera/blob/main/CLAUDE.md"><code>CLAUDE.md</code></a> &mdash; Project orientation for Claude Code. Key commands, layout, workflows, and invariants.</p>
+  <!-- For Agents — bilingual declaration -->
+  <section class="agents" id="agents">
+    <div class="col col-wide">
+      <div class="eyebrow"><span class="slot">@section.07</span> · for machines</div>
+      <h2>This page is also a <span class="accent">machine-readable</span> specification.</h2>
+      <p class="lead">Every document here has an alternate in markdown, served on the same domain, discoverable through standard <code>&lt;link rel="alternate"&gt;</code>, <code>llms.txt</code>, and the Mintlify <code>llms-txt</code> / <code>llms-full-txt</code> conventions.</p>
+
+      <div class="agents-files">
+        <div class="agent-card">
+          <div class="fname"><a href="/SKILL.md">SKILL.md</a></div>
+          <div class="fdesc">Complete language reference for writing Vera code &mdash; syntax, slots, contracts, effects, common mistakes, working examples.</div>
+        </div>
+        <div class="agent-card">
+          <div class="fname"><a href="https://github.com/aallan/vera/blob/main/AGENTS.md">AGENTS.md</a></div>
+          <div class="fdesc">Setup instructions for any agent system (Copilot, Cursor, Windsurf, custom). Writing Vera code and working on the compiler.</div>
+        </div>
+        <div class="agent-card">
+          <div class="fname"><a href="https://github.com/aallan/vera/blob/main/CLAUDE.md">CLAUDE.md</a></div>
+          <div class="fdesc">Project orientation for Claude Code. Key commands, repo layout, workflows, invariants.</div>
+        </div>
       </div>
 
-      <p style="color: var(--brown-500); margin-bottom: 0.75rem; font-size: 0.95rem;">If you're working in the Vera repo, Claude Code discovers <a href="/SKILL.md"><code>SKILL.md</code></a> and <a href="https://github.com/aallan/vera/blob/main/CLAUDE.md"><code>CLAUDE.md</code></a> automatically. For other projects to give Claude access to the Vera language you can install the skill manually:</p>
-      <div class="install-steps" style="margin-bottom: 1rem;">
+      <p>Claude Code discovers <a href="/SKILL.md">SKILL.md</a> and <a href="https://github.com/aallan/vera/blob/main/CLAUDE.md">CLAUDE.md</a> automatically when working inside the repo. For other projects, install the skill manually:</p>
+      <div class="code-block">
 <pre>mkdir -p ~/.claude/skills/vera-language
 cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       </div>
-      <p style="color: var(--brown-500); font-size: 0.95rem;">The skill is now available across all your Claude Code projects. Claude will read it automatically when you ask it to write Vera code. For other models, point the model at <a href="/SKILL.md"><code>SKILL.md</code></a> by including it in the system prompt, as a file attachment, or as a retrieval document. The file is self-contained and works with any model that can read markdown.</p>
-    </div>
-  </section>
-
-  <!-- VeraBench -->
-  <section class="verabench">
-    <div class="container">
-      <h2 class="section-heading">VeraBench</h2>
-      <div class="verabench-layout">
-        <div class="verabench-meerkat">
-          <img src="vera-bench-meerkat-only.png" alt="VeraBench meerkat" width="542" height="640">
-        </div>
-        <div class="verabench-content">
-          <p class="verabench-intro">A 50-problem benchmark across 5 difficulty tiers, measuring whether LLMs write better code in a language designed for them. Six models, three providers, four modes each.</p>
-          <table class="verabench-table">
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th>Vera</th>
-                <th>Python</th>
-                <th>TypeScript</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td class="lang-label">Kimi K2.5 <span class="mode-tag">flagship</span></td>
-                <td class="metric-val highlight">100%</td>
-                <td class="metric-val surprise">86%</td>
-                <td class="metric-val surprise">91%</td>
-              </tr>
-              <tr>
-                <td class="lang-label">GPT-4.1 <span class="mode-tag">flagship</span></td>
-                <td class="metric-val">91%</td>
-                <td class="metric-val">96%</td>
-                <td class="metric-val">96%</td>
-              </tr>
-              <tr>
-                <td class="lang-label">Claude Opus 4 <span class="mode-tag">flagship</span></td>
-                <td class="metric-val">88%</td>
-                <td class="metric-val">96%</td>
-                <td class="metric-val">96%</td>
-              </tr>
-              <tr class="baseline-separator">
-                <td class="lang-label">Kimi K2 Turbo <span class="mode-tag">sonnet</span></td>
-                <td class="metric-val highlight">83%</td>
-                <td class="metric-val">88%</td>
-                <td class="metric-val surprise">79%</td>
-              </tr>
-              <tr>
-                <td class="lang-label">Claude Sonnet 4 <span class="mode-tag">sonnet</span></td>
-                <td class="metric-val">79%</td>
-                <td class="metric-val">96%</td>
-                <td class="metric-val">88%</td>
-              </tr>
-              <tr>
-                <td class="lang-label">GPT-4o <span class="mode-tag">sonnet</span></td>
-                <td class="metric-val">78%</td>
-                <td class="metric-val">93%</td>
-                <td class="metric-val">83%</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-      <!-- Full-width content below the mascot + table row -->
-      <div class="verabench-expanded">
-        <p class="verabench-desc">In our latest results <strong style="color: var(--brown-900);">Kimi K2.5 writes perfect Vera code</strong> &mdash; 100% run_correct, beating both Python (86%) and TypeScript (91%), alongside that we see that Kimi K2 Turbo also writes better Vera than TypeScript. While in our previous <a href="https://github.com/aallan/vera-bench/releases/tag/v0.0.4">v0.0.4</a> benchmark, Claude Sonnet 4 wrote Vera better than TypeScript (83% vs 79%) this result flipped in the latest v0.0.7 re-run above illustrating the variance inherent in single-run evaluation and model non-determinism.</p>
-        <a href="https://github.com/aallan/vera-bench" style="display: block; margin: 1.25rem 0;"><img src="verabench-delta-chart.png" alt="Does Vera beat Python / TypeScript?" style="width: 100%; height: auto; border-radius: 4px;"></a>
-        <p class="verabench-desc">It seems like Vera's mandatory contracts and typed slot references provide enough structure to compensate for zero training data. However it is still early days, just 50 problems, and one run per model. Stable rates will require pass@k evaluation with multiple trials.</p>
-        <p class="verabench-desc">Results from <a href="https://github.com/aallan/vera-bench/releases/tag/v0.0.7">VeraBench v0.0.7</a> against <a href="https://github.com/aallan/vera/releases/tag/v0.0.108">Vera v0.0.108</a>. Five tiers from pure arithmetic through ADTs, recursion, and multi-function effect propagation. Inspired by <a href="https://github.com/openai/human-eval">HumanEval</a>, <a href="https://github.com/google-research/google-research/tree/master/mbpp">MBPP</a>, and <a href="https://github.com/sun-wendy/DafnyBench">DafnyBench</a>.</p>
-        <div class="verabench-cta">
-          <a href="https://github.com/aallan/vera-bench" class="cta-btn primary">
-            <svg class="cta-icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-            GitHub
-          </a>
-        </div>
-      </div>
+      <p>For other models: point them at <a href="/SKILL.md">SKILL.md</a> via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown.</p>
     </div>
   </section>
 
   <!-- Status -->
-  <section class="status-banner">
-    <div class="container">
+  <section class="status">
+    <div class="col col-wide">
       <div class="status-badge">
         <span class="status-dot"></span>
-        Vera is under <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md" class="status-link">active development</a>
+        Vera is under <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md" style="color:inherit;text-decoration:underline;text-decoration-color:var(--flame-400);text-underline-offset:2px">active development</a>
       </div>
       <p class="status-text">
-        A complete compiler with 122 built-in functions, algebraic effects (IO, Http, State, Inference), contract-driven testing, and a 13-chapter specification.
-
-        <br>
-        <a href="https://github.com/aallan/vera/blob/main/README.md">README</a> ·
-        <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md">Roadmap</a> ·
-        <a href="https://github.com/aallan/vera/blob/main/HISTORY.md">History</a> ·
-        <a href="https://github.com/aallan/vera/blob/main/CHANGELOG.md">Changelog</a> ·
-        <a href="https://github.com/aallan/vera/blob/main/CONTRIBUTING.md">Contributing</a> ·
-        <a href="https://github.com/aallan/vera/issues">Issues</a> ·
-        <a href="https://github.com/aallan/vera-bench">VeraBench</a>
+        A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, and a 13-chapter specification. An 80-program conformance suite and 32 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
       </p>
     </div>
   </section>
 
-  <!-- Footer -->
   <footer>
-    <div class="container">
-      <div class="footer-links">
-        <a href="https://github.com/aallan/vera">GitHub</a>
-        <a href="https://github.com/aallan/vera/blob/main/spec/">Specification</a>
-        <a href="/SKILL.md">SKILL.md</a>
-        <a href="https://github.com/aallan/vera/blob/main/AGENTS.md">AGENTS.md</a>
-        <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md">Roadmap</a>
-        <a href="https://github.com/aallan/vera/blob/main/CHANGELOG.md">Changelog</a>
-        <a href="https://github.com/aallan/vera/blob/main/LICENSE">MIT Licence</a>
+    <div class="col col-wide">
+      <div class="footer-inner">
+        <p class="footer-copy">&copy; 2026 Alasdair Allan</p>
+        <a href="https://github.com/aallan/vera" class="footer-repo" aria-label="aallan/vera on GitHub">
+          <svg viewBox="0 0 98 96" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" clip-rule="evenodd" d="M48.854 0C21.839 0 0 22 0 49.217c0 21.756 13.993 40.172 33.405 46.69 2.427.49 3.316-1.059 3.316-2.362 0-1.141-.08-5.052-.08-9.127-13.59 2.934-16.42-5.867-16.42-5.867-2.184-5.704-5.42-7.17-5.42-7.17-4.448-3.015.324-3.015.324-3.015 4.934.326 7.523 5.052 7.523 5.052 4.367 7.496 11.404 5.378 14.235 4.074.404-3.178 1.699-5.378 3.074-6.6-10.839-1.141-22.243-5.378-22.243-24.283 0-5.378 1.94-9.778 5.014-13.2-.485-1.222-2.184-6.275.486-13.038 0 0 4.125-1.304 13.426 5.052a46.97 46.97 0 0 1 12.214-1.63c4.125 0 8.33.571 12.213 1.63 9.302-6.356 13.427-5.052 13.427-5.052 2.67 6.763.97 11.816.485 13.038 3.155 3.422 5.015 7.822 5.015 13.2 0 18.905-11.404 23.06-22.324 24.283 1.78 1.548 3.316 4.481 3.316 9.126 0 6.6-.08 11.897-.08 13.526 0 1.304.89 2.853 3.316 2.364 19.412-6.52 33.405-24.935 33.405-46.691C97.707 22 75.788 0 48.854 0z"/></svg>
+          aallan/vera
+        </a>
       </div>
-      <p class="footer-copy">&copy; 2026 Alasdair Allan</p>
     </div>
   </footer>
 
@@ -1256,6 +625,7 @@ Compiles to WebAssembly. Runs at the CLI or in the browser.
 - [AGENTS.md](https://github.com/aallan/vera/blob/main/AGENTS.md): Setup instructions for any agent system
 - [llms.txt](https://veralang.dev/llms.txt): Site index for LLMs
 - [llms-full.txt](https://veralang.dev/llms-full.txt): Full site content for LLMs
+- [index.md](https://veralang.dev/index.md): Markdown companion of this homepage
   </script>
 
 </body>
