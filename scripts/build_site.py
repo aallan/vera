@@ -343,6 +343,7 @@ def build_index_md(version: str) -> str:
     human designer; if the HTML's substance changes, update this too.
     """
     n_examples = _count_examples()
+    n_conformance = _count_conformance()
     return f"""\
 # Vera — A language designed for machines to write
 
@@ -423,6 +424,7 @@ public fn research_topic(@String -> @Result<String, String>)
   ensures(true)
   effects(<Http, Inference>)
 {{
+  let @String = url_encode(@String.0);
   let @Result<String, String> = Http.get(string_concat("https://api.duckduckgo.com/?format=json&q=", @String.0));
   match @Result<String, String>.0 {{
     Ok(@String) -> Inference.complete(string_concat("Summarise this in one paragraph:\\n\\n", @String.0)),
@@ -574,7 +576,7 @@ For other models: point them at [`SKILL.md`]({SITE}/SKILL.md) via system prompt,
 
 ## Status
 
-Vera is under [active development]({RAW}/ROADMAP.md). A complete compiler with 164 built-in functions, six algebraic effects (IO, Http, State, Exceptions, Async, Inference), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 13-chapter specification. A 77-program conformance suite and {n_examples} worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub]({REPO}) and released under the MIT licence.
+Vera is under [active development]({RAW}/ROADMAP.md). A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 13-chapter specification. A {n_conformance}-program conformance suite and {n_examples} worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub]({REPO}) and released under the MIT licence.
 
 ## Links
 
