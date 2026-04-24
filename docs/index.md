@@ -153,7 +153,7 @@ Full source and data: [https://github.com/aallan/vera-bench](https://github.com/
 
 - **No variable names** — Typed [De Bruijn indices](https://raw.githubusercontent.com/aallan/vera/main/DE_BRUIJN.md) (`@T.n`) replace variable names: `@Int.0` is the most-recent `Int` binding, `@Int.1` the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.
 - **Full contracts** — Mandatory preconditions, postconditions, invariants, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM — no manual test cases.
-- **Algebraic effects** — IO, Http, State, Exceptions, Async, Inference — declared, typed, and handled explicitly. Pure by default.
+- **Algebraic effects** — IO, Http, State, Exceptions, Async, Inference, Random — declared, typed, and handled explicitly. Pure by default.
 - **Refinement types** — Types that express constraints like "a list of positive integers of length `n`".
 - **Three-tier verification** — Static via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), guided with hints, runtime fallback for the rest.
 - **Diagnostics as instructions** — Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.
