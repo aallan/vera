@@ -76,7 +76,7 @@ Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent \
 Contracts are mandatory — every function must declare `requires(...)`, \
 `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts \
 statically where possible; remaining contracts become runtime assertions. \
-All side effects (IO, Http, State, Exceptions, Async, Inference) are \
+All side effects (IO, Http, State, Exceptions, Async, Inference, Random) are \
 tracked in the type system via algebraic effects.
 
 Current version: {version}. The reference compiler is written in Python. \
@@ -118,7 +118,7 @@ closures, generics, and mutual recursion.
 - [Chapter 6: Contracts]({RAW}/spec/06-contracts.md): Preconditions, \
 postconditions, termination measures, and quantifiers.
 - [Chapter 7: Effects]({RAW}/spec/07-effects.md): Algebraic effects, \
-handlers, IO, Http, State, Exceptions, Async, and Inference.
+handlers, IO, Http, State, Exceptions, Async, Inference, and Random.
 - [Chapter 8: Modules]({RAW}/spec/08-modules.md): Module system, imports, \
 and visibility.
 - [Chapter 9: Standard Library]({RAW}/spec/09-standard-library.md): All \
@@ -576,7 +576,7 @@ For other models: point them at [`SKILL.md`]({SITE}/SKILL.md) via system prompt,
 
 ## Status
 
-Vera is under [active development]({RAW}/ROADMAP.md). A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 13-chapter specification. A {n_conformance}-program conformance suite and {n_examples} worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub]({REPO}) and released under the MIT licence.
+Vera is under [active development]({RAW}/ROADMAP.md). A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 13-chapter specification. An {n_conformance}-program conformance suite and {n_examples} worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub]({REPO}) and released under the MIT licence.
 
 ## Links
 
