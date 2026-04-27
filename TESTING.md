@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,534 across 28 files (~34,000 lines of test code; 3,520 passed, 14 skipped) |
+| **Tests** | 3,552 across 29 files (~34,250 lines of test code; 3,538 passed, 14 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 80 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 32, all validated through `vera check` + `vera verify` |
@@ -79,6 +79,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_html.py` | 4 | 166 | HTML landing page code samples: parse, check, verify |
 | `test_build_site.py` | 17 | 213 | `_abs_links` unit tests: relative link rewriting, fenced block immunity (backtick and tilde fences, inline backticks inside fences), http/https/fragment pass-through, Vera effect syntax not mis-parsed |
 | `test_check_changelog_updated.py` | 66 | 638 | `check_changelog_updated.py` unit + end-to-end tests: file classification (incl. file-style exact-match vs directory-style prefix-match), CHANGELOG diff parsing with `[Unreleased]` section tracking, bare-heading rejection, and full-file context (regression test for bullets far below the heading), `Skip-changelog:` trailer detection, temp-repo integration covering substantive/exempt/label/trailer paths |
+| `test_runtime_traps.py` | 18 | 399 | Runtime trap categorisation (#516 Stage 1) and stdout/stderr-on-trap preservation (#522): `_classify_trap` per-`kind` mapping (`divide_by_zero`/`out_of_bounds`/`stack_exhausted`/`unreachable`/`overflow`/`contract_violation`/`unknown`), `WasmTrapError` shape + `RuntimeError` substitutability, end-to-end `cmd_run` text + JSON envelopes including `trap_kind`, captured `stdout`, captured `stderr`, JSON-mode "no stderr leak" invariant on all four JSON-emitting tests, plus a cross-stream code-order regression using merged `redirect_stdout`/`redirect_stderr` |
 
 ## Conformance Suite
 
