@@ -170,7 +170,13 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies and pip-audit
-        run: pip install -e . && pip install pip-audit
+        # `pip install --upgrade pip` first: actions/setup-python@v6 bakes
+        # pip 26.0.1 into its toolchain, which is flagged for CVE-2026-3219
+        # (archive-handling, fixed in pip 26.1 via pypa/pip#13870). Without
+        # the upgrade, pip-audit reports the runner's own pip as vulnerable
+        # even though the fix is shipped on PyPI. Drop the --upgrade once
+        # the runner image picks up pip 26.1.
+        run: pip install --upgrade pip && pip install -e . && pip install pip-audit
 
       - name: Audit dependencies for known CVEs
         # --skip-editable: vera itself is a local editable install, not on PyPI
