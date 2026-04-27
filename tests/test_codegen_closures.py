@@ -677,3 +677,83 @@ public fn test(@Unit -> @Int)
             f"Function table too small ({table_size}) for nested closures; "
             "inner closure was not lifted"
         )
+
+    def test_two_top_level_fns_with_nested_closures(self) -> None:
+        """Cross-function shared-state regression for the #514 worklist.
+
+        Two separate top-level functions, each with one outer closure
+        containing one inner closure: 4 lifted closures total.
+        ``_compile_lifted_closure`` shares the module-level
+        ``_closure_sigs`` and ``_next_closure_id`` by reference; a
+        regression that re-initialised either of those between
+        top-level functions would surface as an ID collision (two
+        ``$anon_0`` definitions, rejected by the WAT parser as
+        duplicate function identifiers) or a sig collision (two
+        ``$closure_sig_0`` for different contents, same rejection).
+
+        ``test_nested_closure_emits_anon_for_inner`` above only
+        exercises one top-level function and so doesn't catch this
+        class of bug — it would still pass even if the module-level
+        state were function-scoped instead of shared.
+        """
+        src = """\
+public fn first(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 2),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 2),
+        fn(@Int -> @Int) effects(pure) { @Int.0 }
+      )
+    }
+  );
+  nat_to_int(array_length(@Array<Array<Int>>.0))
+}
+
+public fn second(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }
+      )
+    }
+  );
+  nat_to_int(array_length(@Array<Array<Int>>.0))
+}
+"""
+        import re
+        result = _compile_ok(src)
+        wat = result.wat
+        # Four lifted functions total — one outer + one inner per
+        # top-level function.  Names must all be distinct (no
+        # ID-counter reset across top-level functions).
+        anon_funcs = re.findall(r"\(func \$anon_\d+", wat)
+        assert len(anon_funcs) >= 4, (
+            f"Expected >= 4 lifted closures across two top-level fns, "
+            f"got {len(anon_funcs)} ({anon_funcs}) — #514 cross-fn "
+            "shared-state regression"
+        )
+        assert len(set(anon_funcs)) == len(anon_funcs), (
+            f"Duplicate $anon_N identifiers in WAT — closure-ID counter "
+            f"was reset between top-level functions: {anon_funcs}"
+        )
+        # All four must be in the function table so they're invokable.
+        m = re.search(r"\(table\s+(\d+)\s+funcref\)", wat)
+        assert m is not None, f"No funcref table in WAT: {wat[:500]}"
+        table_size = int(m.group(1))
+        assert table_size >= 4, (
+            f"Function table too small ({table_size}) for 4 lifted "
+            "closures — some lifted functions weren't registered for "
+            "call_indirect dispatch"
+        )
+        # End-to-end: both functions actually run.  The cross-fn shared-
+        # state bug we're guarding against would surface here as a
+        # WASM validation failure when the module is instantiated.
+        assert _run(src, "first") == 2
+        assert _run(src, "second") == 3
