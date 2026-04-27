@@ -552,6 +552,16 @@ public fn test(@Unit -> @Int)
         the issue text). The capture analysis itself worked for the
         outer; the missing-lift kept the inner from being emitted at all,
         so the capture had nowhere to land.
+
+        Sums every cell in the resulting 3×3 grid so the assertion
+        actually depends on the captured ``@Int.1`` (the outer row
+        index) flowing into the inner closure body.  Cells:
+            row 0: [0+0, 1+0, 2+0] = [0, 1, 2]      sum 3
+            row 1: [0+1, 1+1, 2+1] = [1, 2, 3]      sum 6
+            row 2: [0+2, 1+2, 2+2] = [2, 3, 4]      sum 9
+        Total: 18.  A length-only check (== 3) would pass even if the
+        capture silently returned 0 inside the inner closure, so we
+        force the value through into the result here.
         """
         src = """\
 public fn test(@Unit -> @Int)
@@ -566,10 +576,20 @@ public fn test(@Unit -> @Int)
       )
     }
   );
-  nat_to_int(array_length(@Array<Array<Int>>.0))
+  array_fold(
+    @Array<Array<Int>>.0,
+    0,
+    fn(@Int, @Array<Int> -> @Int) effects(pure) {
+      @Int.0 + array_fold(
+        @Array<Int>.0,
+        0,
+        fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+      )
+    }
+  )
 }
 """
-        assert _run(src, "test") == 3
+        assert _run(src, "test") == 18
 
     def test_three_level_nesting(self) -> None:
         """Paranoia: the worklist-based lifter must handle arbitrary

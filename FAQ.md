@@ -205,7 +205,7 @@ The reference compiler is under active development. The current release includes
 - A 13-chapter formal specification
 - Over 3,000 unit tests plus an 81-program conformance suite
 - 33 working example programs
-- 153 built-in functions covering strings, arrays, math, parsing, and data types
+- 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation
 - Full IO operations (print, read_line, read_file, write_file, args, exit, get_env, sleep, time, stderr)
 - Algebraic data types, pattern matching, closures, generics with monomorphisation
