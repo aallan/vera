@@ -258,7 +258,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.121 | 27 Apr | **Nested closures + ADT capture work end-to-end** ([#514](https://github.com/aallan/vera/issues/514), [#527](https://github.com/aallan/vera/issues/527)) — the natural 2D `array_map(rows, fn { array_map(cols, fn { ... }) })` shape compiles at arbitrary depth. Pair-type captures split into [#535](https://github.com/aallan/vera/issues/535); CVE-2026-3219 ignore dropped (pip 26.1 shipped). |
 | v0.0.122 | 27 Apr | **Conservative GC bounds-checked against `$heap_ptr`** ([#515](https://github.com/aallan/vera/issues/515)) — `$gc_collect` no longer faults when a non-pointer i32 in payload data (e.g. a bit-packed `Nat` row in Conway-style code) happens to satisfy the worklist-seeding alignment + range guards. Layer 2 sanity-checks `obj_ptr + obj_size <= heap_ptr` before marking or scanning a worklist entry; Layer 1 adds a per-iteration bound check inside the conservative scan loop so any future caller that bypasses the upstream check still cannot read past the heap. 40×20×200 Conway now runs cleanly through every generation. |
 | v0.0.123 | 27 Apr | **`IO.print` writes mirror live to `sys.stdout`** ([#543](https://github.com/aallan/vera/issues/543)) — `vera run` text mode now flushes per call, so animations, progress bars, REPL-style output, and any program using ANSI cursor / clear-screen escapes render in real time instead of dumping the whole transcript at exit. Tee preserves the in-memory capture, so trap preservation (#522) and JSON-envelope packaging still work. |
-| v0.0.124 | 27 Apr | **Runtime traps carry a source backtrace** ([#516](https://github.com/aallan/vera/issues/516) Stage 2) — `WasmTrapError.frames` is a structured backtrace per-function (file, line range, builtin tag), surfaced as a `Source backtrace:` block in `vera run` text mode and as a `frames` array in the JSON envelope. Per-function granularity (no debug-info plumbing through codegen). Stage 3 (per-`kind` `Fix:` paragraphs) remains. |
+| v0.0.124 | 27 Apr | **Runtime traps now include a source backtrace** ([#516](https://github.com/aallan/vera/issues/516) Stage 2) — Stage 3 (per-`kind` `Fix:` paragraphs) tracked as [#547](https://github.com/aallan/vera/issues/547). |
 
 ---
 
@@ -291,7 +291,7 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.124 (27 Apr) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,591 |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,593 |
 | Examples | 13 | 15 | 16 | 18 | 24 | 30 | 33 |
 | Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 164 |
 | Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 81 |

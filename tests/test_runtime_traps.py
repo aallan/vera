@@ -985,6 +985,143 @@ public fn main(@Unit -> @Int)
         else:
             raise AssertionError("Expected WasmTrapError, got no exception")
 
+    def test_text_mode_collapses_leading_runtime_helper_frames(
+        self,
+        tmp_path: Path,
+        capsys: CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """When the leaf frame is a runtime helper, cmd_run shows the
+        suppression marker and surfaces the first user frame at the top.
+
+        Real GC / allocator traps that produce a builtin-leaf frame
+        chain are timing-sensitive (they fire only under specific
+        heap-pressure conditions), so this test monkeypatches
+        ``vera.codegen.execute`` to raise a ``WasmTrapError`` with a
+        synthetic frame list — the runtime-helper-collapse logic in
+        ``cmd_run`` is pure given ``exc.frames``, so a deterministic
+        synthetic input pins the contract that real traps would
+        exercise.
+        """
+        # Trivial program that compiles cleanly — execute() never runs
+        # because we patch it before cmd_run gets there.
+        path = tmp_path / "trivial.vera"
+        path.write_text("""\
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+""")
+
+        # Synthetic frame chain: two runtime helpers (gc_collect
+        # then alloc) at the leaf, then the user code that called
+        # into them.  Matches the wasmtime backtrace shape that #515
+        # produced before the fix landed.
+        synthetic_frames: list[dict[str, object]] = [
+            {
+                "func": "gc_collect", "file": "<builtin>",
+                "line_start": None, "line_end": None,
+                "is_builtin": True,
+            },
+            {
+                "func": "alloc", "file": "<builtin>",
+                "line_start": None, "line_end": None,
+                "is_builtin": True,
+            },
+            {
+                "func": "main", "file": str(path),
+                "line_start": 1, "line_end": 3,
+                "is_builtin": False,
+            },
+        ]
+
+        from vera.codegen.api import WasmTrapError
+
+        def fake_execute(*args: object, **kwargs: object) -> None:
+            raise WasmTrapError(
+                "Out-of-bounds memory access",
+                stdout="",
+                stderr="",
+                kind="out_of_bounds",
+                frames=synthetic_frames,
+            )
+
+        # cmd_run does `from vera.codegen import compile, execute` at
+        # call time, so patching the module attribute is sufficient.
+        import vera.codegen
+        monkeypatch.setattr(vera.codegen, "execute", fake_execute)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        # Suppression marker present and counts both leading helpers
+        assert "suppressed 2 runtime-helper frames" in captured.err, (
+            f"Expected suppression marker for 2 collapsed frames; "
+            f"got stderr: {captured.err!r}"
+        )
+        # User frame surfaces at the top of the displayed backtrace
+        assert "in main" in captured.err
+        # Helper frames collapsed away — should not appear inline
+        # (they're counted by the suppression marker, not listed).
+        assert "in gc_collect" not in captured.err
+        assert "in alloc" not in captured.err
+
+    def test_text_mode_does_not_collapse_when_all_frames_are_builtins(
+        self,
+        tmp_path: Path,
+        capsys: CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With no user frames, every helper frame is displayed.
+
+        The collapse logic only fires when at least one user frame
+        would remain after suppression — otherwise the user gets an
+        empty backtrace and no information.  Sibling regression to
+        the test above; pins the "only collapse if a user frame
+        remains" guard in cmd_run.
+        """
+        path = tmp_path / "trivial.vera"
+        path.write_text("""\
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+""")
+
+        synthetic_frames: list[dict[str, object]] = [
+            {
+                "func": "gc_collect", "file": "<builtin>",
+                "line_start": None, "line_end": None,
+                "is_builtin": True,
+            },
+            {
+                "func": "alloc", "file": "<builtin>",
+                "line_start": None, "line_end": None,
+                "is_builtin": True,
+            },
+        ]
+
+        from vera.codegen.api import WasmTrapError
+
+        def fake_execute(*args: object, **kwargs: object) -> None:
+            raise WasmTrapError(
+                "Out-of-bounds memory access",
+                kind="out_of_bounds",
+                frames=synthetic_frames,
+            )
+
+        import vera.codegen
+        monkeypatch.setattr(vera.codegen, "execute", fake_execute)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        # No suppression marker — there's nothing left to surface
+        assert "suppressed" not in captured.err
+        # Both helper frames displayed
+        assert "in gc_collect" in captured.err
+        assert "in alloc" in captured.err
+
 
 class TestSourceMapPopulation516:
     """The CompileResult source map is populated for every user fn.
