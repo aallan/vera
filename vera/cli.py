@@ -36,6 +36,7 @@ import sys
 from pathlib import Path
 
 from lark import Tree
+from vera.codegen.api import WasmTrapError
 from vera.errors import VeraError
 from vera.parser import parse
 from vera.transform import transform
@@ -636,6 +637,52 @@ def cmd_run(
             return 1
         print(exc.diagnostic.format(), file=sys.stderr)
         return 1
+    except WasmTrapError as exc:
+        # Classified WASM trap (#516 Stage 1) carrying any output the
+        # program produced before the trap fired (#522). Note: this
+        # handler must come before ``except RuntimeError`` because
+        # WasmTrapError is a RuntimeError subclass.
+        if as_json:
+            # JSON mode: pack stdout/stderr into the envelope. Writing
+            # them to sys.stdout/sys.stderr would corrupt the JSON for
+            # downstream consumers parsing our output.
+            diag = {
+                "severity": "error",
+                "description": str(exc),
+                "trap_kind": exc.kind,
+                "location": {"line": 0, "column": 0},
+            }
+            envelope: dict[str, object] = {
+                "ok": False,
+                "file": path,
+                "diagnostics": [diag],
+            }
+            if exc.stdout:
+                envelope["stdout"] = exc.stdout
+            if exc.stderr:
+                envelope["stderr"] = exc.stderr
+            print(json.dumps(envelope, indent=2))
+            return 1
+
+        # Text mode: surface the captured streams to the corresponding
+        # actual streams BEFORE the error message, so the error text
+        # ends up after whatever the program had been printing.
+        # Explicit flush on stdout: under `2>&1` redirects, stdout and
+        # stderr are buffered independently and a stderr write can
+        # appear before an earlier stdout write in the merged view.
+        # Flushing stdout before any stderr write guarantees the
+        # captured program output is committed first.
+        if exc.stdout:
+            sys.stdout.write(exc.stdout)
+            if not exc.stdout.endswith("\n"):
+                sys.stdout.write("\n")
+            sys.stdout.flush()
+        if exc.stderr:
+            sys.stderr.write(exc.stderr)
+            if not exc.stderr.endswith("\n"):
+                sys.stderr.write("\n")
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
     except RuntimeError as exc:
         if as_json:
             print(json.dumps({"ok": False, "file": path,
@@ -646,12 +693,14 @@ def cmd_run(
             return 1
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    except Exception as exc:  # pragma: no cover — wasmtime Trap/WasmtimeError
-        # Catch WASM traps (wasmtime.Trap, wasmtime.WasmtimeError)
-        # without importing wasmtime at module level.
+    except Exception as exc:  # pragma: no cover — defensive backstop
+        # WasmTrapError above handles the expected wasmtime path. This
+        # remains as a defensive backstop for the case where some other
+        # Trap-named exception slips past the api.py classifier — for
+        # example a future wasmtime version with a new Trap subclass.
         exc_name = type(exc).__name__
         if exc_name in ("Trap", "WasmtimeError"):
-            msg = f"Runtime contract violation: {exc}"
+            msg = f"Unhandled WASM trap: {exc}"
             if as_json:
                 print(json.dumps({"ok": False, "file": path,
                                   "diagnostics": [{"severity": "error",
