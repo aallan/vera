@@ -202,11 +202,14 @@ def _resolve_trap_frames(
     one dict per frame.  Each dict has:
 
     * ``func`` — the WAT function name as reported by wasmtime, with
-      the leading ``$`` stripped (wasmtime strips it already).  For
-      monomorphized generics (``identity$Int``) this is the mangled
-      name; the resolver also tries the base name (the part before
-      the rightmost ``$``) as a fallback because the source map only
-      stores the original generic.
+      any leading ``$`` stripped defensively (current wasmtime-py
+      versions strip it already, but we normalise anyway so a future
+      version that omits the strip can't silently break the builtin
+      lookup or the source-map join).  For monomorphized generics
+      (``identity$Int``) this is the mangled name; the resolver also
+      tries the base name (the part before the rightmost ``$``) as a
+      fallback because the source map only stores the original
+      generic.
     * ``file`` — source path, or ``"<builtin>"`` for runtime helpers
       that have no Vera source.
     * ``line_start`` / ``line_end`` — source line range of the
@@ -251,6 +254,14 @@ def _resolve_trap_frames(
         # backtrace.
         if not name:
             continue
+        # Defensive normalisation — strip a single leading `$` so the
+        # builtin allowlist and source-map lookup work uniformly across
+        # wasmtime versions.  Current wasmtime-py strips this already
+        # (verified with a divide-by-zero trap inside `(func $bad ...)`
+        # returning func_name='bad'); a future version that doesn't
+        # strip would otherwise silently break every lookup below.
+        if name.startswith("$"):
+            name = name[1:]
 
         is_builtin = (
             name in _BUILTIN_NAMES

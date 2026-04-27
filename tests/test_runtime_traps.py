@@ -872,17 +872,7 @@ class TestTrapSourceBacktrace516:
             "JSON mode must not write to stderr; got: " f"{captured.err!r}"
         )
 
-    def test_contract_violation_carries_backtrace(
-        self, tmp_path: Path, capsys: CaptureFixture[str],
-    ) -> None:
-        """Contract violations get the same source-mapping treatment.
-
-        A precondition failure traps via ``$contract_fail`` which is
-        a built-in; the user frame above it is the function whose
-        precondition was violated.  Pre-Stage-2 the user only got
-        the contract message; now they get the user-frame chain too.
-        """
-        source = """\
+    _CONTRACT_VIOLATION_PROGRAM = """\
 public fn positive(@Int -> @Int)
   requires(@Int.0 > 0) ensures(true) effects(pure)
 {
@@ -895,8 +885,19 @@ public fn main(@Unit -> @Int)
   positive(0 - 5)
 }
 """
+
+    def test_contract_violation_carries_backtrace(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """Contract violations get the same source-mapping treatment.
+
+        A precondition failure traps via ``$contract_fail`` which is
+        a built-in; the user frame above it is the function whose
+        precondition was violated.  Pre-Stage-2 the user only got
+        the contract message; now they get the user-frame chain too.
+        """
         path = tmp_path / "ctr.vera"
-        path.write_text(source)
+        path.write_text(self._CONTRACT_VIOLATION_PROGRAM)
 
         rc = cmd_run(str(path))
 
@@ -908,6 +909,50 @@ public fn main(@Unit -> @Int)
         # precondition failed (so the leaf), main is the caller.
         assert "in positive" in captured.err
         assert "in main" in captured.err
+
+    def test_contract_violation_json_mode_includes_frames(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """JSON variant of the contract-violation backtrace test.
+
+        The text-mode test above pins the human-readable `Source
+        backtrace:` block; this one pins the structured `frames`
+        array in the JSON envelope and the JSON-mode-no-stderr-leak
+        invariant from #543.  Without this regression, a future
+        refactor could surface the backtrace in text mode but drop
+        it from the JSON path (or leak the trap message to stderr in
+        JSON mode and corrupt the envelope for downstream
+        consumers).
+        """
+        path = tmp_path / "ctr.vera"
+        path.write_text(self._CONTRACT_VIOLATION_PROGRAM)
+
+        rc = cmd_run(str(path), as_json=True)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        envelope = json.loads(captured.out)
+        diag = envelope["diagnostics"][0]
+        assert diag["trap_kind"] == "contract_violation"
+        # Structured frames present and includes both user frames
+        assert "frames" in diag
+        assert isinstance(diag["frames"], list)
+        funcs = [f["func"] for f in diag["frames"]]
+        assert "positive" in funcs
+        assert "main" in funcs
+        # Each user frame has the file + line metadata
+        for frame in diag["frames"]:
+            if frame["func"] in ("positive", "main"):
+                assert frame["file"] == str(path)
+                assert isinstance(frame["line_start"], int)
+                assert isinstance(frame["line_end"], int)
+                assert frame["is_builtin"] is False
+        # JSON-mode invariant — same as the four `TestStdoutOnTrap522`
+        # JSON tests pin: no human-readable text leaks to stderr in
+        # JSON mode (would split downstream parsing of our output).
+        assert captured.err == "", (
+            "JSON mode must not write to stderr; got: " f"{captured.err!r}"
+        )
 
     def test_default_execute_attaches_frames_to_wasmtraperror(
         self, tmp_path: Path,
@@ -997,6 +1042,38 @@ public fn run(@Unit -> @Int)
         assert anon_keys, (
             "Expected at least one anon_N entry in fn_source_map; got: "
             f"{list(result.fn_source_map)}"  # type: ignore[attr-defined]
+        )
+
+        # Validate the registered span actually points at the closure
+        # body, not at some surrounding location.  The closure literal
+        # `fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }` opens on
+        # line 4 of `source` (the `array_map(...)` line) and closes on
+        # line 6 (the `})` line).  Anything outside that range would
+        # mean we're registering the wrong AST node — e.g. picking up
+        # the enclosing `array_map` call instead of the AnonFn itself,
+        # which would surface the wrong file:line on a trap inside
+        # the closure body.
+        anon_loc = result.fn_source_map[anon_keys[0]]  # type: ignore[attr-defined]
+        anon_file, anon_start, anon_end = anon_loc
+        # File comes from the temp path threaded through compile()'s
+        # `source=...` channel; in this test path it's empty (we use
+        # parse_to_ast directly), so the codegen falls back to
+        # "<unknown>".  Keep that contract pinned so a future
+        # refactor that wires file= through doesn't silently change
+        # the shape.
+        assert anon_file == "<unknown>", (
+            f"Expected '<unknown>' file for compile-from-string; got "
+            f"{anon_file!r}"
+        )
+        # Closure body spans lines 4-6 in the source above (1-indexed,
+        # counting from the first line which is `public fn run(...)`).
+        assert anon_start == 4, (
+            f"Expected closure to start at line 4 (the array_map call); "
+            f"got {anon_start}"
+        )
+        assert anon_end == 6, (
+            "Expected closure to end at line 6 (the closing brace); "
+            f"got {anon_end}"
         )
 
     def test_no_spurious_entries_for_builtins(self) -> None:

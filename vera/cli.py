@@ -684,15 +684,14 @@ def cmd_run(
                 "description": str(exc),
                 "trap_kind": exc.kind,
                 "location": {"line": 0, "column": 0},
+                # #516 Stage 2 — structured backtrace.  Always present
+                # (possibly an empty list) so JSON consumers can
+                # iterate `diag["frames"]` without `.get(..., [])`
+                # ceremony.  Same shape stability principle as the
+                # always-present `trap_kind` above; `frames` is
+                # structural, not optional content like `stdout`.
+                "frames": exc.frames,
             }
-            # #516 Stage 2 — structured backtrace.  Only include the
-            # field when there's something to put there so the JSON
-            # shape stays minimal for traps from programs that have
-            # no resolvable user-frame backtrace (e.g. an immediate
-            # trap inside a built-in helper before the first user
-            # frame ran — rare but possible).
-            if exc.frames:
-                diag["frames"] = exc.frames
             envelope: dict[str, object] = {
                 "ok": False,
                 "file": path,
