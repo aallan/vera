@@ -62,4 +62,3 @@ CVEs currently suppressed in the `dependency-audit` CI job. Each entry has a rem
 | Ignored CVE | Package | Rationale | Remove when | Issue |
 |-------------|---------|-----------|-------------|-------|
 | [CVE-2026-4539](https://nvd.nist.gov/vuln/detail/CVE-2026-4539) | pygments 2.19.2 (transitive via pytest/rich) | No fix release exists yet. | pygments > 2.19.2 ships with the fix. | — |
-| [CVE-2026-3219](https://nvd.nist.gov/vuln/detail/CVE-2026-3219) ([GHSA-58qw-9mgm-455v](https://github.com/advisories/GHSA-58qw-9mgm-455v)) | pip 26.0.1 (archive-handling: concatenated tar+ZIP interpretation) | Upstream fix merged in [pypa/pip#13870](https://github.com/pypa/pip/pull/13870), milestone pip 26.1, not yet released. Threat model (untrusted ambiguous archives) does not apply to our CI. | pip 26.1 lands on PyPI and GitHub Actions runners pick it up. | [#527](https://github.com/aallan/vera/issues/527) |

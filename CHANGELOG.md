@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### CI
+- **Drop the CVE-2026-3219 ignore in `dependency-audit`** ([#527](https://github.com/aallan/vera/issues/527), closes) — pip 26.1 shipped on 2026-04-26 with the [pypa/pip#13870](https://github.com/pypa/pip/pull/13870) fix that addresses the concatenated-tar+ZIP archive-handling bug ([CVE-2026-3219](https://nvd.nist.gov/vuln/detail/CVE-2026-3219), [GHSA-58qw-9mgm-455v](https://github.com/advisories/GHSA-58qw-9mgm-455v)). Verified locally that `pip-audit --skip-editable` against pip 26.1 returns "No known vulnerabilities found" without the ignore. Removed the `--ignore-vuln CVE-2026-3219` flag from the workflow, the corresponding row from KNOWN_ISSUES.md's "CI ignores" table, and the per-flag annotation from TESTING.md's command example. The pygments CVE-2026-4539 ignore stays in place pending an upstream fix release.
+
 ## [0.0.120] - 2026-04-26
 
 ### Fixed
