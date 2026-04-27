@@ -524,6 +524,13 @@ public fn test(@Unit -> @Int)
         Pre-fix: failed WASM validation with
         ``type mismatch: expected i64, found i32`` at the inner
         call_indirect site.
+
+        Sums every cell to verify the inner ``Array<Int>`` payload
+        actually contains the doubled values, not garbage. Each row is
+        ``[0, 2, 4]``; three rows gives ``3 * (0 + 2 + 4) = 18``.  A
+        length-only check would pass even if the inner closure returned
+        a malformed Array (wrong elements, wrong length, or zeros from a
+        broken pair-write); the sum forces the inner values through.
         """
         src = """\
 public fn test(@Unit -> @Int)
@@ -538,11 +545,20 @@ public fn test(@Unit -> @Int)
       )
     }
   );
-  nat_to_int(array_length(@Array<Array<Int>>.0))
+  array_fold(
+    @Array<Array<Int>>.0,
+    0,
+    fn(@Int, @Array<Int> -> @Int) effects(pure) {
+      @Int.0 + array_fold(
+        @Array<Int>.0,
+        0,
+        fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+      )
+    }
+  )
 }
 """
-        # Outer length 3, inner doesn't matter for this assertion.
-        assert _run(src, "test") == 3
+        assert _run(src, "test") == 18
 
     def test_nested_closure_with_outer_param_capture(self) -> None:
         """The 'with capture' variant from the issue body — the inner
