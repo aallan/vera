@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through Stage 11, across 40 active development days.
+How the Vera compiler was built, from initial commit through Stage 11, across 48 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -279,19 +279,22 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | 28 Mar | `vera run --fn f -- arg` typed argument passing — String, Float64, Bool, Byte alongside Int |
 | 28 Mar | Agent discovery metadata — llms-txt link elements, JSON-LD TechArticle entries, inline script block on veralang.dev |
 | 29 Mar | `vera version` CLI command; `--quiet` flag for `vera check`/`vera verify`; Known Limitations section in SKILL.md; skipped-tests table in TESTING.md |
+| 26 Apr | Crash-debugging UX — runtime traps classified into a stable `kind` (`divide_by_zero`/`out_of_bounds`/`stack_exhausted`/`unreachable`/`overflow`/`contract_violation`/`unknown`), `IO.print` output preserved across traps via `WasmTrapError`, JSON envelope gains `trap_kind` |
+| 26 Apr | `veralang.dev` homepage redesign — editorial-research aesthetic, bilingual reading-path device (`@reader.0 → humans` / `@reader.1 → agents`), Agent Score improvements (3 fails + 2 warns → 2 fails + 1 warn; markdown content parity 90% miss → 21% miss) |
+| 27 Apr | `IO.print` writes flush live to `sys.stdout` in `vera run` text mode — animations, progress bars, REPL-style output, and ANSI cursor / clear-screen escapes render in real time instead of buffering until exit |
 
 ---
 
 ## By the numbers
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.113 (16 Apr) |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.123 (27 Apr) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,319 |
-| Examples | 13 | 15 | 16 | 18 | 24 | 30 | 30 |
-| Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 122 |
-| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 73 |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,575 |
+| Examples | 13 | 15 | 16 | 18 | 24 | 30 | 33 |
+| Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 164 |
+| Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 81 |
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 123 tagged releases, 40 active development days.**
+Total: **810+ commits, 123 tagged releases, 48 active development days.**
