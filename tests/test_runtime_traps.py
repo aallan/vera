@@ -631,3 +631,391 @@ public fn main(@Unit -> @Unit)
         # But not on the actual sys.stdout — tee defaulted off.
         captured = capsys.readouterr()
         assert "should not appear" not in captured.out
+
+
+# =====================================================================
+# #516 Stage 2 — runtime trap source mapping
+# =====================================================================
+
+
+class TestResolveTrapFrames516:
+    """Unit tests for ``_resolve_trap_frames`` in isolation.
+
+    The helper takes any object with a ``frames`` attribute (in
+    practice ``wasmtime.Trap``) plus the ``fn_source_map`` from a
+    ``CompileResult`` and produces a structured backtrace.  We
+    exercise it with a ``_FakeFrame`` shim so the tests don't need to
+    construct real wasmtime traps for every shape.
+    """
+
+    @staticmethod
+    def _make_exc(*frames: object) -> object:
+        """Build a frames-carrying exception stand-in."""
+        class _FakeTrapExc(Exception):
+            pass
+        exc = _FakeTrapExc()
+        exc.frames = list(frames)  # type: ignore[attr-defined]
+        return exc
+
+    @staticmethod
+    def _frame(name: str, **kwargs: object) -> object:
+        """Build a wasmtime.Frame stand-in."""
+        class _FakeFrame:
+            def __init__(self, n: str) -> None:
+                self.func_name = n
+                self.func_index = kwargs.get("func_index", 0)
+                self.func_offset = kwargs.get("func_offset", 0)
+                self.module_offset = kwargs.get("module_offset", 0)
+                self.module_name = kwargs.get("module_name", None)
+        return _FakeFrame(name)
+
+    def test_user_function_resolves_to_file_lines(self) -> None:
+        from vera.codegen.api import _resolve_trap_frames
+        src_map = {"divide": ("/tmp/a.vera", 5, 9)}
+        exc = self._make_exc(self._frame("divide"))
+
+        frames = _resolve_trap_frames(exc, src_map)
+
+        assert len(frames) == 1
+        assert frames[0]["func"] == "divide"
+        assert frames[0]["file"] == "/tmp/a.vera"
+        assert frames[0]["line_start"] == 5
+        assert frames[0]["line_end"] == 9
+        assert frames[0]["is_builtin"] is False
+
+    def test_builtin_helpers_tagged_as_builtin(self) -> None:
+        """alloc / gc_collect / contract_fail must NOT claim a source.
+
+        A frame inside ``$gc_collect`` carries the WAT name
+        ``gc_collect``; the resolver must recognise it as runtime
+        infrastructure and tag it accordingly rather than reporting
+        a misleading file:line lookup miss as ``<unknown>``.
+        """
+        from vera.codegen.api import _resolve_trap_frames
+        src_map: dict[str, tuple[str, int, int]] = {}
+
+        for name in ("alloc", "gc_collect", "contract_fail"):
+            exc = self._make_exc(self._frame(name))
+            frames = _resolve_trap_frames(exc, src_map)
+            assert len(frames) == 1
+            assert frames[0]["func"] == name
+            assert frames[0]["file"] == "<builtin>"
+            assert frames[0]["line_start"] is None
+            assert frames[0]["is_builtin"] is True, name
+
+    def test_builtin_prefix_matches(self) -> None:
+        """exn_* / vera.* / closure_sig_* are also runtime infrastructure."""
+        from vera.codegen.api import _resolve_trap_frames
+
+        for name in ("exn_String", "vera.print", "closure_sig_3"):
+            exc = self._make_exc(self._frame(name))
+            frames = _resolve_trap_frames(exc, {})
+            assert frames[0]["is_builtin"] is True, name
+
+    def test_monomorphized_name_resolves_to_base(self) -> None:
+        """`identity$Int` looks up `identity` after the rightmost `$`.
+
+        Generic monomorphization mangles names like
+        ``identity$Map_String_Int``; the source map only stores the
+        original generic.  The resolver strips at the rightmost ``$``
+        and retries.
+        """
+        from vera.codegen.api import _resolve_trap_frames
+        src_map = {"identity": ("/tmp/m.vera", 3, 6)}
+        exc = self._make_exc(self._frame("identity$Int"))
+
+        frames = _resolve_trap_frames(exc, src_map)
+
+        assert frames[0]["func"] == "identity$Int"  # original WAT name
+        assert frames[0]["file"] == "/tmp/m.vera"
+        assert frames[0]["line_start"] == 3
+
+    def test_unknown_user_function_keeps_frame_with_unknown_loc(
+        self,
+    ) -> None:
+        """A user-named frame not in the map gets ``<unknown>`` not dropped.
+
+        Better to surface the WAT name with no location than to drop
+        the frame entirely — the user still benefits from knowing
+        which function trapped, and any future source-map gap can be
+        diagnosed from the unknown markers.
+        """
+        from vera.codegen.api import _resolve_trap_frames
+        exc = self._make_exc(self._frame("mystery_helper"))
+
+        frames = _resolve_trap_frames(exc, {})
+
+        assert len(frames) == 1
+        assert frames[0]["func"] == "mystery_helper"
+        assert frames[0]["file"] == "<unknown>"
+        assert frames[0]["is_builtin"] is False
+
+    def test_no_frames_attribute_returns_empty_list(self) -> None:
+        """Defensive: a trap-shaped exception with no `frames` returns []."""
+        from vera.codegen.api import _resolve_trap_frames
+        # Exception with no frames attribute at all.
+        exc = RuntimeError("not a real trap")
+        assert _resolve_trap_frames(exc, {}) == []
+
+    def test_frames_preserved_in_outermost_first_order(self) -> None:
+        """Order matches wasmtime's backtrace (outermost first)."""
+        from vera.codegen.api import _resolve_trap_frames
+        src_map = {
+            "outer": ("/tmp/x.vera", 10, 15),
+            "inner": ("/tmp/x.vera", 1, 5),
+        }
+        exc = self._make_exc(
+            self._frame("inner"), self._frame("outer"),
+        )
+        frames = _resolve_trap_frames(exc, src_map)
+        # wasmtime returns inner-first; we preserve that order so
+        # the human reading the backtrace sees the leaf first
+        # (matches the wasmtime CLI convention).
+        assert [f["func"] for f in frames] == ["inner", "outer"]
+
+
+_DIVIDE_BY_ZERO_USER_FN = """\
+public fn divide(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  @Int.1 / @Int.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  divide(42, 0)
+}
+"""
+
+
+class TestTrapSourceBacktrace516:
+    """End-to-end: cmd_run surfaces resolved trap frames."""
+
+    def test_text_mode_shows_source_backtrace(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        path = tmp_path / "div.vera"
+        path.write_text(_DIVIDE_BY_ZERO_USER_FN)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        # The error line itself
+        assert "Integer division by zero" in captured.err
+        # The backtrace heading + the two user frames
+        assert "Source backtrace:" in captured.err
+        assert "in divide" in captured.err
+        assert "in main" in captured.err
+        # File + line range — exact path matches the temp fixture
+        assert str(path) in captured.err
+        # divide is on lines 1-5, main on 7-11 (0-indexed line 1 is
+        # the first line of the source).  Check at least one of
+        # them surfaces with a colon-separated line range.
+        assert ":1-5" in captured.err
+        assert ":7-11" in captured.err
+
+    def test_text_mode_orders_leaf_first(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """The trapping function appears BEFORE its caller.
+
+        wasmtime emits frames leaf-first (closest to the trap site);
+        we preserve that order so the user reading top-to-bottom
+        sees the trap origin first and the call chain widening
+        outward — matches gdb / Python tracebacks / wasmtime CLI.
+        """
+        path = tmp_path / "div.vera"
+        path.write_text(_DIVIDE_BY_ZERO_USER_FN)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        divide_pos = captured.err.find("in divide")
+        main_pos = captured.err.find("in main")
+        assert divide_pos >= 0 and main_pos >= 0
+        assert divide_pos < main_pos, (
+            "Expected leaf frame (divide) before caller (main); got: "
+            f"{captured.err!r}"
+        )
+
+    def test_json_mode_includes_frames_array(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        path = tmp_path / "div.vera"
+        path.write_text(_DIVIDE_BY_ZERO_USER_FN)
+
+        rc = cmd_run(str(path), as_json=True)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        envelope = json.loads(captured.out)
+        diag = envelope["diagnostics"][0]
+        assert diag["trap_kind"] == "divide_by_zero"
+        # Structured frames present
+        assert "frames" in diag
+        assert isinstance(diag["frames"], list)
+        # Both user frames there, with file + line metadata
+        funcs = [f["func"] for f in diag["frames"]]
+        assert "divide" in funcs
+        assert "main" in funcs
+        for frame in diag["frames"]:
+            if frame["func"] in ("divide", "main"):
+                assert frame["file"] == str(path)
+                assert isinstance(frame["line_start"], int)
+                assert isinstance(frame["line_end"], int)
+                assert frame["is_builtin"] is False
+        # JSON-mode invariant from #543 — see TestStdoutOnTrap522.
+        assert captured.err == "", (
+            "JSON mode must not write to stderr; got: " f"{captured.err!r}"
+        )
+
+    def test_contract_violation_carries_backtrace(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """Contract violations get the same source-mapping treatment.
+
+        A precondition failure traps via ``$contract_fail`` which is
+        a built-in; the user frame above it is the function whose
+        precondition was violated.  Pre-Stage-2 the user only got
+        the contract message; now they get the user-frame chain too.
+        """
+        source = """\
+public fn positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{
+  @Int.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  positive(0 - 5)
+}
+"""
+        path = tmp_path / "ctr.vera"
+        path.write_text(source)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "Precondition violation" in captured.err
+        assert "Source backtrace:" in captured.err
+        # Both user frames surface; positive is the one whose
+        # precondition failed (so the leaf), main is the caller.
+        assert "in positive" in captured.err
+        assert "in main" in captured.err
+
+    def test_default_execute_attaches_frames_to_wasmtraperror(
+        self, tmp_path: Path,
+    ) -> None:
+        """``WasmTrapError.frames`` is populated even without cmd_run.
+
+        Direct callers of ``execute()`` (tests, future LSP, library
+        consumers) get the structured backtrace too, not just the
+        CLI text rendering.
+        """
+        from vera.codegen import compile as compile_program
+        from vera.codegen import execute as _execute
+        from vera.codegen.api import WasmTrapError
+        from vera.parser import parse_to_ast
+
+        program = parse_to_ast(_DIVIDE_BY_ZERO_USER_FN)
+        result = compile_program(program, source=_DIVIDE_BY_ZERO_USER_FN)
+        assert result.fn_source_map  # source map populated
+        assert "divide" in result.fn_source_map
+        assert "main" in result.fn_source_map
+
+        try:
+            _execute(result, fn_name="main")
+        except WasmTrapError as exc:
+            assert exc.kind == "divide_by_zero"
+            assert exc.frames, "frames should be populated"
+            funcs = [f["func"] for f in exc.frames]
+            assert "divide" in funcs
+            assert "main" in funcs
+        else:
+            raise AssertionError("Expected WasmTrapError, got no exception")
+
+
+class TestSourceMapPopulation516:
+    """The CompileResult source map is populated for every user fn.
+
+    Lighter-weight than the end-to-end trap tests above — purely
+    inspects the ``fn_source_map`` field after compile() to pin the
+    contract that codegen registers source locations for top-level
+    fns AND for lifted closures.
+    """
+
+    @staticmethod
+    def _compile(source: str) -> object:
+        from vera.codegen import compile as compile_program
+        from vera.parser import parse_to_ast
+        program = parse_to_ast(source)
+        return compile_program(program, source=source)
+
+    def test_top_level_fn_in_source_map(self) -> None:
+        result = self._compile("""\
+public fn add_one(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  @Int.0 + 1
+}
+""")
+        assert "add_one" in result.fn_source_map  # type: ignore[attr-defined]
+        _file, start, end = result.fn_source_map["add_one"]  # type: ignore[attr-defined]
+        assert start == 1
+        # Function spans through line 5 inclusive (the closing brace).
+        assert end >= 4
+
+    def test_lifted_closure_registered_under_anon_id(self) -> None:
+        """Each ``fn(...) { ... }`` lifts to ``$anon_N`` with a source loc.
+
+        The trap-frame resolver looks up ``anon_N`` in the map; if
+        registration broke, traps inside closures would fall through
+        to ``<unknown>`` and the user would lose the location of the
+        actual closure body.
+        """
+        source = """\
+public fn run(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_map([1, 2, 3], fn(@Int -> @Int) effects(pure) {
+    @Int.0 * 2
+  });
+  @Array<Int>.0[0]
+}
+"""
+        result = self._compile(source)
+        anon_keys = [
+            k for k in result.fn_source_map  # type: ignore[attr-defined]
+            if k.startswith("anon_")
+        ]
+        assert anon_keys, (
+            "Expected at least one anon_N entry in fn_source_map; got: "
+            f"{list(result.fn_source_map)}"  # type: ignore[attr-defined]
+        )
+
+    def test_no_spurious_entries_for_builtins(self) -> None:
+        """Compiler-emitted helpers (alloc, gc_collect) must NOT appear.
+
+        If they did, the resolver would surface them as "user" frames
+        with bogus locations.  Our codegen registers source map
+        entries only when ``decl.span is not None``, which built-in
+        injections lack.
+        """
+        result = self._compile("""\
+public fn make_box(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  @Int.0
+}
+""")
+        # The synthetic runtime helpers must never be source-mapped.
+        for forbidden in ("alloc", "gc_collect", "contract_fail"):
+            assert forbidden not in result.fn_source_map, (  # type: ignore[attr-defined]
+                f"Built-in {forbidden!r} leaked into fn_source_map"
+            )

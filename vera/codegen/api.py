@@ -92,6 +92,15 @@ class CompileResult:
     random_ops_used: set[str] = field(default_factory=set)  # #465
     math_ops_used: set[str] = field(default_factory=set)  # #467
     fn_param_types: dict[str, list[str]] = field(default_factory=dict)
+    # #516 Stage 2 — runtime-trap source mapping.  Maps WAT function
+    # name (without leading `$`) → (file, start_line, end_line).
+    # Populated by CodeGenerator during _register_fn (top-level) and
+    # the closure-lifting pass (anonymous fns become `anon_N`).
+    # Consumed by execute() to resolve `wasmtime.Trap.frames` to
+    # source locations for the WasmTrapError backtrace.
+    fn_source_map: dict[str, tuple[str, int, int]] = field(
+        default_factory=dict,
+    )
 
     @property
     def ok(self) -> bool:
@@ -154,9 +163,17 @@ class WasmTrapError(RuntimeError):
         * ``unknown`` — could not classify; raw wasmtime message in
           ``str()``.
 
-    Stage 1 of #516 establishes the ``kind`` taxonomy. Stage 2 will
-    add source mapping (which Vera function trapped); Stage 3 will
-    add per-kind ``Fix:`` suggestion paragraphs.
+    * ``frames`` — a list of resolved trap frames (#516 Stage 2).
+      Each entry is a dict with keys ``func`` (WAT function name as
+      reported by wasmtime), ``file``, ``line_start``, ``line_end``,
+      and ``is_builtin`` (True for runtime helpers like ``alloc``,
+      ``gc_collect``, ``contract_fail`` that have no source mapping).
+      Outermost (most recent) frame first, matching the wasmtime
+      backtrace order.
+
+    Stage 1 of #516 established the ``kind`` taxonomy.  Stage 2 adds
+    source mapping (the ``frames`` field).  Stage 3 will layer per-
+    kind ``Fix:`` suggestion paragraphs on top.
     """
 
     def __init__(
@@ -166,11 +183,124 @@ class WasmTrapError(RuntimeError):
         stdout: str = "",
         stderr: str = "",
         kind: str = "unknown",
+        frames: list[dict[str, object]] | None = None,
     ) -> None:
         super().__init__(message)
         self.stdout = stdout
         self.stderr = stderr
         self.kind = kind
+        self.frames: list[dict[str, object]] = frames or []
+
+
+def _resolve_trap_frames(
+    exc: BaseException,
+    fn_source_map: dict[str, tuple[str, int, int]],
+) -> list[dict[str, object]]:
+    """Resolve ``wasmtime.Trap.frames`` against the codegen source map.
+
+    Walks the trap's frame list and produces a structured backtrace,
+    one dict per frame.  Each dict has:
+
+    * ``func`` — the WAT function name as reported by wasmtime, with
+      the leading ``$`` stripped (wasmtime strips it already).  For
+      monomorphized generics (``identity$Int``) this is the mangled
+      name; the resolver also tries the base name (the part before
+      the rightmost ``$``) as a fallback because the source map only
+      stores the original generic.
+    * ``file`` — source path, or ``"<builtin>"`` for runtime helpers
+      that have no Vera source.
+    * ``line_start`` / ``line_end`` — source line range of the
+      function definition.  ``None`` for built-ins.
+    * ``is_builtin`` — True for ``alloc`` / ``gc_collect`` /
+      ``contract_fail`` / ``exn_*`` / ``vera.*`` (host imports), all
+      of which are runtime infrastructure with no user-visible source
+      location.
+
+    On any failure (no ``frames`` attribute, exception during iter,
+    etc.) returns an empty list — the trap message survives even if
+    the backtrace can't be resolved.  Per-function granularity matches
+    the issue's stated Stage 2 success criterion (#516).
+    """
+    raw_frames = getattr(exc, "frames", None)
+    if not raw_frames:
+        return []
+
+    # WAT names that the codegen emits as runtime-only infrastructure.
+    # Treat any frame matching one of these (or any name starting with
+    # one of the prefixes below) as a built-in with no source location.
+    _BUILTIN_NAMES = {
+        "alloc", "gc_collect", "contract_fail",
+    }
+    _BUILTIN_PREFIXES = (
+        "exn_",        # generated exception throwers ($exn_String etc.)
+        "vera.",       # host imports ($vera.print, $vera.state_get_*, ...)
+        "closure_sig_",  # synthetic closure signatures
+    )
+
+    resolved: list[dict[str, object]] = []
+    try:
+        iter_frames = list(raw_frames)
+    except Exception:  # pragma: no cover — defensive
+        return []
+
+    for frame in iter_frames:
+        name = getattr(frame, "func_name", None) or ""
+        # Some wasmtime versions return the name with a leading `$`
+        # for un-named functions, or `None` for true anonymous frames.
+        # Skip frames we can't even name — they'd be useless in the
+        # backtrace.
+        if not name:
+            continue
+
+        is_builtin = (
+            name in _BUILTIN_NAMES
+            or any(name.startswith(p) for p in _BUILTIN_PREFIXES)
+        )
+        if is_builtin:
+            resolved.append({
+                "func": name,
+                "file": "<builtin>",
+                "line_start": None,
+                "line_end": None,
+                "is_builtin": True,
+            })
+            continue
+
+        # Try the exact name first; on miss, try the base name (the
+        # part before the rightmost `$`) for monomorphized generics.
+        # `$` cannot appear in user-written Vera identifiers, so any
+        # `$` in a WAT name was inserted by the monomorphizer.
+        loc = fn_source_map.get(name)
+        if loc is None and "$" in name:
+            base = name.rsplit("$", 1)[0]
+            loc = fn_source_map.get(base)
+
+        if loc is None:
+            # Not a user function we have a source for, but not on the
+            # builtin allowlist either (could be a future codegen
+            # helper, a closure that didn't register, etc.).  Surface
+            # the name with no location rather than dropping the frame
+            # — the user still benefits from knowing which WAT
+            # function trapped.
+            resolved.append({
+                "func": name,
+                "file": "<unknown>",
+                "line_start": None,
+                "line_end": None,
+                "is_builtin": False,
+            })
+            continue
+
+        file_path, line_start, line_end = loc
+        resolved.append({
+            "func": name,
+            "file": file_path,
+            "line_start": line_start,
+            "line_end": line_end,
+            "is_builtin": False,
+        })
+
+    return resolved
 
 
 def _classify_trap(
@@ -2611,11 +2741,17 @@ def execute(
         exc_name = type(exc).__name__
         if exc_name in ("Trap", "WasmtimeError"):
             kind, message = _classify_trap(exc, last_violation)
+            # #516 Stage 2 — resolve trap frames against the source map.
+            # Pre-Stage-2 the user got a hex-offset wasmtime backtrace
+            # in the exception message and nothing else; now they get
+            # a structured list of (file, line) pairs they can act on.
+            frames = _resolve_trap_frames(exc, result.fn_source_map)
             raise WasmTrapError(
                 message,
                 stdout=output_buf.getvalue(),
                 stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
                 kind=kind,
+                frames=frames,
             ) from exc
         raise
 

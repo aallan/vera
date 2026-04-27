@@ -679,12 +679,20 @@ def cmd_run(
             # JSON mode: pack stdout/stderr into the envelope. Writing
             # them to sys.stdout/sys.stderr would corrupt the JSON for
             # downstream consumers parsing our output.
-            diag = {
+            diag: dict[str, object] = {
                 "severity": "error",
                 "description": str(exc),
                 "trap_kind": exc.kind,
                 "location": {"line": 0, "column": 0},
             }
+            # #516 Stage 2 — structured backtrace.  Only include the
+            # field when there's something to put there so the JSON
+            # shape stays minimal for traps from programs that have
+            # no resolvable user-frame backtrace (e.g. an immediate
+            # trap inside a built-in helper before the first user
+            # frame ran — rare but possible).
+            if exc.frames:
+                diag["frames"] = exc.frames
             envelope: dict[str, object] = {
                 "ok": False,
                 "file": path,
@@ -721,6 +729,54 @@ def cmd_run(
             if not exc.stderr.endswith("\n"):
                 sys.stderr.write("\n")
         print(f"Error: {exc}", file=sys.stderr)
+        # #516 Stage 2 — print the source backtrace after the error
+        # line.  Outermost (most recent) frame first.  Built-in /
+        # runtime helpers ($alloc, $gc_collect, $contract_fail) show
+        # as "<builtin>" rather than a misleading file:line.  Filter
+        # the leading run of built-in frames so the user sees their
+        # own code at the top — those frames are usually noise (the
+        # trap fired inside the allocator on behalf of user code, and
+        # what the user wants to know is which user function called
+        # the allocator).  Only collapse if at least one user frame
+        # would remain; otherwise keep the full list.
+        if exc.frames:
+            user_idx = next(
+                (i for i, f in enumerate(exc.frames)
+                 if not f.get("is_builtin")),
+                None,
+            )
+            display_frames = (
+                exc.frames[user_idx:] if user_idx is not None
+                else exc.frames
+            )
+            if user_idx and user_idx > 0:
+                hidden = user_idx
+                print(
+                    f"  (suppressed {hidden} runtime-helper frame"
+                    f"{'s' if hidden != 1 else ''} above first user code)",
+                    file=sys.stderr,
+                )
+            print("Source backtrace:", file=sys.stderr)
+            for frame in display_frames:
+                func = frame.get("func")
+                file_path = frame.get("file")
+                line_start = frame.get("line_start")
+                line_end = frame.get("line_end")
+                if frame.get("is_builtin"):
+                    print(f"  in {func}  <builtin>", file=sys.stderr)
+                elif file_path == "<unknown>" or line_start is None:
+                    print(f"  in {func}  ({file_path})", file=sys.stderr)
+                elif line_start == line_end:
+                    print(
+                        f"  in {func}  ({file_path}:{line_start})",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"  in {func}  ({file_path}:{line_start}"
+                        f"-{line_end})",
+                        file=sys.stderr,
+                    )
         return 1
     except RuntimeError as exc:
         if as_json:

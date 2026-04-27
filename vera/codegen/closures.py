@@ -63,6 +63,19 @@ class ClosureLiftingMixin:
                 self._needs_alloc = True
                 self._needs_memory = True
 
+                # #516 Stage 2 — record source location for trap mapping.
+                # The lifted WAT name is `$anon_N`; trap frames will see
+                # `anon_N` (no leading `$`) in func_name.  Use the source
+                # span of the original `fn(...) { ... }` expression so a
+                # trap inside a closure points back to the syntactic
+                # `fn` site, not to the synthetic top-level wrapper.
+                if anon_fn.span is not None:
+                    self._fn_source_map[f"anon_{closure_id}"] = (
+                        self.file or "<unknown>",
+                        anon_fn.span.line,
+                        anon_fn.span.end_line,
+                    )
+
                 # Register the closure signature for call_indirect
                 param_wasm: list[str] = ["i32"]  # env param
                 for p in anon_fn.params:

@@ -37,6 +37,19 @@ class RegistrationMixin:
         ret_type = self._type_expr_to_wasm_type(decl.return_type)
         self._fn_sigs[decl.name] = (param_types, ret_type)
 
+        # #516 Stage 2 — record source location so wasmtime trap frames
+        # naming this function can be resolved to (file, line) at runtime.
+        # Skip prelude / built-in injections that have no span (e.g. the
+        # combinators inject_prelude prepends — those are language
+        # infrastructure, not user code, and shouldn't show up in user-
+        # facing backtraces with bogus locations).
+        if decl.span is not None:
+            self._fn_source_map[decl.name] = (
+                self.file or "<unknown>",
+                decl.span.line,
+                decl.span.end_line,
+            )
+
         # Register where-block functions
         if decl.where_fns:
             for wfn in decl.where_fns:

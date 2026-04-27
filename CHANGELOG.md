@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.124] - 2026-04-27
+
+### Improved
+- **Runtime traps now carry a source backtrace** ([#516](https://github.com/aallan/vera/issues/516) Stage 2) — pre-fix, `WasmTrapError` carried only the classified `kind` and the trap message; the user got "Integer division by zero" with no indication of *which* of their functions divided by zero. Stage 2 walks `wasmtime.Trap.frames` after classification, looks each frame's WAT name up in a new `CompileResult.fn_source_map` (built during codegen by `_register_fn` and the closure-lifting pass), and produces a structured backtrace: `[{func, file, line_start, line_end, is_builtin}, …]`, outermost (leaf) frame first to match wasmtime / gdb / Python convention. Per-function granularity, not per-line — wasmtime-py doesn't expose WAT-to-WASM debug-info plumbing, so byte-offset → line mapping isn't viable; "trap inside `divide` (foo.vera:1-5)" is exactly the success criterion the issue calls out.
+- **Resolution rules for the trap-frame walker** (`_resolve_trap_frames` in `vera/codegen/api.py`):
+  - **Built-ins are tagged, not dropped.** WAT functions named `alloc` / `gc_collect` / `contract_fail`, plus anything starting with `exn_` / `vera.` / `closure_sig_`, are runtime infrastructure with no Vera source. They're surfaced as `<builtin>` rather than reported as missing-source-map entries (which would look like a regression).
+  - **Monomorphized generics suffix-strip at the rightmost `$`.** `identity$Int` looks up `identity` because `$` cannot appear in user-written Vera identifiers, so any `$` in a WAT name was inserted by the monomorphizer (`vera/codegen/monomorphize.py::_mangle_fn_name`).
+  - **Lifted closures register under `anon_N`.** The closure-lifting pass tags each `$anon_N` with the source span of the original `fn(...)` syntactic site, so a trap inside a closure points at the closure body, not at the synthetic top-level wrapper.
+  - **Unknown user-named frames are surfaced with `<unknown>` location, not dropped.** Better to show the WAT name with no location than lose the frame entirely — the user still benefits from knowing which function trapped, and any future source-map gap is diagnosable from the unknown markers.
+- **`cmd_run` text-mode rendering** appends a `Source backtrace:` block after the error line. Leading runtime-helper frames (the ones the user can't act on — they trapped inside `$alloc` while serving a user request) are collapsed with a `(suppressed N runtime-helper frames above first user code)` marker so the user sees their own code at the top of the trace. JSON mode adds a `frames` array to each diagnostic with the full structured backtrace (including built-ins, so machine consumers see the full picture).
+
+### Tests
+- New `TestResolveTrapFrames516` (7 tests) — unit tests for the resolver in isolation using a `_FakeFrame` shim: user-fn resolution, built-in tagging, built-in-prefix matching, monomorphized base-name fallback, unknown-name surfacing, defensive empty-frames behaviour, leaf-first ordering preservation.
+- New `TestTrapSourceBacktrace516` (5 tests) — end-to-end via `cmd_run`: text-mode backtrace surfaces, leaf-first ordering preserved across stream output, JSON envelope includes `frames` array, contract violations carry the same backtrace, direct `execute()` callers also get `WasmTrapError.frames`.
+- New `TestSourceMapPopulation516` (3 tests) — light-weight inspection of `CompileResult.fn_source_map`: top-level fns registered, lifted closures registered under `anon_N`, built-in helpers NOT registered (would yield bogus user-frame entries).
+
+### Documentation
+- **KNOWN_ISSUES.md** — #516 row updated to note Stage 2 shipped (Stage 3 remains).
+- **ROADMAP.md** — #516 row in the bug-killing campaign queue updated; intro string unchanged (the row stays in the queue until Stage 3 ships).
+
 ## [0.0.123] - 2026-04-27
 
 ### Fixed
@@ -1732,7 +1752,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.123...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.124...HEAD
+[0.0.124]: https://github.com/aallan/vera/compare/v0.0.123...v0.0.124
 [0.0.123]: https://github.com/aallan/vera/compare/v0.0.122...v0.0.123
 [0.0.122]: https://github.com/aallan/vera/compare/v0.0.121...v0.0.122
 [0.0.121]: https://github.com/aallan/vera/compare/v0.0.120...v0.0.121

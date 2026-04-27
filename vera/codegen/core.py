@@ -134,6 +134,21 @@ class CodeGenerator(
         self._needs_table: bool = False
         self._next_closure_id: int = 0
 
+        # #516 Stage 2 — runtime-trap source mapping.
+        # Maps WAT function name (without leading `$`) → (file, start_line,
+        # end_line) so wasmtime trap frames can be resolved to a source
+        # location at runtime.  Populated during _register_fn (top-level
+        # functions) and during the closure-lifting pass (anonymous fns
+        # become $anon_N).  Monomorphized names like `identity$Int` aren't
+        # registered explicitly — the trap-time resolver strips the
+        # rightmost `$` suffix and looks up the base name (the only `$` in
+        # WAT names comes from the monomorphization mangler since `$` is
+        # not a legal Vera identifier character).  Built-in helpers
+        # ($alloc, $gc_collect, $contract_fail, etc.) intentionally never
+        # appear here — the resolver tags them as "<builtin>" rather than
+        # claim spurious file:line.
+        self._fn_source_map: dict[str, tuple[str, int, int]] = {}
+
         # Cross-module state (C7e)
         self._resolved_modules: list[ResolvedModule] = (
             resolved_modules or []
@@ -392,6 +407,7 @@ class CodeGenerator(
             random_ops_used=set(self._random_ops_used),
             math_ops_used=set(self._math_ops_used),
             fn_param_types=fn_param_types,
+            fn_source_map=dict(self._fn_source_map),
         )
 
     # -----------------------------------------------------------------
