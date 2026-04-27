@@ -210,6 +210,41 @@ class TestStdoutOnTrap522:
         for n in range(1, 5):
             assert f"line {n} before crash" in envelope["stdout"]
 
+    def test_json_mode_includes_stderr_in_envelope(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        # Sibling regression covering the stderr-capture half of the
+        # WasmTrapError contract. Without ``capture_stderr=True`` in
+        # the cmd_run -> execute() call, ``WasmTrapError.stderr`` was
+        # always empty even though the exception class advertised it.
+        # Pin the wired-through behaviour: IO.stderr writes preceding
+        # a trap reach the JSON envelope's ``stderr`` field.
+        source = """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.stderr("warning A\\n");
+  IO.stderr("warning B\\n");
+  let @Nat = 42 / 0;
+  ()
+}
+"""
+        path = tmp_path / "divzero_stderr.vera"
+        path.write_text(source)
+
+        rc = cmd_run(str(path), as_json=True)
+
+        assert rc == 1
+        envelope = json.loads(capsys.readouterr().out)
+        assert envelope["ok"] is False
+        assert "stderr" in envelope, (
+            "Expected captured IO.stderr in envelope; got envelope keys: "
+            f"{sorted(envelope.keys())}. cmd_run must pass "
+            "capture_stderr=True to execute() for this field to populate."
+        )
+        assert "warning A" in envelope["stderr"]
+        assert "warning B" in envelope["stderr"]
+
 
 # =====================================================================
 # End-to-end via cmd_run — trap categorisation

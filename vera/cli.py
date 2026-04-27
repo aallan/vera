@@ -581,9 +581,16 @@ def cmd_run(
             raw_fn_args if raw_fn_args
             else ([str(a) for a in fn_args] if fn_args else [])
         )
+        # capture_stderr=True so IO.stderr writes are buffered into
+        # exec_result.stderr (and into WasmTrapError.stderr on the trap
+        # path). Without it, host_stderr falls through to live writes on
+        # sys.stderr — which works for the success path but leaves the
+        # WasmTrapError handler's exc.stderr / JSON envelope's "stderr"
+        # field permanently empty.  Mirrors the always-capture treatment
+        # of stdout (host_print is unconditional).
         exec_result = execute(
             result, fn_name=fn_name, args=fn_args, raw_args=raw_fn_args,
-            cli_args=str_args,
+            cli_args=str_args, capture_stderr=True,
         )
 
         if as_json:
@@ -597,21 +604,33 @@ def cmd_run(
                 "value": exec_result.value,
                 "stdout": exec_result.stdout,
             }
+            if exec_result.stderr:
+                result_dict["stderr"] = exec_result.stderr
             if exec_result.exit_code is not None:
                 result_dict["exit_code"] = exec_result.exit_code
             print(json.dumps(result_dict, indent=2))
             return exec_result.exit_code if exec_result.exit_code else 0
 
-        # Print stdout from IO.print calls
+        # Print stdout from IO.print calls; if no stdout and we have a
+        # non-Unit return value, print that instead (preserves the
+        # pre-stderr-capture behaviour exactly — stderr does not
+        # suppress value printing).
         if exec_result.stdout:
             sys.stdout.write(exec_result.stdout)
             # Add newline if stdout doesn't end with one
             if not exec_result.stdout.endswith("\n"):
                 sys.stdout.write("\n")
-
-        # Print return value if it's not None (non-Unit function)
         elif exec_result.value is not None:
             print(exec_result.value)
+
+        # Replay captured stderr to the actual stderr stream. Mirrors
+        # the stdout replay above. Independent of value printing — a
+        # function that returns 42 and also wrote to stderr should show
+        # both, in their natural streams.
+        if exec_result.stderr:
+            sys.stderr.write(exec_result.stderr)
+            if not exec_result.stderr.endswith("\n"):
+                sys.stderr.write("\n")
 
         # Use IO.exit code as process exit code
         if exec_result.exit_code is not None:
