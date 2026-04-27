@@ -55,10 +55,11 @@ Files that have grown beyond a comfortable size and need decomposition. None of 
 | `tests/test_checker.py` | 5,522 | Split into phase-focused test files (types, functions, effects, contracts, modules, errors) | [#420](https://github.com/aallan/vera/issues/420) |
 | `vera/codegen/api.py` | 2,228 | Extract memory layout utilities → `memory.py`; extract host runtime → `runtime.py` | [#421](https://github.com/aallan/vera/issues/421) |
 
-## CI ignores
+## CI workarounds
 
-CVEs currently suppressed in the `dependency-audit` CI job. Each entry has a removal trigger — these are bridges, not permanent exceptions.
+Defensive measures currently applied in CI (CVE ignores, forced upgrades, etc.) with explicit removal triggers — bridges, not permanent exceptions.
 
-| Ignored CVE | Package | Rationale | Remove when | Issue |
-|-------------|---------|-----------|-------------|-------|
-| [CVE-2026-4539](https://nvd.nist.gov/vuln/detail/CVE-2026-4539) | pygments 2.19.2 (transitive via pytest/rich) | No fix release exists yet. | pygments > 2.19.2 ships with the fix. | — |
+| Workaround | Where | Rationale | Remove when | Issue |
+|------------|-------|-----------|-------------|-------|
+| `--ignore-vuln CVE-2026-4539` ([CVE-2026-4539](https://nvd.nist.gov/vuln/detail/CVE-2026-4539)) | `dependency-audit` step in `.github/workflows/ci.yml` | pygments 2.19.2 (transitive via pytest/rich); no fix release exists yet. | pygments > 2.19.2 ships with the fix. | — |
+| `pip install --upgrade pip` before audit | Same step | `actions/setup-python@v6` ships pip 26.0.1, which is flagged for [CVE-2026-3219](https://nvd.nist.gov/vuln/detail/CVE-2026-3219) (fixed in pip 26.1, [pypa/pip#13870](https://github.com/pypa/pip/pull/13870)). The runner doesn't track PyPI live, so `pip-audit` scans the runner's bundled pip and fails until we explicitly upgrade. | `actions/setup-python@v6` ships a runner image with pip ≥ 26.1 natively. Drop the `--upgrade pip` from the install step then. | [#537](https://github.com/aallan/vera/issues/537) |

@@ -6,6 +6,8 @@ to module-level WASM functions with explicit environment parameters.
 
 from __future__ import annotations
 
+from collections import deque
+
 from vera import ast
 from vera.codegen.api import ConstructorLayout, _align_up
 from vera.wasm import WasmContext, WasmSlotEnv
@@ -32,7 +34,14 @@ class ClosureLiftingMixin:
         entry.  The worklist below collects each lift's inner-pending
         list and feeds it back, lifting to arbitrary depth.
         """
-        worklist = list(ctx._pending_closures)
+        # ``deque`` (rather than a plain list) because ``popleft`` is
+        # O(1) where ``list.pop(0)`` would shift every remaining entry.
+        # Closure worklists are typically tiny in practice, but the
+        # deque is the right idiom for FIFO and removes the need to
+        # reason about list-pop costs as the depth of nesting grows.
+        worklist: deque[
+            tuple[ast.AnonFn, list[tuple[str, int, str]], int]
+        ] = deque(ctx._pending_closures)
         # Carry the running ID counter and accumulated sigs forward
         # as each iteration may register new ones in its inner ctx.
         self._next_closure_id = ctx._next_closure_id
@@ -41,7 +50,7 @@ class ClosureLiftingMixin:
                 self._closure_sigs[sig_content] = sig_name
 
         while worklist:
-            anon_fn, captures, closure_id = worklist.pop(0)
+            anon_fn, captures, closure_id = worklist.popleft()
             inner_pending: list[tuple[ast.AnonFn, list[tuple[str, int, str]], int]] = []
             lifted_wat = self._compile_lifted_closure(
                 closure_id, anon_fn, captures,

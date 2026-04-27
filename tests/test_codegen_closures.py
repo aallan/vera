@@ -619,18 +619,21 @@ public fn test(@Unit -> @Int)
   nat_to_int(array_length(@Array<Array<Int>>.0))
 }
 """
+        import re
         result = _compile_ok(src)
         wat = result.wat
-        # Both closures must have lifted functions.
-        assert "(func $anon_0" in wat, (
-            "Outer closure missing from WAT — regression in single-level lifting"
-        )
-        assert "(func $anon_1" in wat, (
-            "Inner closure missing from WAT — #514 worklist regression"
+        # Both closures must have lifted functions.  Count distinct
+        # ``$anon_N`` lifted-function definitions rather than asserting
+        # specific names — the worklist's allocation order is an
+        # implementation detail that may change as the lifting pass
+        # evolves.  Two outermost closures in this fixture, so >= 2.
+        anon_funcs = re.findall(r"\(func \$anon_\d+", wat)
+        assert len(anon_funcs) >= 2, (
+            f"Expected >= 2 lifted closure functions in WAT, got "
+            f"{len(anon_funcs)} ({anon_funcs}) — #514 worklist regression"
         )
         # Function table must have at least 2 entries.
         # The exact form is `(table N funcref)` — extract N.
-        import re
         m = re.search(r"\(table\s+(\d+)\s+funcref\)", wat)
         assert m is not None, f"No funcref table in WAT: {wat[:500]}"
         table_size = int(m.group(1))

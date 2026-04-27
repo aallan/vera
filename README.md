@@ -225,7 +225,7 @@ vera/
 │   └── cli.py                     #   Command-line interface
 ├── docs/                          # GitHub Pages site (veralang.dev)
 ├── editors/                       # VS Code extension + TextMate bundle
-├── examples/                      # 32 example Vera programs
+├── examples/                      # 33 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts
 ```

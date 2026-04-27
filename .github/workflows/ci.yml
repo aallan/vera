@@ -174,8 +174,9 @@ jobs:
         # pip 26.0.1 into its toolchain, which is flagged for CVE-2026-3219
         # (archive-handling, fixed in pip 26.1 via pypa/pip#13870). Without
         # the upgrade, pip-audit reports the runner's own pip as vulnerable
-        # even though the fix is shipped on PyPI. Drop the --upgrade once
-        # the runner image picks up pip 26.1.
+        # even though the fix is shipped on PyPI. Drop the `--upgrade pip`
+        # once the runner image picks up pip 26.1 natively. Tracked in #537,
+        # listed in the "CI workarounds" section of KNOWN_ISSUES.md.
         run: pip install --upgrade pip && pip install -e . && pip install pip-audit
 
       - name: Audit dependencies for known CVEs
