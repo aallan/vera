@@ -25,6 +25,8 @@ Stage 2 (source mapping the trapping function) and Stage 3 (per-kind
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -191,6 +193,58 @@ class TestStdoutOnTrap522:
             )
         # Error message itself goes to stderr.
         assert "Error" in captured.err
+
+    def test_text_mode_cross_stream_ordering(
+        self, tmp_path: Path,
+    ) -> None:
+        """The four IO.print lines appear before the error in code order.
+
+        Sibling regression to the per-stream test above. ``capsys`` gives
+        us per-stream content but not the relative order of writes across
+        streams — for that we redirect both ``sys.stdout`` and
+        ``sys.stderr`` into the *same* ``io.StringIO``, which preserves
+        Python-level write order verbatim. If a future refactor were to
+        swap the stdout-replay and error-print blocks in ``cmd_run``'s
+        ``WasmTrapError`` handler, this test fails.
+
+        Caveat: this test does **not** exercise the OS-level buffering
+        concern that ``sys.stdout.flush()`` defends against. With both
+        streams aimed at one ``StringIO`` the flush is a no-op (StringIO
+        has no OS-level buffer). The flush matters only when stdout and
+        stderr are independent file descriptors merged by a shell
+        ``2>&1`` redirect — see #522 for the original symptom.
+        """
+        path = tmp_path / "divzero.vera"
+        path.write_text(_DIVZERO_WITH_PRINTS)
+
+        merged = io.StringIO()
+        with contextlib.redirect_stdout(merged), \
+                contextlib.redirect_stderr(merged):
+            rc = cmd_run(str(path))
+
+        assert rc == 1
+        text = merged.getvalue()
+
+        # All four print lines appear in order.
+        positions = [
+            text.find(f"line {n} before crash") for n in range(1, 5)
+        ]
+        assert all(p >= 0 for p in positions), (
+            f"Missing some 'line N before crash' lines in merged output: "
+            f"{text!r}"
+        )
+        assert positions == sorted(positions), (
+            f"Print lines out of code order in merged output: positions="
+            f"{positions}, text={text!r}"
+        )
+
+        # And the error message lands AFTER all four print lines.
+        error_pos = text.find("Error")
+        assert error_pos > positions[-1], (
+            f"Error message should appear AFTER the last print line, but "
+            f"error at {error_pos} vs last print at {positions[-1]}: "
+            f"{text!r}"
+        )
 
     def test_json_mode_includes_stdout_in_envelope(
         self, tmp_path: Path, capsys: CaptureFixture[str],
