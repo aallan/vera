@@ -467,6 +467,20 @@
     ]
   },
   {
+    "id": "ch05_nested_closures",
+    "file": "ch05_nested_closures.vera",
+    "chapter": 5,
+    "title": "Nested closures and the lifting worklist (#514)",
+    "level": "run",
+    "spec_ref": "Section 5.4",
+    "features": [
+      "closure",
+      "higher_order",
+      "nested_closure",
+      "closure_capture"
+    ]
+  },
+  {
     "id": "ch05_visibility",
     "file": "ch05_visibility.vera",
     "chapter": 5,

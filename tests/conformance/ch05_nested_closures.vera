@@ -1,0 +1,49 @@
+-- Conformance: nested closures (Chapter 5, #514)
+-- Tests: closures inside closure bodies (2D + 3D), captures across the
+-- nesting boundary at primitive types, lift-on-demand worklist.
+-- Pre-v0.0.121 these all failed: only the outermost closure was
+-- lifted to a top-level function, so inner call_indirects targeted
+-- a missing table entry and the program either trapped or failed
+-- WASM validation.
+-- 2D array_map, no captures across nesting.
+private fn build_2d_no_capture(@Unit -> @Array<Array<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_map(array_range(0, 3), fn(@Int -> @Array<Int>) effects(pure) { array_map(array_range(0, 4), fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }) })
+}
+
+-- 2D with capture: inner closure uses outer's parameter @Int.1.
+private fn build_2d_capture(@Unit -> @Array<Array<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_map(array_range(0, 3), fn(@Int -> @Array<Int>) effects(pure) { array_map(array_range(0, 4), fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }) })
+}
+
+-- 3D nesting: worklist must handle arbitrary depth.
+private fn build_3d(@Unit -> @Array<Array<Array<Int>>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_map(array_range(0, 2), fn(@Int -> @Array<Array<Int>>) effects(pure) { array_map(array_range(0, 2), fn(@Int -> @Array<Int>) effects(pure) { array_map(array_range(0, 2), fn(@Int -> @Int) effects(pure) { @Int.0 }) }) })
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- Smoke test: every shape compiles, runs, and returns the right
+  -- top-level shape size. Returns the sum of three lengths: 3 + 3 + 2 = 8.
+  let @Array<Array<Int>> = build_2d_no_capture(());
+  let @Nat = array_length(@Array<Array<Int>>.0);
+  let @Array<Array<Int>> = build_2d_capture(());
+  let @Nat = array_length(@Array<Array<Int>>.0);
+  let @Array<Array<Array<Int>>> = build_3d(());
+  let @Nat = array_length(@Array<Array<Array<Int>>>.0);
+  nat_to_int(@Nat.0) + nat_to_int(@Nat.1) + nat_to_int(@Nat.2)
+}
