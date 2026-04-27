@@ -370,6 +370,7 @@ def execute(
     cli_args: list[str] | None = None,
     env_vars: dict[str, str] | None = None,
     capture_stderr: bool = False,
+    tee_stdout: bool = False,
 ) -> ExecuteResult:
     """Execute a function from a compiled WASM module.
 
@@ -394,6 +395,16 @@ def execute(
         ``ExecuteResult.stderr`` (an in-memory ``StringIO``) rather
         than forwarded to ``sys.stderr``.  Default ``False`` —
         matches the pre-#463 behaviour where there was no stderr.
+    tee_stdout : bool
+        If *True*, ``IO.print`` writes are *both* appended to the
+        in-memory ``output_buf`` (so ``ExecuteResult.stdout`` and
+        ``WasmTrapError.stdout`` still see every byte) *and* mirrored
+        live to ``sys.stdout`` with an explicit flush per write.
+        Default *False* — matches the post-#522 behaviour where the
+        whole transcript is buffered until completion (correct for
+        JSON mode and tests, broken for animations and TUIs).
+        ``cmd_run`` text mode opts in so interactive output appears
+        in real time (#543).
     """
     if not result.ok:
         raise RuntimeError("Cannot execute: compilation had errors")
@@ -563,7 +574,17 @@ def execute(
         buf = memory.data_ptr(store)
         data = bytes(buf[ptr:ptr + length])
         text = data.decode("utf-8")
+        # Always capture into output_buf so ExecuteResult.stdout and
+        # WasmTrapError.stdout reflect every byte the program printed
+        # (the trap-preservation contract from #522 must hold even
+        # when we mirror live to sys.stdout).
         output_buf.write(text)
+        # tee_stdout (#543) mirrors writes live to sys.stdout with an
+        # explicit flush, so animations / progress bars / TUIs see
+        # output as it happens instead of one buffered burst at exit.
+        if tee_stdout:
+            sys.stdout.write(text)
+            sys.stdout.flush()
 
     print_type = wasmtime.FuncType(
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],

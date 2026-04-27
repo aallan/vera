@@ -574,7 +574,7 @@ wheels = [
 
 [[package]]
 name = "vera"
-version = "0.0.122"
+version = "0.0.123"
 source = { editable = "." }
 dependencies = [
     { name = "lark" },

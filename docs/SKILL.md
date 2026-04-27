@@ -1303,7 +1303,7 @@ The IO effect is built-in — no declaration is needed. It provides ten operatio
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `IO.print` | `String -> Unit` | Print a string to stdout |
+| `IO.print` | `String -> Unit` | Print a string to stdout (no implicit newline; flushes per call) |
 | `IO.read_line` | `Unit -> String` | Read a line from stdin |
 | `IO.read_file` | `String -> Result<String, String>` | Read file contents |
 | `IO.write_file` | `String, String -> Result<Unit, String>` | Write string to file |
@@ -1317,6 +1317,8 @@ The IO effect is built-in — no declaration is needed. It provides ten operatio
 If you declare `effect IO { op print(String -> Unit); }` explicitly, that overrides the built-in and only the declared operations are available. Most examples do this — declaring only `print` — because it follows the principle of least privilege: a program that only declares `op print` cannot accidentally perform file I/O or call `exit`.
 
 **Why IO works differently from State and Async:** IO has 10 operations and programs choose which ones they need. State and Async have fixed, minimal operation sets (State: `get`/`put`; Async: no operations, it is a marker effect), so there is nothing to restrict.
+
+**Output buffering and live writes.** Under `vera run` text mode, every `IO.print` call writes to `sys.stdout` and flushes immediately — animations, progress bars, REPLs, and any output using ANSI escape sequences (cursor home, clear screen) render in real time. The captured transcript is *also* preserved in memory so that if the program traps, every byte printed before the trap reaches `WasmTrapError.stdout` and the JSON envelope's `stdout` field. Under `vera run --json`, live mirroring is suppressed — the transcript lives only in the JSON envelope, because writing live to stdout would corrupt the envelope for downstream consumers parsing it. Programs do not need to call any "flush" operation; per-call flushing is the contract. Pre-v0.0.123 the whole transcript was buffered until program exit; that behaviour was correct for trap preservation and JSON consumers but made interactive output invisible.
 
 ### Performing effects
 

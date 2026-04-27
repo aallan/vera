@@ -397,3 +397,237 @@ class TestTrapCategorisation516Stage1:
         assert captured.err == "", (
             "JSON mode must not write to stderr; got: " f"{captured.err!r}"
         )
+
+
+# =====================================================================
+# #543 — IO.print streams live to sys.stdout in cmd_run text mode
+# =====================================================================
+
+
+class TestStdoutTee543:
+    """#543 — ``IO.print`` writes mirror live to ``sys.stdout`` (text mode).
+
+    Before this fix, ``host_print`` only appended to an in-memory
+    ``output_buf`` (correct for the #522 trap-preservation fix), and
+    ``cmd_run`` flushed the whole buffer to ``sys.stdout`` after
+    ``execute()`` returned.  That meant any program using ANSI escape
+    sequences (cursor home, clear screen) for animation — Conway's Game
+    of Life, progress bars, TUIs, REPL-style output — was invisible
+    until exit, at which point the entire transcript flushed in
+    microseconds and the terminal processed all of the cursor-home
+    escapes faster than a human eye can resolve.  Only the *last*
+    frame ended up visible.
+
+    Fix is a tee: ``host_print`` always writes to ``output_buf`` (so
+    the trap-preservation contract from #522 still holds), and *also*
+    writes to ``sys.stdout`` with an explicit flush per call when
+    ``execute(tee_stdout=True)``.  ``cmd_run`` text mode opts in;
+    JSON mode stays off (live stdout writes would corrupt the JSON
+    envelope for downstream consumers parsing our output).
+    """
+
+    _ANIM_PROGRAM = """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("frame 1\\n");
+  IO.print("frame 2\\n");
+  IO.print("frame 3\\n")
+}
+"""
+
+    def test_text_mode_streams_each_print_live(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """Text mode: every IO.print appears on stdout exactly once."""
+        path = tmp_path / "anim.vera"
+        path.write_text(self._ANIM_PROGRAM)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        # Each frame appears, in order...
+        assert "frame 1" in captured.out
+        assert "frame 2" in captured.out
+        assert "frame 3" in captured.out
+        # ...and each appears exactly once. The pre-fix bug had the
+        # whole transcript flush at exit; the fix mirrors live; if a
+        # future refactor accidentally did both, every frame would
+        # appear twice. Pin that invariant.
+        assert captured.out.count("frame 1") == 1
+        assert captured.out.count("frame 2") == 1
+        assert captured.out.count("frame 3") == 1
+
+    def test_text_mode_preserves_print_order(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """Live writes preserve the IO.print call order."""
+        path = tmp_path / "anim.vera"
+        path.write_text(self._ANIM_PROGRAM)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        positions = [captured.out.find(f"frame {n}") for n in (1, 2, 3)]
+        assert all(p >= 0 for p in positions)
+        assert positions == sorted(positions), (
+            f"Frames out of order in stdout: {positions}, {captured.out!r}"
+        )
+
+    def test_json_mode_does_not_tee_to_stdout(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """JSON mode never tees — would corrupt the envelope."""
+        path = tmp_path / "anim.vera"
+        path.write_text(self._ANIM_PROGRAM)
+
+        rc = cmd_run(str(path), as_json=True)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        # JSON-mode invariant — see TestStdoutOnTrap522 for context.
+        # No human-readable text may leak to the actual stderr stream;
+        # error info, captured stderr, and trap kind all live inside
+        # the JSON envelope so downstream consumers parsing our output
+        # see exactly one machine-readable document.
+        assert captured.err == "", (
+            "JSON mode must not write to stderr; got: " f"{captured.err!r}"
+        )
+        # The actual stdout contains exactly one thing: the JSON
+        # envelope. The frame text lives inside it under "stdout",
+        # not as a sibling write that would split the parse.
+        envelope = json.loads(captured.out)
+        assert envelope["ok"] is True
+        assert "frame 1" in envelope["stdout"]
+        assert "frame 2" in envelope["stdout"]
+        assert "frame 3" in envelope["stdout"]
+        # Crucial: the frames must NOT also appear outside the JSON
+        # envelope, or downstream consumers parsing our stdout would
+        # see "frame 1\\nframe 2\\nframe 3\\n{...}" and fail.
+        # Strip the parsed envelope from the captured output and
+        # check what's left.
+        envelope_text = json.dumps(envelope, indent=2) + "\n"
+        residue = captured.out.replace(envelope_text, "", 1)
+        assert "frame" not in residue, (
+            f"Live stdout writes leaked outside JSON envelope: "
+            f"residue={residue!r}"
+        )
+
+    def test_tee_does_not_break_trap_preservation(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """#522 invariant: prints before a trap still reach the user.
+
+        The tee fix mustn't regress the buffered-stdout-on-trap fix.
+        ``output_buf`` is still populated on every host_print, so
+        ``WasmTrapError.stdout`` is still complete; the cmd_run trap
+        handler now skips the re-print (since tee already wrote
+        live) but emits a closing newline if needed.
+        """
+        source = """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("about to crash\\n");
+  let @Nat = 42 / 0;
+  ()
+}
+"""
+        path = tmp_path / "anim_trap.vera"
+        path.write_text(source)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        # Pre-trap stdout reached the user — appears exactly once
+        # (live write only; trap handler does NOT re-print).
+        assert "about to crash" in captured.out
+        assert captured.out.count("about to crash") == 1
+        # Error message lands on stderr after the live stdout.
+        assert "Error" in captured.err
+
+    def test_tee_flushes_each_write(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Each IO.print call flushes sys.stdout immediately.
+
+        The whole point of the fix is real-time output — buffering at
+        the Python io layer would defeat it just as effectively as
+        buffering at the WASM layer did.  Pin the per-write flush by
+        counting flush calls against IO.print calls.
+        """
+        path = tmp_path / "flush.vera"
+        path.write_text(self._ANIM_PROGRAM)
+
+        flush_count = 0
+        write_count = 0
+        original_write = __import__("sys").stdout.write
+        original_flush = __import__("sys").stdout.flush
+
+        def counting_write(s: str) -> int:
+            nonlocal write_count
+            if "frame" in s:
+                write_count += 1
+            return original_write(s)
+
+        def counting_flush() -> None:
+            nonlocal flush_count
+            flush_count += 1
+            original_flush()
+
+        import sys as _sys
+        monkeypatch.setattr(_sys.stdout, "write", counting_write)
+        monkeypatch.setattr(_sys.stdout, "flush", counting_flush)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 0
+        # Three IO.print("frame N\\n") calls => three live writes...
+        assert write_count == 3, f"expected 3 live writes, got {write_count}"
+        # ...and at least three flushes (one per live write; the
+        # cmd_run trailing "no closing newline needed" branch may
+        # flush once more, but never fewer than the per-write flushes).
+        assert flush_count >= 3, (
+            f"expected at least 3 flushes (one per IO.print), got "
+            f"{flush_count}"
+        )
+
+    def test_default_execute_does_not_tee(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """``execute()`` defaults to no tee — protects test suite silence.
+
+        ``_run_io()`` and ``_run()`` in test_codegen.py call
+        ``execute()`` without ``tee_stdout`` and rely on the captured
+        ``ExecuteResult.stdout`` for assertions.  If the default
+        flipped to True, every test that runs an IO.print program
+        would dump the captured text into pytest's capsys stream and
+        pollute test output.  Pin the default off.
+        """
+        from vera.codegen import compile as compile_program
+        from vera.codegen import execute as _execute
+        from vera.parser import parse_to_ast
+
+        source = """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("should not appear in capsys")
+}
+"""
+        program = parse_to_ast(source)
+        compile_result = compile_program(program, source=source)
+
+        # capsys.readouterr() resets the buffer; readouterr after
+        # execute captures only what execute itself wrote.
+        capsys.readouterr()
+        exec_result = _execute(compile_result)
+
+        # The string is in the captured buffer (always).
+        assert exec_result.stdout == "should not appear in capsys"
+        # But not on the actual sys.stdout — tee defaulted off.
+        captured = capsys.readouterr()
+        assert "should not appear" not in captured.out
