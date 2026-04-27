@@ -120,7 +120,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  functions.py` | 286 | | Function body compilation, GC prologue/epilogue (Pass 2) | |
 | `  closures.py` | 272 | | Closure lifting, GC instrumentation | |
 | `  contracts.py` | 282 | | Runtime pre/postconditions, old state snapshots | |
-| `  assembly.py` | 774 | | WAT module assembly, `$alloc`, `$gc_collect` | |
+| `  assembly.py` | 856 | | WAT module assembly, `$alloc`, `$gc_collect` | |
 | `  compilability.py` | 310 | | Compilability checks, state handler scanning | |
 | `tester.py` | 750 | Test | Z3-guided input generation, WASM execution, tier classification | `test()` |
 | `formatter.py` | 1,127 | Format | Canonical code formatter | `format_source()` |
@@ -566,7 +566,7 @@ Memory is managed automatically. The allocator and garbage collector are impleme
 
 **Garbage collector** (`$gc_collect` in `assembly.py`): Conservative mark-sweep in three phases:
 1. **Clear** — walk heap linearly, clear all mark bits
-2. **Mark** — seed worklist from shadow stack roots, drain iteratively; any i32 word that looks like a valid heap pointer is treated as one (no type descriptors needed)
+2. **Mark** — seed worklist from shadow stack roots, drain iteratively; any i32 word that looks like a valid heap pointer (in heap range, properly aligned, below `$heap_ptr`) is treated as one (no type descriptors needed). Because those guards don't prove the word at `val - 4` is actually an object header, the marker also bounds the conservative scan against `$heap_ptr` at two layers — early-skip if `obj_ptr + obj_size > heap_ptr` before marking, plus a per-iteration check inside the scan loop — so a non-pointer payload value that happens to satisfy the seeding guards (e.g. a bit-packed `Nat` row) cannot cause the collector to walk past the heap and trap (#515)
 3. **Sweep** — walk heap, link unmarked objects into free list
 
 **Shadow stack** (`gc_shadow_push` in `helpers.py`): WASM has no stack scanning, so the compiler pushes live heap pointers explicitly. `_compile_fn` in `functions.py` emits a prologue (save `$gc_sp`, push pointer params) and epilogue (save return, restore `$gc_sp`, push return back). Allocation sites in `data.py`, `closures.py`, and `calls.py` push newly allocated pointers after each `call $alloc`. An overflow guard (`$gc_sp >= $gc_stack_limit`) traps if the shadow stack would overflow into the worklist region — this prevents silent GC corruption during deep recursion (#464).

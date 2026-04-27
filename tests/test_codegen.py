@@ -1883,6 +1883,117 @@ public fn f(@Unit -> @Int)
 """
         assert _run(source, fn="f") == 42
 
+    def test_gc_collect_bounds_check_against_heap_ptr(self) -> None:
+        """Regression for #515: $gc_collect must bound the conservative
+        scan against $heap_ptr.
+
+        The conservative-GC worklist push in Phase 2 accepts a shadow
+        stack value as a heap pointer based on three guards (in heap
+        range, properly aligned, below $heap_ptr).  None of those
+        guards prove the word at val-4 is an actual object header.  A
+        non-pointer i32 in payload data (e.g. a bit-packed Nat row in
+        Conway-style code) can satisfy all three, in which case the
+        marker reads garbage as obj_size and walks $obj_ptr+scan_ptr
+        past $heap_ptr, trapping at the linear-memory boundary inside
+        $gc_collect itself.
+
+        Two layers of defence are now emitted:
+          - Layer 2 (early skip): before marking or scanning, verify
+            obj_ptr + obj_size <= heap_ptr.
+          - Layer 1 (per-iter): each scan-loop iteration also checks
+            obj_ptr + scan_ptr + 4 <= heap_ptr before issuing the
+            i32.load.
+
+        This test asserts both bounds checks survive in the emitted
+        WAT.  A behavioural reproducer for #515 is heavily layout-
+        sensitive (string-pool offsets, allocation order); the
+        structural assertion is the durable regression guard.
+
+        The assertions look for the actual opcode pattern that
+        implements each bound check, not just the marker comment.
+        Otherwise a refactor that left the comment in place but
+        deleted the underlying check would silently pass — the
+        comment is a discoverability anchor, the opcodes are the
+        contract.
+        """
+        source = """\
+private data Box { MkBox(Int) }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match MkBox(42) { MkBox(@Int) -> @Int.0 }
+}
+"""
+        result = _compile_ok(source)
+        wat = result.wat
+        assert "func $gc_collect" in wat
+
+        # Helper: extract the next N non-comment, non-blank tokens of
+        # WAT after `marker_text`.  Comments start with `;;` (line) or
+        # `(;` (block) — only line comments appear in the GC code.
+        # Joining tokens with single spaces gives us a normalised
+        # pattern that's stable against whitespace changes in the
+        # emitter but fails fast if any opcode is missing or out of
+        # order.
+        def _opcodes_after(text: str, marker: str, n: int) -> str:
+            i = text.find(marker)
+            assert i >= 0, f"Marker {marker!r} not found in WAT"
+            # The marker sits inside a `;;` comment — the rest of its
+            # line is comment text, not WAT.  Advance to the start of
+            # the line after the marker so we tokenise only emitted
+            # opcodes, never comment prose.
+            line_end = text.find("\n", i)
+            tail = text[line_end + 1:] if line_end >= 0 else ""
+            tokens: list[str] = []
+            for raw_line in tail.splitlines():
+                stripped = raw_line.strip()
+                if not stripped or stripped.startswith(";;"):
+                    continue
+                # Strip trailing inline comments if any (defensive).
+                code = stripped.split(";;", 1)[0].strip()
+                if not code:
+                    continue
+                tokens.extend(code.split())
+                if len(tokens) >= n:
+                    break
+            return " ".join(tokens[:n])
+
+        # Layer 2: the bound-check pattern is —
+        #   local.get $obj_ptr ; local.get $obj_size ; i32.add ;
+        #   global.get $heap_ptr ; i32.gt_u ; if ; br $m_loop
+        # which is 11 whitespace-split tokens (each `local.get $foo`
+        # splits into two: opcode + identifier).
+        layer2_expected = (
+            "local.get $obj_ptr local.get $obj_size i32.add "
+            "global.get $heap_ptr i32.gt_u if br $m_loop"
+        )
+        layer2 = _opcodes_after(
+            wat, "Layer 2 (issue #515)", len(layer2_expected.split()),
+        )
+        assert layer2 == layer2_expected, (
+            f"Layer 2 opcode pattern drifted: {layer2!r}"
+        )
+
+        # Layer 1: the per-iter check pattern is —
+        #   local.get $obj_ptr ; local.get $scan_ptr ; i32.add ;
+        #   i32.const 4 ; i32.add ; global.get $heap_ptr ;
+        #   i32.gt_u ; br_if $sc_done
+        # which is 13 whitespace-split tokens.  The `br_if` (no `if`
+        # block) is the cheap variant — exits the surrounding
+        # `block $sc_done` directly without an if/end pair.
+        layer1_expected = (
+            "local.get $obj_ptr local.get $scan_ptr i32.add "
+            "i32.const 4 i32.add global.get $heap_ptr "
+            "i32.gt_u br_if $sc_done"
+        )
+        layer1 = _opcodes_after(
+            wat, "Layer 1 (issue #515)", len(layer1_expected.split()),
+        )
+        assert layer1 == layer1_expected, (
+            f"Layer 1 opcode pattern drifted: {layer1!r}"
+        )
+
 
 class TestAdtMetadata:
     """Test ADT constructor layout metadata registration."""

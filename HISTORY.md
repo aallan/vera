@@ -256,6 +256,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.119 | 23 Apr | **JSON typed accessors** ([#366](https://github.com/aallan/vera/issues/366)) — eleven pure-Vera prelude accessors on the `Json` ADT: six Layer-1 coercions (`json_as_string`/`_number`/`_bool`/`_int`/`_array`/`_object` → `Option<T>`) and five Layer-2 compound field accessors (`json_get_string`/`_number`/`_bool`/`_int`/`_array`). `json_as_int` guards all four `float_to_int` trap paths (NaN, ±inf, finite overflow). Collapses the two-level `match` every JSON consumer writes. |
 | v0.0.120 | 26 Apr | **Crash-debugging UX: trap categorisation + stdout preserved on trap** ([#522](https://github.com/aallan/vera/issues/522), [#516](https://github.com/aallan/vera/issues/516) Stage 1) — first pair from the bug-killing campaign. New `WasmTrapError` (`RuntimeError` subclass) carries captured `stdout`/`stderr` and a stable `kind` (`divide_by_zero`/`out_of_bounds`/`stack_exhausted`/`unreachable`/`overflow`/`contract_violation`/`unknown`) so `IO.print` output preceding a trap reaches the user and traps stop being mis-labelled "Runtime contract violation". JSON envelope gains `trap_kind`. |
 | v0.0.121 | 27 Apr | **Nested closures + ADT capture work end-to-end** ([#514](https://github.com/aallan/vera/issues/514), [#527](https://github.com/aallan/vera/issues/527)) — the natural 2D `array_map(rows, fn { array_map(cols, fn { ... }) })` shape compiles at arbitrary depth. Pair-type captures split into [#535](https://github.com/aallan/vera/issues/535); CVE-2026-3219 ignore dropped (pip 26.1 shipped). |
+| v0.0.122 | 27 Apr | **Conservative GC bounds-checked against `$heap_ptr`** ([#515](https://github.com/aallan/vera/issues/515)) — `$gc_collect` no longer faults when a non-pointer i32 in payload data (e.g. a bit-packed `Nat` row in Conway-style code) happens to satisfy the worklist-seeding alignment + range guards. Layer 2 sanity-checks `obj_ptr + obj_size <= heap_ptr` before marking or scanning a worklist entry; Layer 1 adds a per-iteration bound check inside the conservative scan loop so any future caller that bypasses the upstream check still cannot read past the heap. 40×20×200 Conway now runs cleanly through every generation. |
 
 ---
 
@@ -292,4 +293,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 121 tagged releases, 40 active development days.**
+Total: **810+ commits, 122 tagged releases, 40 active development days.**
