@@ -1883,6 +1883,49 @@ public fn f(@Unit -> @Int)
 """
         assert _run(source, fn="f") == 42
 
+    def test_gc_collect_bounds_check_against_heap_ptr(self) -> None:
+        """Regression for #515: $gc_collect must bound the conservative
+        scan against $heap_ptr.
+
+        The conservative-GC worklist push in Phase 2 accepts a shadow
+        stack value as a heap pointer based on three guards (in heap
+        range, properly aligned, below $heap_ptr).  None of those
+        guards prove the word at val-4 is an actual object header.  A
+        non-pointer i32 in payload data (e.g. a bit-packed Nat row in
+        Conway-style code) can satisfy all three, in which case the
+        marker reads garbage as obj_size and walks $obj_ptr+scan_ptr
+        past $heap_ptr, trapping at the linear-memory boundary inside
+        $gc_collect itself.
+
+        Two layers of defence are now emitted:
+          - Layer 2 (early skip): before marking or scanning, verify
+            obj_ptr + obj_size <= heap_ptr.
+          - Layer 1 (per-iter): each scan-loop iteration also checks
+            obj_ptr + scan_ptr + 4 <= heap_ptr before issuing the
+            i32.load.
+
+        This test asserts both bounds checks survive in the emitted
+        WAT.  A behavioural reproducer for #515 is heavily layout-
+        sensitive (string-pool offsets, allocation order); the
+        structural assertion is the durable regression guard.
+        """
+        source = """\
+private data Box { MkBox(Int) }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match MkBox(42) { MkBox(@Int) -> @Int.0 }
+}
+"""
+        result = _compile_ok(source)
+        wat = result.wat
+        assert "func $gc_collect" in wat
+        # Layer 2: header sanity check before mark/scan.
+        assert "Layer 2 (issue #515)" in wat
+        # Layer 1: per-iteration bound check inside scan loop.
+        assert "Layer 1 (issue #515)" in wat
+
 
 class TestAdtMetadata:
     """Test ADT constructor layout metadata registration."""

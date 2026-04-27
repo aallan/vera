@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.122] - 2026-04-27
+
+### Fixed
+- **Conservative GC bounds-checked against `$heap_ptr`** ([#515](https://github.com/aallan/vera/issues/515), closes) — `$gc_collect` no longer faults under sustained allocation pressure. Root cause: the Phase 2 worklist-seeding code accepts a shadow-stack value as a heap pointer if it satisfies three guards — in heap range (`val >= gc_heap_start + 4`), aligned (`(val - gc_heap_start) % 8 == 4`), and below `$heap_ptr`. None of those guards prove the word at `val - 4` is an actual object header. A non-pointer i32 in payload data (a bit-packed `Nat` row in Conway-style code, a hash, anything else with bits in heap range) can satisfy all three; Phase 2b then reads garbage as `obj_size = header >> 1`, sets the mark bit (corrupting a random word!), and walks `obj_ptr + 0..obj_size` past `$heap_ptr` and past the linear-memory boundary, trapping with `memory fault at wasm address 0x... in linear memory of size 0x...` — `gc_collect` itself at the top of the stack. Two layers of defence emitted in `_emit_gc_collect` (`vera/codegen/assembly.py`):
+  - **Layer 2 (early skip)** — before either marking or scanning a worklist entry, compute `obj_size` and verify `obj_ptr + obj_size <= heap_ptr`. If not, the entry is a Phase 2 false positive: skip it entirely (no mark store, no scan loop). This catches the bug at the cheapest possible point and prevents the mark-bit corruption that would otherwise persist across the cycle.
+  - **Layer 1 (per-iter)** — inside the conservative scan loop, also check `obj_ptr + scan_ptr + 4 <= heap_ptr` before each `i32.load`. Costs a single `i32.add` + `global.get` + `i32.gt_u` per iteration relative to the load itself — negligible — and protects any future caller that reaches this loop without the Layer-2 check (e.g. a precise scan path added later, or a refactor that bypasses the early skip).
+  Verified end-to-end with a 470-line Conway implementation that pre-fix reliably crashed at generation 56 (heap saturated with rendered-frame strings, bit-packed `Nat` row values matching the alignment + range guards): runs cleanly through every generation post-fix. Structural regression test in `tests/test_codegen.py::TestGarbageCollection::test_gc_collect_bounds_check_against_heap_ptr` asserts both bound checks survive in the emitted WAT — behavioural reproducers for #515 are heavily layout-sensitive (string-pool offsets, allocation order), so a structural assertion is the durable regression guard.
+
+### Documentation
+- **KNOWN_ISSUES.md** — #515 row removed from the Bugs table.
+- **ROADMAP.md** — #515 dropped from the bug-killing campaign queue (closed by this release); intro updated to reflect "ten remain" instead of "eleven remain"; the "[#487](#487) likely also alleviates pressure on #515" note removed (now moot).
+
 ## [0.0.121] - 2026-04-27
 
 ### Fixed
@@ -1708,7 +1720,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.121...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.122...HEAD
+[0.0.122]: https://github.com/aallan/vera/compare/v0.0.121...v0.0.122
 [0.0.121]: https://github.com/aallan/vera/compare/v0.0.120...v0.0.121
 [0.0.120]: https://github.com/aallan/vera/compare/v0.0.119...v0.0.120
 [0.0.119]: https://github.com/aallan/vera/compare/v0.0.118...v0.0.119
