@@ -39,10 +39,18 @@ class RegistrationMixin:
 
         # #516 Stage 2 — record source location so wasmtime trap frames
         # naming this function can be resolved to (file, line) at runtime.
-        # Skip prelude / built-in injections that have no span (e.g. the
-        # combinators inject_prelude prepends — those are language
-        # infrastructure, not user code, and shouldn't show up in user-
-        # facing backtraces with bogus locations).
+        # Functions injected by `inject_prelude()` also have spans (their
+        # bodies come from parse_to_ast of synthetic Vera source), but
+        # those spans point at the synthetic source's line numbers — not
+        # the user's file.  So registering them here would surface
+        # misleading coordinates.  The post-prelude registration loop in
+        # `compile_program` (core.py) calls `_register_fn` for prelude
+        # decls and then immediately moves the entry from
+        # `_fn_source_map` to `_prelude_fn_names`; the resolver tags
+        # those as `<builtin>`.  Built-in WASM helpers (`$alloc`,
+        # `$gc_collect`, `$contract_fail`, `$exn_*`, `$vera.*`) never go
+        # through this method at all — they're emitted directly into WAT
+        # by the assembly module.
         if decl.span is not None:
             self._fn_source_map[decl.name] = (
                 self.file or "<unknown>",

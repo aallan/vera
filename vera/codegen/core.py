@@ -149,6 +149,20 @@ class CodeGenerator(
         # claim spurious file:line.
         self._fn_source_map: dict[str, tuple[str, int, int]] = {}
 
+        # #516 Stage 2 — positive source-of-truth for prelude / built-in
+        # function classification.  Populated by _register_fn whenever a
+        # FnDecl has no span (which is how inject_prelude flags its
+        # synthetic AST nodes — there's no parsed source for them).  The
+        # trap-frame resolver consults this alongside the runtime-helper
+        # allowlist to recognise trap frames inside prelude functions
+        # (`array_map`, `option_unwrap_or`, ADT auto-derived methods, …)
+        # as built-ins rather than mis-classifying them as `<unknown>`
+        # user code — without this, the CLI's suppression-marker collapse
+        # cannot fire for traps that go through prelude functions, and
+        # the user sees a confusing "in array_map (<unknown>)" entry at
+        # the top of their backtrace.
+        self._prelude_fn_names: set[str] = set()
+
         # Cross-module state (C7e)
         self._resolved_modules: list[ResolvedModule] = (
             resolved_modules or []
@@ -257,6 +271,21 @@ class CodeGenerator(
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and decl.name not in existing_fns:
                 self._register_fn(decl)
+                # #516 Stage 2 — anything that arrives here through
+                # inject_prelude() (i.e. wasn't in `existing_fns` before
+                # the prelude pass) is by definition a prelude / built-
+                # in injection, not user code.  Move it from
+                # `_fn_source_map` to `_prelude_fn_names` so the trap-
+                # frame resolver tags traps inside it as `<builtin>`
+                # rather than surfacing a misleading file:line that
+                # points at the prelude's *embedded* source string
+                # (the prelude FnDecls have spans because their bodies
+                # come from `parse_to_ast` of synthesised Vera source —
+                # the spans point at line N of that synthetic source,
+                # which is meaningless coordinates inside the user's
+                # actual file).
+                self._fn_source_map.pop(decl.name, None)
+                self._prelude_fn_names.add(decl.name)
             elif isinstance(decl, ast.DataDecl):
                 if decl.name not in existing_adts:  # pragma: no cover
                     self._register_data(decl)
@@ -408,6 +437,7 @@ class CodeGenerator(
             math_ops_used=set(self._math_ops_used),
             fn_param_types=fn_param_types,
             fn_source_map=dict(self._fn_source_map),
+            prelude_fn_names=set(self._prelude_fn_names),
         )
 
     # -----------------------------------------------------------------

@@ -101,6 +101,17 @@ class CompileResult:
     fn_source_map: dict[str, tuple[str, int, int]] = field(
         default_factory=dict,
     )
+    # #516 Stage 2 — positive source-of-truth for prelude / built-in
+    # function classification.  Populated by `_register_fn` when a
+    # FnDecl has no span (the marker `inject_prelude` uses for
+    # synthetic injections).  Consumed by `_resolve_trap_frames`
+    # alongside the runtime-helper allowlist so trap frames inside
+    # prelude functions (`array_map`, `option_unwrap_or`, ADT auto-
+    # derived methods, …) are tagged as `<builtin>` rather than
+    # falling through to `<unknown>` user code.  Without it the
+    # CLI's suppression-marker collapse cannot fire for traps that
+    # go through prelude functions.
+    prelude_fn_names: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -195,6 +206,7 @@ class WasmTrapError(RuntimeError):
 def _resolve_trap_frames(
     exc: BaseException,
     fn_source_map: dict[str, tuple[str, int, int]],
+    prelude_fn_names: set[str] | None = None,
 ) -> list[dict[str, object]]:
     """Resolve ``wasmtime.Trap.frames`` against the codegen source map.
 
@@ -263,9 +275,27 @@ def _resolve_trap_frames(
         if name.startswith("$"):
             name = name[1:]
 
+        # Prelude / built-in injection check.  Match either the exact
+        # WAT name or, for monomorphized generics, the base name (the
+        # part before the rightmost `$`).  This mirrors the source-
+        # map suffix-strip rule below — `array_map$Int` should resolve
+        # to the same builtin tag as `array_map`.  Without this
+        # fallback, monomorphized prelude calls would mis-classify as
+        # `<unknown>` user code (see CodeRabbit finding on PR #546
+        # round 3).
+        is_prelude = False
+        if prelude_fn_names is not None:
+            if name in prelude_fn_names:
+                is_prelude = True
+            elif "$" in name:
+                base = name.rsplit("$", 1)[0]
+                if base in prelude_fn_names:
+                    is_prelude = True
+
         is_builtin = (
             name in _BUILTIN_NAMES
             or any(name.startswith(p) for p in _BUILTIN_PREFIXES)
+            or is_prelude
         )
         if is_builtin:
             resolved.append({
@@ -2756,7 +2786,9 @@ def execute(
             # Pre-Stage-2 the user got a hex-offset wasmtime backtrace
             # in the exception message and nothing else; now they get
             # a structured list of (file, line) pairs they can act on.
-            frames = _resolve_trap_frames(exc, result.fn_source_map)
+            frames = _resolve_trap_frames(
+                exc, result.fn_source_map, result.prelude_fn_names,
+            )
             raise WasmTrapError(
                 message,
                 stdout=output_buf.getvalue(),

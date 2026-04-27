@@ -757,6 +757,71 @@ class TestResolveTrapFrames516:
         exc = RuntimeError("not a real trap")
         assert _resolve_trap_frames(exc, {}) == []
 
+    def test_prelude_function_tagged_as_builtin(self) -> None:
+        """Prelude / inject_prelude functions tag as ``<builtin>``.
+
+        Regression for the CodeRabbit finding on PR #546 round 3:
+        prelude functions (``array_map``, ``option_unwrap_or``, ADT
+        auto-derived methods, etc.) have no source span (they're
+        synthetic AST nodes injected by ``inject_prelude``), so they
+        don't end up in ``fn_source_map``.  Pre-fix the resolver
+        would fall through to the "not a builtin allowlist match
+        either" branch and surface them as ``<unknown>`` user code,
+        which:
+          (a) lies — the user didn't write `array_map`
+          (b) prevents the CLI's suppression-marker collapse from
+              firing (only `is_builtin=True` frames get collapsed)
+
+        The fix is a separate ``prelude_fn_names`` set on
+        ``CompileResult`` populated by ``_register_fn`` whenever
+        ``decl.span is None``; the resolver consults it alongside
+        the runtime-helper allowlist.
+        """
+        from vera.codegen.api import _resolve_trap_frames
+        prelude_names = {"array_map", "option_unwrap_or"}
+        exc = self._make_exc(self._frame("array_map"))
+
+        frames = _resolve_trap_frames(exc, {}, prelude_names)
+
+        assert frames[0]["func"] == "array_map"
+        assert frames[0]["file"] == "<builtin>"
+        assert frames[0]["is_builtin"] is True
+
+    def test_monomorphized_prelude_tagged_as_builtin(self) -> None:
+        """Prelude classification handles monomorphized base names too.
+
+        ``array_map$Int`` should resolve to the same builtin tag as
+        ``array_map`` — the rightmost-`$` strip rule applies to the
+        prelude check, not just to the source-map lookup.  Without
+        this, every monomorphized prelude call (which is most of
+        them in practice) would still mis-classify as user code.
+        """
+        from vera.codegen.api import _resolve_trap_frames
+        prelude_names = {"array_map"}
+        exc = self._make_exc(self._frame("array_map$Int"))
+
+        frames = _resolve_trap_frames(exc, {}, prelude_names)
+
+        assert frames[0]["func"] == "array_map$Int"
+        assert frames[0]["is_builtin"] is True
+        assert frames[0]["file"] == "<builtin>"
+
+    def test_prelude_fn_names_optional_for_backward_compat(self) -> None:
+        """Resolver works with prelude_fn_names omitted (defaults None).
+
+        Direct callers of ``_resolve_trap_frames`` (older tests, future
+        consumers) shouldn't need to pass an empty set — the parameter
+        defaults to ``None`` and the prelude check short-circuits.
+        Pins the optional shape so an accidental signature tightening
+        breaks loudly.
+        """
+        from vera.codegen.api import _resolve_trap_frames
+        exc = self._make_exc(self._frame("user_function"))
+        # No prelude set passed; user_function is not a known builtin.
+        frames = _resolve_trap_frames(exc, {})
+        assert frames[0]["is_builtin"] is False
+        assert frames[0]["file"] == "<unknown>"
+
     def test_frames_preserved_in_outermost_first_order(self) -> None:
         """Order matches wasmtime's backtrace (outermost first)."""
         from vera.codegen.api import _resolve_trap_frames
@@ -1211,6 +1276,57 @@ public fn run(@Unit -> @Int)
         assert anon_end == 6, (
             "Expected closure to end at line 6 (the closing brace); "
             f"got {anon_end}"
+        )
+
+    def test_prelude_functions_registered_as_builtins(self) -> None:
+        """Prelude / inject_prelude functions land in ``prelude_fn_names``.
+
+        Companion to ``test_prelude_function_tagged_as_builtin`` in
+        ``TestResolveTrapFrames516``: that one tests the resolver
+        against a synthetic prelude name; this one verifies that a
+        real compile actually populates the set with the names the
+        resolver expects.  Together they pin both ends of the
+        plumbing — the codegen registers, the resolver consults.
+
+        Note: ``array_map`` is NOT a prelude FnDecl — it's a WASM
+        translator built-in (recognised directly by `_translate_call`
+        in `calls_arrays.py`, no AST body needed).  The actual prelude
+        FnDecls are the option/result combinators in `vera/prelude.py`,
+        which `inject_prelude` parses from inline Vera source and
+        prepends to `program.declarations`.
+        """
+        # `option_unwrap_or` is one of the canonical prelude combinators;
+        # any program that uses it forces inject_prelude to add the full
+        # set of option/result combinators (they're added unconditionally
+        # when their detection names appear in source).
+        result = self._compile("""\
+public fn run(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(@Option<Int>.0, 0)
+}
+""")
+        names = result.prelude_fn_names  # type: ignore[attr-defined]
+        # option_unwrap_or is the canonical user-facing prelude
+        # combinator; if it doesn't land here the whole prelude-as-
+        # builtin classification collapses (and traps inside it would
+        # surface bogus file:line coordinates pointing into the
+        # prelude's *embedded* source string, not the user's file).
+        assert "option_unwrap_or" in names, (
+            f"Expected 'option_unwrap_or' in prelude_fn_names; got: "
+            f"{sorted(names)}"
+        )
+        # No spurious user-fn entries — the user's `run` function has
+        # a real span pointing at user source, so it goes in
+        # fn_source_map, not here.
+        assert "run" not in names
+        # The user's run IS in fn_source_map with valid coordinates.
+        assert "run" in result.fn_source_map  # type: ignore[attr-defined]
+        # Conversely, prelude functions must NOT be in fn_source_map
+        # (they were moved out by the post-prelude registration loop).
+        assert "option_unwrap_or" not in result.fn_source_map, (  # type: ignore[attr-defined]
+            "option_unwrap_or leaked into fn_source_map with bogus "
+            "coordinates from the prelude's embedded source string"
         )
 
     def test_no_spurious_entries_for_builtins(self) -> None:
