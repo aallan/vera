@@ -71,7 +71,7 @@
 
     /* Hero */
     .hero{padding:2.5rem 0 1rem;text-align:center;border-top:0}
-    .hero-image{max-width:640px;margin:0 auto;border-radius:10px}
+    .hero-image{width:100%;max-width:640px;margin:0 auto;border-radius:10px}
     .hero-tagline{font-family:var(--serif);font-size:clamp(1.5rem,3.5vw,2.25rem);line-height:1.15;color:var(--ink-900);margin:1.75rem auto 0;max-width:620px;letter-spacing:-.015em}
     .hero-etymology{font-size:.95rem;color:var(--ink-300);margin-top:.65rem;font-style:italic}
     .cta-bar{display:flex;justify-content:center;gap:.75rem;flex-wrap:wrap;margin-top:2rem}
@@ -213,13 +213,18 @@
     @media(max-width:640px){
       section{padding:3.5rem 0}
       .hero{padding:1.5rem 0 .5rem}
-      .btn{width:100%;max-width:280px;justify-content:center}
+      /* Stretch only the hero CTA stack, not every button on the page */
       .cta-bar{flex-direction:column;align-items:center}
+      .cta-bar .btn{width:100%;max-width:280px;justify-content:center}
       .sample .code{padding:1.1rem}
       .sample pre{font-size:.76rem}
       .bench-table{font-size:.78rem}
       .bench-table th,.bench-table td{padding:.45rem .55rem}
       .readpath-inner{font-size:.68rem;padding:.5rem 1.25rem;gap:1rem}
+      /* Wrap shell-command code blocks so they don't run off-screen.
+         Vera samples (.sample .code) keep white-space: pre so structure
+         and indentation aren't disrupted by narrow widths. */
+      .code-block pre{white-space:pre-wrap;word-break:break-word}
     }
   </style>
   <script type="application/ld+json">
@@ -260,7 +265,7 @@
         <a href="/SKILL.md" rel="agent-instructions" type="text/markdown" class="btn btn-ghost">For Agents → SKILL.md</a>
       </div>
       <p class="version">
-        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.0.119">0.0.119</a></span>
+        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.0.120">0.0.120</a></span>
         <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" aria-label="CI status"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height:18px"></a>
       </p>
     </div>

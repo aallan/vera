@@ -122,6 +122,116 @@ class _VeraExit(Exception):
         super().__init__(f"IO.exit({code})")
 
 
+class WasmTrapError(RuntimeError):
+    """A WASM runtime trap, classified and carrying buffered output.
+
+    Raised by ``execute()`` in place of the raw ``wasmtime.Trap`` /
+    ``WasmtimeError`` so that consumers (the CLI, tests, future LSP)
+    receive a uniform shape regardless of which underlying wasmtime
+    exception fired:
+
+    * ``message`` — a Vera-native description of the trap reason
+      (e.g. "Integer division by zero"), passed to ``RuntimeError``.
+      Existing ``except RuntimeError`` blocks therefore still catch
+      this error and see a sensible string.
+
+    * ``stdout`` / ``stderr`` — whatever the program wrote via
+      ``IO.print`` / ``IO.eprint`` before trapping. Without this, the
+      output would be discarded as the exception unwound out of
+      ``execute()`` (#522).
+
+    * ``kind`` — a stable identifier for the trap class. One of:
+
+        * ``contract_violation`` — a runtime-checked Vera contract
+          failed (precondition, postcondition, decreases, etc.).
+        * ``divide_by_zero`` — integer division (or modulo) by zero.
+        * ``out_of_bounds`` — WASM memory access outside the linear
+          memory bounds.
+        * ``stack_exhausted`` — WASM call stack overflow (#517-class).
+        * ``unreachable`` — ``unreachable`` instruction executed (the
+          WASM panic primitive — typically a non-exhaustive match).
+        * ``overflow`` — integer overflow trap.
+        * ``unknown`` — could not classify; raw wasmtime message in
+          ``str()``.
+
+    Stage 1 of #516 establishes the ``kind`` taxonomy. Stage 2 will
+    add source mapping (which Vera function trapped); Stage 3 will
+    add per-kind ``Fix:`` suggestion paragraphs.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+        kind: str = "unknown",
+    ) -> None:
+        super().__init__(message)
+        self.stdout = stdout
+        self.stderr = stderr
+        self.kind = kind
+
+
+def _classify_trap(
+    exc: BaseException, last_violation: list[str]
+) -> tuple[str, str]:
+    """Classify a wasmtime trap into ``(kind, user-facing-message)``.
+
+    A contract-violation host-import (``host_contract_fail``) writes
+    the precise contract message into ``last_violation`` before WASM
+    traps. When that channel is populated, it always wins over the
+    wasmtime trap reason: the host-import path is more specific and
+    already Vera-native.
+
+    For everything else we inspect ``str(exc)`` for the wasmtime trap
+    reason substring — wasmtime renders these as ``wasm trap: <reason>``
+    in the exception message. The mapping is intentionally narrow: only
+    reasons we can describe in Vera-native terms, with a known cause,
+    get classified. Unknown reasons fall through to ``unknown`` and
+    surface verbatim so the user is never left without a message.
+
+    Stage 1 of #516. The links to related issues in the messages help
+    agents recognise that what they hit is a known limitation rather
+    than a bug they should report.
+    """
+    # Contract violation takes precedence — the host import gave us
+    # the precise message; wasmtime's trap reason is just "unreachable
+    # executed" in that path and would lose detail.
+    if last_violation:
+        return ("contract_violation", last_violation[0])
+
+    msg = str(exc).lower()
+    if "integer divide by zero" in msg:
+        return ("divide_by_zero", "Integer division by zero")
+    if "out of bounds memory access" in msg:
+        return (
+            "out_of_bounds",
+            "Out-of-bounds memory access "
+            "(if the trapping frame is gc_collect, see #515; "
+            "otherwise check array indexing or string slicing)",
+        )
+    if "call stack exhausted" in msg:
+        return (
+            "stack_exhausted",
+            "WASM call stack exhausted "
+            "(tail-recursive functions blow the stack at "
+            "~tens of thousands of frames until #517 ships TCO)",
+        )
+    if "unreachable" in msg:
+        return (
+            "unreachable",
+            "Reached `unreachable` WASM instruction "
+            "(typically a non-exhaustive match arm or an explicit panic)",
+        )
+    if "integer overflow" in msg:
+        return ("overflow", "Integer overflow")
+
+    # Couldn't classify — surface the raw wasmtime message verbatim so
+    # the user still sees something diagnostic.
+    return ("unknown", f"WASM trap: {exc}")
+
+
 # Import Diagnostic here to avoid circular imports at module level
 from vera.errors import Diagnostic, SourceLocation  # noqa: E402
 
@@ -2467,11 +2577,25 @@ def execute(
             if cause is exc:
                 break  # avoid infinite loop
 
-        # Convert contract violation traps to RuntimeError with
-        # the informative message stored by host_contract_fail.
+        # Convert wasmtime traps to a WasmTrapError carrying:
+        #   * the captured stdout/stderr, so the CLI can surface output
+        #     written before the trap (#522 — previously discarded);
+        #   * a Vera-native classification of the trap reason, so the
+        #     CLI can present "Integer division by zero" instead of
+        #     "Runtime contract violation: ... wasm trap: integer
+        #     divide by zero" (#516 Stage 1 — previously every trap
+        #     was relabelled "Runtime contract violation").
+        # WasmTrapError is a RuntimeError subclass, so existing
+        # ``except RuntimeError`` blocks remain backward-compatible.
         exc_name = type(exc).__name__
-        if exc_name in ("Trap", "WasmtimeError") and last_violation:
-            raise RuntimeError(last_violation[0]) from exc
+        if exc_name in ("Trap", "WasmtimeError"):
+            kind, message = _classify_trap(exc, last_violation)
+            raise WasmTrapError(
+                message,
+                stdout=output_buf.getvalue(),
+                stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
+                kind=kind,
+            ) from exc
         raise
 
     # Extract return value

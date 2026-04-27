@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.120] - 2026-04-26
+
+### Fixed
+- **`IO.print` output preserved on trap** ([#522](https://github.com/aallan/vera/issues/522), closes) — the `host_print` implementation in `vera/codegen/api.py` appends to a Python `io.StringIO` that was only surfaced to the CLI on the success path. On the trap path the buffer was discarded as the exception unwound out of `execute()`, so any `IO.print` calls preceding a runtime crash were lost — exactly when an agent had inserted them to instrument the suspected crash site. Fixed by introducing `WasmTrapError` (a `RuntimeError` subclass carrying `stdout`, `stderr`, and `kind`); `execute()` now raises it on every trap path with the captured buffers attached, and `cmd_run` writes them to `sys.stdout` / `sys.stderr` (text mode) or includes them in the JSON envelope (JSON mode) before reporting the error. Order is preserved under `2>&1` redirects via an explicit `sys.stdout.flush()` after the captured-output write.
+- **`IO.stderr` capture wired through to `cmd_run`** — sibling fix completing the `WasmTrapError.stderr` and JSON-envelope `stderr` contracts. `cmd_run` now passes `capture_stderr=True` to `execute()` (was always defaulting to `False`), so `IO.stderr` writes are buffered into `ExecuteResult.stderr` rather than falling through to live `sys.stderr` writes. The success path now also replays `exec_result.stderr` to `sys.stderr` (text mode) or includes it in the JSON envelope (JSON mode), parallel to the existing stdout treatment. Without this, the `WasmTrapError.stderr` field documented in the previous bullet was permanently empty in production, even though the host-side infrastructure (`host_stderr` writing to `stderr_buf`) had been in place since #463. New regression test `test_json_mode_includes_stderr_in_envelope` pins the contract.
+
+### Improved
+- **Runtime trap categorisation — Stage 1 of [#516](https://github.com/aallan/vera/issues/516)** — every WASM trap was previously relabelled `Runtime contract violation` by the CLI's catch-all, even when the actual cause was integer division by zero, out-of-bounds memory access, call stack exhaustion, or the `unreachable` instruction. The new `_classify_trap` helper in `vera/codegen/api.py` inspects the wasmtime exception message and maps it to a stable `kind` plus a Vera-native description: `divide_by_zero`, `out_of_bounds`, `stack_exhausted`, `unreachable`, `overflow`, `contract_violation`, or `unknown`. The contract-violation path remains via the existing `last_violation` host-import channel, which always wins over the wasmtime trap reason. JSON mode now includes `trap_kind` in each diagnostic so downstream consumers (LSP, agents, future tooling) can branch on the structured value instead of pattern-matching free text. Stages 2 (source mapping the trapping function) and 3 (per-`kind` `Fix:` paragraphs) remain open under #516.
+
+### Tests
+- New `tests/test_runtime_traps.py` — 16 tests covering the classifier (every documented `kind` in isolation), the `WasmTrapError` shape, the end-to-end stdout-on-trap fix in both text and JSON modes, and trap-kind reporting in both modes. Pure-helper tests use a `_FakeTrap` exception class — the classifier is stringly-typed against the wasmtime trap message format, so it can be exercised without a wasmtime runtime, and we benefit from that decoupling for tests.
+
+### Website
+- **Mobile overflow fixes in `docs/index.html`** (folded in from PR #532) — three iOS Safari overflow bugs at iPhone widths: (a) hero meerkat image overflowed because `.hero-image` had `max-width:640px` but no `width:100%` (global `img{max-width:100%}` was beaten on specificity); (b) the VeraBench `vera-bench` GitHub button was stretched into a full-width pill because the mobile `.btn{width:100%}` rule (intended for hero CTA stacking) matched every `.btn`, so the bench button got scoped to `.cta-bar .btn`; (c) shell-command code blocks in the "Runs Everywhere" section ran past the viewport edge because `<pre>` defaults to `white-space:pre`, so a mobile-only `.code-block pre{white-space:pre-wrap;word-break:break-word}` rule was added (Vera sample blocks intentionally keep `pre` to preserve syntax indentation). Verified at 375×812 viewport: all three elements fit cleanly.
+
 ### Tooling notes
 - **[mcp-assert](https://github.com/blackwell-systems/mcp-assert) bookmarked as the test harness for any future Vera MCP server** ([#529](https://github.com/aallan/vera/issues/529)) — Go binary (also pip / npm / brew) that connects to MCP servers over stdio/SSE/HTTP, calls their tools, and asserts results against YAML-defined expectations. Language-agnostic on the server side, MIT-licensed, GitHub Action available. Scope is deterministic tools (data retrieval, state changes, validation) — exactly the shape Vera would expose (`vera_check`, `vera_verify`, `vera_compile`, `vera_context`). Not adopted today (no MCP server to test yet); cross-referenced from [#401](https://github.com/aallan/vera/issues/401) so whoever picks up the documentation MCP endpoint inherits the harness recommendation.
 
@@ -1670,7 +1685,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.119...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.120...HEAD
+[0.0.120]: https://github.com/aallan/vera/compare/v0.0.119...v0.0.120
 [0.0.119]: https://github.com/aallan/vera/compare/v0.0.118...v0.0.119
 [0.0.118]: https://github.com/aallan/vera/compare/v0.0.117...v0.0.118
 [0.0.117]: https://github.com/aallan/vera/compare/v0.0.116...v0.0.117
