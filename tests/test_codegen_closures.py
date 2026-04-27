@@ -471,3 +471,289 @@ public fn test(@Unit -> @Int)
 }
 """
         assert _run(src, "test") == 15
+
+
+# =====================================================================
+# Nested closures (#514) — closures inside other closure bodies.
+#
+# Pre-fix bug: ``_compile_lifted_closure`` created a fresh
+# ``WasmContext`` to translate the body, and any inner ``fn { ... }``
+# discovered during that translation registered on the inner ctx's
+# ``_pending_closures`` list — never bubbled back to the outer lifting
+# loop. Result: only the outermost closure was lifted, the inner's
+# ``$anon_N`` function was missing from the table, and the call_indirect
+# either trapped (``unreachable``) at runtime or failed WASM validation
+# (``i64 vs i32 type mismatch``) depending on the inner's return type.
+#
+# Fix: ``_lift_pending_closures`` is now a worklist that bubbles inner
+# pending closures up after each lifting iteration.
+# =====================================================================
+
+
+class TestNestedClosures:
+    """Tests pinning the #514 fix: closures inside closure bodies."""
+
+    def test_nested_closure_inner_returns_int(self) -> None:
+        """The simplest failing case: 2D ``array_map`` with primitive
+        return types and no captures across the nesting boundary.
+        Pre-fix: trapped with ``unreachable`` at runtime.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      array_length(array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 }
+      ))
+    }
+  );
+  nat_to_int(array_length(@Array<Int>.0))
+}
+"""
+        # Outer array_map produces an Array<Int> of length 3.
+        assert _run(src, "test") == 3
+
+    def test_nested_closure_inner_returns_array(self) -> None:
+        """The headline #514 reproducer: outer ``array_map`` whose
+        closure returns ``Array<Int>`` (built by an inner ``array_map``).
+
+        Pre-fix: failed WASM validation with
+        ``type mismatch: expected i64, found i32`` at the inner
+        call_indirect site.
+
+        Sums every cell to verify the inner ``Array<Int>`` payload
+        actually contains the doubled values, not garbage. Each row is
+        ``[0, 2, 4]``; three rows gives ``3 * (0 + 2 + 4) = 18``.  A
+        length-only check would pass even if the inner closure returned
+        a malformed Array (wrong elements, wrong length, or zeros from a
+        broken pair-write); the sum forces the inner values through.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }
+      )
+    }
+  );
+  array_fold(
+    @Array<Array<Int>>.0,
+    0,
+    fn(@Int, @Array<Int> -> @Int) effects(pure) {
+      @Int.0 + array_fold(
+        @Array<Int>.0,
+        0,
+        fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+      )
+    }
+  )
+}
+"""
+        assert _run(src, "test") == 18
+
+    def test_nested_closure_with_outer_param_capture(self) -> None:
+        """The 'with capture' variant from the issue body — the inner
+        closure references its outer's parameter via ``@Int.1``.
+
+        Pre-fix: same WASM validation failure (offset 1536 vs 1529 in
+        the issue text). The capture analysis itself worked for the
+        outer; the missing-lift kept the inner from being emitted at all,
+        so the capture had nowhere to land.
+
+        Sums every cell in the resulting 3×3 grid so the assertion
+        actually depends on the captured ``@Int.1`` (the outer row
+        index) flowing into the inner closure body.  Cells:
+            row 0: [0+0, 1+0, 2+0] = [0, 1, 2]      sum 3
+            row 1: [0+1, 1+1, 2+1] = [1, 2, 3]      sum 6
+            row 2: [0+2, 1+2, 2+2] = [2, 3, 4]      sum 9
+        Total: 18.  A length-only check (== 3) would pass even if the
+        capture silently returned 0 inside the inner closure, so we
+        force the value through into the result here.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+      )
+    }
+  );
+  array_fold(
+    @Array<Array<Int>>.0,
+    0,
+    fn(@Int, @Array<Int> -> @Int) effects(pure) {
+      @Int.0 + array_fold(
+        @Array<Int>.0,
+        0,
+        fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+      )
+    }
+  )
+}
+"""
+        assert _run(src, "test") == 18
+
+    def test_three_level_nesting(self) -> None:
+        """Paranoia: the worklist-based lifter must handle arbitrary
+        depth, not just two levels. Three nested ``array_map`` calls.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Array<Int>>> = array_map(
+    array_range(0, 2),
+    fn(@Int -> @Array<Array<Int>>) effects(pure) {
+      array_map(
+        array_range(0, 2),
+        fn(@Int -> @Array<Int>) effects(pure) {
+          array_map(
+            array_range(0, 2),
+            fn(@Int -> @Int) effects(pure) { @Int.0 }
+          )
+        }
+      )
+    }
+  );
+  nat_to_int(array_length(@Array<Array<Array<Int>>>.0))
+}
+"""
+        assert _run(src, "test") == 2
+
+    def test_nested_closure_emits_anon_for_inner(self) -> None:
+        """White-box: the emitted WAT must contain a lifted function
+        for the inner closure too. Pre-fix this would have only
+        ``$anon_0`` and the table would be size 1.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 }
+      )
+    }
+  );
+  nat_to_int(array_length(@Array<Array<Int>>.0))
+}
+"""
+        import re
+        result = _compile_ok(src)
+        wat = result.wat
+        # Both closures must have lifted functions.  Count distinct
+        # ``$anon_N`` lifted-function definitions rather than asserting
+        # specific names — the worklist's allocation order is an
+        # implementation detail that may change as the lifting pass
+        # evolves.  Two outermost closures in this fixture, so >= 2.
+        anon_funcs = re.findall(r"\(func \$anon_\d+", wat)
+        assert len(anon_funcs) >= 2, (
+            f"Expected >= 2 lifted closure functions in WAT, got "
+            f"{len(anon_funcs)} ({anon_funcs}) — #514 worklist regression"
+        )
+        # Function table must have at least 2 entries.
+        # The exact form is `(table N funcref)` — extract N.
+        m = re.search(r"\(table\s+(\d+)\s+funcref\)", wat)
+        assert m is not None, f"No funcref table in WAT: {wat[:500]}"
+        table_size = int(m.group(1))
+        assert table_size >= 2, (
+            f"Function table too small ({table_size}) for nested closures; "
+            "inner closure was not lifted"
+        )
+
+    def test_two_top_level_fns_with_nested_closures(self) -> None:
+        """Cross-function shared-state regression for the #514 worklist.
+
+        Two separate top-level functions, each with one outer closure
+        containing one inner closure: 4 lifted closures total.
+        ``_compile_lifted_closure`` shares the module-level
+        ``_closure_sigs`` and ``_next_closure_id`` by reference; a
+        regression that re-initialised either of those between
+        top-level functions would surface as an ID collision (two
+        ``$anon_0`` definitions, rejected by the WAT parser as
+        duplicate function identifiers) or a sig collision (two
+        ``$closure_sig_0`` for different contents, same rejection).
+
+        ``test_nested_closure_emits_anon_for_inner`` above only
+        exercises one top-level function and so doesn't catch this
+        class of bug — it would still pass even if the module-level
+        state were function-scoped instead of shared.
+        """
+        src = """\
+public fn first(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 2),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 2),
+        fn(@Int -> @Int) effects(pure) { @Int.0 }
+      )
+    }
+  );
+  nat_to_int(array_length(@Array<Array<Int>>.0))
+}
+
+public fn second(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }
+      )
+    }
+  );
+  nat_to_int(array_length(@Array<Array<Int>>.0))
+}
+"""
+        import re
+        result = _compile_ok(src)
+        wat = result.wat
+        # Four lifted functions total — one outer + one inner per
+        # top-level function.  Names must all be distinct (no
+        # ID-counter reset across top-level functions).
+        anon_funcs = re.findall(r"\(func \$anon_\d+", wat)
+        assert len(anon_funcs) >= 4, (
+            f"Expected >= 4 lifted closures across two top-level fns, "
+            f"got {len(anon_funcs)} ({anon_funcs}) — #514 cross-fn "
+            "shared-state regression"
+        )
+        assert len(set(anon_funcs)) == len(anon_funcs), (
+            f"Duplicate $anon_N identifiers in WAT — closure-ID counter "
+            f"was reset between top-level functions: {anon_funcs}"
+        )
+        # All four must be in the function table so they're invokable.
+        m = re.search(r"\(table\s+(\d+)\s+funcref\)", wat)
+        assert m is not None, f"No funcref table in WAT: {wat[:500]}"
+        table_size = int(m.group(1))
+        assert table_size >= 4, (
+            f"Function table too small ({table_size}) for 4 lifted "
+            "closures — some lifted functions weren't registered for "
+            "call_indirect dispatch"
+        )
+        # End-to-end: both functions actually run.  The cross-fn shared-
+        # state bug we're guarding against would surface here as a
+        # WASM validation failure when the module is instantiated.
+        assert _run(src, "first") == 2
+        assert _run(src, "second") == 3
