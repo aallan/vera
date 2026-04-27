@@ -201,14 +201,21 @@ class TestStdoutOnTrap522:
         rc = cmd_run(str(path), as_json=True)
 
         assert rc == 1
-        out = capsys.readouterr().out
-        envelope = json.loads(out)
+        captured = capsys.readouterr()
+        envelope = json.loads(captured.out)
         assert envelope["ok"] is False
         # Captured stdout is in the envelope, not on the actual stdout
         # stream (which would corrupt the JSON output).
         assert "stdout" in envelope
         for n in range(1, 5):
             assert f"line {n} before crash" in envelope["stdout"]
+        # JSON-mode invariant: nothing leaks to the actual stderr stream.
+        # The error message lives inside the envelope's diagnostics, not
+        # on a sibling stream that would split the machine-readable output
+        # for downstream consumers.
+        assert captured.err == "", (
+            "JSON mode must not write to stderr; got: " f"{captured.err!r}"
+        )
 
     def test_json_mode_includes_stderr_in_envelope(
         self, tmp_path: Path, capsys: CaptureFixture[str],
@@ -235,7 +242,8 @@ public fn main(@Unit -> @Unit)
         rc = cmd_run(str(path), as_json=True)
 
         assert rc == 1
-        envelope = json.loads(capsys.readouterr().out)
+        captured = capsys.readouterr()
+        envelope = json.loads(captured.out)
         assert envelope["ok"] is False
         assert "stderr" in envelope, (
             "Expected captured IO.stderr in envelope; got envelope keys: "
@@ -244,6 +252,14 @@ public fn main(@Unit -> @Unit)
         )
         assert "warning A" in envelope["stderr"]
         assert "warning B" in envelope["stderr"]
+        # JSON-mode invariant: IO.stderr writes go into the envelope, NOT
+        # to the actual sys.stderr stream — otherwise the captured-stderr
+        # mechanism would be doubled (envelope + live), confusing JSON
+        # consumers who rely on the structured field.
+        assert captured.err == "", (
+            "JSON mode must not write captured IO.stderr to actual "
+            f"stderr; got: {captured.err!r}"
+        )
 
 
 # =====================================================================
@@ -299,10 +315,15 @@ class TestTrapCategorisation516Stage1:
         rc = cmd_run(str(path), as_json=True)
 
         assert rc == 1
-        envelope = json.loads(capsys.readouterr().out)
+        captured = capsys.readouterr()
+        envelope = json.loads(captured.out)
         diag = envelope["diagnostics"][0]
         # Stable identifier for downstream consumers (LSP, agents).
         assert diag.get("trap_kind") == "divide_by_zero"
+        # JSON-mode invariant — see TestStdoutOnTrap522 for context.
+        assert captured.err == "", (
+            "JSON mode must not write to stderr; got: " f"{captured.err!r}"
+        )
 
     def test_json_contract_violation_kind(
         self, tmp_path: Path, capsys: CaptureFixture[str],
@@ -314,6 +335,11 @@ class TestTrapCategorisation516Stage1:
                      as_json=True)
 
         assert rc == 1
-        envelope = json.loads(capsys.readouterr().out)
+        captured = capsys.readouterr()
+        envelope = json.loads(captured.out)
         diag = envelope["diagnostics"][0]
         assert diag.get("trap_kind") == "contract_violation"
+        # JSON-mode invariant — see TestStdoutOnTrap522 for context.
+        assert captured.err == "", (
+            "JSON mode must not write to stderr; got: " f"{captured.err!r}"
+        )
