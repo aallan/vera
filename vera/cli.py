@@ -588,9 +588,19 @@ def cmd_run(
         # WasmTrapError handler's exc.stderr / JSON envelope's "stderr"
         # field permanently empty.  Mirrors the always-capture treatment
         # of stdout (host_print is unconditional).
+        #
+        # tee_stdout (#543): in text mode, mirror IO.print writes live
+        # to sys.stdout so animations, progress bars, and any program
+        # using ANSI escape sequences (cursor home, clear screen, etc.)
+        # render as they happen instead of buffering until exit and
+        # then flushing in a single burst at terminal-redraw speed.
+        # JSON mode keeps the live mirror off — the transcript is
+        # packed into the JSON envelope and a live write would corrupt
+        # the output for downstream consumers parsing our stdout.
         exec_result = execute(
             result, fn_name=fn_name, args=fn_args, raw_args=raw_fn_args,
             cli_args=str_args, capture_stderr=True,
+            tee_stdout=not as_json,
         )
 
         if as_json:
@@ -611,15 +621,19 @@ def cmd_run(
             print(json.dumps(result_dict, indent=2))
             return exec_result.exit_code if exec_result.exit_code else 0
 
-        # Print stdout from IO.print calls; if no stdout and we have a
-        # non-Unit return value, print that instead (preserves the
-        # pre-stderr-capture behaviour exactly — stderr does not
-        # suppress value printing).
+        # Text mode (JSON returned above): IO.print writes have
+        # already streamed live to sys.stdout via tee_stdout (#543),
+        # so we do not re-write exec_result.stdout — that would
+        # double-print the whole transcript.  We still emit a
+        # trailing newline if the last live write didn't end with
+        # one, so the shell prompt doesn't smush against the
+        # program's final character.  The value-fallback branch is
+        # unaffected: when no IO.print was called, output_buf is
+        # empty and we print the return value as before.
         if exec_result.stdout:
-            sys.stdout.write(exec_result.stdout)
-            # Add newline if stdout doesn't end with one
             if not exec_result.stdout.endswith("\n"):
                 sys.stdout.write("\n")
+                sys.stdout.flush()
         elif exec_result.value is not None:
             print(exec_result.value)
 
@@ -691,11 +705,17 @@ def cmd_run(
         # appear before an earlier stdout write in the merged view.
         # Flushing stdout before any stderr write guarantees the
         # captured program output is committed first.
-        if exc.stdout:
-            sys.stdout.write(exc.stdout)
-            if not exc.stdout.endswith("\n"):
-                sys.stdout.write("\n")
-            sys.stdout.flush()
+        #
+        # tee_stdout (#543): in text mode IO.print writes have already
+        # streamed live to sys.stdout, so exc.stdout has been printed
+        # once already. Skip re-writing it (would double-print every
+        # byte the program produced before the trap fired). Just
+        # close the line if the last write didn't end with \n so the
+        # error message lands cleanly on the next line. stderr
+        # remains buffered (no tee), so we still own its replay.
+        if exc.stdout and not exc.stdout.endswith("\n"):
+            sys.stdout.write("\n")
+        sys.stdout.flush()
         if exc.stderr:
             sys.stderr.write(exc.stderr)
             if not exc.stderr.endswith("\n"):

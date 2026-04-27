@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.123] - 2026-04-27
+
+### Fixed
+- **`IO.print` writes mirror live to `sys.stdout` in `vera run` text mode** ([#543](https://github.com/aallan/vera/issues/543), closes) — `IO.print` output was buffered in an in-memory `output_buf` (the v0.0.120 implementation of #522 trap preservation) and only flushed to `sys.stdout` after `execute()` returned. That was correct for trap preservation and for `--json` output (where the transcript packs into the envelope), but it had an unintended side effect: any program using ANSI escape sequences for animation (cursor home `ESC[H`, clear screen `ESC[J`), progress bars, REPLs, or any other interactive pattern was invisible until exit. The 470-line Conway implementation that surfaced #515 made it visible: ~16 seconds of `IO.sleep(80)` × 200 generations with nothing on screen, then exit fired and only the final frame was visible because the 199 preceding cursor-home + clear-screen sequences processed within microseconds and the eye couldn't resolve them.
+- Fix is a tee in `host_print` (`vera/codegen/api.py`): the in-memory `output_buf` still receives every byte (so `WasmTrapError.stdout`, `ExecuteResult.stdout`, and the `--json` envelope's `stdout` field are unchanged), and *also* writes go to `sys.stdout` with an explicit per-write `flush()` when `execute(tee_stdout=True)`. New `tee_stdout: bool = False` parameter on `execute()` defaults *off* — preserves test-helper silence (`_run_io`, `_run` in `tests/test_codegen.py` rely on `ExecuteResult.stdout` and would pollute pytest's `capsys` if the default flipped). `cmd_run` text mode opts in (`tee_stdout=not as_json`); JSON mode stays off (live writes would split the envelope for downstream consumers parsing our stdout). The `cmd_run` text-mode and `WasmTrapError`-handler paths now skip re-writing `exec_result.stdout` / `exc.stdout` (those bytes already streamed live), only emitting a closing `\n` if the program's last write didn't include one — without that change every program's transcript would have double-printed.
+
+### Tests
+- New `TestStdoutTee543` class in `tests/test_runtime_traps.py` (6 tests): live streaming in text mode, write count and order preservation, JSON-mode tee suppression (envelope-corruption prevention), trap-preservation invariant still holds (#522 regression guard), per-call flush count matches per-call `IO.print` count, default `execute()` behaviour stays silent for the test suite.
+
+### Documentation
+- **SKILL.md** — IO operation table cell for `IO.print` notes "no implicit newline; flushes per call". New paragraph after the table explains output buffering: under `vera run` text mode every write is live and flushed; under `vera run --json` the transcript lives only in the envelope; in both cases the in-memory capture survives traps so `WasmTrapError.stdout` and the JSON `stdout` field are complete. Pre-v0.0.123 the whole transcript was buffered until exit — note included so anyone reading the doc with an older Vera installed isn't surprised.
+
 ## [0.0.122] - 2026-04-27
 
 ### Fixed
@@ -1720,7 +1732,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.122...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.123...HEAD
+[0.0.123]: https://github.com/aallan/vera/compare/v0.0.122...v0.0.123
 [0.0.122]: https://github.com/aallan/vera/compare/v0.0.121...v0.0.122
 [0.0.121]: https://github.com/aallan/vera/compare/v0.0.120...v0.0.121
 [0.0.120]: https://github.com/aallan/vera/compare/v0.0.119...v0.0.120
