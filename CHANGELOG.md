@@ -47,7 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - [#515](https://github.com/aallan/vera/issues/515) — `$gc_collect` walks past `$heap_ptr` to the linear-memory bound and traps mid-sweep.
   - [#516](https://github.com/aallan/vera/issues/516) — runtime traps bubble up as raw wasmtime stack traces; CLI mis-labels every trap as "Runtime contract violation".
   - [#517](https://github.com/aallan/vera/issues/517) — no tail-call optimization; the documented tail-recursion iteration idiom blows the WASM call stack at ~tens of thousands of frames.
-  - [#522](https://github.com/aallan/vera/issues/522) — `IO.print` output lost on trap: `host_print` in `vera/codegen/api.py` appends to a Python `io.StringIO` that is only returned to the CLI after successful execution, so on the trap path the captured buffer is dropped as the exception unwinds in `execute()`. Proposed fix (not yet implemented): flush the buffer on trap before re-raising, and/or tee the host print into `sys.stdout` live. Paired with #516 in the ROADMAP queue (both are crash-debugging UX). SKILL.md Known Bugs table extended accordingly.
+  - [#522](https://github.com/aallan/vera/issues/522) — `IO.print` output lost on trap. **Filed early in this cycle and fixed by this release** — see the `### Fixed` section above for the implementation (`WasmTrapError` carrying captured `stdout`/`stderr`/`kind`). Paired with #516 Stage 1 (also in `### Improved` above) — both close the "type-checks clean, runtime crashes opaque, can't even instrument" gap.
 
 ## [0.0.119] - 2026-04-23
 
