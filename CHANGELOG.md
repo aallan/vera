@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Tooling notes
+- **[mcp-assert](https://github.com/blackwell-systems/mcp-assert) bookmarked as the test harness for any future Vera MCP server** ([#529](https://github.com/aallan/vera/issues/529)) — Go binary (also pip / npm / brew) that connects to MCP servers over stdio/SSE/HTTP, calls their tools, and asserts results against YAML-defined expectations. Language-agnostic on the server side, MIT-licensed, GitHub Action available. Scope is deterministic tools (data retrieval, state changes, validation) — exactly the shape Vera would expose (`vera_check`, `vera_verify`, `vera_compile`, `vera_context`). Not adopted today (no MCP server to test yet); cross-referenced from [#401](https://github.com/aallan/vera/issues/401) so whoever picks up the documentation MCP endpoint inherits the harness recommendation.
+
 ### CI
 - **Ignore [CVE-2026-3219](https://nvd.nist.gov/vuln/detail/CVE-2026-3219) in `dependency-audit`** ([#527](https://github.com/aallan/vera/issues/527)) — pip 26.0.1 is flagged for an archive-handling bug (GHSA-58qw-9mgm-455v) where concatenated tar+ZIP files are parsed as ZIP regardless of the filename. Upstream fix merged in [pypa/pip#13870](https://github.com/pypa/pip/pull/13870) under the pip 26.1 milestone but not yet released; no patched version exists to upgrade to. Threat model (installing untrusted ambiguously-formatted archives) does not apply to our CI. The ignore is bridging until pip 26.1 lands on PyPI; removal is tracked as an action item on #527 and in the new "CI ignores" section of KNOWN_ISSUES.md.
 
