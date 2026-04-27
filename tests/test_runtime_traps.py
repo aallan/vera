@@ -487,6 +487,14 @@ public fn main(@Unit -> @Unit)
 
         assert rc == 0
         captured = capsys.readouterr()
+        # JSON-mode invariant — see TestStdoutOnTrap522 for context.
+        # No human-readable text may leak to the actual stderr stream;
+        # error info, captured stderr, and trap kind all live inside
+        # the JSON envelope so downstream consumers parsing our output
+        # see exactly one machine-readable document.
+        assert captured.err == "", (
+            "JSON mode must not write to stderr; got: " f"{captured.err!r}"
+        )
         # The actual stdout contains exactly one thing: the JSON
         # envelope. The frame text lives inside it under "stdout",
         # not as a sibling write that would split the parse.
