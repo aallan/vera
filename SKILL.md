@@ -608,9 +608,9 @@ Inside the closure body, `@Int.0` is the closure's own parameter (index 0 = most
 
 ### Capturing outer bindings
 
-**Closures can capture primitive outer bindings (`Int`, `Nat`, `Bool`, `Byte`, `Float64`) but cannot capture heap-allocated types (`String`, any `Array<T>`, any ADT like `Option<T>` or user-defined `data`).** This is a codegen limitation tracked in [#514](https://github.com/aallan/vera/issues/514), not a language-design choice — the intended semantics is full capture, but the current reference compiler mis-emits the closure environment for anything other than scalar i32/i64/f64 values.
+**Closures can capture primitive outer bindings (`Int`, `Nat`, `Bool`, `Byte`, `Float64`) and single-pointer ADTs (`Option<T>`, `Result<T, E>`, user-defined `data` types, opaque handles like `Map`/`Set`/`Decimal`/`Regex`).** **Pair-type captures (`String`, `Array<T>`) are still broken** — they compile and run but the captured value's length is silently lost ([#535](https://github.com/aallan/vera/issues/535)). The historical [#514](https://github.com/aallan/vera/issues/514) "all heap captures broken" framing was inaccurate; v0.0.121 fixed nested closures and clarified that the residual is specifically pair types.
 
-When capture works, outer bindings are available at higher De Bruijn indices — the closure's own parameters are pushed on top of the slot stack, so outer `@T` bindings shift up by the number of inner `@T` parameters.
+Outer bindings are available at higher De Bruijn indices — the closure's own parameters are pushed on top of the slot stack, so outer `@T` bindings shift up by the number of inner `@T` parameters.
 
 ```vera
 -- WORKS: capturing a primitive @Int.
@@ -641,7 +641,7 @@ Use `vera check --explain-slots file.vera` if you need the resolved index table 
 ### What you cannot capture
 
 ```vera
--- BROKEN: capturing a heap type fails WASM validation.
+-- BROKEN: capturing a pair-typed value silently corrupts it.
 let @Array<Int> = [10, 20, 30];        -- captured (outer) @Array<Int>.0 = this
 let @Array<Int> = [1, 2, 3];           -- iterated (inner) @Array<Int>.0 = this
                                        --             outer shifts to .1
@@ -650,51 +650,48 @@ array_fold(
   0,
   fn(@Int, @Int -> @Int) effects(pure) {
     -- Inside the closure: @Int.0 = element, @Int.1 = acc.
-    -- @Array<Int>.1 refers to the OUTER (captured) array — heap capture.
+    -- @Array<Int>.1 refers to the OUTER (captured) array.
     @Int.1 + @Int.0 + nat_to_int(array_length(@Array<Int>.1))
   }
 )
--- Fails at WASM validation: "unknown local 3: local index out of bounds"
--- or "type mismatch: expected i32, found i64" depending on the exact
--- mix of captured types (see #514 for the minimal reproductions).
+-- Compiles and runs without error, but the captured array reads as
+-- empty (length 0) inside the closure body — the len field of the
+-- (ptr, len) pair is dropped during closure-struct serialisation.
+-- See #535 for the open issue and the in-progress fix.
 ```
 
-Heap types that currently fail to capture:
+The two pair-type capture failures:
 
 - Any `Array<T>` (including `Array<Bool>`, `Array<Array<Int>>`, etc.)
 - `String`
-- Any user-defined ADT
-- Built-in ADT values (`Option<T>`, `Result<T, E>`, `Json`, `HtmlNode`, `MdBlock`, …)
-- Opaque handles (`Map<K, V>`, `Set<T>`, `Decimal`, `Regex`) — same i32 representation at WASM level, but they trigger the same validation failure
 
-### Workaround: tail recursion with explicit parameters
+ADT captures (`Option<T>`, `Result<T, E>`, user `data` types, `Json`, `HtmlNode`, `MdBlock`, opaque handles like `Map<K, V>` / `Set<T>` / `Decimal` / `Regex`) all work — they are single-i32-pointer values, not pairs, so the closure-struct layout handles them correctly.
 
-When a combinator-based transformation needs access to a heap value, lift it to a top-level recursive function that takes everything as explicit parameters rather than capturing anything:
+### Workaround for pair-type captures: lift to a helper
+
+When a combinator needs to capture a `String` or `Array<T>` value, lift the closure body to a top-level `private fn` that takes the pair-typed value as an explicit parameter. The parameter path through `_compile_lifted_closure` already handles pair types correctly; only the capture path is broken (#535).
 
 ```vera
--- Instead of: array_map(grid_rows, fn(row) { ...uses captured grid... })
--- Write a tail-recursive row builder:
-
-private fn transform_rows(@Array<Array<Bool>>, @Array<Array<Bool>>, @Int, @Int -> @Array<Array<Bool>>)
-  requires(@Int.0 >= 0 && @Int.0 <= @Int.1)
-  ensures(true)
-  decreases(@Int.1 - @Int.0)
-  effects(pure)
+private fn use_array(@Int, @Array<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
 {
-  -- Parameters: grid, acc, total_rows, current_row.
-  if @Int.0 >= @Int.1 then {
-    @Array<Array<Bool>>.0
-  } else {
-    let @Array<Bool> = transform_single_row(@Array<Array<Bool>>.1, @Int.0);
-    let @Array<Array<Bool>> = array_append(@Array<Array<Bool>>.0, @Array<Bool>.0);
-    transform_rows(@Array<Array<Bool>>.1, @Array<Array<Bool>>.0, @Int.1, @Int.0 + 1)
-  }
+  @Int.0 + nat_to_int(array_length(@Array<Int>.0))
+}
+
+public fn build(@Unit -> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 7);   -- the array we'd want to capture
+  array_map(
+    array_range(0, 3),
+    -- Helper takes the array as a parameter; @Array<Int>.1 is the
+    -- outer let, @Array<Int>.0 would be a capture (still broken).
+    fn(@Int -> @Int) effects(pure) { use_array(@Int.0, @Array<Int>.1) }
+  )
 }
 ```
 
-The grid threads through as parameter `@Array<Array<Bool>>.1` — no capture. `transform_single_row` can safely use `array_map` or `array_mapi` internally because it takes the row as its own parameter (not a capture).
-
-`examples/life.vera` (Conway's Game of Life) uses this pattern end-to-end for both `initial_grid` and `next_gen` because the natural `array_map(rows, fn(row) { array_map(cols, fn(col) { next_cell(grid, row, col) }) })` hits [#514](https://github.com/aallan/vera/issues/514) on both the nested-closure and the heap-capture axes.
+Awkward — defeats the locality of the closure form — but works until #535 lands.
 
 ### When to use recursion instead
 
@@ -707,37 +704,24 @@ Closures cover pure, self-contained transformations and simple captured constant
 
 For counted iteration with IO, use the recursive `loop` pattern from the Iteration section above; for array transformations, use the array combinators with closures.
 
-### Known limitation: nested closures and captured-scalar indirection
+### Nested closures
 
-Two related codegen bugs, both tracked in [#514](https://github.com/aallan/vera/issues/514):
-
-1. **Compile-time failure**: a closure directly nested inside another closure fails WASM validation with a type-mismatch error. The natural two-dimensional-map shape `array_map(rows, fn(row) { array_map(cols, fn(col) { ... }) })` hits this every time.
-2. **Runtime failure**: a closure that **captures an outer `@Int` binding** and **passes it as an argument to a helper that uses `array_map` internally** traps at runtime with `undefined element: out of bounds table access`. `vera check` and `vera compile` both succeed for this shape — the bug only surfaces at `vera run`. Captured-value-flowed-through-indirect-call is the specific trigger; the same shape with a literal argument instead of a captured binding works correctly.
-
-**Workaround for (1)**: extract the inner closure into a named top-level `private fn` that does the inner `array_map` itself, then pass the helper by name to the outer combinator. Each combinator call then nests at most one closure deep.
-
-**Workaround for (2)**: thread the captured scalar as an explicit parameter to the helper rather than relying on closure capture. The helper then receives the value directly; no captured-binding-flowing-through-call-site for the codegen to mishandle.
+Closures inside closure bodies work end-to-end as of v0.0.121 — the natural 2D `array_map(rows, fn(row) { array_map(cols, fn(col) { ... }) })` shape compiles, validates, and runs at any return type. Captures from the outer scope flow through nested closures correctly for primitives and ADTs (the pair-type capture caveat from [#535](https://github.com/aallan/vera/issues/535) applies to nested cases too — a nested closure capturing an outer `String` or `Array<T>` will hit the same len-loss). Three or more levels of nesting work the same way; the lifting pass uses a worklist that handles arbitrary depth.
 
 ```vera
--- BROKEN (1): nested closures fail at compile time.
-let @Array<Array<Int>> = array_map(
-  array_range(0, 3),
-  fn(@Int -> @Array<Int>) effects(pure) {
-    array_map(array_range(0, 3), fn(@Int -> @Int) effects(pure) { @Int.0 })
-  }
-);
-
--- WORKING (1): inner array_map lives in a named helper.
-private fn fill_row(@Int -> @Array<Int>)
-  requires(true) ensures(true) effects(pure)
-{
-  array_map(array_range(0, 3), fn(@Int -> @Int) effects(pure) { @Int.0 })
-}
-
 public fn build_grid(@Unit -> @Array<Array<Int>>)
   requires(true) ensures(true) effects(pure)
 {
-  array_map(array_range(0, 3), fill_row)
+  -- 2D array of products. No helper, no lifting workaround needed.
+  array_map(
+    array_range(0, 3),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+      )
+    }
+  )
 }
 ```
 
@@ -2270,7 +2254,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 80 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 81 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -2304,15 +2288,14 @@ Current reference-implementation bugs that an agent writing Vera code is likely 
 
 | Shape | Bug summary | Workaround | Issue |
 |---|---|---|---|
-| Closure heap capture | A closure that captures any heap-allocated value (`Array<T>`, `String`, any ADT, opaque handles like `Map`/`Set`/`Decimal`/`Regex`) produces invalid WASM. Fails at validation with `unknown local N: local index out of bounds` or `type mismatch: expected i32, found i64`. The previously-documented "nested closures" and "captured scalar through `array_map`-helper" symptoms are narrow instances of this same root cause. | Lift the closure body to a top-level `private fn` and thread the heap value as an explicit parameter. Only primitive captures (`Int`, `Nat`, `Bool`, `Byte`, `Float64`) work today. See [Closures and captured bindings → Known limitation](#known-limitation-nested-closures-and-captured-scalar-indirection) above. | [#514](https://github.com/aallan/vera/issues/514) |
-| GC collect faults | Under sustained allocation pressure, `$gc_collect` walks past `$heap_ptr` to the linear-memory bound and traps with `memory fault at wasm address 0x... in linear memory of size 0x...` — the two hex values are equal, which is diagnostic. The collector itself faults; the user code at the top of the stack (e.g. `cell_at`) is just whoever was asking for allocation. | Reduce allocation pressure: prefer `abs` + `nat_to_int` over `option_unwrap_or(int_to_nat(...), 0)` in hot paths (the latter allocates an `Option<Nat>` per call); build arrays in one pass via `array_map` rather than repeated `array_append` where possible (bounded by [#514](https://github.com/aallan/vera/issues/514)). | [#515](https://github.com/aallan/vera/issues/515) |
-| Runtime trap diagnostics | All WASM runtime traps (out-of-bounds memory access, integer overflow, unreachable, actual contract-fail) surface as "Runtime contract violation" with a raw wasmtime stack trace. No source-line mapping, no Vera-native suggestion — opposite of the compile-time diagnostics that have detailed `Fix:` paragraphs. | None; bug-fix in progress. For now, when "Runtime contract violation" appears, read the `wasm trap: ...` line underneath to learn the actual cause — it's usually one of this table's entries, not a contract. | [#516](https://github.com/aallan/vera/issues/516) |
-| `IO.print` output lost on trap | Host-side stdout is fully buffered. Any `IO.print` calls preceding a runtime trap are discarded before reaching the terminal, so instrumenting a suspected crash site with `IO.print` produces no visible output — making it look like the instrumented code isn't running when it actually is crashing. | None short of a host-runtime patch. Avoid treating "no `IO.print` output" as evidence that code didn't run; treat it as "code ran and something downstream trapped." Put diagnostic prints behind a branch that returns rather than continuing into the suspected-crash path. | [#522](https://github.com/aallan/vera/issues/522) |
+| Pair-type closure capture | A closure that captures an outer `String` or `Array<T>` binding compiles and runs without error, but the captured value's len field is silently dropped — the closure reads it as empty. Single-pointer ADTs (`Option`, `Result`, user `data`, `Map`/`Set`/`Decimal`/`Regex`) work; only pair types are affected. The historical [#514](https://github.com/aallan/vera/issues/514) "all heap captures broken" framing was inaccurate; v0.0.121 fixed nested closures and ADT captures, leaving this residual. | Lift the closure body to a top-level `private fn` and pass the pair-typed value as an explicit parameter — the parameter path through `_compile_lifted_closure` handles pair types correctly; only the capture path is broken. See [What you cannot capture](#what-you-cannot-capture) above. | [#535](https://github.com/aallan/vera/issues/535) |
+| GC collect faults | Under sustained allocation pressure, `$gc_collect` walks past `$heap_ptr` to the linear-memory bound and traps with `memory fault at wasm address 0x... in linear memory of size 0x...` — the two hex values are equal, which is diagnostic. The collector itself faults; the user code at the top of the stack (e.g. `cell_at`) is just whoever was asking for allocation. | Reduce allocation pressure: prefer `abs` + `nat_to_int` over `option_unwrap_or(int_to_nat(...), 0)` in hot paths (the latter allocates an `Option<Nat>` per call); build arrays in one pass via `array_map` rather than repeated `array_append` where possible. | [#515](https://github.com/aallan/vera/issues/515) |
+| Runtime trap diagnostics — Stages 2–3 | Stage 1 shipped in v0.0.120: traps are now classified into a stable `kind` (`divide_by_zero`/`out_of_bounds`/`stack_exhausted`/`unreachable`/`overflow`/`contract_violation`/`unknown`) and the JSON envelope carries `trap_kind`. Stage 2 (source-mapping the trapping Vera function) and Stage 3 (per-`kind` `Fix:` paragraphs) are still open — runtime traps don't yet point at the Vera source line. | When a trap fires, the categorised label tells you the trap class but not the location. Bisect by halving the suspected code region until the offending expression is isolated. | [#516](https://github.com/aallan/vera/issues/516) |
 | No tail-call optimization | Tail-recursive functions (the documented `for`/`while` replacement) blow the WASM call stack at ~tens of thousands of frames with `wasm trap: call stack exhausted`. The `decreases` clause proves termination to Z3 but doesn't help the stack. | Keep recursive iteration shallow (thousands of frames is fine). For deeper loops, batch work per frame or split into multiple top-level calls. | [#517](https://github.com/aallan/vera/issues/517) |
 | WASM call translators | 10 pre-existing bugs in the decomposed `vera/wasm/calls_*.py` modules. The ones most likely to trip code up: `to_string(INT64_MIN)` produces `-` (negation overflow); `string_slice` / `array_slice` with indices `\|i\| > i32.MAX` wrap to negative then clamp to 0 silently; `string_char_code` with an out-of-range index reads arbitrary memory; `parse_nat` / `parse_int` accept embedded spaces (`"12 34"` parses as 1234). | For now: avoid those edge cases, or convert via alternate paths (e.g. `@Int.0 + 1` works for serialising INT64_MIN+1 when INT64_MIN itself would hit the bug). | [#475](https://github.com/aallan/vera/issues/475) |
 | Large single allocations | `$alloc` grows the WASM memory by one page (64 KB) when the free list is exhausted. A single request larger than that traps with an out-of-bounds memory access even though the WASM max-memory limit is much higher. | Avoid single `$alloc` calls > 64 KB. For big arrays, pre-size or build via append loops that grow gradually. | [#487](https://github.com/aallan/vera/issues/487) |
 
-When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, check for one of these shapes: the `unknown local` / `unknown table` / i32-vs-i64 mismatch class is [#514](https://github.com/aallan/vera/issues/514); `memory fault at wasm address 0xN in linear memory of size 0xN` is [#515](https://github.com/aallan/vera/issues/515); `call stack exhausted` is [#517](https://github.com/aallan/vera/issues/517); the opaque "Runtime contract violation" label on any of the above is [#516](https://github.com/aallan/vera/issues/516). If the trap surfaces with no `IO.print` output at all — even prints you know executed — the stdout-buffering bug is [#522](https://github.com/aallan/vera/issues/522); don't use print-absence as evidence of non-execution.
+When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, check for one of these shapes: a closure capturing a `String` or `Array<T>` reading as empty is [#535](https://github.com/aallan/vera/issues/535); `memory fault at wasm address 0xN in linear memory of size 0xN` is [#515](https://github.com/aallan/vera/issues/515); `call stack exhausted` is [#517](https://github.com/aallan/vera/issues/517). The runtime trap label is now Vera-native (`Integer division by zero`, `Out-of-bounds memory access`, etc.) rather than the old "Runtime contract violation" catch-all — but [#516](https://github.com/aallan/vera/issues/516) Stages 2–3 (source mapping + per-kind Fix paragraphs) are still open, so the trap message tells you the *what* but not yet the *where*.
 
 ## Specification Reference
 

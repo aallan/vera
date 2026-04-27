@@ -237,6 +237,20 @@ class ClosuresMixin:
                     arm.pattern, arm_extra,
                 )
                 self._walk_free_vars(arm.body, arm_extra, free, seen)
+        elif isinstance(expr, ast.AnonFn):
+            # #514: nested closures may reference outer-scope bindings
+            # via De Bruijn indices that exceed the inner closure's own
+            # parameter count for that type.  From the OUTER's
+            # perspective, anything an inner closure captures from the
+            # outer's scope is also a capture for the outer.  Recurse
+            # with the inner's params added to the count so its own
+            # parameter refs are excluded; remaining refs bubble up.
+            inner_counts = dict(param_counts)
+            for p in expr.params:
+                pname = self._type_expr_name(p)
+                if pname:
+                    inner_counts[pname] = inner_counts.get(pname, 0) + 1
+            self._walk_free_vars(expr.body, inner_counts, free, seen)
         # Other expression types (literals, etc.) have no sub-expressions
 
     def _collect_pattern_bindings(

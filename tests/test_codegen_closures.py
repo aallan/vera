@@ -471,3 +471,170 @@ public fn test(@Unit -> @Int)
 }
 """
         assert _run(src, "test") == 15
+
+
+# =====================================================================
+# Nested closures (#514) — closures inside other closure bodies.
+#
+# Pre-fix bug: ``_compile_lifted_closure`` created a fresh
+# ``WasmContext`` to translate the body, and any inner ``fn { ... }``
+# discovered during that translation registered on the inner ctx's
+# ``_pending_closures`` list — never bubbled back to the outer lifting
+# loop. Result: only the outermost closure was lifted, the inner's
+# ``$anon_N`` function was missing from the table, and the call_indirect
+# either trapped (``unreachable``) at runtime or failed WASM validation
+# (``i64 vs i32 type mismatch``) depending on the inner's return type.
+#
+# Fix: ``_lift_pending_closures`` is now a worklist that bubbles inner
+# pending closures up after each lifting iteration.
+# =====================================================================
+
+
+class TestNestedClosures:
+    """Tests pinning the #514 fix: closures inside closure bodies."""
+
+    def test_nested_closure_inner_returns_int(self) -> None:
+        """The simplest failing case: 2D ``array_map`` with primitive
+        return types and no captures across the nesting boundary.
+        Pre-fix: trapped with ``unreachable`` at runtime.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      array_length(array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 }
+      ))
+    }
+  );
+  nat_to_int(array_length(@Array<Int>.0))
+}
+"""
+        # Outer array_map produces an Array<Int> of length 3.
+        assert _run(src, "test") == 3
+
+    def test_nested_closure_inner_returns_array(self) -> None:
+        """The headline #514 reproducer: outer ``array_map`` whose
+        closure returns ``Array<Int>`` (built by an inner ``array_map``).
+
+        Pre-fix: failed WASM validation with
+        ``type mismatch: expected i64, found i32`` at the inner
+        call_indirect site.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }
+      )
+    }
+  );
+  nat_to_int(array_length(@Array<Array<Int>>.0))
+}
+"""
+        # Outer length 3, inner doesn't matter for this assertion.
+        assert _run(src, "test") == 3
+
+    def test_nested_closure_with_outer_param_capture(self) -> None:
+        """The 'with capture' variant from the issue body — the inner
+        closure references its outer's parameter via ``@Int.1``.
+
+        Pre-fix: same WASM validation failure (offset 1536 vs 1529 in
+        the issue text). The capture analysis itself worked for the
+        outer; the missing-lift kept the inner from being emitted at all,
+        so the capture had nowhere to land.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+      )
+    }
+  );
+  nat_to_int(array_length(@Array<Array<Int>>.0))
+}
+"""
+        assert _run(src, "test") == 3
+
+    def test_three_level_nesting(self) -> None:
+        """Paranoia: the worklist-based lifter must handle arbitrary
+        depth, not just two levels. Three nested ``array_map`` calls.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Array<Int>>> = array_map(
+    array_range(0, 2),
+    fn(@Int -> @Array<Array<Int>>) effects(pure) {
+      array_map(
+        array_range(0, 2),
+        fn(@Int -> @Array<Int>) effects(pure) {
+          array_map(
+            array_range(0, 2),
+            fn(@Int -> @Int) effects(pure) { @Int.0 }
+          )
+        }
+      )
+    }
+  );
+  nat_to_int(array_length(@Array<Array<Array<Int>>>.0))
+}
+"""
+        assert _run(src, "test") == 2
+
+    def test_nested_closure_emits_anon_for_inner(self) -> None:
+        """White-box: the emitted WAT must contain a lifted function
+        for the inner closure too. Pre-fix this would have only
+        ``$anon_0`` and the table would be size 1.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Array<Int>> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Array<Int>) effects(pure) {
+      array_map(
+        array_range(0, 3),
+        fn(@Int -> @Int) effects(pure) { @Int.0 }
+      )
+    }
+  );
+  nat_to_int(array_length(@Array<Array<Int>>.0))
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        # Both closures must have lifted functions.
+        assert "(func $anon_0" in wat, (
+            "Outer closure missing from WAT — regression in single-level lifting"
+        )
+        assert "(func $anon_1" in wat, (
+            "Inner closure missing from WAT — #514 worklist regression"
+        )
+        # Function table must have at least 2 entries.
+        # The exact form is `(table N funcref)` — extract N.
+        import re
+        m = re.search(r"\(table\s+(\d+)\s+funcref\)", wat)
+        assert m is not None, f"No funcref table in WAT: {wat[:500]}"
+        table_size = int(m.group(1))
+        assert table_size >= 2, (
+            f"Function table too small ({table_size}) for nested closures; "
+            "inner closure was not lifted"
+        )

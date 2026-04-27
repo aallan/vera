@@ -1,0 +1,48 @@
+-- Nested closures: 2D array_map, the natural higher-order shape.
+-- Demonstrates closures inside closure bodies — fixed in v0.0.121 (#514).
+-- Pre-fix the inner closure was never lifted to a top-level function,
+-- so the outer call_indirect targeted a missing table entry and either
+-- trapped at runtime or failed WASM validation.
+--
+-- The point is the readability of the form: the inner array_map can
+-- live inline at the call site, no helper needed.
+-- Build a 3x4 multiplication-style grid: cell[r][c] = (r + 1) * (c + 1).
+-- Outer array_map produces rows; inner array_map produces columns.
+public fn build_grid(@Unit -> @Array<Array<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_map(array_range(0, 3), fn(@Int -> @Array<Int>) effects(pure) { array_map(array_range(0, 4), fn(@Int -> @Int) effects(pure) { (@Int.0 + 1) * (@Int.1 + 1) }) })
+}
+
+-- The inner closure captures @Int.1 — the outer row index.
+-- ADT and primitive captures across the nesting boundary work.
+-- Sum every cell in the grid as a smoke test that values flow through.
+-- 3x4 grid where cell[r][c] = (r+1) * (c+1):
+--   row 0: [1, 2, 3, 4]    sum 10
+--   row 1: [2, 4, 6, 8]    sum 20
+--   row 2: [3, 6, 9, 12]   sum 30
+-- Total: 60.  The outer fold sums per-row totals; each per-row total
+-- comes from another fold.  Two layers of fold-with-closure, no helpers.
+public fn grid_sum(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Array<Int>> = build_grid(());
+  array_fold(@Array<Array<Int>>.0, 0, fn(@Int, @Array<Int> -> @Int) effects(pure) { @Int.0 + array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 }) })
+}
+
+-- @Int.0 = accumulator, @Array<Int>.0 = current row.
+-- Inner fold sums the row, outer fold sums the row totals.
+-- Three-level nesting also works — the closure-lifting worklist
+-- handles arbitrary depth.
+public fn three_d_count(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Array<Array<Int>>> = array_map(array_range(0, 2), fn(@Int -> @Array<Array<Int>>) effects(pure) { array_map(array_range(0, 2), fn(@Int -> @Array<Int>) effects(pure) { array_map(array_range(0, 2), fn(@Int -> @Int) effects(pure) { @Int.0 }) }) });
+  array_length(@Array<Array<Array<Int>>>.0)
+}

@@ -20,10 +20,32 @@ class ClosureLiftingMixin:
 
         Each pending closure is compiled to a module-level WASM function
         and added to the function table.
+
+        **Worklist pattern (#514).**  ``_compile_lifted_closure`` creates
+        a fresh ``WasmContext`` to translate the closure body.  Any
+        ``fn { ... }`` discovered *inside* that body registers on the
+        new context's ``_pending_closures`` list — never on ``ctx`` here.
+        Pre-#514 this list was thrown away when the inner ctx went out of
+        scope, so nested closures (e.g. ``array_map(rows, fn(row) {
+        array_map(cols, fn(col) { ... }) })``) emitted only the outer
+        function and the inner's call_indirect targeted a missing table
+        entry.  The worklist below collects each lift's inner-pending
+        list and feeds it back, lifting to arbitrary depth.
         """
-        for anon_fn, captures, closure_id in ctx._pending_closures:
+        worklist = list(ctx._pending_closures)
+        # Carry the running ID counter and accumulated sigs forward
+        # as each iteration may register new ones in its inner ctx.
+        self._next_closure_id = ctx._next_closure_id
+        for sig_content, sig_name in ctx._closure_sigs.items():
+            if sig_content not in self._closure_sigs:
+                self._closure_sigs[sig_content] = sig_name
+
+        while worklist:
+            anon_fn, captures, closure_id = worklist.pop(0)
+            inner_pending: list[tuple[ast.AnonFn, list[tuple[str, int, str]], int]] = []
             lifted_wat = self._compile_lifted_closure(
                 closure_id, anon_fn, captures,
+                collect_pending=inner_pending,
             )
             if lifted_wat is not None:
                 self._closure_fns_wat.append(lifted_wat)
@@ -44,7 +66,7 @@ class ClosureLiftingMixin:
                 param_part = " ".join(
                     f"(param {wt})" for wt in param_wasm
                 )
-                if ret_wt == "i32_pair":  # pragma: no cover — String/Array closure returns
+                if ret_wt == "i32_pair":
                     result_part = " (result i32 i32)"
                 elif ret_wt:
                     result_part = f" (result {ret_wt})"
@@ -57,18 +79,19 @@ class ClosureLiftingMixin:
                     )
                     self._closure_sigs[sig_content] = sig_name
 
-        # Update next closure ID for subsequent functions
-        self._next_closure_id = ctx._next_closure_id
-        # Merge closure sigs from the context (content → name)
-        for sig_content, sig_name in ctx._closure_sigs.items():
-            if sig_content not in self._closure_sigs:
-                self._closure_sigs[sig_content] = sig_name
+                # Bubble up nested closures + any new sigs / IDs the
+                # inner ctx registered while translating this body.
+                worklist.extend(inner_pending)
 
     def _compile_lifted_closure(
         self,
         closure_id: int,
         anon_fn: ast.AnonFn,
         captures: list[tuple[str, int, str]],
+        collect_pending: (
+            list[tuple[ast.AnonFn, list[tuple[str, int, str]], int]]
+            | None
+        ) = None,
     ) -> str | None:
         """Compile an anonymous function to a module-level WASM function.
 
@@ -77,6 +100,12 @@ class ClosureLiftingMixin:
 
         The first parameter is the closure environment pointer.
         Captured values are loaded from the environment into locals.
+
+        ``collect_pending`` is the worklist hook used by
+        ``_lift_pending_closures`` to bubble up nested closures (#514).
+        Translating this body in a fresh ``WasmContext`` may register
+        more closures on that inner ctx; without this hook they would be
+        dropped on the floor when the inner ctx goes out of scope.
         """
         # Flatten ADT layouts for context
         ctor_layouts: dict[str, ConstructorLayout] = {}
@@ -94,6 +123,14 @@ class ClosureLiftingMixin:
             ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
         )
+        # #514: share the module-level sig dict and closure-ID counter
+        # with the inner ctx so that any new sigs / IDs it registers
+        # get module-unique names (avoids ``$closure_sig_0`` /
+        # ``$anon_0`` collisions when nested closures are lifted).
+        # Sigs are by-reference: writes inside the inner ctx land
+        # directly in the module-level dict, no merge needed.
+        ctx._closure_sigs = self._closure_sigs
+        ctx._next_closure_id = self._next_closure_id
         fn_ret_types: dict[str, str | None] = {}
         for fn_name, (_, ret_wt) in self._fn_sigs.items():
             if ret_wt != "unsupported":
@@ -269,4 +306,14 @@ class ClosureLiftingMixin:
         for instr in gc_epilogue:
             lines.append(f"    {instr}")
         lines.append("  )")
+
+        # #514: bubble inner-ctx state back to the worklist.
+        # ``_closure_sigs`` is the module-level dict (shared by reference
+        # at ctx-construction above), so new sigs are already visible.
+        # ``_next_closure_id`` and any inner ``_pending_closures`` need
+        # explicit propagation.
+        if collect_pending is not None:
+            collect_pending.extend(ctx._pending_closures)
+        self._next_closure_id = ctx._next_closure_id
+
         return "\n".join(lines)

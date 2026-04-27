@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.121] - 2026-04-27
+
+### Fixed
+- **Nested closures work end-to-end** ([#514](https://github.com/aallan/vera/issues/514), closes) — closures inside closure bodies (the natural 2D `array_map(rows, fn(row) { array_map(cols, fn(col) { ... }) })` shape) failed WASM validation pre-fix because only the outermost closure was lifted to a top-level function. The closure-lifting pass at `vera/codegen/closures.py:_lift_pending_closures` iterated only the outer `WasmContext`'s `_pending_closures` list; `_compile_lifted_closure` created a fresh inner ctx to translate the body, and any `fn { ... }` discovered during that translation registered on the inner ctx — never bubbled back. Result: only `$anon_0` ended up in the function table, and the inner call_indirect targeted a missing entry, surfacing as `type mismatch: expected i64, found i32` (validation) when the inner returned a pair type, or `unreachable` (runtime) otherwise. Fix is a worklist: `_lift_pending_closures` now pops closures one at a time, collects any inner pending discovered during each lift via a new `collect_pending` parameter on `_compile_lifted_closure`, and feeds them back. Inner ctx's `_closure_sigs` and `_next_closure_id` are now shared by reference with the module-level state to avoid `$closure_sig_0` / `$anon_0` name collisions across contexts. The lifter now handles arbitrary nesting depth (verified at three levels). Also fixes `_walk_free_vars` to recurse into nested `AnonFn` expressions so captures from the outer scope referenced inside an inner closure resolve correctly — pre-fix the recursion case was missing entirely; the bug was latent because nested closures didn't make it through lifting in the first place.
+
+### Improved
+- **Closure capture works for ADTs** — same fix scope. The historical [#514](https://github.com/aallan/vera/issues/514) framing claimed "all heap captures broken"; investigation showed ADT captures (`Option<T>`, `Result<T, E>`, user `data` types, `Map`/`Set`/`Decimal`/`Regex`) actually work because they're single-i32-pointer values, not pairs. Only `String` and `Array<T>` are still broken (the closure-struct serialiser drops the len field) — this residual is now scoped to its own issue [#535](https://github.com/aallan/vera/issues/535) with a pointer-only fix path. SKILL.md "Capturing outer bindings" rewritten to reflect this accurate picture; the over-broad "primitives only" claim is gone.
+
+### Tests
+- New `TestNestedClosures` class in `tests/test_codegen_closures.py` (5 tests): nested closure with primitive return, nested with pair return (the original #514 reproducer), nested with outer-param capture, three-level nesting (worklist depth), white-box check that the lifted function table contains both `$anon_0` and `$anon_1`.
+
+### Examples + conformance
+- New `examples/nested_closures.vera` — `build_grid` (3×4 multiplication-style grid via 2D `array_map`), `grid_sum` (two-layer `array_fold` that uses inner closures), `three_d_count` (3D nesting). Verifies all 6 contracts at Tier 1.
+- New `tests/conformance/ch05_nested_closures.vera` (level: `run`) — covers 2D no-capture, 2D with-capture across the nesting boundary, 3D nesting, all in one program.
+
+### Documentation
+- **SKILL.md: Capturing outer bindings rewritten** — the old "primitives only" framing was inaccurate (ADTs work too). New text: primitives + ADTs work; only pair types (`String`, `Array<T>`) remain broken, scoped to [#535](https://github.com/aallan/vera/issues/535). The "Known limitation: nested closures" subsection is removed entirely (no longer broken). The Known Bugs table row for #514 is replaced with a row for #535. The #522 row is removed (closed in v0.0.120). The #516 row is updated to clarify that Stage 1 (categorisation) shipped in v0.0.120 and Stages 2-3 (source mapping + Fix paragraphs) remain.
+- **KNOWN_ISSUES.md** parallel updates to the SKILL changes.
+- **ROADMAP**: removed #514 row from the bug-killing campaign queue (closed by this release); inserted #535 at the bottom of the active queue (workaround exists, lower urgency); intro updated to reflect "ten remain" instead of "eleven remain".
+
 ### CI
 - **Drop the CVE-2026-3219 ignore in `dependency-audit`** ([#527](https://github.com/aallan/vera/issues/527), closes) — pip 26.1 shipped on 2026-04-26 with the [pypa/pip#13870](https://github.com/pypa/pip/pull/13870) fix that addresses the concatenated-tar+ZIP archive-handling bug ([CVE-2026-3219](https://nvd.nist.gov/vuln/detail/CVE-2026-3219), [GHSA-58qw-9mgm-455v](https://github.com/advisories/GHSA-58qw-9mgm-455v)). Verified locally that `pip-audit --skip-editable` against pip 26.1 returns "No known vulnerabilities found" without the ignore. Removed the `--ignore-vuln CVE-2026-3219` flag from the workflow, the corresponding row from KNOWN_ISSUES.md's "CI ignores" table, and the per-flag annotation from TESTING.md's command example. The pygments CVE-2026-4539 ignore stays in place pending an upstream fix release.
 
@@ -1688,7 +1708,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.120...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.121...HEAD
+[0.0.121]: https://github.com/aallan/vera/compare/v0.0.120...v0.0.121
 [0.0.120]: https://github.com/aallan/vera/compare/v0.0.119...v0.0.120
 [0.0.119]: https://github.com/aallan/vera/compare/v0.0.118...v0.0.119
 [0.0.118]: https://github.com/aallan/vera/compare/v0.0.117...v0.0.118
