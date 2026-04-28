@@ -240,14 +240,26 @@ class WasmTrapError(RuntimeError):
           ``str()``.
 
     * ``frames`` — a ``list[TrapFrame]`` resolved trap backtrace
-      (#516 Stage 2).  Outermost (most recent / leaf) frame first,
-      matching the wasmtime backtrace order.  See ``TrapFrame`` for
-      the field shape; serialise to JSON via
+      (#516 Stage 2).  Innermost (leaf) frame first, matching the
+      wasmtime backtrace order.  See ``TrapFrame`` for the field
+      shape; serialise to JSON via
       ``[f.to_dict() for f in exc.frames]``.
 
-    Stage 1 of #516 established the ``kind`` taxonomy.  Stage 2 adds
-    source mapping (the ``frames`` field).  Stage 3 will layer per-
-    kind ``Fix:`` suggestion paragraphs on top.
+    * ``fix`` — a per-kind suggestion paragraph (#516 Stage 3 /
+      #547).  Empty string for ``contract_violation`` (the contract
+      message itself already says what failed) and ``unknown`` (no
+      actionable suggestion possible).  Otherwise contains the
+      canonical text from ``_TRAP_FIX_PARAGRAPHS``: a concrete
+      paragraph naming the most-likely cause and the recommended
+      remediation, formatted to match the rest of the toolchain's
+      compile-time ``Diagnostic`` shape (description / rationale /
+      fix / spec_ref).
+
+    Stage 1 of #516 (v0.0.120) established the ``kind`` taxonomy.
+    Stage 2 (v0.0.124) added source mapping (the ``frames`` field).
+    Stage 3 (this version) adds the ``fix`` field so runtime traps
+    carry actionable Vera-native suggestions like compile-time
+    errors do.
     """
 
     def __init__(
@@ -258,12 +270,14 @@ class WasmTrapError(RuntimeError):
         stderr: str = "",
         kind: str = "unknown",
         frames: list[TrapFrame] | None = None,
+        fix: str = "",
     ) -> None:
         super().__init__(message)
         self.stdout = stdout
         self.stderr = stderr
         self.kind = kind
         self.frames: list[TrapFrame] = frames or []
+        self.fix: str = fix
 
 
 def _find_frames_in_exception_chain(
@@ -451,10 +465,73 @@ def _resolve_trap_frames(
     return resolved
 
 
+# #516 Stage 3 (#547) — per-kind Fix paragraphs.  Keyed by the
+# stable trap kind so consumers can look up the suggestion text
+# without having to re-parse the trap reason.  Stage 3 splits the
+# previous (kind, message) pair into (kind, description, fix), so
+# a contract-violated description like "Out-of-bounds memory
+# access" is no longer crowded with an inline Fix-shaped clause —
+# the suggestion lives in its own field, formatted alongside the
+# rest of the toolchain's compile-time `Diagnostic` shape
+# (description / rationale / fix / spec_ref) for consistency.
+#
+# Empty string for `contract_violation` (the host import already
+# wrote a precise message into ``last_violation``; the user
+# already knows which contract failed and where, so adding a
+# generic "fix your contract" paragraph would be patronising) and
+# for `unknown` (by definition we don't know what to suggest).
+_TRAP_FIX_PARAGRAPHS: dict[str, str] = {
+    "divide_by_zero": (
+        "Add a precondition `requires(divisor != 0)` on the function "
+        "performing the division, or guard the division site with a "
+        "non-zero check.  The Z3 verifier will then prove the division "
+        "is safe at every call site at compile time."
+    ),
+    "out_of_bounds": (
+        "Most often caused by `Array<T>[i]` with `i` outside `[0, "
+        "array_length(arr))` or by `string_slice(s, start, end)` with "
+        "out-of-range indices.  Add a `requires(i < "
+        "array_length(arr))` precondition or guard the access "
+        "explicitly.  If the trapping frame is `gc_collect`, "
+        "`alloc`, or another runtime helper this is a compiler bug "
+        "rather than a user error — please file a minimal reproducer "
+        "at https://github.com/aallan/vera/issues/new."
+    ),
+    "stack_exhausted": (
+        "Tail-recursive functions blow the WASM call stack at ~tens of "
+        "thousands of frames because Vera doesn't yet emit `return_call` "
+        "in tail positions (tracked as #517).  Until #517 ships, "
+        "accumulator-style recursion will not save you here — without "
+        "TCO each tail call still pushes a fresh frame.  Restructure "
+        "the work iteratively (`array_fold` / `array_map` / etc., which "
+        "compile to WASM loops rather than recursion), or split the "
+        "computation into bounded chunks of <5K frames each, or wait "
+        "for #517 to ship."
+    ),
+    "unreachable": (
+        "Usually a non-exhaustive `match` whose missing arm would have "
+        "required user code, or a compiler-generated assertion (e.g. an "
+        "ADT field offset that didn't resolve).  If the trap is inside "
+        "a `match` expression, add the missing arm explicitly rather "
+        "than relying on a wildcard — the type checker will tell you "
+        "which constructors are uncovered."
+    ),
+    "overflow": (
+        "Integer arithmetic produced a value outside the i64 range "
+        "`[-2^63, 2^63)`.  Add a `requires` precondition that constrains "
+        "the operands so Z3 can prove the result is representable, or "
+        "change the operation to a saturating / checked variant via a "
+        "helper function."
+    ),
+    "contract_violation": "",
+    "unknown": "",
+}
+
+
 def _classify_trap(
     exc: BaseException, last_violation: list[str]
-) -> tuple[str, str]:
-    """Classify a wasmtime trap into ``(kind, user-facing-message)``.
+) -> tuple[str, str, str]:
+    """Classify a wasmtime trap into ``(kind, description, fix)``.
 
     A contract-violation host-import (``host_contract_fail``) writes
     the precise contract message into ``last_violation`` before WASM
@@ -464,50 +541,66 @@ def _classify_trap(
 
     For everything else we inspect ``str(exc)`` for the wasmtime trap
     reason substring — wasmtime renders these as ``wasm trap: <reason>``
-    in the exception message. The mapping is intentionally narrow: only
-    reasons we can describe in Vera-native terms, with a known cause,
-    get classified. Unknown reasons fall through to ``unknown`` and
-    surface verbatim so the user is never left without a message.
+    in the exception message. The mapping is intentionally narrow:
+    only reasons we can describe in Vera-native terms, with a known
+    cause, get classified. Unknown reasons fall through to ``unknown``
+    and surface verbatim so the user is never left without a message.
 
-    Stage 1 of #516. The links to related issues in the messages help
-    agents recognise that what they hit is a known limitation rather
-    than a bug they should report.
+    The third return value is the per-kind Fix paragraph (#547,
+    Stage 3), keyed by ``kind`` in ``_TRAP_FIX_PARAGRAPHS``.
+    Empty string for ``contract_violation`` and ``unknown`` —
+    those kinds either already have specific information in the
+    description (the contract message) or have no actionable
+    suggestion possible by definition.
+
+    Stage 1 (v0.0.120) established the kind taxonomy.  Stage 2
+    (v0.0.124, #546) added the source backtrace via
+    ``WasmTrapError.frames``.  Stage 3 (this version) adds the
+    Fix paragraph so the runtime-trap surface matches the rest of
+    the toolchain's diagnostic style (compile-time errors have
+    description / rationale / fix / spec_ref; runtime traps now
+    have description / fix / kind / frames).
     """
     # Contract violation takes precedence — the host import gave us
     # the precise message; wasmtime's trap reason is just "unreachable
     # executed" in that path and would lose detail.
     if last_violation:
-        return ("contract_violation", last_violation[0])
+        return (
+            "contract_violation",
+            last_violation[0],
+            _TRAP_FIX_PARAGRAPHS["contract_violation"],
+        )
 
     msg = str(exc).lower()
+    kind: str
+    description: str
     if "integer divide by zero" in msg:
-        return ("divide_by_zero", "Integer division by zero")
-    if "out of bounds memory access" in msg:
-        return (
-            "out_of_bounds",
-            "Out-of-bounds memory access "
-            "(if the trapping frame is gc_collect, see #515; "
-            "otherwise check array indexing or string slicing)",
-        )
-    if "call stack exhausted" in msg:
-        return (
-            "stack_exhausted",
-            "WASM call stack exhausted "
-            "(tail-recursive functions blow the stack at "
-            "~tens of thousands of frames until #517 ships TCO)",
-        )
-    if "unreachable" in msg:
-        return (
-            "unreachable",
-            "Reached `unreachable` WASM instruction "
-            "(typically a non-exhaustive match arm or an explicit panic)",
-        )
-    if "integer overflow" in msg:
-        return ("overflow", "Integer overflow")
+        kind = "divide_by_zero"
+        description = "Integer division by zero"
+    elif "out of bounds memory access" in msg:
+        kind = "out_of_bounds"
+        description = "Out-of-bounds memory access"
+    elif "call stack exhausted" in msg:
+        kind = "stack_exhausted"
+        description = "WASM call stack exhausted"
+    elif "unreachable" in msg:
+        kind = "unreachable"
+        description = "Reached `unreachable` WASM instruction"
+    elif "integer overflow" in msg:
+        kind = "overflow"
+        description = "Integer overflow"
+    else:
+        # Couldn't classify — surface the raw wasmtime message
+        # verbatim so the user still sees something diagnostic.
+        # Use ``str(exc)`` directly rather than `f"WASM trap: {exc}"`
+        # because the wasmtime exception text already contains the
+        # "wasm trap:" substring (in its "Caused by:" tail), and a
+        # synthetic mock that begins with "wasm trap: ..." would
+        # otherwise produce a double-prefix message
+        # ("WASM trap: wasm trap: ...").
+        return ("unknown", str(exc), _TRAP_FIX_PARAGRAPHS["unknown"])
 
-    # Couldn't classify — surface the raw wasmtime message verbatim so
-    # the user still sees something diagnostic.
-    return ("unknown", f"WASM trap: {exc}")
+    return (kind, description, _TRAP_FIX_PARAGRAPHS[kind])
 
 
 # Import Diagnostic here to avoid circular imports at module level
@@ -2888,7 +2981,12 @@ def execute(
         # ``except RuntimeError`` blocks remain backward-compatible.
         exc_name = type(exc).__name__
         if exc_name in ("Trap", "WasmtimeError"):
-            kind, message = _classify_trap(exc, last_violation)
+            # #516 Stage 3 (#547) — _classify_trap now returns
+            # (kind, description, fix).  The Fix paragraph is
+            # canned per-kind text (empty string for the kinds that
+            # don't admit a generic suggestion: contract_violation /
+            # unknown).
+            kind, message, fix = _classify_trap(exc, last_violation)
             # #516 Stage 2 — resolve trap frames against the source map.
             # Pre-Stage-2 the user got a hex-offset wasmtime backtrace
             # in the exception message and nothing else; now they get
@@ -2902,6 +3000,7 @@ def execute(
                 stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
                 kind=kind,
                 frames=frames,
+                fix=fix,
             ) from exc
         raise
 

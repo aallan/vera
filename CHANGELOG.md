@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.125] - 2026-04-28
+
+### Improved
+- **Runtime traps now carry per-`kind` `Fix:` suggestion paragraphs** ([#547](https://github.com/aallan/vera/issues/547), closes; finishes [#516](https://github.com/aallan/vera/issues/516) Stage 3) — pre-fix, runtime traps surfaced kind + description + structured backtrace (Stages 1+2), but no actionable remediation paragraph.  Compile-time errors have always carried `description` / `rationale` / `fix` / `spec_ref`; runtime traps now match that surface with a Vera-native Fix paragraph appended after the source backtrace.
+- **Refactor: `_classify_trap` returns `(kind, description, fix)`** instead of `(kind, message)`.  The previous shape crammed Fix-shaped hints inline in the message (e.g. `"Out-of-bounds memory access (if the trapping frame is gc_collect, see #515; otherwise check array indexing or string slicing)"`); Stage 3 splits them into clean fields so consumers can render description and fix independently.  New per-kind table `_TRAP_FIX_PARAGRAPHS` in `vera/codegen/api.py` carries the canonical content; empty string for `contract_violation` (the contract message itself already explains what failed) and `unknown` (no specific suggestion possible).
+- **`WasmTrapError` gains a `fix: str` field** alongside the existing `kind` / `frames` / `stdout` / `stderr`.  Default `""` for backward compatibility with direct `WasmTrapError(...)` constructors that don't pass the keyword.
+- **CLI surface**: text mode appends a `Fix:` block after the `Source backtrace:` block, with the paragraph wrapped to ~76 columns (matching the compile-time `Diagnostic` rendering style).  JSON mode adds a `fix` key to each trap diagnostic alongside `description` / `trap_kind` / `frames` — always present for schema stability, possibly empty.  Empty-string Fix paragraphs suppress the text-mode block entirely (no empty `Fix:` header noise) but still surface as `""` in JSON for shape stability.
+
+### Per-kind Fix paragraph content
+- `divide_by_zero` — "Add a precondition `requires(divisor != 0)` on the function performing the division, or guard the division site with a non-zero check.  The Z3 verifier will then prove the division is safe at every call site at compile time."
+- `out_of_bounds` — names the two most-likely user causes (array indexing, string slicing) and the runtime-helper escape hatch (file an issue if the trap is inside `gc_collect` / `alloc` / etc.).
+- `stack_exhausted` — references [#517](https://github.com/aallan/vera/issues/517) (the open TCO issue) so an agent reading the Fix knows this is a known limitation rather than a bug they should report; will be rewritten to reference `return_call` as a supported feature once #517 lands.
+- `unreachable` — names the most-likely cause (non-exhaustive `match`) and the resolution path (add the missing arm explicitly).
+- `overflow` — names the i64 range and the canonical remediation (precondition guarded by Z3).
+
+### Tests
+- New `TestTrapFixParagraphs547` (6 tests) — text-mode Fix-block surfacing with position-ordering invariant (Fix appears after backtrace), text-mode block suppression for `contract_violation`, JSON-mode `fix` field always-present, JSON `fix` field empty-but-present for `contract_violation`, table-completeness assertion (every kind in the taxonomy has a `_TRAP_FIX_PARAGRAPHS` entry — adding a new kind without its Fix paragraph fails this test immediately), and column-wrap invariant (~76 chars max per line, two-space indent under `Fix:` heading).
+- Existing `TestClassifyTrap` (7 tests) updated for the new 3-tuple return shape; per-kind assertions now also verify the Fix paragraph content matches expected substrings (`"requires(divisor != 0)"` for `divide_by_zero`, `"#517"` + `"return_call"` for `stack_exhausted`, etc.).
+- `TestWasmTrapError` extended to verify the `fix` field round-trips through the constructor and defaults to `""`.
+
+### Documentation
+- **KNOWN_ISSUES.md** — #516 row removed (Stage 3 closes it; the parent #516 was closed by the v0.0.124 PR's "Closes #516 Stage 2" wording, but the doc kept the row open against #516; with #547 closed too the entire row is gone).
+- **ROADMAP.md** — #516 / #547 dropped from the bug-killing campaign queue (closed by this release); intro string updated to reflect "nine remain" instead of "ten remain".
+
 ## [0.0.124] - 2026-04-27
 
 ### Improved
@@ -1755,7 +1779,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.124...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.125...HEAD
+[0.0.125]: https://github.com/aallan/vera/compare/v0.0.124...v0.0.125
 [0.0.124]: https://github.com/aallan/vera/compare/v0.0.123...v0.0.124
 [0.0.123]: https://github.com/aallan/vera/compare/v0.0.122...v0.0.123
 [0.0.122]: https://github.com/aallan/vera/compare/v0.0.121...v0.0.122

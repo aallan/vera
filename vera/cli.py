@@ -695,6 +695,13 @@ def cmd_run(
                 # boundary so the wire format stays the same as
                 # before the dataclass refactor (CodeRabbit round 5).
                 "frames": [f.to_dict() for f in exc.frames],
+                # #516 Stage 3 (#547) — per-kind Fix paragraph.
+                # Always present for shape stability (same reasoning
+                # as `trap_kind` and `frames`); empty string for the
+                # kinds that don't admit a generic suggestion
+                # (`contract_violation`, `unknown`).  Mirrors the
+                # `fix` field on compile-time `Diagnostic` objects.
+                "fix": exc.fix,
             }
             envelope: dict[str, object] = {
                 "ok": False,
@@ -788,6 +795,30 @@ def cmd_run(
                         f"-{frame.line_end})",
                         file=sys.stderr,
                     )
+        # #516 Stage 3 (#547) — append the per-kind Fix paragraph
+        # after the backtrace.  Empty string for kinds that don't
+        # admit a generic suggestion (`contract_violation`, where
+        # the description already explains what failed; `unknown`,
+        # where by definition we don't know what to suggest), so
+        # we suppress the block entirely in those cases — printing
+        # an empty "Fix:" header would just be noise.
+        #
+        # Wrap to ~76 columns to match the compile-time `Diagnostic`
+        # rendering style, with a leading "  " indent so the block
+        # visually nests under "Fix:".  textwrap.fill handles the
+        # paragraph as a single string (we don't preserve internal
+        # newlines because the canonical Fix paragraphs in
+        # `_TRAP_FIX_PARAGRAPHS` are already single paragraphs).
+        if exc.fix:
+            import textwrap
+            print("Fix:", file=sys.stderr)
+            wrapped = textwrap.fill(
+                exc.fix,
+                width=76,
+                initial_indent="  ",
+                subsequent_indent="  ",
+            )
+            print(wrapped, file=sys.stderr)
         return 1
     except RuntimeError as exc:
         if as_json:
