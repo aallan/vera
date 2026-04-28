@@ -55,62 +55,100 @@ class _FakeTrap(Exception):
 
 
 class TestClassifyTrap:
-    """``_classify_trap`` maps a wasmtime trap reason to (kind, message)."""
+    """``_classify_trap`` maps a wasmtime trap reason to (kind, description, fix).
+
+    Stage 3 (#516, #547) split the previous (kind, message) tuple
+    into a 3-tuple so the description and the Fix paragraph live
+    in distinct fields.  The description is a clean trap label;
+    the Fix paragraph is canned per-kind text that names the
+    likely cause and the recommended remediation.
+    """
 
     def test_contract_violation_takes_precedence(self) -> None:
         # When ``last_violation`` is set, the host import was called and
         # we have the precise contract message. Trap reason is irrelevant.
-        kind, message = _classify_trap(
+        kind, description, fix = _classify_trap(
             _FakeTrap("wasm trap: integer divide by zero"),
             ["Precondition violation in foo: @Int.0 > 0"],
         )
         assert kind == "contract_violation"
-        assert message == "Precondition violation in foo: @Int.0 > 0"
+        assert description == "Precondition violation in foo: @Int.0 > 0"
+        # Empty fix — the contract message itself already explains
+        # what failed; a generic "fix your contract" paragraph would
+        # be patronising and add noise.
+        assert fix == ""
 
     def test_divide_by_zero(self) -> None:
-        kind, message = _classify_trap(
+        kind, description, fix = _classify_trap(
             _FakeTrap("wasm trap: integer divide by zero"), []
         )
         assert kind == "divide_by_zero"
-        assert "division by zero" in message.lower()
+        assert "division by zero" in description.lower()
+        # Fix paragraph should mention the canonical remediation.
+        assert "requires(divisor != 0)" in fix
+        assert "Z3" in fix
 
     def test_out_of_bounds_memory(self) -> None:
-        kind, message = _classify_trap(
+        kind, description, fix = _classify_trap(
             _FakeTrap("wasm trap: out of bounds memory access"), []
         )
         assert kind == "out_of_bounds"
-        assert "out-of-bounds" in message.lower()
+        assert "out-of-bounds" in description.lower()
+        # Fix paragraph names the two most-likely causes (array
+        # indexing, string slicing) and the runtime-helper escape
+        # hatch (file an issue if the trap is inside `gc_collect` /
+        # `alloc` / etc.).
+        assert "array_length" in fix
+        assert "string_slice" in fix
+        assert "gc_collect" in fix or "compiler bug" in fix
 
     def test_call_stack_exhausted(self) -> None:
-        kind, message = _classify_trap(
+        kind, description, fix = _classify_trap(
             _FakeTrap("wasm trap: call stack exhausted"), []
         )
         assert kind == "stack_exhausted"
-        assert "stack" in message.lower()
+        assert "stack" in description.lower()
+        # Fix paragraph references #517 (the open TCO issue) so an
+        # agent reading the Fix knows this is a known limitation
+        # rather than a bug they should report.  When #517 ships,
+        # this paragraph should be rewritten to reference
+        # `return_call` as a supported feature.
+        assert "#517" in fix
+        assert "return_call" in fix
 
     def test_unreachable(self) -> None:
-        kind, message = _classify_trap(
+        kind, description, fix = _classify_trap(
             _FakeTrap("wasm trap: wasm `unreachable` instruction executed"),
             [],
         )
         assert kind == "unreachable"
-        assert "unreachable" in message.lower()
+        assert "unreachable" in description.lower()
+        # Fix paragraph names the most-likely cause (non-exhaustive
+        # match) and the resolution path (add the missing arm).
+        assert "match" in fix.lower()
 
     def test_integer_overflow(self) -> None:
-        kind, message = _classify_trap(
+        kind, description, fix = _classify_trap(
             _FakeTrap("wasm trap: integer overflow"), []
         )
         assert kind == "overflow"
-        assert "overflow" in message.lower()
+        assert "overflow" in description.lower()
+        # Fix paragraph names the i64 range and the canonical
+        # remediation (precondition guarded by Z3).
+        assert "i64" in fix or "2^63" in fix
+        assert "requires" in fix
 
     def test_unknown_trap_surfaces_raw_message(self) -> None:
-        kind, message = _classify_trap(
+        kind, description, fix = _classify_trap(
             _FakeTrap("wasm trap: some novel reason we have not classified"),
             [],
         )
         assert kind == "unknown"
         # Raw message preserved so the user still sees something useful.
-        assert "novel reason" in message
+        assert "novel reason" in description
+        # Empty fix — by definition we don't know what to suggest
+        # for unrecognised trap reasons.
+        assert fix == ""
 
 
 # =====================================================================
@@ -132,17 +170,21 @@ class TestWasmTrapError:
             stdout="line 1\nline 2\n",
             stderr="warn\n",
             kind="divide_by_zero",
+            fix="Add a `requires(divisor != 0)` precondition.",
         )
         assert str(exc) == "Integer division by zero"
         assert exc.stdout == "line 1\nline 2\n"
         assert exc.stderr == "warn\n"
         assert exc.kind == "divide_by_zero"
+        assert exc.fix == "Add a `requires(divisor != 0)` precondition."
 
     def test_defaults(self) -> None:
         exc = WasmTrapError("trap")
         assert exc.stdout == ""
         assert exc.stderr == ""
         assert exc.kind == "unknown"
+        assert exc.frames == []
+        assert exc.fix == ""
 
 
 # =====================================================================
@@ -1293,6 +1335,232 @@ public fn main(@Unit -> @Int)
         assert diag["frames"][1]["file"] == "<builtin>"
         assert diag["frames"][2]["is_builtin"] is False
         assert diag["frames"][2]["file"] == str(path)
+
+
+# =====================================================================
+# #516 Stage 3 (#547) — per-kind Fix paragraphs
+# =====================================================================
+
+
+_DIVZERO_FOR_FIX = """\
+public fn divide(@Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  @Int.1 / @Int.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  divide(42, 0)
+}
+"""
+
+
+class TestTrapFixParagraphs547:
+    """Stage 3: per-kind ``Fix:`` paragraphs surface in CLI + JSON."""
+
+    def test_text_mode_shows_fix_block_after_backtrace(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """Text mode emits a ``Fix:`` block after the source backtrace.
+
+        Order: error message → ``Source backtrace:`` → frames →
+        ``Fix:`` → wrapped paragraph.  Pre-Stage-3 the runtime-trap
+        surface stopped at the backtrace; the user got "what" and
+        "where" but no "what to do about it".  Stage 3 closes the
+        gap — runtime traps now match compile-time `Diagnostic`
+        outputs which have always carried a Fix paragraph.
+        """
+        path = tmp_path / "div.vera"
+        path.write_text(_DIVZERO_FOR_FIX)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        # Block heading present
+        assert "Fix:" in captured.err
+        # Canonical content from `_TRAP_FIX_PARAGRAPHS["divide_by_zero"]`
+        assert "requires(divisor != 0)" in captured.err
+        # Position invariant: Fix: comes after the last frame
+        backtrace_pos = captured.err.find("Source backtrace:")
+        fix_pos = captured.err.find("Fix:")
+        assert 0 <= backtrace_pos < fix_pos, (
+            f"Expected Fix: block after Source backtrace.  "
+            f"backtrace={backtrace_pos}, fix={fix_pos}.  "
+            f"stderr={captured.err!r}"
+        )
+
+    def test_text_mode_omits_fix_block_for_contract_violation(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """No empty `Fix:` header when the kind has no canned suggestion.
+
+        Contract violations carry their own precise message in the
+        description (the contract that failed, with the violating
+        function name and slot ref); a generic Fix paragraph would
+        be patronising.  ``_TRAP_FIX_PARAGRAPHS["contract_violation"]``
+        is the empty string and the CLI suppresses the block when
+        ``exc.fix`` is empty.
+        """
+        source = """\
+public fn positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{
+  @Int.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  positive(0 - 5)
+}
+"""
+        path = tmp_path / "ctr.vera"
+        path.write_text(source)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        # The error description and backtrace surface as usual.
+        assert "Precondition violation" in captured.err
+        assert "Source backtrace:" in captured.err
+        # But there's no empty Fix: block.
+        assert "Fix:" not in captured.err
+
+    def test_json_mode_includes_fix_field(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """JSON envelope includes the ``fix`` key on every trap diagnostic.
+
+        Always-present (possibly empty string) so consumers can read
+        ``diag["fix"]`` directly without `.get(..., "")` ceremony.
+        Same shape stability principle as ``trap_kind`` and
+        ``frames``.
+        """
+        path = tmp_path / "div.vera"
+        path.write_text(_DIVZERO_FOR_FIX)
+
+        rc = cmd_run(str(path), as_json=True)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        envelope = json.loads(captured.out)
+        diag = envelope["diagnostics"][0]
+        assert diag["trap_kind"] == "divide_by_zero"
+        assert "fix" in diag
+        assert isinstance(diag["fix"], str)
+        assert "requires(divisor != 0)" in diag["fix"]
+        # JSON-mode invariant from #543.
+        assert captured.err == ""
+
+    def test_json_mode_includes_fix_field_for_contract_violation(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """JSON ``fix`` field is present-but-empty for contract violations.
+
+        Schema stability matters more than envelope minimalism for a
+        structural field — same reasoning as the always-present
+        ``frames`` array (CodeRabbit round 5 made that one
+        unconditional).  Empty string is the canonical "no
+        suggestion" value; consumers that want a non-empty fix
+        check `if diag["fix"]:` rather than `.get`.
+        """
+        source = """\
+public fn positive(@Int -> @Int)
+  requires(@Int.0 > 0) ensures(true) effects(pure)
+{
+  @Int.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  positive(0 - 5)
+}
+"""
+        path = tmp_path / "ctr.vera"
+        path.write_text(source)
+
+        rc = cmd_run(str(path), as_json=True)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        envelope = json.loads(captured.out)
+        diag = envelope["diagnostics"][0]
+        assert diag["trap_kind"] == "contract_violation"
+        # Field present, value empty (kind has no canned suggestion).
+        assert diag["fix"] == ""
+        # JSON-mode invariant.
+        assert captured.err == ""
+
+    def test_fix_paragraph_table_covers_every_known_kind(self) -> None:
+        """Every trap kind in the taxonomy has an entry in ``_TRAP_FIX_PARAGRAPHS``.
+
+        Adding a new ``kind`` to ``_classify_trap`` without also
+        adding its Fix paragraph would silently surface ``""`` to
+        the user — the test catches the omission immediately.  The
+        canonical kind list comes from the ``WasmTrapError``
+        docstring; if a future kind is added there, the table must
+        gain a row to keep this test passing.
+        """
+        from vera.codegen.api import _TRAP_FIX_PARAGRAPHS
+        expected_kinds = {
+            "contract_violation",
+            "divide_by_zero",
+            "out_of_bounds",
+            "stack_exhausted",
+            "unreachable",
+            "overflow",
+            "unknown",
+        }
+        assert set(_TRAP_FIX_PARAGRAPHS.keys()) == expected_kinds, (
+            f"_TRAP_FIX_PARAGRAPHS keys drifted from canonical kind "
+            f"taxonomy.  Expected: {sorted(expected_kinds)}.  "
+            f"Got: {sorted(_TRAP_FIX_PARAGRAPHS.keys())}."
+        )
+
+    def test_fix_paragraph_wraps_at_76_columns_in_text_mode(
+        self, tmp_path: Path, capsys: CaptureFixture[str],
+    ) -> None:
+        """Text-mode Fix block wraps long paragraphs to ~76 columns.
+
+        Matches the compile-time `Diagnostic` rendering style.  The
+        canonical Fix paragraphs in ``_TRAP_FIX_PARAGRAPHS`` are
+        single long sentences for editorial flexibility; the CLI
+        wraps them at output time so terminals don't show
+        runaway-line content.  Each wrapped line carries a leading
+        ``"  "`` indent so the block visually nests under ``Fix:``.
+        """
+        path = tmp_path / "div.vera"
+        path.write_text(_DIVZERO_FOR_FIX)
+
+        rc = cmd_run(str(path))
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        # Find the Fix: block and inspect the lines below it.
+        lines = captured.err.splitlines()
+        fix_idx = next(
+            i for i, ln in enumerate(lines) if ln == "Fix:"
+        )
+        fix_body_lines = lines[fix_idx + 1:]
+        # Skip any blank trailing lines.
+        fix_body_lines = [ln for ln in fix_body_lines if ln.strip()]
+        # At least one wrapped line of body content.
+        assert fix_body_lines, "Fix: block has no body content"
+        # Each body line indents with two spaces.
+        for ln in fix_body_lines:
+            assert ln.startswith("  "), (
+                f"Fix-block line missing indent: {ln!r}"
+            )
+        # No line exceeds 80 chars (76 wrap + 2 indent + slack).
+        for ln in fix_body_lines:
+            assert len(ln) <= 80, (
+                f"Fix-block line too long ({len(ln)} chars): {ln!r}"
+            )
 
 
 class TestSourceMapPopulation516:
