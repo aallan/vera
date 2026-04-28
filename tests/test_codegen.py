@@ -2186,6 +2186,176 @@ public fn f(-> @Int)
         # And nothing else either — both ids accounted for.
         assert sites == {id(outer_call)}
 
+    def test_analyzer_does_not_mark_call_in_block_statement(self) -> None:
+        """Unit test: a call inside a Block statement is NOT tail position.
+
+        ``Block`` is tail-transparent for its trailing expression
+        ONLY — calls inside ``LetStmt.value`` / ``ExprStmt.expr`` /
+        ``LetDestruct.value`` are NOT in tail position, even when
+        the block itself is.  The analyzer's Block handler only
+        recurses into ``block.expr``; statements are skipped.
+
+        This test pins the ExprStmt case specifically (the
+        ``LetStmt.value`` case is covered by
+        ``test_analyzer_does_not_mark_let_value_calls``).  A
+        regression that started visiting statements would mark the
+        side-effect call below in tail position, which would mean
+        WASM ``return_call`` discards the current frame and the
+        block's trailing expression (``42``) never executes.
+        """
+        from vera import ast
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+private fn side_effect(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  side_effect(());
+  42
+}
+""")
+        f_decl = program.declarations[1].decl
+        sites = compute_tail_call_sites(f_decl)
+
+        # The block has one ExprStmt (the side_effect call) and a
+        # trailing IntLit.  Locate the ExprStmt's call to assert it
+        # is NOT marked.  AST shape:
+        #
+        #   Block(statements=[ExprStmt(expr=FnCall("side_effect", [UnitLit]))],
+        #         expr=IntLit(42))
+        block = f_decl.body
+        assert isinstance(block, ast.Block)
+        assert len(block.statements) == 1
+        side_effect_stmt = block.statements[0]
+        assert isinstance(side_effect_stmt, ast.ExprStmt)
+        side_effect_call = side_effect_stmt.expr
+        assert isinstance(side_effect_call, ast.FnCall)
+        assert side_effect_call.name == "side_effect"
+
+        # Trailing expression is IntLit(42), not a call — so the
+        # analyzer should mark NOTHING.  The ExprStmt's call must
+        # NOT be in sites (it's a statement, not the trailing
+        # expression).
+        assert id(side_effect_call) not in sites, (
+            f"ExprStmt-position call should NOT be tail position; "
+            f"sites={sites!r}, unexpected id={id(side_effect_call)}"
+        )
+        assert sites == set(), (
+            f"Expected empty sites (only statement call, no tail "
+            f"calls); got {sites!r}"
+        )
+
+    def test_analyzer_does_not_mark_call_in_if_condition(self) -> None:
+        """Unit test: a call inside an IfExpr condition is NOT tail position.
+
+        ``IfExpr`` is tail-transparent for its branches only —
+        the condition is evaluated first, its result is consumed
+        by the if-dispatch, and only THEN one of the branches
+        runs.  A call in the condition is therefore non-tail.
+        The analyzer's IfExpr handler only recurses into
+        ``then_branch`` and ``else_branch``; the condition is
+        skipped.
+        """
+        from vera import ast
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+private fn predicate(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ true }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if predicate(()) then { 1 } else { 2 }
+}
+""")
+        f_decl = program.declarations[1].decl
+        sites = compute_tail_call_sites(f_decl)
+
+        # Locate the predicate() call in the if condition.  Body
+        # shape: Block(statements=[], expr=IfExpr(condition=FnCall(...),
+        # then_branch=Block(...), else_branch=Block(...))).
+        if_expr = f_decl.body.expr
+        assert isinstance(if_expr, ast.IfExpr)
+        cond_call = if_expr.condition
+        assert isinstance(cond_call, ast.FnCall)
+        assert cond_call.name == "predicate"
+
+        # Both branches return literals (no calls), so the analyzer
+        # should mark NOTHING.  The condition call must NOT be in
+        # sites — a regression that recursed into the condition with
+        # the parent's tail status would mark it and ``return_call``
+        # would discard the frame before the if-dispatch ran.
+        assert id(cond_call) not in sites, (
+            f"IfExpr-condition call should NOT be tail position; "
+            f"sites={sites!r}, unexpected id={id(cond_call)}"
+        )
+        assert sites == set(), (
+            f"Expected empty sites (no tail calls — both branches "
+            f"are literals); got {sites!r}"
+        )
+
+    def test_analyzer_does_not_mark_call_in_match_scrutinee(self) -> None:
+        """Unit test: a call inside a MatchExpr scrutinee is NOT tail position.
+
+        ``MatchExpr`` is tail-transparent for its arm bodies only —
+        the scrutinee is evaluated first, its result is consumed
+        by the match-dispatch (constructor tag check + field
+        binding), and only THEN one of the arms runs.  A call in
+        the scrutinee is therefore non-tail.  The analyzer's
+        MatchExpr handler only recurses into each arm's body;
+        the scrutinee is skipped.
+        """
+        from vera import ast
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+private fn make_option(@Unit -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ None }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match make_option(()) {
+    None -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+""")
+        f_decl = program.declarations[1].decl
+        sites = compute_tail_call_sites(f_decl)
+
+        # Locate the make_option() call in the match scrutinee.
+        # Body shape: Block(statements=[], expr=MatchExpr(
+        #   scrutinee=FnCall(...), arms=[...])).
+        match_expr = f_decl.body.expr
+        assert isinstance(match_expr, ast.MatchExpr)
+        scrutinee_call = match_expr.scrutinee
+        assert isinstance(scrutinee_call, ast.FnCall)
+        assert scrutinee_call.name == "make_option"
+
+        # Both arms return literals/slot ref (no calls), so the
+        # analyzer should mark NOTHING.  The scrutinee call must
+        # NOT be in sites — a regression that recursed into the
+        # scrutinee with the parent's tail status would mark it
+        # and ``return_call`` would discard the frame before the
+        # match-dispatch ran (the constructor tag check would have
+        # nothing to inspect).
+        assert id(scrutinee_call) not in sites, (
+            f"MatchExpr-scrutinee call should NOT be tail position; "
+            f"sites={sites!r}, unexpected id={id(scrutinee_call)}"
+        )
+        assert sites == set(), (
+            f"Expected empty sites (no tail calls — both arms are "
+            f"literals/slot ref); got {sites!r}"
+        )
+
 
 class TestGarbageCollection:
     """Test GC infrastructure emission and behavior."""
