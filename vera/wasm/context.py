@@ -163,6 +163,21 @@ class WasmContext(
         self._next_handle_id: int = 0
         # Old state snapshots: type_name -> local_idx (for old() in postconditions)
         self._old_state_locals: dict[str, int] = {}
+        # #517 — WASM tail-call optimization.  Populated by
+        # ``set_tail_call_context`` from the per-fn analyzer in
+        # ``vera/codegen/tail_position.py``: the set of ``id(FnCall)``
+        # AST nodes that are syntactically in tail position.  The
+        # ``_translate_call`` site emits ``return_call $foo`` instead
+        # of ``call $foo`` when the call's id is in this set AND its
+        # WASM return type matches ``_self_ret_wt`` (return_call
+        # requires the callee's signature to match the caller's).
+        # ``_self_ret_wt`` is the current function's WASM return type
+        # — needed for the type-match check.  Both default to "no
+        # tail-call optimization" so ``WasmContext`` instances created
+        # without these set (e.g. closure bodies — see
+        # ``vera/codegen/closures.py``) emit plain ``call``.
+        self._tail_call_sites: set[int] = set()
+        self._self_ret_wt: str | None = None
 
     def set_fn_ret_types(
         self, ret_types: dict[str, str | None],
@@ -206,6 +221,26 @@ class WasmContext(
     ) -> None:
         """Set old-state snapshot locals for old() in postconditions."""
         self._old_state_locals = locals_map
+
+    def set_tail_call_context(
+        self, sites: set[int], self_ret_wt: str | None,
+    ) -> None:
+        """Configure tail-call optimization for the function being compiled.
+
+        ``sites`` is the set of ``id(ast.FnCall)`` AST nodes the
+        per-fn analyzer in ``vera/codegen/tail_position.py``
+        identified as syntactically in tail position.  At translate
+        time, ``_translate_call`` checks ``id(call) in sites`` plus
+        the type-match condition (callee's WASM return type ==
+        ``self_ret_wt``) before emitting ``return_call $foo``
+        instead of ``call $foo``.
+
+        Both arguments default to "no TCO" if never called — this
+        is the right default for closure bodies and other contexts
+        where the caller hasn't pre-computed tail-call sites.
+        """
+        self._tail_call_sites = sites
+        self._self_ret_wt = self_ret_wt
 
     def get_old_state_local(self, type_name: str) -> int | None:
         """Get the local index holding the old() snapshot for a State type."""

@@ -7,6 +7,7 @@ parameter allocation, body translation, and function assembly.
 from __future__ import annotations
 
 from vera import ast
+from vera.codegen.tail_position import compute_tail_call_sites
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import gc_shadow_push
 
@@ -146,6 +147,22 @@ class FunctionCompilationMixin:
         # Scan body for IO qualified calls to register per-op imports
         self._scan_io_ops(decl.body)
 
+        # #517 — configure tail-call optimization for this function.
+        # The analyzer marks `id(FnCall)` for every call in syntactic
+        # tail position; ``_translate_call`` checks membership +
+        # type match before emitting ``return_call $foo``.  The
+        # ``self_ret_wt`` argument is the function's WASM return
+        # type, used by the translator's type-match guard to ensure
+        # WASM ``return_call`` semantics are valid (callee signature
+        # must match caller).  See ``vera/codegen/tail_position.py``
+        # for the analyzer rules and ``_translate_call`` in
+        # ``vera/wasm/calls.py`` for the emit site.
+        tail_sites = compute_tail_call_sites(decl)
+        ctx.set_tail_call_context(
+            tail_sites,
+            self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
+        )
+
         # Compile precondition checks
         pre_instrs = self._compile_preconditions(ctx, decl, env)
 
@@ -170,6 +187,28 @@ class FunctionCompilationMixin:
         if ctx.needs_alloc:
             self._needs_alloc = True
             self._needs_memory = True
+            # #517 — GC-aware tail-call fallback.  WASM ``return_call``
+            # discards the current frame, which means the GC epilogue
+            # (restore ``$gc_sp``, push pointer params unwound) never
+            # runs.  For an allocating function with tail calls, that
+            # leaks shadow-stack slots once per iteration and would
+            # eventually trap on the next ``$alloc`` once gc_sp passes
+            # the worklist boundary — strictly worse for some shapes
+            # than the pre-fix "stack exhausted" trap.  Until full
+            # GC-aware tail-call support lands (a separate concern
+            # tracked under future work), allocating functions revert
+            # ``return_call`` → ``call`` in their body, paying the WASM
+            # frame cost in exchange for correct shadow-stack
+            # management.  Non-allocating functions (the common
+            # iteration-style tail recursion case from
+            # ``SKILL.md``'s "Iteration" section) keep the
+            # optimization and now run in constant stack space.
+            body_instrs = [
+                instr.replace("return_call ", "call ", 1)
+                if instr.lstrip().startswith("return_call ")
+                else instr
+                for instr in body_instrs
+            ]
         # Propagate Map host-import tracking
         self._map_imports.update(ctx._map_imports)
         self._map_ops_used.update(ctx._map_ops_used)

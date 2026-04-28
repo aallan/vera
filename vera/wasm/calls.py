@@ -466,7 +466,29 @@ class CallsMixin:
             if arg_instrs is None:
                 return None
             instructions.extend(arg_instrs)
-        instructions.append(f"call ${call_target}")
+
+        # #517 — emit ``return_call $target`` for tail-position
+        # calls whose WASM signature matches the current function's.
+        # The analyzer in ``vera/codegen/tail_position.py`` populates
+        # ``self._tail_call_sites`` with ids of syntactically tail-
+        # position FnCalls; the type-match guard ensures WASM
+        # ``return_call`` semantics are valid (the callee must
+        # return the same type the caller returns).  Falls back to
+        # plain ``call`` if either condition fails — never an error,
+        # just a missed optimization.  See the GC-aware tail-call
+        # post-process at the end of ``_compile_fn`` in
+        # ``vera/codegen/functions.py`` which reverts ``return_call``
+        # → ``call`` for allocating functions, where shadow-stack
+        # cleanup would otherwise be skipped.
+        is_tail = id(call) in self._tail_call_sites
+        callee_ret_wt: str | None = None
+        if is_tail:
+            sig = self._fn_ret_types.get(call_target)
+            callee_ret_wt = sig if isinstance(sig, str) else None
+        if is_tail and callee_ret_wt == self._self_ret_wt:
+            instructions.append(f"return_call ${call_target}")
+        else:
+            instructions.append(f"call ${call_target}")
         return instructions
 
     def _translate_qualified_call(
