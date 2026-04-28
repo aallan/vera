@@ -1846,6 +1846,86 @@ public fn caller(-> @Int)
             f"(it's bound by `let`, NOT tail position).  Body:\n"
             f"{caller_body}"
         )
+        # Positive sibling assertion — `count_down`'s recursive call
+        # IS in tail position (the trailing expression of the
+        # else-branch, transitively the trailing expression of the
+        # function body via `if`-transparency), so the optimization
+        # must fire there even though it doesn't fire in `caller`.
+        # Without this check, a buggy analyzer that marked NOTHING
+        # would silently pass `assert "return_call $count_down" not
+        # in caller_body` while regressing the actual TCO behaviour.
+        cd_body_start = result.wat.find("(func $count_down")
+        assert cd_body_start >= 0, "count_down function not found"
+        cd_body_end = result.wat.find("(func ", cd_body_start + 1)
+        if cd_body_end < 0:
+            cd_body_end = len(result.wat)
+        count_down_body = result.wat[cd_body_start:cd_body_end]
+        assert "return_call $count_down" in count_down_body, (
+            f"count_down's recursive call should be return_call "
+            f"(tail position via if-else transparency).  Body:\n"
+            f"{count_down_body}"
+        )
+
+    def test_postcondition_function_falls_back_to_plain_call(self) -> None:
+        """A function with a non-trivial `ensures` reverts return_call.
+
+        Postcondition checks emit instructions AFTER the function
+        body in the WAT assembly (`local.set $ret`, condition
+        check, trap on failure, `local.get $ret` to push back).
+        WASM `return_call` discards the current frame and skips
+        all of those — silently violating the contract.
+
+        The fallback in `_compile_fn` reverts every `return_call`
+        → `call` when `post_instrs` is non-empty (CodeRabbit
+        finding on PR #550 round 2).  Pre-fix this would have
+        shipped as a soundness hole: a tail-recursive function
+        with a runtime postcondition would skip the postcondition
+        check on every iteration and the contract would silently
+        fail.  Trivial postconditions like `ensures(true)` are
+        elided by `_compile_postconditions` and don't trigger the
+        fallback (no instructions are emitted, so nothing is
+        skipped).
+        """
+        # A function with a non-trivial postcondition.  The
+        # ensures clause (`@Nat.result >= 0`) is trivially true
+        # for `@Nat` (refinement-typed non-negative), but the
+        # codegen treats any non-`true` ensures as non-trivial
+        # and emits the runtime check.
+        source = """\
+private fn count_down(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { count_down(@Nat.0 - 1) }
+}
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  nat_to_int(count_down(10))
+}
+"""
+        result = _compile_ok(source)
+        cd_body_start = result.wat.find("(func $count_down")
+        assert cd_body_start >= 0
+        cd_body_end = result.wat.find("(func ", cd_body_start + 1)
+        if cd_body_end < 0:
+            cd_body_end = len(result.wat)
+        count_down_body = result.wat[cd_body_start:cd_body_end]
+        # The recursive call is in syntactic tail position, so the
+        # analyzer MARKS it.  But the postcondition check needs to
+        # run after every recursive call's return — `return_call`
+        # would skip it.  Post-process must have reverted the
+        # emission to plain `call`.
+        assert "call $count_down" in count_down_body
+        assert "return_call $count_down" not in count_down_body, (
+            f"count_down has a non-trivial postcondition (ensures "
+            f"@Nat.result >= 0); return_call would skip the runtime "
+            f"check.  Post-process should have reverted to plain "
+            f"call.  Body:\n{count_down_body}"
+        )
 
     def test_allocating_function_falls_back_to_plain_call(self) -> None:
         """Allocating functions revert return_call → call.
@@ -1976,12 +2056,39 @@ public fn f(-> @Int)
   inner(arg_producer())
 }
 """)
+        from vera import ast
         f_decl = program.declarations[2].decl
         sites = compute_tail_call_sites(f_decl)
-        # Only the outer `inner(...)` is in tail position; the
-        # argument call `arg_producer()` is NOT — its result is
-        # consumed by `inner`'s parameter binding.
-        assert len(sites) == 1
+
+        # Locate the two call ids explicitly so the assertion below
+        # checks WHICH call got marked, not just how many.  The
+        # body is `Block(statements=[], expr=FnCall("inner", [FnCall("arg_producer", [])]))`
+        # so the outer call is `f_decl.body.expr`, and the inner
+        # arg-producer call is its first argument.
+        outer_call = f_decl.body.expr
+        assert isinstance(outer_call, ast.FnCall)
+        assert outer_call.name == "inner"
+        inner_arg_call = outer_call.args[0]
+        assert isinstance(inner_arg_call, ast.FnCall)
+        assert inner_arg_call.name == "arg_producer"
+
+        # The outer call IS in tail position (trailing expression of
+        # the function body).  The argument call is NOT — its result
+        # is consumed by `inner`'s parameter binding.  A buggy
+        # analyzer that marked argument calls would emit
+        # `return_call $arg_producer` and the discarded frame would
+        # mean `inner` never receives its argument.
+        assert id(outer_call) in sites, (
+            f"Outer call `inner(...)` should be marked tail position; "
+            f"sites={sites!r}, outer call id={id(outer_call)}"
+        )
+        assert id(inner_arg_call) not in sites, (
+            f"Argument call `arg_producer()` should NOT be marked "
+            f"tail position; sites={sites!r}, "
+            f"arg call id={id(inner_arg_call)}"
+        )
+        # And nothing else either — both ids accounted for.
+        assert sites == {id(outer_call)}
 
 
 class TestGarbageCollection:

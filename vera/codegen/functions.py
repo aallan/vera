@@ -187,28 +187,6 @@ class FunctionCompilationMixin:
         if ctx.needs_alloc:
             self._needs_alloc = True
             self._needs_memory = True
-            # #517 — GC-aware tail-call fallback.  WASM ``return_call``
-            # discards the current frame, which means the GC epilogue
-            # (restore ``$gc_sp``, push pointer params unwound) never
-            # runs.  For an allocating function with tail calls, that
-            # leaks shadow-stack slots once per iteration and would
-            # eventually trap on the next ``$alloc`` once gc_sp passes
-            # the worklist boundary — strictly worse for some shapes
-            # than the pre-fix "stack exhausted" trap.  Until full
-            # GC-aware tail-call support lands (a separate concern
-            # tracked under future work), allocating functions revert
-            # ``return_call`` → ``call`` in their body, paying the WASM
-            # frame cost in exchange for correct shadow-stack
-            # management.  Non-allocating functions (the common
-            # iteration-style tail recursion case from
-            # ``SKILL.md``'s "Iteration" section) keep the
-            # optimization and now run in constant stack space.
-            body_instrs = [
-                instr.replace("return_call ", "call ", 1)
-                if instr.lstrip().startswith("return_call ")
-                else instr
-                for instr in body_instrs
-            ]
         # Propagate Map host-import tracking
         self._map_imports.update(ctx._map_imports)
         self._map_ops_used.update(ctx._map_ops_used)
@@ -243,6 +221,43 @@ class FunctionCompilationMixin:
 
         # Compile postcondition checks (wrap around body result)
         post_instrs = self._compile_postconditions(ctx, decl, env, ret_wt)
+
+        # #517 — tail-call optimization fallback for functions whose
+        # bodies are followed by post-body work that must run before
+        # the function returns.  WASM ``return_call`` discards the
+        # current frame and jumps straight to the callee, so any
+        # instructions emitted AFTER ``body_instrs`` in the WAT
+        # assembly (postcondition checks, GC epilogue) are silently
+        # skipped.  The two known sources of post-body work:
+        #
+        # 1. ``post_instrs`` — postcondition checks (``ensures(...)``
+        #    clauses) emitted by ``_compile_postconditions``.  A
+        #    non-empty ``post_instrs`` means the function has a
+        #    non-trivial postcondition that must be checked at
+        #    runtime; ``return_call`` would skip the check and
+        #    silently violate the contract.
+        #
+        # 2. ``ctx.needs_alloc`` — the GC epilogue (restore
+        #    ``$gc_sp``, unwind shadow-stack pointer slots) runs
+        #    only for allocating functions.  ``return_call`` would
+        #    leak shadow-stack slots once per iteration and
+        #    eventually trap on the next ``$alloc`` (#549 tracks
+        #    GC-aware TCO as a follow-up).
+        #
+        # When either condition holds, revert every ``return_call``
+        # in ``body_instrs`` to plain ``call``.  Allocating /
+        # postcondition-bearing functions pay the WASM frame cost in
+        # exchange for correctness; non-allocating, postcondition-
+        # free functions keep the optimization (the common
+        # iteration-style tail recursion case from ``SKILL.md``'s
+        # "Iteration" section).
+        if ctx.needs_alloc or post_instrs:
+            body_instrs = [
+                instr.replace("return_call ", "call ", 1)
+                if instr.lstrip().startswith("return_call ")
+                else instr
+                for instr in body_instrs
+            ]
 
         # Build GC prologue/epilogue (only when function allocates)
         gc_prologue: list[str] = []
