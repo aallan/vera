@@ -500,11 +500,13 @@ _TRAP_FIX_PARAGRAPHS: dict[str, str] = {
     "stack_exhausted": (
         "Tail-recursive functions blow the WASM call stack at ~tens of "
         "thousands of frames because Vera doesn't yet emit `return_call` "
-        "in tail positions (tracked as #517).  Restructure the recursion "
-        "to bounded depth (split into smaller chunks, use an "
-        "accumulator-shaped helper that keeps the stack flat), or "
-        "wait for #517 to ship before iterating deeper than ~5–10K "
-        "levels."
+        "in tail positions (tracked as #517).  Until #517 ships, "
+        "accumulator-style recursion will not save you here — without "
+        "TCO each tail call still pushes a fresh frame.  Restructure "
+        "the work iteratively (`array_fold` / `array_map` / etc., which "
+        "compile to WASM loops rather than recursion), or split the "
+        "computation into bounded chunks of <5K frames each, or wait "
+        "for #517 to ship."
     ),
     "unreachable": (
         "Usually a non-exhaustive `match` whose missing arm would have "
