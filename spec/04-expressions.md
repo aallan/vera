@@ -47,6 +47,8 @@ Arithmetic operators work on numeric types (`Int`, `Nat`, `Float64`):
 
 Division by zero is undefined behaviour in Vera. The compiler SHOULD verify that the divisor is non-zero via contracts or refinement types. If it cannot, it MUST insert a runtime check.
 
+Subtraction on unsigned types (`Nat`, `Byte`) is undefined behaviour when it would underflow (`lhs < rhs` produces a value below the type's range). The compiler SHOULD verify `lhs >= rhs` via contracts or refinement types. If it cannot, it MUST insert a runtime check that traps on underflow.
+
 Unary negation:
 
 ```
