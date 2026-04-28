@@ -37,6 +37,27 @@ class RegistrationMixin:
         ret_type = self._type_expr_to_wasm_type(decl.return_type)
         self._fn_sigs[decl.name] = (param_types, ret_type)
 
+        # #516 Stage 2 — record source location so wasmtime trap frames
+        # naming this function can be resolved to (file, line) at runtime.
+        # Functions injected by `inject_prelude()` also have spans (their
+        # bodies come from parse_to_ast of synthetic Vera source), but
+        # those spans point at the synthetic source's line numbers — not
+        # the user's file.  So registering them here would surface
+        # misleading coordinates.  The post-prelude registration loop in
+        # `compile_program` (core.py) calls `_register_fn` for prelude
+        # decls and then immediately moves the entry from
+        # `_fn_source_map` to `_prelude_fn_names`; the resolver tags
+        # those as `<builtin>`.  Built-in WASM helpers (`$alloc`,
+        # `$gc_collect`, `$contract_fail`, `$exn_*`, `$vera.*`) never go
+        # through this method at all — they're emitted directly into WAT
+        # by the assembly module.
+        if decl.span is not None:
+            self._fn_source_map[decl.name] = (
+                self.file or "<unknown>",
+                decl.span.line,
+                decl.span.end_line,
+            )
+
         # Register where-block functions
         if decl.where_fns:
             for wfn in decl.where_fns:

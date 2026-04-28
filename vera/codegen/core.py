@@ -134,6 +134,52 @@ class CodeGenerator(
         self._needs_table: bool = False
         self._next_closure_id: int = 0
 
+        # #516 Stage 2 — runtime-trap source mapping.
+        # Maps WAT function name (without leading `$`) → (file, start_line,
+        # end_line) so wasmtime trap frames can be resolved to a source
+        # location at runtime.  Populated by `_register_fn` for top-level
+        # user functions and by the closure-lifting pass for `$anon_N`
+        # helpers; entries for prelude-injected FnDecls are removed
+        # immediately after registration in `compile_program` (see the
+        # post-`inject_prelude` loop) and migrated to
+        # `_prelude_fn_names`.  Monomorphized names like `identity$Int`
+        # are NOT registered explicitly — the trap-time resolver
+        # (`_resolve_trap_frames` in `vera/codegen/api.py`) strips the
+        # rightmost `$` suffix and looks up the base name, since `$`
+        # cannot appear in user-written Vera identifiers and so any
+        # `$` in a WAT name was inserted by the monomorphization
+        # mangler.  Built-in WASM helpers (`$alloc`, `$gc_collect`,
+        # `$contract_fail`, `$exn_*`, `$vera.*`) never appear here at
+        # all — they're emitted directly into WAT by the assembly
+        # module without going through `_register_fn`, and the
+        # resolver tags them as `<builtin>`.
+        self._fn_source_map: dict[str, tuple[str, int, int]] = {}
+
+        # #516 Stage 2 — positive source-of-truth for prelude / built-in
+        # function classification.  Populated by the post-`inject_prelude`
+        # registration loop in `compile_program`: any FnDecl that wasn't
+        # in `_fn_sigs` before the prelude pass but is registered after
+        # is by definition a prelude / built-in injection, not user
+        # code.  Detection is by **registration-flow position**, NOT by
+        # `decl.span` being None — `inject_prelude` calls
+        # `parse_to_ast` on inline Vera source so its synthetic FnDecls
+        # do have spans (just spans pointing into that synthetic
+        # source's line numbers, which would otherwise land entirely
+        # bogus coordinates in `_fn_source_map` and surface them on a
+        # trap as e.g. "in option_unwrap_or (/tmp/foo.vera:9-18)" for
+        # a 3-line user file).
+        #
+        # The trap-frame resolver consults this alongside the runtime-
+        # helper allowlist to recognise trap frames inside prelude
+        # functions (`option_unwrap_or`, the option/result combinators,
+        # ADT auto-derived methods, …) as built-ins rather than mis-
+        # classifying them as `<unknown>` user code — without this, the
+        # CLI's suppression-marker collapse cannot fire for traps that
+        # go through prelude functions, and the user sees a confusing
+        # "in option_unwrap_or (<unknown>)" entry at the top of their
+        # backtrace.
+        self._prelude_fn_names: set[str] = set()
+
         # Cross-module state (C7e)
         self._resolved_modules: list[ResolvedModule] = (
             resolved_modules or []
@@ -242,6 +288,21 @@ class CodeGenerator(
             decl = tld.decl
             if isinstance(decl, ast.FnDecl) and decl.name not in existing_fns:
                 self._register_fn(decl)
+                # #516 Stage 2 — anything that arrives here through
+                # inject_prelude() (i.e. wasn't in `existing_fns` before
+                # the prelude pass) is by definition a prelude / built-
+                # in injection, not user code.  Move it from
+                # `_fn_source_map` to `_prelude_fn_names` so the trap-
+                # frame resolver tags traps inside it as `<builtin>`
+                # rather than surfacing a misleading file:line that
+                # points at the prelude's *embedded* source string
+                # (the prelude FnDecls have spans because their bodies
+                # come from `parse_to_ast` of synthesised Vera source —
+                # the spans point at line N of that synthetic source,
+                # which is meaningless coordinates inside the user's
+                # actual file).
+                self._fn_source_map.pop(decl.name, None)
+                self._prelude_fn_names.add(decl.name)
             elif isinstance(decl, ast.DataDecl):
                 if decl.name not in existing_adts:  # pragma: no cover
                     self._register_data(decl)
@@ -255,6 +316,23 @@ class CodeGenerator(
         mono_decls = self._monomorphize(program)
         for mdecl in mono_decls:
             self._register_fn(mdecl)
+            # #516 Stage 2 — keep monomorphized prelude clones out of
+            # `_fn_source_map`.  A clone like `option_unwrap_or$Int`
+            # inherits the original generic FnDecl's span, which for a
+            # prelude function points at the synthetic source string
+            # `inject_prelude` constructed.  Registering it here would
+            # re-introduce the same bogus-coordinates problem the
+            # post-prelude loop above scrubbed for the base names.
+            # The trap-frame resolver already handles monomorphized
+            # prelude calls correctly via the rightmost-`$` strip rule
+            # (it tags `option_unwrap_or$Int` as `<builtin>` because
+            # `option_unwrap_or` is in `prelude_fn_names`), so the
+            # entry here was dead weight.  Suffix-strip and check the
+            # base name against `_prelude_fn_names` to detect.
+            if "$" in mdecl.name:
+                base = mdecl.name.rsplit("$", 1)[0]
+                if base in self._prelude_fn_names:
+                    self._fn_source_map.pop(mdecl.name, None)
 
         # Pass 1.6: rewrite ability operation calls → concrete expressions
         program, mono_decls = self._rewrite_ability_ops(program, mono_decls)
@@ -392,6 +470,8 @@ class CodeGenerator(
             random_ops_used=set(self._random_ops_used),
             math_ops_used=set(self._math_ops_used),
             fn_param_types=fn_param_types,
+            fn_source_map=dict(self._fn_source_map),
+            prelude_fn_names=set(self._prelude_fn_names),
         )
 
     # -----------------------------------------------------------------

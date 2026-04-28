@@ -679,11 +679,22 @@ def cmd_run(
             # JSON mode: pack stdout/stderr into the envelope. Writing
             # them to sys.stdout/sys.stderr would corrupt the JSON for
             # downstream consumers parsing our output.
-            diag = {
+            diag: dict[str, object] = {
                 "severity": "error",
                 "description": str(exc),
                 "trap_kind": exc.kind,
                 "location": {"line": 0, "column": 0},
+                # #516 Stage 2 — structured backtrace.  Always present
+                # (possibly an empty list) so JSON consumers can
+                # iterate `diag["frames"]` without `.get(..., [])`
+                # ceremony.  Same shape stability principle as the
+                # always-present `trap_kind` above; `frames` is
+                # structural, not optional content like `stdout`.
+                # Each frame is a `TrapFrame` dataclass (#516 Stage
+                # 2) — convert to dict at the JSON serialisation
+                # boundary so the wire format stays the same as
+                # before the dataclass refactor (CodeRabbit round 5).
+                "frames": [f.to_dict() for f in exc.frames],
             }
             envelope: dict[str, object] = {
                 "ok": False,
@@ -721,6 +732,62 @@ def cmd_run(
             if not exc.stderr.endswith("\n"):
                 sys.stderr.write("\n")
         print(f"Error: {exc}", file=sys.stderr)
+        # #516 Stage 2 — print the source backtrace after the error
+        # line.  Outermost (most recent) frame first.  Built-in /
+        # runtime helpers ($alloc, $gc_collect, $contract_fail) show
+        # as "<builtin>" rather than a misleading file:line.  Filter
+        # the leading run of built-in frames so the user sees their
+        # own code at the top — those frames are usually noise (the
+        # trap fired inside the allocator on behalf of user code, and
+        # what the user wants to know is which user function called
+        # the allocator).  Only collapse if at least one user frame
+        # would remain; otherwise keep the full list.
+        if exc.frames:
+            user_idx = next(
+                (i for i, f in enumerate(exc.frames)
+                 if not f.is_builtin),
+                None,
+            )
+            display_frames = (
+                exc.frames[user_idx:] if user_idx is not None
+                else exc.frames
+            )
+            # Header first, then the optional suppression line, then
+            # the frames themselves.  The suppression message is
+            # metadata about the backtrace below it — reading it
+            # under the heading is more natural than reading it as
+            # a preface to the heading (CodeRabbit round 6).
+            print("Source backtrace:", file=sys.stderr)
+            if user_idx and user_idx > 0:
+                hidden = user_idx
+                print(
+                    f"  (suppressed {hidden} runtime-helper frame"
+                    f"{'s' if hidden != 1 else ''} above first user code)",
+                    file=sys.stderr,
+                )
+            for frame in display_frames:
+                if frame.is_builtin:
+                    print(
+                        f"  in {frame.func}  <builtin>", file=sys.stderr,
+                    )
+                elif frame.file == "<unknown>" or frame.line_start is None:
+                    print(
+                        f"  in {frame.func}  ({frame.file})",
+                        file=sys.stderr,
+                    )
+                elif frame.line_start == frame.line_end:
+                    print(
+                        f"  in {frame.func}  "
+                        f"({frame.file}:{frame.line_start})",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"  in {frame.func}  "
+                        f"({frame.file}:{frame.line_start}"
+                        f"-{frame.line_end})",
+                        file=sys.stderr,
+                    )
         return 1
     except RuntimeError as exc:
         if as_json:

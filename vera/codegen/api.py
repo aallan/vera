@@ -92,6 +92,34 @@ class CompileResult:
     random_ops_used: set[str] = field(default_factory=set)  # #465
     math_ops_used: set[str] = field(default_factory=set)  # #467
     fn_param_types: dict[str, list[str]] = field(default_factory=dict)
+    # #516 Stage 2 — runtime-trap source mapping.  Maps WAT function
+    # name (without leading `$`) → (file, start_line, end_line).
+    # Populated by CodeGenerator during _register_fn (top-level) and
+    # the closure-lifting pass (anonymous fns become `anon_N`).
+    # Consumed by execute() to resolve `wasmtime.Trap.frames` to
+    # source locations for the WasmTrapError backtrace.
+    fn_source_map: dict[str, tuple[str, int, int]] = field(
+        default_factory=dict,
+    )
+    # #516 Stage 2 — positive source-of-truth for prelude / built-in
+    # function classification.  Populated by the post-prelude
+    # registration loop in `compile_program` (`vera/codegen/core.py`):
+    # any FnDecl that wasn't registered before `inject_prelude()` ran
+    # but is registered after is by definition a prelude / built-in
+    # injection, not user code.  Detection is by registration-flow
+    # position, NOT by `decl.span` being None — `inject_prelude`
+    # calls `parse_to_ast` on inline Vera source so its synthetic
+    # FnDecls do have spans (just spans pointing into that synthetic
+    # source, which would land bogus coordinates in `fn_source_map`
+    # if used directly).
+    #
+    # Consumed by `_resolve_trap_frames` alongside the runtime-helper
+    # allowlist so trap frames inside prelude functions
+    # (`option_unwrap_or`, ADT auto-derived methods, …) are tagged as
+    # `<builtin>` rather than falling through to `<unknown>` user
+    # code.  Without it the CLI's suppression-marker collapse cannot
+    # fire for traps that go through prelude functions.
+    prelude_fn_names: set[str] = field(default_factory=set)
 
     @property
     def ok(self) -> bool:
@@ -120,6 +148,63 @@ class _VeraExit(Exception):
     def __init__(self, code: int) -> None:
         self.code = code
         super().__init__(f"IO.exit({code})")
+
+
+@dataclass(frozen=True)
+class TrapFrame:
+    """One resolved frame in a runtime-trap source backtrace (#516 Stage 2).
+
+    Built by ``_resolve_trap_frames`` from a ``wasmtime.Frame`` plus
+    the ``CompileResult.fn_source_map`` / ``prelude_fn_names`` data.
+    Carried on ``WasmTrapError.frames`` and consumed by the CLI text
+    formatter and the JSON envelope builder.
+
+    A frozen dataclass instead of a ``dict[str, object]`` so mypy
+    can type-check field access — the previous shape was a hand-
+    rolled dict with stringly-typed keys (``frame["func"]``), which
+    silently allowed typos and made it impossible to track the
+    contract across consumers.
+    """
+
+    func: str
+    """The WAT function name as reported by wasmtime, with any
+    leading ``$`` stripped.  For monomorphized generics (e.g.
+    ``identity$Int``) this is the mangled name."""
+
+    file: str
+    """Source path, ``"<builtin>"`` for runtime helpers / prelude
+    injections, or ``"<unknown>"`` for user-named frames not found
+    in the source map."""
+
+    line_start: int | None
+    """Source line range start of the function definition.  ``None``
+    for built-ins and unknown-name frames."""
+
+    line_end: int | None
+    """Source line range end of the function definition.  ``None``
+    for built-ins and unknown-name frames."""
+
+    is_builtin: bool
+    """``True`` for ``alloc`` / ``gc_collect`` / ``contract_fail`` /
+    ``exn_*`` / ``vera.*`` runtime helpers and for prelude /
+    inject_prelude functions; ``False`` for user-named frames
+    (including ``<unknown>`` lookups)."""
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialise to a JSON-compatible dict for envelope output.
+
+        Used by ``cmd_run --json`` to preserve the wire format that
+        downstream consumers (LSP, agents, telemetry) parse.  Each
+        field becomes a key with its native type (``None`` serialises
+        to JSON null, matching the Stage 2 contract for built-in
+        frames with no source line range)."""
+        return {
+            "func": self.func,
+            "file": self.file,
+            "line_start": self.line_start,
+            "line_end": self.line_end,
+            "is_builtin": self.is_builtin,
+        }
 
 
 class WasmTrapError(RuntimeError):
@@ -154,9 +239,15 @@ class WasmTrapError(RuntimeError):
         * ``unknown`` — could not classify; raw wasmtime message in
           ``str()``.
 
-    Stage 1 of #516 establishes the ``kind`` taxonomy. Stage 2 will
-    add source mapping (which Vera function trapped); Stage 3 will
-    add per-kind ``Fix:`` suggestion paragraphs.
+    * ``frames`` — a ``list[TrapFrame]`` resolved trap backtrace
+      (#516 Stage 2).  Outermost (most recent / leaf) frame first,
+      matching the wasmtime backtrace order.  See ``TrapFrame`` for
+      the field shape; serialise to JSON via
+      ``[f.to_dict() for f in exc.frames]``.
+
+    Stage 1 of #516 established the ``kind`` taxonomy.  Stage 2 adds
+    source mapping (the ``frames`` field).  Stage 3 will layer per-
+    kind ``Fix:`` suggestion paragraphs on top.
     """
 
     def __init__(
@@ -166,11 +257,198 @@ class WasmTrapError(RuntimeError):
         stdout: str = "",
         stderr: str = "",
         kind: str = "unknown",
+        frames: list[TrapFrame] | None = None,
     ) -> None:
         super().__init__(message)
         self.stdout = stdout
         self.stderr = stderr
         self.kind = kind
+        self.frames: list[TrapFrame] = frames or []
+
+
+def _find_frames_in_exception_chain(
+    exc: BaseException,
+) -> object | None:
+    """Walk the exception chain looking for a ``frames`` attribute.
+
+    Some wasmtime call paths raise a ``WasmtimeError`` whose
+    ``__cause__`` is the underlying ``wasmtime.Trap`` carrying the
+    backtrace data; if we only inspect the outer exception we lose
+    the frames silently.  Walks ``exc.frames`` first, then
+    ``__cause__`` / ``__context__`` recursively until a frame
+    sequence is found or the chain terminates.  Mirrors the
+    ``_VeraExit`` chain walk pattern already used in ``execute()``.
+
+    Returns the first non-empty ``.frames`` attribute encountered,
+    or ``None``.
+    """
+    seen: set[int] = set()
+    cursor: BaseException | None = exc
+    while cursor is not None and id(cursor) not in seen:
+        seen.add(id(cursor))
+        frames: object | None = getattr(cursor, "frames", None)
+        if frames:
+            return frames
+        cursor = cursor.__cause__ or cursor.__context__
+    return None
+
+
+def _resolve_trap_frames(
+    exc: BaseException,
+    fn_source_map: dict[str, tuple[str, int, int]],
+    prelude_fn_names: set[str] | None = None,
+) -> list[TrapFrame]:
+    """Resolve ``wasmtime.Trap.frames`` against the codegen source map.
+
+    Walks the trap's frame list and produces a structured backtrace,
+    one ``TrapFrame`` per frame (see ``TrapFrame`` for field shape).
+
+    Resolution rules:
+
+    * The WAT function name is normalised by stripping a single
+      leading ``$`` defensively (current wasmtime-py strips it
+      already; a future version that doesn't would otherwise
+      silently break every lookup below).
+    * Built-in WAT helpers (``alloc`` / ``gc_collect`` /
+      ``contract_fail``) plus anything starting with ``exn_`` /
+      ``vera.`` / ``closure_sig_`` are tagged ``is_builtin=True``,
+      ``file="<builtin>"``.
+    * Prelude / inject_prelude functions are tagged the same way,
+      via the ``prelude_fn_names`` parameter (positive source of
+      truth populated by the post-prelude registration loop).  The
+      check matches the exact name first, then tries the base name
+      (the part before the rightmost ``$``) for monomorphized
+      generics — ``option_unwrap_or$Int`` resolves to the same
+      builtin tag as ``option_unwrap_or``.
+    * User-named frames look up exact-then-base in
+      ``fn_source_map``; on miss the frame is surfaced with
+      ``file="<unknown>"`` rather than dropped.
+
+    On any failure (no ``frames`` attribute, exception during
+    iteration, etc.) returns an empty list — the trap message
+    survives even if the backtrace can't be resolved.  Per-function
+    granularity matches the issue's stated Stage 2 success criterion
+    (#516).
+
+    Walks the exception chain (``__cause__`` / ``__context__``) to
+    find the first frame-bearing exception.  Some wasmtime call
+    paths wrap a ``Trap`` (which carries ``frames``) inside a
+    ``WasmtimeError`` (which doesn't); without the chain walk we'd
+    silently lose the backtrace whenever wrapping happens.  Mirrors
+    the ``_VeraExit`` chain walk in ``execute()``.
+    """
+    raw_frames = _find_frames_in_exception_chain(exc)
+    if not raw_frames:
+        return []
+
+    # WAT names that the codegen emits as runtime-only infrastructure.
+    # Treat any frame matching one of these (or any name starting with
+    # one of the prefixes below) as a built-in with no source location.
+    _BUILTIN_NAMES = {
+        "alloc", "gc_collect", "contract_fail",
+    }
+    _BUILTIN_PREFIXES = (
+        "exn_",        # generated exception throwers ($exn_String etc.)
+        "vera.",       # host imports ($vera.print, $vera.state_get_*, ...)
+        "closure_sig_",  # synthetic closure signatures
+    )
+
+    resolved: list[TrapFrame] = []
+    try:
+        # raw_frames is `object | None` from the chain walker (we
+        # only know it's truthy and presumed iterable — wasmtime's
+        # Trap.frames is a list-of-Frame in practice).  Cast via
+        # `list()` to materialise; the broad except below catches
+        # pathological inputs (a frames attribute that isn't
+        # iterable) so this stays robust.
+        iter_frames = list(raw_frames)  # type: ignore[call-overload]
+    except Exception:  # pragma: no cover — defensive
+        return []
+
+    for frame in iter_frames:
+        name = getattr(frame, "func_name", None) or ""
+        # Some wasmtime versions return the name with a leading `$`
+        # for un-named functions, or `None` for true anonymous frames.
+        # Skip frames we can't even name — they'd be useless in the
+        # backtrace.
+        if not name:
+            continue
+        # Defensive normalisation — strip a single leading `$` so the
+        # builtin allowlist and source-map lookup work uniformly across
+        # wasmtime versions.  Current wasmtime-py strips this already
+        # (verified with a divide-by-zero trap inside `(func $bad ...)`
+        # returning func_name='bad'); a future version that doesn't
+        # strip would otherwise silently break every lookup below.
+        if name.startswith("$"):
+            name = name[1:]
+
+        # Prelude / built-in injection check.  Match either the exact
+        # WAT name or, for monomorphized generics, the base name (the
+        # part before the rightmost `$`).  This mirrors the source-
+        # map suffix-strip rule below — `array_map$Int` should resolve
+        # to the same builtin tag as `array_map`.  Without this
+        # fallback, monomorphized prelude calls would mis-classify as
+        # `<unknown>` user code (see CodeRabbit finding on PR #546
+        # round 3).
+        is_prelude = False
+        if prelude_fn_names is not None:
+            if name in prelude_fn_names:
+                is_prelude = True
+            elif "$" in name:
+                base = name.rsplit("$", 1)[0]
+                if base in prelude_fn_names:
+                    is_prelude = True
+
+        is_builtin = (
+            name in _BUILTIN_NAMES
+            or any(name.startswith(p) for p in _BUILTIN_PREFIXES)
+            or is_prelude
+        )
+        if is_builtin:
+            resolved.append(TrapFrame(
+                func=name,
+                file="<builtin>",
+                line_start=None,
+                line_end=None,
+                is_builtin=True,
+            ))
+            continue
+
+        # Try the exact name first; on miss, try the base name (the
+        # part before the rightmost `$`) for monomorphized generics.
+        # `$` cannot appear in user-written Vera identifiers, so any
+        # `$` in a WAT name was inserted by the monomorphizer.
+        loc = fn_source_map.get(name)
+        if loc is None and "$" in name:
+            base = name.rsplit("$", 1)[0]
+            loc = fn_source_map.get(base)
+
+        if loc is None:
+            # Not a user function we have a source for, but not on the
+            # builtin allowlist either (could be a future codegen
+            # helper, a closure that didn't register, etc.).  Surface
+            # the name with no location rather than dropping the frame
+            # — the user still benefits from knowing which WAT
+            # function trapped.
+            resolved.append(TrapFrame(
+                func=name,
+                file="<unknown>",
+                line_start=None,
+                line_end=None,
+                is_builtin=False,
+            ))
+            continue
+
+        file_path, line_start, line_end = loc
+        resolved.append(TrapFrame(
+            func=name,
+            file=file_path,
+            line_start=line_start,
+            line_end=line_end,
+            is_builtin=False,
+        ))
+
+    return resolved
 
 
 def _classify_trap(
@@ -2611,11 +2889,19 @@ def execute(
         exc_name = type(exc).__name__
         if exc_name in ("Trap", "WasmtimeError"):
             kind, message = _classify_trap(exc, last_violation)
+            # #516 Stage 2 — resolve trap frames against the source map.
+            # Pre-Stage-2 the user got a hex-offset wasmtime backtrace
+            # in the exception message and nothing else; now they get
+            # a structured list of (file, line) pairs they can act on.
+            frames = _resolve_trap_frames(
+                exc, result.fn_source_map, result.prelude_fn_names,
+            )
             raise WasmTrapError(
                 message,
                 stdout=output_buf.getvalue(),
                 stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
                 kind=kind,
+                frames=frames,
             ) from exc
         raise
 
