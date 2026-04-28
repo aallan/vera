@@ -828,8 +828,19 @@ class TestResolveTrapFrames516:
         assert frames[0].is_builtin is False
         assert frames[0].file == "<unknown>"
 
-    def test_frames_preserved_in_outermost_first_order(self) -> None:
-        """Order matches wasmtime's backtrace (outermost first)."""
+    def test_frames_preserved_in_leaf_first_order(self) -> None:
+        """Order matches wasmtime's backtrace (innermost / leaf first).
+
+        Terminology note: "innermost" / "leaf" / "inner-first" all
+        mean the same thing — closest to where the trap fired,
+        which is the bottom of the call stack and the first frame
+        wasmtime emits.  Python tracebacks order the OPPOSITE way
+        (outermost / root first); we follow wasmtime / gdb here so
+        the human reading the backtrace sees the trap origin first
+        and the call chain widening outward.  The previous test
+        name said "outermost-first" which was the literal opposite
+        of what this asserts (CodeRabbit round 6).
+        """
         from vera.codegen.api import _resolve_trap_frames
         src_map = {
             "outer": ("/tmp/x.vera", 10, 15),
@@ -1132,6 +1143,20 @@ public fn main(@Unit -> @Int)
         # (they're counted by the suppression marker, not listed).
         assert "in gc_collect" not in captured.err
         assert "in alloc" not in captured.err
+        # Ordering pin (CodeRabbit round 6): the "Source backtrace:"
+        # header reads before the suppression marker, which reads
+        # before the user frames.  The suppression line is metadata
+        # about the backtrace below it — should appear under the
+        # heading, not above it.
+        header_pos = captured.err.find("Source backtrace:")
+        suppress_pos = captured.err.find("suppressed 2 runtime-helper")
+        main_pos = captured.err.find("in main")
+        assert 0 <= header_pos < suppress_pos < main_pos, (
+            f"Expected order: Source backtrace: header < suppression "
+            f"line < user frame.  Got positions header={header_pos}, "
+            f"suppress={suppress_pos}, main={main_pos}.  Stderr was: "
+            f"{captured.err!r}"
+        )
 
     def test_text_mode_does_not_collapse_when_all_frames_are_builtins(
         self,

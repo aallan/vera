@@ -752,6 +752,12 @@ def cmd_run(
                 exc.frames[user_idx:] if user_idx is not None
                 else exc.frames
             )
+            # Header first, then the optional suppression line, then
+            # the frames themselves.  The suppression message is
+            # metadata about the backtrace below it — reading it
+            # under the heading is more natural than reading it as
+            # a preface to the heading (CodeRabbit round 6).
+            print("Source backtrace:", file=sys.stderr)
             if user_idx and user_idx > 0:
                 hidden = user_idx
                 print(
@@ -759,7 +765,6 @@ def cmd_run(
                     f"{'s' if hidden != 1 else ''} above first user code)",
                     file=sys.stderr,
                 )
-            print("Source backtrace:", file=sys.stderr)
             for frame in display_frames:
                 if frame.is_builtin:
                     print(

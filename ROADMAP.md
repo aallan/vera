@@ -176,7 +176,7 @@ These are not strictly required for the MCP demo but would make it more compelli
 ### Phase 3c: Developer experience
 
 - [#224](https://github.com/aallan/vera/issues/224) **REPL** — interactive exploration for both agents and humans. Useful for rapid prototyping and debugging.
-- [#143](https://github.com/aallan/vera/issues/143) **Comprehensive example programs** — expand from 30 to 50+ examples covering every major pattern: API clients, data pipelines, text processing, LLM orchestration, effect composition.
+- [#143](https://github.com/aallan/vera/issues/143) **Comprehensive example programs** — expand from 33 to 50+ examples covering every major pattern: API clients, data pipelines, text processing, LLM orchestration, effect composition.  (Canonical example count is enforced by `scripts/check_doc_counts.py` — when adding examples, run that script and update this baseline figure if it has drifted.)
 
 ---
 
