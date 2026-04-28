@@ -259,7 +259,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.122 | 27 Apr | **Conservative GC bounds-checked against `$heap_ptr`** ([#515](https://github.com/aallan/vera/issues/515)) — `$gc_collect` no longer faults when a non-pointer i32 in payload data (e.g. a bit-packed `Nat` row in Conway-style code) happens to satisfy the worklist-seeding alignment + range guards. Layer 2 sanity-checks `obj_ptr + obj_size <= heap_ptr` before marking or scanning a worklist entry; Layer 1 adds a per-iteration bound check inside the conservative scan loop so any future caller that bypasses the upstream check still cannot read past the heap. 40×20×200 Conway now runs cleanly through every generation. |
 | v0.0.123 | 27 Apr | **`IO.print` writes mirror live to `sys.stdout`** ([#543](https://github.com/aallan/vera/issues/543)) — `vera run` text mode now flushes per call, so animations, progress bars, REPL-style output, and any program using ANSI cursor / clear-screen escapes render in real time instead of dumping the whole transcript at exit. Tee preserves the in-memory capture, so trap preservation (#522) and JSON-envelope packaging still work. |
 | v0.0.124 | 27 Apr | **Runtime traps now include a source backtrace** ([#516](https://github.com/aallan/vera/issues/516) Stage 2). |
-| v0.0.125 | 28 Apr | **Runtime traps now carry per-`kind` `Fix:` paragraphs** ([#547](https://github.com/aallan/vera/issues/547), closes [#516](https://github.com/aallan/vera/issues/516) Stage 3). |
+| v0.0.125 | 28 Apr | **Runtime traps now carry per-`kind` `Fix:` paragraphs** ([#547](https://github.com/aallan/vera/issues/547)). |
 
 ---
 

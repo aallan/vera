@@ -1383,12 +1383,29 @@ class TestTrapFixParagraphs547:
         assert "Fix:" in captured.err
         # Canonical content from `_TRAP_FIX_PARAGRAPHS["divide_by_zero"]`
         assert "requires(divisor != 0)" in captured.err
-        # Position invariant: Fix: comes after the last frame
+        # Position invariant: Fix: comes after the LAST FRAME, not
+        # merely after the "Source backtrace:" header.  Asserting
+        # only against the header would miss a regression where
+        # the Fix block landed between the header and the frames
+        # (e.g. if a future refactor reordered the cli.py print
+        # statements).  Frame format is `  in <funcname>  (file:N)`;
+        # rfind to locate the last frame line in the stderr capture.
         backtrace_pos = captured.err.find("Source backtrace:")
+        last_frame_pos = captured.err.rfind("\n  in ")
         fix_pos = captured.err.find("Fix:")
-        assert 0 <= backtrace_pos < fix_pos, (
-            f"Expected Fix: block after Source backtrace.  "
-            f"backtrace={backtrace_pos}, fix={fix_pos}.  "
+        assert 0 <= backtrace_pos, (
+            f"Source backtrace: header missing from stderr: "
+            f"{captured.err!r}"
+        )
+        assert backtrace_pos < last_frame_pos, (
+            f"Expected at least one user frame after Source backtrace: "
+            f"header.  backtrace={backtrace_pos}, "
+            f"last_frame={last_frame_pos}.  stderr={captured.err!r}"
+        )
+        assert last_frame_pos < fix_pos, (
+            f"Expected Fix: block AFTER the last frame, not between "
+            f"the header and the frames.  backtrace={backtrace_pos}, "
+            f"last_frame={last_frame_pos}, fix={fix_pos}.  "
             f"stderr={captured.err!r}"
         )
 
@@ -1556,9 +1573,22 @@ public fn main(@Unit -> @Int)
             assert ln.startswith("  "), (
                 f"Fix-block line missing indent: {ln!r}"
             )
-        # No line exceeds 80 chars (76 wrap + 2 indent + slack).
+        # No line exceeds 76 chars.  textwrap.fill counts the
+        # initial_indent / subsequent_indent strings as part of
+        # `width` (verified empirically — width=76 with 2-char
+        # indent produces lines of at most 76 chars total, of which
+        # 2 are indent and up to 74 are body), so 76 is the strict
+        # ceiling for fully-wrapped lines.  Caveat: a single token
+        # longer than 74 chars could exceed; the canonical Fix
+        # paragraphs in `_TRAP_FIX_PARAGRAPHS` don't contain any
+        # such tokens (longest backtick-bounded literal is
+        # `requires(divisor != 0)` at 22 chars), so the strict
+        # ceiling is achievable today.  Loosen this if a future
+        # paragraph adds a longer single-token literal — but flag
+        # that as a separate decision rather than letting the
+        # ceiling drift silently.
         for ln in fix_body_lines:
-            assert len(ln) <= 80, (
+            assert len(ln) <= 76, (
                 f"Fix-block line too long ({len(ln)} chars): {ln!r}"
             )
 

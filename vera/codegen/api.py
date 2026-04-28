@@ -590,7 +590,13 @@ def _classify_trap(
     else:
         # Couldn't classify — surface the raw wasmtime message
         # verbatim so the user still sees something diagnostic.
-        return ("unknown", f"WASM trap: {exc}", _TRAP_FIX_PARAGRAPHS["unknown"])
+        # Use ``str(exc)`` directly rather than `f"WASM trap: {exc}"`
+        # because the wasmtime exception text already contains the
+        # "wasm trap:" substring (in its "Caused by:" tail), and a
+        # synthetic mock that begins with "wasm trap: ..." would
+        # otherwise produce a double-prefix message
+        # ("WASM trap: wasm trap: ...").
+        return ("unknown", str(exc), _TRAP_FIX_PARAGRAPHS["unknown"])
 
     return (kind, description, _TRAP_FIX_PARAGRAPHS[kind])
 
