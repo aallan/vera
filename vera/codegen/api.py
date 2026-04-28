@@ -102,15 +102,23 @@ class CompileResult:
         default_factory=dict,
     )
     # #516 Stage 2 — positive source-of-truth for prelude / built-in
-    # function classification.  Populated by `_register_fn` when a
-    # FnDecl has no span (the marker `inject_prelude` uses for
-    # synthetic injections).  Consumed by `_resolve_trap_frames`
-    # alongside the runtime-helper allowlist so trap frames inside
-    # prelude functions (`array_map`, `option_unwrap_or`, ADT auto-
-    # derived methods, …) are tagged as `<builtin>` rather than
-    # falling through to `<unknown>` user code.  Without it the
-    # CLI's suppression-marker collapse cannot fire for traps that
-    # go through prelude functions.
+    # function classification.  Populated by the post-prelude
+    # registration loop in `compile_program` (`vera/codegen/core.py`):
+    # any FnDecl that wasn't registered before `inject_prelude()` ran
+    # but is registered after is by definition a prelude / built-in
+    # injection, not user code.  Detection is by registration-flow
+    # position, NOT by `decl.span` being None — `inject_prelude`
+    # calls `parse_to_ast` on inline Vera source so its synthetic
+    # FnDecls do have spans (just spans pointing into that synthetic
+    # source, which would land bogus coordinates in `fn_source_map`
+    # if used directly).
+    #
+    # Consumed by `_resolve_trap_frames` alongside the runtime-helper
+    # allowlist so trap frames inside prelude functions
+    # (`option_unwrap_or`, ADT auto-derived methods, …) are tagged as
+    # `<builtin>` rather than falling through to `<unknown>` user
+    # code.  Without it the CLI's suppression-marker collapse cannot
+    # fire for traps that go through prelude functions.
     prelude_fn_names: set[str] = field(default_factory=set)
 
     @property

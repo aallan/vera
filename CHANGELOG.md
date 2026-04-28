@@ -26,6 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **KNOWN_ISSUES.md** — #516 row updated to note Stage 2 shipped (Stage 3 remains).
 - **ROADMAP.md** — #516 row in the bug-killing campaign queue updated; intro string unchanged (the row stays in the queue until Stage 3 ships).
 
+### Stage 3 follow-up
+- Tracked as [#547](https://github.com/aallan/vera/issues/547) — per-`kind` `Fix:` suggestion paragraphs to match the compile-time `Diagnostic` shape (description / rationale / fix / spec_ref).  Will be picked up after #517 (TCO) lands so the `stack_exhausted` Fix paragraph can reference `return_call` as shipped rather than as "see #517 for the planned fix".
+
 ## [0.0.123] - 2026-04-27
 
 ### Fixed

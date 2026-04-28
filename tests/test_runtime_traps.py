@@ -773,9 +773,15 @@ class TestResolveTrapFrames516:
               firing (only `is_builtin=True` frames get collapsed)
 
         The fix is a separate ``prelude_fn_names`` set on
-        ``CompileResult`` populated by ``_register_fn`` whenever
-        ``decl.span is None``; the resolver consults it alongside
-        the runtime-helper allowlist.
+        ``CompileResult`` populated by the post-prelude registration
+        loop in ``compile_program`` (a FnDecl is identified as
+        prelude by *registration position* — i.e. it landed in the
+        decl list during ``inject_prelude`` rather than parsing of
+        user source — not by ``decl.span`` being None, since
+        ``inject_prelude`` calls ``parse_to_ast`` on inline Vera
+        source and so its FnDecls do have spans, just synthetic
+        ones).  The resolver consults ``prelude_fn_names``
+        alongside the runtime-helper allowlist.
         """
         from vera.codegen.api import _resolve_trap_frames
         prelude_names = {"array_map", "option_unwrap_or"}
