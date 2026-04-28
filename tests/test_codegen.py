@@ -1698,6 +1698,665 @@ public fn f(-> @Int)
         assert "(memory" in result.wat
 
 
+class TestTailCallOptimization517:
+    """#517 — WASM `return_call` emission for tail-position calls.
+
+    Pre-fix, every Vera ``call`` site emitted plain WASM ``call``
+    regardless of tail-position status, so a tail-recursive function
+    pushed one WASM frame per iteration and trapped with "call stack
+    exhausted" at ~tens of thousands of frames.  The documented
+    "iteration is tail recursion" idiom from `SKILL.md` thus
+    silently failed past ~5-10K iterations.
+
+    The fix is a per-fn analyzer (`vera/codegen/tail_position.py`)
+    that marks `id(FnCall)` AST nodes in syntactic tail position;
+    `_translate_call` emits ``return_call $foo`` instead of
+    ``call $foo`` when the call's id is in the marked set AND the
+    callee's WASM return type matches the caller's (required for
+    WASM `return_call` semantics — the signature must match).
+    Allocating functions revert ``return_call`` → ``call`` in a
+    post-process step because `return_call` discards the current
+    frame and skips the GC epilogue, leaking shadow-stack slots.
+    """
+
+    def test_tail_recursive_iteration_succeeds_at_50k(self) -> None:
+        """The canonical 50K-iteration loop runs to completion."""
+        source = """\
+private fn count_down(@Nat -> @Nat)
+  requires(true) ensures(true) decreases(@Nat.0) effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { count_down(@Nat.0 - 1) }
+}
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  nat_to_int(count_down(50000))
+}
+"""
+        # Pre-fix this trapped at ~30K iterations on the WASM stack.
+        # Post-fix, return_call keeps the stack flat and the function
+        # returns 0 cleanly.
+        assert _run(source, fn="f") == 0
+
+    def test_tail_recursive_iteration_succeeds_at_1m(self) -> None:
+        """Stress test: 1M iterations also runs to completion.
+
+        The pre-fix bug was at ~30K WASM frames (default wasmtime
+        stack size).  Post-fix, the only constraint is wall-clock
+        time — 1M iterations of a single arithmetic op completes in
+        well under a second.  This test exists to pin "iteration in
+        constant stack space" rather than just "iteration deeper
+        than the broken limit", so a future regression that
+        reintroduced linear stack growth would fail here even if it
+        happened to push the limit higher than 50K.
+        """
+        source = """\
+private fn count_down(@Nat -> @Nat)
+  requires(true) ensures(true) decreases(@Nat.0) effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { count_down(@Nat.0 - 1) }
+}
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  nat_to_int(count_down(1000000))
+}
+"""
+        assert _run(source, fn="f") == 0
+
+    def test_return_call_emitted_for_tail_position_call(self) -> None:
+        """Structural: tail-recursive call site emits `return_call`."""
+        source = """\
+private fn count_down(@Nat -> @Nat)
+  requires(true) ensures(true) decreases(@Nat.0) effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { count_down(@Nat.0 - 1) }
+}
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  nat_to_int(count_down(10))
+}
+"""
+        result = _compile_ok(source)
+        # The recursive call inside the else branch is in tail
+        # position (it's the trailing expression of the else-block,
+        # which is the trailing expression of the if, which is the
+        # trailing expression of the function body).  The non-
+        # tail call to nat_to_int below is also in tail position
+        # in `f`, but nat_to_int is a host-translator builtin
+        # without a WAT $-prefixed name, so it doesn't get the
+        # return_call treatment.  count_down's recursive call
+        # does — assert at least one return_call emission.
+        assert "return_call $count_down" in result.wat, (
+            f"Expected return_call $count_down in WAT.  WAT excerpt:\n"
+            f"{result.wat[:2000]}"
+        )
+
+    def test_no_return_call_for_non_tail_position(self) -> None:
+        """Structural: a call bound by `let` is NOT in tail position.
+
+        Sibling regression to the `return_call` emission test
+        above.  The analyzer must NOT mark calls in non-tail
+        positions; otherwise WASM `return_call` would discard the
+        caller's frame and the let-binding would lose access to
+        the result it needs to bind.
+        """
+        source = """\
+private fn count_down(@Nat -> @Nat)
+  requires(true) ensures(true) decreases(@Nat.0) effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { count_down(@Nat.0 - 1) }
+}
+
+public fn caller(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Nat = count_down(10);
+  @Nat.0 + 1
+}
+"""
+        result = _compile_ok(source)
+        # In `caller`, the call to `count_down(10)` is the value of
+        # a let binding — NOT tail position.  The trailing
+        # `@Nat.0 + 1` consumes the bound value.  Assert that the
+        # WAT contains a plain `call $count_down` from `caller`
+        # AND a `return_call $count_down` from the recursive call
+        # inside count_down's else-branch.  Both must coexist.
+        assert "call $count_down" in result.wat
+        # Look for the let-bound call: it should be plain `call`,
+        # not `return_call`.  Find the function body of `caller`
+        # and inspect.
+        f_body_start = result.wat.find("(func $caller")
+        assert f_body_start >= 0, "caller function not found in WAT"
+        f_body_end = result.wat.find("(func ", f_body_start + 1)
+        if f_body_end < 0:
+            f_body_end = len(result.wat)
+        caller_body = result.wat[f_body_start:f_body_end]
+        # Inside caller's body, the count_down call must be plain
+        # `call`, never `return_call`.  Pre-fix safety: a buggy
+        # analyzer that marked non-tail calls would emit
+        # `return_call $count_down` here and the let-binding
+        # would lose its value.
+        assert "return_call $count_down" not in caller_body, (
+            f"caller's count_down call should NOT be return_call "
+            f"(it's bound by `let`, NOT tail position).  Body:\n"
+            f"{caller_body}"
+        )
+        # Positive sibling assertion — `count_down`'s recursive call
+        # IS in tail position (the trailing expression of the
+        # else-branch, transitively the trailing expression of the
+        # function body via `if`-transparency), so the optimization
+        # must fire there even though it doesn't fire in `caller`.
+        # Without this check, a buggy analyzer that marked NOTHING
+        # would silently pass `assert "return_call $count_down" not
+        # in caller_body` while regressing the actual TCO behaviour.
+        cd_body_start = result.wat.find("(func $count_down")
+        assert cd_body_start >= 0, "count_down function not found"
+        cd_body_end = result.wat.find("(func ", cd_body_start + 1)
+        if cd_body_end < 0:
+            cd_body_end = len(result.wat)
+        count_down_body = result.wat[cd_body_start:cd_body_end]
+        assert "return_call $count_down" in count_down_body, (
+            f"count_down's recursive call should be return_call "
+            f"(tail position via if-else transparency).  Body:\n"
+            f"{count_down_body}"
+        )
+
+    def test_postcondition_function_falls_back_to_plain_call(self) -> None:
+        """A function with a non-trivial `ensures` reverts return_call.
+
+        Postcondition checks emit instructions AFTER the function
+        body in the WAT assembly (`local.set $ret`, condition
+        check, trap on failure, `local.get $ret` to push back).
+        WASM `return_call` discards the current frame and skips
+        all of those — silently violating the contract.
+
+        The fallback in `_compile_fn` reverts every `return_call`
+        → `call` when `post_instrs` is non-empty (CodeRabbit
+        finding on PR #550 round 2).  Pre-fix this would have
+        shipped as a soundness hole: a tail-recursive function
+        with a runtime postcondition would skip the postcondition
+        check on every iteration and the contract would silently
+        fail.  Trivial postconditions like `ensures(true)` are
+        elided by `_compile_postconditions` and don't trigger the
+        fallback (no instructions are emitted, so nothing is
+        skipped).
+        """
+        # A function with a non-trivial postcondition.  The
+        # ensures clause (`@Nat.result >= 0`) is trivially true
+        # for `@Nat` (refinement-typed non-negative), but the
+        # codegen treats any non-`true` ensures as non-trivial
+        # and emits the runtime check.
+        source = """\
+private fn count_down(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result >= 0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then { 0 } else { count_down(@Nat.0 - 1) }
+}
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  nat_to_int(count_down(10))
+}
+"""
+        result = _compile_ok(source)
+        cd_body_start = result.wat.find("(func $count_down")
+        assert cd_body_start >= 0
+        cd_body_end = result.wat.find("(func ", cd_body_start + 1)
+        if cd_body_end < 0:
+            cd_body_end = len(result.wat)
+        count_down_body = result.wat[cd_body_start:cd_body_end]
+        # The recursive call is in syntactic tail position, so the
+        # analyzer MARKS it.  But the postcondition check needs to
+        # run after every recursive call's return — `return_call`
+        # would skip it.  Post-process must have reverted the
+        # emission to plain `call`.
+        assert "call $count_down" in count_down_body
+        assert "return_call $count_down" not in count_down_body, (
+            f"count_down has a non-trivial postcondition (ensures "
+            f"@Nat.result >= 0); return_call would skip the runtime "
+            f"check.  Post-process should have reverted to plain "
+            f"call.  Body:\n{count_down_body}"
+        )
+
+    def test_allocating_function_falls_back_to_plain_call(self) -> None:
+        """Allocating functions revert return_call → call.
+
+        WASM `return_call` discards the current frame, which means
+        the GC epilogue (restore `$gc_sp`, unwind shadow stack)
+        never runs.  For an allocating function with tail calls,
+        that leaks shadow-stack slots once per iteration and would
+        eventually trap on the next `$alloc` once gc_sp passes the
+        worklist boundary.  The post-process in
+        `_compile_fn` reverts every `return_call` → `call` when
+        `ctx.needs_alloc` is True.
+
+        This test pins that contract: a function that both
+        allocates AND has a tail call must emit plain `call`,
+        not `return_call`.  Until full GC-aware tail-call support
+        lands, this is the correctness guard.
+        """
+        # Function that allocates (constructor call) AND has a
+        # tail-recursive call shape.  The analyzer marks the
+        # recursive call as tail-position; the post-process
+        # reverts the emission because needs_alloc is True.
+        source = """\
+private data Box { MkBox(Int) }
+
+private fn build(@Int -> @Box)
+  requires(true) ensures(true) decreases(@Int.0) effects(pure)
+{
+  if @Int.0 == 0 then { MkBox(0) } else { build(@Int.0 - 1) }
+}
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match build(3) { MkBox(@Int) -> @Int.0 }
+}
+"""
+        result = _compile_ok(source)
+        # build allocates (the MkBox constructor) AND has a tail-
+        # recursive call.  Post-process must have reverted the
+        # `return_call $build` to plain `call $build`.
+        build_start = result.wat.find("(func $build")
+        assert build_start >= 0
+        build_end = result.wat.find("(func ", build_start + 1)
+        if build_end < 0:
+            build_end = len(result.wat)
+        build_body = result.wat[build_start:build_end]
+        assert "call $build" in build_body
+        assert "return_call $build" not in build_body, (
+            f"Allocating function `build` emitted return_call, "
+            f"which would leak shadow-stack slots.  Post-process "
+            f"should have reverted to plain call.  Body:\n"
+            f"{build_body}"
+        )
+
+    def test_analyzer_marks_block_trailing_expression(self) -> None:
+        """Unit test: analyzer marks Block.expr as tail position."""
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  f()
+}
+""")
+        decl = program.declarations[0].decl
+        sites = compute_tail_call_sites(decl)
+        # The single FnCall in the body is the trailing expression
+        # of the block — analyzer marks it.
+        assert len(sites) == 1
+
+    def test_analyzer_marks_both_branches_of_tail_if(self) -> None:
+        """Unit test: both then/else branches of a tail-position if."""
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+public fn f(@Bool -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { f(false) } else { f(true) }
+}
+""")
+        decl = program.declarations[0].decl
+        sites = compute_tail_call_sites(decl)
+        # Two FnCalls (one per branch) — both should be marked.
+        assert len(sites) == 2
+
+    def test_analyzer_marks_match_arm_bodies(self) -> None:
+        """Unit test: every arm body of a tail-position match is tail position.
+
+        ``MatchExpr`` is tail-transparent in the same way ``IfExpr``
+        is — if the match expression itself is in tail position
+        (i.e. it's the trailing expression of the function body),
+        every arm body is in tail position.  The scrutinee is NOT,
+        and call arguments inside an arm body are NOT — those are
+        non-transparent in the same way.
+
+        Pre-this-test, MatchExpr handling in the analyzer
+        (``visit_tail`` in ``vera/codegen/tail_position.py``)
+        existed but had no explicit test pinning the behaviour;
+        a regression that dropped or mis-handled the MatchExpr
+        case would have slipped past CI silently.  This test
+        constructs a function whose body is a match with two arms
+        — one arm wraps its tail call around a non-tail argument
+        call — and asserts the analyzer marks the two arm bodies
+        but NOT the inner argument call.
+        """
+        from vera import ast
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+private fn arg_producer(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+
+private fn arm_handler(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+
+public fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    None -> arm_handler(arg_producer(())),
+    Some(@Int) -> arm_handler(@Int.0)
+  }
+}
+""")
+        f_decl = program.declarations[2].decl
+        sites = compute_tail_call_sites(f_decl)
+
+        # Locate the specific call ids by walking the AST so the
+        # assertion below pins WHICH calls got marked, not just how
+        # many — same exhaustiveness pattern as
+        # ``test_analyzer_does_not_mark_call_args``.  Body shape:
+        #
+        #   Block(statements=[], expr=MatchExpr(
+        #     scrutinee=SlotRef,
+        #     arms=[
+        #       Arm(pattern=None, body=FnCall("arm_handler",
+        #             [FnCall("arg_producer", [UnitLit])])),
+        #       Arm(pattern=Some(@Int), body=FnCall("arm_handler",
+        #             [SlotRef])),
+        #     ]))
+        match_expr = f_decl.body.expr
+        assert isinstance(match_expr, ast.MatchExpr)
+        assert len(match_expr.arms) == 2
+
+        none_arm_call = match_expr.arms[0].body
+        some_arm_call = match_expr.arms[1].body
+        assert isinstance(none_arm_call, ast.FnCall)
+        assert isinstance(some_arm_call, ast.FnCall)
+        assert none_arm_call.name == "arm_handler"
+        assert some_arm_call.name == "arm_handler"
+
+        nested_arg_call = none_arm_call.args[0]
+        assert isinstance(nested_arg_call, ast.FnCall)
+        assert nested_arg_call.name == "arg_producer"
+
+        # Both arm bodies (the outer ``arm_handler(...)`` calls)
+        # are in tail position via match-transparency.  The nested
+        # ``arg_producer(())`` call inside the None arm is an
+        # argument — non-transparent, NOT tail.  An exhaustive
+        # ``sites == {...}`` check pins both the inclusion AND the
+        # exclusion in one assertion.
+        assert id(none_arm_call) in sites, (
+            f"None-arm body call should be tail position; "
+            f"sites={sites!r}, expected id={id(none_arm_call)}"
+        )
+        assert id(some_arm_call) in sites, (
+            f"Some-arm body call should be tail position; "
+            f"sites={sites!r}, expected id={id(some_arm_call)}"
+        )
+        assert id(nested_arg_call) not in sites, (
+            f"Nested argument call inside None arm should NOT be "
+            f"tail position; sites={sites!r}, "
+            f"unexpected id={id(nested_arg_call)}"
+        )
+        assert sites == {id(none_arm_call), id(some_arm_call)}, (
+            f"Expected exactly the two arm-body calls in sites; "
+            f"got {sites!r}"
+        )
+
+    def test_analyzer_does_not_mark_let_value_calls(self) -> None:
+        """Unit test: a call as a let value is NOT tail position."""
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+private fn helper(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = helper();
+  @Int.0 + 1
+}
+""")
+        f_decl = program.declarations[1].decl
+        sites = compute_tail_call_sites(f_decl)
+        # The let value is NOT tail; the trailing `@Int.0 + 1` is
+        # an addition (BinaryExpr), not a call.  No FnCalls in tail
+        # position.
+        assert sites == set()
+
+    def test_analyzer_does_not_mark_call_args(self) -> None:
+        """Unit test: args to a tail-position call are NOT themselves tail."""
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+private fn inner(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+
+private fn arg_producer(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  inner(arg_producer())
+}
+""")
+        from vera import ast
+        f_decl = program.declarations[2].decl
+        sites = compute_tail_call_sites(f_decl)
+
+        # Locate the two call ids explicitly so the assertion below
+        # checks WHICH call got marked, not just how many.  The
+        # body is `Block(statements=[], expr=FnCall("inner", [FnCall("arg_producer", [])]))`
+        # so the outer call is `f_decl.body.expr`, and the inner
+        # arg-producer call is its first argument.
+        outer_call = f_decl.body.expr
+        assert isinstance(outer_call, ast.FnCall)
+        assert outer_call.name == "inner"
+        inner_arg_call = outer_call.args[0]
+        assert isinstance(inner_arg_call, ast.FnCall)
+        assert inner_arg_call.name == "arg_producer"
+
+        # The outer call IS in tail position (trailing expression of
+        # the function body).  The argument call is NOT — its result
+        # is consumed by `inner`'s parameter binding.  A buggy
+        # analyzer that marked argument calls would emit
+        # `return_call $arg_producer` and the discarded frame would
+        # mean `inner` never receives its argument.
+        assert id(outer_call) in sites, (
+            f"Outer call `inner(...)` should be marked tail position; "
+            f"sites={sites!r}, outer call id={id(outer_call)}"
+        )
+        assert id(inner_arg_call) not in sites, (
+            f"Argument call `arg_producer()` should NOT be marked "
+            f"tail position; sites={sites!r}, "
+            f"arg call id={id(inner_arg_call)}"
+        )
+        # And nothing else either — both ids accounted for.
+        assert sites == {id(outer_call)}
+
+    def test_analyzer_does_not_mark_call_in_block_statement(self) -> None:
+        """Unit test: a call inside a Block statement is NOT tail position.
+
+        ``Block`` is tail-transparent for its trailing expression
+        ONLY — calls inside ``LetStmt.value`` / ``ExprStmt.expr`` /
+        ``LetDestruct.value`` are NOT in tail position, even when
+        the block itself is.  The analyzer's Block handler only
+        recurses into ``block.expr``; statements are skipped.
+
+        This test pins the ExprStmt case specifically (the
+        ``LetStmt.value`` case is covered by
+        ``test_analyzer_does_not_mark_let_value_calls``).  A
+        regression that started visiting statements would mark the
+        side-effect call below in tail position, which would mean
+        WASM ``return_call`` discards the current frame and the
+        block's trailing expression (``42``) never executes.
+        """
+        from vera import ast
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+private fn side_effect(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 0 }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  side_effect(());
+  42
+}
+""")
+        f_decl = program.declarations[1].decl
+        sites = compute_tail_call_sites(f_decl)
+
+        # The block has one ExprStmt (the side_effect call) and a
+        # trailing IntLit.  Locate the ExprStmt's call to assert it
+        # is NOT marked.  AST shape:
+        #
+        #   Block(statements=[ExprStmt(expr=FnCall("side_effect", [UnitLit]))],
+        #         expr=IntLit(42))
+        block = f_decl.body
+        assert isinstance(block, ast.Block)
+        assert len(block.statements) == 1
+        side_effect_stmt = block.statements[0]
+        assert isinstance(side_effect_stmt, ast.ExprStmt)
+        side_effect_call = side_effect_stmt.expr
+        assert isinstance(side_effect_call, ast.FnCall)
+        assert side_effect_call.name == "side_effect"
+
+        # Trailing expression is IntLit(42), not a call — so the
+        # analyzer should mark NOTHING.  The ExprStmt's call must
+        # NOT be in sites (it's a statement, not the trailing
+        # expression).
+        assert id(side_effect_call) not in sites, (
+            f"ExprStmt-position call should NOT be tail position; "
+            f"sites={sites!r}, unexpected id={id(side_effect_call)}"
+        )
+        assert sites == set(), (
+            f"Expected empty sites (only statement call, no tail "
+            f"calls); got {sites!r}"
+        )
+
+    def test_analyzer_does_not_mark_call_in_if_condition(self) -> None:
+        """Unit test: a call inside an IfExpr condition is NOT tail position.
+
+        ``IfExpr`` is tail-transparent for its branches only —
+        the condition is evaluated first, its result is consumed
+        by the if-dispatch, and only THEN one of the branches
+        runs.  A call in the condition is therefore non-tail.
+        The analyzer's IfExpr handler only recurses into
+        ``then_branch`` and ``else_branch``; the condition is
+        skipped.
+        """
+        from vera import ast
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+private fn predicate(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ true }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if predicate(()) then { 1 } else { 2 }
+}
+""")
+        f_decl = program.declarations[1].decl
+        sites = compute_tail_call_sites(f_decl)
+
+        # Locate the predicate() call in the if condition.  Body
+        # shape: Block(statements=[], expr=IfExpr(condition=FnCall(...),
+        # then_branch=Block(...), else_branch=Block(...))).
+        if_expr = f_decl.body.expr
+        assert isinstance(if_expr, ast.IfExpr)
+        cond_call = if_expr.condition
+        assert isinstance(cond_call, ast.FnCall)
+        assert cond_call.name == "predicate"
+
+        # Both branches return literals (no calls), so the analyzer
+        # should mark NOTHING.  The condition call must NOT be in
+        # sites — a regression that recursed into the condition with
+        # the parent's tail status would mark it and ``return_call``
+        # would discard the frame before the if-dispatch ran.
+        assert id(cond_call) not in sites, (
+            f"IfExpr-condition call should NOT be tail position; "
+            f"sites={sites!r}, unexpected id={id(cond_call)}"
+        )
+        assert sites == set(), (
+            f"Expected empty sites (no tail calls — both branches "
+            f"are literals); got {sites!r}"
+        )
+
+    def test_analyzer_does_not_mark_call_in_match_scrutinee(self) -> None:
+        """Unit test: a call inside a MatchExpr scrutinee is NOT tail position.
+
+        ``MatchExpr`` is tail-transparent for its arm bodies only —
+        the scrutinee is evaluated first, its result is consumed
+        by the match-dispatch (constructor tag check + field
+        binding), and only THEN one of the arms runs.  A call in
+        the scrutinee is therefore non-tail.  The analyzer's
+        MatchExpr handler only recurses into each arm's body;
+        the scrutinee is skipped.
+        """
+        from vera import ast
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+private fn make_option(@Unit -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{ None }
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match make_option(()) {
+    None -> 0,
+    Some(@Int) -> @Int.0
+  }
+}
+""")
+        f_decl = program.declarations[1].decl
+        sites = compute_tail_call_sites(f_decl)
+
+        # Locate the make_option() call in the match scrutinee.
+        # Body shape: Block(statements=[], expr=MatchExpr(
+        #   scrutinee=FnCall(...), arms=[...])).
+        match_expr = f_decl.body.expr
+        assert isinstance(match_expr, ast.MatchExpr)
+        scrutinee_call = match_expr.scrutinee
+        assert isinstance(scrutinee_call, ast.FnCall)
+        assert scrutinee_call.name == "make_option"
+
+        # Both arms return literals/slot ref (no calls), so the
+        # analyzer should mark NOTHING.  The scrutinee call must
+        # NOT be in sites — a regression that recursed into the
+        # scrutinee with the parent's tail status would mark it
+        # and ``return_call`` would discard the frame before the
+        # match-dispatch ran (the constructor tag check would have
+        # nothing to inspect).
+        assert id(scrutinee_call) not in sites, (
+            f"MatchExpr-scrutinee call should NOT be tail position; "
+            f"sites={sites!r}, unexpected id={id(scrutinee_call)}"
+        )
+        assert sites == set(), (
+            f"Expected empty sites (no tail calls — both arms are "
+            f"literals/slot ref); got {sites!r}"
+        )
+
+
 class TestGarbageCollection:
     """Test GC infrastructure emission and behavior."""
 

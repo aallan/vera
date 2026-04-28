@@ -498,15 +498,19 @@ _TRAP_FIX_PARAGRAPHS: dict[str, str] = {
         "at https://github.com/aallan/vera/issues/new."
     ),
     "stack_exhausted": (
-        "Tail-recursive functions blow the WASM call stack at ~tens of "
-        "thousands of frames because Vera doesn't yet emit `return_call` "
-        "in tail positions (tracked as #517).  Until #517 ships, "
-        "accumulator-style recursion will not save you here — without "
-        "TCO each tail call still pushes a fresh frame.  Restructure "
-        "the work iteratively (`array_fold` / `array_map` / etc., which "
-        "compile to WASM loops rather than recursion), or split the "
-        "computation into bounded chunks of <5K frames each, or wait "
-        "for #517 to ship."
+        "Vera compiles tail-position calls to WASM `return_call` (#517, "
+        "shipped in v0.0.126), so iteration-shaped recursion runs in "
+        "constant stack space — if you're still hitting this trap the "
+        "recursion isn't actually in tail position.  Restructure with "
+        "an accumulator parameter so the recursive call is the LAST "
+        "thing the function does (no work after it, no `let`-binding "
+        "of its result, no enclosing arithmetic).  Allocating "
+        "functions are an exception: TCO is disabled there until "
+        "GC-aware tail-call support lands, so a tail-recursive "
+        "function that constructs ADTs each iteration still grows the "
+        "stack — restructure to allocate outside the recursion or "
+        "iterate via `array_fold` / `array_map` (which compile to "
+        "WASM loops rather than recursion)."
     ),
     "unreachable": (
         "Usually a non-exhaustive `match` whose missing arm would have "

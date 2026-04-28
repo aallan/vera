@@ -7,6 +7,7 @@ parameter allocation, body translation, and function assembly.
 from __future__ import annotations
 
 from vera import ast
+from vera.codegen.tail_position import compute_tail_call_sites
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import gc_shadow_push
 
@@ -146,6 +147,22 @@ class FunctionCompilationMixin:
         # Scan body for IO qualified calls to register per-op imports
         self._scan_io_ops(decl.body)
 
+        # #517 — configure tail-call optimization for this function.
+        # The analyzer marks `id(FnCall)` for every call in syntactic
+        # tail position; ``_translate_call`` checks membership +
+        # type match before emitting ``return_call $foo``.  The
+        # ``self_ret_wt`` argument is the function's WASM return
+        # type, used by the translator's type-match guard to ensure
+        # WASM ``return_call`` semantics are valid (callee signature
+        # must match caller).  See ``vera/codegen/tail_position.py``
+        # for the analyzer rules and ``_translate_call`` in
+        # ``vera/wasm/calls.py`` for the emit site.
+        tail_sites = compute_tail_call_sites(decl)
+        ctx.set_tail_call_context(
+            tail_sites,
+            self_ret_wt=ret_wt if ret_wt != "unsupported" else None,
+        )
+
         # Compile precondition checks
         pre_instrs = self._compile_preconditions(ctx, decl, env)
 
@@ -204,6 +221,43 @@ class FunctionCompilationMixin:
 
         # Compile postcondition checks (wrap around body result)
         post_instrs = self._compile_postconditions(ctx, decl, env, ret_wt)
+
+        # #517 — tail-call optimization fallback for functions whose
+        # bodies are followed by post-body work that must run before
+        # the function returns.  WASM ``return_call`` discards the
+        # current frame and jumps straight to the callee, so any
+        # instructions emitted AFTER ``body_instrs`` in the WAT
+        # assembly (postcondition checks, GC epilogue) are silently
+        # skipped.  The two known sources of post-body work:
+        #
+        # 1. ``post_instrs`` — postcondition checks (``ensures(...)``
+        #    clauses) emitted by ``_compile_postconditions``.  A
+        #    non-empty ``post_instrs`` means the function has a
+        #    non-trivial postcondition that must be checked at
+        #    runtime; ``return_call`` would skip the check and
+        #    silently violate the contract.
+        #
+        # 2. ``ctx.needs_alloc`` — the GC epilogue (restore
+        #    ``$gc_sp``, unwind shadow-stack pointer slots) runs
+        #    only for allocating functions.  ``return_call`` would
+        #    leak shadow-stack slots once per iteration and
+        #    eventually trap on the next ``$alloc`` (#549 tracks
+        #    GC-aware TCO as a follow-up).
+        #
+        # When either condition holds, revert every ``return_call``
+        # in ``body_instrs`` to plain ``call``.  Allocating /
+        # postcondition-bearing functions pay the WASM frame cost in
+        # exchange for correctness; non-allocating, postcondition-
+        # free functions keep the optimization (the common
+        # iteration-style tail recursion case from ``SKILL.md``'s
+        # "Iteration" section).
+        if ctx.needs_alloc or post_instrs:
+            body_instrs = [
+                instr.replace("return_call ", "call ", 1)
+                if instr.lstrip().startswith("return_call ")
+                else instr
+                for instr in body_instrs
+            ]
 
         # Build GC prologue/epilogue (only when function allocates)
         gc_prologue: list[str] = []

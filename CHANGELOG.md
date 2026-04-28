@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.126] - 2026-04-28
+
+### Fixed
+- **Tail-call optimization for non-allocating tail-recursive functions** ([#517](https://github.com/aallan/vera/issues/517), closes) — pre-fix, every Vera `call` site emitted a plain WASM `call` regardless of tail-position status, so a tail-recursive function pushed one WASM frame per iteration and trapped with `call stack exhausted` at ~tens of thousands of frames. The documented "iteration is tail recursion" idiom from `SKILL.md` thus silently failed past ~5–10K iterations. The fix is a per-fn analyzer (`vera/codegen/tail_position.py`) that marks `id(FnCall)` AST nodes in syntactic tail position; `_translate_call` emits `return_call $foo` instead of `call $foo` when the call's id is in the marked set AND the callee's WASM return type matches the caller's (required for WASM `return_call` semantics — the signature must match). Non-allocating tail-recursive functions now run in **constant stack space**: the canonical `count_down(50000)` reproducer succeeds, as does a 1M-iteration stress test.
+
+### Tail-position analysis
+- **Marking rules** (recursive on the function body):
+  - The body's trailing expression IS in tail position.
+  - If a sub-expression is in tail position and is an `IfExpr`, both branch bodies are in tail position. The condition is NOT.
+  - If a sub-expression is in tail position and is a `MatchExpr`, every arm body is in tail position. The scrutinee is NOT.
+  - If a sub-expression is in tail position and is a `Block`, only the trailing expression is in tail position. Statement values (`let` initialisers, `ExprStmt` expressions) are NOT.
+  - All other constructs (call arguments, quantifier bodies, `assert`/`assume`, `handle` bodies, `AnonFn`, indexing) are NOT tail-transparent — calls inside them are not in tail position regardless of the parent's status.
+- **Type-safety guard at emit time:** WASM `return_call` requires the callee's signature to match the caller's, so the translator falls back to plain `call` whenever the resolved callee's WASM return type doesn't match the current function's return type. The recursive case (call to the same function) trivially matches; cross-function tail calls match when signatures align.
+
+### Allocating-function fallback
+- **Allocating functions revert `return_call` → `call`** in a post-process step at the end of `_compile_fn`. WASM `return_call` discards the current frame, which means the GC epilogue (restore `$gc_sp`, unwind shadow-stack pointer slots) never runs. For an allocating function with tail calls, that leaks shadow-stack slots once per iteration and would eventually trap on the next `$alloc` once `gc_sp` passes the worklist boundary — strictly worse than the pre-fix "stack exhausted" trap. Until full GC-aware tail-call support lands ([#549](https://github.com/aallan/vera/issues/549) tracks the follow-up), allocating functions pay the WASM frame cost in exchange for correct shadow-stack management. Non-allocating functions (the common iteration-style tail recursion case) keep the optimization.
+
+### Tests
+- New `TestTailCallOptimization517` in `tests/test_codegen.py` (9 tests): 50K-iteration behavioural test (the issue's canonical reproducer), 1M-iteration stress test (pins constant-stack-space behaviour rather than just "deeper than the broken limit"), structural assertion that `return_call $count_down` appears in WAT for the recursive call, structural assertion that a let-bound (non-tail) call emits plain `call`, allocating-function fallback assertion (allocating tail-recursive function emits plain `call` not `return_call`), plus 4 analyzer unit tests covering each tail-transparent construct (Block trailing, both branches of IfExpr, let-value NOT marked, call args NOT marked).
+- Existing fixtures in `tests/test_runtime_traps.py` updated for the TCO interaction: the `_DIVIDE_BY_ZERO_USER_FN`, `_CONTRACT_VIOLATION_PROGRAM`, and `_DIVZERO_FOR_FIX` test programs originally had `main` calling the trapping function in tail position, which #517 would now optimize away — discarding `main`'s frame and shortening the backtrace assertions expect to see. The fixtures now bind the call result with `let` and produce it via slot reference, keeping the call non-tail and preserving `main`'s frame on the WASM call stack. Comments document the intentional non-tail shape so a future contributor doesn't "simplify" them back into tail position.
+
+### Improved
+- **`stack_exhausted` trap Fix paragraph rewritten** to reflect the v0.0.126 reality. Pre-rewrite: "Vera doesn't yet emit `return_call` ... wait for #517 to ship". Post-rewrite: "Vera compiles tail-position calls to WASM `return_call` ... if you're still hitting this trap the recursion isn't actually in tail position. Restructure with an accumulator parameter so the recursive call is the LAST thing the function does (no work after it, no `let`-binding of its result, no enclosing arithmetic). Allocating functions are an exception ... iterate via `array_fold` / `array_map` (which compile to WASM loops rather than recursion)."
+
+### Documentation
+- **KNOWN_ISSUES.md** — #517 row removed (closed); new row added pointing at [#549](https://github.com/aallan/vera/issues/549) (GC-aware TCO follow-up for allocating functions, with restructure/array-fold workarounds).
+- **ROADMAP.md** — #517 dropped from the bug-killing campaign queue (closed by this release); intro updated to "eight remain"; priority rows renumbered (#520 promoted to position 1).
+
 ## [0.0.125] - 2026-04-28
 
 ### Improved
@@ -1779,7 +1807,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.125...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.126...HEAD
+[0.0.126]: https://github.com/aallan/vera/compare/v0.0.125...v0.0.126
 [0.0.125]: https://github.com/aallan/vera/compare/v0.0.124...v0.0.125
 [0.0.124]: https://github.com/aallan/vera/compare/v0.0.123...v0.0.124
 [0.0.123]: https://github.com/aallan/vera/compare/v0.0.122...v0.0.123

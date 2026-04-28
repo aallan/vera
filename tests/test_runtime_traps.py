@@ -898,6 +898,16 @@ class TestResolveTrapFrames516:
         assert [f.func for f in frames] == ["inner", "outer"]
 
 
+# Test fixture for source-backtrace assertions.  The `let` binding
+# in `main` is INTENTIONAL — without it, the call to `divide(42, 0)`
+# would be in tail position and #517 (TCO, v0.0.126) would emit
+# `return_call $divide` instead of `call $divide`, discarding
+# `main`'s frame before `divide` traps.  The assertions below want
+# both `divide` AND `main` to appear in the resolved backtrace, so
+# we keep the call non-tail by binding its result and producing it
+# with a separate slot reference.  The trap still fires inside
+# `divide`, but `main`'s frame is preserved on the WASM call stack
+# and so shows up in `wasmtime.Trap.frames` for the resolver.
 _DIVIDE_BY_ZERO_USER_FN = """\
 public fn divide(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -908,7 +918,8 @@ public fn divide(@Int, @Int -> @Int)
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  divide(42, 0)
+  let @Int = divide(42, 0);
+  @Int.0
 }
 """
 
@@ -934,11 +945,11 @@ class TestTrapSourceBacktrace516:
         assert "in main" in captured.err
         # File + line range — exact path matches the temp fixture
         assert str(path) in captured.err
-        # divide is on lines 1-5, main on 7-11 (0-indexed line 1 is
-        # the first line of the source).  Check at least one of
-        # them surfaces with a colon-separated line range.
+        # divide is on lines 1-5, main on 7-12 (the let + trailing
+        # expression body shape).  Check at least one of them
+        # surfaces with a colon-separated line range.
         assert ":1-5" in captured.err
-        assert ":7-11" in captured.err
+        assert ":7-12" in captured.err
 
     def test_text_mode_orders_leaf_first(
         self, tmp_path: Path, capsys: CaptureFixture[str],
@@ -996,6 +1007,10 @@ class TestTrapSourceBacktrace516:
             "JSON mode must not write to stderr; got: " f"{captured.err!r}"
         )
 
+    # `let` is intentional — see the comment on _DIVIDE_BY_ZERO_USER_FN
+    # above for the TCO interaction.  `main` calls `positive` in
+    # non-tail position so both frames are preserved when the
+    # precondition fails inside `positive`.
     _CONTRACT_VIOLATION_PROGRAM = """\
 public fn positive(@Int -> @Int)
   requires(@Int.0 > 0) ensures(true) effects(pure)
@@ -1006,7 +1021,8 @@ public fn positive(@Int -> @Int)
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  positive(0 - 5)
+  let @Int = positive(0 - 5);
+  @Int.0
 }
 """
 
@@ -1342,6 +1358,10 @@ public fn main(@Unit -> @Int)
 # =====================================================================
 
 
+# `let` keeps the divide call non-tail — see the comment on
+# _DIVIDE_BY_ZERO_USER_FN at line ~901 for the TCO interaction
+# (#517 / v0.0.126 emits return_call for tail positions, which
+# would discard `main`'s frame and shorten the backtrace).
 _DIVZERO_FOR_FIX = """\
 public fn divide(@Int, @Int -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -1352,7 +1372,8 @@ public fn divide(@Int, @Int -> @Int)
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  divide(42, 0)
+  let @Int = divide(42, 0);
+  @Int.0
 }
 """
 

@@ -260,6 +260,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.123 | 27 Apr | **`IO.print` writes mirror live to `sys.stdout`** ([#543](https://github.com/aallan/vera/issues/543)) — `vera run` text mode now flushes per call, so animations, progress bars, REPL-style output, and any program using ANSI cursor / clear-screen escapes render in real time instead of dumping the whole transcript at exit. Tee preserves the in-memory capture, so trap preservation (#522) and JSON-envelope packaging still work. |
 | v0.0.124 | 27 Apr | **Runtime traps now include a source backtrace** ([#516](https://github.com/aallan/vera/issues/516) Stage 2). |
 | v0.0.125 | 28 Apr | **Runtime traps now include actionable fix suggestions** ([#547](https://github.com/aallan/vera/issues/547)). |
+| v0.0.126 | 28 Apr | **Tail-recursive iteration runs in constant stack space** ([#517](https://github.com/aallan/vera/issues/517)). |
 
 ---
 
@@ -289,14 +290,14 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 
 ## By the numbers
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.125 (28 Apr) |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.126 (28 Apr) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,604 |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,618 |
 | Examples | 13 | 15 | 16 | 18 | 24 | 30 | 33 |
 | Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 164 |
 | Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 81 |
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 125 tagged releases, 48 active development days.**
+Total: **810+ commits, 126 tagged releases, 48 active development days.**
