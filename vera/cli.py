@@ -690,7 +690,11 @@ def cmd_run(
                 # ceremony.  Same shape stability principle as the
                 # always-present `trap_kind` above; `frames` is
                 # structural, not optional content like `stdout`.
-                "frames": exc.frames,
+                # Each frame is a `TrapFrame` dataclass (#516 Stage
+                # 2) — convert to dict at the JSON serialisation
+                # boundary so the wire format stays the same as
+                # before the dataclass refactor (CodeRabbit round 5).
+                "frames": [f.to_dict() for f in exc.frames],
             }
             envelope: dict[str, object] = {
                 "ok": False,
@@ -741,7 +745,7 @@ def cmd_run(
         if exc.frames:
             user_idx = next(
                 (i for i, f in enumerate(exc.frames)
-                 if not f.get("is_builtin")),
+                 if not f.is_builtin),
                 None,
             )
             display_frames = (
@@ -757,23 +761,26 @@ def cmd_run(
                 )
             print("Source backtrace:", file=sys.stderr)
             for frame in display_frames:
-                func = frame.get("func")
-                file_path = frame.get("file")
-                line_start = frame.get("line_start")
-                line_end = frame.get("line_end")
-                if frame.get("is_builtin"):
-                    print(f"  in {func}  <builtin>", file=sys.stderr)
-                elif file_path == "<unknown>" or line_start is None:
-                    print(f"  in {func}  ({file_path})", file=sys.stderr)
-                elif line_start == line_end:
+                if frame.is_builtin:
                     print(
-                        f"  in {func}  ({file_path}:{line_start})",
+                        f"  in {frame.func}  <builtin>", file=sys.stderr,
+                    )
+                elif frame.file == "<unknown>" or frame.line_start is None:
+                    print(
+                        f"  in {frame.func}  ({frame.file})",
+                        file=sys.stderr,
+                    )
+                elif frame.line_start == frame.line_end:
+                    print(
+                        f"  in {frame.func}  "
+                        f"({frame.file}:{frame.line_start})",
                         file=sys.stderr,
                     )
                 else:
                     print(
-                        f"  in {func}  ({file_path}:{line_start}"
-                        f"-{line_end})",
+                        f"  in {frame.func}  "
+                        f"({frame.file}:{frame.line_start}"
+                        f"-{frame.line_end})",
                         file=sys.stderr,
                     )
         return 1

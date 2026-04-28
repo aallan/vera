@@ -316,6 +316,23 @@ class CodeGenerator(
         mono_decls = self._monomorphize(program)
         for mdecl in mono_decls:
             self._register_fn(mdecl)
+            # #516 Stage 2 — keep monomorphized prelude clones out of
+            # `_fn_source_map`.  A clone like `option_unwrap_or$Int`
+            # inherits the original generic FnDecl's span, which for a
+            # prelude function points at the synthetic source string
+            # `inject_prelude` constructed.  Registering it here would
+            # re-introduce the same bogus-coordinates problem the
+            # post-prelude loop above scrubbed for the base names.
+            # The trap-frame resolver already handles monomorphized
+            # prelude calls correctly via the rightmost-`$` strip rule
+            # (it tags `option_unwrap_or$Int` as `<builtin>` because
+            # `option_unwrap_or` is in `prelude_fn_names`), so the
+            # entry here was dead weight.  Suffix-strip and check the
+            # base name against `_prelude_fn_names` to detect.
+            if "$" in mdecl.name:
+                base = mdecl.name.rsplit("$", 1)[0]
+                if base in self._prelude_fn_names:
+                    self._fn_source_map.pop(mdecl.name, None)
 
         # Pass 1.6: rewrite ability operation calls → concrete expressions
         program, mono_decls = self._rewrite_ability_ops(program, mono_decls)

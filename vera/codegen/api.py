@@ -150,6 +150,63 @@ class _VeraExit(Exception):
         super().__init__(f"IO.exit({code})")
 
 
+@dataclass(frozen=True)
+class TrapFrame:
+    """One resolved frame in a runtime-trap source backtrace (#516 Stage 2).
+
+    Built by ``_resolve_trap_frames`` from a ``wasmtime.Frame`` plus
+    the ``CompileResult.fn_source_map`` / ``prelude_fn_names`` data.
+    Carried on ``WasmTrapError.frames`` and consumed by the CLI text
+    formatter and the JSON envelope builder.
+
+    A frozen dataclass instead of a ``dict[str, object]`` so mypy
+    can type-check field access — the previous shape was a hand-
+    rolled dict with stringly-typed keys (``frame["func"]``), which
+    silently allowed typos and made it impossible to track the
+    contract across consumers.
+    """
+
+    func: str
+    """The WAT function name as reported by wasmtime, with any
+    leading ``$`` stripped.  For monomorphized generics (e.g.
+    ``identity$Int``) this is the mangled name."""
+
+    file: str
+    """Source path, ``"<builtin>"`` for runtime helpers / prelude
+    injections, or ``"<unknown>"`` for user-named frames not found
+    in the source map."""
+
+    line_start: int | None
+    """Source line range start of the function definition.  ``None``
+    for built-ins and unknown-name frames."""
+
+    line_end: int | None
+    """Source line range end of the function definition.  ``None``
+    for built-ins and unknown-name frames."""
+
+    is_builtin: bool
+    """``True`` for ``alloc`` / ``gc_collect`` / ``contract_fail`` /
+    ``exn_*`` / ``vera.*`` runtime helpers and for prelude /
+    inject_prelude functions; ``False`` for user-named frames
+    (including ``<unknown>`` lookups)."""
+
+    def to_dict(self) -> dict[str, object]:
+        """Serialise to a JSON-compatible dict for envelope output.
+
+        Used by ``cmd_run --json`` to preserve the wire format that
+        downstream consumers (LSP, agents, telemetry) parse.  Each
+        field becomes a key with its native type (``None`` serialises
+        to JSON null, matching the Stage 2 contract for built-in
+        frames with no source line range)."""
+        return {
+            "func": self.func,
+            "file": self.file,
+            "line_start": self.line_start,
+            "line_end": self.line_end,
+            "is_builtin": self.is_builtin,
+        }
+
+
 class WasmTrapError(RuntimeError):
     """A WASM runtime trap, classified and carrying buffered output.
 
@@ -182,13 +239,11 @@ class WasmTrapError(RuntimeError):
         * ``unknown`` — could not classify; raw wasmtime message in
           ``str()``.
 
-    * ``frames`` — a list of resolved trap frames (#516 Stage 2).
-      Each entry is a dict with keys ``func`` (WAT function name as
-      reported by wasmtime), ``file``, ``line_start``, ``line_end``,
-      and ``is_builtin`` (True for runtime helpers like ``alloc``,
-      ``gc_collect``, ``contract_fail`` that have no source mapping).
-      Outermost (most recent) frame first, matching the wasmtime
-      backtrace order.
+    * ``frames`` — a ``list[TrapFrame]`` resolved trap backtrace
+      (#516 Stage 2).  Outermost (most recent / leaf) frame first,
+      matching the wasmtime backtrace order.  See ``TrapFrame`` for
+      the field shape; serialise to JSON via
+      ``[f.to_dict() for f in exc.frames]``.
 
     Stage 1 of #516 established the ``kind`` taxonomy.  Stage 2 adds
     source mapping (the ``frames`` field).  Stage 3 will layer per-
@@ -202,49 +257,87 @@ class WasmTrapError(RuntimeError):
         stdout: str = "",
         stderr: str = "",
         kind: str = "unknown",
-        frames: list[dict[str, object]] | None = None,
+        frames: list[TrapFrame] | None = None,
     ) -> None:
         super().__init__(message)
         self.stdout = stdout
         self.stderr = stderr
         self.kind = kind
-        self.frames: list[dict[str, object]] = frames or []
+        self.frames: list[TrapFrame] = frames or []
+
+
+def _find_frames_in_exception_chain(
+    exc: BaseException,
+) -> object | None:
+    """Walk the exception chain looking for a ``frames`` attribute.
+
+    Some wasmtime call paths raise a ``WasmtimeError`` whose
+    ``__cause__`` is the underlying ``wasmtime.Trap`` carrying the
+    backtrace data; if we only inspect the outer exception we lose
+    the frames silently.  Walks ``exc.frames`` first, then
+    ``__cause__`` / ``__context__`` recursively until a frame
+    sequence is found or the chain terminates.  Mirrors the
+    ``_VeraExit`` chain walk pattern already used in ``execute()``.
+
+    Returns the first non-empty ``.frames`` attribute encountered,
+    or ``None``.
+    """
+    seen: set[int] = set()
+    cursor: BaseException | None = exc
+    while cursor is not None and id(cursor) not in seen:
+        seen.add(id(cursor))
+        frames: object | None = getattr(cursor, "frames", None)
+        if frames:
+            return frames
+        cursor = cursor.__cause__ or cursor.__context__
+    return None
 
 
 def _resolve_trap_frames(
     exc: BaseException,
     fn_source_map: dict[str, tuple[str, int, int]],
     prelude_fn_names: set[str] | None = None,
-) -> list[dict[str, object]]:
+) -> list[TrapFrame]:
     """Resolve ``wasmtime.Trap.frames`` against the codegen source map.
 
     Walks the trap's frame list and produces a structured backtrace,
-    one dict per frame.  Each dict has:
+    one ``TrapFrame`` per frame (see ``TrapFrame`` for field shape).
 
-    * ``func`` — the WAT function name as reported by wasmtime, with
-      any leading ``$`` stripped defensively (current wasmtime-py
-      versions strip it already, but we normalise anyway so a future
-      version that omits the strip can't silently break the builtin
-      lookup or the source-map join).  For monomorphized generics
-      (``identity$Int``) this is the mangled name; the resolver also
-      tries the base name (the part before the rightmost ``$``) as a
-      fallback because the source map only stores the original
-      generic.
-    * ``file`` — source path, or ``"<builtin>"`` for runtime helpers
-      that have no Vera source.
-    * ``line_start`` / ``line_end`` — source line range of the
-      function definition.  ``None`` for built-ins.
-    * ``is_builtin`` — True for ``alloc`` / ``gc_collect`` /
-      ``contract_fail`` / ``exn_*`` / ``vera.*`` (host imports), all
-      of which are runtime infrastructure with no user-visible source
-      location.
+    Resolution rules:
 
-    On any failure (no ``frames`` attribute, exception during iter,
-    etc.) returns an empty list — the trap message survives even if
-    the backtrace can't be resolved.  Per-function granularity matches
-    the issue's stated Stage 2 success criterion (#516).
+    * The WAT function name is normalised by stripping a single
+      leading ``$`` defensively (current wasmtime-py strips it
+      already; a future version that doesn't would otherwise
+      silently break every lookup below).
+    * Built-in WAT helpers (``alloc`` / ``gc_collect`` /
+      ``contract_fail``) plus anything starting with ``exn_`` /
+      ``vera.`` / ``closure_sig_`` are tagged ``is_builtin=True``,
+      ``file="<builtin>"``.
+    * Prelude / inject_prelude functions are tagged the same way,
+      via the ``prelude_fn_names`` parameter (positive source of
+      truth populated by the post-prelude registration loop).  The
+      check matches the exact name first, then tries the base name
+      (the part before the rightmost ``$``) for monomorphized
+      generics — ``option_unwrap_or$Int`` resolves to the same
+      builtin tag as ``option_unwrap_or``.
+    * User-named frames look up exact-then-base in
+      ``fn_source_map``; on miss the frame is surfaced with
+      ``file="<unknown>"`` rather than dropped.
+
+    On any failure (no ``frames`` attribute, exception during
+    iteration, etc.) returns an empty list — the trap message
+    survives even if the backtrace can't be resolved.  Per-function
+    granularity matches the issue's stated Stage 2 success criterion
+    (#516).
+
+    Walks the exception chain (``__cause__`` / ``__context__``) to
+    find the first frame-bearing exception.  Some wasmtime call
+    paths wrap a ``Trap`` (which carries ``frames``) inside a
+    ``WasmtimeError`` (which doesn't); without the chain walk we'd
+    silently lose the backtrace whenever wrapping happens.  Mirrors
+    the ``_VeraExit`` chain walk in ``execute()``.
     """
-    raw_frames = getattr(exc, "frames", None)
+    raw_frames = _find_frames_in_exception_chain(exc)
     if not raw_frames:
         return []
 
@@ -260,9 +353,15 @@ def _resolve_trap_frames(
         "closure_sig_",  # synthetic closure signatures
     )
 
-    resolved: list[dict[str, object]] = []
+    resolved: list[TrapFrame] = []
     try:
-        iter_frames = list(raw_frames)
+        # raw_frames is `object | None` from the chain walker (we
+        # only know it's truthy and presumed iterable — wasmtime's
+        # Trap.frames is a list-of-Frame in practice).  Cast via
+        # `list()` to materialise; the broad except below catches
+        # pathological inputs (a frames attribute that isn't
+        # iterable) so this stays robust.
+        iter_frames = list(raw_frames)  # type: ignore[call-overload]
     except Exception:  # pragma: no cover — defensive
         return []
 
@@ -306,13 +405,13 @@ def _resolve_trap_frames(
             or is_prelude
         )
         if is_builtin:
-            resolved.append({
-                "func": name,
-                "file": "<builtin>",
-                "line_start": None,
-                "line_end": None,
-                "is_builtin": True,
-            })
+            resolved.append(TrapFrame(
+                func=name,
+                file="<builtin>",
+                line_start=None,
+                line_end=None,
+                is_builtin=True,
+            ))
             continue
 
         # Try the exact name first; on miss, try the base name (the
@@ -331,23 +430,23 @@ def _resolve_trap_frames(
             # the name with no location rather than dropping the frame
             # — the user still benefits from knowing which WAT
             # function trapped.
-            resolved.append({
-                "func": name,
-                "file": "<unknown>",
-                "line_start": None,
-                "line_end": None,
-                "is_builtin": False,
-            })
+            resolved.append(TrapFrame(
+                func=name,
+                file="<unknown>",
+                line_start=None,
+                line_end=None,
+                is_builtin=False,
+            ))
             continue
 
         file_path, line_start, line_end = loc
-        resolved.append({
-            "func": name,
-            "file": file_path,
-            "line_start": line_start,
-            "line_end": line_end,
-            "is_builtin": False,
-        })
+        resolved.append(TrapFrame(
+            func=name,
+            file=file_path,
+            line_start=line_start,
+            line_end=line_end,
+            is_builtin=False,
+        ))
 
     return resolved
 

@@ -677,11 +677,11 @@ class TestResolveTrapFrames516:
         frames = _resolve_trap_frames(exc, src_map)
 
         assert len(frames) == 1
-        assert frames[0]["func"] == "divide"
-        assert frames[0]["file"] == "/tmp/a.vera"
-        assert frames[0]["line_start"] == 5
-        assert frames[0]["line_end"] == 9
-        assert frames[0]["is_builtin"] is False
+        assert frames[0].func == "divide"
+        assert frames[0].file == "/tmp/a.vera"
+        assert frames[0].line_start == 5
+        assert frames[0].line_end == 9
+        assert frames[0].is_builtin is False
 
     def test_builtin_helpers_tagged_as_builtin(self) -> None:
         """alloc / gc_collect / contract_fail must NOT claim a source.
@@ -698,10 +698,10 @@ class TestResolveTrapFrames516:
             exc = self._make_exc(self._frame(name))
             frames = _resolve_trap_frames(exc, src_map)
             assert len(frames) == 1
-            assert frames[0]["func"] == name
-            assert frames[0]["file"] == "<builtin>"
-            assert frames[0]["line_start"] is None
-            assert frames[0]["is_builtin"] is True, name
+            assert frames[0].func == name
+            assert frames[0].file == "<builtin>"
+            assert frames[0].line_start is None
+            assert frames[0].is_builtin is True, name
 
     def test_builtin_prefix_matches(self) -> None:
         """exn_* / vera.* / closure_sig_* are also runtime infrastructure."""
@@ -710,7 +710,7 @@ class TestResolveTrapFrames516:
         for name in ("exn_String", "vera.print", "closure_sig_3"):
             exc = self._make_exc(self._frame(name))
             frames = _resolve_trap_frames(exc, {})
-            assert frames[0]["is_builtin"] is True, name
+            assert frames[0].is_builtin is True, name
 
     def test_monomorphized_name_resolves_to_base(self) -> None:
         """`identity$Int` looks up `identity` after the rightmost `$`.
@@ -726,9 +726,9 @@ class TestResolveTrapFrames516:
 
         frames = _resolve_trap_frames(exc, src_map)
 
-        assert frames[0]["func"] == "identity$Int"  # original WAT name
-        assert frames[0]["file"] == "/tmp/m.vera"
-        assert frames[0]["line_start"] == 3
+        assert frames[0].func == "identity$Int"  # original WAT name
+        assert frames[0].file == "/tmp/m.vera"
+        assert frames[0].line_start == 3
 
     def test_unknown_user_function_keeps_frame_with_unknown_loc(
         self,
@@ -746,9 +746,9 @@ class TestResolveTrapFrames516:
         frames = _resolve_trap_frames(exc, {})
 
         assert len(frames) == 1
-        assert frames[0]["func"] == "mystery_helper"
-        assert frames[0]["file"] == "<unknown>"
-        assert frames[0]["is_builtin"] is False
+        assert frames[0].func == "mystery_helper"
+        assert frames[0].file == "<unknown>"
+        assert frames[0].is_builtin is False
 
     def test_no_frames_attribute_returns_empty_list(self) -> None:
         """Defensive: a trap-shaped exception with no `frames` returns []."""
@@ -789,9 +789,9 @@ class TestResolveTrapFrames516:
 
         frames = _resolve_trap_frames(exc, {}, prelude_names)
 
-        assert frames[0]["func"] == "array_map"
-        assert frames[0]["file"] == "<builtin>"
-        assert frames[0]["is_builtin"] is True
+        assert frames[0].func == "array_map"
+        assert frames[0].file == "<builtin>"
+        assert frames[0].is_builtin is True
 
     def test_monomorphized_prelude_tagged_as_builtin(self) -> None:
         """Prelude classification handles monomorphized base names too.
@@ -808,9 +808,9 @@ class TestResolveTrapFrames516:
 
         frames = _resolve_trap_frames(exc, {}, prelude_names)
 
-        assert frames[0]["func"] == "array_map$Int"
-        assert frames[0]["is_builtin"] is True
-        assert frames[0]["file"] == "<builtin>"
+        assert frames[0].func == "array_map$Int"
+        assert frames[0].is_builtin is True
+        assert frames[0].file == "<builtin>"
 
     def test_prelude_fn_names_optional_for_backward_compat(self) -> None:
         """Resolver works with prelude_fn_names omitted (defaults None).
@@ -825,8 +825,8 @@ class TestResolveTrapFrames516:
         exc = self._make_exc(self._frame("user_function"))
         # No prelude set passed; user_function is not a known builtin.
         frames = _resolve_trap_frames(exc, {})
-        assert frames[0]["is_builtin"] is False
-        assert frames[0]["file"] == "<unknown>"
+        assert frames[0].is_builtin is False
+        assert frames[0].file == "<unknown>"
 
     def test_frames_preserved_in_outermost_first_order(self) -> None:
         """Order matches wasmtime's backtrace (outermost first)."""
@@ -842,7 +842,7 @@ class TestResolveTrapFrames516:
         # wasmtime returns inner-first; we preserve that order so
         # the human reading the backtrace sees the leaf first
         # (matches the wasmtime CLI convention).
-        assert [f["func"] for f in frames] == ["inner", "outer"]
+        assert [f.func for f in frames] == ["inner", "outer"]
 
 
 _DIVIDE_BY_ZERO_USER_FN = """\
@@ -1050,7 +1050,7 @@ public fn main(@Unit -> @Int)
         except WasmTrapError as exc:
             assert exc.kind == "divide_by_zero"
             assert exc.frames, "frames should be populated"
-            funcs = [f["func"] for f in exc.frames]
+            funcs = [f.func for f in exc.frames]
             assert "divide" in funcs
             assert "main" in funcs
         else:
@@ -1087,25 +1087,21 @@ public fn main(@Unit -> @Int)
         # then alloc) at the leaf, then the user code that called
         # into them.  Matches the wasmtime backtrace shape that #515
         # produced before the fix landed.
-        synthetic_frames: list[dict[str, object]] = [
-            {
-                "func": "gc_collect", "file": "<builtin>",
-                "line_start": None, "line_end": None,
-                "is_builtin": True,
-            },
-            {
-                "func": "alloc", "file": "<builtin>",
-                "line_start": None, "line_end": None,
-                "is_builtin": True,
-            },
-            {
-                "func": "main", "file": str(path),
-                "line_start": 1, "line_end": 3,
-                "is_builtin": False,
-            },
+        from vera.codegen.api import TrapFrame, WasmTrapError
+        synthetic_frames: list[TrapFrame] = [
+            TrapFrame(
+                func="gc_collect", file="<builtin>",
+                line_start=None, line_end=None, is_builtin=True,
+            ),
+            TrapFrame(
+                func="alloc", file="<builtin>",
+                line_start=None, line_end=None, is_builtin=True,
+            ),
+            TrapFrame(
+                func="main", file=str(path),
+                line_start=1, line_end=3, is_builtin=False,
+            ),
         ]
-
-        from vera.codegen.api import WasmTrapError
 
         def fake_execute(*args: object, **kwargs: object) -> None:
             raise WasmTrapError(
@@ -1158,20 +1154,17 @@ public fn main(@Unit -> @Int)
 { 42 }
 """)
 
-        synthetic_frames: list[dict[str, object]] = [
-            {
-                "func": "gc_collect", "file": "<builtin>",
-                "line_start": None, "line_end": None,
-                "is_builtin": True,
-            },
-            {
-                "func": "alloc", "file": "<builtin>",
-                "line_start": None, "line_end": None,
-                "is_builtin": True,
-            },
+        from vera.codegen.api import TrapFrame, WasmTrapError
+        synthetic_frames: list[TrapFrame] = [
+            TrapFrame(
+                func="gc_collect", file="<builtin>",
+                line_start=None, line_end=None, is_builtin=True,
+            ),
+            TrapFrame(
+                func="alloc", file="<builtin>",
+                line_start=None, line_end=None, is_builtin=True,
+            ),
         ]
-
-        from vera.codegen.api import WasmTrapError
 
         def fake_execute(*args: object, **kwargs: object) -> None:
             raise WasmTrapError(
@@ -1192,6 +1185,89 @@ public fn main(@Unit -> @Int)
         # Both helper frames displayed
         assert "in gc_collect" in captured.err
         assert "in alloc" in captured.err
+
+    def test_json_mode_preserves_full_frame_chain_including_builtins(
+        self,
+        tmp_path: Path,
+        capsys: CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """JSON envelope includes the FULL backtrace, not the
+        text-mode-collapsed view.
+
+        The CLI's text-mode collapse is a *display* convenience —
+        helper frames above the first user code get folded into the
+        suppression marker.  But the JSON envelope is a machine-
+        readable surface; downstream consumers (telemetry, LSP, agent
+        post-processing) need the full unmodified chain so they can
+        decide what to display themselves.  Pin that contract: the
+        ``frames`` array carries every ``TrapFrame`` the resolver
+        produced, including ``is_builtin=True`` helpers, in
+        leaf-first order.
+        """
+        path = tmp_path / "trivial.vera"
+        path.write_text("""\
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+""")
+
+        # Same synthetic shape as the text-mode collapse test, so a
+        # single mock surface exercises both paths.  The wire output
+        # of cmd_run text vs cmd_run --json must diverge cleanly:
+        # text collapses, JSON preserves.
+        from vera.codegen.api import TrapFrame, WasmTrapError
+        synthetic_frames: list[TrapFrame] = [
+            TrapFrame(
+                func="gc_collect", file="<builtin>",
+                line_start=None, line_end=None, is_builtin=True,
+            ),
+            TrapFrame(
+                func="alloc", file="<builtin>",
+                line_start=None, line_end=None, is_builtin=True,
+            ),
+            TrapFrame(
+                func="main", file=str(path),
+                line_start=1, line_end=3, is_builtin=False,
+            ),
+        ]
+
+        def fake_execute(*args: object, **kwargs: object) -> None:
+            raise WasmTrapError(
+                "Out-of-bounds memory access",
+                kind="out_of_bounds",
+                frames=synthetic_frames,
+            )
+
+        import vera.codegen
+        monkeypatch.setattr(vera.codegen, "execute", fake_execute)
+
+        rc = cmd_run(str(path), as_json=True)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        # JSON-mode invariant — see TestStdoutOnTrap522 / #543.
+        assert captured.err == "", (
+            "JSON mode must not write to stderr; got: " f"{captured.err!r}"
+        )
+        envelope = json.loads(captured.out)
+        diag = envelope["diagnostics"][0]
+        assert diag["trap_kind"] == "out_of_bounds"
+        # Full chain present, leaf-first order preserved, helpers
+        # tagged is_builtin=True (NOT filtered or rewritten — the
+        # text-mode collapse stays out of the JSON path).
+        funcs = [f["func"] for f in diag["frames"]]
+        assert funcs == ["gc_collect", "alloc", "main"], (
+            f"Expected leaf-first chain ['gc_collect','alloc','main'] in "
+            f"JSON envelope; got: {funcs}"
+        )
+        # Built-in tagging round-trips through the JSON serialisation.
+        assert diag["frames"][0]["is_builtin"] is True
+        assert diag["frames"][0]["file"] == "<builtin>"
+        assert diag["frames"][1]["is_builtin"] is True
+        assert diag["frames"][1]["file"] == "<builtin>"
+        assert diag["frames"][2]["is_builtin"] is False
+        assert diag["frames"][2]["file"] == str(path)
 
 
 class TestSourceMapPopulation516:
@@ -1339,9 +1415,16 @@ public fn run(@Option<Int> -> @Int)
         """Compiler-emitted helpers (alloc, gc_collect) must NOT appear.
 
         If they did, the resolver would surface them as "user" frames
-        with bogus locations.  Our codegen registers source map
-        entries only when ``decl.span is not None``, which built-in
-        injections lack.
+        with bogus locations.  These WASM helpers (`$alloc`,
+        `$gc_collect`, `$contract_fail`, `$exn_*`, `$vera.*`) are
+        emitted directly into WAT by the assembly module — they
+        never go through `_register_fn` at all, which is why no
+        entry exists.  Prelude-injected functions (a different class
+        of "built-in") DO go through `_register_fn` and are then
+        moved out of `_fn_source_map` into `_prelude_fn_names` by
+        the post-`inject_prelude` registration loop in
+        `compile_program`; that path is covered by
+        ``test_prelude_functions_registered_as_builtins`` above.
         """
         result = self._compile("""\
 public fn make_box(@Int -> @Int)
