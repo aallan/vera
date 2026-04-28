@@ -2014,6 +2014,102 @@ public fn f(@Bool -> @Int)
         # Two FnCalls (one per branch) — both should be marked.
         assert len(sites) == 2
 
+    def test_analyzer_marks_match_arm_bodies(self) -> None:
+        """Unit test: every arm body of a tail-position match is tail position.
+
+        ``MatchExpr`` is tail-transparent in the same way ``IfExpr``
+        is — if the match expression itself is in tail position
+        (i.e. it's the trailing expression of the function body),
+        every arm body is in tail position.  The scrutinee is NOT,
+        and call arguments inside an arm body are NOT — those are
+        non-transparent in the same way.
+
+        Pre-this-test, MatchExpr handling in the analyzer
+        (``visit_tail`` in ``vera/codegen/tail_position.py``)
+        existed but had no explicit test pinning the behaviour;
+        a regression that dropped or mis-handled the MatchExpr
+        case would have slipped past CI silently.  This test
+        constructs a function whose body is a match with two arms
+        — one arm wraps its tail call around a non-tail argument
+        call — and asserts the analyzer marks the two arm bodies
+        but NOT the inner argument call.
+        """
+        from vera import ast
+        from vera.codegen.tail_position import compute_tail_call_sites
+        from vera.parser import parse_to_ast
+        program = parse_to_ast("""\
+private fn arg_producer(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+
+private fn arm_handler(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Int.0 }
+
+public fn f(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @Option<Int>.0 {
+    None -> arm_handler(arg_producer(())),
+    Some(@Int) -> arm_handler(@Int.0)
+  }
+}
+""")
+        f_decl = program.declarations[2].decl
+        sites = compute_tail_call_sites(f_decl)
+
+        # Locate the specific call ids by walking the AST so the
+        # assertion below pins WHICH calls got marked, not just how
+        # many — same exhaustiveness pattern as
+        # ``test_analyzer_does_not_mark_call_args``.  Body shape:
+        #
+        #   Block(statements=[], expr=MatchExpr(
+        #     scrutinee=SlotRef,
+        #     arms=[
+        #       Arm(pattern=None, body=FnCall("arm_handler",
+        #             [FnCall("arg_producer", [UnitLit])])),
+        #       Arm(pattern=Some(@Int), body=FnCall("arm_handler",
+        #             [SlotRef])),
+        #     ]))
+        match_expr = f_decl.body.expr
+        assert isinstance(match_expr, ast.MatchExpr)
+        assert len(match_expr.arms) == 2
+
+        none_arm_call = match_expr.arms[0].body
+        some_arm_call = match_expr.arms[1].body
+        assert isinstance(none_arm_call, ast.FnCall)
+        assert isinstance(some_arm_call, ast.FnCall)
+        assert none_arm_call.name == "arm_handler"
+        assert some_arm_call.name == "arm_handler"
+
+        nested_arg_call = none_arm_call.args[0]
+        assert isinstance(nested_arg_call, ast.FnCall)
+        assert nested_arg_call.name == "arg_producer"
+
+        # Both arm bodies (the outer ``arm_handler(...)`` calls)
+        # are in tail position via match-transparency.  The nested
+        # ``arg_producer(())`` call inside the None arm is an
+        # argument — non-transparent, NOT tail.  An exhaustive
+        # ``sites == {...}`` check pins both the inclusion AND the
+        # exclusion in one assertion.
+        assert id(none_arm_call) in sites, (
+            f"None-arm body call should be tail position; "
+            f"sites={sites!r}, expected id={id(none_arm_call)}"
+        )
+        assert id(some_arm_call) in sites, (
+            f"Some-arm body call should be tail position; "
+            f"sites={sites!r}, expected id={id(some_arm_call)}"
+        )
+        assert id(nested_arg_call) not in sites, (
+            f"Nested argument call inside None arm should NOT be "
+            f"tail position; sites={sites!r}, "
+            f"unexpected id={id(nested_arg_call)}"
+        )
+        assert sites == {id(none_arm_call), id(some_arm_call)}, (
+            f"Expected exactly the two arm-body calls in sites; "
+            f"got {sites!r}"
+        )
+
     def test_analyzer_does_not_mark_let_value_calls(self) -> None:
         """Unit test: a call as a let value is NOT tail position."""
         from vera.codegen.tail_position import compute_tail_call_sites
