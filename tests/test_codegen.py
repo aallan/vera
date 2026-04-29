@@ -14028,8 +14028,11 @@ public fn main(@Unit -> @Nat)
             f"@Nat - @Nat inside unsafe_modcall body, got: {body!r}"
         )
 
-        # Behavioural assertion: unsafe_modcall(5, 0) produces
-        # abs(0) - abs(5) = 0 - 5 = underflow → trap.
+        # Behavioural assertion: unsafe_modcall(0, 5) produces
+        # abs(@Int.1) - abs(@Int.0) = abs(0) - abs(5) = 0 - 5 = underflow → trap.
+        # @Int.1 is the first parameter (older / De Bruijn = 1) and @Int.0 the
+        # second (most-recent), so call order is preserved in the body via
+        # the swapped subscripts.
         with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
             execute(result, fn_name="main", args=[])
 
