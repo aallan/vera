@@ -13956,3 +13956,84 @@ public fn main(@Unit -> @Nat)
             f"(i64.lt_s + unreachable) inside countdown body, got: "
             f"{body!r}"
         )
+
+    def test_modulecall_provenance_emits_guard_and_traps(self) -> None:
+        """ModuleCall with @Nat return type carries provenance.
+
+        `vera.math::abs(...)` returns `@Nat` per spec/09 §9.x, so
+        `vera.math::abs(a) - vera.math::abs(b)` is a `@Nat - @Nat`
+        site where both operands have @Nat provenance via
+        ast.ModuleCall (not ast.FnCall).  The CodeRabbit review on
+        PR #554 (round 1) identified that the original codegen
+        helpers `_is_static_nat_typed` and `_has_nat_origin_codegen`
+        only handled ast.FnCall — module-qualified callees with
+        @Nat return types would have slipped past the guard.
+
+        This test exercises the fix by:
+          (1) confirming the guard is emitted in the WAT for the
+              ModuleCall case, and
+          (2) confirming the guard actually fires at runtime when
+              the subtraction would underflow (`abs(0) - abs(5)`
+              produces -5 without the guard, traps with it).
+        """
+        unsafe_src = """
+import vera.math(abs);
+
+private fn unsafe_modcall(@Int, @Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  vera.math::abs(@Int.1) - vera.math::abs(@Int.0)
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  -- @Int.1 is the first param (older / De Bruijn = 1), @Int.0 is the
+  -- second / most-recent.  Body computes `abs(@Int.1) - abs(@Int.0)`,
+  -- so `unsafe_modcall(0, 5)` evaluates as `abs(0) - abs(5) = 0 - 5`
+  -- → underflow.
+  unsafe_modcall(0, 5)
+}
+"""
+        # Structural assertion: guard emitted in unsafe_modcall body.
+        result = _compile_ok(unsafe_src)
+        wat = result.wat
+        fn_idx = wat.find("(func $unsafe_modcall")
+        assert fn_idx >= 0, "unsafe_modcall not found in WAT"
+        body_end = wat.find("\n  (func ", fn_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[fn_idx:body_end]
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"Expected the underflow guard for ModuleCall-provenance "
+            f"@Nat - @Nat inside unsafe_modcall body, got: {body!r}"
+        )
+
+        # Behavioural assertion: unsafe_modcall(5, 0) produces
+        # abs(0) - abs(5) = 0 - 5 = underflow → trap.
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+            execute(result, fn_name="main", args=[])
+
+        # Safe case: passing args where lhs >= rhs runs cleanly.
+        safe_src = """
+import vera.math(abs);
+
+private fn safe_modcall(@Int, @Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  vera.math::abs(@Int.1) - vera.math::abs(@Int.0)
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  -- safe_modcall(5, 3): @Int.1=5, @Int.0=3 → abs(5) - abs(3) = 2.
+  safe_modcall(5, 3)
+}
+"""
+        # safe_modcall(5, 3): abs(@Int.1) - abs(@Int.0) = abs(5) - abs(3) = 2.
+        assert _run(safe_src) == 2

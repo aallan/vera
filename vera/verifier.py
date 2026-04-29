@@ -906,6 +906,32 @@ class ContractVerifier:
                 )
             return
 
+        if isinstance(expr, ast.ConstructorCall):
+            # ADT constructors (e.g. `Some(@Nat.0 - @Nat.1)`) carry
+            # arguments that can host the same subtraction shape.  The
+            # constructor's *result* type is the ADT, not @Nat — so
+            # `_is_nat_typed`/`_has_nat_origin` don't need a branch
+            # here — but the args themselves still need walking.
+            for arg in expr.args:
+                self._walk_for_subtraction_obligations(
+                    decl, arg, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, ast.QualifiedCall):
+            # Qualified calls (e.g. `Map.get(...)`) — like FnCall and
+            # ModuleCall, args can hold subtraction sites we must
+            # check.  The SMT layer doesn't translate QualifiedCall
+            # itself, so any obligation rooted ON a QualifiedCall
+            # would already drop to Tier 3 via the existing
+            # untranslatable-expression path; recursing here only
+            # catches obligations rooted INSIDE its args.
+            for arg in expr.args:
+                self._walk_for_subtraction_obligations(
+                    decl, arg, smt, slot_env, assumptions,
+                )
+            return
+
         if isinstance(expr, ast.IfExpr):
             # Walk the condition first (before pushing path-cond) — any
             # @Nat-@Nat in the condition is unconditional from the
