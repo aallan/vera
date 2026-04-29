@@ -14057,3 +14057,75 @@ public fn main(@Unit -> @Nat)
 """
         # safe_modcall(5, 3): abs(@Int.1) - abs(@Int.0) = abs(5) - abs(3) = 2.
         assert _run(safe_src) == 2
+
+    def test_rhs_only_provenance_emits_guard_and_traps(self) -> None:
+        """`0 - @Nat.0` carries provenance via the RHS slot only.
+
+        The codegen detector requires `_has_nat_origin_codegen(left)
+        OR _has_nat_origin_codegen(right)` — symmetric in both
+        operands.  Existing positive tests pin the left-has-provenance
+        case (`@Nat.1 - @Nat.0`, `@Nat.0 - 1`) and the both-provenance
+        ModuleCall case, but not the right-only-provenance case.
+        Without that coverage a future refactor that accidentally
+        ignored `expr.right` (or changed `or` to `and`) would still
+        pass every existing test while silently re-opening the
+        underflow hole on the right-only shape.
+
+        Body: `0 - @Nat.0` (a non-negative IntLit on the left, a
+        @Nat slot on the right).  Both operands are statically @Nat
+        per the checker, but only the slot has @Nat provenance —
+        the literal is exempt at Path-A scope.  The guard must
+        still fire because the right operand provides provenance.
+        """
+        src = """
+private fn lit_minus_slot(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0 - @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  -- @Nat.0 = 1 → `0 - 1` underflows.
+  lit_minus_slot(1)
+}
+"""
+        # Structural assertion: guard emitted in lit_minus_slot body
+        # despite the LHS being a literal.
+        result = _compile_ok(src)
+        wat = result.wat
+        fn_idx = wat.find("(func $lit_minus_slot")
+        assert fn_idx >= 0, "lit_minus_slot not found in WAT"
+        body_end = wat.find("\n  (func ", fn_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[fn_idx:body_end]
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"Expected the underflow guard for rhs-only-provenance "
+            f"`0 - @Nat.0` inside lit_minus_slot body, got:\n{body}"
+        )
+
+        # Behavioural assertion: lit_minus_slot(1) → 0 - 1 → trap.
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+            execute(result, fn_name="main", args=[])
+
+        # Safe case: lit_minus_slot(0) → 0 - 0 = 0 (no underflow).
+        safe_src = """
+private fn lit_minus_slot(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0 - @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  lit_minus_slot(0)
+}
+"""
+        assert _run(safe_src) == 0
