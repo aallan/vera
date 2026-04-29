@@ -47,6 +47,8 @@ Arithmetic operators work on numeric types (`Int`, `Nat`, `Float64`):
 
 Division by zero is undefined behaviour in Vera. The compiler SHOULD verify that the divisor is non-zero via contracts or refinement types. If it cannot, it MUST insert a runtime check.
 
+Subtraction on `Nat` is undefined behaviour when it would underflow (`lhs < rhs` produces a negative value below `Nat`'s `>= 0` range). The compiler SHOULD verify `lhs >= rhs` via contracts or refinement types. If it cannot, it MUST insert a runtime check that traps on underflow. The same obligation applies to `Byte` subtraction in principle (the `0..=255` range), but the reference compiler currently checks `Nat` only — `Byte` underflow enforcement is tracked as [#551](https://github.com/aallan/vera/issues/551).
+
 Unary negation:
 
 ```

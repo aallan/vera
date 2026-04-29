@@ -489,6 +489,7 @@ ERROR_CODES: dict[str, str] = {
     # E5xx — Verification
     "E500": "Postcondition verified false",
     "E501": "Call-site precondition violation",
+    "E502": "@Nat subtraction underflow obligation not discharged",
     "E520": "Cannot verify contract (generic function)",
     "E521": "Cannot verify precondition (undecidable)",
     "E522": "Cannot verify postcondition (body undecidable)",

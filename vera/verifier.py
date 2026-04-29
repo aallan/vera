@@ -522,6 +522,15 @@ class ContractVerifier:
         # 5. Translate function body
         body_expr = smt.translate_expr(decl.body, slot_env)
 
+        # 5.5. Check @Nat subtraction underflow obligations (#520).
+        #      Walks the body looking for `@Nat - @Nat` sites and emits
+        #      an obligation `lhs >= rhs` at each, dischargeable from
+        #      preconditions and path conditions.
+        if decl.body is not None:
+            self._walk_for_subtraction_obligations(
+                decl, decl.body, smt, slot_env, assumptions,
+            )
+
         # 6. Report any call-site precondition violations
         for v in smt.drain_call_violations():
             self._report_call_violation(
@@ -854,6 +863,388 @@ class ContractVerifier:
 
         # Other expression types (literals, slot refs, etc.) — no calls
         return
+
+    # -----------------------------------------------------------------
+    # @Nat subtraction underflow obligations (#520)
+    # -----------------------------------------------------------------
+
+    def _walk_for_subtraction_obligations(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.Expr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Walk *expr* checking ``@Nat - @Nat`` sites for underflow.
+
+        Mirrors :py:meth:`_walk_for_calls` structurally, but emits
+        proof obligations at subtraction sites rather than collecting
+        recursive call sites.  Path conditions are tracked via
+        ``smt._path_conditions`` (pushed/popped on if/match branches),
+        so :py:meth:`SmtContext.check_valid` picks them up
+        automatically when discharging each obligation.
+
+        The walker recurses into BinaryExpr, UnaryExpr, IfExpr, Block,
+        FnCall args, and MatchExpr arm bodies.  Other AST node types
+        contain no nested expressions that could host an arithmetic
+        subtraction, so they terminate the walk.
+        """
+        if isinstance(expr, ast.FnCall):
+            for arg in expr.args:
+                self._walk_for_subtraction_obligations(
+                    decl, arg, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, ast.ModuleCall):
+            # Module-qualified calls (e.g. `Math.abs(@Int.0)`) can host
+            # `@Nat - @Nat` in their args just like FnCall does — recurse.
+            for arg in expr.args:
+                self._walk_for_subtraction_obligations(
+                    decl, arg, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, ast.ConstructorCall):
+            # ADT constructors (e.g. `Some(@Nat.0 - @Nat.1)`) carry
+            # arguments that can host the same subtraction shape.  The
+            # constructor's *result* type is the ADT, not @Nat — so
+            # `_is_nat_typed`/`_has_nat_origin` don't need a branch
+            # here — but the args themselves still need walking.
+            for arg in expr.args:
+                self._walk_for_subtraction_obligations(
+                    decl, arg, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, ast.QualifiedCall):
+            # Qualified calls (e.g. `Map.get(...)`) — like FnCall and
+            # ModuleCall, args can hold subtraction sites we must
+            # check.  The SMT layer doesn't translate QualifiedCall
+            # itself, so any obligation rooted ON a QualifiedCall
+            # would already drop to Tier 3 via the existing
+            # untranslatable-expression path; recursing here only
+            # catches obligations rooted INSIDE its args.
+            for arg in expr.args:
+                self._walk_for_subtraction_obligations(
+                    decl, arg, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, ast.IfExpr):
+            # Walk the condition first (before pushing path-cond) — any
+            # @Nat-@Nat in the condition is unconditional from the
+            # caller's perspective.
+            self._walk_for_subtraction_obligations(
+                decl, expr.condition, smt, slot_env, assumptions,
+            )
+            z3_cond = smt.translate_expr(expr.condition, slot_env)
+            if z3_cond is not None:
+                import z3 as z3mod
+                smt._path_conditions.append(z3_cond)
+                try:
+                    self._walk_for_subtraction_obligations(
+                        decl, expr.then_branch, smt, slot_env, assumptions,
+                    )
+                finally:
+                    smt._path_conditions.pop()
+                if expr.else_branch is not None:
+                    smt._path_conditions.append(z3mod.Not(z3_cond))
+                    try:
+                        self._walk_for_subtraction_obligations(
+                            decl, expr.else_branch, smt, slot_env,
+                            assumptions,
+                        )
+                    finally:
+                        smt._path_conditions.pop()
+            else:  # pragma: no cover — condition untranslatable
+                self._walk_for_subtraction_obligations(
+                    decl, expr.then_branch, smt, slot_env, assumptions,
+                )
+                if expr.else_branch is not None:
+                    self._walk_for_subtraction_obligations(
+                        decl, expr.else_branch, smt, slot_env, assumptions,
+                    )
+            return
+
+        if isinstance(expr, ast.Block):
+            cur_env = slot_env
+            for stmt in expr.statements:
+                if isinstance(stmt, ast.LetStmt):
+                    self._walk_for_subtraction_obligations(
+                        decl, stmt.value, smt, cur_env, assumptions,
+                    )
+                    val = smt.translate_expr(stmt.value, cur_env)
+                    if val is not None:
+                        type_name = smt._type_expr_to_slot_name(stmt.type_expr)
+                        if type_name is not None:
+                            cur_env = cur_env.push(type_name, val)
+                elif isinstance(stmt, ast.ExprStmt):  # pragma: no cover
+                    self._walk_for_subtraction_obligations(
+                        decl, stmt.expr, smt, cur_env, assumptions,
+                    )
+            self._walk_for_subtraction_obligations(
+                decl, expr.expr, smt, cur_env, assumptions,
+            )
+            return
+
+        if isinstance(expr, ast.BinaryExpr):
+            # Recurse first so nested subtractions are checked even
+            # when the outer expression isn't @Nat-typed.
+            self._walk_for_subtraction_obligations(
+                decl, expr.left, smt, slot_env, assumptions,
+            )
+            self._walk_for_subtraction_obligations(
+                decl, expr.right, smt, slot_env, assumptions,
+            )
+            if (expr.op == ast.BinOp.SUB
+                    and self._is_nat_typed(expr.left)
+                    and self._is_nat_typed(expr.right)
+                    and (self._has_nat_origin(expr.left)
+                         or self._has_nat_origin(expr.right))):
+                # Both operands are @Nat-typed AND at least one
+                # has Nat-flowed origin (a slot ref, function
+                # return, or a recursive expression containing
+                # one).  Pure-literal subtractions like `0 - 1`
+                # — the common "I want -1" idiom — are
+                # intentionally skipped at Path A scope (#520);
+                # binding-site narrowing into a @Nat slot is
+                # Path B (#552).
+                self._check_subtraction_obligation(
+                    decl, expr, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, ast.UnaryExpr):
+            self._walk_for_subtraction_obligations(
+                decl, expr.operand, smt, slot_env, assumptions,
+            )
+            return
+
+        if isinstance(expr, ast.MatchExpr):
+            self._walk_for_subtraction_obligations(
+                decl, expr.scrutinee, smt, slot_env, assumptions,
+            )
+            scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
+            for arm in expr.arms:
+                arm_env = slot_env
+                pat_cond = None
+                if scrutinee_z3 is not None:
+                    bound = smt._bind_pattern(
+                        scrutinee_z3, arm.pattern, slot_env,
+                    )
+                    if bound is not None:
+                        arm_env = bound
+                    pat_cond = smt._pattern_condition(
+                        scrutinee_z3, arm.pattern,
+                    )
+                if pat_cond is not None:
+                    smt._path_conditions.append(pat_cond)
+                    try:
+                        self._walk_for_subtraction_obligations(
+                            decl, arm.body, smt, arm_env, assumptions,
+                        )
+                    finally:
+                        smt._path_conditions.pop()
+                else:
+                    self._walk_for_subtraction_obligations(
+                        decl, arm.body, smt, arm_env, assumptions,
+                    )
+            return
+
+        # Other expression types (literals, slot refs, quantifiers,
+        # closures, indexing, etc.) — no nested arithmetic to walk.
+        return
+
+    def _check_subtraction_obligation(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.BinaryExpr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Discharge the ``lhs >= rhs`` obligation at a single site.
+
+        On success, increments ``tier1_verified``.  On failure, emits an
+        E502 error with a Z3 counterexample.  Path conditions in
+        ``smt._path_conditions`` are picked up automatically by
+        :py:meth:`SmtContext.check_valid`.
+        """
+        self.summary.total += 1
+        lhs = smt.translate_expr(expr.left, slot_env)
+        rhs = smt.translate_expr(expr.right, slot_env)
+        if lhs is None or rhs is None:  # pragma: no cover — both Nat
+            self.summary.tier3_runtime += 1
+            return
+
+        obligation = lhs >= rhs
+        result = smt.check_valid(obligation, list(assumptions))
+
+        if result.status == "verified":
+            self.summary.tier1_verified += 1
+        elif result.status == "violated":
+            self.summary.total -= 1  # don't count — it's an error
+            self._report_underflow(decl, expr, result.counterexample)
+        else:  # pragma: no cover — solver timeout
+            self.summary.tier3_runtime += 1
+
+    def _report_underflow(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.BinaryExpr,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Emit an E502 diagnostic for an undischarged underflow obligation."""
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if name != "@result":
+                    ce_lines.append(f"    {name} = {value}")
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+
+        description = (
+            f"@Nat subtraction in '{decl.name}' may underflow."
+        )
+        if ce_text:
+            description += f"\n  {ce_text}"
+
+        self._error(
+            expr,
+            description,
+            rationale=(
+                "@Nat - @Nat carries a Tier-1 proof obligation that "
+                "the left operand is at least as large as the right.  "
+                "The SMT solver found inputs where this does not hold; "
+                "a negative i64 would be produced and stored in a @Nat "
+                "slot, violating the type's non-negativity invariant."
+            ),
+            fix=(
+                "Add a precondition that rules out the bad inputs, "
+                "e.g. `requires(@Nat.0 >= @Nat.1)`.  Alternatively, "
+                "guard the subtraction: `if @Nat.0 >= @Nat.1 then "
+                "@Nat.0 - @Nat.1 else 0` — the path condition "
+                "discharges the obligation in the then-branch."
+            ),
+            spec_ref=(
+                'Chapter 4, Section 4.4 "Arithmetic Expressions" '
+                'and Chapter 11, Section 11.2.1 "Nat as i64"'
+            ),
+            error_code="E502",
+        )
+
+    def _is_nat_typed(self, expr: ast.Expr) -> bool:
+        """Return True iff *expr* has static type ``@Nat``.
+
+        Conservative: returns False for expressions whose type cannot
+        be determined locally.  False is the safe default — it means
+        "skip the obligation," matching the existing (pre-#520)
+        behaviour, so this can never reject a program that previously
+        verified.  Only programs with definitely-@Nat-typed unguarded
+        subtractions become rejected.
+
+        Recurses through arithmetic expressions, ``IfExpr``, ``Block``,
+        ``MatchExpr``, and ``FnCall`` (looking up the callee's return
+        type).  Returns False for ``UnaryExpr`` because unary negation
+        always produces ``@Int``, never ``@Nat``.
+
+        See #552 for the broader generalisation that fires on every
+        binding site rather than just at subtraction.
+        """
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name == "Nat"
+        if isinstance(expr, ast.IntLit):
+            # Non-negative literals can be coerced to Nat.
+            return expr.value >= 0
+        if isinstance(expr, ast.BinaryExpr):
+            if expr.op in (
+                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
+                ast.BinOp.DIV, ast.BinOp.MOD,
+            ):
+                # Per checker.py:264-267, the result of an arithmetic
+                # operator is the more general operand type (Nat <: Int).
+                # So the result is @Nat iff BOTH operands are @Nat.
+                return (self._is_nat_typed(expr.left)
+                        and self._is_nat_typed(expr.right))
+            return False
+        if isinstance(expr, ast.IfExpr):
+            if expr.else_branch is None:
+                return False
+            return (self._is_nat_typed(expr.then_branch)
+                    and self._is_nat_typed(expr.else_branch))
+        if isinstance(expr, ast.Block):
+            return self._is_nat_typed(expr.expr)
+        if isinstance(expr, ast.MatchExpr):
+            if not expr.arms:
+                return False
+            return all(self._is_nat_typed(arm.body) for arm in expr.arms)
+        if isinstance(expr, ast.FnCall):
+            fn = self.env.lookup_function(expr.name)
+            if fn is not None:
+                # FunctionInfo.return_type is already a resolved Type
+                # (vera/environment.py:43), no need for _resolve_type.
+                return self._is_nat_type(fn.return_type)
+            return False
+        if isinstance(expr, ast.ModuleCall):
+            # Module-qualified calls (e.g. `Math.abs(...)`) — resolve via
+            # the per-module registry the verifier already maintains.
+            mfn = self._lookup_module_function(expr.path, expr.name)
+            if mfn is not None:
+                return self._is_nat_type(mfn.return_type)
+            return False
+        # UnaryExpr: negation always produces @Int.
+        # Other AST node types: conservative False.
+        return False
+
+    def _has_nat_origin(self, expr: ast.Expr) -> bool:
+        """Return True iff *expr* derives from a definitely-@Nat source.
+
+        Distinct from :py:meth:`_is_nat_typed`: that classifies the
+        *static type* of the expression (and treats non-negative
+        IntLits as @Nat per checker.py:62).  This helper instead
+        asks whether the value has @Nat *provenance* — a parameter,
+        let binding, or function call carrying the @Nat invariant
+        forward — as opposed to a pure literal computation like
+        ``0 - 1``.
+
+        Used to scope #520's obligation: pure-literal subtractions
+        such as ``0 - 1`` (the common "I want -1" idiom) are
+        intentionally skipped because they're typically consumed
+        at @Int positions where the result is upcast.  Catching
+        ``let @Nat = 0 - 1`` requires the broader binding-site
+        check tracked as #552.
+        """
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name == "Nat"
+        if isinstance(expr, ast.FnCall):
+            fn = self.env.lookup_function(expr.name)
+            if fn is None:
+                return False
+            return self._is_nat_type(fn.return_type)
+        if isinstance(expr, ast.ModuleCall):
+            mfn = self._lookup_module_function(expr.path, expr.name)
+            if mfn is None:
+                return False
+            return self._is_nat_type(mfn.return_type)
+        if isinstance(expr, ast.BinaryExpr):
+            return (self._has_nat_origin(expr.left)
+                    or self._has_nat_origin(expr.right))
+        if isinstance(expr, ast.UnaryExpr):
+            return self._has_nat_origin(expr.operand)
+        if isinstance(expr, ast.IfExpr):
+            if expr.else_branch is None:
+                return False
+            return (self._has_nat_origin(expr.then_branch)
+                    or self._has_nat_origin(expr.else_branch))
+        if isinstance(expr, ast.Block):
+            return self._has_nat_origin(expr.expr)
+        if isinstance(expr, ast.MatchExpr):
+            if not expr.arms:
+                return False
+            return any(self._has_nat_origin(arm.body) for arm in expr.arms)
+        return False
 
     # -----------------------------------------------------------------
     # Counterexample reporting

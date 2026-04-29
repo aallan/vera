@@ -467,7 +467,8 @@ private fn factorial(@Nat -> @Nat)
 """)
         # ensures(@Nat.result >= 1) — Tier 1 via modular verification
         # decreases(@Nat.0) — Tier 1 via termination verification
-        assert result.summary.tier1_verified == 3
+        # @Nat.0 - 1 underflow obligation (#520) — Tier 1 via path condition
+        assert result.summary.tier1_verified == 4
         assert result.summary.tier3_runtime == 0
 
 
@@ -546,6 +547,174 @@ private fn remainder(@Int, @Int -> @Int)
 
 
 # =====================================================================
+# @Nat subtraction underflow obligation (#520)
+# =====================================================================
+
+class TestNatSubtractionObligation520:
+    """`@Nat - @Nat` carries a Tier-1 proof obligation `lhs >= rhs`.
+
+    Per spec/04 §4.4 and spec/11 §11.2.1, a subtraction site whose
+    result type is `@Nat` AND at least one operand has `@Nat`
+    *provenance* (a slot reference, a function call returning `@Nat`,
+    or a sub-expression containing one) must prove that the left
+    operand is at least as large as the right. The verifier
+    discharges the obligation from preconditions (`requires`) and
+    path conditions (`if` / `match` branches). When Z3 cannot
+    discharge it, verification fails with a counterexample so the
+    author can add a `requires` clause; the codegen separately emits
+    a runtime guard at the same set of sites.
+
+    Path-A scope (#520): pure-literal subtractions like `0 - 1`
+    (the canonical "I want -1 as a literal" idiom widely used in
+    `Err(_) -> 0 - 1` and `throw(0 - 1)` positions) are intentionally
+    exempt — neither operand has `@Nat` provenance, so the
+    obligation does not fire. `test_pure_literal_subtraction_not_flagged`
+    pins that exception. Catching `let @Nat = 0 - 1` (binding-site
+    narrowing) is the broader generalisation tracked as #552.
+
+    `@Int - @Int` and `@Nat - @Int → @Int` carry no obligation —
+    `Int` is allowed to be negative, so underflow is not a violation.
+    """
+
+    def test_requires_clause_discharges_obligation(self) -> None:
+        """Explicit `requires(@Nat.0 >= @Nat.1)` discharges the obligation."""
+        _verify_ok("""
+private fn safe_sub(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(@Nat.result <= @Nat.0)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+""")
+
+    def test_if_guard_discharges_obligation(self) -> None:
+        """Path condition `@Nat.0 != 0` (else branch of `if @Nat.0 == 0`)
+        implies `@Nat.0 >= 1`, which discharges `@Nat.0 - 1 >= 0`.
+
+        This is the canonical recursion shape used throughout the
+        examples and conformance suite (factorial, fib, mutual
+        recursion). After this fix lands they must continue to verify
+        without source changes.
+        """
+        _verify_ok("""
+private fn dec(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    @Nat.0 - 1
+  }
+}
+""")
+
+    def test_subtract_zero_discharges_trivially(self) -> None:
+        """`@Nat.0 - 0` is always safe — RHS is the literal 0."""
+        _verify_ok("""
+private fn id_via_sub(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result == @Nat.0)
+  effects(pure)
+{ @Nat.0 - 0 }
+""")
+
+    def test_self_subtract_discharges(self) -> None:
+        """`@Nat.0 - @Nat.0` is always 0 — Z3 knows lhs == rhs."""
+        _verify_ok("""
+private fn self_sub(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 0)
+  effects(pure)
+{ @Nat.0 - @Nat.0 }
+""")
+
+    def test_unguarded_subtract_fails(self) -> None:
+        """Bare `@Nat.0 - @Nat.1` without a `requires` fails verification.
+
+        Counterexample: @Nat.0 = 0, @Nat.1 = 1 produces -1, which is
+        not a valid @Nat. The verifier must reject.
+        """
+        _verify_err("""
+private fn unsafe_sub(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+""", "underflow")
+
+    def test_int_subtract_not_obligated(self) -> None:
+        """`@Int - @Int → @Int` carries no underflow obligation.
+
+        @Int is signed; negative results are well-defined. The
+        obligation should fire only when the *result type* is @Nat.
+        """
+        _verify_ok("""
+private fn int_sub(@Int, @Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 - @Int.1)
+  effects(pure)
+{ @Int.0 - @Int.1 }
+""")
+
+    def test_nat_minus_int_not_obligated(self) -> None:
+        """`@Nat - @Int → @Int` carries no obligation.
+
+        Per checker.py:264 the type rule promotes to the more general
+        type when operands differ. `@Nat - @Int` becomes `@Int`
+        because @Nat <: @Int, so the result is allowed to be negative.
+        Author opted into Int semantics by mixing types.
+        """
+        _verify_ok("""
+private fn mixed_sub(@Nat, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Int.0 }
+""")
+
+    def test_partial_requires_does_not_discharge(self) -> None:
+        """`requires(@Nat.0 > 0)` alone does not discharge `@Nat.0 - @Nat.1`.
+
+        The precondition rules out @Nat.0 == 0 but says nothing about
+        @Nat.1 vs @Nat.0. Counterexample: @Nat.0 = 1, @Nat.1 = 5.
+        """
+        _verify_err("""
+private fn partial_req(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 > 0)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 - @Nat.1 }
+""", "underflow")
+
+    def test_pure_literal_subtraction_not_flagged(self) -> None:
+        """`0 - 1` (pure-literal "I want -1" idiom) is intentionally
+        not flagged at Path A (#520) scope.
+
+        The checker classifies non-negative literals as `@Nat`, so the
+        subtraction is technically `@Nat - @Nat`. But the corpus uses
+        this idiom widely in `Err(_) -> 0 - 1` and `throw(0 - 1)`
+        positions where the result is consumed at `@Int` and upcast
+        cleanly. Flagging would force a corpus-wide migration to
+        negative literals (`-1`).
+
+        The verifier therefore requires at least one operand to have
+        Nat *provenance* (slot ref or function return), not just
+        non-negative-literal classification. Pure-literal underflow
+        consumed at a `@Nat` position (e.g. `let @Nat = 0 - 1`) would
+        still escape — that is Path B (#552) territory.
+        """
+        _verify_ok("""
+private fn negative_sentinel(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result < 0)
+  effects(pure)
+{ 0 - 1 }
+""")
+
+
+# =====================================================================
 # Summary
 # =====================================================================
 
@@ -579,8 +748,9 @@ private fn f(@Nat -> @Nat)
         # requires(true) → Tier 1 trivial
         # ensures — Tier 1 via modular verification
         # decreases — Tier 1 via termination verification
-        assert result.summary.total == 3
-        assert result.summary.tier1_verified == 3
+        # @Nat.0 - 1 underflow obligation (#520) — Tier 1 via path condition
+        assert result.summary.total == 4
+        assert result.summary.tier1_verified == 4
         assert result.summary.tier3_runtime == 0
 
     def test_multiple_functions_accumulate(self) -> None:
@@ -1588,7 +1758,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 219 T1 / 26 T3 / 245 total (current).
+        """All examples together: 222 T1 / 26 T3 / 248 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -1598,6 +1768,10 @@ private fn sum(@List<Int> -> @Int)
           contributed 29 T1 + 3 T3 + 32 contracts.
         * 219/26/245 after `nested_closures.vera` (#514, v0.0.121)
           contributed 6 T1 + 6 contracts.
+        * 222/26/248 after #520 added @Nat subtraction underflow
+          obligations.  factorial.vera (+1) and mutual_recursion.vera
+          (+2) each have @Nat.0 - 1 sites that the verifier now
+          discharges from path conditions.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -1608,9 +1782,9 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 219, f"Expected 219 T1, got {t1}"
+        assert t1 == 222, f"Expected 222 T1, got {t1}"
         assert t3 == 26, f"Expected 26 T3, got {t3}"
-        assert total == 245, f"Expected 245 total, got {total}"
+        assert total == 248, f"Expected 248 total, got {total}"
 
 
 # =====================================================================
@@ -1707,7 +1881,9 @@ public fn outer(@Nat -> @Nat)
         typecheck(prog, text)
         result = verify(prog, text, file=str(source))
         assert result.summary.tier3_runtime == 0
-        assert result.summary.tier1_verified == 8
+        # 8 contract obligations + 2 @Nat.0 - 1 underflow obligations
+        # (#520) — both discharged from `if @Nat.0 == 0` path condition.
+        assert result.summary.tier1_verified == 10
 
 
 class TestStringLengthVerification:

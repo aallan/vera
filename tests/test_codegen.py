@@ -13703,3 +13703,429 @@ public fn main(@Unit -> @Int)
 }
 """
         assert _run(src) == 500
+
+
+# =====================================================================
+# @Nat subtraction underflow runtime guard (#520)
+# =====================================================================
+
+class TestNatSubtractionRuntimeGuard520:
+    """Codegen emits a runtime underflow guard for `@Nat - @Nat`.
+
+    The verifier (vera/verifier.py, #520 commit b446cac) emits a
+    Tier-1 proof obligation `lhs >= rhs` at every @Nat-Nat
+    subtraction site.  The codegen mirrors that detection (same
+    helpers — _is_static_nat_typed + _has_nat_origin_codegen) and
+    emits a runtime guard that traps on underflow.
+
+    The guard exists because `vera compile` doesn't run the verifier
+    — programs that skip `vera verify` would otherwise produce
+    silent negative @Nat values.  When verification has run and
+    discharged the obligation statically, the runtime guard is
+    redundant but cheap (one i64 compare + branch); a Tier-1
+    skip-channel is a future optimization.
+    """
+
+    # Body uses `@Nat.1 - @Nat.0` (first param minus second param)
+    # rather than `@Nat.0 - @Nat.1` so the call-site argument order
+    # reads naturally — De Bruijn `@T.0` is the most recent (last)
+    # binding, so `unsafe(a, b)` with body `@Nat.0 - @Nat.1` would be
+    # `b - a` and easy to misread.  See CLAUDE.md / DE_BRUIJN.md.
+    _GUARDED_SUB = """
+private fn unsafe(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.1 - @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  unsafe(0, 1)
+}
+"""
+
+    _SAFE_SUB = """
+private fn safe(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.1 - @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  safe(5, 3)
+}
+"""
+
+    def test_underflow_traps_at_runtime(self) -> None:
+        """unsafe(0, 1) traps via the runtime guard.
+
+        Without the guard, `i64.sub` would produce -1 silently and
+        store it in a @Nat slot, violating the type invariant. With
+        the guard, the function traps cleanly before the bad value
+        propagates.
+        """
+        result = _compile_ok(self._GUARDED_SUB)
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+            execute(result, fn_name="main", args=[])
+
+    def test_safe_subtraction_returns_correct_result(self) -> None:
+        """safe(5, 3) returns 2 — guard passes through cleanly.
+
+        The guard is `if (i64.lt_s lhs rhs) then unreachable end`, so
+        when lhs >= rhs the branch is not taken and the subtraction
+        proceeds normally.  Confirms the guard doesn't introduce a
+        regression on the happy path.
+        """
+        assert _run(self._SAFE_SUB) == 2
+
+    def test_guard_emitted_in_wat_for_nat_sub(self) -> None:
+        """The guarded WAT contains `i64.lt_s` and `unreachable`.
+
+        Structural assertion that the codegen actually inserted the
+        guard sequence rather than emitting a bare `i64.sub`.  The
+        unguarded WAT (e.g. for `@Int - @Int`) would contain
+        `i64.sub` but no `i64.lt_s` paired with `unreachable`.
+        """
+        result = _compile_ok(self._GUARDED_SUB)
+        wat = result.wat
+        # Both the comparison and the trap must appear inside `unsafe`
+        # (the function with the @Nat-Nat subtraction).
+        unsafe_idx = wat.find("(func $unsafe")
+        assert unsafe_idx >= 0, "unsafe function not found in WAT"
+        # Slice out the `unsafe` body up to the next top-level paren.
+        body_end = wat.find("\n  (func ", unsafe_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[unsafe_idx:body_end]
+        assert "i64.lt_s" in body, (
+            f"Expected `i64.lt_s` in unsafe body for underflow guard, "
+            f"got: {body!r}"
+        )
+        assert "unreachable" in body, (
+            f"Expected `unreachable` in unsafe body for underflow guard, "
+            f"got: {body!r}"
+        )
+
+    def test_int_subtract_emits_no_guard(self) -> None:
+        """`@Int - @Int` does not get the guard — Int can be negative.
+
+        Sister to the structural test above: the guard fires only on
+        sites where the result is statically @Nat AND at least one
+        operand has @Nat origin.  Int-Int sites must emit a bare
+        `i64.sub` with no `i64.lt_s`/`unreachable` pair adjacent.
+        """
+        src = """
+private fn int_sub(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 - @Int.1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  int_sub(5, 10)
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        int_sub_idx = wat.find("(func $int_sub")
+        assert int_sub_idx >= 0
+        body_end = wat.find("\n  (func ", int_sub_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[int_sub_idx:body_end]
+        # i64.sub must be present (it's the actual subtraction).
+        assert "i64.sub" in body
+        # But the guard pieces must NOT be — Int subtraction is unguarded.
+        # Banning *both* `i64.lt_s` and `i64.lt_u` (regex
+        # `\bi64\.lt_[su]\b`) defends against a future codegen flip
+        # to unsigned-comparison or any other compare-then-trap
+        # variant; the previous `not in body` substring check would
+        # have silently passed if the guard mechanism changed.
+        assert not re.search(r"\bi64\.lt_[su]\b", body), (
+            f"Unexpected `i64.lt_[su]` in int_sub body — Int subtraction "
+            f"should not have an underflow guard. Body:\n{body}"
+        )
+        assert "unreachable" not in body, (
+            f"Unexpected `unreachable` in int_sub body — Int subtraction "
+            f"should not emit a trap. Body:\n{body}"
+        )
+
+    def test_pure_literal_subtract_emits_no_guard(self) -> None:
+        """`0 - 1` (pure-literal idiom) emits no guard — Path-A scope.
+
+        The codegen guard fires only when at least one operand has
+        @Nat *provenance* (slot ref or @Nat-returning function),
+        matching the verifier's _has_nat_origin filter.  This keeps
+        the corpus's `Err(_) -> 0 - 1` and `throw(0 - 1)` idioms
+        unaffected — they consume the result at @Int positions where
+        the upcast is well-defined.
+        """
+        # ensures(true) avoids confounding `i64.lt_s` from the
+        # postcondition-check codegen (which compiles `< 0` to
+        # `i64.lt_s; i32.eqz; if; ...; call $vera.contract_fail`).
+        # We're isolating whether the underflow guard fires, not the
+        # postcondition check.
+        src = """
+public fn neg_sentinel(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0 - 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  neg_sentinel()
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        sentinel_idx = wat.find("(func $neg_sentinel")
+        assert sentinel_idx >= 0
+        body_end = wat.find("\n  (func ", sentinel_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[sentinel_idx:body_end]
+        # Bare i64.sub, no guard — even though both operands are
+        # non-negative IntLits and thus statically @Nat per checker.
+        # The provenance filter excludes pure-literal subtractions.
+        # As with test_int_subtract_emits_no_guard, banning both
+        # `i64.lt_s` / `i64.lt_u` and any `unreachable` defends
+        # against future codegen variants that switch comparator or
+        # trap mechanism.
+        assert "i64.sub" in body
+        assert not re.search(r"\bi64\.lt_[su]\b", body), (
+            f"Pure-literal `0 - 1` should not get a guard at Path-A "
+            f"scope. Body:\n{body}"
+        )
+        assert "unreachable" not in body, (
+            f"Pure-literal `0 - 1` should not emit a trap guard at "
+            f"Path-A scope. Body:\n{body}"
+        )
+
+    def test_recursion_with_path_guard_runs_clean(self) -> None:
+        """`if @Nat.0 == 0 then 0 else f(@Nat.0 - 1)` runs at deep depth.
+
+        The verifier discharges the underflow obligation from the
+        path condition (the else-branch implies @Nat.0 != 0, hence
+        @Nat.0 >= 1).  The codegen still emits the runtime guard
+        (no Tier-1 skip-channel currently), but `lhs >= rhs` always
+        holds at runtime so the branch is never taken — confirming
+        the guard doesn't fire spuriously on path-discharged sites.
+        """
+        src = """
+private fn countdown(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    countdown(@Nat.0 - 1)
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  countdown(100)
+}
+"""
+        # countdown(100) → 99 → ... → 0; guard never fires.
+        assert _run(src) == 0
+
+        # Structural assertion: the guard IS emitted on the
+        # path-discharged @Nat.0 - 1 site.  Pure behavioural assertion
+        # (countdown(100) == 0) would pass even if the guard were
+        # accidentally elided, because the path condition keeps
+        # @Nat.0 >= 1 in the recursive arm so underflow can never
+        # fire — making the test silently coverage-blind.  Pinning
+        # the WAT shape catches a future regression where the codegen
+        # detector skips path-discharged sites (that's a Tier-1
+        # skip-channel optimisation; until it lands, every @Nat-Nat
+        # site with provenance gets the guard regardless of static
+        # discharge status).
+        result = _compile_ok(src)
+        wat = result.wat
+        countdown_idx = wat.find("(func $countdown")
+        assert countdown_idx >= 0, "countdown not found in WAT"
+        body_end = wat.find("\n  (func ", countdown_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[countdown_idx:body_end]
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"Expected the @Nat.0 - 1 underflow guard "
+            f"(i64.lt_s + unreachable) inside countdown body, got: "
+            f"{body!r}"
+        )
+
+    def test_modulecall_provenance_emits_guard_and_traps(self) -> None:
+        """ModuleCall with @Nat return type carries provenance.
+
+        `vera.math::abs(...)` returns `@Nat` per spec/09 §9.x, so
+        `vera.math::abs(a) - vera.math::abs(b)` is a `@Nat - @Nat`
+        site where both operands have @Nat provenance via
+        ast.ModuleCall (not ast.FnCall).  The CodeRabbit review on
+        PR #554 (round 1) identified that the original codegen
+        helpers `_is_static_nat_typed` and `_has_nat_origin_codegen`
+        only handled ast.FnCall — module-qualified callees with
+        @Nat return types would have slipped past the guard.
+
+        This test exercises the fix by:
+          (1) confirming the guard is emitted in the WAT for the
+              ModuleCall case, and
+          (2) confirming the guard actually fires at runtime when
+              the subtraction would underflow (`abs(0) - abs(5)`
+              produces -5 without the guard, traps with it).
+        """
+        unsafe_src = """
+import vera.math(abs);
+
+private fn unsafe_modcall(@Int, @Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  vera.math::abs(@Int.1) - vera.math::abs(@Int.0)
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  -- @Int.1 is the first param (older / De Bruijn = 1), @Int.0 is the
+  -- second / most-recent.  Body computes `abs(@Int.1) - abs(@Int.0)`,
+  -- so `unsafe_modcall(0, 5)` evaluates as `abs(0) - abs(5) = 0 - 5`
+  -- → underflow.
+  unsafe_modcall(0, 5)
+}
+"""
+        # Structural assertion: guard emitted in unsafe_modcall body.
+        result = _compile_ok(unsafe_src)
+        wat = result.wat
+        fn_idx = wat.find("(func $unsafe_modcall")
+        assert fn_idx >= 0, "unsafe_modcall not found in WAT"
+        body_end = wat.find("\n  (func ", fn_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[fn_idx:body_end]
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"Expected the underflow guard for ModuleCall-provenance "
+            f"@Nat - @Nat inside unsafe_modcall body, got: {body!r}"
+        )
+
+        # Behavioural assertion: unsafe_modcall(0, 5) produces
+        # abs(@Int.1) - abs(@Int.0) = abs(0) - abs(5) = 0 - 5 = underflow → trap.
+        # @Int.1 is the first parameter (older / De Bruijn = 1) and @Int.0 the
+        # second (most-recent), so call order is preserved in the body via
+        # the swapped subscripts.
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+            execute(result, fn_name="main", args=[])
+
+        # Safe case: passing args where lhs >= rhs runs cleanly.
+        safe_src = """
+import vera.math(abs);
+
+private fn safe_modcall(@Int, @Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  vera.math::abs(@Int.1) - vera.math::abs(@Int.0)
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  -- safe_modcall(5, 3): @Int.1=5, @Int.0=3 → abs(5) - abs(3) = 2.
+  safe_modcall(5, 3)
+}
+"""
+        # safe_modcall(5, 3): abs(@Int.1) - abs(@Int.0) = abs(5) - abs(3) = 2.
+        assert _run(safe_src) == 2
+
+    def test_rhs_only_provenance_emits_guard_and_traps(self) -> None:
+        """`0 - @Nat.0` carries provenance via the RHS slot only.
+
+        The codegen detector requires `_has_nat_origin_codegen(left)
+        OR _has_nat_origin_codegen(right)` — symmetric in both
+        operands.  Existing positive tests pin the left-has-provenance
+        case (`@Nat.1 - @Nat.0`, `@Nat.0 - 1`) and the both-provenance
+        ModuleCall case, but not the right-only-provenance case.
+        Without that coverage a future refactor that accidentally
+        ignored `expr.right` (or changed `or` to `and`) would still
+        pass every existing test while silently re-opening the
+        underflow hole on the right-only shape.
+
+        Body: `0 - @Nat.0` (a non-negative IntLit on the left, a
+        @Nat slot on the right).  Both operands are statically @Nat
+        per the checker, but only the slot has @Nat provenance —
+        the literal is exempt at Path-A scope.  The guard must
+        still fire because the right operand provides provenance.
+        """
+        src = """
+private fn lit_minus_slot(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0 - @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  -- @Nat.0 = 1 → `0 - 1` underflows.
+  lit_minus_slot(1)
+}
+"""
+        # Structural assertion: guard emitted in lit_minus_slot body
+        # despite the LHS being a literal.
+        result = _compile_ok(src)
+        wat = result.wat
+        fn_idx = wat.find("(func $lit_minus_slot")
+        assert fn_idx >= 0, "lit_minus_slot not found in WAT"
+        body_end = wat.find("\n  (func ", fn_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[fn_idx:body_end]
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"Expected the underflow guard for rhs-only-provenance "
+            f"`0 - @Nat.0` inside lit_minus_slot body, got:\n{body}"
+        )
+
+        # Behavioural assertion: lit_minus_slot(1) → 0 - 1 → trap.
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+            execute(result, fn_name="main", args=[])
+
+        # Safe case: lit_minus_slot(0) → 0 - 0 = 0 (no underflow).
+        safe_src = """
+private fn lit_minus_slot(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0 - @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  lit_minus_slot(0)
+}
+"""
+        assert _run(safe_src) == 0

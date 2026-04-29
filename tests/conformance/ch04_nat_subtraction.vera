@@ -1,0 +1,80 @@
+-- Conformance: @Nat subtraction underflow obligation (Chapter 4)
+--
+-- Tests the proof obligation introduced by #520: every `@Nat - @Nat`
+-- subtraction site must statically prove `lhs >= rhs`.  Per spec/04
+-- §4.4 ("the compiler SHOULD verify lhs >= rhs via contracts or
+-- refinement types") and spec/11 §11.2.1 (Tier-3 fallback emits a
+-- runtime guard that traps on underflow).
+--
+-- All sites here verify at Tier 1 — discharged from explicit
+-- `requires` clauses, path conditions in `if` branches, or trivial
+-- algebraic facts (`a - a == 0`, `a - 0 == a`).
+-- Discharged via explicit requires.
+public fn safe_sub(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(@Nat.result == @Nat.0 - @Nat.1)
+  effects(pure)
+{
+  @Nat.0 - @Nat.1
+}
+
+-- Discharged via path condition: the else-branch is reached only
+-- when `@Nat.0 != 0`, hence `@Nat.0 >= 1`, hence `@Nat.0 - 1 >= 0`.
+-- This is the canonical recursion shape used throughout the
+-- examples and conformance suite (factorial, fib, mutual recursion).
+public fn countdown(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    countdown(@Nat.0 - 1)
+  }
+}
+
+-- Discharged trivially: rhs is the literal 0.
+public fn id_via_sub(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result == @Nat.0)
+  effects(pure)
+{
+  @Nat.0 - 0
+}
+
+-- Discharged trivially: Z3 knows lhs == rhs implies lhs >= rhs.
+public fn self_sub(@Nat -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 0)
+  effects(pure)
+{
+  @Nat.0 - @Nat.0
+}
+
+-- Mixed-type subtraction: `@Nat - @Int` evaluates to `@Int` per the
+-- type rule (vera/checker/expressions.py:264-267 returns the more
+-- general type when operands differ; @Nat <: @Int).  The result is
+-- @Int, so no underflow obligation fires — @Int is allowed to be
+-- negative.
+public fn nat_minus_int(@Nat, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0 - @Int.0
+}
+
+-- Top-level entry: an inline @Nat - @Nat that the verifier
+-- discharges from a literal-zero RHS (the canonical "trivial"
+-- discharge path).  Inline rather than via call so we don't depend
+-- on the verifier substituting literal call arguments into
+-- callee preconditions.
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(@Nat.result == 7)
+  effects(pure)
+{
+  7 - 0
+}

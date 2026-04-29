@@ -119,7 +119,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("01-lexical-structure.md", 45): "FRAGMENT",  # "fn  let  if  then ..."
 
     # Chapter 4 — type alias + bare let statement (not top-level)
-    ("04-expressions.md", 130): "FRAGMENT",  # type alias + let @PosInt = 42
+    ("04-expressions.md", 132): "FRAGMENT",  # type alias + let @PosInt = 42
 
     # Chapter 5 — template with metavariable placeholders
     ("05-functions.md", 19): "FRAGMENT",  # fn function_name(@ParamType1 ...)

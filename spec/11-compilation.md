@@ -43,6 +43,18 @@ Generic type variables are resolved via monomorphization — each concrete insta
 
 `Nat` and `Int` share the same WASM representation (`i64`). The non-negativity invariant of `Nat` is enforced by the contract system (preconditions, postconditions), not by the WASM type. This avoids the overhead of runtime range checks on every arithmetic operation while maintaining the correctness guarantee through verification.
 
+The one operation that can violate the invariant despite well-typed operands is unsigned subtraction (`@Nat - @Nat`). At every such site whose result is statically `@Nat` AND at least one operand has `@Nat` *provenance* (a slot reference, function call returning `@Nat`, or a sub-expression containing one — pure-literal subtractions like `0 - 1` are intentionally exempt because they're commonly consumed at `@Int` positions), the compiler emits a Tier-1 proof obligation `lhs >= rhs`. If Z3 discharges the obligation the codegen emits a plain `i64.sub`. If Z3 cannot, the function drops to Tier 3 and the codegen emits a guarded subtraction:
+
+```wat
+(if (i64.lt_s lhs rhs)
+  (then unreachable))   ;; traps with WasmTrapError(kind="unreachable")
+(i64.sub lhs rhs)
+```
+
+The trap is classified as `kind="unreachable"` rather than a dedicated `kind="underflow"` because the `unreachable` instruction is the lightest-weight trap mechanism and adding a dedicated kind requires new host-import scaffolding (mirroring `vera.contract_fail`); a precise underflow diagnostic via `vera verify` is the recommended path until the dedicated kind lands.
+
+Authors lift Tier-3 functions back to Tier 1 by adding `requires lhs >= rhs` clauses. Subtraction sites that do not produce a `Nat`-typed result (e.g., `@Int - @Int`) are not obligation-checked — they may produce negative values, which is well-defined for `Int`. The same mechanism would apply to `@Byte - @Byte` (the `0..=255` range), but `Byte` is currently unenforced — tracked separately in [#551](https://github.com/aallan/vera/issues/551). The verifier currently checks the `@Nat >= 0` invariant at function return positions and at subtraction sites; generalising the check to every binding site that introduces a `@Nat` slot (e.g. `let @Nat = -1` would still slip through) is tracked as [#552](https://github.com/aallan/vera/issues/552).
+
 ### 11.2.2 Unit as Void
 
 Functions with return type `Unit` compile to WASM functions with no result type. The caller does not receive a return value. This matches WASM's native support for void functions and avoids allocating a dummy return value.
@@ -91,6 +103,8 @@ Binary operators compile to their WASM equivalents:
 | `\|\|` | — | — | `i32.or` |
 
 Float64 modulo uses the decomposition `a % b = a - trunc(a / b) * b`, where `trunc` is `f64.trunc` (truncation toward zero). This matches C's `fmod` semantics and is consistent with integer `%` (which uses `i64.rem_s`, also truncated toward zero). WASM has no native `f64.rem` instruction, so the compiler emits a multi-instruction sequence using temporary locals.
+
+`-` on `@Nat` operands is the bare `i64.sub` shown above only when the verifier discharges the underflow obligation `lhs >= rhs`. When it cannot, the codegen emits a guarded sequence that traps on underflow — see §11.2.1.
 
 Float64 comparisons return `i32` (0 or 1), matching WASM's native comparison semantics.
 

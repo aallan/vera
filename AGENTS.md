@@ -8,7 +8,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 81 small, self-contained programs — one per language feature — that serve as minimal working examples. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 82 small, self-contained programs — one per language feature — that serve as minimal working examples. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -161,7 +161,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 81 conformance programs must pass
+python scripts/check_conformance.py    # All 82 conformance programs must pass
 python scripts/check_examples.py       # All 33 examples must pass
 ```
 
@@ -171,7 +171,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 81 conformance programs in `tests/conformance/` must pass their declared level
+- All 82 conformance programs in `tests/conformance/` must pass their declared level
 - All 33 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
