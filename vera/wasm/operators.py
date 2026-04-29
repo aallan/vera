@@ -85,6 +85,16 @@ class OperatorsMixin:
                 if op not in self._ARITH_OPS_F64:  # pragma: no cover
                     return None  # unsupported float op
                 return left + right + [self._ARITH_OPS_F64[op]]
+            # @Nat subtraction underflow guard (#520) — mirrors the
+            # static obligation emitted in vera/verifier.py.  When the
+            # result is statically @Nat and at least one operand has
+            # @Nat origin, emit a runtime check that traps on
+            # underflow.  Programs that ran `vera verify` first will
+            # have caught the violation statically; this guard is the
+            # safety net for `vera compile` / `vera run` paths that
+            # skipped verification.
+            if op == ast.BinOp.SUB and self._is_nat_subtraction(expr):
+                return self._emit_nat_sub_guard(left, right)
             return left + right + [self._ARITH_OPS[op]]
 
         # Comparison — choose i32/i64/f64 based on operand types
@@ -710,3 +720,159 @@ class OperatorsMixin:
         if isinstance(arg, ast.NamedType):
             return arg.name
         return None  # pragma: no cover
+
+    # -----------------------------------------------------------------
+    # @Nat subtraction underflow guard (#520)
+    # -----------------------------------------------------------------
+
+    def _is_nat_subtraction(self, expr: ast.BinaryExpr) -> bool:
+        """Return True iff *expr* is a `@Nat - @Nat` site that needs guarding.
+
+        Mirrors :py:meth:`ContractVerifier._is_nat_typed` AND
+        :py:meth:`ContractVerifier._has_nat_origin` from the verifier
+        (vera/verifier.py): the result must be statically @Nat (both
+        operands @Nat-typed per checker subtyping rule) AND at least
+        one operand must have @Nat *provenance* (slot ref or
+        function return), distinguishing real @Nat-flowed
+        subtractions from pure-literal idioms like ``0 - 1`` (the
+        common "I want -1 as a literal" pattern used in
+        ``Err(_) -> 0 - 1`` and similar positions).
+
+        The two conditions must agree exactly with the verifier so
+        that programs verified clean at Tier 1 don't pay an unguarded
+        underflow risk and so the runtime guard never fires on a site
+        the verifier considered exempt.
+
+        Pure-literal underflow into a @Nat binding (e.g.
+        ``let @Nat = 0 - 1``) is intentionally *not* caught here —
+        that's Path B (#552) territory, which generalises the
+        verifier check to every binding-site narrowing.
+        """
+        return (self._is_static_nat_typed(expr.left)
+                and self._is_static_nat_typed(expr.right)
+                and (self._has_nat_origin_codegen(expr.left)
+                     or self._has_nat_origin_codegen(expr.right)))
+
+    def _is_static_nat_typed(self, expr: ast.Expr) -> bool:
+        """Return True iff *expr* has static type @Nat.
+
+        Mirrors :py:meth:`ContractVerifier._is_nat_typed`.  Returns
+        True for SlotRef of type @Nat, non-negative IntLits,
+        arithmetic expressions where both operands are @Nat (per
+        vera/checker/expressions.py:264-267 Nat <: Int subtyping
+        rule), IfExpr / MatchExpr with all branches @Nat, and FnCall
+        returning @Nat.  Conservative False elsewhere — UnaryExpr
+        (negation) always produces @Int.
+        """
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name == "Nat"
+        if isinstance(expr, ast.IntLit):
+            return expr.value >= 0
+        if isinstance(expr, ast.BinaryExpr):
+            if expr.op in (
+                ast.BinOp.ADD, ast.BinOp.SUB, ast.BinOp.MUL,
+                ast.BinOp.DIV, ast.BinOp.MOD,
+            ):
+                return (self._is_static_nat_typed(expr.left)
+                        and self._is_static_nat_typed(expr.right))
+            return False
+        if isinstance(expr, ast.IfExpr):
+            if expr.else_branch is None:
+                return False
+            return (self._is_static_nat_typed(expr.then_branch)
+                    and self._is_static_nat_typed(expr.else_branch))
+        if isinstance(expr, ast.Block):
+            return self._is_static_nat_typed(expr.expr)
+        if isinstance(expr, ast.MatchExpr):
+            if not expr.arms:
+                return False
+            return all(
+                self._is_static_nat_typed(arm.body) for arm in expr.arms
+            )
+        if isinstance(expr, ast.FnCall):
+            ret_type_name = self._infer_fncall_vera_type(expr)
+            return ret_type_name == "Nat"
+        return False
+
+    def _has_nat_origin_codegen(self, expr: ast.Expr) -> bool:
+        """Return True iff *expr* derives from a definitely-@Nat source.
+
+        Mirrors :py:meth:`ContractVerifier._has_nat_origin`.  Distinct
+        from :py:meth:`_is_static_nat_typed`: that classifies the
+        type, this asks whether the value has @Nat *provenance* — a
+        parameter, let-binding, or function call carrying the @Nat
+        invariant forward, vs. a pure-literal computation.
+
+        Used to scope #520's runtime guard so it doesn't fire on
+        pure-literal subtractions (those are #552 territory).
+        """
+        if isinstance(expr, ast.SlotRef):
+            return expr.type_name == "Nat"
+        if isinstance(expr, ast.FnCall):
+            return self._infer_fncall_vera_type(expr) == "Nat"
+        if isinstance(expr, ast.BinaryExpr):
+            return (self._has_nat_origin_codegen(expr.left)
+                    or self._has_nat_origin_codegen(expr.right))
+        if isinstance(expr, ast.UnaryExpr):
+            return self._has_nat_origin_codegen(expr.operand)
+        if isinstance(expr, ast.IfExpr):
+            if expr.else_branch is None:
+                return False
+            return (self._has_nat_origin_codegen(expr.then_branch)
+                    or self._has_nat_origin_codegen(expr.else_branch))
+        if isinstance(expr, ast.Block):
+            return self._has_nat_origin_codegen(expr.expr)
+        if isinstance(expr, ast.MatchExpr):
+            if not expr.arms:
+                return False
+            return any(
+                self._has_nat_origin_codegen(arm.body)
+                for arm in expr.arms
+            )
+        return False
+
+    def _emit_nat_sub_guard(
+        self, left: list[str], right: list[str],
+    ) -> list[str]:
+        """Emit a guarded `i64.sub` that traps on underflow.
+
+        Pattern:
+
+            [left] [right]
+            local.set $rhs_tmp     ;; pop rhs into temp
+            local.tee $lhs_tmp     ;; pop lhs into temp, leave on stack
+            local.get $rhs_tmp     ;; push rhs back (stack: [lhs, rhs])
+            i64.lt_s               ;; lhs < rhs?
+            if
+              unreachable          ;; trap; classified as "unreachable"
+            end                    ;;   by vera/codegen/api.py:_classify_trap
+            local.get $lhs_tmp
+            local.get $rhs_tmp
+            i64.sub
+
+        The trap is the bare `unreachable` instruction so it's
+        classified by the existing trap taxonomy as
+        ``kind="unreachable"`` — adding a dedicated ``"underflow"``
+        kind with a specific Fix paragraph requires new
+        host-import scaffolding (mirroring how `vera.contract_fail`
+        works) and is left as a follow-up enhancement.  Users who
+        want a precise diagnostic should run ``vera verify`` first;
+        the guard's role is preventing silent corruption of @Nat
+        slots in programs that skipped verification.
+        """
+        lhs_tmp = self.alloc_local("i64")
+        rhs_tmp = self.alloc_local("i64")
+        return [
+            *left,
+            *right,
+            f"local.set {rhs_tmp}",
+            f"local.tee {lhs_tmp}",
+            f"local.get {rhs_tmp}",
+            "i64.lt_s",
+            "if",
+            "  unreachable",
+            "end",
+            f"local.get {lhs_tmp}",
+            f"local.get {rhs_tmp}",
+            "i64.sub",
+        ]

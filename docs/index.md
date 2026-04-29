@@ -229,7 +229,7 @@ For other models: point them at [`SKILL.md`](https://veralang.dev/SKILL.md) via 
 
 ## Status
 
-Vera is under [active development](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md). A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 13-chapter specification. An 81-program conformance suite and 33 worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub](https://github.com/aallan/vera) and released under the MIT licence.
+Vera is under [active development](https://raw.githubusercontent.com/aallan/vera/main/ROADMAP.md). A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via [Z3](https://www.microsoft.com/en-us/research/project/z3-3/), and a 13-chapter specification. An 82-program conformance suite and 33 worked examples are validated against the spec on every pull request. All of it is developed openly on [GitHub](https://github.com/aallan/vera) and released under the MIT licence.
 
 ## Links
 

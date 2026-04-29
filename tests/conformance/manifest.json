@@ -259,6 +259,21 @@
     ]
   },
   {
+    "id": "ch04_nat_subtraction",
+    "file": "ch04_nat_subtraction.vera",
+    "chapter": 4,
+    "title": "@Nat subtraction underflow obligation (#520)",
+    "level": "run",
+    "spec_ref": "Section 4.4 / Section 11.2.1",
+    "features": [
+      "nat_subtraction",
+      "underflow_obligation",
+      "tier1_discharge",
+      "path_condition_discharge",
+      "trivial_discharge"
+    ]
+  },
+  {
     "id": "ch04_comparison",
     "file": "ch04_comparison.vera",
     "chapter": 4,

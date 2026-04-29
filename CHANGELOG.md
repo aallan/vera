@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **`@Nat` subtraction silent underflow — soundness hole closed** ([#520](https://github.com/aallan/vera/issues/520), closes) — pre-fix, the type system accepted `@Nat - @Nat : @Nat` but the runtime emitted a plain `i64.sub` with no underflow check, so a negative i64 could end up in a `@Nat` slot, undermining any Tier-1-verified contract that relied on `Nat >= 0` (and turning `@Array<T>[@Nat.0]` indexing with a bad `@Nat` into a memory-safety issue). The fix is two-sided: (a) the verifier emits a Tier-1 proof obligation `lhs >= rhs` at every `@Nat - @Nat` site whose result is statically `@Nat` AND at least one operand has `@Nat` *provenance* (slot ref or function return), discharged from preconditions and path conditions via Z3; (b) the codegen emits a runtime guard (`local.set $rhs; local.tee $lhs; local.get $rhs; i64.lt_s; if unreachable end; ...; i64.sub`) on the same set of sites so programs that skip `vera verify` still trap cleanly on underflow rather than silently producing negative `@Nat` values. The two analyses share the helper logic (`_is_static_nat_typed` + `_has_nat_origin_codegen` mirror the verifier's `_is_nat_typed` + `_has_nat_origin`) so the verifier's Tier-1-discharged sites and the codegen-guarded sites agree exactly.
+
+### Path-A scope and follow-ups
+- **Pure-literal subtractions like `0 - 1` are intentionally not flagged.** The corpus uses this idiom widely (e.g. `Err(_) -> 0 - 1` and `throw(0 - 1)`) where the result is consumed at `@Int` positions and the upcast is well-defined. The verifier and codegen both require at least one operand to have `@Nat` *provenance* (a slot ref to a `@Nat` slot or a function returning `@Nat`), distinguishing real `@Nat`-flowed subtractions from pure-literal "I want -1 as a literal" idioms.
+- **`@Byte` follow-up tracked as [#551](https://github.com/aallan/vera/issues/551)** — the same underflow shape applies to `@Byte - @Byte` (`0..=255` range). Mechanical follow-up once the verifier helper and codegen guard are reusable.
+- **Binding-site narrowing tracked as [#552](https://github.com/aallan/vera/issues/552)** — the verifier currently checks the `@Nat >= 0` invariant only at function return positions and at subtraction sites. Narrowing from `@Int` into a `@Nat`-typed let binding or function argument (e.g. `let @Nat = 0 - 1`) is not yet obligation-checked. Architectural generalisation; ships separately so the obligation infrastructure stays focused.
+
+### New error code
+- **E502** — `@Nat subtraction underflow obligation not discharged`. Counterexample-bearing diagnostic with rationale, fix suggestion (`requires(@Nat.0 >= @Nat.1)` or guarded if-branch), and spec ref to §4.4 + §11.2.1.
+
+### Spec
+- **`spec/04-expressions.md` §4.4** — short clause mirroring the divide-by-zero language: subtraction on unsigned types is undefined behaviour when it would underflow; the compiler SHOULD verify `lhs >= rhs` and MUST insert a runtime check otherwise.
+- **`spec/11-compilation.md` §11.2.1** — full treatment with the Tier-1 proof obligation, Tier-3 fallback codegen (`(if (i64.lt_s lhs rhs) (then unreachable))`), the lift-back path via `requires`, and references to #551 (@Byte) and #552 (binding-site generalisation).
+- **`spec/11-compilation.md` §11.3.3** — footnote on the operator table pointing back to §11.2.1 so readers of the canonical "what does each operator compile to" reference learn that `@Nat - @Nat` is conditionally guarded.
+
+### Tests
+- New `TestNatSubtractionObligation520` in `tests/test_verifier.py` (9 tests): requires-clause discharge, if-guard / path-condition discharge (canonical recursion shape), trivial discharges (`@Nat.0 - 0`, `@Nat.0 - @Nat.0`), unguarded-subtract counterexample, `@Int - @Int` and `@Nat - @Int → @Int` exclusions, partial-requires non-discharge, pure-literal exclusion documenting Path-A scope.
+- New `TestNatSubtractionRuntimeGuard520` in `tests/test_codegen.py` (6 tests): underflow traps at runtime, safe subtraction passes through, structural WAT assertions that the guard appears for `@Nat - @Nat` and is absent for `@Int - @Int` and pure-literal `0 - 1`, deep-recursion path-discharged site runs without spurious traps.
+- New `tests/conformance/ch04_nat_subtraction.vera` (Section 4.4 / 11.2.1) demonstrating the canonical discharge patterns: explicit `requires`, `if`-guarded recursion, trivial discharges (`a - 0`, `a - a`), and `@Nat - @Int → @Int` exclusion. Verifies at Tier 1 with 17 contracts; corpus is now 82 conformance programs.
+- Existing tier-count assertions updated where the new obligations land: `test_recursive_call_decreases_verified` and `test_mixed_tiers` (3 → 4 T1), `test_overall_tier_counts` aggregate (219/26/245 → 222/26/248), `test_mutual_recursion_example_all_t1` (8 → 10 T1).
+
+### Migration
+- **Zero corpus migration needed.** Every existing `@Nat - @Nat` site in `examples/` and `tests/conformance/` is guarded by `if @Nat.0 == 0 then base else recursive(@Nat.0 - 1)` and Z3 discharges the obligation from the path condition automatically. External programs that previously verified at Tier 1 may now require explicit `requires(lhs >= rhs)` clauses on functions doing `@Nat - @Nat`; the diagnostic (E502) names the fix and shows the counterexample inputs.
+
 ## [0.0.126] - 2026-04-28
 
 ### Fixed

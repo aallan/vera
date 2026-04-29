@@ -13703,3 +13703,231 @@ public fn main(@Unit -> @Int)
 }
 """
         assert _run(src) == 500
+
+
+# =====================================================================
+# @Nat subtraction underflow runtime guard (#520)
+# =====================================================================
+
+class TestNatSubtractionRuntimeGuard520:
+    """Codegen emits a runtime underflow guard for `@Nat - @Nat`.
+
+    The verifier (vera/verifier.py, #520 commit b446cac) emits a
+    Tier-1 proof obligation `lhs >= rhs` at every @Nat-Nat
+    subtraction site.  The codegen mirrors that detection (same
+    helpers — _is_static_nat_typed + _has_nat_origin_codegen) and
+    emits a runtime guard that traps on underflow.
+
+    The guard exists because `vera compile` doesn't run the verifier
+    — programs that skip `vera verify` would otherwise produce
+    silent negative @Nat values.  When verification has run and
+    discharged the obligation statically, the runtime guard is
+    redundant but cheap (one i64 compare + branch); a Tier-1
+    skip-channel is a future optimization.
+    """
+
+    # Body uses `@Nat.1 - @Nat.0` (first param minus second param)
+    # rather than `@Nat.0 - @Nat.1` so the call-site argument order
+    # reads naturally — De Bruijn `@T.0` is the most recent (last)
+    # binding, so `unsafe(a, b)` with body `@Nat.0 - @Nat.1` would be
+    # `b - a` and easy to misread.  See CLAUDE.md / DE_BRUIJN.md.
+    _GUARDED_SUB = """
+private fn unsafe(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.1 - @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  unsafe(0, 1)
+}
+"""
+
+    _SAFE_SUB = """
+private fn safe(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.1 - @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  safe(5, 3)
+}
+"""
+
+    def test_underflow_traps_at_runtime(self) -> None:
+        """unsafe(0, 1) traps via the runtime guard.
+
+        Without the guard, `i64.sub` would produce -1 silently and
+        store it in a @Nat slot, violating the type invariant. With
+        the guard, the function traps cleanly before the bad value
+        propagates.
+        """
+        result = _compile_ok(self._GUARDED_SUB)
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+            execute(result, fn_name="main", args=[])
+
+    def test_safe_subtraction_returns_correct_result(self) -> None:
+        """safe(5, 3) returns 2 — guard passes through cleanly.
+
+        The guard is `if (i64.lt_s lhs rhs) then unreachable end`, so
+        when lhs >= rhs the branch is not taken and the subtraction
+        proceeds normally.  Confirms the guard doesn't introduce a
+        regression on the happy path.
+        """
+        assert _run(self._SAFE_SUB) == 2
+
+    def test_guard_emitted_in_wat_for_nat_sub(self) -> None:
+        """The guarded WAT contains `i64.lt_s` and `unreachable`.
+
+        Structural assertion that the codegen actually inserted the
+        guard sequence rather than emitting a bare `i64.sub`.  The
+        unguarded WAT (e.g. for `@Int - @Int`) would contain
+        `i64.sub` but no `i64.lt_s` paired with `unreachable`.
+        """
+        result = _compile_ok(self._GUARDED_SUB)
+        wat = result.wat
+        # Both the comparison and the trap must appear inside `unsafe`
+        # (the function with the @Nat-Nat subtraction).
+        unsafe_idx = wat.find("(func $unsafe")
+        assert unsafe_idx >= 0, "unsafe function not found in WAT"
+        # Slice out the `unsafe` body up to the next top-level paren.
+        body_end = wat.find("\n  (func ", unsafe_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[unsafe_idx:body_end]
+        assert "i64.lt_s" in body, (
+            f"Expected `i64.lt_s` in unsafe body for underflow guard, "
+            f"got: {body!r}"
+        )
+        assert "unreachable" in body, (
+            f"Expected `unreachable` in unsafe body for underflow guard, "
+            f"got: {body!r}"
+        )
+
+    def test_int_subtract_emits_no_guard(self) -> None:
+        """`@Int - @Int` does not get the guard — Int can be negative.
+
+        Sister to the structural test above: the guard fires only on
+        sites where the result is statically @Nat AND at least one
+        operand has @Nat origin.  Int-Int sites must emit a bare
+        `i64.sub` with no `i64.lt_s`/`unreachable` pair adjacent.
+        """
+        src = """
+private fn int_sub(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0 - @Int.1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  int_sub(5, 10)
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        int_sub_idx = wat.find("(func $int_sub")
+        assert int_sub_idx >= 0
+        body_end = wat.find("\n  (func ", int_sub_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[int_sub_idx:body_end]
+        # i64.sub must be present (it's the actual subtraction).
+        assert "i64.sub" in body
+        # But the guard pieces must NOT be — Int subtraction is unguarded.
+        assert "i64.lt_s" not in body, (
+            f"Unexpected `i64.lt_s` in int_sub body — Int subtraction "
+            f"should not have an underflow guard. Body: {body!r}"
+        )
+
+    def test_pure_literal_subtract_emits_no_guard(self) -> None:
+        """`0 - 1` (pure-literal idiom) emits no guard — Path-A scope.
+
+        The codegen guard fires only when at least one operand has
+        @Nat *provenance* (slot ref or @Nat-returning function),
+        matching the verifier's _has_nat_origin filter.  This keeps
+        the corpus's `Err(_) -> 0 - 1` and `throw(0 - 1)` idioms
+        unaffected — they consume the result at @Int positions where
+        the upcast is well-defined.
+        """
+        # ensures(true) avoids confounding `i64.lt_s` from the
+        # postcondition-check codegen (which compiles `< 0` to
+        # `i64.lt_s; i32.eqz; if; ...; call $vera.contract_fail`).
+        # We're isolating whether the underflow guard fires, not the
+        # postcondition check.
+        src = """
+public fn neg_sentinel(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  0 - 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  neg_sentinel()
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        sentinel_idx = wat.find("(func $neg_sentinel")
+        assert sentinel_idx >= 0
+        body_end = wat.find("\n  (func ", sentinel_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[sentinel_idx:body_end]
+        # Bare i64.sub, no guard — even though both operands are
+        # non-negative IntLits and thus statically @Nat per checker.
+        # The provenance filter excludes pure-literal subtractions.
+        assert "i64.sub" in body
+        assert "i64.lt_s" not in body, (
+            f"Pure-literal `0 - 1` should not get a guard at Path-A "
+            f"scope. Body: {body!r}"
+        )
+
+    def test_recursion_with_path_guard_runs_clean(self) -> None:
+        """`if @Nat.0 == 0 then 0 else f(@Nat.0 - 1)` runs at deep depth.
+
+        The verifier discharges the underflow obligation from the
+        path condition (the else-branch implies @Nat.0 != 0, hence
+        @Nat.0 >= 1).  The codegen still emits the runtime guard
+        (no Tier-1 skip-channel currently), but `lhs >= rhs` always
+        holds at runtime so the branch is never taken — confirming
+        the guard doesn't fire spuriously on path-discharged sites.
+        """
+        src = """
+private fn countdown(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  if @Nat.0 == 0 then {
+    0
+  } else {
+    countdown(@Nat.0 - 1)
+  }
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  countdown(100)
+}
+"""
+        # countdown(100) → 99 → ... → 0; guard never fires.
+        assert _run(src) == 0
