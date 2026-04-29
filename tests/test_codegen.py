@@ -13847,9 +13847,18 @@ public fn main(@Unit -> @Int)
         # i64.sub must be present (it's the actual subtraction).
         assert "i64.sub" in body
         # But the guard pieces must NOT be — Int subtraction is unguarded.
-        assert "i64.lt_s" not in body, (
-            f"Unexpected `i64.lt_s` in int_sub body — Int subtraction "
-            f"should not have an underflow guard. Body: {body!r}"
+        # Banning *both* `i64.lt_s` and `i64.lt_u` (regex
+        # `\bi64\.lt_[su]\b`) defends against a future codegen flip
+        # to unsigned-comparison or any other compare-then-trap
+        # variant; the previous `not in body` substring check would
+        # have silently passed if the guard mechanism changed.
+        assert not re.search(r"\bi64\.lt_[su]\b", body), (
+            f"Unexpected `i64.lt_[su]` in int_sub body — Int subtraction "
+            f"should not have an underflow guard. Body:\n{body}"
+        )
+        assert "unreachable" not in body, (
+            f"Unexpected `unreachable` in int_sub body — Int subtraction "
+            f"should not emit a trap. Body:\n{body}"
         )
 
     def test_pure_literal_subtract_emits_no_guard(self) -> None:
@@ -13893,10 +13902,18 @@ public fn main(@Unit -> @Int)
         # Bare i64.sub, no guard — even though both operands are
         # non-negative IntLits and thus statically @Nat per checker.
         # The provenance filter excludes pure-literal subtractions.
+        # As with test_int_subtract_emits_no_guard, banning both
+        # `i64.lt_s` / `i64.lt_u` and any `unreachable` defends
+        # against future codegen variants that switch comparator or
+        # trap mechanism.
         assert "i64.sub" in body
-        assert "i64.lt_s" not in body, (
+        assert not re.search(r"\bi64\.lt_[su]\b", body), (
             f"Pure-literal `0 - 1` should not get a guard at Path-A "
-            f"scope. Body: {body!r}"
+            f"scope. Body:\n{body}"
+        )
+        assert "unreachable" not in body, (
+            f"Pure-literal `0 - 1` should not emit a trap guard at "
+            f"Path-A scope. Body:\n{body}"
         )
 
     def test_recursion_with_path_guard_runs_clean(self) -> None:
