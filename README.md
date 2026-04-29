@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/aallan-vera-badge.png)](https://mseep.ai/app/aallan-vera)
+
 # Vera
 
 [![Vera — A language designed for machines to write](assets/vera-social-preview.jpg)](https://veralang.dev)
