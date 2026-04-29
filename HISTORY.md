@@ -261,6 +261,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.124 | 27 Apr | **Runtime traps now include a source backtrace** ([#516](https://github.com/aallan/vera/issues/516) Stage 2). |
 | v0.0.125 | 28 Apr | **Runtime traps now include actionable fix suggestions** ([#547](https://github.com/aallan/vera/issues/547)). |
 | v0.0.126 | 28 Apr | **Tail-recursive iteration runs in constant stack space** ([#517](https://github.com/aallan/vera/issues/517)). |
+| v0.0.127 | 29 Apr | **`@Nat` subtraction soundness hole closed** ([#520](https://github.com/aallan/vera/issues/520)). |
 
 ---
 

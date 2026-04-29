@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.127] - 2026-04-29
+
 ### Fixed
 - **`@Nat` subtraction silent underflow — soundness hole closed** ([#520](https://github.com/aallan/vera/issues/520), closes) — pre-fix, the type system accepted `@Nat - @Nat : @Nat` but the runtime emitted a plain `i64.sub` with no underflow check, so a negative i64 could end up in a `@Nat` slot, undermining any Tier-1-verified contract that relied on `Nat >= 0` (and turning `@Array<T>[@Nat.0]` indexing with a bad `@Nat` into a memory-safety issue). The fix is two-sided: (a) the verifier emits a Tier-1 proof obligation `lhs >= rhs` at every `@Nat - @Nat` site whose result is statically `@Nat` AND at least one operand has `@Nat` *provenance* (slot ref or function return), discharged from preconditions and path conditions via Z3; (b) the codegen emits a runtime guard (`local.set $rhs; local.tee $lhs; local.get $rhs; i64.lt_s; if unreachable end; ...; i64.sub`) on the same set of sites so programs that skip `vera verify` still trap cleanly on underflow rather than silently producing negative `@Nat` values. The two analyses share the helper logic (`_is_static_nat_typed` + `_has_nat_origin_codegen` mirror the verifier's `_is_nat_typed` + `_has_nat_origin`) so the verifier's Tier-1-discharged sites and the codegen-guarded sites agree exactly.
 
@@ -1832,7 +1834,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.126...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.127...HEAD
+[0.0.127]: https://github.com/aallan/vera/compare/v0.0.126...v0.0.127
 [0.0.126]: https://github.com/aallan/vera/compare/v0.0.125...v0.0.126
 [0.0.125]: https://github.com/aallan/vera/compare/v0.0.124...v0.0.125
 [0.0.124]: https://github.com/aallan/vera/compare/v0.0.123...v0.0.124
