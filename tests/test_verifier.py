@@ -553,13 +553,24 @@ private fn remainder(@Int, @Int -> @Int)
 class TestNatSubtractionObligation520:
     """`@Nat - @Nat` carries a Tier-1 proof obligation `lhs >= rhs`.
 
-    Per spec/04 §4.4 and spec/11 §11.2.1, every subtraction site whose
-    result type is `@Nat` must prove that the left operand is at least
-    as large as the right. The verifier discharges the obligation
-    from preconditions (`requires`) and path conditions (`if`/`match`
-    branches). When Z3 cannot discharge it, verification fails with a
-    counterexample so the author can add a `requires` clause; the
-    codegen separately emits a runtime guard for Tier-3 fallback.
+    Per spec/04 §4.4 and spec/11 §11.2.1, a subtraction site whose
+    result type is `@Nat` AND at least one operand has `@Nat`
+    *provenance* (a slot reference, a function call returning `@Nat`,
+    or a sub-expression containing one) must prove that the left
+    operand is at least as large as the right. The verifier
+    discharges the obligation from preconditions (`requires`) and
+    path conditions (`if` / `match` branches). When Z3 cannot
+    discharge it, verification fails with a counterexample so the
+    author can add a `requires` clause; the codegen separately emits
+    a runtime guard at the same set of sites.
+
+    Path-A scope (#520): pure-literal subtractions like `0 - 1`
+    (the canonical "I want -1 as a literal" idiom widely used in
+    `Err(_) -> 0 - 1` and `throw(0 - 1)` positions) are intentionally
+    exempt — neither operand has `@Nat` provenance, so the
+    obligation does not fire. `test_pure_literal_subtraction_not_flagged`
+    pins that exception. Catching `let @Nat = 0 - 1` (binding-site
+    narrowing) is the broader generalisation tracked as #552.
 
     `@Int - @Int` and `@Nat - @Int → @Int` carry no obligation —
     `Int` is allowed to be negative, so underflow is not a violation.

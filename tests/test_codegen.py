@@ -13931,3 +13931,28 @@ public fn main(@Unit -> @Nat)
 """
         # countdown(100) → 99 → ... → 0; guard never fires.
         assert _run(src) == 0
+
+        # Structural assertion: the guard IS emitted on the
+        # path-discharged @Nat.0 - 1 site.  Pure behavioural assertion
+        # (countdown(100) == 0) would pass even if the guard were
+        # accidentally elided, because the path condition keeps
+        # @Nat.0 >= 1 in the recursive arm so underflow can never
+        # fire — making the test silently coverage-blind.  Pinning
+        # the WAT shape catches a future regression where the codegen
+        # detector skips path-discharged sites (that's a Tier-1
+        # skip-channel optimisation; until it lands, every @Nat-Nat
+        # site with provenance gets the guard regardless of static
+        # discharge status).
+        result = _compile_ok(src)
+        wat = result.wat
+        countdown_idx = wat.find("(func $countdown")
+        assert countdown_idx >= 0, "countdown not found in WAT"
+        body_end = wat.find("\n  (func ", countdown_idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[countdown_idx:body_end]
+        assert "i64.lt_s" in body and "unreachable" in body, (
+            f"Expected the @Nat.0 - 1 underflow guard "
+            f"(i64.lt_s + unreachable) inside countdown body, got: "
+            f"{body!r}"
+        )

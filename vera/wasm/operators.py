@@ -792,6 +792,15 @@ class OperatorsMixin:
         if isinstance(expr, ast.FnCall):
             ret_type_name = self._infer_fncall_vera_type(expr)
             return ret_type_name == "Nat"
+        if isinstance(expr, ast.ModuleCall):
+            # ModuleCall is desugared to FnCall in
+            # vera/wasm/context.py:translate_expr (line 315), so the
+            # callee's return type is reachable via the same
+            # _infer_fncall_vera_type lookup once we synthesize the
+            # flattened FnCall shape.
+            return self._infer_fncall_vera_type(
+                ast.FnCall(name=expr.name, args=expr.args, span=expr.span),
+            ) == "Nat"
         return False
 
     def _has_nat_origin_codegen(self, expr: ast.Expr) -> bool:
@@ -810,6 +819,10 @@ class OperatorsMixin:
             return expr.type_name == "Nat"
         if isinstance(expr, ast.FnCall):
             return self._infer_fncall_vera_type(expr) == "Nat"
+        if isinstance(expr, ast.ModuleCall):
+            return self._infer_fncall_vera_type(
+                ast.FnCall(name=expr.name, args=expr.args, span=expr.span),
+            ) == "Nat"
         if isinstance(expr, ast.BinaryExpr):
             return (self._has_nat_origin_codegen(expr.left)
                     or self._has_nat_origin_codegen(expr.right))

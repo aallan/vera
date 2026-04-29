@@ -897,6 +897,15 @@ class ContractVerifier:
                 )
             return
 
+        if isinstance(expr, ast.ModuleCall):
+            # Module-qualified calls (e.g. `Math.abs(@Int.0)`) can host
+            # `@Nat - @Nat` in their args just like FnCall does — recurse.
+            for arg in expr.args:
+                self._walk_for_subtraction_obligations(
+                    decl, arg, smt, slot_env, assumptions,
+                )
+            return
+
         if isinstance(expr, ast.IfExpr):
             # Walk the condition first (before pushing path-cond) — any
             # @Nat-@Nat in the condition is unconditional from the
@@ -1152,6 +1161,13 @@ class ContractVerifier:
                 # (vera/environment.py:43), no need for _resolve_type.
                 return self._is_nat_type(fn.return_type)
             return False
+        if isinstance(expr, ast.ModuleCall):
+            # Module-qualified calls (e.g. `Math.abs(...)`) — resolve via
+            # the per-module registry the verifier already maintains.
+            mfn = self._lookup_module_function(expr.path, expr.name)
+            if mfn is not None:
+                return self._is_nat_type(mfn.return_type)
+            return False
         # UnaryExpr: negation always produces @Int.
         # Other AST node types: conservative False.
         return False
@@ -1181,6 +1197,11 @@ class ContractVerifier:
             if fn is None:
                 return False
             return self._is_nat_type(fn.return_type)
+        if isinstance(expr, ast.ModuleCall):
+            mfn = self._lookup_module_function(expr.path, expr.name)
+            if mfn is None:
+                return False
+            return self._is_nat_type(mfn.return_type)
         if isinstance(expr, ast.BinaryExpr):
             return (self._has_nat_origin(expr.left)
                     or self._has_nat_origin(expr.right))

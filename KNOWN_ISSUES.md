@@ -20,7 +20,7 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | Limitation | Issue |
 |-----------|-------|
 | Tier 2 verification (Z3-guided with `assert`/lemma hints) is specified in §6.3.2 but not yet implemented; contracts requiring hints fall to Tier 3 (runtime check) | [#427](https://github.com/aallan/vera/issues/427) |
-| `@Nat` invariant check fires only at function return positions — narrowing from `@Int` into a `@Nat`-typed let binding or function argument is not obligation-checked, so a bad value can silently flow through subsequent expressions. Tier-3 fallback compiles correctly but the verifier doesn't catch it statically. Generalisation of #520 (which fixes the subtraction-specific subset) | [#552](https://github.com/aallan/vera/issues/552) |
+| `@Nat` invariant check fires only at function return positions and at subtraction sites (the latter via #520's verifier obligation + codegen guard in `vera/wasm/operators.py`) — narrowing from `@Int` into a `@Nat`-typed let binding or function argument is not obligation-checked statically and not guarded at runtime, so a bad value can silently flow through subsequent expressions. Generalisation of #520 (which fixes the subtraction-specific subset) | [#552](https://github.com/aallan/vera/issues/552) |
 | `vera test` cannot generate ADT (algebraic data type) inputs | [#440](https://github.com/aallan/vera/issues/440) |
 | Effect row variable unification (full effect polymorphism) | [#294](https://github.com/aallan/vera/issues/294) |
 | Incremental compilation | [#56](https://github.com/aallan/vera/issues/56) |

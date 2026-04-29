@@ -43,15 +43,17 @@ Generic type variables are resolved via monomorphization — each concrete insta
 
 `Nat` and `Int` share the same WASM representation (`i64`). The non-negativity invariant of `Nat` is enforced by the contract system (preconditions, postconditions), not by the WASM type. This avoids the overhead of runtime range checks on every arithmetic operation while maintaining the correctness guarantee through verification.
 
-The one operation that can violate the invariant despite well-typed operands is unsigned subtraction (`@Nat - @Nat`). At every such site the compiler emits a Tier-1 proof obligation `lhs >= rhs`. If Z3 discharges the obligation the codegen emits a plain `i64.sub`. If Z3 cannot, the function drops to Tier 3 and the codegen emits a guarded subtraction:
+The one operation that can violate the invariant despite well-typed operands is unsigned subtraction (`@Nat - @Nat`). At every such site whose result is statically `@Nat` AND at least one operand has `@Nat` *provenance* (a slot reference, function call returning `@Nat`, or a sub-expression containing one — pure-literal subtractions like `0 - 1` are intentionally exempt because they're commonly consumed at `@Int` positions), the compiler emits a Tier-1 proof obligation `lhs >= rhs`. If Z3 discharges the obligation the codegen emits a plain `i64.sub`. If Z3 cannot, the function drops to Tier 3 and the codegen emits a guarded subtraction:
 
 ```wat
 (if (i64.lt_s lhs rhs)
-  (then unreachable))   ;; traps with WasmTrapError(kind="underflow")
+  (then unreachable))   ;; traps with WasmTrapError(kind="unreachable")
 (i64.sub lhs rhs)
 ```
 
-Authors lift Tier-3 functions back to Tier 1 by adding `requires lhs >= rhs` clauses. Subtraction sites that do not produce a `Nat`-typed result (e.g., `@Int - @Int`) are not obligation-checked — they may produce negative values, which is well-defined for `Int`. The same mechanism applies to `@Byte - @Byte` (the `0..=255` range — tracked separately in [#551](https://github.com/aallan/vera/issues/551)). The verifier currently checks the `@Nat >= 0` invariant at function return positions and at subtraction sites; generalising the check to every binding site that introduces a `@Nat` slot is tracked as [#552](https://github.com/aallan/vera/issues/552).
+The trap is classified as `kind="unreachable"` rather than a dedicated `kind="underflow"` because the `unreachable` instruction is the lightest-weight trap mechanism and adding a dedicated kind requires new host-import scaffolding (mirroring `vera.contract_fail`); a precise underflow diagnostic via `vera verify` is the recommended path until the dedicated kind lands.
+
+Authors lift Tier-3 functions back to Tier 1 by adding `requires lhs >= rhs` clauses. Subtraction sites that do not produce a `Nat`-typed result (e.g., `@Int - @Int`) are not obligation-checked — they may produce negative values, which is well-defined for `Int`. The same mechanism would apply to `@Byte - @Byte` (the `0..=255` range), but `Byte` is currently unenforced — tracked separately in [#551](https://github.com/aallan/vera/issues/551). The verifier currently checks the `@Nat >= 0` invariant at function return positions and at subtraction sites; generalising the check to every binding site that introduces a `@Nat` slot (e.g. `let @Nat = -1` would still slip through) is tracked as [#552](https://github.com/aallan/vera/issues/552).
 
 ### 11.2.2 Unit as Void
 
