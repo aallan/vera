@@ -100,7 +100,8 @@ Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.
 ### Phase 1c: Expand contract-driven testing
 
 - [#440](https://github.com/aallan/vera/issues/440) **`vera test` input generation for ADT types** — functions with ADT (algebraic data type) parameters are still skipped. ADT generation requires constructor synthesis: selecting from known constructors and recursively generating field values.
-- [#170](https://github.com/aallan/vera/issues/170) **Hypothesis integration** — use Hypothesis strategies for input generation, enabling property-based contract testing with shrinking. This is the long-term path to replacing hand-written test generation with a mature fuzzing framework.
+- [#562](https://github.com/aallan/vera/issues/562) **Advanced testing features** — input shrinking (find the smallest failing input from large counterexamples), cross-function scenarios (test sequences like `put` then `get` for stateful contracts), and coverage-guided generation (use WASM execution paths to steer the generator). The active backlog for `vera test` beyond ADT input generation.
+- [#170](https://github.com/aallan/vera/issues/170) **Hypothesis as input-generation backend** (bookmark) — evaluate adopting Hypothesis to handle types Z3 can't encode (String, Array, ADT, nested structures). Deferred until `vera test`'s Z3 backend hits its ceiling on a real Vera program; trigger condition is sustained "cannot generate inputs" warnings on String/Array contracts. Tool choice (#170) is the deferred decision; the feature work it would unblock is #562.
 
 ---
 
