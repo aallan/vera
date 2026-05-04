@@ -47,7 +47,7 @@ Arithmetic operators work on numeric types (`Int`, `Nat`, `Float64`):
 
 Division by zero is undefined behaviour in Vera. The compiler SHOULD verify that the divisor is non-zero via contracts or refinement types. If it cannot, it MUST insert a runtime check.
 
-Subtraction on `Nat` is undefined behaviour when it would underflow (`lhs < rhs` produces a negative value below `Nat`'s `>= 0` range). The compiler SHOULD verify `lhs >= rhs` via contracts or refinement types. If it cannot, it MUST insert a runtime check that traps on underflow. The same obligation applies to `Byte` subtraction in principle (the `0..=255` range), but the reference compiler currently checks `Nat` only — `Byte` underflow enforcement is tracked as [#551](https://github.com/aallan/vera/issues/551).
+Subtraction on `Nat` is undefined behaviour when it would underflow (`lhs < rhs` produces a negative value below `Nat`'s `>= 0` range). The compiler SHOULD verify `lhs >= rhs` via contracts or refinement types. If it cannot, it MUST insert a runtime check that traps on underflow. `Byte` arithmetic is not currently supported by the type checker (`Byte` is excluded from the numeric-types set in `vera/types.py`); user code that needs byte-level arithmetic uses `byte_to_int` to convert before arithmetic and `int_to_byte` to convert back. Allowing `Byte` arithmetic with both underflow and overflow guards is tracked speculatively as [#564](https://github.com/aallan/vera/issues/564).
 
 Unary negation:
 

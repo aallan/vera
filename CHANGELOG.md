@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+- **`@Byte` arithmetic exclusion documented in spec** ([#551](https://github.com/aallan/vera/issues/551) closed as not-a-bug; [#564](https://github.com/aallan/vera/issues/564) filed speculatively) — `vera/types.py` excludes `Byte` from `NUMERIC_TYPES`, so `@Byte - @Byte` (and similar) produce E140 at type-check time. The original #551 framing assumed a runtime underflow hole; investigation showed the checker prevents the construct entirely. Spec §4.4 and §11.2.1 updated to drop the previous "Byte enforcement tracked as #551" caveat in favour of a clear note that Byte arithmetic isn't permitted; user code that needs byte-level arithmetic uses `byte_to_int` / `int_to_byte` round-trip. The forward-looking *feature* (allow Byte arithmetic with verified underflow + overflow guards) is preserved as #564 with full design analysis (pros, cons, trigger conditions, action checklist) under a new ROADMAP `## Speculative` section. New `TestByteArithmeticRejection551` regression test (5 cases) pins the checker behaviour so a future widening of `NUMERIC_TYPES` can't silently re-open the underflow hole without a corresponding extension of the verifier obligation + codegen guard from #520.
+
 ## [0.0.127] - 2026-04-29
 
 ### Fixed

@@ -1178,6 +1178,8 @@ int_to_byte(@Int.0)               -- returns Option<Byte> (None if out of 0..255
 
 Vera has no implicit numeric conversions — use these functions to convert between numeric types. `int_to_float`, `nat_to_int`, and `byte_to_int` are widening conversions that always succeed. `float_to_int` truncates toward zero and traps on NaN/Infinity. `int_to_nat` and `int_to_byte` are checked narrowing conversions that return `Option` — pattern match on the result to handle the failure case. `nat_to_int` and `byte_to_int` are SMT-verifiable (Tier 1); the rest are Tier 3 (runtime).
 
+`Byte` is excluded from arithmetic operators (`+`, `-`, `*`, `/`, `%`, unary `-`) at type-check time — `@Byte.0 + @Byte.1` produces `E140`. For byte-level math, convert to `Int` via `byte_to_int`, do the arithmetic in `@Int`, and convert back via `int_to_byte` if needed. The forward-looking design question of allowing direct `@Byte` arithmetic (with verified underflow + overflow guards) is tracked speculatively as [#564](https://github.com/aallan/vera/issues/564); the current convention keeps the verifier's range-checking story focused on `@Nat` (where only underflow can occur).
+
 ### Float64 predicates
 
 ```vera
