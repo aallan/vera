@@ -5654,3 +5654,113 @@ public fn two_holes(@Int, @Bool -> @Int)
         warnings = _warnings(src)
         hole_warnings = [w for w in warnings if w.error_code == "W001"]
         assert len(hole_warnings) == 2
+
+
+# =====================================================================
+# @Byte arithmetic rejection (regression for #551 disposition)
+# =====================================================================
+
+class TestByteArithmeticRejection551:
+    """Pin the current convention that `@Byte` is excluded from arithmetic.
+
+    `vera/types.py:132` defines `NUMERIC_TYPES = frozenset({INT, NAT,
+    FLOAT64})` — `@Byte` is *deliberately* not in that set.  The
+    arithmetic check at `expressions.py:252` (binary) and `:384`
+    (unary negation) rejects any operand whose base type isn't in
+    `NUMERIC_TYPES`, producing E140.
+
+    This is the type-check-time guard that makes the runtime "@Byte
+    underflow soundness hole" filed as #551 unreachable: there's no
+    AST shape `BinaryExpr(SUB, @Byte, @Byte)` for the verifier or
+    codegen to ever see.  #551 closed as not-a-bug; #564 captures
+    the speculative *feature* (allow byte arithmetic with verified
+    underflow + overflow guards) for if/when a real user driver
+    emerges.
+
+    These tests pin the current behaviour so a future widening of
+    `NUMERIC_TYPES` (e.g. resolving #564 affirmatively) can't
+    silently re-open the underflow hole without a corresponding
+    extension of the verifier obligation + codegen guard from #520.
+    """
+
+    def test_byte_subtraction_rejected_e140(self):
+        """`@Byte - @Byte` produces E140 at type-check time."""
+        src = """
+public fn byte_sub(@Byte, @Byte -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Byte.0 - @Byte.1 }
+"""
+        errs = _check_err(src, "numeric")
+        e140 = [e for e in errs if e.error_code == "E140"]
+        assert len(e140) >= 1, (
+            f"Expected E140 for @Byte - @Byte; got: "
+            f"{[(e.error_code, e.description[:60]) for e in errs]}"
+        )
+
+    def test_byte_addition_rejected_e140(self):
+        """`@Byte + @Byte` produces the same E140 — covers ADD."""
+        src = """
+public fn byte_add(@Byte, @Byte -> @Byte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Byte.0 + @Byte.1 }
+"""
+        errs = _check_err(src, "numeric")
+        assert any(e.error_code == "E140" for e in errs)
+
+    def test_byte_unary_negation_rejected_e147(self):
+        """`-@Byte` produces E147 at type-check time (unary path)."""
+        src = """
+public fn byte_neg(@Byte -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ -@Byte.0 }
+"""
+        errs = _check_err(src, "numeric")
+        e147 = [e for e in errs if e.error_code == "E147"]
+        assert len(e147) >= 1, (
+            f"Expected E147 for -@Byte; got: "
+            f"{[(e.error_code, e.description[:60]) for e in errs]}"
+        )
+
+    def test_refinement_alias_does_not_bypass(self):
+        """A refinement alias of @Byte still rejects arithmetic.
+
+        `base_type()` strips refinements before the `NUMERIC_TYPES`
+        check, so `type MyByte = { @Byte | true }` does not provide
+        an escape hatch.  This pinning matters: if a future change
+        moves the check to operate on the refined type rather than
+        the base type, refinements would silently bypass the rule.
+        """
+        src = """
+type MyByte = { @Byte | true };
+
+public fn refined_sub(@MyByte, @MyByte -> @MyByte)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @MyByte.0 - @MyByte.1 }
+"""
+        errs = _check_err(src, "numeric")
+        assert any(e.error_code == "E140" for e in errs)
+
+    def test_byte_to_int_then_arithmetic_works(self):
+        """The canonical workaround: `byte_to_int` then arithmetic.
+
+        Confirms the user-facing contract for byte-level work today:
+        explicit conversion to `@Int`, do arithmetic in `@Int`, then
+        (if needed) convert back via `int_to_byte`.  This is the
+        idiom #564 would relax if/when adopted.
+        """
+        src = """
+public fn byte_diff(@Byte, @Byte -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ byte_to_int(@Byte.1) - byte_to_int(@Byte.0) }
+"""
+        _check_ok(src)
