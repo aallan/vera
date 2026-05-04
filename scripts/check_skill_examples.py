@@ -86,12 +86,9 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
 
     # Effect declarations and handlers
     1285: ("FRAGMENT", "Effect declarations list"),
-    1396: ("FRAGMENT", "Async effect declarations list"),
     1416: ("FRAGMENT", "Async effect row declarations, bare clauses"),
     1446: ("FRAGMENT", "Http effect declarations list"),
     1477: ("FRAGMENT", "Inference effect declarations list"),
-    1485: ("FRAGMENT", "Effect handler syntax template"),
-    1552: ("FRAGMENT", "Handler syntax template, not real code"),
     1569: ("FRAGMENT", "Handler with-clause pseudocode, bare expression"),
     1581: ("FRAGMENT", "Handler with-clause, bare put arm expression"),
     1591: ("FRAGMENT", "Qualified effect calls (State.put, Logger.put)"),
@@ -101,7 +98,6 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     1808: ("FRAGMENT", "Comment syntax example"),
 
     # Common mistakes section — intentionally wrong code
-    1863: ("FRAGMENT", "Wrong: missing index on slot reference"),
     1887: ("FRAGMENT", "Wrong: missing contracts"),
     1907: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
     1930: ("FRAGMENT", "Wrong: bare @Int + @Int without indices"),
