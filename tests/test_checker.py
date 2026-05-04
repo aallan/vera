@@ -5663,10 +5663,11 @@ public fn two_holes(@Int, @Bool -> @Int)
 class TestByteArithmeticRejection551:
     """Pin the current convention that `@Byte` is excluded from arithmetic.
 
-    `vera/types.py:132` defines `NUMERIC_TYPES = frozenset({INT, NAT,
+    `vera/types.py` defines `NUMERIC_TYPES = frozenset({INT, NAT,
     FLOAT64})` — `@Byte` is *deliberately* not in that set.  The
-    arithmetic check at `expressions.py:252` (binary) and `:384`
-    (unary negation) rejects any operand whose base type isn't in
+    arithmetic check in `vera/checker/expressions.py` (the
+    `_check_binary` arithmetic branch and the `_check_unary` NEG
+    branch) rejects any operand whose base type isn't in
     `NUMERIC_TYPES`, producing E140.
 
     This is the type-check-time guard that makes the runtime "@Byte
