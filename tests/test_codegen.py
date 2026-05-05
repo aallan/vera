@@ -1657,9 +1657,15 @@ public fn main(@Unit -> @Unit)
         result = _compile_ok(source)
         # "hello" is 5 bytes; GC adds 81920 (16K shadow stack + 64K
         # worklist after #348's quadrupling of the worklist), so
-        # heap_ptr should start at 5 + 81920 = 81925.
-        assert "global $heap_ptr" in result.wat
-        assert "i32.const 81925" in result.wat
+        # heap_ptr should start at 5 + 81920 = 81925.  Match the
+        # declaration and its initializer in a single substring so a
+        # stale `i32.const 81925` elsewhere in the WAT (e.g. a future
+        # constant in $alloc that happens to land on the same value)
+        # can't satisfy the assertion on its own.
+        assert (
+            '(global $heap_ptr (export "heap_ptr") (mut i32) (i32.const 81925))'
+            in result.wat
+        )
 
     def test_heap_ptr_zero_without_strings(self) -> None:
         """Without strings, heap starts at GC offset 81920 (16K stack + 64K worklist)."""
@@ -1671,7 +1677,12 @@ public fn f(-> @Int)
 { 42 }
 """
         result = _compile_ok(source)
-        assert "i32.const 81920)" in result.wat  # heap_ptr init
+        # Combined declaration + initializer match (see
+        # test_heap_ptr_starts_after_strings for the rationale).
+        assert (
+            '(global $heap_ptr (export "heap_ptr") (mut i32) (i32.const 81920))'
+            in result.wat
+        )
 
     def test_alloc_alignment_logic(self) -> None:
         """Alloc function contains 8-byte alignment rounding."""
@@ -15178,6 +15189,59 @@ public fn main(@Unit -> @Int)
 """
         assert _run(src) == 999
 
+    def test_page_boundary_alloc_rounding(self) -> None:
+        """Allocations that span the 64 KiB page boundary work cleanly.
+
+        Pins the `pages_needed = (shortage + 65535) >> 16` ceiling
+        math against off-by-one regressions at the 64 KiB boundary:
+
+          - shortage = 65535 → 1 page  (just under)
+          - shortage = 65536 → 1 page  (exactly fits)
+          - shortage = 65537 → 2 pages (1 byte over → must round up)
+
+        Each `array_range(0, N)` allocates `8 * N` payload bytes
+        plus a small header.  The exact shortage at runtime depends
+        on prior heap state, but the array sizes below straddle the
+        single-page allocation boundary (8192 i64s = 65536 bytes ≈
+        1 page).  If the rounding math regresses, one of these
+        sizes will trap on out-of-bounds memory access at the index
+        read.  Each test allocates fresh; we read the last element
+        to force the access to actually land in the new memory.
+        """
+        # 8192 elements = 65536 bytes payload — exactly 1 page
+        src_8192 = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 8192);
+  @Array<Int>.0[8191]
+}
+"""
+        assert _run(src_8192) == 8191
+
+        # 8193 elements = 65544 bytes payload — 1 page + 8 bytes
+        # (shortage just over 64 KiB, must round up to 2 pages)
+        src_8193 = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 8193);
+  @Array<Int>.0[8192]
+}
+"""
+        assert _run(src_8193) == 8192
+
+        # 16384 elements = 131072 bytes payload — exactly 2 pages
+        src_16384 = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 16384);
+  @Array<Int>.0[16383]
+}
+"""
+        assert _run(src_16384) == 16383
+
 
 class TestWorklistOverflow348:
     """`#348`: GC worklist overflow trap (was: silent use-after-free).
@@ -15283,23 +15347,32 @@ public fn main(-> @Int)
         gc_start = wat.index("(func $gc_collect")
         gc_end = wat.index("\n  (func ", gc_start + 1) if "\n  (func " in wat[gc_start + 1 :] else len(wat)
         gc_collect = wat[gc_start:gc_end]
-        # `local.get $wl_end` should appear at least twice — once in
-        # Phase 2 seed and once in Phase 2b mark-scan, both guarding
-        # an `unreachable` (post-fix shape).  Pre-fix the same two
-        # spots used `i32.lt_u` followed by a guarded push (silent
-        # drop), so the structural shape is detectably different.
-        assert gc_collect.count("local.get $wl_end") >= 2, (
-            "Expected ≥2 wl_end checks in $gc_collect (Phase 2 seed + Phase 2b scan)"
+        # Match the exact overflow-guard opcode sequence:
+        #   local.get $wl_ptr
+        #   local.get $wl_end
+        #   i32.ge_u
+        #   if
+        #     unreachable
+        # (with arbitrary indentation between lines).  Pre-fix the
+        # corresponding sequence used `i32.lt_u` followed by a push,
+        # so this regex would match zero times against a regressed
+        # file even if `i32.ge_u` continued to appear elsewhere.
+        # The two matches correspond to:
+        #   - Phase 2 seed: scan_ptr loop, push of root pointers
+        #   - Phase 2b mark-scan: per-payload-word push of children
+        pattern = re.compile(
+            r"local\.get \$wl_ptr\s*"
+            r"local\.get \$wl_end\s*"
+            r"i32\.ge_u\s*"
+            r"if\s*"
+            r"unreachable",
+            re.MULTILINE,
         )
-        # The new push branches use `i32.ge_u` (was `i32.lt_u`) and
-        # the inner `if` body is `unreachable` (was: a push sequence).
-        # We just confirm there are ≥2 ge_u/unreachable pairs in
-        # $gc_collect — too brittle to match exact whitespace.
-        ge_u_count = gc_collect.count("i32.ge_u")
-        # The Phase 1 clear loop and Phase 3 sweep also use ge_u; we
-        # only care that it's strictly more than the pre-fix baseline.
-        # Pre-fix (without our two new ge_u checks) had 4 `i32.ge_u`
-        # occurrences inside $gc_collect; post-fix there are 6.
-        assert ge_u_count >= 6, (
-            f"Expected ≥6 i32.ge_u in $gc_collect post-fix (was 4 pre-fix); found {ge_u_count}"
+        matches = pattern.findall(gc_collect)
+        assert len(matches) >= 2, (
+            f"Expected ≥2 worklist-overflow guard sequences in $gc_collect "
+            f"(Phase 2 seed + Phase 2b scan), found {len(matches)}.  "
+            f"Pre-fix shape used `i32.lt_u` + push; post-fix uses "
+            f"`i32.ge_u` + `unreachable` — a regression here would "
+            f"mean one or both push branches reverted to silent-drop."
         )
