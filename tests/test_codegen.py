@@ -14994,3 +14994,54 @@ public fn main(@Unit -> @Int)
 """
         # (100 + 4) × 3 = 312
         assert _run(src) == 312
+
+    def test_empty_string_capture_in_closure(self) -> None:
+        """Captured empty `String` reads as length 0 (not garbage).
+
+        Edge case for the pair-capture fix: an empty string has
+        len = 0, the same value the pre-fix bug *also* produced
+        (because it always returned 0).  The post-fix property we
+        pin here is that the len is *correctly* preserved as 0
+        (rather than reading garbage from an unallocated len slot
+        in the closure struct).
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @String = "";
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      nat_to_int(string_length(@String.0))
+    }
+  );
+  array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 })
+}
+"""
+        # 0 × 3 = 0 (empty string captured)
+        assert _run(src) == 0
+
+    def test_empty_array_capture_in_closure(self) -> None:
+        """Captured empty `Array<Int>` reads as length 0 (not garbage).
+
+        Same edge-case shape as the empty-string test: pins that the
+        post-fix path correctly preserves a zero-length pair capture
+        (vs. happening to print 0 because the bug always read len as 0).
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 0);
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      nat_to_int(array_length(@Array<Int>.0))
+    }
+  );
+  array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 })
+}
+"""
+        # 0 × 3 = 0 (empty array captured)
+        assert _run(src) == 0

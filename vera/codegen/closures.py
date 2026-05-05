@@ -299,8 +299,19 @@ class ClosureLiftingMixin:
         self._json_ops_used.update(ctx._json_ops_used)
         self._html_ops_used.update(ctx._html_ops_used)
 
-        # Build GC prologue/epilogue (only when closure body allocates)
+        # Build GC prologue/epilogue (only when closure body allocates).
+        # Two-phase prologue: ``gc_prologue`` runs before ``load_instrs``
+        # (saves the GC sp and roots pointer-typed parameters, which are
+        # already populated by WASM's call ABI); ``gc_capture_pushes``
+        # runs *after* ``load_instrs`` (CodeRabbit on PR #569 — captures
+        # are still 0 in the prologue because the env-loads haven't run
+        # yet, so ``gc_shadow_push`` would write zero to the shadow
+        # stack and any captured heap pointer reachable only through
+        # the closure could be GC'd while in use).  Splitting the
+        # prologue lets us push capture roots once the loads have
+        # populated their locals.
         gc_prologue: list[str] = []
+        gc_capture_pushes: list[str] = []
         gc_epilogue: list[str] = []
         if ctx.needs_alloc:
             gc_sp_save = ctx.alloc_local("i32")
@@ -308,15 +319,16 @@ class ClosureLiftingMixin:
             gc_prologue.append(f"local.set {gc_sp_save}")
             for pidx in gc_pointer_params:
                 gc_prologue.extend(gc_shadow_push(pidx))
-            # Also push captured pointer locals.  Pair captures
-            # (#535) have their ptr field at `cap_local` and len at
-            # `cap_local + 1`; we root the ptr but not the len (len
-            # is an i32 byte count, never a heap pointer).
+            # Capture roots: pair captures (#535) have their ptr field
+            # at ``cap_local`` and len at ``cap_local + 1``; we root the
+            # ptr but not the len (len is an i32 byte count, never a
+            # heap pointer).  Emitted into ``gc_capture_pushes`` so
+            # they run after the env-loads have populated the locals.
             for (tname, cap_local), kind in zip(cap_locals, cap_local_kinds):
                 if kind == "i32_pair":
-                    gc_prologue.extend(gc_shadow_push(cap_local))
+                    gc_capture_pushes.extend(gc_shadow_push(cap_local))
                 elif kind == "i32" and tname not in ("Bool", "Byte"):
-                    gc_prologue.extend(gc_shadow_push(cap_local))
+                    gc_capture_pushes.extend(gc_shadow_push(cap_local))
 
             # Determine if return type is a heap pointer
             ret_is_pointer = False
@@ -365,6 +377,12 @@ class ClosureLiftingMixin:
         for instr in gc_prologue:
             lines.append(f"    {instr}")
         for instr in load_instrs:
+            lines.append(f"    {instr}")
+        # Capture roots are pushed AFTER load_instrs so the locals
+        # contain the loaded ptr (not the default 0) when shadow_push
+        # snapshots their value — see the gc_prologue/gc_capture_pushes
+        # split above for the rationale.
+        for instr in gc_capture_pushes:
             lines.append(f"    {instr}")
         for instr in body_instrs:
             lines.append(f"    {instr}")
