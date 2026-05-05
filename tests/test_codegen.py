@@ -14129,3 +14129,304 @@ public fn main(@Unit -> @Nat)
 }
 """
         assert _run(safe_src) == 0
+
+
+# =====================================================================
+# WASM call translator critical bug fixes (#475 PR 1)
+# =====================================================================
+
+class TestExpressionBodiedExnHandler475:
+    """`#475` finding 1: handle[Exn<E>] with expression-bodied catch arms.
+
+    Pre-fix, `_translate_handle_exn` only inferred `result_wt` when
+    the catch-clause body was an `ast.Block`; expression-bodied
+    handlers (e.g. `throw(@String) -> None`) left `result_wt = None`
+    and the emitted WAT omitted the `(result T)` annotation —
+    producing invalid WAT that would fail validation when the body
+    type was anything other than Unit.
+
+    Post-fix, `_infer_expr_wasm_type` is used for both the catch
+    clause and the body, handling all expression types uniformly.
+    """
+
+    def test_expression_bodied_handler_returns_option(self) -> None:
+        """`throw(@String) -> None` (expression-bodied, returns Option)."""
+        src = """
+private fn try_div(@Int, @Int -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> None
+  } in {
+    Some(safe_div(@Int.0, @Int.1))
+  }
+}
+
+private fn safe_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{
+  if @Int.1 == 0 then {
+    throw("divide by zero")
+  } else {
+    @Int.0 / @Int.1
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match try_div(10, 2) {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+"""
+        # Should compile cleanly and run; pre-#475 the missing
+        # `(result ...)` annotation made the WAT invalid.
+        assert _run(src) == 5
+
+    def test_expression_bodied_handler_traps_on_zero(self) -> None:
+        """Same shape as above but exercises the throw path returning None."""
+        src = """
+private fn try_div(@Int, @Int -> @Option<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> None
+  } in {
+    Some(safe_div(@Int.0, @Int.1))
+  }
+}
+
+private fn safe_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{
+  if @Int.1 == 0 then {
+    throw("divide by zero")
+  } else {
+    @Int.0 / @Int.1
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match try_div(10, 0) {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+"""
+        # try_div(10, 0) → throws → handler returns None → match → -1.
+        assert _run(src) == -1
+
+    def test_expression_bodied_handler_int_result(self) -> None:
+        """Catch arm returns @Int (not Option) — verifies non-pair WAT result."""
+        src = """
+private fn safe_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  handle[Exn<String>] {
+    throw(@String) -> 0 - 1
+  } in {
+    inner_div(@Int.0, @Int.1)
+  }
+}
+
+private fn inner_div(@Int, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(<Exn<String>>)
+{
+  if @Int.1 == 0 then {
+    throw("divide by zero")
+  } else {
+    @Int.0 / @Int.1
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  safe_div(10, 0)
+}
+"""
+        assert _run(src) == -1
+
+
+class TestStringSliceClampBefore475:
+    """`#475` finding 2: `string_slice` clamps in i64 before wrapping to i32.
+
+    Pre-fix, `string_slice` had no clamping at all (the placeholder
+    `_ = len_s  # reserved for future bounds checking` documented
+    the gap).  Indices were narrowed via `i32.wrap_i64` first; large
+    positive i64 values silently turned into negative i32 values,
+    which then drove the byte-copy loop into out-of-range memory
+    or produced garbled output.
+
+    Post-fix, the clamp happens in i64 space (via the new
+    `_clamp_i64_to_range_then_wrap` helper) before narrowing — so a
+    huge positive index clamps to `len_s` cleanly and a negative
+    index clamps to 0, producing a well-defined empty or short
+    slice.
+    """
+
+    def test_normal_slice(self) -> None:
+        """Baseline: `string_slice("hello world", 0, 5)` → 'hello'."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_slice("hello world", 0, 5))
+}
+"""
+        assert _run_io(src).strip() == "hello"
+
+    def test_negative_start_clamps_to_zero(self) -> None:
+        """Negative start clamps to 0 (in i64) — produces 'hel'.
+
+        Pre-fix this either crashed the byte-copy loop on a wrapped
+        negative i32 offset, or silently produced garbled output.
+        """
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_slice("hello", -1, 3))
+}
+"""
+        assert _run_io(src).strip() == "hel"
+
+    def test_end_beyond_length_clamps_to_length(self) -> None:
+        """End past length clamps to length — full remaining suffix."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_slice("hello", 2, 100))
+}
+"""
+        assert _run_io(src).strip() == "llo"
+
+    def test_swapped_indices_produce_empty(self) -> None:
+        """end < start → empty slice (end clamped up to start)."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_slice("hello", 3, 1))
+}
+"""
+        # start=3, end=1 → end clamped up to start=3 → empty.
+        assert _run_io(src).strip() == ""
+
+    def test_huge_positive_start_clamps_in_i64(self) -> None:
+        """Pre-fix bug: i64 value > i32.MAX wraps to negative i32 then misbehaves.
+
+        Post-fix: clamps in i64 space to `len_s` (i64) before
+        narrowing.  Index 4294967301 (= 2^32 + 5) would wrap to
+        i32 = 5 pre-fix, falsely succeeding with an unintended
+        offset.  Post-fix it clamps to len_s (5) and produces the
+        empty slice correctly.
+        """
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(string_slice("hello", 4294967301, 4294967310))
+}
+"""
+        # Both indices clamp to len_s (5); end clamped up to start;
+        # new_len = 0; empty string.
+        assert _run_io(src).strip() == ""
+
+
+class TestCharCodeBoundsCheck475:
+    """`#475` finding 3: `string_char_code` traps on out-of-range index.
+
+    Pre-fix, `_translate_char_code` had no bounds check at all —
+    the index was wrapped from i64 to i32 and used as a byte offset
+    to `i32.load8_u` directly.  Out-of-range indices read arbitrary
+    WASM linear memory, a real memory-safety hole.
+
+    Post-fix, the bounds check operates in i64 space (`idx < 0 ||
+    idx >= len_s_i64`) and traps with `unreachable` before
+    narrowing — so huge positive i64 values cannot wrap to small
+    in-range-looking i32 values and bypass the check.
+    """
+
+    def test_in_range_returns_byte(self) -> None:
+        """Baseline: `string_char_code("hello", 1)` → 'e' = 101."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  string_char_code("hello", 1)
+}
+"""
+        assert _run(src) == 101
+
+    def test_negative_index_traps(self) -> None:
+        """Negative index → trap (was: read at ptr - 1 silently)."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  string_char_code("hello", -1)
+}
+"""
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+            execute(_compile_ok(src), fn_name="main", args=[])
+
+    def test_index_at_length_traps(self) -> None:
+        """Index == length → trap (out-of-range; valid range is [0, len))."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  string_char_code("hello", 5)
+}
+"""
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+            execute(_compile_ok(src), fn_name="main", args=[])
+
+    def test_huge_positive_index_traps(self) -> None:
+        """Huge i64 index → trap (was: wraps to small i32 and reads OOB).
+
+        4294967301 (= 2^32 + 5) wraps to i32 = 5 pre-fix.  For
+        "hello" (len 5) that would have read at offset 5 — past
+        the string, into adjacent memory.  Post-fix: bounds check
+        operates in i64 *before* narrowing, so 4294967301 >>
+        len_s_i64 (5) traps cleanly.
+        """
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  string_char_code("hello", 4294967301)
+}
+"""
+        with pytest.raises((wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)):
+            execute(_compile_ok(src), fn_name="main", args=[])
+
+    def test_last_valid_index(self) -> None:
+        """Boundary: index == length - 1 returns the last byte cleanly."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  string_char_code("hello", 4)
+}
+"""
+        # 'o' = 111
+        assert _run(src) == 111
