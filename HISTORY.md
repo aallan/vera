@@ -266,7 +266,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.129 | 5 May | **WASM call translator major correctness fixes — closes [#475](https://github.com/aallan/vera/issues/475)**. |
 | v0.0.130 | 5 May | **Pair-type closure captures preserve their len field — closes [#535](https://github.com/aallan/vera/issues/535)** (residual of #514). |
 | v0.0.131 | 5 May | **GC infrastructure batch — `$alloc` multi-page grow + worklist size + overflow trap, closes [#487](https://github.com/aallan/vera/issues/487) and [#348](https://github.com/aallan/vera/issues/348)** (heap base shifts 32 768 → 81 920 bytes from the worklist resize; surfaced [#570](https://github.com/aallan/vera/issues/570) `array_map` shadow-stack overflow for follow-up). |
-| v0.0.132 | 5 May | **Opaque-handle GC-rooting hygiene — closes [#347](https://github.com/aallan/vera/issues/347) and [#490](https://github.com/aallan/vera/issues/490)** (`#346` deferred — active reclamation needs a heap-wrap-as-ADT design, tracked as follow-up; per-`execute()` leak bounded by Python GC at exit). |
+| v0.0.132 | 5 May | **Opaque-handle GC-rooting hygiene — closes [#347](https://github.com/aallan/vera/issues/347) and [#490](https://github.com/aallan/vera/issues/490)** (`#346` closed as superseded by [#573](https://github.com/aallan/vera/issues/573); active reclamation needs a heap-wrap-as-ADT design tracked there). |
 
 ---
 
@@ -299,7 +299,7 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.132 (5 May) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,698 |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,700 |
 | Examples | 13 | 15 | 16 | 18 | 24 | 30 | 33 |
 | Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 164 |
 | Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 82 |

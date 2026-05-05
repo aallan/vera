@@ -15406,6 +15406,42 @@ class TestOpaqueHandleParamRooting347:
     the `local.get $p0; i32.store` shadow-push idiom.
     """
 
+    @staticmethod
+    def _assert_param0_not_shadow_pushed(
+        src: str, fn_name: str, type_label: str,
+    ) -> None:
+        """Shared helper for the per-handle-type assertion.
+
+        Compiles `src`, finds `$fn_name`, and verifies the canonical
+        param-0 shadow-push idiom (`global.get $gc_sp; local.get 0;
+        i32.store`) is NOT present.  `type_label` is used in the
+        failure message so each test surfaces which handle type
+        regressed.
+        """
+        result = _compile_ok(src)
+        fn_marker = f"(func ${fn_name}"
+        fn_start = result.wat.index(fn_marker)
+        if "\n  (func " in result.wat[fn_start + 1:]:
+            fn_end = result.wat.index("\n  (func ", fn_start + 1)
+        else:
+            fn_end = len(result.wat)
+        fn_body = result.wat[fn_start:fn_end]
+        push_pattern = re.compile(
+            r"global\.get \$gc_sp\s+"
+            r"local\.get 0\s+"
+            r"i32\.store",
+            re.MULTILINE,
+        )
+        assert not push_pattern.search(fn_body), (
+            f"Found a shadow_push of param 0 (the {type_label} "
+            f"handle) in ${fn_name} — the opaque-handle exclusion "
+            f"(#347) isn't being applied.  Map / Set / Decimal "
+            f"handles are i32 indices into Python-side stores, not "
+            f"Vera-heap pointers; rooting them wastes shadow-stack "
+            f"space and could cause spurious heap-object retention "
+            f"via the conservative GC's heap-range check."
+        )
+
     def test_map_param_not_shadow_pushed(self) -> None:
         """A `Map<Nat, Nat>` parameter must not appear in any
         gc_shadow_push sequence in the function's prologue.
@@ -15425,37 +15461,54 @@ public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
   option_unwrap_or(map_get(@Map<Nat, Nat>.0, @Nat.0), 0)
 }
 """
-        result = _compile_ok(src)
-        # Extract the lookup_or_zero function body
-        fn_start = result.wat.index("(func $lookup_or_zero")
-        if "\n  (func " in result.wat[fn_start + 1:]:
-            fn_end = result.wat.index("\n  (func ", fn_start + 1)
-        else:
-            fn_end = len(result.wat)
-        fn_body = result.wat[fn_start:fn_end]
-        # Direct pattern match for the param-0 shadow-push idiom.
-        # The exact sequence emitted by `gc_shadow_push(0)` is:
-        #   global.get $gc_sp
-        #   local.get 0
-        #   i32.store
-        # (with the surrounding overflow check + sp advance).  Pre-fix
-        # this would be present; post-fix the Map handle param is
-        # excluded by `_is_host_handle_type`, so the sequence is
-        # absent.
-        push_pattern = re.compile(
-            r"global\.get \$gc_sp\s+"
-            r"local\.get 0\s+"
-            r"i32\.store",
-            re.MULTILINE,
+        self._assert_param0_not_shadow_pushed(src, "lookup_or_zero", "Map")
+
+    def test_set_param_not_shadow_pushed(self) -> None:
+        """A `Set<Nat>` parameter must not appear in any
+        gc_shadow_push sequence — same mechanism as Map; the test
+        catches a regression isolated to the Set codegen path.
+
+        We allocate via `option_unwrap_or` so the GC prologue is
+        emitted (otherwise the function compiles trivially and
+        there's nothing to assert about).
+        """
+        src = """
+public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  if set_contains(@Set<Nat>.0, @Nat.0) then {
+    option_unwrap_or(Some(true), false)
+  } else {
+    option_unwrap_or(Some(false), false)
+  }
+}
+"""
+        self._assert_param0_not_shadow_pushed(
+            src, "contains_or_false", "Set",
         )
-        assert not push_pattern.search(fn_body), (
-            "Found a shadow_push of param 0 (the Map handle) in "
-            "lookup_or_zero — the opaque-handle exclusion (#347) "
-            "isn't being applied.  Map / Set / Decimal handles are "
-            "i32 indices into Python-side stores, not Vera-heap "
-            "pointers; rooting them wastes shadow-stack space and "
-            "could cause spurious heap-object retention via the "
-            "conservative GC's heap-range check."
+
+    def test_decimal_param_not_shadow_pushed(self) -> None:
+        """A `Decimal` parameter must not appear in any
+        gc_shadow_push sequence — completes the Map / Set / Decimal
+        coverage triplet for the `_is_host_handle_type` exclusion.
+
+        Allocates via `option_unwrap_or` to force the GC prologue;
+        the structural check then verifies the Decimal handle param
+        isn't rooted.
+        """
+        src = """
+public fn is_positive_or_false(@Decimal -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  if decimal_eq(@Decimal.0, decimal_from_int(0)) then {
+    option_unwrap_or(Some(false), false)
+  } else {
+    option_unwrap_or(Some(true), false)
+  }
+}
+"""
+        self._assert_param0_not_shadow_pushed(
+            src, "is_positive_or_false", "Decimal",
         )
 
 
