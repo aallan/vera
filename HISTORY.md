@@ -264,6 +264,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.127 | 29 Apr | **`@Nat` subtraction soundness hole closed** ([#520](https://github.com/aallan/vera/issues/520)). |
 | v0.0.128 | 5 May | **WASM call translator critical safety fixes** ([#475](https://github.com/aallan/vera/issues/475)). |
 | v0.0.129 | 5 May | **WASM call translator major correctness fixes — closes [#475](https://github.com/aallan/vera/issues/475)**. |
+| v0.0.130 | 5 May | **Pair-type closure captures preserve their len field — closes [#535](https://github.com/aallan/vera/issues/535)** (residual of #514). |
 
 ---
 
@@ -293,14 +294,14 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 
 ## By the numbers
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.129 (5 May) |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.130 (5 May) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,680 |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,689 |
 | Examples | 13 | 15 | 16 | 18 | 24 | 30 | 33 |
 | Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 164 |
 | Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 82 |
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 129 tagged releases, 54 active development days.**
+Total: **810+ commits, 130 tagged releases, 54 active development days.**

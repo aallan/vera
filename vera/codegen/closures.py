@@ -196,30 +196,73 @@ class ClosureLiftingMixin:
                 if wt == "i32" and type_name not in ("Bool", "Byte", None):
                     gc_pointer_params.append(local_idx)
 
-        # Compute capture layout (must match _translate_anon_fn)
+        # Compute capture layout (must match _translate_anon_fn).
+        # Pair-type captures (#535) take 8 bytes: ptr (i32) + len (i32),
+        # two consecutive 4-byte fields.  The matching emit in
+        # `_translate_anon_fn` writes both halves; we read both halves
+        # here into two consecutive i32 locals so the closure body can
+        # resolve the pair as if it were a parameter or let-binding.
         cap_offsets: list[tuple[int, str]] = []
         offset = 4  # skip func_table_idx
         for _tname, _cidx, cap_wt in captures:
-            align = 8 if cap_wt in ("i64", "f64") else 4
-            offset = _align_up(offset, align)
-            cap_offsets.append((offset, cap_wt))
-            offset += 8 if cap_wt in ("i64", "f64") else 4
+            if cap_wt == "i32_pair":
+                offset = _align_up(offset, 4)
+                cap_offsets.append((offset, cap_wt))
+                offset += 8
+            elif cap_wt in ("i64", "f64"):
+                offset = _align_up(offset, 8)
+                cap_offsets.append((offset, cap_wt))
+                offset += 8
+            else:  # i32
+                offset = _align_up(offset, 4)
+                cap_offsets.append((offset, cap_wt))
+                offset += 4
 
         # Load captured values from env into locals (allocated AFTER params)
-        cap_locals: list[tuple[str, int]] = []  # (type_name, local_idx)
+        cap_locals: list[tuple[str, int]] = []  # (type_name, ptr_or_only_local)
+        cap_local_kinds: list[str] = []  # parallel: cap_wt for each entry
         load_instrs: list[str] = []
         for i, (tname, _cidx, cap_wt) in enumerate(captures):
-            cap_local = ctx.alloc_local(cap_wt)
             cap_offset, _ = cap_offsets[i]
-            load_op = (
-                "i64.load" if cap_wt == "i64"
-                else "f64.load" if cap_wt == "f64"
-                else "i32.load"
-            )
-            load_instrs.append(f"local.get {env_idx}")
-            load_instrs.append(f"{load_op} offset={cap_offset}")
-            load_instrs.append(f"local.set {cap_local}")
-            cap_locals.append((tname, cap_local))
+            if cap_wt == "i32_pair":
+                # Allocate two consecutive i32 locals (ptr, len).  The
+                # SlotEnv convention pushes only `ptr_idx`; the body
+                # reads `local.get ptr_idx` for the ptr and
+                # `local.get ptr_idx + 1` for the len, matching the
+                # let-binding and parameter conventions.
+                ptr_local = ctx.alloc_local("i32")
+                len_local = ctx.alloc_local("i32")
+                # Sanity: the two locals must be consecutive.  Both
+                # `alloc_local("i32")` calls go to the same i32 pool,
+                # so consecutive allocation is guaranteed by the
+                # WasmContext implementation.  An explicit raise (vs.
+                # `assert`) so the check survives `python -O`
+                # (ruff S101).
+                if len_local != ptr_local + 1:  # pragma: no cover
+                    raise RuntimeError(
+                        f"pair capture locals must be consecutive: "
+                        f"ptr={ptr_local} len={len_local}"
+                    )
+                load_instrs.append(f"local.get {env_idx}")
+                load_instrs.append(f"i32.load offset={cap_offset}")
+                load_instrs.append(f"local.set {ptr_local}")
+                load_instrs.append(f"local.get {env_idx}")
+                load_instrs.append(f"i32.load offset={cap_offset + 4}")
+                load_instrs.append(f"local.set {len_local}")
+                cap_locals.append((tname, ptr_local))
+                cap_local_kinds.append("i32_pair")
+            else:
+                cap_local = ctx.alloc_local(cap_wt)
+                load_op = (
+                    "i64.load" if cap_wt == "i64"
+                    else "f64.load" if cap_wt == "f64"
+                    else "i32.load"
+                )
+                load_instrs.append(f"local.get {env_idx}")
+                load_instrs.append(f"{load_op} offset={cap_offset}")
+                load_instrs.append(f"local.set {cap_local}")
+                cap_locals.append((tname, cap_local))
+                cap_local_kinds.append(cap_wt)
 
         # Build slot environment: captures first (outer scope, higher
         # De Bruijn indices), then function params on top (most recent).
@@ -256,8 +299,19 @@ class ClosureLiftingMixin:
         self._json_ops_used.update(ctx._json_ops_used)
         self._html_ops_used.update(ctx._html_ops_used)
 
-        # Build GC prologue/epilogue (only when closure body allocates)
+        # Build GC prologue/epilogue (only when closure body allocates).
+        # Two-phase prologue: ``gc_prologue`` runs before ``load_instrs``
+        # (saves the GC sp and roots pointer-typed parameters, which are
+        # already populated by WASM's call ABI); ``gc_capture_pushes``
+        # runs *after* ``load_instrs`` (CodeRabbit on PR #569 — captures
+        # are still 0 in the prologue because the env-loads haven't run
+        # yet, so ``gc_shadow_push`` would write zero to the shadow
+        # stack and any captured heap pointer reachable only through
+        # the closure could be GC'd while in use).  Splitting the
+        # prologue lets us push capture roots once the loads have
+        # populated their locals.
         gc_prologue: list[str] = []
+        gc_capture_pushes: list[str] = []
         gc_epilogue: list[str] = []
         if ctx.needs_alloc:
             gc_sp_save = ctx.alloc_local("i32")
@@ -265,15 +319,16 @@ class ClosureLiftingMixin:
             gc_prologue.append(f"local.set {gc_sp_save}")
             for pidx in gc_pointer_params:
                 gc_prologue.extend(gc_shadow_push(pidx))
-            # Also push captured pointer locals
-            for tname, cap_local in cap_locals:
-                gc_cap_wt: str | None = None
-                for _tn, _ci, cwt in captures:
-                    if _tn == tname:
-                        gc_cap_wt = cwt
-                        break
-                if gc_cap_wt == "i32" and tname not in ("Bool", "Byte"):
-                    gc_prologue.extend(gc_shadow_push(cap_local))
+            # Capture roots: pair captures (#535) have their ptr field
+            # at ``cap_local`` and len at ``cap_local + 1``; we root the
+            # ptr but not the len (len is an i32 byte count, never a
+            # heap pointer).  Emitted into ``gc_capture_pushes`` so
+            # they run after the env-loads have populated the locals.
+            for (tname, cap_local), kind in zip(cap_locals, cap_local_kinds):
+                if kind == "i32_pair":
+                    gc_capture_pushes.extend(gc_shadow_push(cap_local))
+                elif kind == "i32" and tname not in ("Bool", "Byte"):
+                    gc_capture_pushes.extend(gc_shadow_push(cap_local))
 
             # Determine if return type is a heap pointer
             ret_is_pointer = False
@@ -322,6 +377,12 @@ class ClosureLiftingMixin:
         for instr in gc_prologue:
             lines.append(f"    {instr}")
         for instr in load_instrs:
+            lines.append(f"    {instr}")
+        # Capture roots are pushed AFTER load_instrs so the locals
+        # contain the loaded ptr (not the default 0) when shadow_push
+        # snapshots their value — see the gc_prologue/gc_capture_pushes
+        # split above for the rationale.
+        for instr in gc_capture_pushes:
             lines.append(f"    {instr}")
         for instr in body_instrs:
             lines.append(f"    {instr}")
