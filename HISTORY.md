@@ -265,7 +265,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.128 | 5 May | **WASM call translator critical safety fixes** ([#475](https://github.com/aallan/vera/issues/475)). |
 | v0.0.129 | 5 May | **WASM call translator major correctness fixes — closes [#475](https://github.com/aallan/vera/issues/475)**. |
 | v0.0.130 | 5 May | **Pair-type closure captures preserve their len field — closes [#535](https://github.com/aallan/vera/issues/535)** (residual of #514). |
-| v0.0.131 | 5 May | **GC infrastructure batch — `$alloc` multi-page grow + worklist size + overflow trap, closes [#487](https://github.com/aallan/vera/issues/487) and [#348](https://github.com/aallan/vera/issues/348)**. |
+| v0.0.131 | 5 May | **GC infrastructure batch — `$alloc` multi-page grow + worklist size + overflow trap, closes [#487](https://github.com/aallan/vera/issues/487) and [#348](https://github.com/aallan/vera/issues/348)** (heap base shifts 32 768 → 81 920 bytes from the worklist resize; surfaced [#570](https://github.com/aallan/vera/issues/570) `array_map` shadow-stack overflow for follow-up). |
 
 ---
 
