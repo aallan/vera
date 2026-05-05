@@ -133,11 +133,24 @@ class CallsContainersMixin:
     # ── Map<K, V> host-import builtins ──────────────────────────────
 
     @staticmethod
-    def _map_wasm_tag(vera_type: str | None) -> str:
+    def _map_wasm_tag(vera_type: str | None) -> str | None:
         """Map a Vera type name to a single-char WASM type tag.
 
         Used to build monomorphized host import names like
         ``map_insert$ki_vi`` (key=i64, value=i64).
+
+        Returns ``None`` for ``Array<T>`` values: arrays lower to
+        ``i32_pair`` (ptr + len), but pre-#475 the fallback routed
+        every non-primitive / non-String type to ``"b"`` (single
+        i32), which produced a host-import signature with one i32
+        slot where two were needed — silently mis-tagging
+        ``Map<K, Array<T>>`` insertions and breaking ``map_values``
+        round-trips.  Callers must check for ``None`` and return
+        ``None`` themselves, propagating the "skip this function"
+        signal through the translator (the standard compile-failure
+        convention).  When direct ``Map<K, Array<T>>`` support is
+        added later it would belong here as a new tag (e.g. ``"a"``)
+        with matching ``_map_wasm_types`` entry.
         """
         if vera_type in ("Int", "Nat"):
             return "i"   # i64
@@ -145,7 +158,28 @@ class CallsContainersMixin:
             return "f"   # f64
         if vera_type == "String":
             return "s"   # i32_pair
-        # Bool, Byte, ADTs, Map handles → i32
+        # Array<T> values lower to i32_pair too, but no Map host
+        # import currently handles that shape.  Reject so the caller
+        # bails to "function skipped" rather than emitting a
+        # signature-mismatched import.  The None-guard is required
+        # because `vera_type` is `Optional` per the type hint above —
+        # we explicitly reject Array shapes, but a `None` (uninferred
+        # element type from an empty collection like `set_new()` or
+        # `map_keys(map_new())`) is allowed to fall through to ``"b"``
+        # so empty-collection round-trips still compile.
+        if vera_type is not None and vera_type.startswith("Array"):
+            return None
+        # Bool, Byte, ADTs, Map handles, and uninferred (None) element
+        # types from empty collections → i32.  This is the historical
+        # fall-through; CodeRabbit on PR #567 flagged it as a possible
+        # re-introduction of the pre-#475 hole, but the empty-collection
+        # tests (`test_set_empty_to_array`, `test_map_keys_in_if_expr`,
+        # `test_set_to_array_in_if_expr`) depend on this path: the
+        # element type is genuinely unknown but the host import works
+        # because no element value flows through it.  Mis-tagging is
+        # only possible when a real (non-None) type fails inference,
+        # and that's caught by the Array branch above and the
+        # primitive branches.
         return "b"
 
     @staticmethod
@@ -239,6 +273,9 @@ class CallsContainersMixin:
         kt = self._map_wasm_tag(key_type)
         vt = self._map_wasm_tag(val_type)
 
+        if kt is None or vt is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+
         params = ["i32"]  # map handle
         params.extend(self._map_wasm_types(kt))  # key
         params.extend(self._map_wasm_types(vt))  # value
@@ -265,10 +302,16 @@ class CallsContainersMixin:
         """
         key_type = self._infer_vera_type(call.args[1])
         kt = self._map_wasm_tag(key_type)
+
+        if kt is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
         # We need the value tag too, so the host knows how to build Option<V>.
         # Infer from the map's type — look at the slot ref for arg[0].
         val_type = self._infer_map_value_from_map_arg(call.args[0])
         vt = self._map_wasm_tag(val_type)
+
+        if vt is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
 
         params = ["i32"]  # map handle
         params.extend(self._map_wasm_types(kt))  # key
@@ -323,6 +366,9 @@ class CallsContainersMixin:
         key_type = self._infer_vera_type(call.args[1])
         kt = self._map_wasm_tag(key_type)
 
+        if kt is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+
         params = ["i32"]  # map handle
         params.extend(self._map_wasm_types(kt))  # key
         wasm_name = self._register_map_import(
@@ -344,6 +390,9 @@ class CallsContainersMixin:
         """map_remove(m, k) → i32 (new handle) via host import."""
         key_type = self._infer_vera_type(call.args[1])
         kt = self._map_wasm_tag(key_type)
+
+        if kt is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
 
         params = ["i32"]  # map handle
         params.extend(self._map_wasm_types(kt))  # key
@@ -383,6 +432,9 @@ class CallsContainersMixin:
         key_type = self._infer_map_key_from_map_arg(call.args[0])
         kt = self._map_wasm_tag(key_type)
 
+        if kt is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+
         wasm_name = self._register_map_import(
             "map_keys", kt, None,
             extra_params=["i32"], results=["i32", "i32"],
@@ -401,6 +453,9 @@ class CallsContainersMixin:
         """map_values(m) → (i32, i32) Array<V> via host import."""
         val_type = self._infer_map_value_from_map_arg(call.args[0])
         vt = self._map_wasm_tag(val_type)
+
+        if vt is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
 
         wasm_name = self._register_map_import(
             "map_values", val_tag=vt,
@@ -533,6 +588,9 @@ class CallsContainersMixin:
         elem_type = self._infer_vera_type(call.args[1])
         et = self._map_wasm_tag(elem_type)
 
+        if et is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+
         params = ["i32"]  # set handle
         params.extend(self._map_wasm_types(et))  # element
         wasm_name = self._register_set_import(
@@ -555,6 +613,9 @@ class CallsContainersMixin:
         elem_type = self._infer_vera_type(call.args[1])
         et = self._map_wasm_tag(elem_type)
 
+        if et is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+
         params = ["i32"]  # set handle
         params.extend(self._map_wasm_types(et))  # element
         wasm_name = self._register_set_import(
@@ -576,6 +637,9 @@ class CallsContainersMixin:
         """set_remove(s, elem) → i32 (new handle) via host import."""
         elem_type = self._infer_vera_type(call.args[1])
         et = self._map_wasm_tag(elem_type)
+
+        if et is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
 
         params = ["i32"]  # set handle
         params.extend(self._map_wasm_types(et))  # element
@@ -613,6 +677,9 @@ class CallsContainersMixin:
         """set_to_array(s) → (i32, i32) Array<T> via host import."""
         elem_type = self._infer_set_elem_from_set_arg(call.args[0])
         et = self._map_wasm_tag(elem_type)
+
+        if et is None:
+            return None  # Map<K, Array<T>> not supported (#475 finding 5)
 
         wasm_name = self._register_set_import(
             "set_to_array", et,
