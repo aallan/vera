@@ -246,6 +246,16 @@ class CallsStringsMixin:
         instructions.append(f"local.set {len_s}")
         instructions.append(f"local.set {ptr_s}")
 
+        # Root the source-string pointer on the GC shadow stack
+        # *before* the `call $alloc` below — the conservative
+        # collector only sees pointers that are stored on the shadow
+        # stack, not those that live solely in WAT locals.  ptr_s is
+        # read at line ~301 (the byte-copy loop), so it must survive
+        # any GC triggered by the destination allocation.  Auto-pop
+        # at function exit via the standard $gc_sp save/restore in
+        # the function epilogue.
+        instructions.extend(gc_shadow_push(ptr_s))
+
         # Widen len_s to i64 for in-i64 clamping.
         instructions.append(f"local.get {len_s}")
         instructions.append("i64.extend_i32_u")

@@ -304,11 +304,15 @@ class CallsHandlersMixin:
         # only `ast.Block` clause bodies got their result type inferred,
         # leaving `result_wt = None` for any expression-bodied handler and
         # omitting the `(result ...)` annotation in emitted WAT.  #475 (1).
+        # `expr.body` is statically typed `Block` (ast.py:481), so passing
+        # it to `_infer_expr_wasm_type` produces the same answer as the
+        # Block-specific helper would — using one helper for both call
+        # sites is uniformity for free.
         result_wt = None
         if expr.clauses:
             result_wt = self._infer_expr_wasm_type(expr.clauses[0].body)
         if result_wt is None:
-            result_wt = self._infer_block_result_type(expr.body)
+            result_wt = self._infer_expr_wasm_type(expr.body)
 
         # Save/inject throw as an effect op for the body
         saved_ops = dict(self._effect_ops)
