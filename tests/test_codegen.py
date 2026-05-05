@@ -15045,3 +15045,72 @@ public fn main(@Unit -> @Int)
 """
         # 0 × 3 = 0 (empty array captured)
         assert _run(src) == 0
+
+    def test_gc_pressure_pair_capture(self) -> None:
+        """Pair capture survives heavy in-closure allocation (GC pressure).
+
+        Exercises the round-1 GC-ordering fix (`gc_capture_pushes`
+        runs after `load_instrs`): the closure body allocates several
+        large temporary arrays *before* reading the captured array's
+        length.  If the capture root were pushed in the prologue
+        (pre-fix, before loads), the shadow stack would carry zero —
+        and a `$gc_collect` triggered by these in-body allocations
+        could mark the captured array unreachable and sweep it,
+        leaving the subsequent `array_length(@Array<Int>.0)` reading
+        from freed memory.
+
+        Post-fix: the capture root sits on the shadow stack with the
+        loaded ptr value (after the env-loads emit), so the captured
+        array stays marked through every allocation.
+
+        Three iterations of the outer `array_map`, each allocating
+        ~12 KB of temporary arrays inside the body, then reading the
+        captured array's length (7) — folded sum is 21.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 7);
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      let @Array<Int> = array_range(0, 500);
+      let @Array<Int> = array_range(0, 500);
+      let @Array<Int> = array_range(0, 500);
+      nat_to_int(array_length(@Array<Int>.3))
+    }
+  );
+  array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 })
+}
+"""
+        # @Array<Int>.3 is the outer captured array (skip the three inner
+        # let-bindings at indices 0, 1, 2); length 7, three iterations,
+        # folded sum 21.
+        assert _run(src) == 21
+
+    def test_gc_pressure_string_capture(self) -> None:
+        """Same shape as test_gc_pressure_pair_capture but for `String`.
+
+        Captured String must survive heavy in-closure allocation.
+        Three iterations × `string_length("hello")` = 5 × 3 = 15.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @String = "hello";
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      let @Array<Int> = array_range(0, 500);
+      let @Array<Int> = array_range(0, 500);
+      let @Array<Int> = array_range(0, 500);
+      nat_to_int(string_length(@String.0))
+    }
+  );
+  array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 })
+}
+"""
+        # Captured "hello" is length 5; three iterations × 5 = 15
+        assert _run(src) == 15
