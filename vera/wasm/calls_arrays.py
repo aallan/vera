@@ -14,6 +14,7 @@ from vera.wasm.helpers import (
     _element_mem_size,
     _element_store_op,
     _element_wasm_type,
+    _is_host_handle_type,
     _is_pair_element_type,
     gc_shadow_push,
 )
@@ -1061,11 +1062,18 @@ class CallsArraysMixin:
         # from the GC's perspective — rooting required.  The
         # ``_element_wasm_type`` helper returns ``"i32_pair"`` for
         # pair types and ``"i32"`` for ADT handles.  Primitives
-        # (i64/f64/i32 for Bool-Byte) don't need rooting.
+        # (i64/f64/i32 for Bool-Byte) don't need rooting.  Opaque
+        # host handles (Map / Set / Decimal) also lower to i32 but
+        # are indices into Python-side stores, not Vera-heap
+        # pointers — exclude them from the ADT root set so a handle
+        # value that lands in heap-pointer range with valid
+        # alignment doesn't spuriously mark an unrelated heap
+        # object as live (#490).
         u_is_adt = (
             u_wasm == "i32"
             and u_type not in ("Bool", "Byte")
             and not u_is_pair
+            and not _is_host_handle_type(u_type)
         )
         u_needs_root = u_is_pair or u_is_adt
 
@@ -2139,11 +2147,14 @@ class CallsArraysMixin:
         #
         # Detection for the ADT/handle case mirrors the fold's
         # ``u_is_adt`` check: ``t_wasm == "i32"`` (scalar, not pair)
-        # and T is not one of the known primitive-as-i32 types.
+        # and T is not one of the known primitive-as-i32 types or
+        # opaque host handles (#490 — same exclusion as the fold
+        # heuristic above).
         t_is_adt = (
             t_wasm == "i32"
             and t_type not in ("Bool", "Byte")
             and not t_is_pair
+            and not _is_host_handle_type(t_type)
         )
         t_needs_root = t_is_pair or t_is_adt
         #

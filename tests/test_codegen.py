@@ -15376,3 +15376,409 @@ public fn main(-> @Int)
             f"`i32.ge_u` + `unreachable` — a regression here would "
             f"mean one or both push branches reverted to silent-drop."
         )
+
+
+# =====================================================================
+# Opaque-handle GC-rooting hygiene (#347 + #490)
+# =====================================================================
+
+
+class TestOpaqueHandleParamRooting347:
+    """`#347`: opaque host handles (Map / Set / Decimal) MUST NOT be
+    pushed to the GC shadow stack as roots when they appear as
+    function parameters.
+
+    Pre-fix, the gc_pointer_params loop in
+    `vera/codegen/functions.py` excluded only `Bool` and `Byte`,
+    so a `Map<K, V>` / `Set<T>` / `Decimal` parameter (i32 handle
+    index) was treated as a heap pointer and pushed onto the
+    shadow stack.  Wasted shadow-stack space and a handle value
+    that happened to land in the heap-pointer range with valid
+    alignment would have caused the conservative mark phase to
+    spuriously mark an unrelated heap object as live (memory
+    retention, not corruption).
+
+    Post-fix, the new `_is_host_handle_type` classifier in
+    `vera/wasm/helpers.py` is consulted at the rooting decision
+    site to exclude these opaque handle types.  We pin the fix
+    structurally via WAT inspection: a function taking a
+    `Map<K, V>` parameter and needing GC alloc should NOT contain
+    the `local.get $p0; i32.store` shadow-push idiom.
+    """
+
+    @staticmethod
+    def _assert_param0_not_shadow_pushed(
+        src: str, fn_name: str, type_label: str,
+    ) -> None:
+        """Shared helper for the per-handle-type assertion.
+
+        Compiles `src`, finds `$fn_name`, and verifies:
+
+          1. The function's GC prologue WAS emitted (otherwise the
+             test is vacuous — a function with no allocator activity
+             trivially has no shadow-pushes regardless of whether
+             the exclusion fires).
+          2. The canonical param-0 shadow-push idiom is NOT present.
+
+        The push regex accepts both numeric (`local.get 0`) and
+        named (`local.get $p0`, `local.get $name`) forms — codegen
+        currently emits numeric, but future renames shouldn't make
+        this test silently pass.
+
+        `type_label` surfaces in failure messages so each call site
+        reports which handle type regressed.
+        """
+        result = _compile_ok(src)
+        fn_marker = f"(func ${fn_name}"
+        fn_start = result.wat.index(fn_marker)
+        if "\n  (func " in result.wat[fn_start + 1:]:
+            fn_end = result.wat.index("\n  (func ", fn_start + 1)
+        else:
+            fn_end = len(result.wat)
+        fn_body = result.wat[fn_start:fn_end]
+
+        # Non-vacuity check: confirm the GC prologue WAS emitted for
+        # this function.  The prologue's signature is
+        # `global.get $gc_sp` followed by a `local.set` (saving the
+        # restore point).  Without this, the absence of param-0
+        # pushes below is meaningless — there's no shadow-stack
+        # activity in the function at all.
+        prologue_pattern = re.compile(
+            r"global\.get \$gc_sp\s+local\.set\b",
+        )
+        assert prologue_pattern.search(fn_body), (
+            f"${fn_name} has no GC prologue — the test is vacuous "
+            f"because no shadow-push activity was emitted.  Adjust "
+            f"the test source so the function body forces an "
+            f"allocation (e.g. via `option_unwrap_or` or an ADT "
+            f"constructor) before the assertion below can pin the "
+            f"opaque-handle exclusion."
+        )
+
+        # The push idiom we're guarding against — both numeric and
+        # named forms of `local.get`.  Numeric is what codegen emits
+        # today; named (`$p0`, `$name`) is matched defensively in
+        # case codegen is later updated to use param names.
+        push_pattern = re.compile(
+            r"global\.get \$gc_sp\s+"
+            r"local\.get (?:0\b|\$\S+)\s+"
+            r"i32\.store",
+            re.MULTILINE,
+        )
+        # Filter to pushes that target param 0 specifically.  Named
+        # form `$p0` is the canonical first-param name; numeric `0`
+        # also targets the first local.  Other locals (`local.get 1`,
+        # `local.get $l2`, etc.) aren't relevant to the param-0
+        # exclusion check.
+        for match in push_pattern.finditer(fn_body):
+            text = match.group(0)
+            if "local.get 0" in text or "local.get $p0" in text:
+                raise AssertionError(
+                    f"Found a shadow_push of param 0 (the "
+                    f"{type_label} handle) in ${fn_name} — the "
+                    f"opaque-handle exclusion (#347) isn't being "
+                    f"applied.  Map / Set / Decimal handles are "
+                    f"i32 indices into Python-side stores, not "
+                    f"Vera-heap pointers; rooting them wastes "
+                    f"shadow-stack space and could cause spurious "
+                    f"heap-object retention via the conservative "
+                    f"GC's heap-range check.\n\nMatched WAT "
+                    f"sequence: {text!r}"
+                )
+
+    def test_map_param_not_shadow_pushed(self) -> None:
+        """A `Map<Nat, Nat>` parameter must not appear in any
+        gc_shadow_push sequence in the function's prologue.
+
+        The function below allocates (via `option_unwrap_or` —
+        which the prelude expands to an Option allocation), so
+        the GC prologue is emitted.  Pre-fix the prologue would
+        contain the canonical shadow-push idiom for `$p0`:
+        `global.get $gc_sp; local.get 0; i32.store`.  Post-fix
+        the classifier excludes the Map handle, so that exact
+        sequence is absent.
+        """
+        src = """
+public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(map_get(@Map<Nat, Nat>.0, @Nat.0), 0)
+}
+"""
+        self._assert_param0_not_shadow_pushed(src, "lookup_or_zero", "Map")
+
+    def test_set_param_not_shadow_pushed(self) -> None:
+        """A `Set<Nat>` parameter must not appear in any
+        gc_shadow_push sequence — same mechanism as Map; the test
+        catches a regression isolated to the Set codegen path.
+
+        We allocate via `option_unwrap_or` so the GC prologue is
+        emitted (otherwise the function compiles trivially and
+        there's nothing to assert about).
+        """
+        src = """
+public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  if set_contains(@Set<Nat>.0, @Nat.0) then {
+    option_unwrap_or(Some(true), false)
+  } else {
+    option_unwrap_or(Some(false), false)
+  }
+}
+"""
+        self._assert_param0_not_shadow_pushed(
+            src, "contains_or_false", "Set",
+        )
+
+    def test_decimal_param_not_shadow_pushed(self) -> None:
+        """A `Decimal` parameter must not appear in any
+        gc_shadow_push sequence — completes the Map / Set / Decimal
+        coverage triplet for the `_is_host_handle_type` exclusion.
+
+        Allocates via `option_unwrap_or` to force the GC prologue;
+        the structural check then verifies the Decimal handle param
+        isn't rooted.
+        """
+        src = """
+public fn is_positive_or_false(@Decimal -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  if decimal_eq(@Decimal.0, decimal_from_int(0)) then {
+    option_unwrap_or(Some(false), false)
+  } else {
+    option_unwrap_or(Some(true), false)
+  }
+}
+"""
+        self._assert_param0_not_shadow_pushed(
+            src, "is_positive_or_false", "Decimal",
+        )
+
+
+class TestArrayFoldHandleRooting490:
+    """`#490`: `array_fold` (and `array_map`) must NOT root opaque
+    handle accumulators / element types.
+
+    Pre-fix the `u_is_adt` heuristic in
+    `vera/wasm/calls_arrays.py` was
+    `u_wasm == "i32" and u_type not in ("Bool", "Byte") and not
+    u_is_pair`, which classified `Map` / `Set` / `Decimal`
+    accumulators as ADT pointers and emitted shadow-stack rooting
+    around the loop.  Same wasted-space + spurious-retention
+    concerns as #347.
+
+    Post-fix, the same `_is_host_handle_type` classifier excludes
+    them.  Functional behaviour is unchanged either way (the
+    conservative GC's heap-range check rejects small handle
+    indices), but the structural fix removes the wasted root-
+    management code.
+    """
+
+    @staticmethod
+    def _count_main_pushes(wat: str) -> int:
+        """Count `global.set $gc_sp` idioms inside `$main`'s body.
+
+        Each `gc_shadow_push` emits exactly one `global.set $gc_sp`
+        (the sp-advance step at the end of the idiom).  A higher
+        count for the host-handle case vs. the Int reference
+        indicates the handle accumulator/element is being rooted
+        when it shouldn't be.
+        """
+        fn_start = wat.index("(func $main")
+        if "\n  (func " in wat[fn_start + 1:]:
+            fn_end = wat.index("\n  (func ", fn_start + 1)
+        else:
+            fn_end = len(wat)
+        return wat[fn_start:fn_end].count("global.set $gc_sp")
+
+    def _assert_handle_not_extra_rooted(
+        self,
+        int_src: str,
+        decimal_src: str,
+        builder_name: str,
+        accumulator_label: str,
+    ) -> None:
+        """Compile `int_src` (reference: no rooting needed) and
+        `decimal_src` (test: opaque host handle), then assert the
+        Decimal version doesn't emit MORE shadow-pushes than the
+        Int version.
+
+        Two checks to avoid the test passing trivially:
+          1. **Non-vacuity** — assert both counts are > 0.  Without
+             this, a degenerate case where neither version emits
+             any pushes (e.g. if the WAT structure changed and the
+             helper now slices an empty body) would pass with
+             0 == 0.
+          2. **Equality** — Decimal must not emit MORE pushes than
+             the Int reference.  An ADT accumulator (which IS a
+             Vera-heap pointer) would emit one extra; an opaque
+             host handle (post-fix #490) emits the same count.
+        """
+        int_wat = _compile_ok(int_src).wat
+        decimal_wat = _compile_ok(decimal_src).wat
+        int_count = self._count_main_pushes(int_wat)
+        decimal_count = self._count_main_pushes(decimal_wat)
+
+        # Non-vacuity: there MUST be shadow-stack activity in $main
+        # for this comparison to be meaningful.  `array_range`
+        # itself shadow-pushes its result; lacking this means the
+        # WAT structure has shifted and the helper isn't slicing
+        # the right region.
+        assert int_count > 0, (
+            f"Int reference for {builder_name} emitted 0 "
+            f"`global.set $gc_sp` idioms in $main — the helper "
+            f"isn't measuring real shadow-stack activity, so the "
+            f"comparison below would pass trivially.  Likely the "
+            f"WAT structure shifted; re-check `_count_main_pushes` "
+            f"slicing logic."
+        )
+
+        # Equality: Decimal accumulator/element must not add an
+        # extra push relative to Int.
+        assert decimal_count == int_count, (
+            f"`{builder_name}` with a Decimal {accumulator_label} "
+            f"emits {decimal_count} `global.set $gc_sp` idioms in "
+            f"$main vs. {int_count} for an Int reference.  Post-"
+            f"#490 these should be equal — Decimal is an opaque "
+            f"host handle, not a Vera-heap pointer, and shouldn't "
+            f"be rooted around the `call_indirect`.  An extra "
+            f"count means `_is_host_handle_type` isn't firing in "
+            f"the `u_is_adt` / `t_is_adt` heuristic."
+        )
+
+    def test_decimal_accumulator_not_rooted(self) -> None:
+        """`array_fold` over `Decimal` accumulator should NOT emit
+        the per-iteration accumulator root that ADT accumulators
+        get.
+
+        Exercises the `u_is_adt` heuristic in
+        `_translate_array_fold`.  The mirror for `array_map`'s
+        `t_is_adt` heuristic is in `test_decimal_mapper_not_rooted`
+        below.
+        """
+        int_src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold(
+    array_range(0, 5),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+  )
+}
+"""
+        decimal_src = """
+public fn main(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold(
+    array_range(0, 5),
+    decimal_from_int(0),
+    fn(@Decimal, @Int -> @Decimal) effects(pure) {
+      decimal_add(@Decimal.0, decimal_from_int(@Int.0))
+    }
+  )
+}
+"""
+        self._assert_handle_not_extra_rooted(
+            int_src, decimal_src, "array_fold", "accumulator",
+        )
+
+    def test_decimal_mapper_not_rooted(self) -> None:
+        """`array_map` producing `Decimal` elements should NOT
+        emit the per-iteration element root that ADT elements get.
+
+        Mirrors `test_decimal_accumulator_not_rooted` but exercises
+        the `t_is_adt` heuristic in `_translate_array_map` (the
+        result-element rooting decision, distinct from the fold's
+        accumulator rooting).  A regression isolated to the
+        array_map path would not be caught by the fold test.
+        """
+        int_src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_map(
+    array_range(0, 5),
+    fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }
+  ))
+}
+"""
+        decimal_src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_map(
+    array_range(0, 5),
+    fn(@Int -> @Decimal) effects(pure) { decimal_from_int(@Int.0) }
+  ))
+}
+"""
+        self._assert_handle_not_extra_rooted(
+            int_src, decimal_src, "array_map", "element",
+        )
+
+    def test_array_fold_with_decimal_runs_correctly(self) -> None:
+        """Functional pin: the fold over Decimal still produces the
+        right result.  Pre- and post-fix this works (the
+        conservative GC's heap-range check rejects small handle
+        values either way), so this test passes in both states —
+        but it pins that the structural optimisation didn't break
+        anything.
+
+        Sum 0+1+2+3+4 = 10; comparing to `decimal_from_int(10)`
+        via `decimal_eq` returns 1.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = array_fold(
+    array_range(0, 5),
+    decimal_from_int(0),
+    fn(@Decimal, @Int -> @Decimal) effects(pure) {
+      decimal_add(@Decimal.0, decimal_from_int(@Int.0))
+    }
+  );
+  if decimal_eq(@Decimal.0, decimal_from_int(10)) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_array_map_with_decimal_runs_correctly(self) -> None:
+        """Functional pin for the array_map case: produce an array
+        of Decimal handles and verify the round-trip through
+        `array_fold(decimal_add)` returns the right total.
+
+        Pre- and post-fix this works (same conservative-GC
+        argument as the fold case), but pinning prevents a
+        future array_map regression from silently breaking the
+        `Decimal` element path.
+
+        `array_map([0..5), fn(i) { decimal_from_int(i*2) })`
+        produces `[0, 2, 4, 6, 8]` as Decimal handles; folding
+        with `decimal_add` gives 20.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Decimal> = array_map(
+    array_range(0, 5),
+    fn(@Int -> @Decimal) effects(pure) {
+      decimal_from_int(@Int.0 * 2)
+    }
+  );
+  let @Decimal = array_fold(
+    @Array<Decimal>.0,
+    decimal_from_int(0),
+    fn(@Decimal, @Decimal -> @Decimal) effects(pure) {
+      decimal_add(@Decimal.0, @Decimal.1)
+    }
+  );
+  if decimal_eq(@Decimal.0, decimal_from_int(20)) then { 1 } else { 0 }
+}
+"""
+        # 0 + 2 + 4 + 6 + 8 = 20
+        assert _run(src) == 1

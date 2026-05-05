@@ -9,7 +9,7 @@ from __future__ import annotations
 from vera import ast
 from vera.codegen.tail_position import compute_tail_call_sites
 from vera.wasm import WasmContext, WasmSlotEnv
-from vera.wasm.helpers import gc_shadow_push
+from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push
 
 
 class FunctionCompilationMixin:
@@ -119,8 +119,18 @@ class FunctionCompilationMixin:
             type_name = self._type_expr_to_slot_name(param_te)
             if type_name:
                 env = env.push(type_name, local_idx)
-            # Track i32 pointer params (ADT/closure, not Bool/Byte)
-            if wt == "i32" and type_name not in ("Bool", "Byte", None):
+            # Track i32 pointer params (ADT/closure, not Bool/Byte,
+            # not opaque host handles — Map/Set/Decimal are i32
+            # indices into Python-side stores, not Vera-heap
+            # pointers; pushing them onto the GC shadow stack wastes
+            # space and a handle value that lands in the heap-pointer
+            # range with valid alignment would spuriously mark an
+            # unrelated heap object as live (#347).
+            if (
+                wt == "i32"
+                and type_name not in ("Bool", "Byte", None)
+                and not _is_host_handle_type(type_name)
+            ):
                 gc_pointer_params.append(local_idx)
 
         # Return type
@@ -272,8 +282,10 @@ class FunctionCompilationMixin:
             # Determine if return type is a heap pointer
             ret_type_name = self._type_expr_to_slot_name(decl.return_type)
             ret_is_pointer = False
-            if ret_wt == "i32" and ret_type_name not in (
-                "Bool", "Byte", None,
+            if (
+                ret_wt == "i32"
+                and ret_type_name not in ("Bool", "Byte", None)
+                and not _is_host_handle_type(ret_type_name)
             ):
                 ret_is_pointer = True
             elif ret_wt == "i32_pair":
