@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.132] - 2026-05-05
+
+### Fixed
+- **Opaque-handle GC-rooting hygiene — closes [#347](https://github.com/aallan/vera/issues/347) and [#490](https://github.com/aallan/vera/issues/490)** (`#346` deferred — see Note below).  Two related cleanups around how `Map`, `Set`, and `Decimal` opaque handles are treated by the codegen's GC-rooting heuristics.  Shared infrastructure: a new `_is_host_handle_type` classifier in `vera/wasm/helpers.py` distinguishes types that lower to i32 indices into Python-side host stores from real Vera-heap pointers.
+  - **#347 — opaque handle parameters no longer pushed onto the GC shadow stack**.  Pre-fix `vera/codegen/functions.py` and `vera/codegen/closures.py` excluded only `Bool` / `Byte` from `gc_pointer_params`, so a `Map<K, V>` / `Set<T>` / `Decimal` parameter (i32 handle index) was treated as a heap pointer and pushed onto the shadow stack at every function entry.  Wasted shadow-stack space; a handle value that landed in the heap-pointer range with valid alignment would have caused the conservative mark phase to spuriously mark an unrelated heap object as live (memory retention, not corruption).  Post-fix the new classifier excludes opaque handles at four rooting decision sites: top-level params + return type in `functions.py`, closure params + captures + return type in `closures.py`.  New `TestOpaqueHandleParamRooting347` regression test pins the fix structurally — a function taking a `Map<K, V>` parameter no longer contains the canonical `local.get $p0; i32.store` shadow-push idiom in its WAT.
+  - **#490 — `array_fold` and `array_map` no longer over-root opaque-handle accumulators**.  Pre-fix the `u_is_adt`/`t_is_adt` heuristics in `vera/wasm/calls_arrays.py` (`u_wasm == "i32" and u_type not in ("Bool", "Byte") and not u_is_pair`) classified `Map`/`Set`/`Decimal` accumulators as ADT pointers and emitted shadow-stack rooting around the loop body.  Post-fix the same `_is_host_handle_type` classifier excludes them.  New `TestArrayFoldHandleRooting490` (2 tests): a structural pin via `global.set $gc_sp` count parity between Int and Decimal accumulators, plus a functional regression that the fold still produces the right result.
+
+### Note — `#346` deferred to follow-up
+- The original issue tracker grouped `#346 (host-store leak)` with `#347` and `#490` under "opaque-handle hygiene", but `#346` is a fundamentally different problem: it requires *active reclamation* of unreachable handles from Python-side stores, while `#347` and `#490` are purely *codegen-time* decisions about which i32 values to push to the shadow stack.  An earlier draft of this PR attempted to close all three by adding a `host_gc_sweep` host import that walked the live heap + shadow stack to identify reachable handle indices, but the resulting design (six interlocking pieces — heap walk, shadow-stack scan, transitive closure, re-entrancy guard, let-binding shadow_push, JSON/HTML emission gates) had too much complexity for the practical impact.  Per-`execute()` handle leaks are bounded (Python GC reclaims at `execute()` exit), and Vera doesn't yet have long-running execution contexts where the leak would matter in practice.  Active reclamation is now tracked separately as a follow-up issue with a recommended heap-wrap-as-ADT design that would integrate with the existing mark-sweep GC instead of running parallel to it.
+
 ## [0.0.131] - 2026-05-05
 
 ### Fixed
@@ -1875,7 +1885,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.131...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.132...HEAD
+[0.0.132]: https://github.com/aallan/vera/compare/v0.0.131...v0.0.132
 [0.0.131]: https://github.com/aallan/vera/compare/v0.0.130...v0.0.131
 [0.0.130]: https://github.com/aallan/vera/compare/v0.0.129...v0.0.130
 [0.0.129]: https://github.com/aallan/vera/compare/v0.0.128...v0.0.129

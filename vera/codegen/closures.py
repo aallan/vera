@@ -11,7 +11,7 @@ from collections import deque
 from vera import ast
 from vera.codegen.api import ConstructorLayout, _align_up
 from vera.wasm import WasmContext, WasmSlotEnv
-from vera.wasm.helpers import gc_shadow_push
+from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push
 
 
 class ClosureLiftingMixin:
@@ -191,9 +191,17 @@ class ClosureLiftingMixin:
                 local_idx = ctx.alloc_param()
                 param_parts.append(f"(param $p{i} {wt})")
                 param_info.append((i, param_te, local_idx))
-                # Track pointer params for GC
+                # Track pointer params for GC.  #347: opaque host
+                # handles (Map / Set / Decimal) are i32 indices into
+                # Python-side stores, not Vera-heap pointers — exclude
+                # from rooting (see `_is_host_handle_type` for full
+                # rationale).
                 type_name = self._type_expr_to_slot_name(param_te)
-                if wt == "i32" and type_name not in ("Bool", "Byte", None):
+                if (
+                    wt == "i32"
+                    and type_name not in ("Bool", "Byte", None)
+                    and not _is_host_handle_type(type_name)
+                ):
                     gc_pointer_params.append(local_idx)
 
         # Compute capture layout (must match _translate_anon_fn).
@@ -327,7 +335,14 @@ class ClosureLiftingMixin:
             for (tname, cap_local), kind in zip(cap_locals, cap_local_kinds):
                 if kind == "i32_pair":
                     gc_capture_pushes.extend(gc_shadow_push(cap_local))
-                elif kind == "i32" and tname not in ("Bool", "Byte"):
+                elif (
+                    kind == "i32"
+                    and tname not in ("Bool", "Byte")
+                    and not _is_host_handle_type(tname)
+                ):
+                    # #347: same exclusion as the param case above —
+                    # opaque host handles are i32 indices, not Vera-
+                    # heap pointers.
                     gc_capture_pushes.extend(gc_shadow_push(cap_local))
 
             # Determine if return type is a heap pointer
@@ -336,7 +351,12 @@ class ClosureLiftingMixin:
                 ret_type_name = self._type_expr_to_slot_name(
                     anon_fn.return_type,
                 )
-                if ret_type_name not in ("Bool", "Byte", None):
+                if (
+                    ret_type_name not in ("Bool", "Byte", None)
+                    and not _is_host_handle_type(ret_type_name)
+                ):
+                    # #347: opaque host handles aren't Vera-heap
+                    # pointers; same exclusion as param/capture cases.
                     ret_is_pointer = True
             elif ret_wt == "i32_pair":  # pragma: no cover — String/Array closure return
                 ret_is_pointer = True

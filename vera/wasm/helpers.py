@@ -245,6 +245,58 @@ def _is_pair_element_type(elem_type: str) -> bool:
     return elem_type == "String" or elem_type == "Array" or elem_type.startswith("Array<")
 
 
+# Opaque host-handle types: i32 indices into Python-side host stores
+# (`_map_store`, `_set_store`, `_decimal_store` in
+# `vera/codegen/api.py`).  These look like i32 heap pointers to the
+# default GC heuristic but are NOT pointers into the Vera GC heap, so:
+#
+#   - Pushing them onto the GC shadow stack as roots wastes shadow-
+#     stack space (#347), and a handle index in the heap-pointer
+#     range with valid alignment would cause spurious marks of
+#     unrelated heap objects during the conservative mark phase.
+#
+#   - Treating them as ADT heap pointers in `array_fold` /
+#     `array_map` rooting heuristics (#490) extends the same problem
+#     into the iterative-builder loops.
+#
+# String/Array (pair types) ARE GC-managed and remain rooted.  ADT
+# types (Option, Result, user data, Json, Html, etc.) are
+# GC-managed.  Only the three host-handle types below are excluded.
+#
+# Note: per-execute() handle leaks for these stores are tracked
+# separately as #346 — that's an active-reclamation problem
+# distinct from the rooting decision the classifier informs.
+_HOST_HANDLE_TYPES: frozenset[str] = frozenset({"Map", "Set", "Decimal"})
+
+
+def _is_host_handle_type(type_name: str | None) -> bool:
+    """Return True if `type_name` names an opaque host-handle type.
+
+    Used at GC-rooting decision sites (`vera/codegen/functions.py`,
+    `vera/codegen/closures.py`, `vera/wasm/calls_arrays.py`) to
+    exclude `Map` / `Set` / `Decimal` handles from the shadow-stack
+    push set — they're i32 indices into Python-side host stores,
+    not Vera-heap pointers, so the conservative GC's mark phase
+    would either reject them via the heap-range check (the common
+    case) or incorrectly mark an unrelated heap object whose
+    address happens to coincide with the handle value.
+
+    Parametric forms like `Map<K, V>` strip to the bare head; we
+    match on prefix to handle both.  ``Regex`` was originally
+    listed in the #346/#347/#490 issue bodies but Vera doesn't
+    expose a `Regex` value type — regex operations take pattern
+    strings and return Result, with no persistent host-side
+    handle.  Excluded from this set.
+    """
+    if type_name is None:
+        return False
+    if type_name in _HOST_HANDLE_TYPES:
+        return True
+    # Parametric form: Map<K, V>, Set<T>, etc.
+    head = type_name.split("<", 1)[0]
+    return head in _HOST_HANDLE_TYPES
+
+
 def _element_mem_size(elem_type: str) -> int | None:
     """Get memory size in bytes for an array element type.
 

@@ -15376,3 +15376,193 @@ public fn main(-> @Int)
             f"`i32.ge_u` + `unreachable` — a regression here would "
             f"mean one or both push branches reverted to silent-drop."
         )
+
+
+# =====================================================================
+# Opaque-handle GC-rooting hygiene (#347 + #490)
+# =====================================================================
+
+
+class TestOpaqueHandleParamRooting347:
+    """`#347`: opaque host handles (Map / Set / Decimal) MUST NOT be
+    pushed to the GC shadow stack as roots when they appear as
+    function parameters.
+
+    Pre-fix, the gc_pointer_params loop in
+    `vera/codegen/functions.py` excluded only `Bool` and `Byte`,
+    so a `Map<K, V>` / `Set<T>` / `Decimal` parameter (i32 handle
+    index) was treated as a heap pointer and pushed onto the
+    shadow stack.  Wasted shadow-stack space and a handle value
+    that happened to land in the heap-pointer range with valid
+    alignment would have caused the conservative mark phase to
+    spuriously mark an unrelated heap object as live (memory
+    retention, not corruption).
+
+    Post-fix, the new `_is_host_handle_type` classifier in
+    `vera/wasm/helpers.py` is consulted at the rooting decision
+    site to exclude these opaque handle types.  We pin the fix
+    structurally via WAT inspection: a function taking a
+    `Map<K, V>` parameter and needing GC alloc should NOT contain
+    the `local.get $p0; i32.store` shadow-push idiom.
+    """
+
+    def test_map_param_not_shadow_pushed(self) -> None:
+        """A `Map<Nat, Nat>` parameter must not appear in any
+        gc_shadow_push sequence in the function's prologue.
+
+        The function below allocates (via `option_unwrap_or` —
+        which the prelude expands to an Option allocation), so
+        the GC prologue is emitted.  Pre-fix the prologue would
+        contain the canonical shadow-push idiom for `$p0`:
+        `global.get $gc_sp; local.get 0; i32.store`.  Post-fix
+        the classifier excludes the Map handle, so that exact
+        sequence is absent.
+        """
+        src = """
+public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(map_get(@Map<Nat, Nat>.0, @Nat.0), 0)
+}
+"""
+        result = _compile_ok(src)
+        # Extract the lookup_or_zero function body
+        fn_start = result.wat.index("(func $lookup_or_zero")
+        if "\n  (func " in result.wat[fn_start + 1:]:
+            fn_end = result.wat.index("\n  (func ", fn_start + 1)
+        else:
+            fn_end = len(result.wat)
+        fn_body = result.wat[fn_start:fn_end]
+        # Direct pattern match for the param-0 shadow-push idiom.
+        # The exact sequence emitted by `gc_shadow_push(0)` is:
+        #   global.get $gc_sp
+        #   local.get 0
+        #   i32.store
+        # (with the surrounding overflow check + sp advance).  Pre-fix
+        # this would be present; post-fix the Map handle param is
+        # excluded by `_is_host_handle_type`, so the sequence is
+        # absent.
+        push_pattern = re.compile(
+            r"global\.get \$gc_sp\s+"
+            r"local\.get 0\s+"
+            r"i32\.store",
+            re.MULTILINE,
+        )
+        assert not push_pattern.search(fn_body), (
+            "Found a shadow_push of param 0 (the Map handle) in "
+            "lookup_or_zero — the opaque-handle exclusion (#347) "
+            "isn't being applied.  Map / Set / Decimal handles are "
+            "i32 indices into Python-side stores, not Vera-heap "
+            "pointers; rooting them wastes shadow-stack space and "
+            "could cause spurious heap-object retention via the "
+            "conservative GC's heap-range check."
+        )
+
+
+class TestArrayFoldHandleRooting490:
+    """`#490`: `array_fold` (and `array_map`) must NOT root opaque
+    handle accumulators / element types.
+
+    Pre-fix the `u_is_adt` heuristic in
+    `vera/wasm/calls_arrays.py` was
+    `u_wasm == "i32" and u_type not in ("Bool", "Byte") and not
+    u_is_pair`, which classified `Map` / `Set` / `Decimal`
+    accumulators as ADT pointers and emitted shadow-stack rooting
+    around the loop.  Same wasted-space + spurious-retention
+    concerns as #347.
+
+    Post-fix, the same `_is_host_handle_type` classifier excludes
+    them.  Functional behaviour is unchanged either way (the
+    conservative GC's heap-range check rejects small handle
+    indices), but the structural fix removes the wasted root-
+    management code.
+    """
+
+    def test_decimal_accumulator_not_rooted(self) -> None:
+        """`array_fold` over `Decimal` accumulator should NOT emit
+        the per-iteration accumulator root that ADT accumulators
+        get.
+
+        Structural pin via `global.set $gc_sp` count: the same
+        fold over `Int` (no rooting needed) and `Decimal` (post-
+        fix: also no rooting per #490) should produce the same
+        count of `global.set $gc_sp` idioms in `$main`.  An ADT
+        accumulator (which IS a Vera-heap pointer) would emit one
+        more.  This test pins that Decimal counts match Int.
+        """
+        # Reference: fold over Int (no rooting needed) — baseline
+        int_src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold(
+    array_range(0, 5),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+  )
+}
+"""
+        # Test: fold over Decimal (post-fix: also no rooting per #490)
+        decimal_src = """
+public fn main(@Unit -> @Decimal)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold(
+    array_range(0, 5),
+    decimal_from_int(0),
+    fn(@Decimal, @Int -> @Decimal) effects(pure) {
+      decimal_add(@Decimal.0, decimal_from_int(@Int.0))
+    }
+  )
+}
+"""
+        int_wat = _compile_ok(int_src).wat
+        decimal_wat = _compile_ok(decimal_src).wat
+
+        def count_main_pushes(wat: str) -> int:
+            fn_start = wat.index("(func $main")
+            if "\n  (func " in wat[fn_start + 1:]:
+                fn_end = wat.index("\n  (func ", fn_start + 1)
+            else:
+                fn_end = len(wat)
+            return wat[fn_start:fn_end].count("global.set $gc_sp")
+
+        int_count = count_main_pushes(int_wat)
+        decimal_count = count_main_pushes(decimal_wat)
+        assert decimal_count == int_count, (
+            f"`array_fold` over a Decimal accumulator emits "
+            f"{decimal_count} `global.set $gc_sp` idioms in $main "
+            f"vs. {int_count} for an Int accumulator.  Post-#490 "
+            f"these should be equal — Decimal is an opaque host "
+            f"handle, not a Vera-heap pointer, and shouldn't be "
+            f"rooted around the call_indirect.  An extra count "
+            f"means `_is_host_handle_type` isn't firing in the "
+            f"`u_is_adt` heuristic."
+        )
+
+    def test_array_fold_with_decimal_runs_correctly(self) -> None:
+        """Functional pin: the fold over Decimal still produces the
+        right result.  Pre- and post-fix this works (the
+        conservative GC's heap-range check rejects small handle
+        values either way), so this test passes in both states —
+        but it pins that the structural optimisation didn't break
+        anything.
+
+        Sum 0+1+2+3+4 = 10; comparing to `decimal_from_int(10)`
+        via `decimal_eq` returns 1.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = array_fold(
+    array_range(0, 5),
+    decimal_from_int(0),
+    fn(@Decimal, @Int -> @Decimal) effects(pure) {
+      decimal_add(@Decimal.0, decimal_from_int(@Int.0))
+    }
+  );
+  if decimal_eq(@Decimal.0, decimal_from_int(10)) then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
