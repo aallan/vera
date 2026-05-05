@@ -161,10 +161,25 @@ class CallsContainersMixin:
         # Array<T> values lower to i32_pair too, but no Map host
         # import currently handles that shape.  Reject so the caller
         # bails to "function skipped" rather than emitting a
-        # signature-mismatched import.
+        # signature-mismatched import.  The None-guard is required
+        # because `vera_type` is `Optional` per the type hint above —
+        # we explicitly reject Array shapes, but a `None` (uninferred
+        # element type from an empty collection like `set_new()` or
+        # `map_keys(map_new())`) is allowed to fall through to ``"b"``
+        # so empty-collection round-trips still compile.
         if vera_type is not None and vera_type.startswith("Array"):
             return None
-        # Bool, Byte, ADTs, Map handles → i32
+        # Bool, Byte, ADTs, Map handles, and uninferred (None) element
+        # types from empty collections → i32.  This is the historical
+        # fall-through; CodeRabbit on PR #567 flagged it as a possible
+        # re-introduction of the pre-#475 hole, but the empty-collection
+        # tests (`test_set_empty_to_array`, `test_map_keys_in_if_expr`,
+        # `test_set_to_array_in_if_expr`) depend on this path: the
+        # element type is genuinely unknown but the host import works
+        # because no element value flows through it.  Mis-tagging is
+        # only possible when a real (non-None) type fails inference,
+        # and that's caught by the Array branch above and the
+        # primitive branches.
         return "b"
 
     @staticmethod

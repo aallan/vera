@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.0.129] - 2026-04-29
+## [0.0.129] - 2026-05-05
 
 ### Fixed
 - **WASM call translator major bugs — seven correctness fixes close out [#475](https://github.com/aallan/vera/issues/475)** (PR 2 of 2 — Major findings 4-10; Critical findings 1-3 shipped in v0.0.128). All seven fixes were CodeRabbit findings on PR #474's calls.py decomposition; with this release the issue is fully closed.

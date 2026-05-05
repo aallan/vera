@@ -14516,26 +14516,41 @@ class TestMapArrayValueRejected475:
     error rather than a silent miscompilation.
     """
 
-    def test_compile_fails_for_map_of_array(self) -> None:
-        """`Map<Nat, Array<Nat>>` operations should not compile silently.
+    def test_compile_skips_function_for_map_of_array(self) -> None:
+        """`Map<Nat, Array<Nat>>` insert: function body skipped at codegen.
 
-        We verify this surfaces as a codegen error or a controlled
-        translation failure rather than producing a compromised
-        binary.
+        Pre-fix the value type fell through to `_map_wasm_tag` ⇒ ``"b"``
+        (single i32) and the host import was emitted with one slot
+        where two were needed; the resulting binary mis-tagged Array
+        values silently.
+
+        Post-fix `_translate_map_insert` returns `None` (because
+        `_map_wasm_tag("Array<Nat>")` is `None`); the WASM backend's
+        per-function "unsupported expressions" guard catches the None
+        and emits an E602 warning, skipping `main` from the export
+        table.  The well-formed program (parses, type-checks) gets a
+        controlled rejection rather than a silently mis-tagged binary.
         """
         src = """
 public fn main(@Unit -> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  let m = map_set(Map.empty(), 1, [1, 2, 3]);
-  IO.print(nat_to_string(array_length(map_get(@Map.0, 1))))
+  let @Map<Nat, Array<Nat>> = map_insert(map_new(), 1, [1, 2, 3]);
+  IO.print("ok")
 }
 """
-        # Compiler should fail — either type-check rejects the
-        # nested Array value, or codegen returns None for the
-        # unsupported map flavour.
-        with pytest.raises((Exception,)):
-            _compile_ok(src)
+        # Type-check + compile both succeed (no error diagnostics);
+        # but `main` is skipped from exports and an E602 "unsupported
+        # expressions" warning is emitted.
+        result = _compile_ok(src)
+        assert "main" not in result.exports, (
+            f"main should be skipped (Map<Nat, Array<Nat>> unsupported); "
+            f"exports were: {result.exports}"
+        )
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        assert any("unsupported" in d.description.lower() for d in warnings), (
+            f"Expected an 'unsupported' warning; warnings: {warnings}"
+        )
 
 
 class TestUrlParseJoinRoundTrip475:
