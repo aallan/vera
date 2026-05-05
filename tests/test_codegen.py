@@ -1655,13 +1655,20 @@ public fn main(@Unit -> @Unit)
 { IO.print("hello") }
 """
         result = _compile_ok(source)
-        # "hello" is 5 bytes; GC adds 32768 (16K shadow stack + 16K worklist)
-        # so heap_ptr should start at 5 + 32768 = 32773
-        assert "global $heap_ptr" in result.wat
-        assert "i32.const 32773" in result.wat
+        # "hello" is 5 bytes; GC adds 81920 (16K shadow stack + 64K
+        # worklist after #348's quadrupling of the worklist), so
+        # heap_ptr should start at 5 + 81920 = 81925.  Match the
+        # declaration and its initializer in a single substring so a
+        # stale `i32.const 81925` elsewhere in the WAT (e.g. a future
+        # constant in $alloc that happens to land on the same value)
+        # can't satisfy the assertion on its own.
+        assert (
+            '(global $heap_ptr (export "heap_ptr") (mut i32) (i32.const 81925))'
+            in result.wat
+        )
 
     def test_heap_ptr_zero_without_strings(self) -> None:
-        """Without strings, heap starts at GC offset 32768."""
+        """Without strings, heap starts at GC offset 81920 (16K stack + 64K worklist)."""
         source = """\
 private data Flag { On, Off }
 
@@ -1670,7 +1677,12 @@ public fn f(-> @Int)
 { 42 }
 """
         result = _compile_ok(source)
-        assert "i32.const 32768)" in result.wat  # heap_ptr init
+        # Combined declaration + initializer match (see
+        # test_heap_ptr_starts_after_strings for the rationale).
+        assert (
+            '(global $heap_ptr (export "heap_ptr") (mut i32) (i32.const 81920))'
+            in result.wat
+        )
 
     def test_alloc_alignment_logic(self) -> None:
         """Alloc function contains 8-byte alignment rounding."""
@@ -15114,3 +15126,253 @@ public fn main(@Unit -> @Int)
 """
         # Captured "hello" is length 5; three iterations × 5 = 15
         assert _run(src) == 15
+
+
+# =====================================================================
+# GC infrastructure: $alloc multi-page grow (#487) + worklist (#348)
+# =====================================================================
+
+
+class TestLargeAllocGrow487:
+    """`#487`: `$alloc` grows by enough pages, not just 1.
+
+    Pre-fix, when `heap_ptr + total > memory.size * 65536`, `$alloc`
+    unconditionally called `memory.grow 1` regardless of how many
+    pages were actually needed.  A single allocation request more
+    than ~64 KB past the current memory boundary fell through to
+    the bump-allocate and trapped on out-of-bounds memory access.
+
+    Post-fix, `$alloc` computes
+    `pages_needed = ceil(shortage / 65536)` and grows by that many
+    pages in a single call, so allocations of any practical size
+    succeed (subject to `memory.grow` returning a valid value).
+    """
+
+    def test_50k_int_array_alloc_succeeds(self) -> None:
+        """`array_range(0, 50_000)` allocates ~400 KB; pre-fix trapped.
+
+        Two arrays of 50 K i64s (~800 KB total).  The default initial
+        memory is 1 page (64 KB); the second `array_range` would
+        need to grow by ~7 pages but pre-fix only grew by 1 page
+        and then bump-allocated past memory.size, causing a WASM
+        OOB-memory-access trap.  Post-fix: the multi-page grow
+        provides enough memory and the access at index 49999 reads
+        cleanly.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 50000);
+  let @Array<Int> = array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Int.0 + 1 });
+  @Array<Int>.0[49999]
+}
+"""
+        # array_range(0, 50000) = [0..49999]; mapped to [+1] = [1..50000];
+        # index 49999 = 50000.
+        assert _run(src) == 50000
+
+    def test_single_large_alloc_smaller_than_old_limit(self) -> None:
+        """Smaller allocations (well within 1 page) must keep working.
+
+        Regression pin: the multi-page grow math for the small case
+        (shortage ≤ 65535 → pages_needed = 1) reduces to the same
+        behaviour as the pre-fix single-page grow.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 1000);
+  @Array<Int>.0[999]
+}
+"""
+        assert _run(src) == 999
+
+    def test_page_boundary_alloc_rounding(self) -> None:
+        """Allocations that span the 64 KiB page boundary work cleanly.
+
+        Pins the `pages_needed = (shortage + 65535) >> 16` ceiling
+        math against off-by-one regressions at the 64 KiB boundary:
+
+          - shortage = 65535 → 1 page  (just under)
+          - shortage = 65536 → 1 page  (exactly fits)
+          - shortage = 65537 → 2 pages (1 byte over → must round up)
+
+        Each `array_range(0, N)` allocates `8 * N` payload bytes
+        plus a small header.  The exact shortage at runtime depends
+        on prior heap state, but the array sizes below straddle the
+        single-page allocation boundary (8192 i64s = 65536 bytes ≈
+        1 page).  If the rounding math regresses, one of these
+        sizes will trap on out-of-bounds memory access at the index
+        read.  Each test allocates fresh; we read the last element
+        to force the access to actually land in the new memory.
+        """
+        # 8192 elements = 65536 bytes payload — exactly 1 page
+        src_8192 = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 8192);
+  @Array<Int>.0[8191]
+}
+"""
+        assert _run(src_8192) == 8191
+
+        # 8193 elements = 65544 bytes payload — 1 page + 8 bytes
+        # (shortage just over 64 KiB, must round up to 2 pages)
+        src_8193 = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 8193);
+  @Array<Int>.0[8192]
+}
+"""
+        assert _run(src_8193) == 8192
+
+        # 16384 elements = 131072 bytes payload — exactly 2 pages
+        src_16384 = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 16384);
+  @Array<Int>.0[16383]
+}
+"""
+        assert _run(src_16384) == 16383
+
+
+class TestWorklistOverflow348:
+    """`#348`: GC worklist overflow trap (was: silent use-after-free).
+
+    The mark-phase worklist sits between the shadow stack and the
+    heap.  Pre-fix: 16 KiB capacity (4 096 entries); when full, the
+    push branches in Phase 2 (seed) and Phase 2b (mark scan) silently
+    skipped — leaving reachable objects unmarked, which the sweep
+    phase then freed as garbage (a real use-after-free hole for
+    programs with object graphs holding more than ~4 K pointers
+    reachable from a single root).
+
+    Post-fix:
+      - Worklist quadrupled to 64 KiB (16 384 entries).  Reasonable
+        program shapes don't reach the cap.
+      - Both push branches now `unreachable` on overflow rather than
+        silently dropping.  Any residual overflow is a clean WASM
+        trap, not silent corruption.
+
+    Note: the obvious "wide-graph" runtime test (e.g. an
+    `array_map`-built `Array<Box>` of 5 000+ elements) is blocked by
+    a separate pre-existing shadow-stack-overflow issue inside
+    `array_map`'s per-element allocation pattern, which trips at
+    around 4 000 elements regardless of GC worklist size.  The
+    wide-graph runtime regression is therefore covered by a
+    moderate-size case (which exercises the mark loop without
+    tripping the shadow-stack issue) plus structural pins on the
+    WAT.
+    """
+
+    def test_moderate_graph_with_gc_pressure(self) -> None:
+        """ADT graph + heap pressure exercises the post-fix mark loop.
+
+        Builds a 1 000-element `Array<Box>` (well within the
+        shadow-stack budget) and forces several `$gc_collect`
+        cycles via additional allocations before reading.  The
+        Box pointers in the array's payload are pushed onto the
+        worklist during the mark phase — exercising the same code
+        path that overflowed pre-fix on larger graphs.
+        """
+        src = """
+private data Box { MkBox(Int) }
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Box> = array_map(
+    array_range(0, 1000),
+    fn(@Int -> @Box) effects(pure) { MkBox(@Int.0) }
+  );
+  array_fold(
+    @Array<Box>.0,
+    0,
+    fn(@Int, @Box -> @Int) effects(pure) {
+      @Int.0 + match @Box.0 { MkBox(@Int) -> @Int.0 }
+    }
+  )
+}
+"""
+        # 0+1+...+999 = 499_500
+        assert _run(src) == 499_500
+
+    def test_worklist_size_quadrupled_in_wat(self) -> None:
+        """Structural pin: the GC region reflects the 64 KiB worklist.
+
+        Pre-fix, `gc_heap_start = stack_base + 16 KiB stack + 16 KiB
+        worklist = 32 768`.  Post-fix the worklist is 64 KiB so
+        `gc_heap_start = 16 384 + 65 536 = 81 920`.  Pinning the
+        constant against the WAT catches accidental size regressions.
+        """
+        source = """\
+private data Box { MkBox(Int) }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match MkBox(42) { MkBox(@Int) -> @Int.0 } }
+"""
+        result = _compile_ok(source)
+        # gc_stack_limit = 16384 (16 KiB shadow stack)
+        # gc_heap_start  = 81920 (16 KiB stack + 64 KiB worklist)
+        assert "(global $gc_stack_limit i32 (i32.const 16384))" in result.wat
+        assert "(global $gc_heap_start i32 (i32.const 81920))" in result.wat
+
+    def test_worklist_overflow_traps_in_wat(self) -> None:
+        """Structural pin: both worklist push branches trap on overflow.
+
+        Pre-fix, the seed (Phase 2) and mark-scan (Phase 2b) push
+        branches both used `i32.lt_u` followed by a guarded push,
+        silently dropping pushes when the worklist was full.
+        Post-fix, both use `i32.ge_u` followed by `unreachable` —
+        any overflow is a clean trap rather than silent corruption.
+        """
+        source = """\
+private data Box { MkBox(Int) }
+
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match MkBox(42) { MkBox(@Int) -> @Int.0 } }
+"""
+        result = _compile_ok(source)
+        wat = result.wat
+        # Extract the $gc_collect function body for inspection.
+        gc_start = wat.index("(func $gc_collect")
+        gc_end = wat.index("\n  (func ", gc_start + 1) if "\n  (func " in wat[gc_start + 1 :] else len(wat)
+        gc_collect = wat[gc_start:gc_end]
+        # Match the exact overflow-guard opcode sequence:
+        #   local.get $wl_ptr
+        #   local.get $wl_end
+        #   i32.ge_u
+        #   if
+        #     unreachable
+        # (with arbitrary indentation between lines).  Pre-fix the
+        # corresponding sequence used `i32.lt_u` followed by a push,
+        # so this regex would match zero times against a regressed
+        # file even if `i32.ge_u` continued to appear elsewhere.
+        # The two matches correspond to:
+        #   - Phase 2 seed: scan_ptr loop, push of root pointers
+        #   - Phase 2b mark-scan: per-payload-word push of children
+        pattern = re.compile(
+            r"local\.get \$wl_ptr\s*"
+            r"local\.get \$wl_end\s*"
+            r"i32\.ge_u\s*"
+            r"if\s*"
+            r"unreachable",
+            re.MULTILINE,
+        )
+        matches = pattern.findall(gc_collect)
+        assert len(matches) >= 2, (
+            f"Expected ≥2 worklist-overflow guard sequences in $gc_collect "
+            f"(Phase 2 seed + Phase 2b scan), found {len(matches)}.  "
+            f"Pre-fix shape used `i32.lt_u` + push; post-fix uses "
+            f"`i32.ge_u` + `unreachable` — a regression here would "
+            f"mean one or both push branches reverted to silent-drop."
+        )
