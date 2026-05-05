@@ -14430,3 +14430,419 @@ public fn main(@Unit -> @Nat)
 """
         # 'o' = 111
         assert _run(src) == 111
+
+
+# =====================================================================
+# WASM call translator major bug fixes (#475 PR 2)
+# =====================================================================
+
+
+class TestArraySliceClamp475:
+    """`#475` finding 4: `array_slice` clamps in i64 before wrapping.
+
+    Pre-fix, `array_slice` narrowed start/end indices via
+    `i32.wrap_i64` first, then compared with `arr_len` as i32.  A
+    huge positive i64 value (e.g. 2^32 + 5) wraps to a small i32
+    that looks in-range and the byte-copy reads past the array.
+
+    Post-fix, the translator widens `arr_len` to i64 and uses the
+    cross-mixin `_clamp_i64_to_range_then_wrap` helper (shared with
+    `string_slice`) to clamp before narrowing.
+    """
+
+    def test_normal_slice(self) -> None:
+        """Baseline: `array_slice([1,2,3,4,5], 1, 4)` length 3."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_slice([1, 2, 3, 4, 5], 1, 4))
+}
+"""
+        assert _run(src) == 3
+
+    def test_negative_start_clamps_to_zero(self) -> None:
+        """Negative start clamps to 0 (in i64) — slice has length 3."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_slice([1, 2, 3, 4, 5], -1, 3))
+}
+"""
+        assert _run(src) == 3
+
+    def test_end_beyond_length_clamps(self) -> None:
+        """End past length clamps to length — full remaining suffix."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_slice([1, 2, 3, 4, 5], 2, 100))
+}
+"""
+        assert _run(src) == 3
+
+    def test_huge_positive_start_clamps_in_i64(self) -> None:
+        """Pre-fix bug: i64 > i32.MAX wraps to small i32 and reads OOB.
+
+        Post-fix: clamps in i64 space to `arr_len_i64` before
+        narrowing.  4294967301 (2^32 + 5) wraps to i32 = 5 pre-fix
+        and would have copied past the array; post-fix it clamps
+        to arr_len cleanly.
+        """
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_slice([1, 2, 3, 4, 5], 4294967301, 4294967310))
+}
+"""
+        assert _run(src) == 0
+
+
+class TestMapArrayValueRejected475:
+    """`#475` finding 5: `Map<K, Array<T>>` is rejected at codegen.
+
+    Pre-fix, `_map_wasm_tag` returned a placeholder string for any
+    unknown type, so `Map<K, Array<T>>` would compile but silently
+    treat the array values as opaque pointers — operations like
+    `Map<K, Array<T>>.get` returned the raw pointer i32, not a
+    properly-tagged Array, leading to type-system holes downstream.
+
+    Post-fix, `_map_wasm_tag` returns `None` for unsupported value
+    types (including `Array`); 11 call sites guard against this and
+    return None to surface the unsupported feature as a codegen
+    error rather than a silent miscompilation.
+    """
+
+    def test_compile_fails_for_map_of_array(self) -> None:
+        """`Map<Nat, Array<Nat>>` operations should not compile silently.
+
+        We verify this surfaces as a codegen error or a controlled
+        translation failure rather than producing a compromised
+        binary.
+        """
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let m = map_set(Map.empty(), 1, [1, 2, 3]);
+  IO.print(nat_to_string(array_length(map_get(@Map.0, 1))))
+}
+"""
+        # Compiler should fail — either type-check rejects the
+        # nested Array value, or codegen returns None for the
+        # unsupported map flavour.
+        with pytest.raises((Exception,)):
+            _compile_ok(src)
+
+
+class TestUrlParseJoinRoundTrip475:
+    """`#475` finding 6: `url_parse` / `url_join` round-trip preserves shape.
+
+    Pre-fix, `url_parse` discarded the `has_auth`, `has_query`, and
+    `has_frag` delimiter bits; `url_join` then reconstructed using
+    `len > 0` heuristics, which:
+
+    - Conflated `http:path` (no authority) with `http://path` (empty
+      authority) — both joined as `http:///path`.
+    - Lost trailing `?` and `#` when the body was empty.
+
+    Post-fix, `url_parse` packs the three flag bits into a previously
+    unused i32 word at struct offset 44; `url_join` reads them back
+    and emits the delimiters faithfully.
+    """
+
+    def test_scheme_only_no_authority(self) -> None:
+        """`http:path` round-trips without gaining `//`."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match url_parse("http:path") {
+    Ok(@UrlParts) -> IO.print(url_join(@UrlParts.0)),
+    Err(@String) -> IO.print("ERR")
+  }
+}
+"""
+        assert _run_io(src).strip() == "http:path"
+
+    def test_full_url_with_authority(self) -> None:
+        """`http://example.com/p` round-trips faithfully."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match url_parse("http://example.com/p") {
+    Ok(@UrlParts) -> IO.print(url_join(@UrlParts.0)),
+    Err(@String) -> IO.print("ERR")
+  }
+}
+"""
+        assert _run_io(src).strip() == "http://example.com/p"
+
+    def test_url_with_query(self) -> None:
+        """Query body with `=` round-trips."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match url_parse("https://x/p?q=1") {
+    Ok(@UrlParts) -> IO.print(url_join(@UrlParts.0)),
+    Err(@String) -> IO.print("ERR")
+  }
+}
+"""
+        assert _run_io(src).strip() == "https://x/p?q=1"
+
+    def test_empty_query_delimiter_preserved(self) -> None:
+        """`http://x?` (trailing `?` with empty body) round-trips.
+
+        Pre-fix the trailing `?` was dropped because url_join
+        gated query emit on `q_len > 0`.
+        """
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match url_parse("http://x?") {
+    Ok(@UrlParts) -> IO.print(url_join(@UrlParts.0)),
+    Err(@String) -> IO.print("ERR")
+  }
+}
+"""
+        assert _run_io(src).strip() == "http://x?"
+
+    def test_empty_fragment_delimiter_preserved(self) -> None:
+        """`http://x#` (trailing `#` with empty body) round-trips."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match url_parse("http://x#") {
+    Ok(@UrlParts) -> IO.print(url_join(@UrlParts.0)),
+    Err(@String) -> IO.print("ERR")
+  }
+}
+"""
+        assert _run_io(src).strip() == "http://x#"
+
+
+class TestBase64DecodePadding475:
+    """`#475` finding 7: `base64_decode` rejects `=` outside padding region.
+
+    RFC 4648 only allows `=` in the final 1–2 positions of the
+    encoded string (and only when total length % 4 ∈ {2, 3}).  Pre-fix
+    the decoder accepted `=` anywhere — `AB=C` decoded as if it were
+    `AB==` followed by `C`, silently producing a corrupted output.
+
+    Post-fix, the decoder verifies that any `=` byte sits at index
+    >= `slen - pad` and rejects otherwise, surfacing a controlled
+    error rather than miscompiling input.
+    """
+
+    def test_valid_padding_decodes(self) -> None:
+        """Baseline: `Zm9v` (no padding) decodes to `foo`."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match base64_decode("Zm9v") {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print("ERR")
+  }
+}
+"""
+        assert _run_io(src).strip() == "foo"
+
+    def test_valid_one_pad_decodes(self) -> None:
+        """`Zm8=` decodes to `fo` — one `=` at the end."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match base64_decode("Zm8=") {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print("ERR")
+  }
+}
+"""
+        assert _run_io(src).strip() == "fo"
+
+    def test_misplaced_equals_rejected(self) -> None:
+        """`AB=C` (= in middle) → Err.
+
+        Pre-fix this decoded silently with the embedded `=`
+        treated as zero bits.  Post-fix it returns Err.
+        """
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match base64_decode("AB=C") {
+    Ok(@String) -> IO.print("OK"),
+    Err(@String) -> IO.print("ERR")
+  }
+}
+"""
+        assert _run_io(src).strip() == "ERR"
+
+
+class TestParseEmbeddedSpaces475:
+    """`#475` finding 8: `parse_nat` / `parse_int` reject embedded spaces.
+
+    Pre-fix the digit loop in both parsers silently skipped ASCII
+    space characters mid-number.  `"1 2"` parsed as 12; `"-1 0"`
+    parsed as -10.  Documentation only mentions trimming leading/
+    trailing whitespace.
+
+    Post-fix, leading whitespace is still trimmed but embedded
+    spaces fall through to the `< '0'` digit-check and produce
+    `Err`.
+    """
+
+    def test_parse_nat_normal(self) -> None:
+        """Baseline: `parse_nat("123")` → Ok(123)."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  match parse_nat("123") {
+    Ok(@Nat) -> @Nat.0,
+    Err(@String) -> 999
+  }
+}
+"""
+        assert _run(src) == 123
+
+    def test_parse_nat_leading_space_ok(self) -> None:
+        """Leading whitespace still trimmed: `parse_nat("  42")` → Ok(42)."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  match parse_nat("  42") {
+    Ok(@Nat) -> @Nat.0,
+    Err(@String) -> 999
+  }
+}
+"""
+        assert _run(src) == 42
+
+    def test_parse_nat_embedded_space_rejected(self) -> None:
+        """`parse_nat("1 2")` → Err (was: Ok(12) pre-fix)."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  match parse_nat("1 2") {
+    Ok(@Nat) -> @Nat.0,
+    Err(@String) -> 999
+  }
+}
+"""
+        assert _run(src) == 999
+
+    def test_parse_int_embedded_space_rejected(self) -> None:
+        """`parse_int("-1 0")` → Err (was: Ok(-10) pre-fix)."""
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match parse_int("-1 0") {
+    Ok(@Int) -> @Int.0,
+    Err(@String) -> -999
+  }
+}
+"""
+        assert _run(src) == -999
+
+
+class TestToStringInt64Min475:
+    """`#475` finding 9: `int_to_string(INT64_MIN)` correct.
+
+    Pre-fix, `_translate_to_string` extracted digits via signed
+    `i64.le_s 0` as the loop break, which on the first iteration
+    of negation `-INT64_MIN` overflows back to `INT64_MIN` (still
+    `< 0`) and prints partial garbage.
+
+    Post-fix, the loop break uses unsigned `i64.eqz` after digit
+    extraction with `i64.div_u` / `i64.rem_u`, so the unsigned
+    bit pattern walks down to zero correctly.
+    """
+
+    def test_int64_min_to_string(self) -> None:
+        """`int_to_string(-9223372036854775808)` → exact decimal."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(int_to_string(-9223372036854775808))
+}
+"""
+        assert _run_io(src).strip() == "-9223372036854775808"
+
+    def test_negative_basic(self) -> None:
+        """Sanity: `int_to_string(-42)` → '-42'."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(int_to_string(-42))
+}
+"""
+        assert _run_io(src).strip() == "-42"
+
+
+class TestFloatToStringCarry475:
+    """`#475` finding 10: `float_to_string` handles fraction-rounding carry.
+
+    Pre-fix, the integer part was written first, then the
+    fractional `frac_val = round((f - floor(f)) * 1_000_000)`
+    was computed.  When the fraction rounded up to exactly
+    1_000_000, the integer part was already on the page — output
+    `1.000000` instead of `2.000000`.
+
+    Post-fix, frac_val is computed first; when it equals 1_000_000
+    we increment ival and reset frac_val to 0 before emitting any
+    digits.
+    """
+
+    def test_carry_propagates(self) -> None:
+        """`1.9999996 → "2.0"` (frac rounds up to 1_000_000, trailing zeros trimmed).
+
+        Pre-fix this printed "1.0" — the integer part was emitted
+        before the carry was detected, so the rounded-up fraction
+        couldn't propagate.
+        """
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(1.9999996))
+}
+"""
+        assert _run_io(src).strip() == "2.0"
+
+    def test_normal_fraction(self) -> None:
+        """Baseline: `1.5 → "1.5"` (trailing zeros trimmed by format)."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(1.5))
+}
+"""
+        assert _run_io(src).strip() == "1.5"
+
+    def test_full_six_decimals_when_significant(self) -> None:
+        """When fraction has 6 significant digits, all are kept."""
+        src = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print(float_to_string(0.123456))
+}
+"""
+        assert _run_io(src).strip() == "0.123456"

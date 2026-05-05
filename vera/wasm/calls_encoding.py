@@ -550,11 +550,29 @@ class CallsEncodingMixin:
         ins.append("          br $valid_d")
         ins.append("        end")
 
-        # '=' (61) → 0 (padding)
+        # '=' (61) → 0, but ONLY in trailing-padding positions
+        # (#475 finding 7).  Pre-fix the main loop unconditionally
+        # treated `=` as value 0 anywhere in the input — so e.g.
+        # `"AB=D"` decoded to a 3-byte buffer with `=` silently
+        # mapped to 0 in the middle of a quartet.  Trailing `=`s
+        # were correctly counted into `pad` (lines 392-423) but the
+        # main loop didn't enforce that they only appeared there.
+        # Now: a `=` outside the trailing-padding region (defined
+        # by `i + gi >= slen - pad`) is rejected as an invalid
+        # character.
         ins.append(f"        local.get {ch}")
         ins.append("        i32.const 61")
         ins.append("        i32.eq")
         ins.append("        if")
+        # Compute absolute position and compare against (slen - pad).
+        ins.append(f"          local.get {i}")
+        ins.append(f"          local.get {gi}")
+        ins.append("          i32.add")
+        ins.append(f"          local.get {slen}")
+        ins.append(f"          local.get {pad}")
+        ins.append("          i32.sub")
+        ins.append("          i32.lt_u")
+        ins.append("          br_if $err_chr_bd")
         ins.append("          i32.const 0")
         ins.append(f"          local.set {val}")
         ins.append("          br $valid_d")
@@ -1736,6 +1754,39 @@ class CallsEncodingMixin:
         ins.append("end")
         ins.append("i32.store offset=40")    # frag_len
 
+        # Pack delimiter-presence flags into the previously-padding
+        # word at offset 44 so url_join can distinguish "absent" from
+        # "empty" components.  Pre-#475 url_parse discarded the
+        # has_auth / has_query / has_frag flags after using them to
+        # set the component bounds — url_join then re-derived
+        # delimiter presence from len > 0, which conflated `http:path`
+        # (no authority) with `http://path` (empty authority), and
+        # `url?` / `url#` (empty trailing query/frag) with `url`
+        # (no query/frag delimiter).  The packed layout in offset 44:
+        #   bit 0: scheme_has_authority  (was there `://`?)
+        #   bit 1: query_delimiter_present (was there `?`?)
+        #   bit 2: fragment_delimiter_present (was there `#`?)
+        #   bit 3: explicit-mode sentinel (always 1 when set by url_parse)
+        # url_join reads this word; if bit 3 is set, it uses bits 0-2
+        # for delimiter presence.  If bit 3 is clear (the offset-44
+        # word is just the zero padding from a UrlParts created via
+        # the data constructor), url_join falls back to the legacy
+        # `len > 0` heuristic so direct-constructor callers keep their
+        # pre-fix behaviour.
+        ins.append(f"local.get {up}")
+        ins.append(f"local.get {has_auth}")
+        ins.append(f"local.get {has_query}")
+        ins.append("i32.const 1")
+        ins.append("i32.shl")
+        ins.append("i32.or")
+        ins.append(f"local.get {has_frag}")
+        ins.append("i32.const 2")
+        ins.append("i32.shl")
+        ins.append("i32.or")
+        ins.append("i32.const 8")           # explicit-mode sentinel bit
+        ins.append("i32.or")
+        ins.append("i32.store offset=44")    # delimiter flags (packed i32)
+
         # ---- Step 5: Allocate Result (16 bytes), Ok(UrlParts) ----
         ins.append("i32.const 16")
         ins.append("call $alloc")
@@ -1786,11 +1837,6 @@ class CallsEncodingMixin:
 
         self.needs_alloc = True
 
-        # Intern "://" for the scheme separator
-        sep_off, sep_len = self.string_pool.intern("://")
-        q_off, _ = self.string_pool.intern("?")
-        h_off, _ = self.string_pool.intern("#")
-
         # UrlParts pointer
         up = self.alloc_local("i32")
         # Component locals (5 pairs: ptr, len)
@@ -1804,6 +1850,13 @@ class CallsEncodingMixin:
         q_len = self.alloc_local("i32")
         f_ptr = self.alloc_local("i32")    # fragment
         f_len = self.alloc_local("i32")
+        # Delimiter-presence flags (#475 finding 6 — the previously
+        # discarded has_auth / has_query / has_frag bits, packed into
+        # offset 44 by url_parse).
+        flags = self.alloc_local("i32")
+        has_auth = self.alloc_local("i32")
+        has_query = self.alloc_local("i32")
+        has_frag = self.alloc_local("i32")
         # Output
         total = self.alloc_local("i32")
         dst = self.alloc_local("i32")
@@ -1851,31 +1904,95 @@ class CallsEncodingMixin:
         ins.append("i32.load offset=40")
         ins.append(f"local.set {f_len}")
 
+        # Read packed delimiter-presence flags from offset 44
+        # (#475 finding 6).  Pre-fix this position was zero-padding;
+        # url_parse now stores has_auth / has_query / has_frag (bits
+        # 0-2) plus an explicit-mode sentinel (bit 3) so url_join can
+        # distinguish absent from empty.  When bit 3 is clear (the
+        # caller built UrlParts directly via the data constructor and
+        # the word is still zero), we fall back to the legacy
+        # `len > 0` heuristic — `UrlParts("http", "", "", "", "")`
+        # still joins as `http://`, just like before the fix.
+        ins.append(f"local.get {up}")
+        ins.append("i32.load offset=44")
+        ins.append(f"local.set {flags}")
+        # if (flags & 8) != 0: explicit mode — use bits 0-2 verbatim
+        # else: legacy mode — derive from component lengths
+        ins.append(f"local.get {flags}")
+        ins.append("i32.const 8")
+        ins.append("i32.and")
+        ins.append("if")
+        ins.append(f"  local.get {flags}")
+        ins.append("  i32.const 1")
+        ins.append("  i32.and")
+        ins.append(f"  local.set {has_auth}")
+        ins.append(f"  local.get {flags}")
+        ins.append("  i32.const 1")
+        ins.append("  i32.shr_u")
+        ins.append("  i32.const 1")
+        ins.append("  i32.and")
+        ins.append(f"  local.set {has_query}")
+        ins.append(f"  local.get {flags}")
+        ins.append("  i32.const 2")
+        ins.append("  i32.shr_u")
+        ins.append("  i32.const 1")
+        ins.append("  i32.and")
+        ins.append(f"  local.set {has_frag}")
+        ins.append("else")
+        # Legacy heuristic: data constructor → zero-init flags.
+        # has_auth = (s_len > 0); has_query = (q_len > 0);
+        # has_frag = (f_len > 0).  Replicates pre-fix url_join shape.
+        ins.append(f"  local.get {s_len}")
+        ins.append("  i32.const 0")
+        ins.append("  i32.gt_u")
+        ins.append(f"  local.set {has_auth}")
+        ins.append(f"  local.get {q_len}")
+        ins.append("  i32.const 0")
+        ins.append("  i32.gt_u")
+        ins.append(f"  local.set {has_query}")
+        ins.append(f"  local.get {f_len}")
+        ins.append("  i32.const 0")
+        ins.append("  i32.gt_u")
+        ins.append(f"  local.set {has_frag}")
+        ins.append("end")
+
         # ---- Pass 1: compute total output length ----
         # total = scheme_len + path_len
         ins.append(f"local.get {s_len}")
         ins.append(f"local.get {p_len}")
         ins.append("i32.add")
         ins.append(f"local.set {total}")
-        # If scheme_len > 0: total += 3 (for "://")
+        # If scheme present: total += 1 (for ":") regardless of
+        # whether there's an authority.  `http:path` round-trips
+        # as itself (no `://`); `http://path` round-trips with the
+        # full delimiter.  Pre-fix unconditionally added 3 when
+        # scheme was present, baking in the `://` shape.
         ins.append(f"local.get {s_len}")
         ins.append("i32.const 0")
         ins.append("i32.gt_u")
         ins.append("if")
         ins.append(f"  local.get {total}")
-        ins.append("  i32.const 3")
+        ins.append("  i32.const 1")
         ins.append("  i32.add")
         ins.append(f"  local.set {total}")
         ins.append("end")
-        # total += auth_len
-        ins.append(f"local.get {total}")
-        ins.append(f"local.get {a_len}")
-        ins.append("i32.add")
-        ins.append(f"local.set {total}")
-        # If query_len > 0: total += 1 + query_len
-        ins.append(f"local.get {q_len}")
-        ins.append("i32.const 0")
-        ins.append("i32.gt_u")
+        # If has_auth: total += 2 (for "//") plus auth_len.  Pre-fix
+        # used `s_len > 0` for both the delimiter and the auth — we
+        # split them so absent / empty / present authorities are all
+        # round-trippable.
+        ins.append(f"local.get {has_auth}")
+        ins.append("if")
+        ins.append(f"  local.get {total}")
+        ins.append("  i32.const 2")
+        ins.append("  i32.add")
+        ins.append(f"  local.get {a_len}")
+        ins.append("  i32.add")
+        ins.append(f"  local.set {total}")
+        ins.append("end")
+        # If has_query: total += 1 + query_len.  Pre-fix used
+        # `q_len > 0`, dropping the trailing "?" delimiter when the
+        # original URL had `url?` (empty query, delimiter present).
+        ins.append(f"local.get {has_query}")
         ins.append("if")
         ins.append(f"  local.get {total}")
         ins.append("  i32.const 1")
@@ -1884,10 +2001,8 @@ class CallsEncodingMixin:
         ins.append("  i32.add")
         ins.append(f"  local.set {total}")
         ins.append("end")
-        # If frag_len > 0: total += 1 + frag_len
-        ins.append(f"local.get {f_len}")
-        ins.append("i32.const 0")
-        ins.append("i32.gt_u")
+        # If has_frag: total += 1 + frag_len.  Same shape as has_query.
+        ins.append(f"local.get {has_frag}")
         ins.append("if")
         ins.append(f"  local.get {total}")
         ins.append("  i32.const 1")
@@ -1920,7 +2035,11 @@ class CallsEncodingMixin:
         ins.append("i32.const 0")
         ins.append(f"local.set {k}")
 
-        # If scheme non-empty: copy scheme, write "://"
+        # If scheme non-empty: copy scheme + ":".  The "//" is
+        # written separately based on has_auth so `http:path` (no
+        # authority) round-trips correctly.  Pre-fix this block
+        # wrote scheme + "://" together; an URL with scheme but no
+        # authority would gain a spurious "//".
         ins.append(f"local.get {s_len}")
         ins.append("i32.const 0")
         ins.append("i32.gt_u")
@@ -1936,34 +2055,54 @@ class CallsEncodingMixin:
         ins.append(f"  local.get {s_len}")
         ins.append("  i32.add")
         ins.append(f"  local.set {k}")
-        # Write "://" (3 bytes from string pool)
+        # Write ":" (1 byte) — always present when scheme is present.
         ins.append(f"  local.get {dst}")
         ins.append(f"  local.get {k}")
         ins.append("  i32.add")
-        ins.append(f"  i32.const {sep_off}")
-        ins.append("  i32.const 3")
-        ins.append("  memory.copy")
+        ins.append("  i32.const 58")   # ':'
+        ins.append("  i32.store8 offset=0")
         ins.append(f"  local.get {k}")
-        ins.append("  i32.const 3")
+        ins.append("  i32.const 1")
         ins.append("  i32.add")
         ins.append(f"  local.set {k}")
         ins.append("end")
 
-        # Copy authority (even if empty — zero-length copy is a no-op)
-        ins.append(f"local.get {a_len}")
-        ins.append("i32.const 0")
-        ins.append("i32.gt_u")
+        # If has_auth: write "//" + authority.  The authority bytes
+        # may be empty (`http:////path` is a degenerate but valid
+        # URL with empty authority), but the `//` delimiter is
+        # always written when has_auth is set.
+        ins.append(f"local.get {has_auth}")
         ins.append("if")
         ins.append(f"  local.get {dst}")
         ins.append(f"  local.get {k}")
         ins.append("  i32.add")
-        ins.append(f"  local.get {a_ptr}")
-        ins.append(f"  local.get {a_len}")
-        ins.append("  memory.copy")
+        ins.append("  i32.const 47")   # '/'
+        ins.append("  i32.store8 offset=0")
+        ins.append(f"  local.get {dst}")
         ins.append(f"  local.get {k}")
-        ins.append(f"  local.get {a_len}")
+        ins.append("  i32.add")
+        ins.append("  i32.const 47")   # '/'
+        ins.append("  i32.store8 offset=1")
+        ins.append(f"  local.get {k}")
+        ins.append("  i32.const 2")
         ins.append("  i32.add")
         ins.append(f"  local.set {k}")
+        # Copy authority bytes (zero-length copy is a no-op)
+        ins.append(f"  local.get {a_len}")
+        ins.append("  i32.const 0")
+        ins.append("  i32.gt_u")
+        ins.append("  if")
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {k}")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {a_ptr}")
+        ins.append(f"    local.get {a_len}")
+        ins.append("    memory.copy")
+        ins.append(f"    local.get {k}")
+        ins.append(f"    local.get {a_len}")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {k}")
+        ins.append("  end")
         ins.append("end")
 
         # Copy path
@@ -1983,10 +2122,12 @@ class CallsEncodingMixin:
         ins.append(f"  local.set {k}")
         ins.append("end")
 
-        # If query non-empty: write "?" + query
-        ins.append(f"local.get {q_len}")
-        ins.append("i32.const 0")
-        ins.append("i32.gt_u")
+        # If has_query: write "?" + query (zero-length query is OK
+        # — the trailing "?" is preserved as a delimiter even if
+        # the query body is empty).  Pre-fix this gated on
+        # `q_len > 0`, dropping the trailing "?" delimiter when the
+        # original URL had `url?` (empty query, delimiter present).
+        ins.append(f"local.get {has_query}")
         ins.append("if")
         # Write '?' (1 byte)
         ins.append(f"  local.get {dst}")
@@ -1998,23 +2139,26 @@ class CallsEncodingMixin:
         ins.append("  i32.const 1")
         ins.append("  i32.add")
         ins.append(f"  local.set {k}")
-        # Copy query
-        ins.append(f"  local.get {dst}")
-        ins.append(f"  local.get {k}")
-        ins.append("  i32.add")
-        ins.append(f"  local.get {q_ptr}")
+        # Copy query (zero-length copy is a no-op)
         ins.append(f"  local.get {q_len}")
-        ins.append("  memory.copy")
-        ins.append(f"  local.get {k}")
-        ins.append(f"  local.get {q_len}")
-        ins.append("  i32.add")
-        ins.append(f"  local.set {k}")
+        ins.append("  i32.const 0")
+        ins.append("  i32.gt_u")
+        ins.append("  if")
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {k}")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {q_ptr}")
+        ins.append(f"    local.get {q_len}")
+        ins.append("    memory.copy")
+        ins.append(f"    local.get {k}")
+        ins.append(f"    local.get {q_len}")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {k}")
+        ins.append("  end")
         ins.append("end")
 
-        # If fragment non-empty: write "#" + fragment
-        ins.append(f"local.get {f_len}")
-        ins.append("i32.const 0")
-        ins.append("i32.gt_u")
+        # If has_frag: write "#" + fragment (same shape as query).
+        ins.append(f"local.get {has_frag}")
         ins.append("if")
         # Write '#' (1 byte)
         ins.append(f"  local.get {dst}")
@@ -2026,17 +2170,22 @@ class CallsEncodingMixin:
         ins.append("  i32.const 1")
         ins.append("  i32.add")
         ins.append(f"  local.set {k}")
-        # Copy fragment
-        ins.append(f"  local.get {dst}")
-        ins.append(f"  local.get {k}")
-        ins.append("  i32.add")
-        ins.append(f"  local.get {f_ptr}")
+        # Copy fragment (zero-length copy is a no-op)
         ins.append(f"  local.get {f_len}")
-        ins.append("  memory.copy")
-        ins.append(f"  local.get {k}")
-        ins.append(f"  local.get {f_len}")
-        ins.append("  i32.add")
-        ins.append(f"  local.set {k}")
+        ins.append("  i32.const 0")
+        ins.append("  i32.gt_u")
+        ins.append("  if")
+        ins.append(f"    local.get {dst}")
+        ins.append(f"    local.get {k}")
+        ins.append("    i32.add")
+        ins.append(f"    local.get {f_ptr}")
+        ins.append(f"    local.get {f_len}")
+        ins.append("    memory.copy")
+        ins.append(f"    local.get {k}")
+        ins.append(f"    local.get {f_len}")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {k}")
+        ins.append("  end")
         ins.append("end")
 
         ins.append("end")  # block $uj_done

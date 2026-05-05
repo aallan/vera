@@ -594,12 +594,22 @@ class CallsStringsMixin:
         instructions.append("  i32.const 48")
         instructions.append("  i32.store8 offset=0")
         instructions.append("else")
-        # Extract digits in reverse
+        # Extract digits in reverse using *unsigned* arithmetic.  For
+        # INT64_MIN, the negation `0 - INT64_MIN` overflows because the
+        # positive magnitude doesn't fit in signed i64 (the wrap leaves
+        # `val` at INT64_MIN's bit pattern = 0x8000000000000000, the
+        # unsigned value 9223372036854775808).  The break condition is
+        # therefore `i64.eqz` (val == 0) rather than `i64.le_s 0`
+        # (signed val ≤ 0) — pre-#475 the signed check fired immediately
+        # on the wrapped INT64_MIN, exiting the loop before any digits
+        # were extracted and producing a stray "-" with no body.  With
+        # `i64.eqz` plus the existing unsigned `i64.rem_u` / `i64.div_u`
+        # operators below, the bit pattern is correctly read as the
+        # unsigned magnitude and digits are extracted in full.
         instructions.append("  block $brk_ts")
         instructions.append("  loop $lp_ts")
         instructions.append(f"    local.get {val}")
-        instructions.append("    i64.const 0")
-        instructions.append("    i64.le_s")
+        instructions.append("    i64.eqz")
         instructions.append("    br_if $brk_ts")
         # digit = val % 10
         instructions.append(f"    local.get {val}")
@@ -832,6 +842,41 @@ class CallsStringsMixin:
         instructions.append("i64.trunc_f64_s")
         instructions.append(f"local.set {ival}")
 
+        # Compute the fractional part NOW, before writing integer
+        # digits, so a rounding carry can propagate to the integer
+        # part (#475 finding 10).  Pre-fix this block lived after
+        # the integer-digit write — for inputs like 1.9999995 the
+        # rounded fractional was 1_000_000 (carry) but the integer
+        # part had already been written as "1", and the fractional
+        # loop's `% 10`/`/ 10` extraction silently dropped the
+        # carry, producing "1.0" instead of "2.0".  Now: detect the
+        # carry and increment ival before any digits are written.
+        # frac_val = round((fval - floor(fval)) * 1_000_000)
+        instructions.append(f"local.get {fval}")
+        instructions.append(f"local.get {fval}")
+        instructions.append("f64.floor")
+        instructions.append("f64.sub")
+        instructions.append("f64.const 1000000")
+        instructions.append("f64.mul")
+        instructions.append("f64.const 0.5")
+        instructions.append("f64.add")
+        instructions.append("i64.trunc_f64_s")
+        instructions.append(f"local.set {frac_val}")
+        # Carry detection: if frac_val == 1_000_000 it means the
+        # rounding pushed all six fractional digits over — the
+        # carry belongs in the integer part.
+        instructions.append(f"local.get {frac_val}")
+        instructions.append("i64.const 1000000")
+        instructions.append("i64.eq")
+        instructions.append("if")
+        instructions.append(f"  local.get {ival}")
+        instructions.append("  i64.const 1")
+        instructions.append("  i64.add")
+        instructions.append(f"  local.set {ival}")
+        instructions.append("  i64.const 0")
+        instructions.append(f"  local.set {frac_val}")
+        instructions.append("end")
+
         # Write integer digits using a temp buffer (reverse then copy)
         # Allocate 20-byte temp buffer for int digits
         instructions.append("i32.const 20")
@@ -939,19 +984,9 @@ class CallsStringsMixin:
         instructions.append("i32.add")
         instructions.append(f"local.set {pos}")
 
-        # Fractional part: frac = (fval - floor(fval)) * 1_000_000
-        # Re-extract integer part as f64 for subtraction
-        instructions.append(f"local.get {fval}")
-        instructions.append(f"local.get {fval}")
-        instructions.append("f64.floor")
-        instructions.append("f64.sub")
-        instructions.append("f64.const 1000000")
-        instructions.append("f64.mul")
-        # Round to nearest integer
-        instructions.append("f64.const 0.5")
-        instructions.append("f64.add")
-        instructions.append("i64.trunc_f64_s")
-        instructions.append(f"local.set {frac_val}")
+        # frac_val was computed earlier (before integer-digit write)
+        # so the rounding carry could propagate to ival; #475 finding
+        # 10. Continue with the existing 6-digit reverse-extract loop.
 
         # Write exactly 6 fractional digits (will trim trailing zeros after)
         # We write them in reverse into tbuf, then copy forward

@@ -263,6 +263,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.126 | 28 Apr | **Tail-recursive iteration runs in constant stack space** ([#517](https://github.com/aallan/vera/issues/517)). |
 | v0.0.127 | 29 Apr | **`@Nat` subtraction soundness hole closed** ([#520](https://github.com/aallan/vera/issues/520)). |
 | v0.0.128 | 5 May | **WASM call translator critical safety fixes** ([#475](https://github.com/aallan/vera/issues/475)). |
+| v0.0.129 | 29 Apr | **WASM call translator major correctness fixes — closes [#475](https://github.com/aallan/vera/issues/475)**. |
 
 ---
 

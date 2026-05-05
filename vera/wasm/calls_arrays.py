@@ -454,6 +454,7 @@ class CallsArraysMixin:
 
         ptr = self.alloc_local("i32")
         arr_len = self.alloc_local("i32")
+        arr_len_i64 = self.alloc_local("i64")
         s = self.alloc_local("i32")
         e = self.alloc_local("i32")
         slice_len = self.alloc_local("i32")
@@ -468,45 +469,31 @@ class CallsArraysMixin:
         instructions.append(f"local.set {arr_len}")
         instructions.append(f"local.set {ptr}")
 
-        # Evaluate start → i64, wrap to i32
-        instructions.extend(start_instrs)
-        instructions.append("i32.wrap_i64")
-        instructions.append(f"local.set {s}")
-
-        # Evaluate end → i64, wrap to i32
-        instructions.extend(end_instrs)
-        instructions.append("i32.wrap_i64")
-        instructions.append(f"local.set {e}")
-
-        # Clamp start: s = max(0, min(s, arr_len))
-        instructions.append(f"local.get {s}")
-        instructions.append("i32.const 0")
-        instructions.append("i32.lt_s")
-        instructions.append("if (result i32)")
-        instructions.append("  i32.const 0")
-        instructions.append("else")
-        instructions.append(f"  local.get {s}")
-        instructions.append(f"  local.get {arr_len}")
-        instructions.append("  i32.gt_s")
-        instructions.append("  if (result i32)")
-        instructions.append(f"    local.get {arr_len}")
-        instructions.append("  else")
-        instructions.append(f"    local.get {s}")
-        instructions.append("  end")
-        instructions.append("end")
-        instructions.append(f"local.set {s}")
-
-        # Clamp end: e = max(s, min(e, arr_len))
-        instructions.append(f"local.get {e}")
+        # Widen arr_len to i64 for in-i64 clamping (#475 finding 4).
+        # Pre-#475 this method wrapped i64 → i32 first then clamped in
+        # i32 — large positive i64 indices wrapped to negative i32
+        # values, which then drove the "negative <= 0" branch and
+        # collapsed to 0 silently.  Same shape as #2 for string_slice;
+        # both now share the `_clamp_i64_to_range_then_wrap` helper
+        # that does the clamp in i64 BEFORE narrowing.
         instructions.append(f"local.get {arr_len}")
-        instructions.append("i32.gt_s")
-        instructions.append("if (result i32)")
-        instructions.append(f"  local.get {arr_len}")
-        instructions.append("else")
-        instructions.append(f"  local.get {e}")
-        instructions.append("end")
+        instructions.append("i64.extend_i32_u")
+        instructions.append(f"local.set {arr_len_i64}")
+
+        # Evaluate start (i64), clamp to [0, arr_len] in i64, wrap.
+        instructions.extend(start_instrs)
+        instructions.extend(self._clamp_i64_to_range_then_wrap(arr_len_i64))
+        instructions.append(f"local.set {s}")
+
+        # Evaluate end (i64), clamp to [0, arr_len] in i64, wrap.
+        instructions.extend(end_instrs)
+        instructions.extend(self._clamp_i64_to_range_then_wrap(arr_len_i64))
         instructions.append(f"local.set {e}")
-        # Ensure e >= s
+
+        # Ensure e >= s (clamp end up to start so a swapped pair
+        # produces an empty slice, not a negative length).  The i64
+        # clamp doesn't know about the start/end relationship —
+        # this i32-level fixup remains.
         instructions.append(f"local.get {e}")
         instructions.append(f"local.get {s}")
         instructions.append("i32.lt_s")

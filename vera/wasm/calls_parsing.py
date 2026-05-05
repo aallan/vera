@@ -77,11 +77,19 @@ class CallsParsingMixin:
         ins.append("    i32.add")
         ins.append("    i32.load8_u offset=0")
         ins.append(f"    local.set {byte}")
-        # Skip space (byte 32)
+        # Space (byte 32) handling (#475 finding 8).  Pre-fix the loop
+        # unconditionally skipped spaces, so embedded spaces in inputs
+        # like "12 34" or "1 2 3" silently parsed as 1234 / 123.
+        # Now: leading spaces (has_digit == 0) are still skipped, but a
+        # space encountered after a digit breaks out of the digit loop;
+        # the tail-validation loop below then requires every remaining
+        # byte to also be a space (so "77  " still works, "1 2" errors).
         ins.append(f"    local.get {byte}")
         ins.append("    i32.const 32")
         ins.append("    i32.eq")
         ins.append("    if")
+        ins.append(f"      local.get {has_digit}")
+        ins.append("      br_if $brk_pn")
         ins.append(f"      local.get {idx}")
         ins.append("      i32.const 1")
         ins.append("      i32.add")
@@ -119,6 +127,31 @@ class CallsParsingMixin:
         ins.append("    br $lp_pn")
         ins.append("  end")   # loop
         ins.append("end")     # block $brk_pn
+
+        # -- Tail validation (#475 finding 8): after the digit loop has
+        # broken out (either via end-of-string or via a trailing space),
+        # every remaining byte must be a space.  Pre-fix this was folded
+        # into the digit loop's space-skip and accepted embedded spaces.
+        ins.append("block $brk_tail_pn")
+        ins.append("  loop $lp_tail_pn")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_tail_pn")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.const 32")
+        ins.append("    i32.ne")
+        ins.append("    br_if $err_pn")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_tail_pn")
+        ins.append("  end")
+        ins.append("end")
 
         # -- After loop: no digits seen → error
         ins.append(f"local.get {has_digit}")
@@ -298,18 +331,25 @@ class CallsParsingMixin:
         ins.append("    i32.add")
         ins.append("    i32.load8_u offset=0")
         ins.append(f"    local.set {byte}")
-        # Skip trailing space (byte 32)
+        # Space handling (#475 finding 8).  Pre-fix the digit loop
+        # unconditionally skipped spaces (the comment said "trailing
+        # space" but it fired on any embedded space too), so inputs
+        # like "- 5" or "1 2" parsed as -5 / 12 silently.  Leading
+        # spaces are already consumed by the `$lp_sp_pi` loop above.
+        # Now: a space encountered before any digit (e.g. "- 5")
+        # falls through to the `< 48` check and errors.  A space
+        # encountered after a digit breaks out of the digit loop;
+        # the tail-validation loop below requires every remaining
+        # byte to also be a space.
         ins.append(f"    local.get {byte}")
         ins.append("    i32.const 32")
         ins.append("    i32.eq")
         ins.append("    if")
-        ins.append(f"      local.get {idx}")
-        ins.append("      i32.const 1")
-        ins.append("      i32.add")
-        ins.append(f"      local.set {idx}")
-        ins.append("      br $lp_pi")
+        ins.append(f"      local.get {has_digit}")
+        ins.append("      br_if $brk_pi")
         ins.append("    end")
-        # Check byte < '0' (48) → error
+        # Check byte < '0' (48) → error (also catches embedded space
+        # before any digit, since 32 < 48)
         ins.append(f"    local.get {byte}")
         ins.append("    i32.const 48")
         ins.append("    i32.lt_u")
@@ -340,6 +380,31 @@ class CallsParsingMixin:
         ins.append("    br $lp_pi")
         ins.append("  end")   # loop
         ins.append("end")     # block $brk_pi
+
+        # -- Tail validation (#475 finding 8): after the digit loop has
+        # broken out (either via end-of-string or via a trailing space),
+        # every remaining byte must be a space.  Pre-fix this was folded
+        # into the digit loop's space-skip and accepted embedded spaces.
+        ins.append("block $brk_tail_pi")
+        ins.append("  loop $lp_tail_pi")
+        ins.append(f"    local.get {idx}")
+        ins.append(f"    local.get {slen}")
+        ins.append("    i32.ge_u")
+        ins.append("    br_if $brk_tail_pi")
+        ins.append(f"    local.get {ptr}")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.add")
+        ins.append("    i32.load8_u offset=0")
+        ins.append("    i32.const 32")
+        ins.append("    i32.ne")
+        ins.append("    br_if $err_pi")
+        ins.append(f"    local.get {idx}")
+        ins.append("    i32.const 1")
+        ins.append("    i32.add")
+        ins.append(f"    local.set {idx}")
+        ins.append("    br $lp_tail_pi")
+        ins.append("  end")
+        ins.append("end")
 
         # -- After loop: no digits seen → error
         ins.append(f"local.get {has_digit}")
