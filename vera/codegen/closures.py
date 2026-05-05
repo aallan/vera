@@ -235,11 +235,14 @@ class ClosureLiftingMixin:
                 # Sanity: the two locals must be consecutive.  Both
                 # `alloc_local("i32")` calls go to the same i32 pool,
                 # so consecutive allocation is guaranteed by the
-                # WasmContext implementation.
-                assert len_local == ptr_local + 1, (
-                    f"pair capture locals must be consecutive: "
-                    f"ptr={ptr_local} len={len_local}"
-                )
+                # WasmContext implementation.  An explicit raise (vs.
+                # `assert`) so the check survives `python -O`
+                # (ruff S101).
+                if len_local != ptr_local + 1:  # pragma: no cover
+                    raise RuntimeError(
+                        f"pair capture locals must be consecutive: "
+                        f"ptr={ptr_local} len={len_local}"
+                    )
                 load_instrs.append(f"local.get {env_idx}")
                 load_instrs.append(f"i32.load offset={cap_offset}")
                 load_instrs.append(f"local.set {ptr_local}")
