@@ -15575,19 +15575,88 @@ class TestArrayFoldHandleRooting490:
     management code.
     """
 
+    @staticmethod
+    def _count_main_pushes(wat: str) -> int:
+        """Count `global.set $gc_sp` idioms inside `$main`'s body.
+
+        Each `gc_shadow_push` emits exactly one `global.set $gc_sp`
+        (the sp-advance step at the end of the idiom).  A higher
+        count for the host-handle case vs. the Int reference
+        indicates the handle accumulator/element is being rooted
+        when it shouldn't be.
+        """
+        fn_start = wat.index("(func $main")
+        if "\n  (func " in wat[fn_start + 1:]:
+            fn_end = wat.index("\n  (func ", fn_start + 1)
+        else:
+            fn_end = len(wat)
+        return wat[fn_start:fn_end].count("global.set $gc_sp")
+
+    def _assert_handle_not_extra_rooted(
+        self,
+        int_src: str,
+        decimal_src: str,
+        builder_name: str,
+        accumulator_label: str,
+    ) -> None:
+        """Compile `int_src` (reference: no rooting needed) and
+        `decimal_src` (test: opaque host handle), then assert the
+        Decimal version doesn't emit MORE shadow-pushes than the
+        Int version.
+
+        Two checks to avoid the test passing trivially:
+          1. **Non-vacuity** — assert both counts are > 0.  Without
+             this, a degenerate case where neither version emits
+             any pushes (e.g. if the WAT structure changed and the
+             helper now slices an empty body) would pass with
+             0 == 0.
+          2. **Equality** — Decimal must not emit MORE pushes than
+             the Int reference.  An ADT accumulator (which IS a
+             Vera-heap pointer) would emit one extra; an opaque
+             host handle (post-fix #490) emits the same count.
+        """
+        int_wat = _compile_ok(int_src).wat
+        decimal_wat = _compile_ok(decimal_src).wat
+        int_count = self._count_main_pushes(int_wat)
+        decimal_count = self._count_main_pushes(decimal_wat)
+
+        # Non-vacuity: there MUST be shadow-stack activity in $main
+        # for this comparison to be meaningful.  `array_range`
+        # itself shadow-pushes its result; lacking this means the
+        # WAT structure has shifted and the helper isn't slicing
+        # the right region.
+        assert int_count > 0, (
+            f"Int reference for {builder_name} emitted 0 "
+            f"`global.set $gc_sp` idioms in $main — the helper "
+            f"isn't measuring real shadow-stack activity, so the "
+            f"comparison below would pass trivially.  Likely the "
+            f"WAT structure shifted; re-check `_count_main_pushes` "
+            f"slicing logic."
+        )
+
+        # Equality: Decimal accumulator/element must not add an
+        # extra push relative to Int.
+        assert decimal_count == int_count, (
+            f"`{builder_name}` with a Decimal {accumulator_label} "
+            f"emits {decimal_count} `global.set $gc_sp` idioms in "
+            f"$main vs. {int_count} for an Int reference.  Post-"
+            f"#490 these should be equal — Decimal is an opaque "
+            f"host handle, not a Vera-heap pointer, and shouldn't "
+            f"be rooted around the `call_indirect`.  An extra "
+            f"count means `_is_host_handle_type` isn't firing in "
+            f"the `u_is_adt` / `t_is_adt` heuristic."
+        )
+
     def test_decimal_accumulator_not_rooted(self) -> None:
         """`array_fold` over `Decimal` accumulator should NOT emit
         the per-iteration accumulator root that ADT accumulators
         get.
 
-        Structural pin via `global.set $gc_sp` count: the same
-        fold over `Int` (no rooting needed) and `Decimal` (post-
-        fix: also no rooting per #490) should produce the same
-        count of `global.set $gc_sp` idioms in `$main`.  An ADT
-        accumulator (which IS a Vera-heap pointer) would emit one
-        more.  This test pins that Decimal counts match Int.
+        Exercises the `u_is_adt` heuristic in
+        `_translate_array_fold`.  The mirror for `array_map`'s
+        `t_is_adt` heuristic is in `test_decimal_mapper_not_rooted`
+        below.
         """
-        # Reference: fold over Int (no rooting needed) — baseline
         int_src = """
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -15599,7 +15668,6 @@ public fn main(@Unit -> @Int)
   )
 }
 """
-        # Test: fold over Decimal (post-fix: also no rooting per #490)
         decimal_src = """
 public fn main(@Unit -> @Decimal)
   requires(true) ensures(true) effects(pure)
@@ -15613,28 +15681,42 @@ public fn main(@Unit -> @Decimal)
   )
 }
 """
-        int_wat = _compile_ok(int_src).wat
-        decimal_wat = _compile_ok(decimal_src).wat
+        self._assert_handle_not_extra_rooted(
+            int_src, decimal_src, "array_fold", "accumulator",
+        )
 
-        def count_main_pushes(wat: str) -> int:
-            fn_start = wat.index("(func $main")
-            if "\n  (func " in wat[fn_start + 1:]:
-                fn_end = wat.index("\n  (func ", fn_start + 1)
-            else:
-                fn_end = len(wat)
-            return wat[fn_start:fn_end].count("global.set $gc_sp")
+    def test_decimal_mapper_not_rooted(self) -> None:
+        """`array_map` producing `Decimal` elements should NOT
+        emit the per-iteration element root that ADT elements get.
 
-        int_count = count_main_pushes(int_wat)
-        decimal_count = count_main_pushes(decimal_wat)
-        assert decimal_count == int_count, (
-            f"`array_fold` over a Decimal accumulator emits "
-            f"{decimal_count} `global.set $gc_sp` idioms in $main "
-            f"vs. {int_count} for an Int accumulator.  Post-#490 "
-            f"these should be equal — Decimal is an opaque host "
-            f"handle, not a Vera-heap pointer, and shouldn't be "
-            f"rooted around the call_indirect.  An extra count "
-            f"means `_is_host_handle_type` isn't firing in the "
-            f"`u_is_adt` heuristic."
+        Mirrors `test_decimal_accumulator_not_rooted` but exercises
+        the `t_is_adt` heuristic in `_translate_array_map` (the
+        result-element rooting decision, distinct from the fold's
+        accumulator rooting).  A regression isolated to the
+        array_map path would not be caught by the fold test.
+        """
+        int_src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_map(
+    array_range(0, 5),
+    fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }
+  ))
+}
+"""
+        decimal_src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_map(
+    array_range(0, 5),
+    fn(@Int -> @Decimal) effects(pure) { decimal_from_int(@Int.0) }
+  ))
+}
+"""
+        self._assert_handle_not_extra_rooted(
+            int_src, decimal_src, "array_map", "element",
         )
 
     def test_array_fold_with_decimal_runs_correctly(self) -> None:
@@ -15662,4 +15744,41 @@ public fn main(@Unit -> @Int)
   if decimal_eq(@Decimal.0, decimal_from_int(10)) then { 1 } else { 0 }
 }
 """
+        assert _run(src) == 1
+
+    def test_array_map_with_decimal_runs_correctly(self) -> None:
+        """Functional pin for the array_map case: produce an array
+        of Decimal handles and verify the round-trip through
+        `array_fold(decimal_add)` returns the right total.
+
+        Pre- and post-fix this works (same conservative-GC
+        argument as the fold case), but pinning prevents a
+        future array_map regression from silently breaking the
+        `Decimal` element path.
+
+        `array_map([0..5), fn(i) { decimal_from_int(i*2) })`
+        produces `[0, 2, 4, 6, 8]` as Decimal handles; folding
+        with `decimal_add` gives 20.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Decimal> = array_map(
+    array_range(0, 5),
+    fn(@Int -> @Decimal) effects(pure) {
+      decimal_from_int(@Int.0 * 2)
+    }
+  );
+  let @Decimal = array_fold(
+    @Array<Decimal>.0,
+    decimal_from_int(0),
+    fn(@Decimal, @Decimal -> @Decimal) effects(pure) {
+      decimal_add(@Decimal.0, @Decimal.1)
+    }
+  );
+  if decimal_eq(@Decimal.0, decimal_from_int(20)) then { 1 } else { 0 }
+}
+"""
+        # 0 + 2 + 4 + 6 + 8 = 20
         assert _run(src) == 1
