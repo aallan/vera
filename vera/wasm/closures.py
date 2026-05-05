@@ -35,13 +35,24 @@ class ClosuresMixin:
 
         # Compute closure struct layout
         # offset 0: func_table_idx (i32, 4 bytes)
+        # Pair-type captures (#535) take 8 bytes: ptr + len, two
+        # consecutive i32 fields, 4-byte aligned.  The matching layout
+        # in `_compile_lifted_closure` reads them back as two i32 loads.
         field_offsets: list[tuple[int, str]] = []
         offset = 4  # skip func_table_idx
         for _tname, _idx, cap_wt in captures:
-            align = 8 if cap_wt in ("i64", "f64") else 4
-            offset = _align_up(offset, align)
-            field_offsets.append((offset, cap_wt))
-            offset += 8 if cap_wt in ("i64", "f64") else 4
+            if cap_wt == "i32_pair":
+                offset = _align_up(offset, 4)
+                field_offsets.append((offset, cap_wt))
+                offset += 8  # ptr (4) + len (4)
+            elif cap_wt in ("i64", "f64"):
+                offset = _align_up(offset, 8)
+                field_offsets.append((offset, cap_wt))
+                offset += 8
+            else:  # i32
+                offset = _align_up(offset, 4)
+                field_offsets.append((offset, cap_wt))
+                offset += 4
         total_size = max(_align_up(offset, 8), 8)  # at least 8 bytes
 
         # Emit allocation + stores
@@ -60,20 +71,34 @@ class ClosuresMixin:
         instructions.append(f"i32.const {closure_id}")
         instructions.append("i32.store offset=0")
 
-        # Store each captured value
+        # Store each captured value.  Pair captures (#535) live at
+        # consecutive locals (env pushed `ptr_idx`; the matching `len`
+        # is at `ptr_idx + 1`); the let-binding emit and the parameter
+        # emit both use this convention.  We mirror it by writing two
+        # i32 fields at `cap_offset` and `cap_offset + 4`.
         for i, (tname, cap_idx, cap_wt) in enumerate(captures):
             cap_offset, _wt = field_offsets[i]
             local_idx = env.resolve(tname, cap_idx)
             if local_idx is None:
                 return None  # capture reference unresolvable
-            instructions.append(f"local.get {tmp}")
-            instructions.append(f"local.get {local_idx}")
-            store_op = (
-                "i64.store" if cap_wt == "i64"
-                else "f64.store" if cap_wt == "f64"
-                else "i32.store"
-            )
-            instructions.append(f"{store_op} offset={cap_offset}")
+            if cap_wt == "i32_pair":
+                # Store ptr at cap_offset
+                instructions.append(f"local.get {tmp}")
+                instructions.append(f"local.get {local_idx}")
+                instructions.append(f"i32.store offset={cap_offset}")
+                # Store len at cap_offset + 4
+                instructions.append(f"local.get {tmp}")
+                instructions.append(f"local.get {local_idx + 1}")
+                instructions.append(f"i32.store offset={cap_offset + 4}")
+            else:
+                instructions.append(f"local.get {tmp}")
+                instructions.append(f"local.get {local_idx}")
+                store_op = (
+                    "i64.store" if cap_wt == "i64"
+                    else "f64.store" if cap_wt == "f64"
+                    else "i32.store"
+                )
+                instructions.append(f"{store_op} offset={cap_offset}")
 
         # Leave closure pointer on stack
         instructions.append(f"local.get {tmp}")
@@ -192,8 +217,24 @@ class ClosuresMixin:
                 key = (type_name, outer_idx)
                 if key not in seen:
                     seen.add(key)
-                    # Infer wasm type from type name
-                    wt = self._type_name_to_wasm(type_name)
+                    # Infer wasm type from type name.  `_type_name_to_wasm`
+                    # collapses every composite type to a single ``"i32"``
+                    # for handler-callsite compatibility, so we re-detect
+                    # the pair shape here (#535): String / Array<T> values
+                    # live as two consecutive i32 slots (ptr, len) and a
+                    # closure capture must serialise both.  Pre-fix the
+                    # capture path used the bare ``"i32"`` and stored only
+                    # the ptr — the body then read len from adjacent
+                    # struct memory (typically zero), making the captured
+                    # value silently appear empty.
+                    if (
+                        type_name == "String"
+                        or type_name == "Array"
+                        or type_name.startswith("Array<")
+                    ):
+                        wt = "i32_pair"
+                    else:
+                        wt = self._type_name_to_wasm(type_name)
                     free.append((type_name, outer_idx, wt))
             return
 

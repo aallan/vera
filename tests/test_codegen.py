@@ -14861,3 +14861,136 @@ public fn main(@Unit -> @Unit)
 }
 """
         assert _run_io(src).strip() == "0.123456"
+
+
+# =====================================================================
+# Pair-type closure capture (#535 — residual of #514)
+# =====================================================================
+
+
+class TestPairCapture535:
+    """`#535`: closures capturing `String` / `Array<T>` outer bindings.
+
+    Pre-fix, `vera/wasm/closures.py::_walk_free_vars` resolved the
+    capture's wasm type via `_type_name_to_wasm`, which collapses every
+    composite type to a single `"i32"`.  `_translate_anon_fn` then
+    serialised only the ptr half of the pair into the closure struct;
+    `_compile_lifted_closure` read back only the ptr and the body got
+    the len from adjacent struct memory (typically zero).  So
+    `array_length` / `string_length` of a captured `Array<T>` /
+    `String` always returned 0.
+
+    Post-fix all three sites carry an `"i32_pair"` tag for these
+    captures: 8 bytes per field (two consecutive i32 stores at
+    offset / offset+4); the lifted body allocates two consecutive
+    i32 locals (ptr, len) and pushes only the ptr into the slot env,
+    matching the let-binding and parameter conventions.
+    """
+
+    def test_array_capture_length_in_closure(self) -> None:
+        """Reproducer from #535: captured `Array<Int>` length is correct.
+
+        Three iterations × captured length 7 = 21.  Pre-fix the inner
+        closure read the captured `@Array<Int>.0` length as 0, so
+        `array_fold(...)` summed three zeroes = 0.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_range(0, 7);
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      nat_to_int(array_length(@Array<Int>.0))
+    }
+  );
+  array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 })
+}
+"""
+        assert _run(src) == 21
+
+    def test_string_capture_length_in_closure(self) -> None:
+        """Captured `@String.0` length is correct (5 × 3 iterations = 15)."""
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @String = "hello";
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      nat_to_int(string_length(@String.0))
+    }
+  );
+  array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 })
+}
+"""
+        assert _run(src) == 15
+
+    def test_adt_capture_still_works(self) -> None:
+        """ADT capture (single i32 ptr) still works — proof the pair fix
+        is scoped and doesn't disturb the i32 path."""
+        src = """
+private data Box<T> { Box(T) }
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Box<Int> = Box(42);
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      match @Box<Int>.0 { Box(@Int) -> @Int.0 }
+    }
+  );
+  array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 })
+}
+"""
+        # 42 × 3 = 126
+        assert _run(src) == 126
+
+    def test_primitive_capture_still_works(self) -> None:
+        """Primitive (Int) capture still works — same scope-pin as ADT."""
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 7;
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      @Int.1
+    }
+  );
+  array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 })
+}
+"""
+        # 7 × 3 = 21
+        assert _run(src) == 21
+
+    def test_mixed_pair_and_primitive_capture(self) -> None:
+        """Closure captures both an Int (primitive) and an Array (pair).
+
+        Layout exercise: `_translate_anon_fn` must pack the i64 (Int)
+        capture at one offset and the i32_pair at another, in the
+        order they appear in the free-var walk.
+        `_compile_lifted_closure` must mirror that layout on read.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 100;
+  let @Array<Int> = array_range(0, 4);
+  let @Array<Int> = array_map(
+    array_range(0, 3),
+    fn(@Int -> @Int) effects(pure) {
+      @Int.1 + nat_to_int(array_length(@Array<Int>.0))
+    }
+  );
+  array_fold(@Array<Int>.0, 0, fn(@Int, @Int -> @Int) effects(pure) { @Int.0 + @Int.1 })
+}
+"""
+        # (100 + 4) × 3 = 312
+        assert _run(src) == 312

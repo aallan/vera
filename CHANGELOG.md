@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.130] - 2026-05-05
+
+### Fixed
+- **Pair-type closure captures (`String`, `Array<T>`) preserve their length field — closes [#535](https://github.com/aallan/vera/issues/535)** (residual of [#514](https://github.com/aallan/vera/issues/514); v0.0.121 fixed nested closures and primitive/ADT captures, this release closes the residual pair-type subset).
+  Pre-fix, `vera/wasm/closures.py::_walk_free_vars` resolved the wasm type of every capture via `_type_name_to_wasm`, which collapses any composite type to a single `"i32"`. `_translate_anon_fn` then allocated 4 bytes per capture and stored only the ptr half of pair-typed values; `_compile_lifted_closure` read back only the ptr and the body got the len from adjacent struct memory (typically zero). Operations on a captured `Array<T>` or `String` therefore silently saw an empty value — `array_length(@Array<Int>.0)` returned 0, `string_length(@String.0)` returned 0, and any indexed read into a captured pair worked off ptr=correct/len=0.
+  Post-fix, all three sites carry an `"i32_pair"` tag for these captures: `_walk_free_vars` detects `String` / `Array<T>` and overrides the wasm type (without changing `_type_name_to_wasm`, which other callers like `handle_state` and `handle_exn` still need to return the single-slot form); `_translate_anon_fn` allocates 8 bytes per pair field (two consecutive i32 stores at `cap_offset` / `cap_offset + 4`); `_compile_lifted_closure` allocates two consecutive i32 locals (ptr, len), loads both halves, and pushes only the ptr into the slot env — matching the let-binding and parameter conventions so the closure body resolves the pair correctly. GC shadow-push was extended to root the ptr field of pair captures (the len is a byte count, not a heap pointer). New `TestPairCapture535` (5 tests) covers `Array<Int>` capture (returns 21 not 0), `String` capture (returns 15 not 0), ADT capture regression (still works), primitive capture regression (still works), and a mixed-layout test that captures both an `Int` (i64) and an `Array<Int>` (i32_pair) to exercise the field-packing order.
+
 ## [0.0.129] - 2026-05-05
 
 ### Fixed
@@ -1860,7 +1867,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.129...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.130...HEAD
+[0.0.130]: https://github.com/aallan/vera/compare/v0.0.129...v0.0.130
 [0.0.129]: https://github.com/aallan/vera/compare/v0.0.128...v0.0.129
 [0.0.128]: https://github.com/aallan/vera/compare/v0.0.127...v0.0.128
 [0.0.127]: https://github.com/aallan/vera/compare/v0.0.126...v0.0.127
