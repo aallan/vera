@@ -26,6 +26,61 @@ from vera.wasm.helpers import (
 class CallsStringsMixin:
     """Methods for translating string built-in functions."""
 
+    def _clamp_i64_to_range_then_wrap(self, max_local_i64: int) -> list[str]:
+        """Emit WAT that clamps an i64 on the stack to ``[0, max]`` and
+        wraps to i32.
+
+        Consumes one i64 from the stack and pushes one i32.
+        ``max_local_i64`` must hold the upper bound (already widened
+        to i64 via ``i64.extend_i32_u``).
+
+        Used by `_translate_string_slice` (#475 finding 2) and
+        `_translate_char_code` (#475 finding 3) to clamp Int / Nat
+        indices in i64 space *before* narrowing to i32.  Pre-#475
+        the order was reversed (wrap first, clamp second), causing
+        large positive i64 indices to silently turn into negative
+        i32 values that then collapsed to 0 — masking real
+        out-of-range bugs.
+
+        Pattern (using a fresh i64 temp to refer to the value twice):
+
+            local.tee $tmp     ;; save value, leave on stack
+            i64.const 0
+            i64.lt_s           ;; val < 0?
+            if (result i64)
+              i64.const 0      ;; clamp to 0
+            else
+              local.get $tmp
+              local.get $max_local_i64
+              i64.gt_s         ;; val > max?
+              if (result i64)
+                local.get $max_local_i64   ;; clamp to max
+              else
+                local.get $tmp
+              end
+            end
+            i32.wrap_i64
+        """
+        tmp_i64 = self.alloc_local("i64")
+        return [
+            f"local.tee {tmp_i64}",
+            "i64.const 0",
+            "i64.lt_s",
+            "if (result i64)",
+            "  i64.const 0",
+            "else",
+            f"  local.get {tmp_i64}",
+            f"  local.get {max_local_i64}",
+            "  i64.gt_s",
+            "  if (result i64)",
+            f"    local.get {max_local_i64}",
+            "  else",
+            f"    local.get {tmp_i64}",
+            "  end",
+            "end",
+            "i32.wrap_i64",
+        ]
+
     def _translate_string_length(
         self, arg: ast.Expr, env: WasmSlotEnv,
     ) -> list[str] | None:
@@ -158,8 +213,14 @@ class CallsStringsMixin:
         """Translate string_slice(s, start, end) → String.
 
         Allocates a new buffer of size (end - start), copies the
-        substring, and returns (new_ptr, new_len).  start and end
-        are Int (i64) and are wrapped to i32.
+        substring, and returns (new_ptr, new_len).  start and end are
+        ``Int`` (i64); they are clamped to ``[0, len_s]`` *while still
+        in i64* and only then narrowed to i32 — clamping after
+        ``i32.wrap_i64`` (the pre-#475 shape) silently mishandled
+        large positive i64 indices that wrap to negative i32 values
+        and then collapse to 0.  Pre-#475 there was no clamping at
+        all on this path; the placeholder unused ``len_s`` was
+        explicitly marked "reserved for future bounds checking".
         """
         s_instrs = self.translate_expr(arg_s, env)
         start_instrs = self.translate_expr(arg_start, env)
@@ -171,15 +232,12 @@ class CallsStringsMixin:
 
         ptr_s = self.alloc_local("i32")
         len_s = self.alloc_local("i32")
+        len_s_i64 = self.alloc_local("i64")
         start = self.alloc_local("i32")
         end = self.alloc_local("i32")
         new_len = self.alloc_local("i32")
         dst = self.alloc_local("i32")
         idx = self.alloc_local("i32")
-
-        # Suppress unused-variable warning for len_s — reserved for
-        # future bounds checking
-        _ = len_s
 
         instructions: list[str] = []
 
@@ -188,15 +246,33 @@ class CallsStringsMixin:
         instructions.append(f"local.set {len_s}")
         instructions.append(f"local.set {ptr_s}")
 
-        # Evaluate start (i64 → i32)
+        # Widen len_s to i64 for in-i64 clamping.
+        instructions.append(f"local.get {len_s}")
+        instructions.append("i64.extend_i32_u")
+        instructions.append(f"local.set {len_s_i64}")
+
+        # Evaluate start (i64).  Clamp to [0, len_s_i64], then wrap.
+        # Pre-fix this path wrapped to i32 first, allowing huge
+        # positive i64 indices to silently turn into negative i32
+        # values and bypass any subsequent check (#475 finding 2).
         instructions.extend(start_instrs)
-        instructions.append("i32.wrap_i64")
+        instructions.extend(self._clamp_i64_to_range_then_wrap(len_s_i64))
         instructions.append(f"local.set {start}")
 
-        # Evaluate end (i64 → i32)
+        # Evaluate end (i64). Same clamp-then-wrap pattern.
         instructions.extend(end_instrs)
-        instructions.append("i32.wrap_i64")
+        instructions.extend(self._clamp_i64_to_range_then_wrap(len_s_i64))
         instructions.append(f"local.set {end}")
+
+        # Ensure end >= start (clamp end up to start so a swapped
+        # pair produces an empty slice, not a negative length).
+        instructions.append(f"local.get {end}")
+        instructions.append(f"local.get {start}")
+        instructions.append("i32.lt_s")
+        instructions.append("if")
+        instructions.append(f"  local.get {start}")
+        instructions.append(f"  local.set {end}")
+        instructions.append("end")
 
         # new_len = end - start
         instructions.append(f"local.get {end}")
@@ -251,6 +327,14 @@ class CallsStringsMixin:
         """Translate char_code(s, idx) → Nat (i64).
 
         Returns the byte value at the given index in the string.
+        Traps with ``unreachable`` when the index is out of range
+        (negative or >= ``string_length(s)``).  Pre-#475 there was
+        no bounds check at all — out-of-range indices read arbitrary
+        WASM linear memory at ``ptr_s + (wrapped index)``, which is
+        a real memory-safety hole.  The bounds check operates in i64
+        *before* narrowing to i32 so a large positive i64 index
+        cannot wrap to a small (in-range-looking) i32 and bypass
+        the check.
         """
         s_instrs = self.translate_expr(arg_s, env)
         idx_instrs = self.translate_expr(arg_idx, env)
@@ -259,8 +343,9 @@ class CallsStringsMixin:
 
         ptr_s = self.alloc_local("i32")
         len_s = self.alloc_local("i32")
+        len_s_i64 = self.alloc_local("i64")
+        idx_i64 = self.alloc_local("i64")
         idx = self.alloc_local("i32")
-        _ = len_s  # reserved for future bounds checking
 
         instructions: list[str] = []
 
@@ -269,8 +354,34 @@ class CallsStringsMixin:
         instructions.append(f"local.set {len_s}")
         instructions.append(f"local.set {ptr_s}")
 
-        # Evaluate index (i64 → i32)
+        # Widen len_s to i64 for in-i64 bounds checking.
+        instructions.append(f"local.get {len_s}")
+        instructions.append("i64.extend_i32_u")
+        instructions.append(f"local.set {len_s_i64}")
+
+        # Evaluate index (i64) and stash it for the bounds checks.
         instructions.extend(idx_instrs)
+        instructions.append(f"local.set {idx_i64}")
+
+        # Bounds check #475 finding 3: trap on idx < 0 || idx >= len_s_i64
+        # while still in i64 — narrowing first would let huge
+        # positive i64 values wrap to small (possibly in-range) i32
+        # values and silently bypass the check.
+        instructions.append(f"local.get {idx_i64}")
+        instructions.append("i64.const 0")
+        instructions.append("i64.lt_s")
+        instructions.append("if")
+        instructions.append("  unreachable")
+        instructions.append("end")
+        instructions.append(f"local.get {idx_i64}")
+        instructions.append(f"local.get {len_s_i64}")
+        instructions.append("i64.ge_s")
+        instructions.append("if")
+        instructions.append("  unreachable")
+        instructions.append("end")
+
+        # Now safe to narrow to i32.
+        instructions.append(f"local.get {idx_i64}")
         instructions.append("i32.wrap_i64")
         instructions.append(f"local.set {idx}")
 

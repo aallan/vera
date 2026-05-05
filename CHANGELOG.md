@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.128] - 2026-05-05
+
+### Fixed
+- **WASM call translator critical bugs — three safety fixes** ([#475](https://github.com/aallan/vera/issues/475), partial — Critical findings 1, 2, 3 of 10; Major findings 4-10 remain for the next release). Each was a pre-existing bug surfaced by CodeRabbit during PR #474's calls.py decomposition review and tracked since mid-April; this release ships PR 1 of 2 (Criticals) so the safety holes close immediately, with the seven Major correctness fixes following as PR 2.
+  - **Memory-safety hole in `string_char_code` closed** (`vera/wasm/calls_strings.py` `_translate_char_code`) — pre-fix, no bounds check before `i32.load8_u`; out-of-range indices read arbitrary WASM linear memory at `ptr_s + (wrapped index)`. The placeholder `_ = len_s  # reserved for future bounds checking` documented the gap. Post-fix: bounds check operates in i64 (`idx < 0 || idx >= len_s_i64`) and traps with `unreachable` *before* narrowing to i32 — so a huge positive i64 value cannot wrap to a small in-range-looking i32 and bypass the check. New `TestCharCodeBoundsCheck475` (5 tests) covers the in-range, negative, at-length, huge-positive, and last-valid-index cases.
+  - **`string_slice` clamp-before-narrow** (`vera/wasm/calls_strings.py` `_translate_string_slice`) — pre-fix had no clamping at all (the same `_ = len_s` placeholder pattern). Indices were narrowed via `i32.wrap_i64` first; large positive i64 values silently turned into negative i32 values, which then drove the byte-copy loop into out-of-range memory or produced garbled output. Post-fix: clamp in i64 space (via the new `_clamp_i64_to_range_then_wrap` helper that widens `len_s` to i64, clamps, then wraps) before narrowing. Negative starts clamp to 0, ends past length clamp to length, swapped indices produce empty slices, huge positive indices clamp to length cleanly. New `TestStringSliceClampBefore475` (5 tests).
+  - **Expression-bodied `Exn<E>` handler result type** (`vera/wasm/calls_handlers.py` `_translate_handle_exn`) — pre-fix, catch-arm result type was inferred only when `clause.body` was an `ast.Block`; expression-bodied handlers (e.g. `throw(@String) -> None`, `throw(@Int) -> @Int.0 + 1`) left `result_wt = None` and the emitted WAT omitted the `(result T)` annotation, producing invalid WAT that failed validation when the body type was anything other than Unit. Post-fix: use `_infer_expr_wasm_type` (which handles all Expr types including `ast.Block`) for both the catch clause and the body. New `TestExpressionBodiedExnHandler475` (3 tests) covers `Option`-returning, `Int`-returning, and trap-path catch arms.
+
+### Shared infrastructure
+- New `_clamp_i64_to_range_then_wrap(max_local_i64)` helper on `CallsStringsMixin` emits the canonical "clamp i64 to [0, max] then wrap to i32" sequence. Used by both `_translate_string_slice` and `_translate_char_code`; will be promoted to a shared location when PR 2 fixes finding 4 (`array_slice` same shape, in `calls_arrays.py`).
+
 ### Documentation
 - **`@Byte` arithmetic exclusion documented in spec** ([#551](https://github.com/aallan/vera/issues/551) closed as not-a-bug; [#564](https://github.com/aallan/vera/issues/564) filed speculatively) — `vera/types.py` excludes `Byte` from `NUMERIC_TYPES`, so `@Byte - @Byte` (and similar) produce E140 at type-check time. The original #551 framing assumed a runtime underflow hole; investigation showed the checker prevents the construct entirely. Spec §4.4 and §11.2.1 updated to drop the previous "Byte enforcement tracked as #551" caveat in favour of a clear note that Byte arithmetic isn't permitted; user code that needs byte-level arithmetic uses `byte_to_int` / `int_to_byte` round-trip. The forward-looking *feature* (allow Byte arithmetic with verified underflow + overflow guards) is preserved as #564 with full design analysis (pros, cons, trigger conditions, action checklist) under a new ROADMAP `## Speculative` section. New `TestByteArithmeticRejection551` regression test (5 cases) pins the checker behaviour so a future widening of `NUMERIC_TYPES` can't silently re-open the underflow hole without a corresponding extension of the verifier obligation + codegen guard from #520.
 
@@ -1837,7 +1848,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.127...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.128...HEAD
+[0.0.128]: https://github.com/aallan/vera/compare/v0.0.127...v0.0.128
 [0.0.127]: https://github.com/aallan/vera/compare/v0.0.126...v0.0.127
 [0.0.126]: https://github.com/aallan/vera/compare/v0.0.125...v0.0.126
 [0.0.125]: https://github.com/aallan/vera/compare/v0.0.124...v0.0.125

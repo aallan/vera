@@ -298,11 +298,15 @@ class CallsHandlersMixin:
 
         # Infer result type: try handler clause first (body may always
         # throw, making its inferred type None), then fall back to body.
+        # Use `_infer_expr_wasm_type` rather than `_infer_block_result_type`
+        # so expression-bodied handler clauses (e.g. `throw(@String) -> None`,
+        # `throw(@Int) -> @Int.0 + 1`, etc.) are inferred correctly — pre-fix
+        # only `ast.Block` clause bodies got their result type inferred,
+        # leaving `result_wt = None` for any expression-bodied handler and
+        # omitting the `(result ...)` annotation in emitted WAT.  #475 (1).
         result_wt = None
         if expr.clauses:
-            clause_body = expr.clauses[0].body
-            if isinstance(clause_body, ast.Block):
-                result_wt = self._infer_block_result_type(clause_body)
+            result_wt = self._infer_expr_wasm_type(expr.clauses[0].body)
         if result_wt is None:
             result_wt = self._infer_block_result_type(expr.body)
 
