@@ -15412,11 +15412,21 @@ class TestOpaqueHandleParamRooting347:
     ) -> None:
         """Shared helper for the per-handle-type assertion.
 
-        Compiles `src`, finds `$fn_name`, and verifies the canonical
-        param-0 shadow-push idiom (`global.get $gc_sp; local.get 0;
-        i32.store`) is NOT present.  `type_label` is used in the
-        failure message so each test surfaces which handle type
-        regressed.
+        Compiles `src`, finds `$fn_name`, and verifies:
+
+          1. The function's GC prologue WAS emitted (otherwise the
+             test is vacuous — a function with no allocator activity
+             trivially has no shadow-pushes regardless of whether
+             the exclusion fires).
+          2. The canonical param-0 shadow-push idiom is NOT present.
+
+        The push regex accepts both numeric (`local.get 0`) and
+        named (`local.get $p0`, `local.get $name`) forms — codegen
+        currently emits numeric, but future renames shouldn't make
+        this test silently pass.
+
+        `type_label` surfaces in failure messages so each call site
+        reports which handle type regressed.
         """
         result = _compile_ok(src)
         fn_marker = f"(func ${fn_name}"
@@ -15426,21 +15436,55 @@ class TestOpaqueHandleParamRooting347:
         else:
             fn_end = len(result.wat)
         fn_body = result.wat[fn_start:fn_end]
+
+        # Non-vacuity check: confirm the GC prologue WAS emitted for
+        # this function.  The prologue's signature is
+        # `global.get $gc_sp` followed by a `local.set` (saving the
+        # restore point).  Without this, the absence of param-0
+        # pushes below is meaningless — there's no shadow-stack
+        # activity in the function at all.
+        prologue_pattern = re.compile(
+            r"global\.get \$gc_sp\s+local\.set\b",
+        )
+        assert prologue_pattern.search(fn_body), (
+            f"${fn_name} has no GC prologue — the test is vacuous "
+            f"because no shadow-push activity was emitted.  Adjust "
+            f"the test source so the function body forces an "
+            f"allocation (e.g. via `option_unwrap_or` or an ADT "
+            f"constructor) before the assertion below can pin the "
+            f"opaque-handle exclusion."
+        )
+
+        # The push idiom we're guarding against — both numeric and
+        # named forms of `local.get`.  Numeric is what codegen emits
+        # today; named (`$p0`, `$name`) is matched defensively in
+        # case codegen is later updated to use param names.
         push_pattern = re.compile(
             r"global\.get \$gc_sp\s+"
-            r"local\.get 0\s+"
+            r"local\.get (?:0\b|\$\S+)\s+"
             r"i32\.store",
             re.MULTILINE,
         )
-        assert not push_pattern.search(fn_body), (
-            f"Found a shadow_push of param 0 (the {type_label} "
-            f"handle) in ${fn_name} — the opaque-handle exclusion "
-            f"(#347) isn't being applied.  Map / Set / Decimal "
-            f"handles are i32 indices into Python-side stores, not "
-            f"Vera-heap pointers; rooting them wastes shadow-stack "
-            f"space and could cause spurious heap-object retention "
-            f"via the conservative GC's heap-range check."
-        )
+        # Filter to pushes that target param 0 specifically.  Named
+        # form `$p0` is the canonical first-param name; numeric `0`
+        # also targets the first local.  Other locals (`local.get 1`,
+        # `local.get $l2`, etc.) aren't relevant to the param-0
+        # exclusion check.
+        for match in push_pattern.finditer(fn_body):
+            text = match.group(0)
+            if "local.get 0" in text or "local.get $p0" in text:
+                raise AssertionError(
+                    f"Found a shadow_push of param 0 (the "
+                    f"{type_label} handle) in ${fn_name} — the "
+                    f"opaque-handle exclusion (#347) isn't being "
+                    f"applied.  Map / Set / Decimal handles are "
+                    f"i32 indices into Python-side stores, not "
+                    f"Vera-heap pointers; rooting them wastes "
+                    f"shadow-stack space and could cause spurious "
+                    f"heap-object retention via the conservative "
+                    f"GC's heap-range check.\n\nMatched WAT "
+                    f"sequence: {text!r}"
+                )
 
     def test_map_param_not_shadow_pushed(self) -> None:
         """A `Map<Nat, Nat>` parameter must not appear in any

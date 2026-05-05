@@ -214,7 +214,7 @@ These are not milestone-gated — they should be addressed continuously alongsid
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
 | Add property-based testing with Hypothesis | [#386](https://github.com/aallan/vera/issues/386) | 2–4 hours | Catches parser/formatter edge cases via round-trip properties |
-| Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether 3,658 tests catch real bugs, not just execute paths |
+| Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether the test suite catches real bugs, not just execute paths |
 | Investigate parser fuzzing with Atheris | [#402](https://github.com/aallan/vera/issues/402) | 4–8 hours | Crash-inducing inputs for parser and type checker |
 | Improve browser runtime test coverage to >80% | [#349](https://github.com/aallan/vera/issues/349) | 2–4 hours | Parity with Python-side coverage gate |
 | Add `check_changelog_updated.py` pre-push hook + CI check | [#478](https://github.com/aallan/vera/issues/478) | 30–60 min | Fails PRs that touch `vera/`/`spec/`/`SKILL.md` without a CHANGELOG entry; prevents the #474 miss from recurring |
@@ -236,12 +236,6 @@ These are not milestone-gated — they should be addressed continuously alongsid
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
 | Audit `smt.py` for soundness | [#392](https://github.com/aallan/vera/issues/392) | 4–8 hours | A bug here silently bypasses verification |
-
-### Compiler internals
-
-| Item | Issue | Effort | Impact |
-|------|-------|--------|--------|
-| Tighten GC-rooting heuristic in iterative combinators | [#490](https://github.com/aallan/vera/issues/490) | 1–2 hours | Replaces `u_wasm == "i32" and not Bool/Byte` with a positive `is_gc_managed(type)` predicate. Currently over-roots host-managed handles (Map/Set/Decimal/Regex) — safe but wasteful; spotted during #489 review. Unblocks cleaner rooting decisions for any future combinator or host-handle addition. |
 
 ### Testing gaps
 
