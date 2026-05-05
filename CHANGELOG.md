@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.131] - 2026-05-05
+
+### Fixed
+- **GC infrastructure batch — `$alloc` multi-page grow + worklist size + overflow trap (closes [#487](https://github.com/aallan/vera/issues/487) and [#348](https://github.com/aallan/vera/issues/348))**.
+  - **`$alloc` computes pages-needed for `memory.grow`** (`vera/codegen/assembly.py` `_emit_alloc`, fixes #487). Pre-fix, when `heap_ptr + total > memory.size * 65536`, `$alloc` unconditionally called `memory.grow 1` regardless of how many pages were actually needed; a single allocation request more than ~64 KB past the current memory boundary fell through to the bump-allocate and trapped on out-of-bounds memory access. Post-fix: compute `pages_needed = ceil(((heap_ptr + total) - memory.size * 65536) / 65536)` and grow by that many pages in a single call. Verified against the issue's reproducer (two 50K-element `Array<Int>`s, ~800 KB total) which now allocates cleanly. New `TestLargeAllocGrow487` (2 tests) covers the 50K case and a small-allocation regression pin.
+  - **GC mark-phase worklist quadrupled to 64 KiB + trap on overflow** (`vera/codegen/assembly.py` `_emit_gc_collect` + `gc_worklist_size` constant, fixes #348). Pre-fix the worklist was 16 KiB / 4096 entries; both push branches (Phase 2 seed and Phase 2b mark scan) silently dropped pushes when full, leaving reachable objects unmarked which the sweep phase then freed — a real use-after-free hole for object graphs holding more than ~4 K reachable pointers. Post-fix: worklist increased to 64 KiB / 16 384 entries (covers reasonable program shapes), and both push branches now `unreachable` on overflow rather than silently dropping. The combined effect: most programs that previously fit have ~4× headroom, and any residual overflow is a clean WASM trap rather than silent corruption. New `TestWorklistOverflow348` (3 tests) covers a moderate-graph runtime case plus structural pins on the new GC region size and trap shape. Two existing tests (`test_heap_ptr_starts_after_strings`, `test_heap_ptr_zero_without_strings`) updated for the new heap base offset (32 768 → 81 920 bytes from the worklist resize).
+- **Surfaced separately**: `array_map` (and likely sibling iterative builders) overflow the GC shadow stack at ~4 000 heap-allocating elements ([#570](https://github.com/aallan/vera/issues/570)). Found while writing the natural runtime regression test for #348 (a 5 000-element `Array<Box>`); the failure was on the shadow-stack-overflow `unreachable` inside the lifted closure, not the worklist trap. Pre-existing, separate subsystem — tracked for follow-up; the #348 runtime regression is covered by a 1 000-element graph (within the shadow-stack budget) plus structural WAT pins.
+
 ## [0.0.130] - 2026-05-05
 
 ### Fixed
@@ -1867,7 +1875,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.130...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.131...HEAD
+[0.0.131]: https://github.com/aallan/vera/compare/v0.0.130...v0.0.131
 [0.0.130]: https://github.com/aallan/vera/compare/v0.0.129...v0.0.130
 [0.0.129]: https://github.com/aallan/vera/compare/v0.0.128...v0.0.129
 [0.0.128]: https://github.com/aallan/vera/compare/v0.0.127...v0.0.128
