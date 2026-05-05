@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.133] - 2026-05-05
+
+### Fixed
+- **Iterative array builders no longer leak the closure return-value root — closes [#570](https://github.com/aallan/vera/issues/570)**.  The lifted-closure epilogue (`vera/codegen/closures.py`) restores its entry `$gc_sp` and then, when the return type is a heap pointer (Vera ADT, `String`, `Array<T>`), pushes the return as a fresh root so generic stash-then-GC callers stay sound.  The iterative array builders consume the return synchronously (store into a rooted `dst[idx]`, or in-place overwrite a rooted accumulator slot), so the per-call root is redundant — and accumulating one leaked slot per iteration overflowed the 16 KiB / 4 096-entry shadow stack.  Pre-fix symptom: a 5 000-element `array_map<_, ADT>` trapped at `unreachable` inside `gc_shadow_push` around iteration 4 000.  Fix is per-callsite (`vera/wasm/calls_arrays.py`):
+  - **`array_map`** and **`array_mapi`**: emit a 4-byte `$gc_sp` decrement after storing the return into `dst[idx]`.
+  - **`array_fold`**: emit the same 4-byte unwind *before* the `gc_sp - 8` overwrite math that updates the rooted-accumulator slot.  Without this, the second iteration's overwrite addressed the previous-call's leaked slot instead of the accumulator's pre-call slot — a second symptom of the same bug class that this fix incidentally closes.
+  - **`array_sort_by`**: same 4-byte unwind after the comparator's `Ordering` tag is read via `i32.load offset=0`.  Insertion sort issues up to `n*(n-1)/2` comparisons, so the leak surfaces at ~200 reverse-sorted elements (well past the shadow-stack budget).
+  Builders that take a Bool-returning predicate (`array_filter`, `array_find`, `array_any`, `array_all`) and builders without a callback (`array_flatten`, `array_reverse`, `array_range`) are unaffected — `Bool` is excluded from the closure's `ret_is_pointer` flag, so no post-restore root push happens.  New `TestIterativeBuilderShadowStack` (4 tests in `tests/test_codegen_closures.py`) covers each fixed builder at the size that previously overflowed.
+
 ## [0.0.132] - 2026-05-05
 
 ### Fixed
@@ -1885,7 +1894,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.132...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.133...HEAD
+[0.0.133]: https://github.com/aallan/vera/compare/v0.0.132...v0.0.133
 [0.0.132]: https://github.com/aallan/vera/compare/v0.0.131...v0.0.132
 [0.0.131]: https://github.com/aallan/vera/compare/v0.0.130...v0.0.131
 [0.0.130]: https://github.com/aallan/vera/compare/v0.0.129...v0.0.130

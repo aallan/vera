@@ -267,6 +267,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.130 | 5 May | **Pair-type closure captures preserve their len field — closes [#535](https://github.com/aallan/vera/issues/535)** (residual of #514). |
 | v0.0.131 | 5 May | **GC infrastructure batch — `$alloc` multi-page grow + worklist size + overflow trap, closes [#487](https://github.com/aallan/vera/issues/487) and [#348](https://github.com/aallan/vera/issues/348)** (heap base shifts 32 768 → 81 920 bytes from the worklist resize; surfaced [#570](https://github.com/aallan/vera/issues/570) `array_map` shadow-stack overflow for follow-up). |
 | v0.0.132 | 5 May | **Opaque-handle GC-rooting hygiene — closes [#347](https://github.com/aallan/vera/issues/347) and [#490](https://github.com/aallan/vera/issues/490)** (`#346` closed as superseded by [#573](https://github.com/aallan/vera/issues/573); active reclamation needs a heap-wrap-as-ADT design tracked there). |
+| v0.0.133 | 5 May | **Iterative array builders no longer leak the closure return-value root — closes [#570](https://github.com/aallan/vera/issues/570)** (`array_map` / `array_mapi` / `array_fold` / `array_sort_by`; per-callsite `$gc_sp` unwind after each `call_indirect` whose closure returns a heap pointer). |
 
 ---
 

@@ -757,3 +757,155 @@ public fn second(@Unit -> @Int)
         # WASM validation failure when the module is instantiated.
         assert _run(src, "first") == 2
         assert _run(src, "second") == 3
+
+
+# =====================================================================
+# #570: iterative-builder shadow-stack leak regressions
+# =====================================================================
+# The lifted closure's epilogue restores its entry ``$gc_sp`` and then,
+# when the return type is a heap pointer (Vera ADT, String, Array), pushes
+# the return value as a fresh root so generic callers stay sound across a
+# stash-then-GC pattern.  The iterative array builders consume the return
+# synchronously (store into rooted dst[idx], or in-place overwrite a rooted
+# slot), so the per-call root is redundant — and at scale, accumulating
+# leaked slots overflows the 16 KiB / 4 096-entry shadow stack.
+#
+# The fix is a per-callsite unwind in each builder.  These tests assert
+# the unwind: each runs the builder at a size large enough that one
+# leaked slot per call WOULD overflow, and checks the result.
+# =====================================================================
+
+
+class TestIterativeBuilderShadowStack:
+    """Shadow-stack regressions for #570 across array builders that take
+    a heap-pointer-returning closure: ``array_map``, ``array_mapi``,
+    ``array_fold``, and ``array_sort_by``.  Counterpart predicates
+    (``array_filter`` / ``_find`` / ``_any`` / ``_all``) return Bool —
+    excluded from the closure epilogue's post-restore root push, so they
+    don't leak and don't need their own regression here.
+    """
+
+    def test_array_map_5000_adt_no_overflow(self) -> None:
+        """``array_map`` over 5 000 elements with an ADT-returning closure.
+
+        Pre-fix: trapped at the shadow-stack overflow check inside
+        ``gc_shadow_push`` (~iteration 4 000).  Post-fix: completes and
+        returns the expected sum.  Sum 0..4999 = 12 497 500.
+        """
+        src = """\
+private data Box { MkBox(Int) }
+
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Box> = array_map(
+    array_range(0, 5000),
+    fn(@Int -> @Box) effects(pure) { MkBox(@Int.0) }
+  );
+  array_fold(
+    @Array<Box>.0,
+    0,
+    fn(@Int, @Box -> @Int) effects(pure) {
+      @Int.0 + match @Box.0 { MkBox(@Int) -> @Int.0 }
+    }
+  )
+}
+"""
+        assert _run(src, "test") == 12497500
+
+    def test_array_mapi_5000_adt_no_overflow(self) -> None:
+        """``array_mapi`` over 5 000 elements with an ADT-returning closure.
+
+        Same shape as ``array_map`` but the closure additionally takes a
+        Nat index.  The index doesn't change the closure's return-root
+        push (still triggered by ``ret_is_pointer``), so the same per-
+        callsite unwind is required.
+
+        Boxed values are ``2 * i`` (elem index plus elem-as-int), so the
+        sum is ``sum(2*i for i in 0..4999) = 24 995 000``.
+        """
+        src = """\
+private data Box { MkBox(Int) }
+
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Box> = array_mapi(
+    array_range(0, 5000),
+    fn(@Int, @Nat -> @Box) effects(pure) {
+      MkBox(@Int.0 + nat_to_int(@Nat.0))
+    }
+  );
+  array_fold(
+    @Array<Box>.0,
+    0,
+    fn(@Int, @Box -> @Int) effects(pure) {
+      @Int.0 + match @Box.0 { MkBox(@Int) -> @Int.0 }
+    }
+  )
+}
+"""
+        assert _run(src, "test") == 24995000
+
+    def test_array_fold_5000_adt_accumulator_no_overflow(self) -> None:
+        """``array_fold`` with a heap-pointer accumulator across 5 000
+        elements.
+
+        ``array_fold`` is a special case of the same bug class with an
+        additional symptom: the existing ``gc_sp - 8`` overwrite math
+        assumed the closure pushed exactly zero post-call slots.  With
+        the closure leaking one slot per iteration, that offset drifts
+        and addresses the leaked-slot-from-the-previous-call instead of
+        the accumulator's pre-call slot.  The fix pops the leak before
+        computing the offset.
+
+        Sum 0..4999 = 12 497 500.
+        """
+        src = """\
+private data Box { MkBox(Int) }
+
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Box = array_fold(
+    array_range(0, 5000),
+    MkBox(0),
+    fn(@Box, @Int -> @Box) effects(pure) {
+      MkBox(match @Box.0 { MkBox(@Int) -> @Int.0 } + @Int.0)
+    }
+  );
+  match @Box.0 { MkBox(@Int) -> @Int.0 }
+}
+"""
+        assert _run(src, "test") == 12497500
+
+    def test_array_sort_by_200_reverse_no_overflow(self) -> None:
+        """``array_sort_by`` with a 200-element reverse-sorted input.
+
+        The comparator returns ``Ordering`` (a heap-allocated ADT), so
+        the closure epilogue post-pushes a root for each comparator
+        call.  Insertion sort issues up to ``n*(n-1)/2`` comparisons —
+        ~19 900 for n=200, well past the 4 096-entry shadow-stack
+        capacity.  Pre-fix: trapped at ``gc_shadow_push`` overflow.
+        Post-fix: returns the array length (200) after sorting.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = array_map(
+    array_range(0, 200),
+    fn(@Int -> @Int) effects(pure) { 200 - @Int.0 }
+  );
+  let @Array<Int> = array_sort_by(
+    @Array<Int>.0,
+    fn(@Int, @Int -> @Ordering) effects(pure) {
+      if @Int.1 < @Int.0 then { Less } else {
+        if @Int.1 > @Int.0 then { Greater } else { Equal }
+      }
+    }
+  );
+  nat_to_int(array_length(@Array<Int>.0))
+}
+"""
+        assert _run(src, "test") == 200
