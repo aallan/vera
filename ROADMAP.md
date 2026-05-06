@@ -14,31 +14,27 @@ Significant progress has been made towards Vera being a viable agent target. [Ve
 
 ---
 
-## What's next — short-term priorities
+## What's next — agent-integration push
 
-This section captures the concrete **implementation order** for the next few weeks of work. The phase numbering in the milestones below (Phase 4a/4b/4c etc.) reflects **strategic grouping** — what kind of feature it is and which broader goal it serves — and is stable across releases. Implementation order shifts as empirical evidence arrives, so it lives here rather than as a reordering of the milestones.
+The bug-killing campaign that ran from v0.0.120 through v0.0.134 closed twelve runtime/codegen bugs that surfaced agent friction at the "compiled artefact misbehaves" layer.  See [HISTORY.md](HISTORY.md) Stage 11 for the per-release narrative; [CHANGELOG.md](CHANGELOG.md) for the long form of each fix.
+
+With the runtime-correctness floor raised, the next phase of friction reduction is **integration with the tools agents already use**: editor LSPs, project-scoped context export, and Inference-effect ergonomics.  These are independent of compiler internals; each one adds capability that VeraBench-style harnesses can directly observe.
 
 ### The ordering principle
 
-The current near-term queue is a **bug-killing campaign**. After the Stage 11 stdlib push closed most of the ergonomic gaps (missing primitives, typed accessors, ASCII character utilities — see [HISTORY.md](HISTORY.md) for the release history), the dominant source of agent friction shifted from "the language can't do this" to "the language compiles and verifies my program but the compiled artefact misbehaves at runtime."
-
-A second Game of Life agent run against v0.0.119, plus targeted testing, surfaced enough fresh codegen/runtime bugs that combined with the pre-existing translator and GC issues the campaign opened with twelve bug issues. As of v0.0.134, the campaign is closed — the final batch (#573, #575, #576) shipped together as the heap-wrap-as-ADT migration for Map / Set / Decimal.  The only remaining priority entry is stdlib depth ([#507](https://github.com/aallan/vera/issues/507)).  See [HISTORY.md](HISTORY.md) and [CHANGELOG.md](CHANGELOG.md) for what each release closed.
-
-The agent's self-observation on why this matters:
-
-> *The gap between "the type system is happy" and "the compiled artefact actually runs" is wider than you'd expect from a language with SMT-verified contracts. The verifier can prove your termination argument is sound while the codegen silently miscompiles your closure environment out from under you.*
-
-Closing that gap is the highest-leverage agent-adoption work available. Priority order below is by "impact on an agent trying to write a non-trivial program today," not by implementation difficulty.
+The phase numbering in the milestones below (Phase 1a/1b/etc) reflects **strategic grouping** — which audience the work serves — and is stable across releases.  This near-term section is a rolling view of the next few weeks of implementation; entries are pulled forward from the milestones when they become tractable, and removed once they ship.
 
 ### Implementation order
 
 | Order | Issue | Why now |
 |:---:|---|---|
-| 1 | [#507](https://github.com/aallan/vera/issues/507) — Eq/Ord-dispatched array ops (`array_sort`, `array_contains`, `array_index_of`) | Phase 2 of [#466](https://github.com/aallan/vera/issues/466). Needs the dispatch infrastructure to invoke `compare$T`/`eq$T` from inside an iterative WASM loop. Lower urgency because explicit-callback alternatives (`array_sort_by`, `array_any` + equality predicate) already work. |
+| 1 | [#222](https://github.com/aallan/vera/issues/222) — LSP server | Standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf).  The `--json` infrastructure provides most of what's needed.  Real-time feedback as agents write — diagnostics, hover, completion — turns Vera from "compile-and-pray" into the tight loop agents are calibrated for.  Single highest-leverage adoption enabler. |
+| 2 | [#523](https://github.com/aallan/vera/issues/523) — `vera context` token-budgeted project export | New CLI command that walks a project's dependency graph and emits a compact LLM-consumable summary of public signatures, contracts, effects, and ADTs.  Mandatory contracts carry the semantic payload that named-variable languages convey via identifiers and docstrings, so the output is denser per byte than equivalent Python/TS exports.  Estimated 1–2 days; module system and function registry already exist internally. |
+| 3 | [#370](https://github.com/aallan/vera/issues/370) — Configurable `Inference.complete` `max_tokens` / `temperature` | Currently hardcoded.  Agent workloads need control over both — for cost gates, deterministic replays, and routing strategies.  Smallest of the Inference-hardening items but also the one that blocks the most concrete user requests. |
 
 ### What moves when
 
-Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md) as usual. When the table shrinks to ~3 items the section should be re-evaluated and repopulated from the next batch of priorities — it's intended to be a rolling view of the next few weeks, not a permanent roadmap layer.
+Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md).  When the table shrinks to ~1 item the section gets repopulated from Phase 2a (Inference hardening), Phase 3a (further agent integration), or wherever the next batch of evidence points.
 
 ---
 
@@ -244,7 +240,7 @@ These are not milestone-gated — they should be addressed continuously alongsid
 
 ## Speculative
 
-Items here are **deferred decisions**, not scheduled work. Each captures the design analysis for a feature whose user driver has not yet emerged — so the rationale doesn't have to be re-derived if/when one does. Distinct from the bug-killing campaign (currently-broken behaviour), the milestone phases (planned future work), and Continuous hardening (incremental quality work). When a real driver shows up, the relevant entry promotes into a milestone phase or the campaign queue.
+Items here are **deferred decisions**, not scheduled work. Each captures the design analysis for a feature whose user driver has not yet emerged — so the rationale doesn't have to be re-derived if/when one does. Distinct from the milestone phases (planned future work) and Continuous hardening (incremental quality work). When a real driver shows up, the relevant entry promotes into a milestone phase or the near-term-priorities queue.
 
 | Item | Issue | Trigger condition |
 |------|-------|-------------------|
