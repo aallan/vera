@@ -123,13 +123,28 @@ class AssemblyMixin:
             # #573 phase 3: Decimal migrated to heap-wrap-as-ADT.
             self._needs_wrap_table = True
 
-        # #573: emit ``host_decref_handle`` import after all three
-        # wrap-table types have had their gating blocks run.
-        # Phase 2c of ``$gc_collect`` calls this for each unmarked
-        # wrapper.  Must come after the per-type imports above so
-        # the WAT (import "vera" ...) declarations stay grouped by
-        # subsystem in the output, but before the GC infrastructure
-        # is emitted (which references the import).
+        # #573: JSON and HTML host parsers allocate Map wrappers
+        # internally (for JObject's ``Map<String, Json>`` field
+        # and HtmlElement's ``Map<String, String>`` attrs) via
+        # ``_alloc_map_wrapper`` in ``vera/codegen/api.py``.
+        # Those allocations register with the wrap table and rely
+        # on Phase 2c + ``host_decref_handle`` for reclamation —
+        # without flipping the flag here, JSON/HTML-only programs
+        # (no user-level ``map_*`` ops) leak the underlying
+        # ``_map_store`` entries indefinitely because
+        # ``register_wrapper`` is unexported and Phase 2c isn't
+        # emitted.  Same flag flip; the gating cost is one extra
+        # 64 KiB region in linear memory.
+        if self._json_ops_used or self._html_ops_used:
+            self._needs_wrap_table = True
+
+        # #573: emit ``host_decref_handle`` import after the
+        # gating blocks above have all run.  Phase 2c of
+        # ``$gc_collect`` calls this for each unmarked wrapper.
+        # Must come after the per-type imports so the WAT
+        # ``(import "vera" ...)`` declarations stay grouped by
+        # subsystem, but before the GC infrastructure is emitted
+        # (which references the import).
         if self._needs_wrap_table:
             parts.append(
                 '  (import "vera" "host_decref_handle" '

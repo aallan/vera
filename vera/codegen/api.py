@@ -1711,16 +1711,19 @@ def execute(
     # unmarked, evicting the corresponding entry from the appropriate
     # Python-side store.  Dispatch on ``kind``:
     #   1 = Map, 2 = Set, 3 = Decimal (4..N reserved).
-    # The import is gated on ``map_ops_used or set_ops_used or
-    # decimal_ops_used`` because any of them flips
-    # ``_needs_wrap_table`` on the WAT side, which makes the import
-    # mandatory.  The dispatcher only references stores that exist
-    # — Python's late-binding of closure variables means we can
-    # safely guard each branch with the same condition that gates
-    # the corresponding store's creation.
+    # The import is gated on the same predicate that flips
+    # ``_needs_wrap_table`` on the WAT side: any of the three
+    # user-handle types OR any host-side use of
+    # ``_alloc_map_wrapper`` (i.e. JSON / HTML parsers, which
+    # build internal Map wrappers for JObject and HtmlElement
+    # fields).  Without the JSON / HTML branch the destructor
+    # import would be missing for json-only / html-only
+    # programs and the WASM module would fail to instantiate
+    # (Phase 2c references ``$vera.host_decref_handle``).
     _decref_used = (
         result.map_ops_used or result.set_ops_used
         or result.decimal_ops_used
+        or result.json_ops_used or result.html_ops_used
     )
     if _decref_used:
         def host_decref_handle(

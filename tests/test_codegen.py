@@ -15532,18 +15532,30 @@ public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
             f"Could not find $lookup_or_zero in WAT: {wat[:500]}"
         )
         fn_body = fn_match.group(0)
+        # The full ``gc_shadow_push`` idiom is push + advance:
+        #   global.get $gc_sp; local.get N; i32.store      (push)
+        #   global.get $gc_sp; i32.const 4; i32.add;
+        #   global.set $gc_sp                              (advance)
+        # Match BOTH halves in order — without the advance, every
+        # subsequent push overwrites the same shadow-stack slot,
+        # so the test must fail if the advance is missing.
         push_pattern = re.compile(
             r"global\.get \$gc_sp\s+"
             r"local\.get (?:0\b|\$p?0\b)\s+"
-            r"i32\.store",
+            r"i32\.store\s+"
+            r"global\.get \$gc_sp\s+"
+            r"i32\.const 4\s+"
+            r"i32\.add\s+"
+            r"global\.set \$gc_sp",
             re.MULTILINE,
         )
         assert push_pattern.search(fn_body) is not None, (
             "#573 regression: Map<Nat, Nat> param 0 was NOT "
-            "shadow-pushed in $lookup_or_zero.  Post-#573, Map "
-            "values are GC-managed wrapper-ADT pointers and MUST "
-            "be rooted across allocating calls; without the push "
-            "the wrapper can be freed mid-call.\n\n"
+            "shadow-pushed (with sp advance) in $lookup_or_zero. "
+            "Post-#573, Map values are GC-managed wrapper-ADT "
+            "pointers and MUST be rooted across allocating calls; "
+            "without the full push+advance idiom the wrapper can "
+            "be freed mid-call OR the next push overwrites it.\n\n"
             f"Function body excerpt:\n{fn_body[:800]}"
         )
 
@@ -15591,17 +15603,23 @@ public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
         )
         assert fn_match is not None
         fn_body = fn_match.group(0)
+        # Full push+advance idiom — see Map test for rationale.
         push_pattern = re.compile(
             r"global\.get \$gc_sp\s+"
             r"local\.get (?:0\b|\$p?0\b)\s+"
-            r"i32\.store",
+            r"i32\.store\s+"
+            r"global\.get \$gc_sp\s+"
+            r"i32\.const 4\s+"
+            r"i32\.add\s+"
+            r"global\.set \$gc_sp",
             re.MULTILINE,
         )
         assert push_pattern.search(fn_body) is not None, (
             "#573 phase 2 regression: Set<Nat> param 0 was NOT "
-            "shadow-pushed in $contains_or_false.  Post-#573 phase "
-            "2, Set values are GC-managed wrapper-ADT pointers "
-            "and MUST be rooted across allocating calls.\n\n"
+            "shadow-pushed (with sp advance) in $contains_or_false. "
+            "Post-#573 phase 2, Set values are GC-managed "
+            "wrapper-ADT pointers and MUST be rooted with the full "
+            "push+advance idiom across allocating calls.\n\n"
             f"Function body excerpt:\n{fn_body[:800]}"
         )
 
@@ -15642,17 +15660,24 @@ public fn is_positive_or_false(@Decimal -> @Bool)
         )
         assert fn_match is not None
         fn_body = fn_match.group(0)
+        # Full push+advance idiom — see Map test for rationale.
         push_pattern = re.compile(
             r"global\.get \$gc_sp\s+"
             r"local\.get (?:0\b|\$p?0\b)\s+"
-            r"i32\.store",
+            r"i32\.store\s+"
+            r"global\.get \$gc_sp\s+"
+            r"i32\.const 4\s+"
+            r"i32\.add\s+"
+            r"global\.set \$gc_sp",
             re.MULTILINE,
         )
         assert push_pattern.search(fn_body) is not None, (
             "#573 phase 3 regression: Decimal param 0 was NOT "
-            "shadow-pushed in $is_positive_or_false.  Post-#573 "
-            "phase 3, Decimal values are GC-managed wrapper-ADT "
-            "pointers and MUST be rooted across allocating calls.\n\n"
+            "shadow-pushed (with sp advance) in "
+            "$is_positive_or_false.  Post-#573 phase 3, Decimal "
+            "values are GC-managed wrapper-ADT pointers and MUST "
+            "be rooted with the full push+advance idiom across "
+            "allocating calls.\n\n"
             f"Function body excerpt:\n{fn_body[:800]}"
         )
 
@@ -15943,15 +15968,24 @@ public fn main(@Unit -> @Int)
         # ~10 000.  Use a generous bound (<= 100) so slight churn
         # in GC scheduling doesn't make the test flaky.
         store_size = exec_result.host_store_sizes.get("map", 0)
-        assert store_size <= 100, (
+        # Empirically observed: 1 entry (the live final Map) after
+        # 10 000 transient inserts.  The bound of 10 admits any
+        # single-digit residual from in-flight wrappers between
+        # the last allocation and the function-epilogue's
+        # gc_sp restore.  Pre-fix this was 10 001, so any bound
+        # below ~100 demonstrates reclamation is working; the
+        # tighter bound here enforces "only the live final Map"
+        # behaviour rather than just "GC fires occasionally".
+        assert store_size <= 10, (
             f"#573 regression: _map_store has {store_size} entries "
             f"after a 10 000-iter map_insert chain.  Pre-fix this "
             f"was monotonic in iterations (~10 001); post-fix the "
             f"GC reclaims transients via the Phase 2c destructor "
-            f"hook and the size should be a small constant. "
-            f"A size > 100 indicates either: (a) the wrap table "
+            f"hook and only the live final Map should remain. "
+            f"A size > 10 indicates either: (a) the wrap table "
             f"isn't being populated, (b) Phase 2c isn't running, "
-            f"or (c) `host_decref_handle` isn't evicting entries."
+            f"(c) `host_decref_handle` isn't evicting entries, or "
+            f"(d) the GC fires too rarely on this path."
         )
 
     def test_json_object_map_reclaimed(self) -> None:
@@ -16182,6 +16216,63 @@ public fn main(@Unit -> @Bool)
             f"host_decref_handle.  A size > 1 500 indicates "
             f"reclamation isn't keeping pace with allocation."
         )
+
+    def test_json_only_module_includes_wrap_table(self) -> None:
+        """A module that uses ONLY ``json_parse`` (no user-level
+        ``map_*`` ops) must still emit the wrap-table
+        infrastructure.
+
+        ``write_json``'s JObject branch allocates Map wrappers
+        host-side via ``_alloc_map_wrapper``, which calls
+        ``$register_wrapper``.  Pre-fix the wrap-table flag only
+        flipped on direct Map / Set / Decimal use, so JSON-only
+        programs would either: (a) compile cleanly but leak
+        ``_map_store`` entries for every parsed JObject (no
+        Phase 2c, no destructor import), or (b) trap at
+        instantiation if ``host_json_parse`` tried to call the
+        non-existent ``register_wrapper`` export.
+
+        Post-fix the flag flips on ``_json_ops_used`` /
+        ``_html_ops_used`` too.  This structural test asserts
+        the WAT contains the wrap-table imports, exports, and
+        sweep machinery.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("{\\"a\\": 1}");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        wat = _compile_ok(src).wat
+        assert (
+            'import "vera" "host_decref_handle"' in wat
+        ), (
+            "#573 finding 5 regression: JSON-only program is "
+            "missing the host_decref_handle import.  Without it, "
+            "Phase 2c can't reclaim Map wrappers allocated by "
+            "write_json's JObject path."
+        )
+        assert "$register_wrapper" in wat, (
+            "#573 finding 5 regression: JSON-only program is "
+            "missing the $register_wrapper helper.  Without it, "
+            "_alloc_map_wrapper's call from host_json_parse "
+            "either no-ops (silent leak) or traps at "
+            "instantiation."
+        )
+        assert '(export "register_wrapper"' in wat, (
+            "#573 finding 5 regression: JSON-only program is "
+            "missing the register_wrapper export.  Host-side "
+            "_alloc_map_wrapper accesses this export via "
+            "caller[\"register_wrapper\"]; without it the cast "
+            "returns None and registration is silently skipped."
+        )
+        # Functional check too: the program runs and returns 1.
+        assert _run(src) == 1
 
     def test_decimal_value_correct_after_gc_pressure(self) -> None:
         """Functional integrity for Decimal under GC pressure.
