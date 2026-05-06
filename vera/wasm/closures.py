@@ -141,18 +141,26 @@ class ClosuresMixin:
             instructions.extend(arg_instrs)
             # Infer WASM type for call_indirect type signature.
             # Pair types (String, Array) push two i32 values onto the stack.
-            # Unit args push nothing — `_infer_expr_wasm_type` returns None
-            # for them — so they must NOT contribute a phantom param to
-            # the call_indirect sig.  The closure-lift side already
-            # skips Unit params (vera/codegen/closures.py:85), and a
-            # mismatch here makes WASM validation reject the call with
-            # "type mismatch: expected i64, found i32" because the
-            # closure's func_table_idx ends up where the phantom value
-            # arg was expected.
             wt = self._infer_expr_wasm_type(arg)
             if wt == "i32_pair":
                 arg_wasm_types.extend(["i32", "i32"])
-            elif wt is not None:
+            elif wt is None:
+                # Unit arg: `_infer_expr_wasm_type` returns None and
+                # `translate_expr` pushed nothing onto the stack
+                # above, so this entry must NOT contribute a phantom
+                # param to the call_indirect sig.  The closure-lift
+                # side at `vera/codegen/closures.py:85` likewise skips
+                # Unit params, so the two sides agree on omitting
+                # them (#586).  Per the type-checker invariant, the
+                # only well-typed expression for which
+                # `_infer_expr_wasm_type` returns None is a Unit-typed
+                # one — anything else would have failed type-check
+                # before reaching codegen, so an explicit branch here
+                # documents the intent without needing a runtime
+                # assert (which would have to re-run type inference
+                # to verify Unit-typedness, defeating the purpose).
+                pass
+            else:
                 arg_wasm_types.append(wt)
 
         # Load func_table_idx from closure struct
