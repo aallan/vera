@@ -5018,7 +5018,15 @@ public fn add_to(@Int, @String -> @Int)
         assert exec_result.value == 11
 
     def test_string_return_execution(self) -> None:
-        """Executing a String-returning function returns a pointer."""
+        """Executing a String-returning function decodes the (ptr, len) pair
+        back into the original Python str (not a bare heap pointer).
+
+        Pre-fix this test asserted ``isinstance(value, int)`` because the
+        CLI displayed only the first half of the i32_pair return.  After
+        the alias-codegen burndown PR (v0.0.135), execute() decodes the
+        UTF-8 bytes from linear memory so `vera run` on a String-returning
+        `main` shows the actual string instead of a confusing pointer.
+        """
         src = '''
 public fn hello(-> @String)
   requires(true) ensures(true) effects(pure)
@@ -5026,7 +5034,38 @@ public fn hello(-> @String)
 '''
         result = _compile_ok(src)
         exec_result = execute(result, fn_name="hello")
-        # Returns the data pointer (an integer)
+        assert exec_result.value == "hello"
+
+    def test_string_alias_return_execution(self) -> None:
+        """Aliased String returns decode the same way as direct String —
+        `type Greeting = String` participates in `fn_string_returns`
+        because `_return_type_is_string` resolves aliases.  Locks in the
+        cooperation between #583's alias work and the String-decode path.
+        """
+        src = '''
+type Greeting = String;
+
+public fn hello(-> @Greeting)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+'''
+        result = _compile_ok(src)
+        exec_result = execute(result, fn_name="hello")
+        assert exec_result.value == "hello"
+
+    def test_array_return_unchanged(self) -> None:
+        """Array<T> returns deliberately keep the bare-pointer fallback —
+        their bytes-at-ptr aren't UTF-8 and decoding them would require
+        element-type-aware formatting (separate scope).  Locks in the
+        intentional asymmetry with String returns.
+        """
+        src = '''
+public fn nums(-> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{ [1, 2, 3] }
+'''
+        result = _compile_ok(src)
+        exec_result = execute(result, fn_name="nums")
         assert isinstance(exec_result.value, int)
 
 

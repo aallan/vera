@@ -611,6 +611,12 @@ class DataMixin:
         elem_type = self._infer_array_element_type(expr)
         if elem_type is None:
             return None
+        # Resolve type aliases — `type Row = Array<Bool>` makes the
+        # inferred element name "Row", but the element-layout helpers
+        # below match on bare "Array" / "Array<...>".  Without this,
+        # an alias-typed element falls through to the 4-byte i32 path
+        # and the literal emits a malformed WAT (#583).
+        elem_type = self._resolve_base_type_name(elem_type)
         elem_size = _element_mem_size(elem_type)
         if elem_size is None:
             return None

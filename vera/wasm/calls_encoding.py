@@ -1397,6 +1397,20 @@ class CallsEncodingMixin:
         ins.append("  end")  # loop
         ins.append("end")    # block $found_colon
 
+        # RFC 3986 §3.1 — scheme must be non-empty and begin with an
+        # ALPHA character.  Reject colon_pos == 0 (empty scheme) here so
+        # `url_parse(":foo")` returns Err instead of round-tripping
+        # through `url_join` as bare "foo" (#568).  We don't enforce the
+        # full ALPHA / [ALPHA / DIGIT / "+" / "-" / "."]* scheme grammar
+        # — that's a wider RFC-conformance follow-up — but the empty-
+        # scheme case alone is the only one that lost its leading colon
+        # in the round-trip.
+        ins.append(f"local.get {colon_pos}")
+        ins.append("i32.eqz")
+        ins.append("if")
+        ins.append("  br $err_up")
+        ins.append("end")
+
         # scheme is input[0..colon_pos]
         # Now check if :// follows the colon
 

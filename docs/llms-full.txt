@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.134. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.135. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -424,8 +424,6 @@ Empty arrays **must** appear in a position with a known type — a `let` binding
 type PosInt = { @Int | @Int.0 > 0 };
 type Name = String;
 ```
-
-> **Type aliases over `Array<T>` are currently broken at codegen** ([#583](https://github.com/aallan/vera/issues/583)).  `vera check` accepts them, then `vera run` either fails at WASM instantiation (alias used as a parameter type) or silently skips the enclosing function (alias used in a `let` binding).  Workaround: use the underlying type directly — write `Array<Bool>` not `type Row = Array<Bool>`, and `Array<Array<Bool>>` not `type Grid = Array<Row>`.  Aliases over single-pointer types (`Int`, `Nat`, `Bool`, refinement-typed primitives, single-field ADTs) are unaffected.
 
 ## Data Types (ADTs)
 
@@ -2236,11 +2234,9 @@ public fn main(@Unit -> @Unit)
 }
 ```
 
-> **Codegen footgun, [#584](https://github.com/aallan/vera/issues/584)**: the `IO.print(...)` call mid-block at the start of `loop`'s body works because it's a *qualified call to a built-in effect operation*.  If you factor it into a user helper — `print_line(@Nat.0); if ... { loop(...) } else { () }` — the codegen emits invalid WAT (the user helper returns `@Unit`, statement-sequencing logic emits a `drop` expecting a value, the call left nothing on the stack).  Keep user `@Unit`-returning calls in tail position until #584 lands.
-
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 82 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 84 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -2275,9 +2271,6 @@ Current reference-implementation bugs that an agent writing Vera code is likely 
 | Shape | Bug summary | Workaround | Issue |
 |---|---|---|---|
 | Tail-call optimization disabled for allocating functions | v0.0.126 ([#517](https://github.com/aallan/vera/issues/517)) ships WASM `return_call` for tail-position calls so non-allocating tail recursion runs in constant stack space. Allocating functions revert `return_call` → `call` because `return_call` discards the GC epilogue and would leak shadow-stack slots — so an allocating tail-recursive function still pays a WASM frame per iteration and traps with `call stack exhausted` at ~tens of thousands of frames. | Iterate via `array_fold` / `array_map` (which compile to WASM loops with no per-iteration frame cost — usually the right answer); or split the recursion into bounded chunks of <5K frames per call; or wait for the GC-aware `return_call` follow-up tracked by [#549](https://github.com/aallan/vera/issues/549). | [#549](https://github.com/aallan/vera/issues/549) |
-| `url_parse` / `url_join` drops a leading colon | `url_parse(":foo")` returns `Ok` with empty scheme, then `url_join` emits just `foo` because its scheme-delimiter branch is gated on `s_len > 0`. Affects only inputs starting with `:` — typical URLs round-trip correctly. | Reject inputs whose first character is `:` before calling `url_parse`, or check `string_length(scheme) > 0` on the round-tripped output. | [#568](https://github.com/aallan/vera/issues/568) |
-| Type aliases over `Array<T>` break codegen | `type Row = Array<Bool>;` type-checks fine, then breaks at codegen.  Two failure modes: alias as a parameter type (`fn foo(@Row -> ...)`) emits invalid WAT and fails at WASM instantiation; alias in a `let` binding (`let @Row = [...]`) silently triggers an `E602` skip of the enclosing function — the function disappears from the compiled output and `vera run` reports "no exported functions" or `unknown func: $caller`.  Affects `String` aliases too (suspected; same pair-type root cause). | Use the underlying type directly throughout: `Array<Bool>` not `type Row = Array<Bool>`, `Array<Array<Bool>>` not `type Grid = Array<Row>`.  Aliases over single-pointer types (primitives, refinement types, single-field ADTs) are unaffected. | [#583](https://github.com/aallan/vera/issues/583) |
-| User `@Unit`-returning fn call in non-tail position breaks WAT | A block-statement sequence like `helper(()); next_expr` where `helper` is a user-defined function declared with `@Unit` return emits structurally invalid WAT and fails at WASM instantiation with `type mismatch: expected a type but nothing on stack`.  Built-in `IO.*` operations and effect-op `FnCall`s in the same position work; only user helpers returning `@Unit` are affected, and only when they sit in non-tail position.  The natural `render(grid); IO.sleep(120); recurse(...)` shape lands directly on this whenever `render` is a user helper (see [Iteration with IO](#iteration-with-io) — the FizzBuzz example uses inline `IO.print` mid-block which works, but factoring it into a `print_line(...)` helper would trip the bug). | Keep user `@Unit`-returning fn calls in tail position.  Two patterns: fold trailing actions into the helper itself so the helper ends the block; or reshape the loop so the recursive call is the tail expression of the active branch (and the terminal frame's render is the tail of the other branch). | [#584](https://github.com/aallan/vera/issues/584) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, the first thing to check is `call stack exhausted` from a tail-recursive *allocating* function — that's [#549](https://github.com/aallan/vera/issues/549), and switching to `array_fold` / `array_map` is the canonical fix.  Runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label (`divide_by_zero` / `out_of_bounds` / `stack_exhausted` / `unreachable` / `overflow` / `contract_violation` / `unknown`), a per-kind `Fix:` paragraph naming the canonical remediation, and a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>`.
 
@@ -2315,7 +2308,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 82 small, self-contained programs — one per language feature — that serve as minimal working examples. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 84 small, self-contained programs — one per language feature — that serve as minimal working examples. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
@@ -2468,7 +2461,7 @@ Each stage is a module with a single public API function (`parse_file`, `transfo
 pytest tests/ -v                       # Run all tests (see TESTING.md)
 pytest tests/test_conformance.py -v    # Conformance suite only
 mypy vera/                             # Type-check the compiler
-python scripts/check_conformance.py    # All 82 conformance programs must pass
+python scripts/check_conformance.py    # All 84 conformance programs must pass
 python scripts/check_examples.py       # All 33 examples must pass
 ```
 
@@ -2478,7 +2471,7 @@ When implementing a new language feature, write the conformance program *first* 
 
 ### Invariants
 
-- All 82 conformance programs in `tests/conformance/` must pass their declared level
+- All 84 conformance programs in `tests/conformance/` must pass their declared level
 - All 33 examples in `examples/` must pass `vera check` and `vera verify`
 - `mypy vera/` must be clean
 - `pytest tests/ -v` must pass
@@ -2657,7 +2650,7 @@ None of this is Vera-specific, but it validates the design choices. The thesis i
 
 This is a real concern. LLMs are trained on trillions of tokens of Python, TypeScript, and JavaScript. A MojoBench study (NAACL 2025) found that even fine-tuned models achieved only 30–35% improvement over base models on Mojo code generation, illustrating the cold-start problem for new languages.
 
-Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (82 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
+Vera's approach has three parts. First, the agent-facing documentation (SKILL.md) is designed to be dropped into a model's context window, so the model works from the language specification rather than training data recall. Second, Vera's syntax is deliberately simple and regular — fewer constructs, each with exactly one canonical form — which reduces the surface area a model needs to learn. Third, the conformance test suite (84 programs covering every language feature) gives models concrete examples to learn from and conform to. Simon Willison argued in December 2025 that a language-agnostic conformance suite is the single most important tool for LLM adoption of a new language — LLMs can learn new languages remarkably well when given tests to conform to.
 
 
 ## How does Vera compare to Dafny / Lean / Koka / F*?
@@ -2698,7 +2691,7 @@ The reference compiler is under active development. The current release includes
 
 - A seven-stage pipeline: parse, transform, resolve, typecheck, verify, compile, execute
 - A 13-chapter formal specification
-- Over 3,000 unit tests plus an 82-program conformance suite
+- Over 3,000 unit tests plus an 84-program conformance suite
 - 33 working example programs
 - 164 built-in functions covering strings, arrays, math, parsing, and data types
 - Four built-in abilities (Eq, Ord, Hash, Show) with constrained generics and ADT auto-derivation

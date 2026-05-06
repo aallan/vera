@@ -488,6 +488,14 @@ class WasmContext(
         if isinstance(expr, ast.FnCall) and expr.name in self._effect_ops:
             _name, is_void = self._effect_ops[expr.name]
             return is_void
+        # User-defined fns declared with @Unit return type — registry stores
+        # them with value None alongside non-void returns.  Without this
+        # clause a `helper(); next_expr` block where `helper` is a user
+        # @Unit fn fell through to "produces a value", got a stray `drop`
+        # appended, and failed WASM validation with "expected a type but
+        # nothing on stack" (#584).
+        if isinstance(expr, ast.FnCall) and expr.name in self._fn_ret_types:
+            return self._fn_ret_types[expr.name] is None
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
             return True  # assert/assume return Unit (void)
         # Compound expressions: void if all branches are void
