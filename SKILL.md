@@ -30,6 +30,10 @@ If you are working on the compiler itself, install development dependencies too:
 pip install -e ".[dev]"
 ```
 
+> **For agents running in a sandbox** (Claude.ai, Code Interpreter, container-based execution environments, etc.): the steps above work. Sandboxes typically have Python, `git`, `pip`, and outbound network access — that's all Vera needs. **Run the install commands and verify with `vera run examples/hello_world.vera` before concluding that Vera "isn't available." Don't assume the sandbox lacks the toolchain — try it.**
+>
+> One caveat: `pip install vera` (no source) installs a *different* package from PyPI (an ERAV citizen-science library — unrelated to this Vera). Always install from the GitHub source clone shown above.
+
 ## Toolchain
 
 ```bash
@@ -414,6 +418,8 @@ Empty arrays **must** appear in a position with a known type — a `let` binding
 type PosInt = { @Int | @Int.0 > 0 };
 type Name = String;
 ```
+
+> **Type aliases over `Array<T>` are currently broken at codegen** ([#583](https://github.com/aallan/vera/issues/583)).  `vera check` accepts them, then `vera run` either fails at WASM instantiation (alias used as a parameter type) or silently skips the enclosing function (alias used in a `let` binding).  Workaround: use the underlying type directly — write `Array<Bool>` not `type Row = Array<Bool>`, and `Array<Array<Bool>>` not `type Grid = Array<Row>`.  Aliases over single-pointer types (`Int`, `Nat`, `Bool`, refinement-typed primitives, single-field ADTs) are unaffected.
 
 ## Data Types (ADTs)
 
@@ -2224,6 +2230,8 @@ public fn main(@Unit -> @Unit)
 }
 ```
 
+> **Codegen footgun, [#584](https://github.com/aallan/vera/issues/584)**: the `IO.print(...)` call mid-block at the start of `loop`'s body works because it's a *qualified call to a built-in effect operation*.  If you factor it into a user helper — `print_line(@Nat.0); if ... { loop(...) } else { () }` — the codegen emits invalid WAT (the user helper returns `@Unit`, statement-sequencing logic emits a `drop` expecting a value, the call left nothing on the stack).  Keep user `@Unit`-returning calls in tail position until #584 lands.
+
 ## Conformance Suite
 
 The `tests/conformance/` directory contains 82 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
@@ -2262,6 +2270,8 @@ Current reference-implementation bugs that an agent writing Vera code is likely 
 |---|---|---|---|
 | Tail-call optimization disabled for allocating functions | v0.0.126 ([#517](https://github.com/aallan/vera/issues/517)) ships WASM `return_call` for tail-position calls so non-allocating tail recursion runs in constant stack space. Allocating functions revert `return_call` → `call` because `return_call` discards the GC epilogue and would leak shadow-stack slots — so an allocating tail-recursive function still pays a WASM frame per iteration and traps with `call stack exhausted` at ~tens of thousands of frames. | Iterate via `array_fold` / `array_map` (which compile to WASM loops with no per-iteration frame cost — usually the right answer); or split the recursion into bounded chunks of <5K frames per call; or wait for the GC-aware `return_call` follow-up tracked by [#549](https://github.com/aallan/vera/issues/549). | [#549](https://github.com/aallan/vera/issues/549) |
 | `url_parse` / `url_join` drops a leading colon | `url_parse(":foo")` returns `Ok` with empty scheme, then `url_join` emits just `foo` because its scheme-delimiter branch is gated on `s_len > 0`. Affects only inputs starting with `:` — typical URLs round-trip correctly. | Reject inputs whose first character is `:` before calling `url_parse`, or check `string_length(scheme) > 0` on the round-tripped output. | [#568](https://github.com/aallan/vera/issues/568) |
+| Type aliases over `Array<T>` break codegen | `type Row = Array<Bool>;` type-checks fine, then breaks at codegen.  Two failure modes: alias as a parameter type (`fn foo(@Row -> ...)`) emits invalid WAT and fails at WASM instantiation; alias in a `let` binding (`let @Row = [...]`) silently triggers an `E602` skip of the enclosing function — the function disappears from the compiled output and `vera run` reports "no exported functions" or `unknown func: $caller`.  Affects `String` aliases too (suspected; same pair-type root cause). | Use the underlying type directly throughout: `Array<Bool>` not `type Row = Array<Bool>`, `Array<Array<Bool>>` not `type Grid = Array<Row>`.  Aliases over single-pointer types (primitives, refinement types, single-field ADTs) are unaffected. | [#583](https://github.com/aallan/vera/issues/583) |
+| User `@Unit`-returning fn call in non-tail position breaks WAT | A block-statement sequence like `helper(()); next_expr` where `helper` is a user-defined function declared with `@Unit` return emits structurally invalid WAT and fails at WASM instantiation with `type mismatch: expected a type but nothing on stack`.  Built-in `IO.*` operations and effect-op `FnCall`s in the same position work; only user helpers returning `@Unit` are affected, and only when they sit in non-tail position.  The natural `render(grid); IO.sleep(120); recurse(...)` shape lands directly on this whenever `render` is a user helper (see [Iteration with IO](#iteration-with-io) — the FizzBuzz example uses inline `IO.print` mid-block which works, but factoring it into a `print_line(...)` helper would trip the bug). | Keep user `@Unit`-returning fn calls in tail position.  Two patterns: fold trailing actions into the helper itself so the helper ends the block; or reshape the loop so the recursive call is the tail expression of the active branch (and the terminal frame's render is the tail of the other branch). | [#584](https://github.com/aallan/vera/issues/584) |
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, the first thing to check is `call stack exhausted` from a tail-recursive *allocating* function — that's [#549](https://github.com/aallan/vera/issues/549), and switching to `array_fold` / `array_map` is the canonical fix.  Runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label (`divide_by_zero` / `out_of_bounds` / `stack_exhausted` / `unreachable` / `overflow` / `contract_violation` / `unknown`), a per-kind `Fix:` paragraph naming the canonical remediation, and a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>`.
 
