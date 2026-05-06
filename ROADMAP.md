@@ -250,4 +250,4 @@ Items here are **deferred decisions**, not scheduled work. Each captures the des
 
 ## Completed phases
 
-The compiler was built through eleven stages from February 2026 onwards. **810+ commits, 134 tagged releases (as of v0.0.134), 3,726 tests, 96% coverage, 84 conformance programs, 33 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the per-stage narrative and per-release table.
+The compiler was built through eleven stages from February 2026 onwards. **810+ commits, 135 tagged releases (as of v0.0.135), 3,726 tests, 96% coverage, 84 conformance programs, 33 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the per-stage narrative and per-release table.
