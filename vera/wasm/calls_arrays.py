@@ -634,6 +634,25 @@ class CallsArraysMixin:
         b_wasm = _element_wasm_type(b_type)
         if b_wasm is None:
             return None
+        # #570: the lifted closure's epilogue pushes its return
+        # value onto the GC shadow stack (after restoring the
+        # function-entry sp) when the return is a heap pointer
+        # (pair or i32 ADT — same condition the closure's
+        # `ret_is_pointer` flag uses).  The expectation is that
+        # the caller will either consume the return immediately
+        # or unwind the slot.  array_map's loop body stores the
+        # return into `dst[idx]` and never unwinds — one slot
+        # leaks per iteration, exhausting the 16 KiB / 4 096-entry
+        # shadow stack at ~4 000 elements.  We compute the
+        # "needs unwind" flag here and emit a pop after the store
+        # in the loop body below.
+        b_is_adt = (
+            b_wasm == "i32"
+            and b_type not in ("Bool", "Byte")
+            and not b_is_pair
+            and not _is_host_handle_type(b_type)
+        )
+        b_needs_unwind = b_is_pair or b_is_adt
 
         self.needs_alloc = True
 
@@ -750,6 +769,19 @@ class CallsArraysMixin:
             instructions.append(f"    local.get {dst_slot}")
             instructions.append(f"    local.get {ret_scalar}")
             instructions.append(f"    {b_store} offset=0")
+
+        # #570: unwind the closure's post-restore return-value root.
+        # The closure epilogue pushes one i32 onto the shadow stack
+        # for heap-pointer returns; once we've stored the value into
+        # `dst[idx]` (which is itself rooted via `gc_shadow_push(dst)`
+        # before the loop), the per-iteration root is redundant.
+        # Without this pop, a 4 000-element `array_map<_, ADT>`
+        # exhausts the 16 KiB / 4 096-entry shadow stack.
+        if b_needs_unwind:
+            instructions.append("    global.get $gc_sp")
+            instructions.append("    i32.const 4")
+            instructions.append("    i32.sub")
+            instructions.append("    global.set $gc_sp")
 
         # idx++, loop.
         instructions.append(f"    local.get {idx}")
@@ -1174,6 +1206,29 @@ class CallsArraysMixin:
         if u_is_pair:
             instructions.append(f"    local.set {acc_len}")
             instructions.append(f"    local.set {acc_ptr}")
+        else:
+            instructions.append(f"    local.set {acc}")
+
+        # #570: when the closure return is a heap pointer, the
+        # closure's epilogue restores its entry sp and then pushes
+        # the return value as a fresh root (so a stash-then-GC
+        # caller stays sound).  We're about to overwrite the
+        # accumulator's pre-call slot in place, so the per-call
+        # post-push is redundant — and accumulating it across
+        # iterations both leaks shadow-stack space (overflow at
+        # ~4 000 elements) and breaks the `gc_sp - 8` arithmetic
+        # below: after the second iteration that offset addresses
+        # the leaked slot from the previous call, not the
+        # accumulator's pre-call slot.  Pop the closure's
+        # post-push here so the overwrite math operates on the
+        # original layout.
+        if u_needs_root:
+            instructions.append("    global.get $gc_sp")
+            instructions.append("    i32.const 4")
+            instructions.append("    i32.sub")
+            instructions.append("    global.set $gc_sp")
+
+        if u_is_pair:
             # Overwrite shadow-stack root with the new acc_ptr.
             # The slot was pushed second-to-last (after arr_ptr and
             # before fn_tmp), so its address is gc_sp - 8.
@@ -1182,15 +1237,13 @@ class CallsArraysMixin:
             instructions.append("    i32.sub")
             instructions.append(f"    local.get {acc_ptr}")
             instructions.append("    i32.store")
-        else:
-            instructions.append(f"    local.set {acc}")
-            if u_needs_root:
-                # ADT handle acc: slot is at gc_sp - 8 (same layout).
-                instructions.append("    global.get $gc_sp")
-                instructions.append("    i32.const 8")
-                instructions.append("    i32.sub")
-                instructions.append(f"    local.get {acc}")
-                instructions.append("    i32.store")
+        elif u_needs_root:
+            # ADT handle acc: slot is at gc_sp - 8 (same layout).
+            instructions.append("    global.get $gc_sp")
+            instructions.append("    i32.const 8")
+            instructions.append("    i32.sub")
+            instructions.append(f"    local.get {acc}")
+            instructions.append("    i32.store")
 
         # idx++, loop.
         instructions.append(f"    local.get {idx}")
@@ -1374,6 +1427,16 @@ class CallsArraysMixin:
         b_wasm = _element_wasm_type(b_type)
         if b_wasm is None:
             return None
+        # #570: same closure-leak unwind condition as ``_translate_array_map``.
+        # See the long comment there.  Tracked separately because mapi
+        # has its own scalar/pair temporaries.
+        b_is_adt = (
+            b_wasm == "i32"
+            and b_type not in ("Bool", "Byte")
+            and not b_is_pair
+            and not _is_host_handle_type(b_type)
+        )
+        b_needs_unwind = b_is_pair or b_is_adt
 
         self.needs_alloc = True
 
@@ -1488,6 +1551,14 @@ class CallsArraysMixin:
             ins.append(f"    local.get {dst_slot}")
             ins.append(f"    local.get {ret_scalar}")
             ins.append(f"    {b_store} offset=0")
+
+        # #570: unwind the closure's post-restore return-value root.
+        # See `_translate_array_map` for the long version — same fix.
+        if b_needs_unwind:
+            ins.append("    global.get $gc_sp")
+            ins.append("    i32.const 4")
+            ins.append("    i32.sub")
+            ins.append("    global.set $gc_sp")
 
         # idx++, loop
         ins.append(f"    local.get {idx}")
@@ -2324,6 +2395,20 @@ class CallsArraysMixin:
         # Ordering box (tag stored at offset 0).  Dereference to
         # get the tag before comparing against Greater=2.
         ins.append("        i32.load offset=0")
+        # #570: the comparator's lifted closure epilogue pushes the
+        # returned Ordering pointer onto the GC shadow stack as a
+        # fresh root after restoring its entry sp (Ordering is an
+        # ADT, so ``ret_is_pointer`` is true in
+        # ``vera/codegen/closures.py``).  We've now consumed the
+        # pointer with ``i32.load offset=0`` — the per-call root is
+        # redundant.  Without this pop, an ``n``-element insertion
+        # sort can issue up to ``n*(n-1)/2`` comparator calls, each
+        # leaking 4 bytes; ~200 reverse-sorted elements suffices to
+        # exhaust the 16 KiB / 4 096-entry shadow stack.
+        ins.append("        global.get $gc_sp")
+        ins.append("        i32.const 4")
+        ins.append("        i32.sub")
+        ins.append("        global.set $gc_sp")
         ins.append("        i32.const 2")
         ins.append("        i32.ne")
         ins.append("        br_if $brk_sort_inner")
