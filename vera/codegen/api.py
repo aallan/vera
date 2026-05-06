@@ -1729,7 +1729,20 @@ def execute(
         def host_decref_handle(
             _caller: wasmtime.Caller, kind: int, handle: int,
         ) -> None:
-            if kind == 1 and result.map_ops_used:
+            # ``kind == 1`` (Map) — no result-flag gate because
+            # ``_map_store`` is created when ANY of map_ops_used /
+            # json_ops_used / html_ops_used is true (JObject and
+            # HtmlElement attrs flow through the same store).  A
+            # JSON-only or HTML-only program has
+            # ``map_ops_used = False`` but still allocates Map
+            # wrappers internally, so gating on
+            # ``map_ops_used`` here would silently leak those
+            # entries.  ``kind == 2/3`` keep their gates because
+            # ``_set_store`` / ``_decimal_store`` only exist when
+            # the corresponding flag is set, and the runtime
+            # invariant "kind == N at runtime ⟹ that store
+            # exists" holds via the wrap-table emit logic.
+            if kind == 1:
                 _map_store.pop(handle, None)
             elif kind == 2 and result.set_ops_used:
                 _set_store.pop(handle, None)
@@ -3110,13 +3123,21 @@ def execute(
     try:
         raw_result = func(store, *call_args)
     except _VeraExit as exit_exc:
-        # IO.exit(code) — return captured output with exit code
+        # IO.exit(code) — return captured output with exit code.
+        # #573: include host_store_sizes here too so the field is
+        # always populated, mirroring the normal-completion path
+        # below.  Programs that exit via IO.exit can still observe
+        # host-store population (e.g. for tests verifying that
+        # reclamation happened before exit).
         return ExecuteResult(
             value=None,
             stdout=output_buf.getvalue(),
             stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
             state={k: v[-1] for k, v in state_store.items()},
             exit_code=exit_exc.code,
+            host_store_sizes={
+                k: len(v) for k, v in _host_store_refs.items()
+            },
         )
     except Exception as exc:
         # _VeraExit may be wrapped by wasmtime in a Trap/WasmtimeError.
@@ -3130,6 +3151,9 @@ def execute(
                     stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
                     state={k: v[-1] for k, v in state_store.items()},
                     exit_code=cause.code,
+                    host_store_sizes={
+                        k: len(v) for k, v in _host_store_refs.items()
+                    },
                 )
             cause = cause.__cause__ or cause.__context__
             if cause is exc:

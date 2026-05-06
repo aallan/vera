@@ -15929,8 +15929,25 @@ public fn main(@Unit -> @Int)
 
 
 class TestHostHandleReclamation573:
-    """Regressions for #573 phase 1 (Map only).  Set / Decimal land
-    in their own follow-ups."""
+    """Reclamation regressions for the heap-wrap-as-ADT migration of
+    Map (#573), Set (#575), and Decimal (#576) — all shipped together
+    in v0.0.134.
+
+    Covers three failure modes per type:
+
+    * **chain reclaims transients** — a 5K–10K-iter ``array_fold``
+      chain leaves the corresponding host store at a bounded
+      residual (single-digit for Map, < 2K for Set, < 1.5K for
+      Decimal); proves Phase 2c is firing destructors.
+    * **value correct after pressure** — multiple lookups against
+      the live final value across heavy GC cadence; proves the
+      destructor isn't evicting live entries.
+    * **JSON-only / HTML-only programs include wrap-table** —
+      the host parsers' internal Map allocations register through
+      the same wrap-table machinery; pins the
+      ``_needs_wrap_table`` flip on ``_json_ops_used`` /
+      ``_html_ops_used``.
+    """
 
     def test_map_chain_reclaims_transients(self) -> None:
         """A 10 000-element ``array_fold`` over ``map_insert`` only
@@ -16272,6 +16289,50 @@ public fn main(@Unit -> @Int)
             "returns None and registration is silently skipped."
         )
         # Functional check too: the program runs and returns 1.
+        assert _run(src) == 1
+
+    def test_html_only_module_includes_wrap_table(self) -> None:
+        """An HTML-using program emits the wrap-table machinery
+        (mirror of ``test_json_only_module_includes_wrap_table``).
+
+        ``write_html``'s HtmlElement attrs branch allocates Map
+        wrappers via ``_alloc_map_wrapper`` exactly like
+        ``write_json``'s JObject branch.  Note that compiling
+        ``html_parse`` typically also pulls in the prelude's
+        ``html_attr`` (which dispatches to ``map_get``), so
+        ``_map_ops_used`` would be set anyway in practice — but
+        the ``_needs_wrap_table`` gating on ``_html_ops_used``
+        is the load-bearing fix if that prelude transitivity
+        ever changes (or if a future codegen DCE eliminates the
+        unused ``html_attr`` import).
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match html_parse("<p>hello</p>") {
+    Ok(@HtmlNode) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        wat = _compile_ok(src).wat
+        assert (
+            'import "vera" "host_decref_handle"' in wat
+        ), (
+            "#573 finding 5 regression (HTML): missing "
+            "host_decref_handle import.  Without it, Phase 2c "
+            "can't reclaim Map wrappers allocated by "
+            "write_html's HtmlElement-attrs path."
+        )
+        assert "$register_wrapper" in wat, (
+            "#573 finding 5 regression (HTML): missing "
+            "$register_wrapper helper."
+        )
+        assert '(export "register_wrapper"' in wat, (
+            "#573 finding 5 regression (HTML): missing "
+            "register_wrapper export."
+        )
         assert _run(src) == 1
 
     def test_decimal_value_correct_after_gc_pressure(self) -> None:
