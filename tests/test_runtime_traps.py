@@ -1804,29 +1804,40 @@ class TestHostPrintInvalidUtf8589:
     is the WasmTrapError contract from #516 / #522 / #547 applied to the
     UTF-8-decode paths.
 
-    Tests here are structural assertions on the source: the four affected
-    decode sites must use ``errors="replace"``.  Validating the actual
-    end-to-end behaviour requires either a synthetic WAT module that
-    imports ``vera.print`` directly with crafted bytes (heavy) or
-    triggering #588 to produce corrupt strings (depends on a separate
-    bug remaining open).  The structural checks pin the fix without
-    that coupling.
+    Tests here are primarily structural assertions on the source: each
+    affected decode site (four in ``vera/codegen/api.py``, one in
+    ``vera/wasm/markdown.py``) must use ``errors="replace"``.  These
+    catch a regression that drops the flag from any of the production
+    sites.  Plus one end-to-end test using a synthetic WAT module that
+    imports ``vera.print`` and calls it with raw invalid UTF-8 bytes —
+    that test pins the wasmtime-trampoline contract (a Python
+    ``UnicodeDecodeError`` escapes a host import as a "python exception"
+    cause iff the host decode is strict).  It mirrors the production
+    code rather than wiring up the real ``host_print`` so the production
+    regression is caught by the structural tests, not this one.
     """
 
-    def _api_body_after(self, marker: str, *, span: int = 1500) -> str:
+    def _file_body_after(
+        self, file_path: str, marker: str, *, span: int = 1500,
+    ) -> str:
         from pathlib import Path
-        api_src = (
-            Path(__file__).parent.parent / "vera/codegen/api.py"
-        ).read_text()
-        idx = api_src.index(marker)
-        return api_src[idx:idx + span]
+        repo_root = Path(__file__).parent.parent
+        src = (repo_root / file_path).read_text()
+        idx = src.index(marker)
+        return src[idx:idx + span]
+
+    def _api_body_after(self, marker: str, *, span: int = 1500) -> str:
+        return self._file_body_after("vera/codegen/api.py", marker, span=span)
 
     def test_host_print_uses_errors_replace(self) -> None:
         """host_print decodes with errors='replace' so invalid UTF-8
         bytes from a corrupt String surface as U+FFFD instead of a
         raw Python exception escaping through wasmtime's trampoline.
+
+        Anchors on ``def host_print(`` rather than a nearby comment so
+        the test isn't fragile to comment refactoring.
         """
-        body = self._api_body_after("Host function: vera.print")
+        body = self._api_body_after("def host_print(")
         assert 'data.decode("utf-8", errors="replace")' in body, (
             "host_print must decode with errors='replace' so invalid "
             "UTF-8 bytes don't escape as a Python UnicodeDecodeError "
@@ -1862,6 +1873,40 @@ class TestHostPrintInvalidUtf8589:
         )
         assert 'errors="replace"' in body, (
             "_read_wasm_string must decode with errors='replace' (#589)."
+        )
+
+    def test_markdown_read_string_uses_errors_replace(self) -> None:
+        """vera/wasm/markdown.py::_read_string is the fifth UTF-8 decode
+        site — invoked from host_md_render / host_md_has_heading /
+        host_md_extract_text / host_md_count_blocks for every Markdown
+        host import.  Same failure mode as the four api.py sites: a
+        corrupt String passed to md_render would have escaped as a
+        Python UnicodeDecodeError through wasmtime's trampoline.  Pins
+        the fix at the markdown.py site too (#589).
+        """
+        body = self._file_body_after(
+            "vera/wasm/markdown.py",
+            "def _read_string(",
+        )
+        assert 'errors="replace"' in body, (
+            "vera/wasm/markdown.py::_read_string must decode with "
+            "errors='replace' for parity with the four api.py sites (#589)."
+        )
+
+    def test_extract_string_uses_errors_replace(self) -> None:
+        """The String-return decoder in execute() (api.py around
+        line 3260) was previously try/except → pointer fallback, which
+        silently mutated the return type from str to int when bytes
+        weren't valid UTF-8.  That fallback was a worse silent failure
+        than visible U+FFFD chars (downstream CLI printer printed an
+        integer where a string was expected).  Post-fix: errors='replace'
+        keeps the value typed as str (#589).
+        """
+        body = self._api_body_after("# Extract return value", span=2200)
+        assert 'raw_bytes.decode("utf-8", errors="replace")' in body, (
+            "_extract_string path must use errors='replace' instead of "
+            "the old try/except → pointer fallback (#589 — silently "
+            "mutating str → int is worse than U+FFFD)."
         )
 
     def test_invalid_utf8_through_host_print_does_not_raise(self) -> None:

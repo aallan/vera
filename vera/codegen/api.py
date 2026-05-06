@@ -3255,13 +3255,16 @@ def execute(
                 mem_size = memory_export.data_len(store)
                 if 0 <= ptr and ptr + length <= mem_size:
                     raw_bytes = bytes(buf[ptr:ptr + length])
-                    try:
-                        value = raw_bytes.decode("utf-8")
-                    except UnicodeDecodeError:
-                        # Not valid UTF-8 (shouldn't happen for a
-                        # well-formed String, but stay defensive) —
-                        # fall back to the pointer half.
-                        value = ptr
+                    # `errors="replace"` rather than the previous
+                    # try/except → pointer-fallback pattern (#589).  The
+                    # old fallback silently mutated the return type from
+                    # ``str`` to ``int`` when bytes weren't valid UTF-8,
+                    # so a downstream consumer (CLI printer) printed an
+                    # integer where a string was expected — a worse
+                    # footgun than visible U+FFFD chars.  Now invalid
+                    # bytes surface as replacement characters in the
+                    # decoded string and ``value`` stays a ``str``.
+                    value = raw_bytes.decode("utf-8", errors="replace")
                 else:  # pragma: no cover — out-of-bounds defensive path
                     value = ptr
             else:  # pragma: no cover — module without memory export
