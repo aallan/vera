@@ -30,6 +30,10 @@ If you are working on the compiler itself, install development dependencies too:
 pip install -e ".[dev]"
 ```
 
+> **For agents running in a sandbox** (Claude.ai, Code Interpreter, container-based execution environments, etc.): the steps above work. Sandboxes typically have Python, `git`, `pip`, and outbound network access — that's all Vera needs. **Run the install commands and verify with `vera run examples/hello_world.vera` before concluding that Vera "isn't available." Don't assume the sandbox lacks the toolchain — try it.**
+>
+> One caveat: `pip install vera` (no source) installs a *different* package from PyPI (an ERAV citizen-science library — unrelated to this Vera). Always install from the GitHub source clone shown above.
+
 ## Toolchain
 
 ```bash

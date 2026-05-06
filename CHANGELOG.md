@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+- **SKILL.md sandbox-install affordance** — observed in the wild that a Claude.ai sandboxed instance reading the existing Installation section concluded "Vera isn't available in this sandbox" and fell back to "write code the user can run locally" without trying the install steps.  Added an explicit note in the Installation section telling agents running in sandboxes (Claude.ai, Code Interpreter, container-based execution environments) that the standard `git clone + pip install -e .` works there too — sandboxes typically have Python, `git`, `pip`, and outbound network — and to run + verify before concluding the toolchain is unavailable.  Also flagged the `pip install vera` PyPI footgun: that name resolves to an unrelated ERAV citizen-science library, not us; install from the GitHub source clone.
+
 ## [0.0.134] - 2026-05-06
 
 ### Documentation
