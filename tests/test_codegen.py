@@ -15486,18 +15486,24 @@ class TestOpaqueHandleParamRooting347:
                     f"sequence: {text!r}"
                 )
 
-    def test_map_param_not_shadow_pushed(self) -> None:
-        """A `Map<Nat, Nat>` parameter must not appear in any
-        gc_shadow_push sequence in the function's prologue.
+    def test_map_param_shadow_pushed_after_573(self) -> None:
+        """A `Map<Nat, Nat>` parameter MUST appear in a
+        gc_shadow_push sequence after #573.
 
-        The function below allocates (via `option_unwrap_or` —
-        which the prelude expands to an Option allocation), so
-        the GC prologue is emitted.  Pre-fix the prologue would
-        contain the canonical shadow-push idiom for `$p0`:
-        `global.get $gc_sp; local.get 0; i32.store`.  Post-fix
-        the classifier excludes the Map handle, so that exact
-        sequence is absent.
+        Pre-#573 (v0.0.132): Map values lowered to raw i32 host
+        handles, so the #347 classifier excluded them from
+        rooting.  Post-#573 (v0.0.134): Map values are pointers
+        to GC-managed wrapper ADTs — real Vera-heap pointers
+        that the conservative GC must trace, so the exclusion
+        is dropped and the canonical shadow-push idiom
+        ``global.get $gc_sp; local.get 0; i32.store`` reappears.
+        Without rooting, a Map captured across an allocating
+        call (e.g. ``map_get`` returning ``Option<V>``) would
+        get freed mid-call and the host store entry would be
+        decref'd before the surrounding code finishes using it.
         """
+        from vera.parser import parse_file
+        from vera.transform import transform
         src = """
 public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
@@ -15505,7 +15511,41 @@ public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
   option_unwrap_or(map_get(@Map<Nat, Nat>.0, @Nat.0), 0)
 }
 """
-        self._assert_param0_not_shadow_pushed(src, "lookup_or_zero", "Map")
+        import tempfile
+        from pathlib import Path
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False,
+        ) as f:
+            f.write(src)
+            f.flush()
+            path = f.name
+        tree = parse_file(path)
+        ast_module = transform(tree)
+        result = compile(ast_module, source=src, file=path)
+        wat = result.wat
+        # Find $lookup_or_zero's body.
+        fn_match = re.search(
+            r"\(func \$lookup_or_zero\b.*?(?=\n  \(func |\n\s*\)\s*$)",
+            wat, re.DOTALL,
+        )
+        assert fn_match is not None, (
+            f"Could not find $lookup_or_zero in WAT: {wat[:500]}"
+        )
+        fn_body = fn_match.group(0)
+        push_pattern = re.compile(
+            r"global\.get \$gc_sp\s+"
+            r"local\.get (?:0\b|\$p?0\b)\s+"
+            r"i32\.store",
+            re.MULTILINE,
+        )
+        assert push_pattern.search(fn_body) is not None, (
+            "#573 regression: Map<Nat, Nat> param 0 was NOT "
+            "shadow-pushed in $lookup_or_zero.  Post-#573, Map "
+            "values are GC-managed wrapper-ADT pointers and MUST "
+            "be rooted across allocating calls; without the push "
+            "the wrapper can be freed mid-call.\n\n"
+            f"Function body excerpt:\n{fn_body[:800]}"
+        )
 
     def test_set_param_not_shadow_pushed(self) -> None:
         """A `Set<Nat>` parameter must not appear in any
@@ -15782,3 +15822,173 @@ public fn main(@Unit -> @Int)
 """
         # 0 + 2 + 4 + 6 + 8 = 20
         assert _run(src) == 1
+
+# =====================================================================
+# #573: Active reclamation of host-store handles
+# =====================================================================
+# Pre-fix: every map_new / map_insert / map_remove allocated a new
+# entry in `_map_store` (in `vera/codegen/api.py`) and never released
+# transient predecessors — the store grew monotonically across an
+# `execute()` call.  Bounded by Python GC at execute() exit, so
+# single-shot programs leaked but didn't OOM; mattered for long-
+# running execution contexts (server programs, repeated execute()).
+#
+# Post-fix (heap-wrap-as-ADT): each Map value is now a pointer to
+# an 8-byte wrapper ADT on the GC heap (tag at offset 0, raw host
+# handle at offset 4).  Wrappers register with the WASM-side wrap
+# table at allocation; Phase 2c of `$gc_collect` walks the wrap
+# table and fires `host_decref_handle(MAP_KIND, raw_handle)` for
+# every wrapper that was unmarked, evicting the corresponding
+# `_map_store` entry.
+#
+# `ExecuteResult.host_store_sizes` exposes the post-execution
+# population of each host store so tests can verify reclamation
+# without introspecting linker-internal state.
+# =====================================================================
+
+
+class TestHostHandleReclamation573:
+    """Regressions for #573 phase 1 (Map only).  Set / Decimal land
+    in their own follow-ups."""
+
+    def test_map_chain_reclaims_transients(self) -> None:
+        """A 10 000-element ``array_fold`` over ``map_insert`` only
+        keeps the final Map reachable.  Pre-fix ``_map_store`` size
+        would be 10 001 at execute-end (one entry per insert + the
+        empty starting map).  Post-fix Phase 2c reclaims every
+        transient and the store holds a small constant — typically 1
+        (just the live final Map).
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_new();
+  let @Map<Int, Int> = array_fold(
+    array_range(1, 10001),
+    @Map<Int, Int>.0,
+    fn(@Map<Int, Int>, @Int -> @Map<Int, Int>) effects(pure) {
+      map_insert(@Map<Int, Int>.0, @Int.0, @Int.0)
+    }
+  );
+  match map_get(@Map<Int, Int>.0, 5000) {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+"""
+        result = _compile_ok(src)
+        exec_result = execute(result)
+        # Functional check: looked up key=5000 returns 5000.
+        assert exec_result.value == 5000, (
+            f"Map lookup returned {exec_result.value}, expected 5000"
+        )
+        # Reclamation check: store should be a small constant, not
+        # ~10 000.  Use a generous bound (<= 100) so slight churn
+        # in GC scheduling doesn't make the test flaky.
+        store_size = exec_result.host_store_sizes.get("map", 0)
+        assert store_size <= 100, (
+            f"#573 regression: _map_store has {store_size} entries "
+            f"after a 10 000-iter map_insert chain.  Pre-fix this "
+            f"was monotonic in iterations (~10 001); post-fix the "
+            f"GC reclaims transients via the Phase 2c destructor "
+            f"hook and the size should be a small constant. "
+            f"A size > 100 indicates either: (a) the wrap table "
+            f"isn't being populated, (b) Phase 2c isn't running, "
+            f"or (c) `host_decref_handle` isn't evicting entries."
+        )
+
+    def test_json_object_map_reclaimed(self) -> None:
+        """JSON's internal Map for JObject is also wrapped (#573).
+
+        ``json_parse`` allocates a ``Map<String, Json>`` for each
+        JObject; the wrapper migration extends to those host-side
+        allocations via ``_alloc_map_wrapper`` in
+        ``vera/codegen/api.py``.  Parses 5 000 distinct JSON
+        objects via ``array_fold`` so each intermediate Json is
+        unreachable on the next iteration — the iterative shape
+        is essential, recursive variants keep all Results alive
+        via per-frame shadow-stack roots (a correctness property,
+        not a leak).  Counts successful parses and checks the
+        store is bounded well below the total iteration count.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 0;
+  array_fold(
+    array_range(0, 5000),
+    @Int.0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      let @Result<Json, String> = json_parse("{\\"k\\": 1}");
+      match @Result<Json, String>.0 {
+        Ok(@Json) -> @Int.1 + 1,
+        Err(@String) -> @Int.1
+      }
+    }
+  )
+}
+"""
+        result = _compile_ok(src)
+        exec_result = execute(result)
+        assert exec_result.value == 5000, (
+            f"All 5 000 parses should succeed; got {exec_result.value}"
+        )
+        # 5 000 transient JObject Maps, none reachable at exit
+        # (the closure return is ``@Int.1 + 1``, not the Json).
+        # Steady-state residual is bounded by collection cadence
+        # rather than total allocations.  Pre-fix this was
+        # monotonic at ~5 000; post-fix Phase 2c reclaims the
+        # wrappers and ``host_decref_handle`` evicts the host-
+        # store entries.  We assert << 5000 (proof of reclamation,
+        # not zero — GC fires periodically, not on every alloc).
+        store_size = exec_result.host_store_sizes.get("map", 0)
+        assert store_size < 1500, (
+            f"#573 regression: _map_store has {store_size} entries "
+            f"after 5 000 transient JObject allocations.  Pre-fix "
+            f"this was monotonic (~5 000); post-fix the GC reclaims "
+            f"unreachable JObject Maps via the same wrap-table "
+            f"mechanism as user-allocated Maps.  Steady-state "
+            f"residual depends on GC cadence but should stay well "
+            f"below the total allocation count."
+        )
+
+    def test_map_value_lookup_after_gc_pressure(self) -> None:
+        """Functional integrity after heavy reclamation pressure.
+
+        Pre-#573 the wrap-table walk wasn't running, so this would
+        return the right answer trivially.  Post-#573 the destructor
+        hook is firing on every transient — if it had a bug
+        (off-by-one in compaction, wrong handle stored, etc.) the
+        live Map's host store entry could be evicted by mistake
+        and ``map_get`` would return None or trap.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_new();
+  let @Map<Int, Int> = array_fold(
+    array_range(0, 1000),
+    @Map<Int, Int>.0,
+    fn(@Map<Int, Int>, @Int -> @Map<Int, Int>) effects(pure) {
+      map_insert(@Map<Int, Int>.0, @Int.0, @Int.0 * 7)
+    }
+  );
+  --Look up several keys to force the live Map's entry to be
+  --consulted multiple times across GC events.
+  match map_get(@Map<Int, Int>.0, 0) {
+    Some(@Int) -> match map_get(@Map<Int, Int>.0, 500) {
+      Some(@Int) -> match map_get(@Map<Int, Int>.0, 999) {
+        Some(@Int) -> @Int.0,
+        None -> -1
+      },
+      None -> -2
+    },
+    None -> -3
+  }
+}
+"""
+        # 999 * 7 = 6993
+        assert _run(src) == 6993

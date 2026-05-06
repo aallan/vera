@@ -4,6 +4,18 @@ Handles the three opaque-handle types: Map<K,V>, Set<E>, and Decimal.
 All three use the host-import pattern with lazy registration of
 type-specialised imports (e.g. ``map_insert$ks_vi`` for String key /
 Int value).
+
+#573 (phase 1 — Map only): Map host functions return raw i32 handles
+(indices into ``_map_store`` in ``vera/codegen/api.py``).  Each
+Map-returning call-site now wraps that handle in an 8-byte ADT on
+the GC heap (tag at offset 0, handle at offset 4) and registers the
+wrapper with ``$register_wrapper`` so Phase 2c of ``$gc_collect``
+can fire ``host_decref_handle`` when the wrapper becomes
+unreachable.  Map-consuming call-sites unwrap by loading the handle
+back via ``i32.load offset=4`` before the host call.  Set and
+Decimal still use the raw-handle scheme; they migrate in their own
+follow-ups so each domain's wrapping decisions can be reviewed
+independently.
 """
 
 from __future__ import annotations
@@ -11,9 +23,99 @@ from __future__ import annotations
 from vera import ast
 from vera.wasm.helpers import WasmSlotEnv
 
+# #573: kind discriminators passed to ``host_decref_handle`` and
+# stored in the wrap-table side index.  Must stay in sync with the
+# Python dispatcher in ``vera/codegen/api.py`` and the JS dispatcher
+# in ``vera/browser/runtime.mjs``.
+_WRAP_KIND_MAP = 1
+_WRAP_KIND_SET = 2  # reserved (Set follow-up)
+_WRAP_KIND_DECIMAL = 3  # reserved (Decimal follow-up)
+
+# #573: wrapper-ADT tag values stored at wrapper body offset 0.  Not
+# strictly required for correctness — the side table is the source
+# of truth for "is this object a wrapper" — but stored anyway as a
+# debugging aid (a heap dump will show MAP_HANDLE_TAG at the body's
+# first word).  Chosen well outside the user-ADT tag range (which
+# starts at 0 and increments per constructor).
+_MAP_HANDLE_TAG = 0xFEEDC001
+# 0xFEEDC002 reserved for SetHandle, 0xFEEDC003 for DecimalHandle.
+
+# #573: wrapper ADT body size.  Tag (i32, 4 bytes) + handle (i32, 4
+# bytes) = 8 bytes; ``$alloc`` rounds up to 8-byte alignment, so
+# this matches actual usage exactly.
+_WRAPPER_BODY_SIZE = 8
+
 
 class CallsContainersMixin:
     """Methods for translating Map, Set, and Decimal built-in functions."""
+
+    # -----------------------------------------------------------------
+    # #573: handle wrap / unwrap helpers (Map only — phase 1)
+    # -----------------------------------------------------------------
+
+    def _emit_wrap_handle(
+        self, kind: int, handle_temp: int, wrapper_temp: int,
+    ) -> list[str]:
+        """Emit WAT to wrap a host-handle i32 into a heap ADT wrapper.
+
+        Pre-condition: ``handle_temp`` holds the raw i32 handle
+        returned by a host helper.
+
+        Post-condition: ``wrapper_temp`` holds the wrapper-ADT
+        pointer (a GC-managed i32 heap pointer).  The wrapper has
+        been registered with the wrap table so Phase 2c of
+        ``$gc_collect`` will fire ``host_decref_handle(kind,
+        handle)`` when the wrapper becomes unreachable.
+
+        ``kind`` is one of the ``_WRAP_KIND_*`` constants.
+        Wrapper body layout:
+
+        ::
+
+            offset 0: tag (i32) — magic value (debugging aid)
+            offset 4: handle (i32) — host-handle index
+
+        Caller is responsible for leaving ``wrapper_temp`` (or a
+        ``local.get`` of it) on the operand stack as the call's
+        result, so the slot env / let-binding sees the wrapper
+        pointer rather than the raw handle.
+        """
+        if kind == _WRAP_KIND_MAP:
+            tag_value = _MAP_HANDLE_TAG
+        else:  # pragma: no cover — Set / Decimal land in follow-ups
+            raise NotImplementedError(
+                f"#573 phase 1 wraps Map only; kind={kind} reserved",
+            )
+        # Allocate 8-byte body.  $alloc returns the body pointer
+        # (header lives at body_ptr - 4).
+        return [
+            f"i32.const {_WRAPPER_BODY_SIZE}",
+            "call $alloc",
+            f"local.tee {wrapper_temp}",
+            # Store tag at body[0].
+            f"i32.const {tag_value}",
+            "i32.store offset=0",
+            # Store handle at body[4].
+            f"local.get {wrapper_temp}",
+            f"local.get {handle_temp}",
+            "i32.store offset=4",
+            # Register with wrap table: $register_wrapper(ptr, kind, handle).
+            f"local.get {wrapper_temp}",
+            f"i32.const {kind}",
+            f"local.get {handle_temp}",
+            "call $register_wrapper",
+            # Leave the wrapper pointer on the stack as the call result.
+            f"local.get {wrapper_temp}",
+        ]
+
+    def _emit_unwrap_handle(self) -> list[str]:
+        """Emit WAT to unwrap a wrapper-ADT pointer to its raw handle.
+
+        Consumes one i32 from the operand stack (the wrapper
+        pointer) and produces one i32 (the raw handle stored at
+        body offset 4).
+        """
+        return ["i32.load offset=4"]
 
     # -----------------------------------------------------------------
     # Decimal built-in operations (§9.7.2)
@@ -250,23 +352,41 @@ class CallsContainersMixin:
     def _translate_map_new(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """map_new() → i32 handle via host import.
+        """map_new() → wrapped Map handle via host import (#573).
 
-        Since map_new has no arguments, we use a single unparameterised
-        host import that returns a fresh empty map handle.
+        Allocates a fresh empty map on the host side, then wraps the
+        raw handle in an 8-byte ADT on the GC heap so the existing
+        mark-sweep collector can reclaim it.  Phase 2c of
+        ``$gc_collect`` fires ``host_decref_handle(MAP, handle)``
+        when the wrapper becomes unreachable, evicting the dead
+        entry from ``_map_store``.
         """
         wasm_name = "$vera.map_new"
         sig = "(func $vera.map_new (result i32))"
         self._map_imports.add(f'  (import "vera" "map_new" {sig})')
         self._map_ops_used.add("map_new")
-        return [f"call {wasm_name}"]
+        self.needs_alloc = True
+        ins: list[str] = [f"call {wasm_name}"]
+        handle_tmp = self.alloc_local("i32")
+        wrapper_tmp = self.alloc_local("i32")
+        ins.append(f"local.set {handle_tmp}")
+        ins.extend(
+            self._emit_wrap_handle(
+                _WRAP_KIND_MAP, handle_tmp, wrapper_tmp,
+            )
+        )
+        return ins
 
     def _translate_map_insert(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """map_insert(m, k, v) → i32 (new handle) via host import.
+        """map_insert(m, k, v) → wrapped Map handle via host import.
 
-        Emits a type-specific host import based on the key and value types.
+        Emits a type-specific host import based on the key and value
+        types.  Per #573, the input ``m`` is a wrapper-ADT pointer
+        and we must unwrap it (``i32.load offset=4``) to get the
+        raw host handle before calling the host helper; the result
+        is a fresh raw handle that we re-wrap before returning.
         """
         key_type = self._infer_vera_type(call.args[1])
         val_type = self._infer_vera_type(call.args[2])
@@ -284,12 +404,29 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
-        for arg in call.args:
+        # Eval `m` (wrapper ptr) and unwrap to raw handle.
+        arg0 = self.translate_expr(call.args[0], env)
+        if arg0 is None:
+            return None
+        ins.extend(arg0)
+        ins.extend(self._emit_unwrap_handle())
+        # Eval remaining args.
+        for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
+        # Wrap result.
+        self.needs_alloc = True
+        handle_tmp = self.alloc_local("i32")
+        wrapper_tmp = self.alloc_local("i32")
+        ins.append(f"local.set {handle_tmp}")
+        ins.extend(
+            self._emit_wrap_handle(
+                _WRAP_KIND_MAP, handle_tmp, wrapper_tmp,
+            )
+        )
         return ins
 
     def _translate_map_get(
@@ -321,7 +458,14 @@ class CallsContainersMixin:
         )
         self.needs_alloc = True
         ins: list[str] = []
-        for arg in call.args:
+        # Unwrap the Map argument (#573).  Result is an Option ADT
+        # heap pointer built by the host helper, so no re-wrap.
+        arg0 = self.translate_expr(call.args[0], env)
+        if arg0 is None:
+            return None
+        ins.extend(arg0)
+        ins.extend(self._emit_unwrap_handle())
+        for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
@@ -376,7 +520,13 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
-        for arg in call.args:
+        # Unwrap the Map argument (#573).  Result is Bool — no wrap.
+        arg0 = self.translate_expr(call.args[0], env)
+        if arg0 is None:
+            return None
+        ins.extend(arg0)
+        ins.extend(self._emit_unwrap_handle())
+        for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
@@ -401,18 +551,37 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
-        for arg in call.args:
+        # Unwrap the Map argument (#573); re-wrap the new handle.
+        arg0 = self.translate_expr(call.args[0], env)
+        if arg0 is None:
+            return None
+        ins.extend(arg0)
+        ins.extend(self._emit_unwrap_handle())
+        for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
+        self.needs_alloc = True
+        handle_tmp = self.alloc_local("i32")
+        wrapper_tmp = self.alloc_local("i32")
+        ins.append(f"local.set {handle_tmp}")
+        ins.extend(
+            self._emit_wrap_handle(
+                _WRAP_KIND_MAP, handle_tmp, wrapper_tmp,
+            )
+        )
         return ins
 
     def _translate_map_size(
         self, arg: "ast.Expr", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """map_size(m) → i64 (Int) via host import."""
+        """map_size(m) → i64 (Int) via host import.
+
+        Per #573 the Map argument is a wrapper-ADT pointer; unwrap
+        before calling the host.  The result is i64, no re-wrap.
+        """
         wasm_name = "$vera.map_size"
         sig = "(func $vera.map_size (param i32) (result i64))"
         self._map_imports.add(f'  (import "vera" "map_size" {sig})')
@@ -421,6 +590,7 @@ class CallsContainersMixin:
         if arg_instrs is None:
             return None
         ins: list[str] = list(arg_instrs)
+        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins
 
@@ -444,6 +614,7 @@ class CallsContainersMixin:
         if arg_instrs is None:
             return None
         ins: list[str] = list(arg_instrs)
+        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins
 
@@ -466,6 +637,7 @@ class CallsContainersMixin:
         if arg_instrs is None:
             return None
         ins: list[str] = list(arg_instrs)
+        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins
 

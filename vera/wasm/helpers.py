@@ -266,7 +266,15 @@ def _is_pair_element_type(elem_type: str) -> bool:
 # Note: per-execute() handle leaks for these stores are tracked
 # separately as #346 — that's an active-reclamation problem
 # distinct from the rooting decision the classifier informs.
-_HOST_HANDLE_TYPES: frozenset[str] = frozenset({"Map", "Set", "Decimal"})
+#
+# #573 phase 1: ``Map`` migrated to the heap-wrap-as-ADT scheme.
+# Map values are now pointers to GC-managed wrapper ADTs (8-byte
+# objects holding the real i32 host handle in field 0); they ARE
+# Vera-heap pointers and MUST be rooted, so ``Map`` is excluded
+# from this set.  ``Set`` / ``Decimal`` still use the raw-handle
+# scheme and remain in the set; they migrate in their own
+# follow-ups.
+_HOST_HANDLE_TYPES: frozenset[str] = frozenset({"Set", "Decimal"})
 
 
 def _is_host_handle_type(type_name: str | None) -> bool:

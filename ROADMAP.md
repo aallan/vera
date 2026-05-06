@@ -8,7 +8,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 164 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,706 tests, 82 conformance programs, 33 examples, and a 13-chapter specification.
+The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 164 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,709 tests, 82 conformance programs, 33 examples, and a 13-chapter specification.
 
 Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers — now covers 6 models across 3 providers (v0.0.7). The headline result: Kimi K2.5 achieves 100% run_correct on Vera, beating both Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera. The flagship tier averages 93% Vera run_correct vs 93% Python — essentially parity. These are single-run results with high variance; stable rates will require pass@k evaluation. The remaining gaps are empirical breadth (repeated trials, more models), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
 
@@ -22,7 +22,7 @@ This section captures the concrete **implementation order** for the next few wee
 
 The current near-term queue is a **bug-killing campaign**. After the Stage 11 stdlib push closed most of the ergonomic gaps (missing primitives, typed accessors, ASCII character utilities — see [HISTORY.md](HISTORY.md) for the release history), the dominant source of agent friction shifted from "the language can't do this" to "the language compiles and verifies my program but the compiled artefact misbehaves at runtime."
 
-A second Game of Life agent run against v0.0.119, plus targeted testing, surfaced enough fresh codegen/runtime bugs that combined with the pre-existing translator and GC issues the campaign opened with twelve bug issues. As of v0.0.133, one bug remains ([#573](https://github.com/aallan/vera/issues/573)) plus one stdlib enhancement ([#507](https://github.com/aallan/vera/issues/507)); see [HISTORY.md](HISTORY.md) and [CHANGELOG.md](CHANGELOG.md) for what each release closed.
+A second Game of Life agent run against v0.0.119, plus targeted testing, surfaced enough fresh codegen/runtime bugs that combined with the pre-existing translator and GC issues the campaign opened with twelve bug issues. As of v0.0.134, the original campaign issues are closed; #573 phase 1 (Map) shipped, and follow-ups #575 (Set) and #576 (Decimal) are mechanical mirrors that will land in subsequent releases. The remaining priority entries are stdlib depth ([#507](https://github.com/aallan/vera/issues/507)) and the two phase-2/3 reclamation issues. See [HISTORY.md](HISTORY.md) and [CHANGELOG.md](CHANGELOG.md) for what each release closed.
 
 The agent's self-observation on why this matters:
 
@@ -34,8 +34,9 @@ Closing that gap is the highest-leverage agent-adoption work available. Priority
 
 | Order | Issue | Why now |
 |:---:|---|---|
-| 1 | [#573](https://github.com/aallan/vera/issues/573) — Active reclamation of host-store handles | Python-side stores (`_map_store` / `_set_store` / `_decimal_store` in `vera/codegen/api.py`) accumulate monotonically across an `execute()` call. Recommended design is heap-wrap-as-ADT — return a Vera-heap `MapHandle(i32)` from each handle-creating op so the existing mark-sweep GC handles reclamation via a destructor callback. |
-| 2 | [#507](https://github.com/aallan/vera/issues/507) — Eq/Ord-dispatched array ops (`array_sort`, `array_contains`, `array_index_of`) | Phase 2 of [#466](https://github.com/aallan/vera/issues/466). Needs the dispatch infrastructure to invoke `compare$T`/`eq$T` from inside an iterative WASM loop. Lower urgency because explicit-callback alternatives (`array_sort_by`, `array_any` + equality predicate) already work. |
+| 1 | [#575](https://github.com/aallan/vera/issues/575) — Heap-wrap-as-ADT for `Set<T>` (#573 phase 2) | Mechanical mirror of v0.0.134's Map migration: wrap on Set-returning ops, unwrap on Set-consuming ops, extend `host_decref_handle` with `kind == 2`, drop `Set` from `_HOST_HANDLE_TYPES`. Closes the per-`execute()` `_set_store` leak. |
+| 2 | [#576](https://github.com/aallan/vera/issues/576) — Heap-wrap-as-ADT for `Decimal` (#573 phase 3) | Same mirror for Decimal, slightly larger because every arithmetic op (`decimal_add` / `_sub` / `_mul` / `_div` / `_round` / ...) returns a new handle. Closes the per-`execute()` `_decimal_store` leak. |
+| 3 | [#507](https://github.com/aallan/vera/issues/507) — Eq/Ord-dispatched array ops (`array_sort`, `array_contains`, `array_index_of`) | Phase 2 of [#466](https://github.com/aallan/vera/issues/466). Needs the dispatch infrastructure to invoke `compare$T`/`eq$T` from inside an iterative WASM loop. Lower urgency because explicit-callback alternatives (`array_sort_by`, `array_any` + equality predicate) already work. |
 
 ### What moves when
 
@@ -255,4 +256,4 @@ Items here are **deferred decisions**, not scheduled work. Each captures the des
 
 ## Completed phases
 
-The compiler was built through eleven stages from February 2026 onwards. **810+ commits, 133 tagged releases (as of v0.0.133), 3,706 tests, 96% coverage, 82 conformance programs, 33 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the per-stage narrative and per-release table.
+The compiler was built through eleven stages from February 2026 onwards. **810+ commits, 134 tagged releases (as of v0.0.134), 3,709 tests, 96% coverage, 82 conformance programs, 33 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the per-stage narrative and per-release table.

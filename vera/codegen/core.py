@@ -132,6 +132,15 @@ class CodeGenerator(
         self._closure_sigs: dict[str, str] = {}  # sig_key -> WAT type decl
         self._closure_fns_wat: list[str] = []  # WAT for lifted closures
         self._needs_table: bool = False
+        # #573: wrap-table flag — see ``WasmContext`` for the long
+        # description.  Set in ``_assemble_module`` whenever a
+        # host-handle type that has migrated to heap-wrap-as-ADT is
+        # in use (currently just Map; Set / Decimal extend the
+        # gating in their own follow-ups).  When true, the WAT
+        # module gets a 64 KiB wrap-table region, the
+        # ``$register_wrapper`` helper, and Phase 2c of
+        # ``$gc_collect``.
+        self._needs_wrap_table: bool = False
         self._next_closure_id: int = 0
 
         # #516 Stage 2 — runtime-trap source mapping.

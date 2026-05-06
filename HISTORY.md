@@ -268,6 +268,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.131 | 5 May | **GC infrastructure batch — `$alloc` multi-page grow + worklist size + overflow trap, closes [#487](https://github.com/aallan/vera/issues/487) and [#348](https://github.com/aallan/vera/issues/348)** (heap base shifts 32 768 → 81 920 bytes from the worklist resize; surfaced [#570](https://github.com/aallan/vera/issues/570) `array_map` shadow-stack overflow for follow-up). |
 | v0.0.132 | 5 May | **Opaque-handle GC-rooting hygiene — closes [#347](https://github.com/aallan/vera/issues/347) and [#490](https://github.com/aallan/vera/issues/490)** (`#346` closed as superseded by [#573](https://github.com/aallan/vera/issues/573); active reclamation needs a heap-wrap-as-ADT design tracked there). |
 | v0.0.133 | 5 May | **Iterative array builders no longer leak the closure return-value root — closes [#570](https://github.com/aallan/vera/issues/570)** (`array_map` / `array_mapi` / `array_fold` / `array_sort_by`; per-callsite `$gc_sp` unwind after each `call_indirect` whose closure returns a heap pointer). |
+| v0.0.134 | 6 May | **Active reclamation of host-store Map handles (heap-wrap-as-ADT) — closes [#573](https://github.com/aallan/vera/issues/573) phase 1**.  Map values are now pointers to GC-tracked wrapper ADTs; Phase 2c of `$gc_collect` fires `host_decref_handle` to evict unreachable Map entries from `_map_store`.  10 000-iter `map_insert` chain leaves the store at 1 entry, not 10 001.  Set ([#575](https://github.com/aallan/vera/issues/575)) and Decimal ([#576](https://github.com/aallan/vera/issues/576)) follow in separate PRs. |
 
 ---
 
@@ -297,14 +298,14 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 
 ## By the numbers
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.133 (5 May) |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.134 (6 May) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser |
-| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,706 |
+| Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,709 |
 | Examples | 13 | 15 | 16 | 18 | 24 | 30 | 33 |
 | Built-in functions | 0 | 0 | ~5 | ~30 | ~80 | 122 | 164 |
 | Conformance programs | 0 | 0 | 0 | 0 | ~50 | 64 | 82 |
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 133 tagged releases, 54 active development days.**
+Total: **810+ commits, 134 tagged releases, 54 active development days.**

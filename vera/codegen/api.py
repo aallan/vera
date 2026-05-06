@@ -140,6 +140,16 @@ class ExecuteResult:
     # callers.  Default "" preserves backward compatibility — only
     # populated when execute(capture_stderr=True).
     stderr: str = ""
+    # #573: post-execution snapshot of host-side store sizes so
+    # tests can verify GC reclamation actually happened.  Populated
+    # only when the corresponding store was created (i.e. when the
+    # program used Map/Set/Decimal at all).  Sizes here are taken
+    # *after* the program returns but *before* the linker is
+    # dropped, so the dict reflects the steady-state population
+    # (any wrappers the GC reclaimed via Phase 2c are already
+    # gone; any survivors that were live at exit are still
+    # counted).  Empty when no host stores were used.
+    host_store_sizes: dict[str, int] = field(default_factory=dict)
 
 
 class _VeraExit(Exception):
@@ -802,6 +812,14 @@ def execute(
     # see error output where they expect it).
     stderr_buf: StringIO | None = StringIO() if capture_stderr else None
 
+    # #573: introspection hook for tests verifying GC reclamation of
+    # host-side stores.  Populated by reference inside the
+    # ``result.map_ops_used`` etc. branches below; we read its
+    # entries' ``len()`` after the program returns and ship them
+    # in ``ExecuteResult.host_store_sizes``.  Empty for programs
+    # that never used Map / Set / Decimal.
+    _host_store_refs: dict[str, dict[int, object]] = {}
+
     # -----------------------------------------------------------------
     # Memory helpers for host → WASM string/ADT allocation
     # -----------------------------------------------------------------
@@ -838,6 +856,66 @@ def execute(
         ptr = alloc_fn(caller, size)
         assert isinstance(ptr, int)  # noqa: S101
         return ptr
+
+    # #573: wrapper-ADT layout constants (must match
+    # ``vera/wasm/calls_containers.py``).  Tag values are picked
+    # well outside the user-ADT tag range as a debugging aid; the
+    # wrap-table is the source of truth for "is this object a
+    # wrapper", so a tag collision wouldn't cause incorrect
+    # destructor firing.
+    _WRAP_KIND_MAP = 1
+    _MAP_HANDLE_TAG = 0xFEEDC001
+    _WRAPPER_BODY_SIZE = 8
+
+    def _call_register_wrapper(
+        caller: wasmtime.Caller, ptr: int, kind: int, handle: int,
+    ) -> None:
+        """Register a wrapper ADT with the WASM-side wrap table.
+
+        Calls the exported ``$register_wrapper`` so Phase 2c of
+        ``$gc_collect`` will fire ``host_decref_handle(kind, handle)``
+        when ``ptr`` becomes unreachable.  No-op when the WAT
+        module didn't enable the wrap table (i.e. no Map / Set /
+        Decimal use); host-side JSON / HTML parsers can call this
+        unconditionally and it'll just skip.
+        """
+        register_fn = caller["register_wrapper"]
+        if register_fn is None:  # pragma: no cover — wrap table disabled
+            return
+        assert isinstance(register_fn, wasmtime.Func)  # noqa: S101
+        register_fn(caller, ptr, kind, handle)
+
+    def _alloc_map_wrapper(
+        caller: wasmtime.Caller, d: dict[object, object],
+    ) -> int:
+        """Allocate a Map host-store entry plus GC-tracked wrapper (#573).
+
+        Drop-in replacement for ``_map_alloc(d)`` in host code
+        paths whose result flows back to user-level Map<K, V>
+        handling: ``write_json``'s JObject branch and the HTML
+        parser's HtmlElement attrs.  Allocates the dict in
+        ``_map_store`` (via ``_map_alloc``) AND emits an 8-byte
+        wrapper ADT in WASM memory registered with
+        ``$register_wrapper``.  The returned i32 is the wrapper
+        pointer, type-compatible with the rest of the WASM
+        codepath (the slot env stores wrapper pointers; user
+        consumers like ``map_get`` unwrap with ``i32.load
+        offset=4``).
+
+        Forward closure reference: ``_map_alloc`` is defined
+        below in the ``if result.map_ops_used or ...`` block
+        below; tolerated because this helper is only called from
+        JSON / HTML host code whose own gating flags imply the
+        map store exists by call time.
+        """
+        raw_handle = _map_alloc(d)
+        body_ptr = _call_alloc(caller, _WRAPPER_BODY_SIZE)
+        _write_i32(caller, body_ptr, _MAP_HANDLE_TAG)
+        _write_i32(caller, body_ptr + 4, raw_handle)
+        _call_register_wrapper(
+            caller, body_ptr, _WRAP_KIND_MAP, raw_handle,
+        )
+        return body_ptr
 
     def _alloc_string(
         caller: wasmtime.Caller, s: str,
@@ -1604,6 +1682,8 @@ def execute(
         # Handle table: maps i32 handles to Python dicts.
         _map_store: dict[int, dict[object, object]] = {}
         _map_next_handle = [1]
+        # #573: expose to ExecuteResult.host_store_sizes for tests.
+        _host_store_refs["map"] = _map_store  # type: ignore[assignment]
 
         def _map_alloc(d: dict[object, object]) -> int:
             h = _map_next_handle[0]
@@ -1612,6 +1692,35 @@ def execute(
             return h
 
     if result.map_ops_used:
+        # #573: destructor host import.  Phase 2c of `$gc_collect`
+        # calls this for every wrap-table entry whose wrapper ADT
+        # was unmarked, evicting the corresponding entry from the
+        # appropriate Python-side store.  Dispatch on `kind`:
+        #   1 = Map, 2 = Set, 3 = Decimal (4..N reserved).
+        # In this release only `kind=1` is reachable from generated
+        # WAT (Map is the only host-handle type migrated to the
+        # heap-wrap-as-ADT scheme — phase 1 of #573 / Plan B).
+        # Set and Decimal extend this dispatcher in their own
+        # follow-ups once their call-site translators wrap.
+        # Unknown kinds are silently ignored: a no-op destructor
+        # never produces store corruption, and being defensive
+        # here costs nothing.
+        def host_decref_handle(
+            _caller: wasmtime.Caller, kind: int, handle: int,
+        ) -> None:
+            if kind == 1:
+                _map_store.pop(handle, None)
+            # kind == 2 / 3 reserved for Set / Decimal follow-ups.
+
+        linker.define_func(
+            "vera", "host_decref_handle",
+            wasmtime.FuncType(
+                [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
+                [],
+            ),
+            host_decref_handle, access_caller=True,
+        )
+
         # map_new() → i32 handle
         def host_map_new(_caller: wasmtime.Caller) -> int:
             return _map_alloc({})
@@ -1881,6 +1990,10 @@ def execute(
     if result.set_ops_used:
         _set_store: dict[int, set[object]] = {}
         _set_next_handle = [1]
+        # #573 introspection (same pattern as Map; even though Set
+        # doesn't migrate to wrappers in this PR, exposing the size
+        # lets follow-up reclamation work re-use this hook).
+        _host_store_refs["set"] = _set_store  # type: ignore[assignment]
 
         def _set_alloc(s: set[object]) -> int:
             h = _set_next_handle[0]
@@ -2055,6 +2168,9 @@ def execute(
 
         _decimal_store: dict[int, PyDecimal] = {}
         _decimal_next_handle = [1]
+        # #573 introspection (same pattern as Map; Decimal migration
+        # is a separate follow-up).
+        _host_store_refs["decimal"] = _decimal_store  # type: ignore[assignment]
 
         def _decimal_alloc(d: PyDecimal) -> int:
             h = _decimal_next_handle[0]
@@ -2284,7 +2400,7 @@ def execute(
                     return _alloc_result_err_string(caller, str(exc))
                 json_ptr = write_json(
                     caller, _call_alloc, _write_i32, _write_f64,
-                    _alloc_string, _map_alloc, parsed,
+                    _alloc_string, _alloc_map_wrapper, parsed,
                 )
                 return _alloc_result_ok_i32(caller, json_ptr)
 
@@ -2494,7 +2610,7 @@ def execute(
                     root = parser.get_root()
                     html_ptr = write_html(
                         caller, _call_alloc, _write_i32,
-                        _alloc_string, _map_alloc, root,
+                        _alloc_string, _alloc_map_wrapper, root,
                     )
                     return _alloc_result_ok_i32(caller, html_ptr)
                 except Exception as exc:
@@ -2546,7 +2662,7 @@ def execute(
                     for i, m in enumerate(matches):
                         m_ptr = write_html(
                             caller, _call_alloc, _write_i32,
-                            _alloc_string, _map_alloc, m,
+                            _alloc_string, _alloc_map_wrapper, m,
                         )
                         _write_i32(caller, arr_ptr + i * 4, m_ptr)
                 else:
@@ -3027,4 +3143,5 @@ def execute(
         stdout=output_buf.getvalue(),
         stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
         state={k: v[-1] for k, v in state_store.items()},
+        host_store_sizes={k: len(v) for k, v in _host_store_refs.items()},
     )

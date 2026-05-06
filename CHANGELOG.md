@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.134] - 2026-05-06
+
+### Fixed
+- **Active reclamation of host-store Map handles — closes [#573](https://github.com/aallan/vera/issues/573) (phase 1 — Map only)**.  Pre-fix, every `map_new` / `map_insert` / `map_remove` allocated a fresh entry in `_map_store` (Python-side dict in `vera/codegen/api.py`) and never released the transient predecessors.  A 10 000-iteration `array_fold` over `map_insert` left 10 001 entries in the store at `execute()` exit; bounded by Python GC at process exit, so single-shot programs were unaffected, but long-running execution contexts (server programs, repeated `execute()` calls) leaked monotonically.
+
+  Post-fix, the heap-wrap-as-ADT design from the issue body: every `Map<K, V>` value is now a pointer to an 8-byte wrapper ADT on the GC heap (tag at offset 0, raw host handle at offset 4).  Wrappers register with a new 64 KiB wrap-table region in linear memory at allocation; Phase 2c of `$gc_collect` walks the wrap table and fires a new `host_decref_handle(kind, handle)` host import for every wrapper that was unmarked, evicting the corresponding entry from `_map_store`.  Survivors are compacted in place so the table tracks live wrappers, not total allocations.
+
+  Concretely:
+  - `vera/codegen/assembly.py` — new wrap-table region (gated on `_needs_wrap_table`), `$register_wrapper` helper, Phase 2c walk in `$gc_collect`, `host_decref_handle` import declaration, `register_wrapper` export so host-side JSON/HTML parsers can register their internal Map wrappers.
+  - `vera/wasm/calls_containers.py` — every Map call-site now wraps the handle on construction (`map_new` / `map_insert` / `map_remove`) and unwraps via `i32.load offset=4` on consumption (`map_get` / `map_contains` / `map_size` / `map_keys` / `map_values`).
+  - `vera/wasm/helpers.py` — `Map` removed from `_HOST_HANDLE_TYPES` so the wrapper pointer (which IS a real Vera-heap pointer) gets shadow-stack-rooted across allocating calls.  Set / Decimal stay in the set until their own follow-ups.
+  - `vera/codegen/api.py` — new `_alloc_map_wrapper(caller, dict)` helper called by `write_json` / `write_html` so JObject and HtmlElement attrs get the same wrapper treatment as user-allocated Maps.  Without this, prelude functions like `json_has_field` (which dispatches to `map_contains` on JObject's Map field) would dereference a raw host handle as a wrapper pointer and read garbage.
+  - `vera/wasm/json_serde.py`, `vera/wasm/html_serde.py` — `write_*` use `map_alloc` to produce wrapper pointers; `read_*` unwrap before looking up the host store.
+  - `vera/browser/runtime.mjs` — full mirror: `host_decref_handle`, `allocMapWrapper`, JObject and HtmlElement wrap on write, unwrap on read.
+  - `tests/test_codegen.py::TestHostHandleReclamation573` — three regression tests: 10 000-iter `map_insert` chain (`_map_store` size <= 100 after), 5 000 transient JObject allocations (`_map_store` < 1 500), and a functional integrity check that `map_get` returns correct values after heavy GC pressure.
+  - `ExecuteResult.host_store_sizes` — new field exposing post-execution store population so tests can verify reclamation without invasive linker introspection.
+
+  Phase 2 (Set, [#575](https://github.com/aallan/vera/issues/575)) and Phase 3 (Decimal, [#576](https://github.com/aallan/vera/issues/576)) follow as separate PRs — each is a mechanical mirror of the Map migration and benefits from reviewing the design choices made here before extending.
+
+### Updated
+- `tests/test_codegen.py::TestOpaqueHandleParamRooting347::test_map_param_shadow_pushed_after_573` — was `test_map_param_not_shadow_pushed` pinning #347's exclusion of Map from GC-rooting.  After #573, Map values ARE GC-managed wrapper pointers and MUST be rooted, so the test now asserts the canonical `gc_shadow_push` idiom IS present in the function prologue.  Set / Decimal pinning tests unchanged.
+
 ## [0.0.133] - 2026-05-05
 
 ### Fixed
@@ -1894,7 +1916,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.133...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.134...HEAD
+[0.0.134]: https://github.com/aallan/vera/compare/v0.0.133...v0.0.134
 [0.0.133]: https://github.com/aallan/vera/compare/v0.0.132...v0.0.133
 [0.0.132]: https://github.com/aallan/vera/compare/v0.0.131...v0.0.132
 [0.0.131]: https://github.com/aallan/vera/compare/v0.0.130...v0.0.131
