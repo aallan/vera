@@ -843,11 +843,20 @@ def execute(
     def _read_wasm_string(
         caller: wasmtime.Caller, ptr: int, length: int,
     ) -> str:
-        """Read a UTF-8 string from WASM memory."""
+        """Read a UTF-8 string from WASM memory.
+
+        Uses ``errors="replace"`` so that a corrupt (ptr, len) pair from
+        an upstream codegen bug surfaces as U+FFFD replacement characters
+        rather than a raw ``UnicodeDecodeError`` escaping through
+        wasmtime's trampoline (#589).  Path / env-var / file-content
+        consumers downstream may then surface their own "file not found"
+        / "value not set" errors when the replacement chars don't match
+        anything, which is a strict improvement over a Python traceback.
+        """
         memory = caller["memory"]
         assert isinstance(memory, wasmtime.Memory)  # noqa: S101
         buf = memory.data_ptr(store)
-        return bytes(buf[ptr:ptr + length]).decode("utf-8")
+        return bytes(buf[ptr:ptr + length]).decode("utf-8", errors="replace")
 
     def _write_bytes(
         caller: wasmtime.Caller, offset: int, data: bytes,
@@ -1057,7 +1066,14 @@ def execute(
         assert isinstance(memory, wasmtime.Memory)  # noqa: S101
         buf = memory.data_ptr(store)
         data = bytes(buf[ptr:ptr + length])
-        text = data.decode("utf-8")
+        # `errors="replace"` so an upstream codegen bug producing a
+        # corrupt String (ptr, len) pair surfaces as U+FFFD characters
+        # in the user's output rather than a raw Python `UnicodeDecodeError`
+        # escaping through wasmtime's trampoline as a "python exception"
+        # cause (#589).  A user-level program must never produce a Python
+        # traceback regardless of what the program does — the WasmTrapError
+        # contract from #516/#522/#547 holds here too.
+        text = data.decode("utf-8", errors="replace")
         # Always capture into output_buf so ExecuteResult.stdout and
         # WasmTrapError.stdout reflect every byte the program printed
         # (the trap-preservation contract from #522 must hold even
@@ -1209,7 +1225,8 @@ def execute(
         assert isinstance(memory, wasmtime.Memory)  # noqa: S101
         buf = memory.data_ptr(store)
         data = bytes(buf[ptr:ptr + length])
-        text = data.decode("utf-8")
+        # `errors="replace"` for the same reason as `host_print` (#589).
+        text = data.decode("utf-8", errors="replace")
         if stderr_buf is not None:
             stderr_buf.write(text)
         else:
@@ -1262,7 +1279,10 @@ def execute(
         buf = memory.data_ptr(store)
         data = bytes(buf[ptr:ptr + length])
         last_violation.clear()
-        last_violation.append(data.decode("utf-8"))
+        # `errors="replace"` so a corrupt violation message itself
+        # doesn't crash with a `UnicodeDecodeError` and mask the
+        # underlying contract violation that triggered the trap (#589).
+        last_violation.append(data.decode("utf-8", errors="replace"))
 
     contract_fail_type = wasmtime.FuncType(
         [wasmtime.ValType.i32(), wasmtime.ValType.i32()],
@@ -3235,13 +3255,16 @@ def execute(
                 mem_size = memory_export.data_len(store)
                 if 0 <= ptr and ptr + length <= mem_size:
                     raw_bytes = bytes(buf[ptr:ptr + length])
-                    try:
-                        value = raw_bytes.decode("utf-8")
-                    except UnicodeDecodeError:
-                        # Not valid UTF-8 (shouldn't happen for a
-                        # well-formed String, but stay defensive) —
-                        # fall back to the pointer half.
-                        value = ptr
+                    # `errors="replace"` rather than the previous
+                    # try/except → pointer-fallback pattern (#589).  The
+                    # old fallback silently mutated the return type from
+                    # ``str`` to ``int`` when bytes weren't valid UTF-8,
+                    # so a downstream consumer (CLI printer) printed an
+                    # integer where a string was expected — a worse
+                    # footgun than visible U+FFFD chars.  Now invalid
+                    # bytes surface as replacement characters in the
+                    # decoded string and ``value`` stays a ``str``.
+                    value = raw_bytes.decode("utf-8", errors="replace")
                 else:  # pragma: no cover — out-of-bounds defensive path
                     value = ptr
             else:  # pragma: no cover — module without memory export

@@ -8,6 +8,8 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 |-----|-------|
 | Tail-call optimization disabled for allocating functions — `return_call` would discard the GC epilogue and leak shadow-stack slots, so allocating functions fall back to plain `call`. Workaround: restructure to allocate outside the recursion, or iterate via `array_fold` / `array_map` (which compile to WASM loops). | [#549](https://github.com/aallan/vera/issues/549) |
 | Conservative GC scan can spuriously retain heap objects via the host-handle field of a wrapper ADT (#573 latent). Phase 2b scans wrapper payloads word-by-word; the `handle` at offset 4 is a small i32 that stays below `gc_heap_start` (~147 KiB) for typical programs, so the heap-range check rejects it. Long-running programs (>100K host-store allocations in a single `execute()`) could see a handle exceed the threshold and (with the right alignment) be falsely classified as a heap pointer, retaining an unrelated heap object. Retention bug, not correctness — no use-after-free, no corruption. Issue body lists four candidate fix designs (self-describing wrappers, header skip-scan flag, wrap-table cross-reference, max-handle lower-bound check). | [#578](https://github.com/aallan/vera/issues/578) |
+| Indexing a *captured* `Array<T>` inside a closure body produces invalid WASM. Element type doesn't matter — `Array<Int>`, `Array<Bool>`, `Array<Array<Bool>>` all reproduce. Two failure modes: flat case (one level) fails WASM *validation* with `unknown table 0: table index out of bounds`; nested case (two levels) passes validation but traps at runtime with `undefined element: out of bounds table access` or `indirect call type mismatch`. The trigger is the `[]` operator on a slot reference whose binding is a capture. `array_length` on the captured array works fine; `[]` outside any closure works fine. Workaround for flat case: `let @Array<T> = @Array<T>.0; @Array<T>.0[i]` (rebind the capture to a fresh let). Workaround for nested case: pass the array through a top-level helper as an explicit parameter. | [#588](https://github.com/aallan/vera/issues/588) |
+| `Inference.complete` / `Http.get` / `Http.post` decode network response bodies with strict UTF-8 (`vera/codegen/api.py:756 / :2809 / :2841`). If a remote API returns a response containing non-UTF-8 bytes, the user sees a Python `UnicodeDecodeError` message leaked into the `Result::Err` string. Lower-severity sibling of #589 — the sites are wrapped in `try/except Exception` so no Python traceback escapes wasmtime's trampoline (the failure surfaces as a Vera-level `Err`, not a crash), but the error message contains Python-internals noise rather than a Vera-native diagnostic. Practical trigger probability is low (HTTP/JSON APIs almost universally use UTF-8), but the defensive-coding hygiene gap mirrors #589 and should be closed. Decision pending: `errors="replace"` (preserve data, lose signal) vs explicit invalid-UTF-8 detection with a Vera-native `Err` (preserve signal, lose data). | [#591](https://github.com/aallan/vera/issues/591) |
 
 ## Limitations
 
@@ -47,6 +49,14 @@ Files that have grown beyond a comfortable size and need decomposition. None of 
 | `tests/test_codegen.py` | 10,019 | Split into feature-focused test files (literals, arithmetic, control flow, strings, arrays, collections, effects, data types) | [#419](https://github.com/aallan/vera/issues/419) |
 | `tests/test_checker.py` | 5,522 | Split into phase-focused test files (types, functions, effects, contracts, modules, errors) | [#420](https://github.com/aallan/vera/issues/420) |
 | `vera/codegen/api.py` | 2,228 | Extract memory layout utilities → `memory.py`; extract host runtime → `runtime.py` | [#421](https://github.com/aallan/vera/issues/421) |
+
+## Test coverage gaps
+
+Internal test-quality items that don't affect correctness today but would make the suite more durable to refactoring.
+
+| Gap | Issue |
+|-----|-------|
+| `TestHostPrintInvalidUtf8589` (`tests/test_runtime_traps.py`) has 6 structural source-greps and 1 end-to-end synthetic-WAT test for `host_print`. The other 5 decode sites (`host_stderr`, `host_contract_fail`, `_read_wasm_string`, `markdown.py::_read_string`, `_extract_string`) are pinned only by structural tests. A refactor that centralises the decodes into a `_safe_decode()` helper would break the structural greps even with preserved behaviour. End-to-end tests using synthetic WAT modules per site (~5 × 20 lines) would survive the refactor. Lowest-cost form: parametrize the existing test over an `(import_name, type_signature, payload_construction)` tuple. | [#592](https://github.com/aallan/vera/issues/592) |
 
 ## CI workarounds
 

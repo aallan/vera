@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **[#589](https://github.com/aallan/vera/issues/589)** — `host_print` / `host_stderr` / `host_contract_fail` / `_read_wasm_string` / `vera/wasm/markdown.py::_read_string` no longer crash with a raw Python `UnicodeDecodeError` when an upstream codegen bug produces a corrupt String `(ptr, len)` pair pointing at non-UTF-8 bytes.  Pre-fix, the unhandled exception escaped through wasmtime's trampoline as a "python exception" cause and the user's CLI saw a 30+ line Python traceback ending in `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc1`.  A user-level program must never produce a Python traceback regardless of what the program does — this is the WasmTrapError contract from #516 / #522 / #547 applied to the UTF-8-decode paths.  Fix is per-site `errors="replace"` so invalid bytes surface as U+FFFD replacement characters in the user's output instead.  The String-return decoder in `execute()` (added by v0.0.135) was previously try/except → pointer fallback, which silently mutated the return type from `str` to `int` when bytes weren't valid UTF-8 — that fallback was a worse silent failure than visible U+FFFD chars (downstream consumers printed an integer where a string was expected) and is now also `errors="replace"`.  Surfaced by [#588](https://github.com/aallan/vera/issues/588) (captured-Array-indexing in closure produces corrupt String pointers); fixing #588 removes the most common trigger but the defensive-coding hygiene applies regardless of source.  New `TestHostPrintInvalidUtf8589` test class in `tests/test_runtime_traps.py` covers all six affected sites with structural assertions plus an end-to-end wasmtime-trampoline contract test using a synthetic WAT module that imports `vera.print` and calls it with raw invalid UTF-8 bytes.
+
 ## [0.0.135] - 2026-05-06
 
 ### Fixed
