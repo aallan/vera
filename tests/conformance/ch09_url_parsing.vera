@@ -37,6 +37,20 @@ public fn test_parse_err(@Unit -> @Int)
   }
 }
 
+-- RFC 3986 §3.1: scheme must be non-empty.  url_parse(":foo")
+-- previously returned Ok with empty scheme then url_join emitted
+-- bare "foo", losing the leading colon.  Post-#568 it returns Err.
+public fn test_parse_empty_scheme(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 1)
+  effects(pure)
+{
+  match url_parse(":foo") {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
 public fn test_join_full(@Unit -> @Int)
   requires(true)
   ensures(@Int.result == 33)
@@ -67,6 +81,7 @@ public fn main(@Unit -> @Unit)
   IO.print(to_string(test_parse_full(())));
   IO.print(to_string(test_parse_no_query(())));
   IO.print(to_string(test_parse_err(())));
+  IO.print(to_string(test_parse_empty_scheme(())));
   IO.print(to_string(test_join_full(())));
   IO.print(to_string(test_roundtrip(())));
   ()
