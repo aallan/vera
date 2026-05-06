@@ -44,15 +44,33 @@ def main() -> int:
     index_html = root / "docs" / "index.html"
     if index_html.is_file():
         html_text = index_html.read_text()
+        # NOTE: ``re.search`` returns the first match in document
+        # order.  The version-badge URL appears at line ~268
+        # before any body-text release links (the VeraBench /
+        # earlier-release references later in the file), so this
+        # currently grabs the right URL.  If a future doc edit
+        # inserts a release-tag URL before the badge, the URL
+        # extraction will silently grab the wrong version.  The
+        # link-text regex below IS anchored to the badge shape
+        # (``">X.Y.Z</a>`` after the URL), so a divergence will
+        # still be caught by the all-match check at the end —
+        # but a tighter URL anchor (e.g. ``<span>v<a href=...``)
+        # would be more robust.  Held for a follow-up.
         url_match = re.search(r"releases/tag/v([0-9]+\.[0-9]+\.[0-9]+)", html_text)
         if url_match:
             versions["docs/index.html (URL)"] = url_match.group(1)
         else:
+            # Fail-fast: matches the vera/__init__.py and README.md
+            # patterns above.  A WARNING-and-continue here would let
+            # the all-match check pass vacuously when the version
+            # badge is malformed or removed entirely — exactly the
+            # silent-failure mode this hardening is meant to close.
             print(
-                "WARNING: Could not find release URL version "
+                "ERROR: Could not find release URL version "
                 "in docs/index.html",
                 file=sys.stderr,
             )
+            return 1
         # Visible link-text version: ``...">X.Y.Z</a>`` immediately
         # after the URL.  Pin to the same line as the release URL
         # by anchoring on the closing-quote-then-angle-bracket of
@@ -65,10 +83,11 @@ def main() -> int:
             versions["docs/index.html (link text)"] = text_match.group(1)
         else:
             print(
-                "WARNING: Could not find link-text version "
+                "ERROR: Could not find link-text version "
                 "in docs/index.html",
                 file=sys.stderr,
             )
+            return 1
 
     # README.md — "active development at vX.Y.Z"
     readme = root / "README.md"
