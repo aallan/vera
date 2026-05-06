@@ -269,6 +269,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.132 | 5 May | **Opaque-handle GC-rooting hygiene — closes [#347](https://github.com/aallan/vera/issues/347) and [#490](https://github.com/aallan/vera/issues/490)**. |
 | v0.0.133 | 5 May | **Iterative array builders no longer leak closure return-value root — closes [#570](https://github.com/aallan/vera/issues/570)** (`array_map` / `_mapi` / `_fold` / `_sort_by`). |
 | v0.0.134 | 6 May | **Active reclamation of host-store handles via heap-wrap-as-ADT — closes [#573](https://github.com/aallan/vera/issues/573), [#575](https://github.com/aallan/vera/issues/575), [#576](https://github.com/aallan/vera/issues/576), [#579](https://github.com/aallan/vera/issues/579)** (Map / Set / Decimal). |
+| v0.0.135 | 6 May | **Three codegen bug fixes — closes [#584](https://github.com/aallan/vera/issues/584), [#583](https://github.com/aallan/vera/issues/583), [#568](https://github.com/aallan/vera/issues/568)** (user `@Unit` fn in non-tail position; `Array<T>` type aliases in param/let/index/element positions; `url_parse(":foo")` → `Err` per RFC 3986 §3.1). |
 
 ---
 
