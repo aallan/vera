@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.135] - 2026-05-06
+
+### Fixed
+- **[#584](https://github.com/aallan/vera/issues/584)** — User-defined `@Unit`-returning fn call in non-tail block-statement position no longer emits invalid WAT.  `vera/wasm/context.py::_is_void_expr` previously recognised `IO.*` qualified calls, `UnitLit`, effect-op `FnCall`s, and compound expressions as void but missed `FnCall` to user-declared `@Unit` fns — the surrounding statement-sequencer fell through to "produces a value", emitted a stray `drop`, and failed WASM validation with `expected a type but nothing on stack`.  Fix expands the codegen registry (`_fn_ret_types` filter in `vera/codegen/functions.py`) to include Unit-returning fns explicitly with `None`, then adds a clause to `_is_void_expr` that recognises them.  Recursive cases (Unit fn nested inside `if`/`match` arms in non-tail position) come for free via the existing recursion.  The natural `render(grid); IO.sleep(120); recurse(...)` shape now compiles cleanly whenever `render` is a user helper.
+- **[#583](https://github.com/aallan/vera/issues/583)** — Type aliases over `Array<T>` no longer break WASM codegen.  `_is_pair_type_name` in `vera/wasm/inference.py` did string-pattern matching on unresolved alias names, so `type Row = Array<Bool>` left "Row" unrecognised as a pair type — SlotRefs to `@Row.0` only emitted the pointer (not pointer + length), and let-bindings or parameters typed `@Row` fell through to silent E602 skips.  Fix converts `_is_pair_type_name` to an instance method that resolves aliases via `_resolve_base_type_name` first; complementary alias resolution added in `_translate_array_lit` (so `[@Row.0, @Row.0]` lays out elements at the correct stride) and `_infer_index_element_type_expr` (so `@Row.0[1]` resolves the element type correctly).  Aliases in parameter, let-binding, indexing, and array-literal-element positions all work now.
+
 ### Documentation
 - **SKILL.md sandbox-install affordance** — observed in the wild that a Claude.ai sandboxed instance reading the existing Installation section concluded "Vera isn't available in this sandbox" and fell back to "write code the user can run locally" without trying the install steps.  Added an explicit note in the Installation section telling agents running in sandboxes (Claude.ai, Code Interpreter, container-based execution environments) that the standard `git clone + pip install -e .` works there too — sandboxes typically have Python, `git`, `pip`, and outbound network — and to run + verify before concluding the toolchain is unavailable.  Also flagged the `pip install vera` PyPI footgun: that name resolves to an unrelated ERAV citizen-science library, not us; install from the GitHub source clone.
 
@@ -1934,7 +1940,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.134...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.135...HEAD
+[0.0.135]: https://github.com/aallan/vera/compare/v0.0.134...v0.0.135
 [0.0.134]: https://github.com/aallan/vera/compare/v0.0.133...v0.0.134
 [0.0.133]: https://github.com/aallan/vera/compare/v0.0.132...v0.0.133
 [0.0.132]: https://github.com/aallan/vera/compare/v0.0.131...v0.0.132

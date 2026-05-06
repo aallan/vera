@@ -17,7 +17,7 @@ class InferenceMixin:
     - _infer_fncall_vera_type
     - _ctor_to_adt_name
     - _is_array_type_name (staticmethod)
-    - _is_pair_type_name (staticmethod)
+    - _is_pair_type_name
     - _infer_array_element_type
     - _infer_index_element_type
     - _get_arg_type_info_wasm
@@ -790,17 +790,22 @@ class InferenceMixin:
         """Check if a slot type name is an Array<T> type."""
         return type_name.startswith("Array<")
 
-    @staticmethod
-    def _is_pair_type_name(type_name: str) -> bool:
+    def _is_pair_type_name(self, type_name: str) -> bool:
         """Check if a slot type name is a pair type (ptr, len).
 
         String and Array<T> are represented as two consecutive i32 locals.
         Bare "Array" also matches — monomorphization may produce slot
         references with type_name="Array" (no type args in the name).
+
+        Resolves type aliases first so `type Row = Array<Bool>` compiles
+        identically to writing `Array<Bool>` directly: a SlotRef with
+        type_name "Row" must emit `(local.get ptr; local.get len)` like
+        any other Array slot, not just the ptr (#583).
         """
-        return (type_name == "String"
-                or type_name == "Array"
-                or type_name.startswith("Array<"))
+        resolved = self._resolve_base_type_name(type_name)
+        return (resolved == "String"
+                or resolved == "Array"
+                or resolved.startswith("Array<"))
 
     def _infer_array_element_type(self, expr: ast.ArrayLit) -> str | None:
         """Infer the Vera element type name from an array literal."""
@@ -826,13 +831,16 @@ class InferenceMixin:
 
         Returns the NamedType so that chained indexing can inspect
         nested type_args (e.g. Array<Array<Int>> → Array<Int> → Int).
+        Type aliases on the collection (`type Row = Array<Bool>`) are
+        followed to their underlying Array<...> definition before
+        extracting the element type — without this, indexing through
+        an aliased slot like `@Row.0[1]` silently fails with E602 (#583).
         """
         coll = expr.collection
         if isinstance(coll, ast.SlotRef):
-            if coll.type_name == "Array" and coll.type_args:
-                ta = coll.type_args[0]
-                if isinstance(ta, ast.NamedType):
-                    return ta
+            ta_te = self._alias_array_element(coll.type_name, coll.type_args)
+            if ta_te is not None:
+                return ta_te
         # Chained indexing: collection is itself an IndexExpr
         if isinstance(coll, ast.IndexExpr):
             inner_te = self._infer_index_element_type_expr(coll)
@@ -841,6 +849,30 @@ class InferenceMixin:
                 ta = inner_te.type_args[0]
                 if isinstance(ta, ast.NamedType):
                     return ta
+        return None
+
+    def _alias_array_element(
+        self,
+        type_name: str,
+        type_args: tuple[ast.TypeExpr, ...] | None,
+    ) -> ast.NamedType | None:
+        """If (type_name, type_args) names an Array<T> (possibly via alias),
+        return T as a NamedType.  Returns None otherwise.
+        """
+        # Direct Array<T>
+        if type_name == "Array" and type_args:
+            ta = type_args[0]
+            if isinstance(ta, ast.NamedType):
+                return ta
+            return None
+        # Type alias — follow to its target.  Only handles the common case
+        # of a non-generic alias pointing at a concrete Array<T>; generic
+        # aliases (`type Box<T> = Array<T>`) would need substitution,
+        # which we don't attempt here.
+        if type_name in self._type_aliases:
+            target = self._type_aliases[type_name]
+            if isinstance(target, ast.NamedType):
+                return self._alias_array_element(target.name, target.type_args)
         return None
 
     def _get_arg_type_info_wasm(

@@ -72,10 +72,16 @@ class FunctionCompilationMixin:
             ctor_adt_tp_indices=getattr(self, "_ctor_adt_tp_indices", None),
             adt_tp_counts=getattr(self, "_adt_tp_counts", None),
         )
-        # Build function return type map for FnCall type inference
+        # Build function return type map for FnCall type inference.
+        # Include Unit-returning fns explicitly with None so `_is_void_expr`
+        # in vera/wasm/context.py can distinguish "Unit return" (key present,
+        # value is None) from "unknown function" (key absent).  Without this,
+        # a user @Unit fn called in non-tail block-statement position fell
+        # through to "produces a value", emitting a stray drop and breaking
+        # WASM validation (#584).
         fn_ret_types: dict[str, str | None] = {}
         for fn_name, (_, ret_wt) in self._fn_sigs.items():
-            if ret_wt and ret_wt != "unsupported":
+            if ret_wt != "unsupported":
                 fn_ret_types[fn_name] = ret_wt
         ctx.set_fn_ret_types(fn_ret_types)
         # Provide type aliases so closures can resolve FnType return types

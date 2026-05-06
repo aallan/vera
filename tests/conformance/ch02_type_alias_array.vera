@@ -1,0 +1,31 @@
+-- Conformance: type aliases over Array<T> (Chapter 2)
+-- Tests: type_alias as parameter type, let binding, index access, array literal element
+type Row = Array<Bool>;
+
+-- Exercise: alias as parameter type (covers the param path in _is_pair_type_name)
+private fn row_len(@Row -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_length(@Row.0)
+}
+
+-- Exercise: let-bound alias, index access, nested array literal from alias value
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- let binding with alias type (covers let-binding path)
+  let @Row = [true, false, true];
+  -- param call through alias (covers parameter path)
+  let @Int = row_len(@Row.0);
+  -- index access through alias (covers index path)
+  let @Bool = @Row.0[1];
+  -- array literal whose elements are alias-typed values (covers literal element path)
+  let @Array<Array<Bool>> = [@Row.0, @Row.0];
+  -- return length of nested array (= 2) added to row_len result (= 3)
+  let @Int = array_length(@Array<Array<Bool>>.0);
+  @Int.1 + @Int.0
+}

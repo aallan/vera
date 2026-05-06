@@ -168,6 +168,18 @@
     ]
   },
   {
+    "id": "ch02_type_alias_array",
+    "file": "ch02_type_alias_array.vera",
+    "chapter": 2,
+    "title": "Type aliases over Array<T>",
+    "level": "run",
+    "spec_ref": "Section 2",
+    "features": [
+      "type_alias",
+      "array"
+    ]
+  },
+  {
     "id": "ch03_slot_basic",
     "file": "ch03_slot_basic.vera",
     "chapter": 3,
@@ -708,6 +720,19 @@
       "handler_composition",
       "state_handler",
       "exn_handler"
+    ]
+  },
+  {
+    "id": "ch07_unit_fn_nontail",
+    "file": "ch07_unit_fn_nontail.vera",
+    "chapter": 7,
+    "title": "@Unit-returning user fn in non-tail block-statement position (#584)",
+    "level": "run",
+    "spec_ref": "Sections 4 and 7",
+    "features": [
+      "unit_return",
+      "block_statement",
+      "effects"
     ]
   },
   {

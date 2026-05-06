@@ -1,0 +1,58 @@
+-- Conformance: @Unit-returning user fn in non-tail block-statement position (Chapter 7)
+-- Tests: unit_return, block_statement, effects
+-- Regression for issue #584: _is_void_expr did not recognise user @Unit fns,
+-- causing a stray `drop` in WAT that failed WASM validation.
+effect IO {
+  op print(String -> Unit);
+}
+
+-- Helper that performs an IO side-effect and returns Unit.
+private fn marker(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("M")
+}
+
+-- Position 1: mid-block — stmt before and after the @Unit call.
+private fn test_mid(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.print("a");
+  marker(());
+  IO.print("b\n")
+}
+
+-- Position 2: leading — @Unit call is the first stmt, IO.print follows.
+private fn test_leading(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  marker(());
+  IO.print("c\n")
+}
+
+-- Position 3: inside a non-tail if-arm — the if expr is used as a stmt,
+-- with a further IO.print after it.
+private fn test_if_arm(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  if true then { marker(()) } else { IO.print("never") };
+  IO.print("d\n")
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  test_mid(());
+  test_leading(());
+  test_if_arm(())
+}

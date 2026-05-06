@@ -8,7 +8,7 @@ See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was bui
 
 ## Where we are
 
-The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 164 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,716 tests, 82 conformance programs, 33 examples, and a 13-chapter specification.
+The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 164 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,726 tests, 84 conformance programs, 33 examples, and a 13-chapter specification.
 
 Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers — now covers 6 models across 3 providers (v0.0.7). The headline result: Kimi K2.5 achieves 100% run_correct on Vera, beating both Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera. The flagship tier averages 93% Vera run_correct vs 93% Python — essentially parity. These are single-run results with high variance; stable rates will require pass@k evaluation. The remaining gaps are empirical breadth (repeated trials, more models), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
 
@@ -250,4 +250,4 @@ Items here are **deferred decisions**, not scheduled work. Each captures the des
 
 ## Completed phases
 
-The compiler was built through eleven stages from February 2026 onwards. **810+ commits, 134 tagged releases (as of v0.0.134), 3,716 tests, 96% coverage, 82 conformance programs, 33 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the per-stage narrative and per-release table.
+The compiler was built through eleven stages from February 2026 onwards. **810+ commits, 134 tagged releases (as of v0.0.134), 3,726 tests, 96% coverage, 84 conformance programs, 33 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the per-stage narrative and per-release table.
