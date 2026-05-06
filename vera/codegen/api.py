@@ -864,7 +864,16 @@ def execute(
     # wrapper", so a tag collision wouldn't cause incorrect
     # destructor firing.
     _WRAP_KIND_MAP = 1
+    _WRAP_KIND_SET = 2
+    _WRAP_KIND_DECIMAL = 3
     _MAP_HANDLE_TAG = 0xFEEDC001
+    _SET_HANDLE_TAG = 0xFEEDC002
+    _DECIMAL_HANDLE_TAG = 0xFEEDC003
+    _KIND_TO_TAG_API = {
+        _WRAP_KIND_MAP: _MAP_HANDLE_TAG,
+        _WRAP_KIND_SET: _SET_HANDLE_TAG,
+        _WRAP_KIND_DECIMAL: _DECIMAL_HANDLE_TAG,
+    }
     _WRAPPER_BODY_SIZE = 8
 
     def _call_register_wrapper(
@@ -885,6 +894,29 @@ def execute(
         assert isinstance(register_fn, wasmtime.Func)  # noqa: S101
         register_fn(caller, ptr, kind, handle)
 
+    def _wrap_handle(
+        caller: wasmtime.Caller, kind: int, raw_handle: int,
+    ) -> int:
+        """Wrap an existing host handle into a GC-tracked ADT (#573).
+
+        Allocates an 8-byte wrapper ADT in WASM memory (tag at
+        body[0], handle at body[4]), registers with the wrap
+        table, and returns the wrapper pointer.  Used by host
+        helpers that have already allocated their store entry
+        and need to lift the resulting handle to a wrapper
+        pointer before storing in a user-visible structure (e.g.
+        ``decimal_from_string`` wrapping its Decimal handle
+        inside an ``Option<Decimal>``'s Some payload).
+        """
+        tag = _KIND_TO_TAG_API.get(kind)
+        if tag is None:  # pragma: no cover
+            raise ValueError(f"#573: unknown wrap kind {kind}")
+        body_ptr = _call_alloc(caller, _WRAPPER_BODY_SIZE)
+        _write_i32(caller, body_ptr, tag)
+        _write_i32(caller, body_ptr + 4, raw_handle)
+        _call_register_wrapper(caller, body_ptr, kind, raw_handle)
+        return body_ptr
+
     def _alloc_map_wrapper(
         caller: wasmtime.Caller, d: dict[object, object],
     ) -> int:
@@ -894,28 +926,11 @@ def execute(
         paths whose result flows back to user-level Map<K, V>
         handling: ``write_json``'s JObject branch and the HTML
         parser's HtmlElement attrs.  Allocates the dict in
-        ``_map_store`` (via ``_map_alloc``) AND emits an 8-byte
-        wrapper ADT in WASM memory registered with
-        ``$register_wrapper``.  The returned i32 is the wrapper
-        pointer, type-compatible with the rest of the WASM
-        codepath (the slot env stores wrapper pointers; user
-        consumers like ``map_get`` unwrap with ``i32.load
-        offset=4``).
-
-        Forward closure reference: ``_map_alloc`` is defined
-        below in the ``if result.map_ops_used or ...`` block
-        below; tolerated because this helper is only called from
-        JSON / HTML host code whose own gating flags imply the
-        map store exists by call time.
+        ``_map_store`` (via ``_map_alloc``) and then lifts the
+        resulting handle to a wrapper pointer via ``_wrap_handle``.
         """
         raw_handle = _map_alloc(d)
-        body_ptr = _call_alloc(caller, _WRAPPER_BODY_SIZE)
-        _write_i32(caller, body_ptr, _MAP_HANDLE_TAG)
-        _write_i32(caller, body_ptr + 4, raw_handle)
-        _call_register_wrapper(
-            caller, body_ptr, _WRAP_KIND_MAP, raw_handle,
-        )
-        return body_ptr
+        return _wrap_handle(caller, _WRAP_KIND_MAP, raw_handle)
 
     def _alloc_string(
         caller: wasmtime.Caller, s: str,
@@ -1691,26 +1706,35 @@ def execute(
             _map_store[h] = d
             return h
 
-    if result.map_ops_used:
-        # #573: destructor host import.  Phase 2c of `$gc_collect`
-        # calls this for every wrap-table entry whose wrapper ADT
-        # was unmarked, evicting the corresponding entry from the
-        # appropriate Python-side store.  Dispatch on `kind`:
-        #   1 = Map, 2 = Set, 3 = Decimal (4..N reserved).
-        # In this release only `kind=1` is reachable from generated
-        # WAT (Map is the only host-handle type migrated to the
-        # heap-wrap-as-ADT scheme — phase 1 of #573 / Plan B).
-        # Set and Decimal extend this dispatcher in their own
-        # follow-ups once their call-site translators wrap.
-        # Unknown kinds are silently ignored: a no-op destructor
-        # never produces store corruption, and being defensive
-        # here costs nothing.
+    # #573: destructor host import.  Phase 2c of ``$gc_collect``
+    # calls this for every wrap-table entry whose wrapper ADT was
+    # unmarked, evicting the corresponding entry from the appropriate
+    # Python-side store.  Dispatch on ``kind``:
+    #   1 = Map, 2 = Set, 3 = Decimal (4..N reserved).
+    # The import is gated on ``map_ops_used or set_ops_used or
+    # decimal_ops_used`` because any of them flips
+    # ``_needs_wrap_table`` on the WAT side, which makes the import
+    # mandatory.  The dispatcher only references stores that exist
+    # — Python's late-binding of closure variables means we can
+    # safely guard each branch with the same condition that gates
+    # the corresponding store's creation.
+    _decref_used = (
+        result.map_ops_used or result.set_ops_used
+        or result.decimal_ops_used
+    )
+    if _decref_used:
         def host_decref_handle(
             _caller: wasmtime.Caller, kind: int, handle: int,
         ) -> None:
-            if kind == 1:
+            if kind == 1 and result.map_ops_used:
                 _map_store.pop(handle, None)
-            # kind == 2 / 3 reserved for Set / Decimal follow-ups.
+            elif kind == 2 and result.set_ops_used:
+                _set_store.pop(handle, None)
+            elif kind == 3 and result.decimal_ops_used:
+                _decimal_store.pop(handle, None)
+            # Unknown kinds (or kinds whose store doesn't exist)
+            # are silent no-ops — the alternative is a defensive
+            # trap that would only fire on compiler bugs.
 
         linker.define_func(
             "vera", "host_decref_handle",
@@ -1720,6 +1744,8 @@ def execute(
             ),
             host_decref_handle, access_caller=True,
         )
+
+    if result.map_ops_used:
 
         # map_new() → i32 handle
         def host_map_new(_caller: wasmtime.Caller) -> int:
@@ -2209,9 +2235,15 @@ def execute(
                 s = _read_wasm_string(caller, ptr, length)
                 try:
                     d = PyDecimal(s)
-                    # Allocate Some(handle)
-                    handle = _decimal_alloc(d)
-                    return _alloc_option_some_i32(caller, handle)
+                    # #573 phase 3: wrap the Decimal handle so the
+                    # Option<Decimal>'s Some payload is a wrapper
+                    # pointer (matching what every other Decimal-
+                    # producing op now returns).
+                    raw = _decimal_alloc(d)
+                    wrapped = _wrap_handle(
+                        caller, _WRAP_KIND_DECIMAL, raw,
+                    )
+                    return _alloc_option_some_i32(caller, wrapped)
                 except InvalidOperation:
                     return _alloc_option_none(caller)
             linker.define_func(
@@ -2291,11 +2323,22 @@ def execute(
             def host_decimal_div(
                 caller: wasmtime.Caller, a: int, b: int,
             ) -> int:
+                # #573 phase 3: ``a`` and ``b`` are raw handles
+                # (the WASM-side translator unwraps wrapper
+                # pointers before this call, matching the
+                # pattern for every other Decimal binary op).
+                # The result handle is wrapped here because the
+                # host constructs ``Option<Decimal>`` internally
+                # — its Some payload must be a wrapper pointer
+                # to match what user code post-match expects.
                 divisor = _decimal_store[b]
                 if divisor == 0:
                     return _alloc_option_none(caller)
-                handle = _decimal_alloc(_decimal_store[a] / divisor)
-                return _alloc_option_some_i32(caller, handle)
+                raw = _decimal_alloc(_decimal_store[a] / divisor)
+                wrapped = _wrap_handle(
+                    caller, _WRAP_KIND_DECIMAL, raw,
+                )
+                return _alloc_option_some_i32(caller, wrapped)
             linker.define_func(
                 "vera", "decimal_div",
                 wasmtime.FuncType([wasmtime.ValType.i32(),

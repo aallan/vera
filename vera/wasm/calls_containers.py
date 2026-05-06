@@ -21,24 +21,31 @@ independently.
 from __future__ import annotations
 
 from vera import ast
-from vera.wasm.helpers import WasmSlotEnv
+from vera.wasm.helpers import WasmSlotEnv, gc_shadow_push
 
 # #573: kind discriminators passed to ``host_decref_handle`` and
 # stored in the wrap-table side index.  Must stay in sync with the
 # Python dispatcher in ``vera/codegen/api.py`` and the JS dispatcher
 # in ``vera/browser/runtime.mjs``.
 _WRAP_KIND_MAP = 1
-_WRAP_KIND_SET = 2  # reserved (Set follow-up)
-_WRAP_KIND_DECIMAL = 3  # reserved (Decimal follow-up)
+_WRAP_KIND_SET = 2
+_WRAP_KIND_DECIMAL = 3
 
 # #573: wrapper-ADT tag values stored at wrapper body offset 0.  Not
 # strictly required for correctness — the side table is the source
 # of truth for "is this object a wrapper" — but stored anyway as a
-# debugging aid (a heap dump will show MAP_HANDLE_TAG at the body's
-# first word).  Chosen well outside the user-ADT tag range (which
-# starts at 0 and increments per constructor).
+# debugging aid (a heap dump will show e.g. MAP_HANDLE_TAG at the
+# body's first word).  Chosen well outside the user-ADT tag range
+# (which starts at 0 and increments per constructor).
 _MAP_HANDLE_TAG = 0xFEEDC001
-# 0xFEEDC002 reserved for SetHandle, 0xFEEDC003 for DecimalHandle.
+_SET_HANDLE_TAG = 0xFEEDC002
+_DECIMAL_HANDLE_TAG = 0xFEEDC003
+
+_KIND_TO_TAG: dict[int, int] = {
+    _WRAP_KIND_MAP: _MAP_HANDLE_TAG,
+    _WRAP_KIND_SET: _SET_HANDLE_TAG,
+    _WRAP_KIND_DECIMAL: _DECIMAL_HANDLE_TAG,
+}
 
 # #573: wrapper ADT body size.  Tag (i32, 4 bytes) + handle (i32, 4
 # bytes) = 8 bytes; ``$alloc`` rounds up to 8-byte alignment, so
@@ -80,15 +87,14 @@ class CallsContainersMixin:
         result, so the slot env / let-binding sees the wrapper
         pointer rather than the raw handle.
         """
-        if kind == _WRAP_KIND_MAP:
-            tag_value = _MAP_HANDLE_TAG
-        else:  # pragma: no cover — Set / Decimal land in follow-ups
+        tag_value = _KIND_TO_TAG.get(kind)
+        if tag_value is None:  # pragma: no cover
             raise NotImplementedError(
-                f"#573 phase 1 wraps Map only; kind={kind} reserved",
+                f"#573: unknown wrap kind {kind}",
             )
         # Allocate 8-byte body.  $alloc returns the body pointer
         # (header lives at body_ptr - 4).
-        return [
+        seq = [
             f"i32.const {_WRAPPER_BODY_SIZE}",
             "call $alloc",
             f"local.tee {wrapper_temp}",
@@ -104,9 +110,25 @@ class CallsContainersMixin:
             f"i32.const {kind}",
             f"local.get {handle_temp}",
             "call $register_wrapper",
-            # Leave the wrapper pointer on the stack as the call result.
-            f"local.get {wrapper_temp}",
         ]
+        # #573: shadow-push the wrapper so any subsequent
+        # allocation within the same function frame can't sweep
+        # it.  Without this, code like
+        # ``decimal_add(decimal_from_int(a), decimal_from_int(b))``
+        # is unsafe — the inner ``decimal_from_int`` returns a
+        # wrapper which sits on the operand stack while the
+        # second ``decimal_from_int`` invokes ``$alloc``; if GC
+        # fires there, the first wrapper is unmarked (it's on
+        # the operand stack and in a WASM local but neither is
+        # GC-visible) and Phase 2c evicts its host-store entry.
+        # The function epilogue's ``gc_sp`` restore clears
+        # these per-call pushes, so the shadow stack doesn't
+        # grow unbounded across iterations of an enclosing
+        # ``array_fold``.
+        seq.extend(gc_shadow_push(wrapper_temp))
+        # Leave the wrapper pointer on the stack as the call result.
+        seq.append(f"local.get {wrapper_temp}")
+        return seq
 
     def _emit_unwrap_handle(self) -> list[str]:
         """Emit WAT to unwrap a wrapper-ADT pointer to its raw handle.
@@ -133,35 +155,93 @@ class CallsContainersMixin:
         self._decimal_ops_used.add(op)
         return wasm_name
 
+    def _emit_wrap_decimal_result(self) -> list[str]:
+        """Wrap a Decimal raw handle on the operand stack into a
+        wrapper-ADT pointer (#573 phase 3).
+
+        Convenience for Decimal-returning ops; allocates the
+        ``handle_tmp`` and ``wrapper_tmp`` locals and emits the
+        wrap sequence.  Caller must have just left the raw handle
+        on the operand stack (e.g. from a host-import call).
+        """
+        self.needs_alloc = True
+        handle_tmp = self.alloc_local("i32")
+        wrapper_tmp = self.alloc_local("i32")
+        ins: list[str] = [f"local.set {handle_tmp}"]
+        ins.extend(
+            self._emit_wrap_handle(
+                _WRAP_KIND_DECIMAL, handle_tmp, wrapper_tmp,
+            )
+        )
+        return ins
+
     def _translate_decimal_unary(
         self, call: "ast.FnCall", env: WasmSlotEnv,
         op: str, param_type: str, result_type: str,
     ) -> list[str] | None:
-        """Translate a unary Decimal operation (one param, one result)."""
+        """Translate a unary Decimal operation (#573 phase 3).
+
+        Three flavours by ``param_type`` / ``result_type``:
+
+        * ``decimal_from_int``/``decimal_from_float`` — input is a
+          primitive (i64/f64), output is Decimal.  WRAP result.
+        * ``decimal_neg`` — input and output are both Decimal.
+          UNWRAP input, WRAP result.
+        * ``decimal_to_float`` — input Decimal, output f64.
+          UNWRAP input only.
+        """
         arg_instrs = self.translate_expr(call.args[0], env)
         if arg_instrs is None:
             return None
         wasm_name = self._register_decimal_import(
             op, [param_type], [result_type])
-        return arg_instrs + [f"call {wasm_name}"]
+        ins: list[str] = list(arg_instrs)
+        # Input: unwrap if Decimal (i32 with handle semantics).
+        if param_type == "i32":
+            ins.extend(self._emit_unwrap_handle())
+        ins.append(f"call {wasm_name}")
+        # Result: wrap if Decimal.  ``decimal_to_float`` produces
+        # f64 (not Decimal) and is the only i32-input / non-i32-
+        # output op; ``decimal_from_int`` and ``decimal_from_float``
+        # have non-i32 input and i32 (Decimal) output.
+        if result_type == "i32":
+            ins.extend(self._emit_wrap_decimal_result())
+        return ins
 
     def _translate_decimal_binary(
         self, call: "ast.FnCall", env: WasmSlotEnv,
         op: str,
     ) -> list[str] | None:
-        """Translate a binary Decimal operation (two handles → handle)."""
+        """Translate a binary Decimal op (Decimal, Decimal → Decimal).
+
+        Both inputs and the output are Decimal: UNWRAP both,
+        WRAP result.  Used for ``decimal_add`` / ``decimal_sub``
+        / ``decimal_mul``.
+        """
         a_instrs = self.translate_expr(call.args[0], env)
         b_instrs = self.translate_expr(call.args[1], env)
         if a_instrs is None or b_instrs is None:
             return None
         wasm_name = self._register_decimal_import(
             op, ["i32", "i32"], ["i32"])
-        return a_instrs + b_instrs + [f"call {wasm_name}"]
+        ins: list[str] = list(a_instrs)
+        ins.extend(self._emit_unwrap_handle())
+        ins.extend(b_instrs)
+        ins.extend(self._emit_unwrap_handle())
+        ins.append(f"call {wasm_name}")
+        ins.extend(self._emit_wrap_decimal_result())
+        return ins
 
     def _translate_decimal_from_string(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """decimal_from_string(s) → Option<Decimal> (i32 heap ptr)."""
+        """decimal_from_string(s) → Option<Decimal> (i32 heap ptr).
+
+        Input is a String (i32_pair) — no unwrap needed.  Result
+        is an Option ADT whose Some payload is wrapped *host-
+        side* (see ``host_decimal_from_string`` in
+        ``vera/codegen/api.py``), so no further wrapping here.
+        """
         arg_instrs = self.translate_expr(call.args[0], env)
         if arg_instrs is None:
             return None
@@ -173,19 +253,27 @@ class CallsContainersMixin:
     def _translate_decimal_to_string(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """decimal_to_string(d) → String (i32_pair)."""
+        """decimal_to_string(d) → String (#573: unwrap input only)."""
         arg_instrs = self.translate_expr(call.args[0], env)
         if arg_instrs is None:
             return None
         wasm_name = self._register_decimal_import(
             "decimal_to_string", ["i32"], ["i32", "i32"])
         self.needs_alloc = True
-        return arg_instrs + [f"call {wasm_name}"]
+        ins: list[str] = list(arg_instrs)
+        ins.extend(self._emit_unwrap_handle())
+        ins.append(f"call {wasm_name}")
+        return ins
 
     def _translate_decimal_div(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """decimal_div(a, b) → Option<Decimal> (i32 heap ptr)."""
+        """decimal_div(a, b) → Option<Decimal> (#573: unwrap inputs).
+
+        Result wrapping happens host-side (see ``host_decimal_div``
+        in ``vera/codegen/api.py``); the Some payload is a
+        wrapper pointer when present.
+        """
         a_instrs = self.translate_expr(call.args[0], env)
         b_instrs = self.translate_expr(call.args[1], env)
         if a_instrs is None or b_instrs is None:
@@ -193,12 +281,17 @@ class CallsContainersMixin:
         wasm_name = self._register_decimal_import(
             "decimal_div", ["i32", "i32"], ["i32"])
         self.needs_alloc = True
-        return a_instrs + b_instrs + [f"call {wasm_name}"]
+        ins: list[str] = list(a_instrs)
+        ins.extend(self._emit_unwrap_handle())
+        ins.extend(b_instrs)
+        ins.extend(self._emit_unwrap_handle())
+        ins.append(f"call {wasm_name}")
+        return ins
 
     def _translate_decimal_compare(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """decimal_compare(a, b) → Ordering (i32 heap ptr)."""
+        """decimal_compare(a, b) → Ordering (#573: unwrap inputs)."""
         a_instrs = self.translate_expr(call.args[0], env)
         b_instrs = self.translate_expr(call.args[1], env)
         if a_instrs is None or b_instrs is None:
@@ -206,31 +299,46 @@ class CallsContainersMixin:
         wasm_name = self._register_decimal_import(
             "decimal_compare", ["i32", "i32"], ["i32"])
         self.needs_alloc = True
-        return a_instrs + b_instrs + [f"call {wasm_name}"]
+        ins: list[str] = list(a_instrs)
+        ins.extend(self._emit_unwrap_handle())
+        ins.extend(b_instrs)
+        ins.extend(self._emit_unwrap_handle())
+        ins.append(f"call {wasm_name}")
+        return ins
 
     def _translate_decimal_eq(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """decimal_eq(a, b) → Bool (i32)."""
+        """decimal_eq(a, b) → Bool (#573: unwrap inputs)."""
         a_instrs = self.translate_expr(call.args[0], env)
         b_instrs = self.translate_expr(call.args[1], env)
         if a_instrs is None or b_instrs is None:
             return None
         wasm_name = self._register_decimal_import(
             "decimal_eq", ["i32", "i32"], ["i32"])
-        return a_instrs + b_instrs + [f"call {wasm_name}"]
+        ins: list[str] = list(a_instrs)
+        ins.extend(self._emit_unwrap_handle())
+        ins.extend(b_instrs)
+        ins.extend(self._emit_unwrap_handle())
+        ins.append(f"call {wasm_name}")
+        return ins
 
     def _translate_decimal_round(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """decimal_round(d, places) → Decimal handle (i32)."""
+        """decimal_round(d, places) → Decimal (#573: unwrap d, wrap result)."""
         d_instrs = self.translate_expr(call.args[0], env)
         p_instrs = self.translate_expr(call.args[1], env)
         if d_instrs is None or p_instrs is None:
             return None
         wasm_name = self._register_decimal_import(
             "decimal_round", ["i32", "i64"], ["i32"])
-        return d_instrs + p_instrs + [f"call {wasm_name}"]
+        ins: list[str] = list(d_instrs)
+        ins.extend(self._emit_unwrap_handle())
+        ins.extend(p_instrs)
+        ins.append(f"call {wasm_name}")
+        ins.extend(self._emit_wrap_decimal_result())
+        return ins
 
     # ── Map<K, V> host-import builtins ──────────────────────────────
 
@@ -746,17 +854,33 @@ class CallsContainersMixin:
     def _translate_set_new(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_new() → i32 handle via host import."""
+        """set_new() → wrapped Set handle via host import (#573 phase 2).
+
+        Mirror of ``_translate_map_new``; see there for design.
+        """
         wasm_name = "$vera.set_new"
         sig = "(func $vera.set_new (result i32))"
         self._set_imports.add(f'  (import "vera" "set_new" {sig})')
         self._set_ops_used.add("set_new")
-        return [f"call {wasm_name}"]
+        self.needs_alloc = True
+        ins: list[str] = [f"call {wasm_name}"]
+        handle_tmp = self.alloc_local("i32")
+        wrapper_tmp = self.alloc_local("i32")
+        ins.append(f"local.set {handle_tmp}")
+        ins.extend(
+            self._emit_wrap_handle(
+                _WRAP_KIND_SET, handle_tmp, wrapper_tmp,
+            )
+        )
+        return ins
 
     def _translate_set_add(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_add(s, elem) → i32 (new handle) via host import."""
+        """set_add(s, elem) → wrapped Set handle (#573).
+
+        Unwrap ``s``, call host, re-wrap result.
+        """
         elem_type = self._infer_vera_type(call.args[1])
         et = self._map_wasm_tag(elem_type)
 
@@ -770,18 +894,32 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
-        for arg in call.args:
+        arg0 = self.translate_expr(call.args[0], env)
+        if arg0 is None:
+            return None
+        ins.extend(arg0)
+        ins.extend(self._emit_unwrap_handle())
+        for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
+        self.needs_alloc = True
+        handle_tmp = self.alloc_local("i32")
+        wrapper_tmp = self.alloc_local("i32")
+        ins.append(f"local.set {handle_tmp}")
+        ins.extend(
+            self._emit_wrap_handle(
+                _WRAP_KIND_SET, handle_tmp, wrapper_tmp,
+            )
+        )
         return ins
 
     def _translate_set_contains(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_contains(s, elem) → i32 (Bool) via host import."""
+        """set_contains(s, elem) → Bool (#573: unwrap input only)."""
         elem_type = self._infer_vera_type(call.args[1])
         et = self._map_wasm_tag(elem_type)
 
@@ -795,7 +933,12 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
-        for arg in call.args:
+        arg0 = self.translate_expr(call.args[0], env)
+        if arg0 is None:
+            return None
+        ins.extend(arg0)
+        ins.extend(self._emit_unwrap_handle())
+        for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
@@ -806,7 +949,7 @@ class CallsContainersMixin:
     def _translate_set_remove(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_remove(s, elem) → i32 (new handle) via host import."""
+        """set_remove(s, elem) → wrapped Set handle (#573)."""
         elem_type = self._infer_vera_type(call.args[1])
         et = self._map_wasm_tag(elem_type)
 
@@ -820,18 +963,32 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
-        for arg in call.args:
+        arg0 = self.translate_expr(call.args[0], env)
+        if arg0 is None:
+            return None
+        ins.extend(arg0)
+        ins.extend(self._emit_unwrap_handle())
+        for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
+        self.needs_alloc = True
+        handle_tmp = self.alloc_local("i32")
+        wrapper_tmp = self.alloc_local("i32")
+        ins.append(f"local.set {handle_tmp}")
+        ins.extend(
+            self._emit_wrap_handle(
+                _WRAP_KIND_SET, handle_tmp, wrapper_tmp,
+            )
+        )
         return ins
 
     def _translate_set_size(
         self, arg: "ast.Expr", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_size(s) → i64 (Int) via host import."""
+        """set_size(s) → i64 (#573: unwrap input only)."""
         wasm_name = "$vera.set_size"
         sig = "(func $vera.set_size (param i32) (result i64))"
         self._set_imports.add(f'  (import "vera" "set_size" {sig})')
@@ -840,13 +997,14 @@ class CallsContainersMixin:
         if arg_instrs is None:
             return None
         ins: list[str] = list(arg_instrs)
+        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins
 
     def _translate_set_to_array(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_to_array(s) → (i32, i32) Array<T> via host import."""
+        """set_to_array(s) → Array<T> (#573: unwrap input only)."""
         elem_type = self._infer_set_elem_from_set_arg(call.args[0])
         et = self._map_wasm_tag(elem_type)
 
@@ -862,5 +1020,6 @@ class CallsContainersMixin:
         if arg_instrs is None:
             return None
         ins: list[str] = list(arg_instrs)
+        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins

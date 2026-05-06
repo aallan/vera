@@ -96,23 +96,14 @@ class AssemblyMixin:
         if self._map_ops_used:
             self._needs_alloc = True
             self._needs_memory = True
-            # #573: Map is the first host-handle type to migrate to
-            # the heap-wrap-as-ADT scheme.  Flip the wrap-table flag
-            # so `assembly.py` allocates the side-table region,
-            # emits `$register_wrapper`, and adds Phase 2c to
-            # `$gc_collect`.  Set / Decimal will set the same flag
-            # in their follow-up migrations.
+            # #573: Map / Set / Decimal all migrate to the heap-
+            # wrap-as-ADT scheme.  Any of them being used flips
+            # the wrap-table flag — ``assembly.py`` then allocates
+            # the 64 KiB side-table region, emits
+            # ``$register_wrapper``, adds Phase 2c to
+            # ``$gc_collect``, and (below, after all three blocks)
+            # imports the ``host_decref_handle`` helper.
             self._needs_wrap_table = True
-
-        # #573: import the destructor host helper when any
-        # wrap-table-backed type is in use.  Phase 2c of $gc_collect
-        # calls this for each unmarked wrapper.
-        if self._needs_wrap_table:
-            parts.append(
-                '  (import "vera" "host_decref_handle" '
-                "(func $vera.host_decref_handle "
-                "(param i32) (param i32)))"
-            )
 
         # Import Set host-import builtins (per-type-instantiation)
         for import_line in sorted(self._set_imports):
@@ -120,6 +111,8 @@ class AssemblyMixin:
         if self._set_ops_used:
             self._needs_alloc = True
             self._needs_memory = True
+            # #573 phase 2: Set migrated to heap-wrap-as-ADT.
+            self._needs_wrap_table = True
 
         # Import Decimal host-import builtins
         for import_line in sorted(self._decimal_imports):
@@ -127,6 +120,22 @@ class AssemblyMixin:
         if self._decimal_ops_used:
             self._needs_alloc = True
             self._needs_memory = True
+            # #573 phase 3: Decimal migrated to heap-wrap-as-ADT.
+            self._needs_wrap_table = True
+
+        # #573: emit ``host_decref_handle`` import after all three
+        # wrap-table types have had their gating blocks run.
+        # Phase 2c of ``$gc_collect`` calls this for each unmarked
+        # wrapper.  Must come after the per-type imports above so
+        # the WAT (import "vera" ...) declarations stay grouped by
+        # subsystem in the output, but before the GC infrastructure
+        # is emitted (which references the import).
+        if self._needs_wrap_table:
+            parts.append(
+                '  (import "vera" "host_decref_handle" '
+                "(func $vera.host_decref_handle "
+                "(param i32) (param i32)))"
+            )
 
         # Import Json host-import builtins
         if "json_parse" in self._json_ops_used:

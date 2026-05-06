@@ -1169,39 +1169,53 @@ function buildImportObject(module) {
   //
   // host_decref_handle is called from Phase 2c of $gc_collect for
   // every wrapper-ADT object that became unmarked.  It evicts the
-  // entry from the corresponding host store; only kind=1 (Map) is
-  // reachable in this release (Set / Decimal migrate in follow-ups).
+  // entry from the corresponding host store; kind=1 (Map),
+  // kind=2 (Set), kind=3 (Decimal) are all live post-#573 phase 3.
   imports.vera.host_decref_handle = (kind, handle) => {
     if (kind === 1) {
       mapStore.delete(handle);
+    } else if (kind === 2) {
+      setStore.delete(handle);
+    } else if (kind === 3) {
+      decimalStore.delete(handle);
     }
-    // kind === 2 / 3 reserved for Set / Decimal follow-ups.
+    // Unknown kinds: silent no-op.
   };
 
-  // allocMapWrapper(d) : drop-in replacement for mapAlloc(d) used by
-  // writeJson / writeHtml.  Inserts d into mapStore, allocates an
-  // 8-byte wrapper ADT in WASM memory (tag at +0, handle at +4),
-  // calls $register_wrapper so Phase 2c reclaims it on the next GC.
-  // Returns the wrapper-ADT pointer — not the raw handle — so the
-  // caller (e.g. writeJson's JObject branch) stores a wrapper
-  // pointer, type-compatible with everything user-level Map code
-  // does post-#573 (slot env stores wrappers; map_get etc. unwrap
-  // with i32.load offset=4 before the host call).
-  const _MAP_HANDLE_TAG = 0xFEEDC001 | 0;  // |0 → 32-bit signed
-  function allocMapWrapper(d) {
-    const handle = mapAlloc(d);
+  // #573 wrapper-ADT layout constants (must match
+  // vera/wasm/calls_containers.py).
+  const _MAP_HANDLE_TAG = 0xFEEDC001 | 0;
+  const _SET_HANDLE_TAG = 0xFEEDC002 | 0;
+  const _DECIMAL_HANDLE_TAG = 0xFEEDC003 | 0;
+  const _KIND_TO_TAG_JS = {
+    1: _MAP_HANDLE_TAG,
+    2: _SET_HANDLE_TAG,
+    3: _DECIMAL_HANDLE_TAG,
+  };
+
+  // wrapHandle(kind, rawHandle) — JS counterpart of `_wrap_handle`
+  // in vera/codegen/api.py.  Allocates an 8-byte wrapper ADT,
+  // writes tag + handle, calls the exported $register_wrapper.
+  // Used by host helpers that have already obtained a raw handle
+  // and need to lift it to a wrapper pointer before stuffing into
+  // an Option<T> Some payload (e.g. decimal_from_string).
+  function wrapHandle(kind, rawHandle) {
+    const tag = _KIND_TO_TAG_JS[kind];
     const ptr = alloc(8);
-    writeI32(ptr, _MAP_HANDLE_TAG);
-    writeI32(ptr + 4, handle);
-    // The export only exists when the WAT module enabled the wrap
-    // table (i.e. _map_ops_used was non-empty).  When this helper
-    // is called, the module is already instantiated so ``wasm``
-    // (the bound exports object, set in instantiate())  is in
-    // scope.  Defensive null-check for tests / future variants.
+    writeI32(ptr, tag);
+    writeI32(ptr + 4, rawHandle);
     if (wasm && typeof wasm.register_wrapper === "function") {
-      wasm.register_wrapper(ptr, 1, handle);
+      wasm.register_wrapper(ptr, kind, rawHandle);
     }
     return ptr;
+  }
+
+  // allocMapWrapper(d) : drop-in replacement for mapAlloc(d) used by
+  // writeJson / writeHtml.  Inserts d into mapStore and lifts the
+  // resulting handle to a wrapper pointer via wrapHandle.
+  function allocMapWrapper(d) {
+    const handle = mapAlloc(d);
+    return wrapHandle(1, handle);
   }
 
   // Helper: allocate Option.None on heap (tag=0, 4 bytes)
@@ -1504,7 +1518,8 @@ function buildImportObject(module) {
       const s = readString(ptr, len);
       if (/^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s.trim())) {
         const h = decimalAlloc(s.trim());
-        return allocOptionSomeI32(h);
+        // #573 phase 3: wrap before stuffing into Some.
+        return allocOptionSomeI32(wrapHandle(3, h));
       }
       return allocOptionNone();
     };
@@ -1529,10 +1544,13 @@ function buildImportObject(module) {
   }
   if (needed.has("decimal_div")) {
     imports.vera.decimal_div = (a, b) => {
+      // #573 phase 3: a, b are raw handles (the WASM-side
+      // translator unwraps wrapper pointers).  Result is wrapped
+      // here before stuffing into Some, matching the Python side.
       const bVal = Number(decimalStore.get(b));
       if (bVal === 0) return allocOptionNone();
       const h = decimalAlloc(decStrDiv(decimalStore.get(a), decimalStore.get(b)));
-      return allocOptionSomeI32(h);
+      return allocOptionSomeI32(wrapHandle(3, h));
     };
   }
   if (needed.has("decimal_neg")) {

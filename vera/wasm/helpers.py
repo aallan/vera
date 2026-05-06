@@ -267,14 +267,15 @@ def _is_pair_element_type(elem_type: str) -> bool:
 # separately as #346 — that's an active-reclamation problem
 # distinct from the rooting decision the classifier informs.
 #
-# #573 phase 1: ``Map`` migrated to the heap-wrap-as-ADT scheme.
-# Map values are now pointers to GC-managed wrapper ADTs (8-byte
-# objects holding the real i32 host handle in field 0); they ARE
-# Vera-heap pointers and MUST be rooted, so ``Map`` is excluded
-# from this set.  ``Set`` / ``Decimal`` still use the raw-handle
-# scheme and remain in the set; they migrate in their own
-# follow-ups.
-_HOST_HANDLE_TYPES: frozenset[str] = frozenset({"Set", "Decimal"})
+# #573 phases 1-3: ``Map``, ``Set``, and ``Decimal`` have all
+# migrated to the heap-wrap-as-ADT scheme.  Their values are now
+# pointers to GC-managed wrapper ADTs (8-byte objects holding the
+# real i32 host handle in field 0); they ARE Vera-heap pointers
+# and MUST be rooted, so the set is empty.  Any future host-
+# handle type added without wrapper migration would be added
+# here, but in practice all host-handle types should follow the
+# wrap-as-ADT pattern from the start.
+_HOST_HANDLE_TYPES: frozenset[str] = frozenset()
 
 
 def _is_host_handle_type(type_name: str | None) -> bool:
