@@ -696,13 +696,26 @@ class AssemblyMixin:
             offset 8: handle (i32) — index into the host-side store
             offset 12: reserved (zero) — alignment / future use
 
-        Traps cleanly with ``unreachable`` if the wrap table overflows
-        rather than silently dropping the registration (mirroring the
-        worklist overflow behaviour from #348).  An overflow means
-        more than 4 096 host-handle wrappers are simultaneously live
-        between collections — bumping ``gc_wraptable_size`` is the
-        cure.  Sweep compacts in place, so the table tracks live
-        wrappers, not total allocations.
+        On overflow (4 096 simultaneously-live wrappers between
+        collections) the slow path triggers ``$gc_collect``, which
+        runs Phase 2c compaction — survivors are kept in place,
+        dead entries are dropped, ``$gc_wrap_ptr`` is reset to the
+        compacted end.  After the collect the overflow check is
+        re-evaluated; only if the table is *still* full do we trap
+        with ``unreachable`` (which means 4 096+ wrappers are
+        genuinely live and the program is over the budget; bumping
+        ``gc_wraptable_size`` is the cure).
+
+        The slow path roots the in-flight wrapper on the shadow
+        stack *before* calling ``$gc_collect`` because the wrapper
+        isn't in the wrap-table yet (that's what we're trying to
+        do) and its body has just been allocated by the caller —
+        without rooting, Phase 2b would mark it unreachable and
+        Phase 3 would link it into the free list, leaving us
+        appending to a freed object after the collect.  The pop
+        immediately after the collect keeps the shadow stack
+        stable so iterative builders' per-iteration push count
+        doesn't drift across calls.
 
         The destructor side (firing ``host_decref_handle`` for
         unmarked wrappers) lives in ``$gc_collect`` Phase 2c.
@@ -710,12 +723,44 @@ class AssemblyMixin:
         return (
             "  (func $register_wrapper "
             "(param $ptr i32) (param $kind i32) (param $handle i32)\n"
-            "    ;; Overflow check: trap if wrap table is full.\n"
+            "    ;; Overflow check: try compaction first, only\n"
+            "    ;; trap if still full afterwards (#573 / #579).\n"
             "    global.get $gc_wrap_ptr\n"
             "    global.get $gc_wrap_end\n"
             "    i32.ge_u\n"
             "    if\n"
-            "      unreachable\n"
+            "      ;; Slow path: root the in-flight wrapper, then\n"
+            "      ;; collect.  Without the push, Phase 2b marks the\n"
+            "      ;; in-flight wrapper unreachable and Phase 3\n"
+            "      ;; frees it; we'd append to a freed object.\n"
+            "      global.get $gc_sp\n"
+            "      global.get $gc_stack_limit\n"
+            "      i32.ge_u\n"
+            "      if\n"
+            "        unreachable\n"
+            "      end\n"
+            "      global.get $gc_sp\n"
+            "      local.get $ptr\n"
+            "      i32.store\n"
+            "      global.get $gc_sp\n"
+            "      i32.const 4\n"
+            "      i32.add\n"
+            "      global.set $gc_sp\n"
+            "      ;; Compact: Phase 2c walks the wrap-table,\n"
+            "      ;; drops unmarked entries, resets $gc_wrap_ptr.\n"
+            "      call $gc_collect\n"
+            "      ;; Pop the temporary root.\n"
+            "      global.get $gc_sp\n"
+            "      i32.const 4\n"
+            "      i32.sub\n"
+            "      global.set $gc_sp\n"
+            "      ;; Re-check; trap only if still full.\n"
+            "      global.get $gc_wrap_ptr\n"
+            "      global.get $gc_wrap_end\n"
+            "      i32.ge_u\n"
+            "      if\n"
+            "        unreachable\n"
+            "      end\n"
             "    end\n"
             "    ;; entry[0] = ptr\n"
             "    global.get $gc_wrap_ptr\n"

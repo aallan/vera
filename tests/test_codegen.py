@@ -16335,6 +16335,92 @@ public fn main(@Unit -> @Int)
         )
         assert _run(src) == 1
 
+    def test_register_wrapper_has_compaction_slow_path(self) -> None:
+        """``$register_wrapper`` triggers ``$gc_collect`` on
+        overflow before trapping (#579).
+
+        Pre-#579 the function trapped with ``unreachable`` the
+        moment ``$gc_wrap_ptr >= $gc_wrap_end`` — even if
+        compaction would have freed thousands of dead entries.
+        Post-fix the slow path roots the in-flight wrapper on
+        the shadow stack, calls ``$gc_collect`` (which runs
+        Phase 2c compaction), pops the root, and re-checks; only
+        if the table is still full does it trap.
+
+        This is a structural test rather than functional because
+        triggering the slow path under a real workload is hard:
+        every wrapper IS also a heap allocation, so wrap-table-
+        full and heap-full happen at similar cadences and
+        ``$alloc`` triggers GC first under normal conditions.
+        Asserting the slow-path WAT is present pins that the
+        emitter wired up the compaction call correctly; if a
+        future refactor reverts to the unconditional trap, this
+        test catches it.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_new();
+  match map_get(@Map<Int, Int>.0, 1) {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+"""
+        wat = _compile_ok(src).wat
+        # Locate the $register_wrapper function body.
+        fn_match = re.search(
+            r"\(func \$register_wrapper\b.*?(?=\n  \(func |\n\s*\)\s*$)",
+            wat, re.DOTALL,
+        )
+        assert fn_match is not None, (
+            "$register_wrapper not emitted in WAT — wrap-table "
+            "infrastructure may be missing despite a Map op being "
+            "used"
+        )
+        body = fn_match.group(0)
+        # Slow path must call $gc_collect.
+        assert "call $gc_collect" in body, (
+            "#579 regression: $register_wrapper has no "
+            "$gc_collect call in its overflow path.  Pre-#579 it "
+            "trapped unconditionally; post-fix it must compact "
+            "first.  Without the slow path, programs hitting the "
+            "wrap-table ceiling trap even when most entries are "
+            "dead and would be reclaimed by Phase 2c."
+        )
+        # Slow path must shadow-push the in-flight wrapper before
+        # the collect (otherwise GC frees the just-allocated
+        # wrapper body and we append to a dangling pointer).
+        # The push idiom: global.get $gc_sp; local.get $ptr;
+        # i32.store; ...; global.set $gc_sp.
+        push_before_collect = re.search(
+            r"global\.get \$gc_sp\s+"
+            r"local\.get \$ptr\s+"
+            r"i32\.store\s+"
+            r"global\.get \$gc_sp\s+"
+            r"i32\.const 4\s+"
+            r"i32\.add\s+"
+            r"global\.set \$gc_sp.*?"
+            r"call \$gc_collect",
+            body, re.DOTALL,
+        )
+        assert push_before_collect is not None, (
+            "#579 regression: $register_wrapper calls "
+            "$gc_collect but doesn't shadow-push $ptr first.  "
+            "Without rooting, Phase 2b marks the in-flight "
+            "wrapper unreachable, Phase 3 frees it, and the "
+            "post-collect append writes to a freed object."
+        )
+        # And there should be a re-check after the collect — two
+        # `i32.ge_u` operations (the initial overflow check, and
+        # the post-compaction re-check).
+        assert body.count("i32.ge_u") >= 2, (
+            "#579 regression: $register_wrapper has fewer than 2 "
+            "`i32.ge_u` ops; the post-compaction re-check is "
+            "likely missing."
+        )
+
     def test_decimal_value_correct_after_gc_pressure(self) -> None:
         """Functional integrity for Decimal under GC pressure.
 
