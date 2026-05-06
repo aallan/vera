@@ -1782,3 +1782,162 @@ public fn make_box(@Int -> @Int)
             assert forbidden not in result.fn_source_map, (  # type: ignore[attr-defined]
                 f"Built-in {forbidden!r} leaked into fn_source_map"
             )
+
+
+# =====================================================================
+# #589 — host_print never crashes Python on invalid UTF-8
+# =====================================================================
+
+
+class TestHostPrintInvalidUtf8589:
+    """#589 — ``host_print`` (and siblings) decode with ``errors="replace"``
+    so an upstream codegen bug producing a corrupt String (ptr, len) pair
+    never escapes as a raw Python ``UnicodeDecodeError`` through wasmtime's
+    trampoline.
+
+    Triggered in the wild by the captured-Array-indexing-in-closure bug
+    (#588) producing corrupt String pointers in a Conway's Game of Life
+    program; the user saw a 30+ line Python traceback ending in
+    ``UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc1`` instead
+    of a Vera-native runtime trap.  A user-level program should never
+    produce a Python traceback regardless of what the program does — this
+    is the WasmTrapError contract from #516 / #522 / #547 applied to the
+    UTF-8-decode paths.
+
+    Tests here are structural assertions on the source: the four affected
+    decode sites must use ``errors="replace"``.  Validating the actual
+    end-to-end behaviour requires either a synthetic WAT module that
+    imports ``vera.print`` directly with crafted bytes (heavy) or
+    triggering #588 to produce corrupt strings (depends on a separate
+    bug remaining open).  The structural checks pin the fix without
+    that coupling.
+    """
+
+    def _api_body_after(self, marker: str, *, span: int = 1500) -> str:
+        from pathlib import Path
+        api_src = (
+            Path(__file__).parent.parent / "vera/codegen/api.py"
+        ).read_text()
+        idx = api_src.index(marker)
+        return api_src[idx:idx + span]
+
+    def test_host_print_uses_errors_replace(self) -> None:
+        """host_print decodes with errors='replace' so invalid UTF-8
+        bytes from a corrupt String surface as U+FFFD instead of a
+        raw Python exception escaping through wasmtime's trampoline.
+        """
+        body = self._api_body_after("Host function: vera.print")
+        assert 'data.decode("utf-8", errors="replace")' in body, (
+            "host_print must decode with errors='replace' so invalid "
+            "UTF-8 bytes don't escape as a Python UnicodeDecodeError "
+            "through wasmtime's trampoline (#589)."
+        )
+
+    def test_host_stderr_uses_errors_replace(self) -> None:
+        """host_stderr decodes with errors='replace' for the same
+        reason as host_print — IO.stderr must never crash Python.
+        """
+        body = self._api_body_after("def host_stderr(")
+        assert 'data.decode("utf-8", errors="replace")' in body, (
+            "host_stderr must decode with errors='replace' (#589)."
+        )
+
+    def test_host_contract_fail_uses_errors_replace(self) -> None:
+        """host_contract_fail decodes with errors='replace' so a corrupt
+        contract-violation message itself doesn't mask the underlying
+        violation with a Python traceback.
+        """
+        body = self._api_body_after("def host_contract_fail(")
+        assert 'data.decode("utf-8", errors="replace")' in body, (
+            "host_contract_fail must decode with errors='replace' (#589)."
+        )
+
+    def test_read_wasm_string_uses_errors_replace(self) -> None:
+        """_read_wasm_string (used by read_file path / get_env / etc.)
+        decodes with errors='replace' so any corrupt-bytes input surfaces
+        as U+FFFD downstream rather than crashing Python.
+        """
+        body = self._api_body_after(
+            '"""Read a UTF-8 string from WASM memory.',
+        )
+        assert 'errors="replace"' in body, (
+            "_read_wasm_string must decode with errors='replace' (#589)."
+        )
+
+    def test_invalid_utf8_through_host_print_does_not_raise(self) -> None:
+        """End-to-end: synthesise a wasmtime instance that imports vera.print
+        and call it with raw invalid UTF-8 bytes.  Pre-fix, the
+        UnicodeDecodeError escaped wasmtime's trampoline as a "python
+        exception" cause and the user's CLI saw a Python traceback.
+        Post-fix, the host import returns cleanly (or wraps as a
+        WasmTrapError); the test asserts no Python exception escapes.
+        """
+        import wasmtime
+
+        # Bytes that are invalid UTF-8 (0xc1 is a never-valid lead byte
+        # — the same byte value the user's Conway's Life crash report
+        # showed in position 123).
+        invalid_bytes = b"hello \xc1 world"
+
+        # Minimal WAT module that imports vera.print, has linear memory
+        # populated with our test bytes, and exports a `run` function
+        # calling vera.print(0, len(invalid_bytes)).
+        # WAT data-section escape syntax is `\HH` per byte; in a Python
+        # string that's a single literal backslash followed by two hex
+        # digits.
+        wat_bytes = "".join(f"\\{b:02x}" for b in invalid_bytes)
+        wat = (
+            "(module\n"
+            '  (import "vera" "print" (func $print (param i32 i32)))\n'
+            '  (memory (export "memory") 1)\n'
+            f'  (data (i32.const 0) "{wat_bytes}")\n'
+            '  (func (export "run")\n'
+            "    i32.const 0\n"
+            f"    i32.const {len(invalid_bytes)}\n"
+            "    call $print\n"
+            "  )\n"
+            ")\n"
+        )
+
+        # Build a host_print closure mirroring the production one.
+        decoded: list[str] = []
+
+        def host_print(
+            caller: wasmtime.Caller, ptr: int, length: int,
+        ) -> None:
+            memory = caller["memory"]
+            assert isinstance(memory, wasmtime.Memory)
+            buf = memory.data_ptr(caller)
+            data = bytes(buf[ptr:ptr + length])
+            # The behaviour under test: must use errors="replace" so a
+            # corrupt String never raises a UnicodeDecodeError that
+            # escapes wasmtime's trampoline.
+            decoded.append(data.decode("utf-8", errors="replace"))
+
+        engine = wasmtime.Engine()
+        store = wasmtime.Store(engine)
+        linker = wasmtime.Linker(engine)
+        print_type = wasmtime.FuncType(
+            [wasmtime.ValType.i32(), wasmtime.ValType.i32()], [],
+        )
+        linker.define_func(
+            "vera", "print", print_type, host_print, access_caller=True,
+        )
+
+        module = wasmtime.Module(engine, wat)
+        instance = linker.instantiate(store, module)
+        run_export = instance.exports(store)["run"]
+        assert isinstance(run_export, wasmtime.Func)
+
+        # The actual test: this call must not raise UnicodeDecodeError.
+        run_export(store)
+
+        # Decoded result has the U+FFFD replacement char at the bad-byte
+        # position, with valid bytes preserved on either side.
+        assert len(decoded) == 1
+        assert "hello " in decoded[0]
+        assert " world" in decoded[0]
+        assert "�" in decoded[0], (
+            "Expected U+FFFD replacement char where 0xc1 was; got "
+            f"{decoded[0]!r}"
+        )
