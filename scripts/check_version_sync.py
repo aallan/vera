@@ -28,16 +28,45 @@ def main() -> int:
         print("ERROR: Could not find __version__ in vera/__init__.py", file=sys.stderr)
         return 1
 
-    # docs/index.html — version badge and release link
+    # docs/index.html — version badge has the version twice on one
+    # line: in the release-tag URL and in the visible link text:
+    #
+    #   <span>v<a href=".../releases/tag/v0.0.134">0.0.134</a></span>
+    #
+    # Both must be checked separately.  Pre-fix this script only
+    # extracted from the URL via ``releases/tag/v([^"]+)`` — a naive
+    # ``sed 's/v{old}/v{new}/g'`` during version bumps matched the
+    # URL (where ``v`` is part of the path) but skipped the visible
+    # text (no ``v`` prefix), and the visible text silently lagged
+    # for two releases (v0.0.133 and v0.0.134) before being caught
+    # by the user.  Now extract both and report each as a distinct
+    # source so the all-match check catches any divergence.
     index_html = root / "docs" / "index.html"
     if index_html.is_file():
         html_text = index_html.read_text()
-        match = re.search(r"releases/tag/v([^\"]+)", html_text)
-        if match:
-            versions["docs/index.html"] = match.group(1)
+        url_match = re.search(r"releases/tag/v([0-9]+\.[0-9]+\.[0-9]+)", html_text)
+        if url_match:
+            versions["docs/index.html (URL)"] = url_match.group(1)
         else:
             print(
-                "WARNING: Could not find version in docs/index.html",
+                "WARNING: Could not find release URL version "
+                "in docs/index.html",
+                file=sys.stderr,
+            )
+        # Visible link-text version: ``...">X.Y.Z</a>`` immediately
+        # after the URL.  Pin to the same line as the release URL
+        # by anchoring on the closing-quote-then-angle-bracket of
+        # the href.
+        text_match = re.search(
+            r'releases/tag/v[0-9]+\.[0-9]+\.[0-9]+">([0-9]+\.[0-9]+\.[0-9]+)</a>',
+            html_text,
+        )
+        if text_match:
+            versions["docs/index.html (link text)"] = text_match.group(1)
+        else:
+            print(
+                "WARNING: Could not find link-text version "
+                "in docs/index.html",
                 file=sys.stderr,
             )
 
