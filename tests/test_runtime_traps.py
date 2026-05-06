@@ -1867,11 +1867,18 @@ class TestHostPrintInvalidUtf8589:
         """_read_wasm_string (used by read_file path / get_env / etc.)
         decodes with errors='replace' so any corrupt-bytes input surfaces
         as U+FFFD downstream rather than crashing Python.
+
+        Asserts on the literal `.decode("utf-8", errors="replace")`
+        call form rather than just the substring `errors="replace"` —
+        the latter is also present in the function's docstring (where
+        the `errors="replace"` strategy is explained in prose), so a
+        substring check would pass spuriously even if the actual call
+        was reverted to strict-mode `.decode("utf-8")`.
         """
         body = self._api_body_after(
             '"""Read a UTF-8 string from WASM memory.',
         )
-        assert 'errors="replace"' in body, (
+        assert '.decode("utf-8", errors="replace")' in body, (
             "_read_wasm_string must decode with errors='replace' (#589)."
         )
 
@@ -1883,12 +1890,18 @@ class TestHostPrintInvalidUtf8589:
         corrupt String passed to md_render would have escaped as a
         Python UnicodeDecodeError through wasmtime's trampoline.  Pins
         the fix at the markdown.py site too (#589).
+
+        Asserts on the literal `.decode("utf-8", errors="replace")`
+        call form rather than just the substring `errors="replace"`
+        for the same reason as the `_read_wasm_string` test above —
+        the docstring explains the strategy in prose so a substring
+        check would spuriously pass even if the call was reverted.
         """
         body = self._file_body_after(
             "vera/wasm/markdown.py",
             "def _read_string(",
         )
-        assert 'errors="replace"' in body, (
+        assert '.decode("utf-8", errors="replace")' in body, (
             "vera/wasm/markdown.py::_read_string must decode with "
             "errors='replace' for parity with the four api.py sites (#589)."
         )
