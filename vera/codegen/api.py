@@ -92,6 +92,17 @@ class CompileResult:
     random_ops_used: set[str] = field(default_factory=set)  # #465
     math_ops_used: set[str] = field(default_factory=set)  # #467
     fn_param_types: dict[str, list[str]] = field(default_factory=dict)
+    # Functions whose Vera return type is `String` (after alias
+    # resolution).  Used by ``execute()`` to decode the (ptr, len)
+    # pair returned by such functions back into a Python `str` for
+    # display purposes — without this, `vera run` on a String-returning
+    # `main` printed only the heap pointer (the first half of the
+    # i32_pair return), not the actual string content.  Populated in
+    # `compile_program` by inspecting each FnDecl's return type
+    # against the resolved alias chain.  Functions returning `Array<T>`
+    # are deliberately *not* in this set — the (ptr, len) representation
+    # is the same shape but the bytes-at-ptr aren't UTF-8.
+    fn_string_returns: set[str] = field(default_factory=set)
     # #516 Stage 2 — runtime-trap source mapping.  Maps WAT function
     # name (without leading `$`) → (file, start_line, end_line).
     # Populated by CodeGenerator during _register_fn (top-level) and
@@ -131,7 +142,12 @@ class CompileResult:
 class ExecuteResult:
     """Result of executing a WASM function."""
 
-    value: int | float | None  # Return value (None for void/Unit functions)
+    # Return value: int / float for primitive returns, str for `String`
+    # returns (decoded from the (ptr, len) pair so callers don't see a
+    # bare heap pointer), int (the heap pointer half) for Array<T> and
+    # ADT returns where element-aware formatting would be needed,
+    # None for void/Unit functions.
+    value: int | float | str | None
     stdout: str  # Captured IO.print output
     state: dict[str, int | float] = field(default_factory=dict)
     exit_code: int | None = None  # Set by IO.exit
@@ -3195,12 +3211,43 @@ def execute(
         raise
 
     # Extract return value
-    value: int | float | None
+    value: int | float | str | None
     if raw_result is None:
         value = None
     elif isinstance(raw_result, (tuple, list)):
-        # Multi-value return (e.g. String/Array as (ptr, len))
-        value = raw_result[0] if raw_result else None
+        # Multi-value return (e.g. String/Array as (ptr, len)).  For
+        # String returns we decode the UTF-8 bytes from linear memory
+        # so callers (notably the CLI's `vera run` printer) see the
+        # actual string instead of a bare heap pointer.  Array returns
+        # keep the existing pointer-only fallback — their bytes-at-ptr
+        # aren't UTF-8 and we'd need element-type-aware formatting to
+        # render them meaningfully (separate scope).
+        if (
+            len(raw_result) == 2
+            and fn_name in result.fn_string_returns
+            and isinstance(raw_result[0], int)
+            and isinstance(raw_result[1], int)
+        ):
+            ptr, length = raw_result[0], raw_result[1]
+            memory_export = instance.exports(store).get("memory")
+            if isinstance(memory_export, wasmtime.Memory) and length >= 0:
+                buf = memory_export.data_ptr(store)
+                mem_size = memory_export.data_len(store)
+                if 0 <= ptr and ptr + length <= mem_size:
+                    raw_bytes = bytes(buf[ptr:ptr + length])
+                    try:
+                        value = raw_bytes.decode("utf-8")
+                    except UnicodeDecodeError:
+                        # Not valid UTF-8 (shouldn't happen for a
+                        # well-formed String, but stay defensive) —
+                        # fall back to the pointer half.
+                        value = ptr
+                else:  # pragma: no cover — out-of-bounds defensive path
+                    value = ptr
+            else:  # pragma: no cover — module without memory export
+                value = ptr
+        else:
+            value = raw_result[0] if raw_result else None
     elif isinstance(raw_result, float):
         value = raw_result
     elif isinstance(raw_result, int):

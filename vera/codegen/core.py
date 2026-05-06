@@ -461,6 +461,18 @@ class CodeGenerator(
             name: [t for t in params if t is not None]
             for name, (params, _) in self._fn_sigs.items()
         }
+        # Collect functions whose Vera return type resolves to `String`
+        # so `execute()` can decode their (ptr, len) pair back into a
+        # str.  Walks the AST rather than using `_fn_sigs` because
+        # `_fn_sigs` carries the WAT type ("i32_pair") which conflates
+        # String and Array<T>.  Alias-resolved via `_resolve_named_type`
+        # so `type Name = String` participates.
+        fn_string_returns: set[str] = set()
+        for tld in program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl):
+                if self._return_type_is_string(decl.return_type):
+                    fn_string_returns.add(decl.name)
         return CompileResult(
             wat=wat,
             wasm_bytes=bytes(wasm_bytes),
@@ -479,6 +491,7 @@ class CodeGenerator(
             random_ops_used=set(self._random_ops_used),
             math_ops_used=set(self._math_ops_used),
             fn_param_types=fn_param_types,
+            fn_string_returns=fn_string_returns,
             fn_source_map=dict(self._fn_source_map),
             prelude_fn_names=set(self._prelude_fn_names),
         )
@@ -486,6 +499,24 @@ class CodeGenerator(
     # -----------------------------------------------------------------
     # Type helpers (used by most mixins)
     # -----------------------------------------------------------------
+
+    def _return_type_is_string(self, te: ast.TypeExpr) -> bool:
+        """True iff the Vera return type resolves to ``String`` (post-alias).
+
+        Used to populate ``CompileResult.fn_string_returns`` so
+        ``execute()`` knows to decode the (ptr, len) pair into a Python
+        ``str`` for display.  Distinguishes ``String`` from ``Array<T>``
+        — both share the i32_pair WAT shape but only ``String`` has
+        UTF-8 bytes at memory[ptr:ptr+len].
+        """
+        if isinstance(te, ast.NamedType):
+            if te.name == "String":
+                return True
+            if te.name in self._type_aliases:
+                return self._return_type_is_string(self._type_aliases[te.name])
+        if isinstance(te, ast.RefinementType):
+            return self._return_type_is_string(te.base_type)
+        return False
 
     def _type_expr_to_wasm_type(self, te: ast.TypeExpr) -> str | None:
         """Map a Vera TypeExpr to a WAT type string.
