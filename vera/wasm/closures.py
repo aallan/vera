@@ -141,11 +141,19 @@ class ClosuresMixin:
             instructions.extend(arg_instrs)
             # Infer WASM type for call_indirect type signature.
             # Pair types (String, Array) push two i32 values onto the stack.
+            # Unit args push nothing — `_infer_expr_wasm_type` returns None
+            # for them — so they must NOT contribute a phantom param to
+            # the call_indirect sig.  The closure-lift side already
+            # skips Unit params (vera/codegen/closures.py:85), and a
+            # mismatch here makes WASM validation reject the call with
+            # "type mismatch: expected i64, found i32" because the
+            # closure's func_table_idx ends up where the phantom value
+            # arg was expected.
             wt = self._infer_expr_wasm_type(arg)
             if wt == "i32_pair":
                 arg_wasm_types.extend(["i32", "i32"])
-            else:
-                arg_wasm_types.append(wt or "i64")  # default to i64
+            elif wt is not None:
+                arg_wasm_types.append(wt)
 
         # Load func_table_idx from closure struct
         instructions.append(f"local.get {tmp}")

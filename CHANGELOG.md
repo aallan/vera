@@ -6,7 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.136] - 2026-05-06
+
 ### Fixed
+- **[#586](https://github.com/aallan/vera/issues/586)** — `apply_fn(closure, ())` on a `(Unit -> X)` closure no longer trips a WASM type mismatch.  Pre-fix, `_translate_apply_fn` in `vera/wasm/closures.py` defaulted the value-arg's WASM type to `i64` whenever `_infer_expr_wasm_type` returned `None` — but it returns `None` for both "couldn't infer" and "Unit has no representation", conflating the two cases.  A `UnitLit` arg pushed nothing onto the stack but registered a phantom `i64` param in the call_indirect signature.  The closure-lift side correctly skips Unit params, so the two ends disagreed and validation rejected the call with `expected i64, found i32` (the `func_table_idx` landing where the phantom value-arg was expected).  Fix is three lines: change `arg_wasm_types.append(wt or "i64")` to `elif wt is not None: arg_wasm_types.append(wt)` so Unit args contribute zero entries to the sig.  Same falsy-pitfall pattern as #584's `_fn_ret_types` filter.  New conformance test `ch05_unit_arg_closure.vera` covers no-capture, Int-capture, and Array-capture variants.
 - **[#589](https://github.com/aallan/vera/issues/589)** — `host_print` / `host_stderr` / `host_contract_fail` / `_read_wasm_string` / `vera/wasm/markdown.py::_read_string` no longer crash with a raw Python `UnicodeDecodeError` when an upstream codegen bug produces a corrupt String `(ptr, len)` pair pointing at non-UTF-8 bytes.  Pre-fix, the unhandled exception escaped through wasmtime's trampoline as a "python exception" cause and the user's CLI saw a 30+ line Python traceback ending in `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xc1`.  A user-level program must never produce a Python traceback regardless of what the program does — this is the WasmTrapError contract from #516 / #522 / #547 applied to the UTF-8-decode paths.  Fix is per-site `errors="replace"` so invalid bytes surface as U+FFFD replacement characters in the user's output instead.  The String-return decoder in `execute()` (added by v0.0.135) was previously try/except → pointer fallback, which silently mutated the return type from `str` to `int` when bytes weren't valid UTF-8 — that fallback was a worse silent failure than visible U+FFFD chars (downstream consumers printed an integer where a string was expected) and is now also `errors="replace"`.  Surfaced by [#588](https://github.com/aallan/vera/issues/588) (captured-Array-indexing in closure produces corrupt String pointers); fixing #588 removes the most common trigger but the defensive-coding hygiene applies regardless of source.  New `TestHostPrintInvalidUtf8589` test class in `tests/test_runtime_traps.py` covers all six affected sites with structural assertions plus an end-to-end wasmtime-trampoline contract test using a synthetic WAT module that imports `vera.print` and calls it with raw invalid UTF-8 bytes.
 
 ## [0.0.135] - 2026-05-06
@@ -1945,7 +1948,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.135...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.136...HEAD
+[0.0.136]: https://github.com/aallan/vera/compare/v0.0.135...v0.0.136
 [0.0.135]: https://github.com/aallan/vera/compare/v0.0.134...v0.0.135
 [0.0.134]: https://github.com/aallan/vera/compare/v0.0.133...v0.0.134
 [0.0.133]: https://github.com/aallan/vera/compare/v0.0.132...v0.0.133
