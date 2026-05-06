@@ -279,23 +279,31 @@ _HOST_HANDLE_TYPES: frozenset[str] = frozenset()
 
 
 def _is_host_handle_type(type_name: str | None) -> bool:
-    """Return True if `type_name` names an opaque host-handle type.
+    """Return True if `type_name` names an opaque host-handle type
+    that should be excluded from GC-rooting decisions.
 
-    Used at GC-rooting decision sites (`vera/codegen/functions.py`,
-    `vera/codegen/closures.py`, `vera/wasm/calls_arrays.py`) to
-    exclude `Map` / `Set` / `Decimal` handles from the shadow-stack
-    push set — they're i32 indices into Python-side host stores,
-    not Vera-heap pointers, so the conservative GC's mark phase
-    would either reject them via the heap-range check (the common
-    case) or incorrectly mark an unrelated heap object whose
-    address happens to coincide with the handle value.
+    Pre-#573 (v0.0.132): used to exclude ``Map`` / ``Set`` /
+    ``Decimal`` handles from shadow-stack rooting because those
+    values lowered to raw i32 host-store indices — not Vera-heap
+    pointers — and the conservative GC's mark phase would either
+    reject them via the heap-range check (the common case) or
+    spuriously mark an unrelated heap object whose address
+    happened to match a handle value.
+
+    Post-#573 (v0.0.134): all three types migrated to the
+    heap-wrap-as-ADT scheme.  Their values are now pointers to
+    GC-managed wrapper ADTs and DO require rooting, so the
+    underlying ``_HOST_HANDLE_TYPES`` set is empty and this
+    helper always returns False.  The function is kept rather
+    than deleted so future host-handle types added without
+    wrapper migration have an obvious place to register their
+    exclusion.
 
     Parametric forms like `Map<K, V>` strip to the bare head; we
-    match on prefix to handle both.  ``Regex`` was originally
-    listed in the #346/#347/#490 issue bodies but Vera doesn't
-    expose a `Regex` value type — regex operations take pattern
-    strings and return Result, with no persistent host-side
-    handle.  Excluded from this set.
+    match on prefix.  ``Regex`` was historically discussed for
+    inclusion but Vera doesn't expose a `Regex` value type —
+    regex operations take pattern strings and return Result, with
+    no persistent host-side handle.
     """
     if type_name is None:
         return False

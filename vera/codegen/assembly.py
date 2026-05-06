@@ -365,6 +365,26 @@ class AssemblyMixin:
                 f"  (global $gc_heap_start i32 "
                 f"(i32.const {gc_heap_start}))"
             )
+            # #573: dedicated worklist-end constant.  Pre-#573
+            # the mark phase used ``$gc_heap_start`` as the
+            # worklist upper bound, on the (correct-at-the-time)
+            # assumption that the worklist sat directly before
+            # the heap.  After the wrap-table region was
+            # inserted between worklist and heap, that
+            # assumption broke: the worklist would think it had
+            # ``worklist_size + wraptable_size`` of capacity and
+            # could grow into the wrap-table, corrupting
+            # entries.  Phase 2c would then operate on garbage
+            # (wrong obj_ptr / kind / handle triples), evicting
+            # arbitrary host-store entries.  This dedicated
+            # constant is always exactly one ``gc_worklist_size``
+            # past ``gc_stack_limit`` regardless of whether the
+            # wrap-table is enabled.
+            gc_worklist_end = gc_stack_limit + gc_worklist_size
+            parts.append(
+                f"  (global $gc_worklist_end i32 "
+                f"(i32.const {gc_worklist_end}))"
+            )
             parts.append(
                 "  (global $gc_free_head (mut i32) (i32.const 0))"
             )
@@ -856,12 +876,17 @@ class AssemblyMixin:
             "    (local $free_head i32)\n"
             + wrap_locals
             + "\n"
-            "    ;; Worklist region: gc_stack_limit .. gc_heap_start\n"
+            "    ;; Worklist region: gc_stack_limit .. gc_worklist_end.\n"
+            "    ;; #573: use the dedicated worklist-end constant\n"
+            "    ;; rather than $gc_heap_start — with the wrap-table\n"
+            "    ;; enabled, $gc_heap_start sits past the wrap-table\n"
+            "    ;; and the worklist could grow into and corrupt\n"
+            "    ;; wrap-table entries.\n"
             "    global.get $gc_stack_limit\n"
             "    local.set $wl_base\n"
             "    local.get $wl_base\n"
             "    local.set $wl_ptr\n"
-            "    global.get $gc_heap_start\n"
+            "    global.get $gc_worklist_end\n"
             "    local.set $wl_end\n"
             "\n"
             "    ;; === Phase 1: Clear all mark bits ===\n"
