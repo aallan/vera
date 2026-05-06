@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+- **Post-campaign consistency sweep** — `ROADMAP.md` near-term-priorities section reframed from the now-closed bug-killing campaign to an agent-integration push (LSP server [#222](https://github.com/aallan/vera/issues/222), `vera context` [#523](https://github.com/aallan/vera/issues/523), `Inference.complete` token/temperature controls [#370](https://github.com/aallan/vera/issues/370)).  `HISTORY.md` Stage 11 release table compacted — entries v0.0.119–v0.0.134 had drifted to 2–3× the density of Stage 5–9 entries with implementation details and parenthetical asides that didn't match the established style.  `SKILL.md` "Known Bugs and Workarounds" cleaned: dropped three closed-issue rows ([#475](https://github.com/aallan/vera/issues/475) / [#487](https://github.com/aallan/vera/issues/487) / [#535](https://github.com/aallan/vera/issues/535) all closed in v0.0.129–v0.0.131), rewrote the closure-capture subsection that was telling agents to use a now-obsolete "lift to a helper" workaround for pair-type captures (#535 closed in v0.0.130), added the still-open [#568](https://github.com/aallan/vera/issues/568) (`url_parse` leading-colon drop) for parity with `KNOWN_ISSUES.md`.  Net delta across the three commits: −108 lines, with SKILL.md no longer leading agents to write workarounds for bugs that no longer exist.
+
 ## [0.0.134] - 2026-05-06
 
 ### Fixed
