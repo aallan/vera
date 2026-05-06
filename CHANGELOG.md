@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.134] - 2026-05-06
+
+### Fixed
+- **Active reclamation of host-store handles — closes [#573](https://github.com/aallan/vera/issues/573), [#575](https://github.com/aallan/vera/issues/575), [#576](https://github.com/aallan/vera/issues/576), [#579](https://github.com/aallan/vera/issues/579)**.  Pre-fix, every `map_new` / `map_insert` / `map_remove`, every `set_new` / `set_add` / `set_remove`, and every Decimal arithmetic op allocated a fresh entry in the corresponding Python-side store (`_map_store` / `_set_store` / `_decimal_store` in `vera/codegen/api.py`) and never released transient predecessors *within a single `execute()` call*.  A 10 000-iteration `array_fold` over `map_insert` left 10 001 entries in the store at `execute()` exit.  Each store is local to one `execute()`, so the leak doesn't accumulate across separate calls — but a single long-running call (a server's request loop running inside one `execute()`, an interactive session, a Game-of-Life-style program with many generations) could exhaust memory monotonically.
+
+  Post-fix: the heap-wrap-as-ADT design from #573's body, applied to all three types in one PR.  Every `Map<K, V>` / `Set<T>` / `Decimal` value is now a pointer to an 8-byte wrapper ADT on the GC heap (tag at offset 0, raw host handle at offset 4).  Wrappers register with a new 64 KiB wrap-table region in linear memory at allocation; Phase 2c of `$gc_collect` walks the wrap table and fires a new `host_decref_handle(kind, handle)` host import for every wrapper that was unmarked, evicting the corresponding entry from the appropriate store.  Survivors are compacted in place so the table tracks live wrappers, not total allocations.
+
+  **Infrastructure** (one-time, shared across all three types):
+  - `vera/codegen/assembly.py` — new wrap-table region (gated on `_needs_wrap_table`), `$register_wrapper` helper, Phase 2c walk in `$gc_collect`, `host_decref_handle` import declaration, `register_wrapper` export so host-side JSON/HTML parsers and Decimal helpers can register wrappers from Python.
+  - `vera/codegen/api.py` — `host_decref_handle(kind, handle)` Python implementation dispatching on `kind` (1=Map, 2=Set, 3=Decimal) to the appropriate `*_store.pop`.  New `_wrap_handle(caller, kind, raw)` helper for cases where the host has already obtained a raw handle (e.g. `decimal_from_string` constructing `Option<Decimal>`).
+  - `vera/browser/runtime.mjs` — full mirror: `host_decref_handle` dispatcher, `wrapHandle(kind, raw)`, all three kinds.
+  - `ExecuteResult.host_store_sizes` — new field exposing post-execution store population so tests can verify reclamation without linker introspection.
+
+  **Per-type call-site migration** (`vera/wasm/calls_containers.py`):
+  - **Map** (8 ops): wrap on `map_new` / `map_insert` / `map_remove`; unwrap on `map_get` / `map_contains` / `map_size` / `map_keys` / `map_values` (closes #573 phase 1).
+  - **Set** (6 ops): wrap on `set_new` / `set_add` / `set_remove`; unwrap on `set_contains` / `set_size` / `set_to_array` (closes #575).
+  - **Decimal** (10 ops): wrap on `decimal_from_int` / `_from_float` / `_neg` / `_add` / `_sub` / `_mul` / `_round`; unwrap on `_to_string` / `_to_float` / `_eq` / `_compare`.  `decimal_from_string` and `decimal_div` return `Option<Decimal>` constructed host-side; their inner Decimal handle is wrapped via `_wrap_handle` before being stuffed into the Some payload (closes #576).
+
+  **GC-rooting hygiene**:
+  - `vera/wasm/helpers.py` — `_HOST_HANDLE_TYPES` is now empty (was `{Map, Set, Decimal}`).  All three are real Vera-heap pointers post-#573 and MUST be shadow-stack-rooted across allocating calls; the `_is_host_handle_type` exclusion would have left them vulnerable to mid-call sweep.
+  - The wrapper-allocation helper (`_emit_wrap_handle` in `calls_containers.py`) now shadow-pushes the new wrapper pointer immediately after construction, matching the existing ADT-constructor pattern in `vera/wasm/data.py`.  Without this, nested expressions like `decimal_add(decimal_from_int(a), decimal_from_int(b))` would be unsafe — the inner wrapper sits on the operand stack while the second `decimal_from_int` invokes `$alloc`, and a GC fire there would sweep the unmarked wrapper.
+
+  **JSON / HTML internal Map wrapping** (closes a JObject / HtmlElement coupling):
+  - `vera/codegen/api.py` — `_alloc_map_wrapper(caller, dict)` allocates the dict in `_map_store` AND wraps the resulting handle.  Used by `write_json` (JObject) and `write_html` (HtmlElement attrs) so the i32 stored in those ADT fields is a wrapper pointer, type-compatible with user-level `map_get` / `map_contains` calls (which now expect wrappers and unwrap with `i32.load offset=4`).
+  - `vera/wasm/json_serde.py`, `vera/wasm/html_serde.py` — `write_*` use the wrapping `map_alloc(caller, dict)` signature; `read_*` unwrap before looking up the host store.
+
+  **Tests** (`tests/test_codegen.py::TestHostHandleReclamation573`): ten regression tests covering all three types — chain-reclaims-transients (10K Map, 10K Set, 5K Decimal) plus value-correct-after-pressure (Map, Set, Decimal) plus the JObject case proving JSON/HTML internal Maps are reclaimed too plus a structural pin (`test_register_wrapper_has_compaction_slow_path`) that the slow-path WAT is wired up correctly.
+
+  **#579 — `$register_wrapper` slow path before trap.**  Pre-fix the function trapped with `unreachable` the moment the wrap-table filled (4 096 simultaneously-live entries) — even if compaction would have freed thousands of dead entries.  Post-fix the slow path roots the in-flight wrapper on the shadow stack, calls `$gc_collect` (which runs Phase 2c compaction), pops the root, and re-checks; only if the table is still full after compaction does it trap.  Bounded in practice by heap fill rate, but the slow path covers wrapper-heavy workloads with low heap pressure (e.g. tight loops creating throwaway Map/Set/Decimal values that go dead before the next iteration).  Adds ~20 lines of WAT plus a structural test pinning the wiring.
+
+### Updated
+- `tests/test_codegen.py::TestOpaqueHandleParamRooting347` — three rooting tests flipped from "param 0 must NOT be shadow-pushed" to "param 0 MUST be shadow-pushed after #573".  All three host-handle types (Map, Set, Decimal) lower to wrapper-ADT pointers post-fix and require GC rooting.
+- `tests/test_codegen.py::TestArrayFoldHandleRooting490` — `_assert_handle_not_extra_rooted` flipped to `_assert_handle_extra_rooted_after_573`.  `array_fold` and `array_map` accumulators / elements of type Decimal now MUST emit per-iteration root pushes (was: must not).
+
 ## [0.0.133] - 2026-05-05
 
 ### Fixed
@@ -1894,7 +1928,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.133...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.134...HEAD
+[0.0.134]: https://github.com/aallan/vera/compare/v0.0.133...v0.0.134
 [0.0.133]: https://github.com/aallan/vera/compare/v0.0.132...v0.0.133
 [0.0.132]: https://github.com/aallan/vera/compare/v0.0.131...v0.0.132
 [0.0.131]: https://github.com/aallan/vera/compare/v0.0.130...v0.0.131

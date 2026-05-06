@@ -15486,18 +15486,24 @@ class TestOpaqueHandleParamRooting347:
                     f"sequence: {text!r}"
                 )
 
-    def test_map_param_not_shadow_pushed(self) -> None:
-        """A `Map<Nat, Nat>` parameter must not appear in any
-        gc_shadow_push sequence in the function's prologue.
+    def test_map_param_shadow_pushed_after_573(self) -> None:
+        """A `Map<Nat, Nat>` parameter MUST appear in a
+        gc_shadow_push sequence after #573.
 
-        The function below allocates (via `option_unwrap_or` —
-        which the prelude expands to an Option allocation), so
-        the GC prologue is emitted.  Pre-fix the prologue would
-        contain the canonical shadow-push idiom for `$p0`:
-        `global.get $gc_sp; local.get 0; i32.store`.  Post-fix
-        the classifier excludes the Map handle, so that exact
-        sequence is absent.
+        Pre-#573 (v0.0.132): Map values lowered to raw i32 host
+        handles, so the #347 classifier excluded them from
+        rooting.  Post-#573 (v0.0.134): Map values are pointers
+        to GC-managed wrapper ADTs — real Vera-heap pointers
+        that the conservative GC must trace, so the exclusion
+        is dropped and the canonical shadow-push idiom
+        ``global.get $gc_sp; local.get 0; i32.store`` reappears.
+        Without rooting, a Map captured across an allocating
+        call (e.g. ``map_get`` returning ``Option<V>``) would
+        get freed mid-call and the host store entry would be
+        decref'd before the surrounding code finishes using it.
         """
+        from vera.parser import parse_file
+        from vera.transform import transform
         src = """
 public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
   requires(true) ensures(true) effects(pure)
@@ -15505,17 +15511,70 @@ public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
   option_unwrap_or(map_get(@Map<Nat, Nat>.0, @Nat.0), 0)
 }
 """
-        self._assert_param0_not_shadow_pushed(src, "lookup_or_zero", "Map")
+        import tempfile
+        from pathlib import Path
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False,
+        ) as f:
+            f.write(src)
+            f.flush()
+            path = f.name
+        tree = parse_file(path)
+        ast_module = transform(tree)
+        result = compile(ast_module, source=src, file=path)
+        wat = result.wat
+        # Find $lookup_or_zero's body.
+        fn_match = re.search(
+            r"\(func \$lookup_or_zero\b.*?(?=\n  \(func |\n\s*\)\s*$)",
+            wat, re.DOTALL,
+        )
+        assert fn_match is not None, (
+            f"Could not find $lookup_or_zero in WAT: {wat[:500]}"
+        )
+        fn_body = fn_match.group(0)
+        # The full ``gc_shadow_push`` idiom is push + advance:
+        #   global.get $gc_sp; local.get N; i32.store      (push)
+        #   global.get $gc_sp; i32.const 4; i32.add;
+        #   global.set $gc_sp                              (advance)
+        # Match BOTH halves in order — without the advance, every
+        # subsequent push overwrites the same shadow-stack slot,
+        # so the test must fail if the advance is missing.
+        push_pattern = re.compile(
+            r"global\.get \$gc_sp\s+"
+            r"local\.get (?:0\b|\$p?0\b)\s+"
+            r"i32\.store\s+"
+            r"global\.get \$gc_sp\s+"
+            r"i32\.const 4\s+"
+            r"i32\.add\s+"
+            r"global\.set \$gc_sp",
+            re.MULTILINE,
+        )
+        assert push_pattern.search(fn_body) is not None, (
+            "#573 regression: Map<Nat, Nat> param 0 was NOT "
+            "shadow-pushed (with sp advance) in $lookup_or_zero. "
+            "Post-#573, Map values are GC-managed wrapper-ADT "
+            "pointers and MUST be rooted across allocating calls; "
+            "without the full push+advance idiom the wrapper can "
+            "be freed mid-call OR the next push overwrites it.\n\n"
+            f"Function body excerpt:\n{fn_body[:800]}"
+        )
 
-    def test_set_param_not_shadow_pushed(self) -> None:
-        """A `Set<Nat>` parameter must not appear in any
-        gc_shadow_push sequence — same mechanism as Map; the test
-        catches a regression isolated to the Set codegen path.
+    def test_set_param_shadow_pushed_after_573(self) -> None:
+        """A `Set<Nat>` parameter MUST appear in a
+        gc_shadow_push sequence after #573 phase 2.
 
-        We allocate via `option_unwrap_or` so the GC prologue is
-        emitted (otherwise the function compiles trivially and
-        there's nothing to assert about).
+        Same flip as Map (`test_map_param_shadow_pushed_after_573`):
+        post-#573 the Set value lowers to a wrapper-ADT pointer
+        (real Vera-heap pointer), so the conservative GC must
+        trace it.  Without rooting, a Set captured across an
+        allocating call (e.g. `set_contains` returning Bool but
+        the surrounding ``option_unwrap_or(Some(...), ...)`` does
+        an Option allocation) could be freed mid-call and the
+        host-store entry decref'd before subsequent code finishes
+        using it.
         """
+        from vera.parser import parse_file
+        from vera.transform import transform
         src = """
 public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
   requires(true) ensures(true) effects(pure)
@@ -15527,19 +15586,52 @@ public fn contains_or_false(@Set<Nat>, @Nat -> @Bool)
   }
 }
 """
-        self._assert_param0_not_shadow_pushed(
-            src, "contains_or_false", "Set",
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False,
+        ) as f:
+            f.write(src)
+            f.flush()
+            path = f.name
+        tree = parse_file(path)
+        ast_module = transform(tree)
+        result = compile(ast_module, source=src, file=path)
+        wat = result.wat
+        fn_match = re.search(
+            r"\(func \$contains_or_false\b.*?(?=\n  \(func |\n\s*\)\s*$)",
+            wat, re.DOTALL,
+        )
+        assert fn_match is not None
+        fn_body = fn_match.group(0)
+        # Full push+advance idiom — see Map test for rationale.
+        push_pattern = re.compile(
+            r"global\.get \$gc_sp\s+"
+            r"local\.get (?:0\b|\$p?0\b)\s+"
+            r"i32\.store\s+"
+            r"global\.get \$gc_sp\s+"
+            r"i32\.const 4\s+"
+            r"i32\.add\s+"
+            r"global\.set \$gc_sp",
+            re.MULTILINE,
+        )
+        assert push_pattern.search(fn_body) is not None, (
+            "#573 phase 2 regression: Set<Nat> param 0 was NOT "
+            "shadow-pushed (with sp advance) in $contains_or_false. "
+            "Post-#573 phase 2, Set values are GC-managed "
+            "wrapper-ADT pointers and MUST be rooted with the full "
+            "push+advance idiom across allocating calls.\n\n"
+            f"Function body excerpt:\n{fn_body[:800]}"
         )
 
-    def test_decimal_param_not_shadow_pushed(self) -> None:
-        """A `Decimal` parameter must not appear in any
-        gc_shadow_push sequence — completes the Map / Set / Decimal
-        coverage triplet for the `_is_host_handle_type` exclusion.
+    def test_decimal_param_shadow_pushed_after_573(self) -> None:
+        """A `Decimal` parameter MUST appear in a gc_shadow_push
+        sequence after #573 phase 3.
 
-        Allocates via `option_unwrap_or` to force the GC prologue;
-        the structural check then verifies the Decimal handle param
-        isn't rooted.
+        Same flip as Map and Set: Decimal values are now wrapper-
+        ADT pointers and need rooting.
         """
+        from vera.parser import parse_file
+        from vera.transform import transform
         src = """
 public fn is_positive_or_false(@Decimal -> @Bool)
   requires(true) ensures(true) effects(pure)
@@ -15551,28 +15643,67 @@ public fn is_positive_or_false(@Decimal -> @Bool)
   }
 }
 """
-        self._assert_param0_not_shadow_pushed(
-            src, "is_positive_or_false", "Decimal",
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False,
+        ) as f:
+            f.write(src)
+            f.flush()
+            path = f.name
+        tree = parse_file(path)
+        ast_module = transform(tree)
+        result = compile(ast_module, source=src, file=path)
+        wat = result.wat
+        fn_match = re.search(
+            r"\(func \$is_positive_or_false\b.*?(?=\n  \(func |\n\s*\)\s*$)",
+            wat, re.DOTALL,
+        )
+        assert fn_match is not None
+        fn_body = fn_match.group(0)
+        # Full push+advance idiom — see Map test for rationale.
+        push_pattern = re.compile(
+            r"global\.get \$gc_sp\s+"
+            r"local\.get (?:0\b|\$p?0\b)\s+"
+            r"i32\.store\s+"
+            r"global\.get \$gc_sp\s+"
+            r"i32\.const 4\s+"
+            r"i32\.add\s+"
+            r"global\.set \$gc_sp",
+            re.MULTILINE,
+        )
+        assert push_pattern.search(fn_body) is not None, (
+            "#573 phase 3 regression: Decimal param 0 was NOT "
+            "shadow-pushed (with sp advance) in "
+            "$is_positive_or_false.  Post-#573 phase 3, Decimal "
+            "values are GC-managed wrapper-ADT pointers and MUST "
+            "be rooted with the full push+advance idiom across "
+            "allocating calls.\n\n"
+            f"Function body excerpt:\n{fn_body[:800]}"
         )
 
 
 class TestArrayFoldHandleRooting490:
-    """`#490`: `array_fold` (and `array_map`) must NOT root opaque
-    handle accumulators / element types.
+    """`#490` (pre-#573) and `#573 phase 3` (post-): array_fold /
+    array_map handle-rooting policy for ``Decimal`` accumulators
+    and elements.
 
-    Pre-fix the `u_is_adt` heuristic in
-    `vera/wasm/calls_arrays.py` was
-    `u_wasm == "i32" and u_type not in ("Bool", "Byte") and not
-    u_is_pair`, which classified `Map` / `Set` / `Decimal`
-    accumulators as ADT pointers and emitted shadow-stack rooting
-    around the loop.  Same wasted-space + spurious-retention
-    concerns as #347.
+    Pre-#490 (v0.0.131): ADT-rooting heuristic over-rooted
+    Decimal accumulators / elements as if they were heap pointers,
+    even though Decimal lowered to a raw i32 host handle.
 
-    Post-fix, the same `_is_host_handle_type` classifier excludes
-    them.  Functional behaviour is unchanged either way (the
-    conservative GC's heap-range check rejects small handle
-    indices), but the structural fix removes the wasted root-
-    management code.
+    Post-#490 (v0.0.132): the ``_is_host_handle_type`` classifier
+    excluded Decimal so the rooting was suppressed (no waste, no
+    spurious retention).
+
+    Post-#573 phase 3 (v0.0.134): Decimal MIGRATED to heap-wrap-
+    as-ADT.  Decimal values are now wrapper-ADT pointers — real
+    Vera-heap pointers — so they MUST be rooted again.  This
+    test class flips its assertion to enforce the new policy:
+    Decimal accumulators / elements emit MORE shadow-pushes than
+    the Int reference (the wrapper allocation rooting + the
+    accumulator slot push).  Without rooting, a wrapper could be
+    reclaimed mid-fold and the host_decref_handle path would
+    evict the live Decimal entry from the host store.
     """
 
     @staticmethod
@@ -15580,10 +15711,10 @@ class TestArrayFoldHandleRooting490:
         """Count `global.set $gc_sp` idioms inside `$main`'s body.
 
         Each `gc_shadow_push` emits exactly one `global.set $gc_sp`
-        (the sp-advance step at the end of the idiom).  A higher
-        count for the host-handle case vs. the Int reference
-        indicates the handle accumulator/element is being rooted
-        when it shouldn't be.
+        (the sp-advance step at the end of the idiom).  Higher
+        count for Decimal vs. Int reference indicates Decimal IS
+        being rooted — which post-#573 phase 3 is the correct
+        behaviour.
         """
         fn_start = wat.index("(func $main")
         if "\n  (func " in wat[fn_start + 1:]:
@@ -15592,70 +15723,62 @@ class TestArrayFoldHandleRooting490:
             fn_end = len(wat)
         return wat[fn_start:fn_end].count("global.set $gc_sp")
 
-    def _assert_handle_not_extra_rooted(
+    def _assert_handle_extra_rooted_after_573(
         self,
         int_src: str,
         decimal_src: str,
         builder_name: str,
         accumulator_label: str,
     ) -> None:
-        """Compile `int_src` (reference: no rooting needed) and
-        `decimal_src` (test: opaque host handle), then assert the
-        Decimal version doesn't emit MORE shadow-pushes than the
-        Int version.
+        """Compile `int_src` (Int reference) and `decimal_src`
+        (Decimal handle wrapper), then assert the Decimal version
+        emits MORE shadow-pushes than the Int version.
 
-        Two checks to avoid the test passing trivially:
-          1. **Non-vacuity** — assert both counts are > 0.  Without
-             this, a degenerate case where neither version emits
-             any pushes (e.g. if the WAT structure changed and the
-             helper now slices an empty body) would pass with
-             0 == 0.
-          2. **Equality** — Decimal must not emit MORE pushes than
-             the Int reference.  An ADT accumulator (which IS a
-             Vera-heap pointer) would emit one extra; an opaque
-             host handle (post-fix #490) emits the same count.
+        Pre-#573 this asserted the opposite (Decimal must equal
+        Int).  Post-#573 phase 3 Decimal is wrapper-rooted, so
+        the count rises by at least one (the accumulator's
+        wrapper-pointer push) plus any per-iteration alloc roots
+        from the wrap operation itself.
         """
         int_wat = _compile_ok(int_src).wat
         decimal_wat = _compile_ok(decimal_src).wat
         int_count = self._count_main_pushes(int_wat)
         decimal_count = self._count_main_pushes(decimal_wat)
 
-        # Non-vacuity: there MUST be shadow-stack activity in $main
-        # for this comparison to be meaningful.  `array_range`
-        # itself shadow-pushes its result; lacking this means the
-        # WAT structure has shifted and the helper isn't slicing
-        # the right region.
+        # Non-vacuity: int_count > 0 ensures we're measuring real
+        # shadow-stack activity, not a degenerate empty slice.
         assert int_count > 0, (
             f"Int reference for {builder_name} emitted 0 "
             f"`global.set $gc_sp` idioms in $main — the helper "
             f"isn't measuring real shadow-stack activity, so the "
-            f"comparison below would pass trivially.  Likely the "
-            f"WAT structure shifted; re-check `_count_main_pushes` "
-            f"slicing logic."
+            f"comparison below would pass trivially."
         )
 
-        # Equality: Decimal accumulator/element must not add an
-        # extra push relative to Int.
-        assert decimal_count == int_count, (
+        # Strictly-greater: Decimal MUST add roots.  Pre-#573 this
+        # was equality; post-#573 phase 3 the wrapper migration
+        # adds wrapper-allocation rooting + accumulator-slot push.
+        assert decimal_count > int_count, (
             f"`{builder_name}` with a Decimal {accumulator_label} "
             f"emits {decimal_count} `global.set $gc_sp` idioms in "
             f"$main vs. {int_count} for an Int reference.  Post-"
-            f"#490 these should be equal — Decimal is an opaque "
-            f"host handle, not a Vera-heap pointer, and shouldn't "
-            f"be rooted around the `call_indirect`.  An extra "
-            f"count means `_is_host_handle_type` isn't firing in "
-            f"the `u_is_adt` / `t_is_adt` heuristic."
+            f"#573 phase 3 the Decimal version must emit MORE — "
+            f"Decimal is now a GC-managed wrapper-ADT pointer, "
+            f"not a raw handle, so the wrapper allocation and "
+            f"accumulator slot both need rooting.  An equal or "
+            f"smaller count means `_is_host_handle_type` is "
+            f"still excluding Decimal."
         )
 
-    def test_decimal_accumulator_not_rooted(self) -> None:
-        """`array_fold` over `Decimal` accumulator should NOT emit
-        the per-iteration accumulator root that ADT accumulators
-        get.
+    def test_decimal_accumulator_rooted_after_573(self) -> None:
+        """`array_fold` over a `Decimal` accumulator MUST root the
+        wrapper pointer (post-#573 phase 3).
 
-        Exercises the `u_is_adt` heuristic in
-        `_translate_array_fold`.  The mirror for `array_map`'s
-        `t_is_adt` heuristic is in `test_decimal_mapper_not_rooted`
-        below.
+        Pre-#573 phase 3 this asserted the opposite — the
+        ``u_is_adt`` heuristic excluded Decimal because raw i32
+        handles aren't heap pointers.  Post-#573 Decimal IS a
+        heap pointer (wrapper ADT) and must be rooted to survive
+        per-iteration GC pressure (every iteration's
+        ``decimal_add`` allocates a new wrapper).
         """
         int_src = """
 public fn main(@Unit -> @Int)
@@ -15681,19 +15804,17 @@ public fn main(@Unit -> @Decimal)
   )
 }
 """
-        self._assert_handle_not_extra_rooted(
+        self._assert_handle_extra_rooted_after_573(
             int_src, decimal_src, "array_fold", "accumulator",
         )
 
-    def test_decimal_mapper_not_rooted(self) -> None:
-        """`array_map` producing `Decimal` elements should NOT
-        emit the per-iteration element root that ADT elements get.
+    def test_decimal_mapper_rooted_after_573(self) -> None:
+        """`array_map` producing `Decimal` elements MUST root the
+        wrapper pointer (post-#573 phase 3).
 
-        Mirrors `test_decimal_accumulator_not_rooted` but exercises
-        the `t_is_adt` heuristic in `_translate_array_map` (the
-        result-element rooting decision, distinct from the fold's
-        accumulator rooting).  A regression isolated to the
-        array_map path would not be caught by the fold test.
+        Mirror of ``test_decimal_accumulator_rooted_after_573``
+        for ``array_map``'s element-rooting heuristic
+        (``t_is_adt``).
         """
         int_src = """
 public fn main(@Unit -> @Int)
@@ -15715,7 +15836,7 @@ public fn main(@Unit -> @Int)
   ))
 }
 """
-        self._assert_handle_not_extra_rooted(
+        self._assert_handle_extra_rooted_after_573(
             int_src, decimal_src, "array_map", "element",
         )
 
@@ -15781,4 +15902,581 @@ public fn main(@Unit -> @Int)
 }
 """
         # 0 + 2 + 4 + 6 + 8 = 20
+        assert _run(src) == 1
+
+# =====================================================================
+# #573: Active reclamation of host-store handles
+# =====================================================================
+# Pre-fix: every map_new / map_insert / map_remove allocated a new
+# entry in `_map_store` (in `vera/codegen/api.py`) and never released
+# transient predecessors — the store grew monotonically across an
+# `execute()` call.  Bounded by Python GC at execute() exit, so
+# single-shot programs leaked but didn't OOM; mattered for long-
+# running execution contexts (server programs, repeated execute()).
+#
+# Post-fix (heap-wrap-as-ADT): each Map value is now a pointer to
+# an 8-byte wrapper ADT on the GC heap (tag at offset 0, raw host
+# handle at offset 4).  Wrappers register with the WASM-side wrap
+# table at allocation; Phase 2c of `$gc_collect` walks the wrap
+# table and fires `host_decref_handle(MAP_KIND, raw_handle)` for
+# every wrapper that was unmarked, evicting the corresponding
+# `_map_store` entry.
+#
+# `ExecuteResult.host_store_sizes` exposes the post-execution
+# population of each host store so tests can verify reclamation
+# without introspecting linker-internal state.
+# =====================================================================
+
+
+class TestHostHandleReclamation573:
+    """Reclamation regressions for the heap-wrap-as-ADT migration of
+    Map (#573), Set (#575), and Decimal (#576) — all shipped together
+    in v0.0.134.
+
+    Covers three failure modes per type:
+
+    * **chain reclaims transients** — a 5K–10K-iter ``array_fold``
+      chain leaves the corresponding host store at a bounded
+      residual (single-digit for Map, < 2K for Set, < 1.5K for
+      Decimal); proves Phase 2c is firing destructors.
+    * **value correct after pressure** — multiple lookups against
+      the live final value across heavy GC cadence; proves the
+      destructor isn't evicting live entries.
+    * **JSON-only / HTML-only programs include wrap-table** —
+      the host parsers' internal Map allocations register through
+      the same wrap-table machinery; pins the
+      ``_needs_wrap_table`` flip on ``_json_ops_used`` /
+      ``_html_ops_used``.
+    """
+
+    def test_map_chain_reclaims_transients(self) -> None:
+        """A 10 000-element ``array_fold`` over ``map_insert`` only
+        keeps the final Map reachable.  Pre-fix ``_map_store`` size
+        would be 10 001 at execute-end (one entry per insert + the
+        empty starting map).  Post-fix Phase 2c reclaims every
+        transient and the store holds a small constant — typically 1
+        (just the live final Map).
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_new();
+  let @Map<Int, Int> = array_fold(
+    array_range(1, 10001),
+    @Map<Int, Int>.0,
+    fn(@Map<Int, Int>, @Int -> @Map<Int, Int>) effects(pure) {
+      map_insert(@Map<Int, Int>.0, @Int.0, @Int.0)
+    }
+  );
+  match map_get(@Map<Int, Int>.0, 5000) {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+"""
+        result = _compile_ok(src)
+        exec_result = execute(result)
+        # Functional check: looked up key=5000 returns 5000.
+        assert exec_result.value == 5000, (
+            f"Map lookup returned {exec_result.value}, expected 5000"
+        )
+        # Reclamation check: store should be a small constant, not
+        # ~10 000.  Use a generous bound (<= 100) so slight churn
+        # in GC scheduling doesn't make the test flaky.
+        store_size = exec_result.host_store_sizes.get("map", 0)
+        # Empirically observed: 1 entry (the live final Map) after
+        # 10 000 transient inserts.  The bound of 10 admits any
+        # single-digit residual from in-flight wrappers between
+        # the last allocation and the function-epilogue's
+        # gc_sp restore.  Pre-fix this was 10 001, so any bound
+        # below ~100 demonstrates reclamation is working; the
+        # tighter bound here enforces "only the live final Map"
+        # behaviour rather than just "GC fires occasionally".
+        assert store_size <= 10, (
+            f"#573 regression: _map_store has {store_size} entries "
+            f"after a 10 000-iter map_insert chain.  Pre-fix this "
+            f"was monotonic in iterations (~10 001); post-fix the "
+            f"GC reclaims transients via the Phase 2c destructor "
+            f"hook and only the live final Map should remain. "
+            f"A size > 10 indicates either: (a) the wrap table "
+            f"isn't being populated, (b) Phase 2c isn't running, "
+            f"(c) `host_decref_handle` isn't evicting entries, or "
+            f"(d) the GC fires too rarely on this path."
+        )
+
+    def test_json_object_map_reclaimed(self) -> None:
+        """JSON's internal Map for JObject is also wrapped (#573).
+
+        ``json_parse`` allocates a ``Map<String, Json>`` for each
+        JObject; the wrapper migration extends to those host-side
+        allocations via ``_alloc_map_wrapper`` in
+        ``vera/codegen/api.py``.  Parses 5 000 distinct JSON
+        objects via ``array_fold`` so each intermediate Json is
+        unreachable on the next iteration — the iterative shape
+        is essential, recursive variants keep all Results alive
+        via per-frame shadow-stack roots (a correctness property,
+        not a leak).  Counts successful parses and checks the
+        store is bounded well below the total iteration count.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 0;
+  array_fold(
+    array_range(0, 5000),
+    @Int.0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      let @Result<Json, String> = json_parse("{\\"k\\": 1}");
+      match @Result<Json, String>.0 {
+        Ok(@Json) -> @Int.1 + 1,
+        Err(@String) -> @Int.1
+      }
+    }
+  )
+}
+"""
+        result = _compile_ok(src)
+        exec_result = execute(result)
+        assert exec_result.value == 5000, (
+            f"All 5 000 parses should succeed; got {exec_result.value}"
+        )
+        # 5 000 transient JObject Maps, none reachable at exit
+        # (the closure return is ``@Int.1 + 1``, not the Json).
+        # Steady-state residual is bounded by collection cadence
+        # rather than total allocations.  Pre-fix this was
+        # monotonic at ~5 000; post-fix Phase 2c reclaims the
+        # wrappers and ``host_decref_handle`` evicts the host-
+        # store entries.  We assert << 5000 (proof of reclamation,
+        # not zero — GC fires periodically, not on every alloc).
+        store_size = exec_result.host_store_sizes.get("map", 0)
+        assert store_size < 1500, (
+            f"#573 regression: _map_store has {store_size} entries "
+            f"after 5 000 transient JObject allocations.  Pre-fix "
+            f"this was monotonic (~5 000); post-fix the GC reclaims "
+            f"unreachable JObject Maps via the same wrap-table "
+            f"mechanism as user-allocated Maps.  Steady-state "
+            f"residual depends on GC cadence but should stay well "
+            f"below the total allocation count."
+        )
+
+    def test_map_value_lookup_after_gc_pressure(self) -> None:
+        """Functional integrity after heavy reclamation pressure.
+
+        Pre-#573 the wrap-table walk wasn't running, so this would
+        return the right answer trivially.  Post-#573 the destructor
+        hook is firing on every transient — if it had a bug
+        (off-by-one in compaction, wrong handle stored, etc.) the
+        live Map's host store entry could be evicted by mistake
+        and ``map_get`` would return None or trap.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_new();
+  let @Map<Int, Int> = array_fold(
+    array_range(0, 1000),
+    @Map<Int, Int>.0,
+    fn(@Map<Int, Int>, @Int -> @Map<Int, Int>) effects(pure) {
+      map_insert(@Map<Int, Int>.0, @Int.0, @Int.0 * 7)
+    }
+  );
+  --Look up several keys to force the live Map's entry to be
+  --consulted multiple times across GC events.
+  match map_get(@Map<Int, Int>.0, 0) {
+    Some(@Int) -> match map_get(@Map<Int, Int>.0, 500) {
+      Some(@Int) -> match map_get(@Map<Int, Int>.0, 999) {
+        Some(@Int) -> @Int.0,
+        None -> -1
+      },
+      None -> -2
+    },
+    None -> -3
+  }
+}
+"""
+        # 999 * 7 = 6993
+        assert _run(src) == 6993
+
+    def test_set_chain_reclaims_transients(self) -> None:
+        """A 10 000-element ``array_fold`` over ``set_add`` only
+        keeps the final Set reachable.  Pre-#573 phase 2 the
+        ``_set_store`` would have 10 001 entries at execute-end
+        (one per add + the empty start).  Post-fix Phase 2c
+        reclaims most transients.
+
+        Steady-state residual is bounded by GC cadence rather
+        than total allocations: Set's host op is cheap (Python
+        ``set.add``), so GC fires less often than for Map's
+        dict-copy-on-insert and the residual is correspondingly
+        higher.  We assert the residual is well below the total
+        (< 2 000 vs. 10 001) to prove reclamation is working
+        without over-specifying the exact count.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_new();
+  let @Set<Int> = array_fold(
+    array_range(1, 10001),
+    @Set<Int>.0,
+    fn(@Set<Int>, @Int -> @Set<Int>) effects(pure) {
+      set_add(@Set<Int>.0, @Int.0)
+    }
+  );
+  if set_contains(@Set<Int>.0, 5000) then { 1 } else { 0 }
+}
+"""
+        result = _compile_ok(src)
+        exec_result = execute(result)
+        assert exec_result.value == 1, (
+            f"set_contains(5000) should be true; got {exec_result.value}"
+        )
+        store_size = exec_result.host_store_sizes.get("set", 0)
+        assert store_size < 2000, (
+            f"#573 phase 2 regression: _set_store has {store_size} "
+            f"entries after a 10 000-iter set_add chain.  Pre-fix "
+            f"this was monotonic (~10 001); post-fix the GC reclaims "
+            f"transients via the same Phase 2c destructor hook as "
+            f"Map (`kind == 2` in host_decref_handle).  A size > "
+            f"2 000 indicates reclamation isn't keeping pace."
+        )
+
+    def test_set_value_correct_after_gc_pressure(self) -> None:
+        """Functional integrity for Set under GC pressure.
+
+        Symmetric to the Map / Decimal lookup-after-pressure tests:
+        if the Set destructor mechanism had a bug evicting live
+        wrappers, ``set_contains`` would return false for elements
+        that ARE in the live Set, or trap on a missing host-store
+        entry.  Exercises 1 000 set_adds + multiple ``set_contains``
+        and ``set_size`` calls on the live Set.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<Int> = set_new();
+  let @Set<Int> = array_fold(
+    array_range(0, 1000),
+    @Set<Int>.0,
+    fn(@Set<Int>, @Int -> @Set<Int>) effects(pure) {
+      set_add(@Set<Int>.0, @Int.0)
+    }
+  );
+  --Three lookups + size, all on the same live Set across GC events.
+  if set_contains(@Set<Int>.0, 0) then {
+    if set_contains(@Set<Int>.0, 500) then {
+      if set_contains(@Set<Int>.0, 999) then {
+        nat_to_int(set_size(@Set<Int>.0))
+      } else { -1 }
+    } else { -2 }
+  } else { -3 }
+}
+"""
+        # 1000 distinct elements in [0, 1000) → size 1000.
+        assert _run(src) == 1000
+
+    def test_decimal_chain_reclaims_transients(self) -> None:
+        """A 5 000-iteration ``array_fold`` over ``decimal_add``
+        reclaims transients (#573 phase 3).
+
+        Each iteration constructs a new Decimal handle via
+        ``decimal_add`` (host_decimal_add allocates a fresh
+        PyDecimal in ``_decimal_store``); the closure return is
+        consumed by the next iteration.  Pre-fix store size was
+        ~5 000+ (each intermediate plus per-iteration
+        ``decimal_from_int(@Int.0)`` for the second arg).  Post-
+        fix Phase 2c walks the wrap table and fires
+        ``host_decref_handle(DECIMAL, handle)`` for every
+        unmarked wrapper.
+
+        Smaller iteration count than the Map test because
+        ``decimal_add`` is more expensive per iteration (Python
+        ``Decimal`` arithmetic vs. dict insertion).
+        """
+        src = """
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = array_fold(
+    array_range(0, 5000),
+    decimal_from_int(0),
+    fn(@Decimal, @Int -> @Decimal) effects(pure) {
+      decimal_add(@Decimal.0, decimal_from_int(@Int.0))
+    }
+  );
+  --Sum 0 + 1 + ... + 4999 = 12 497 500.
+  decimal_eq(@Decimal.0, decimal_from_int(12497500))
+}
+"""
+        result = _compile_ok(src)
+        exec_result = execute(result)
+        assert exec_result.value == 1, (
+            f"Decimal sum should equal 12 497 500; "
+            f"got {exec_result.value}"
+        )
+        store_size = exec_result.host_store_sizes.get("decimal", 0)
+        # Decimal accumulates ~2 entries per iteration pre-GC
+        # (the old accumulator + the from_int(idx)) plus the
+        # final decimal_eq pair.  Bound is more generous than
+        # Map because the arithmetic path is denser.
+        assert store_size < 1500, (
+            f"#573 phase 3 regression: _decimal_store has "
+            f"{store_size} entries after 5 000 decimal_add "
+            f"iterations.  Pre-fix this was monotonic at "
+            f"~10 000+; post-fix Phase 2c reclaims unreachable "
+            f"Decimal wrappers via `kind == 3` in "
+            f"host_decref_handle.  A size > 1 500 indicates "
+            f"reclamation isn't keeping pace with allocation."
+        )
+
+    def test_json_only_module_includes_wrap_table(self) -> None:
+        """A module that uses ONLY ``json_parse`` (no user-level
+        ``map_*`` ops) must still emit the wrap-table
+        infrastructure.
+
+        ``write_json``'s JObject branch allocates Map wrappers
+        host-side via ``_alloc_map_wrapper``, which calls
+        ``$register_wrapper``.  Pre-fix the wrap-table flag only
+        flipped on direct Map / Set / Decimal use, so JSON-only
+        programs would either: (a) compile cleanly but leak
+        ``_map_store`` entries for every parsed JObject (no
+        Phase 2c, no destructor import), or (b) trap at
+        instantiation if ``host_json_parse`` tried to call the
+        non-existent ``register_wrapper`` export.
+
+        Post-fix the flag flips on ``_json_ops_used`` /
+        ``_html_ops_used`` too.  This structural test asserts
+        the WAT contains the wrap-table imports, exports, and
+        sweep machinery.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse("{\\"a\\": 1}");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        wat = _compile_ok(src).wat
+        assert (
+            'import "vera" "host_decref_handle"' in wat
+        ), (
+            "#573 finding 5 regression: JSON-only program is "
+            "missing the host_decref_handle import.  Without it, "
+            "Phase 2c can't reclaim Map wrappers allocated by "
+            "write_json's JObject path."
+        )
+        assert "$register_wrapper" in wat, (
+            "#573 finding 5 regression: JSON-only program is "
+            "missing the $register_wrapper helper.  Without it, "
+            "_alloc_map_wrapper's call from host_json_parse "
+            "either no-ops (silent leak) or traps at "
+            "instantiation."
+        )
+        assert '(export "register_wrapper"' in wat, (
+            "#573 finding 5 regression: JSON-only program is "
+            "missing the register_wrapper export.  Host-side "
+            "_alloc_map_wrapper accesses this export via "
+            "caller[\"register_wrapper\"]; without it the cast "
+            "returns None and registration is silently skipped."
+        )
+        # Functional check too: the program runs and returns 1.
+        assert _run(src) == 1
+
+    def test_html_only_module_includes_wrap_table(self) -> None:
+        """An HTML-using program emits the wrap-table machinery
+        (mirror of ``test_json_only_module_includes_wrap_table``).
+
+        ``write_html``'s HtmlElement attrs branch allocates Map
+        wrappers via ``_alloc_map_wrapper`` exactly like
+        ``write_json``'s JObject branch.  Note that compiling
+        ``html_parse`` typically also pulls in the prelude's
+        ``html_attr`` (which dispatches to ``map_get``), so
+        ``_map_ops_used`` would be set anyway in practice — but
+        the ``_needs_wrap_table`` gating on ``_html_ops_used``
+        is the load-bearing fix if that prelude transitivity
+        ever changes (or if a future codegen DCE eliminates the
+        unused ``html_attr`` import).
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match html_parse("<p>hello</p>") {
+    Ok(@HtmlNode) -> 1,
+    Err(@String) -> 0
+  }
+}
+"""
+        wat = _compile_ok(src).wat
+        assert (
+            'import "vera" "host_decref_handle"' in wat
+        ), (
+            "#573 finding 5 regression (HTML): missing "
+            "host_decref_handle import.  Without it, Phase 2c "
+            "can't reclaim Map wrappers allocated by "
+            "write_html's HtmlElement-attrs path."
+        )
+        assert "$register_wrapper" in wat, (
+            "#573 finding 5 regression (HTML): missing "
+            "$register_wrapper helper."
+        )
+        assert '(export "register_wrapper"' in wat, (
+            "#573 finding 5 regression (HTML): missing "
+            "register_wrapper export."
+        )
+        assert _run(src) == 1
+
+    def test_register_wrapper_has_compaction_slow_path(self) -> None:
+        """``$register_wrapper`` triggers ``$gc_collect`` on
+        overflow before trapping (#579).
+
+        Pre-#579 the function trapped with ``unreachable`` the
+        moment ``$gc_wrap_ptr >= $gc_wrap_end`` — even if
+        compaction would have freed thousands of dead entries.
+        Post-fix the slow path roots the in-flight wrapper on
+        the shadow stack, calls ``$gc_collect`` (which runs
+        Phase 2c compaction), pops the root, and re-checks; only
+        if the table is still full does it trap.
+
+        This is a structural test rather than functional because
+        triggering the slow path under a real workload is hard:
+        every wrapper IS also a heap allocation, so wrap-table-
+        full and heap-full happen at similar cadences and
+        ``$alloc`` triggers GC first under normal conditions.
+        Asserting the slow-path WAT is present pins that the
+        emitter wired up the compaction call correctly; if a
+        future refactor reverts to the unconditional trap, this
+        test catches it.
+        """
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_new();
+  match map_get(@Map<Int, Int>.0, 1) {
+    Some(@Int) -> @Int.0,
+    None -> 0
+  }
+}
+"""
+        wat = _compile_ok(src).wat
+        # Locate the $register_wrapper function body.
+        fn_match = re.search(
+            r"\(func \$register_wrapper\b.*?(?=\n  \(func |\n\s*\)\s*$)",
+            wat, re.DOTALL,
+        )
+        assert fn_match is not None, (
+            "$register_wrapper not emitted in WAT — wrap-table "
+            "infrastructure may be missing despite a Map op being "
+            "used"
+        )
+        body = fn_match.group(0)
+        # Slow path must call $gc_collect.
+        assert "call $gc_collect" in body, (
+            "#579 regression: $register_wrapper has no "
+            "$gc_collect call in its overflow path.  Pre-#579 it "
+            "trapped unconditionally; post-fix it must compact "
+            "first.  Without the slow path, programs hitting the "
+            "wrap-table ceiling trap even when most entries are "
+            "dead and would be reclaimed by Phase 2c."
+        )
+        # Slow path must shadow-push the in-flight wrapper before
+        # the collect (otherwise GC frees the just-allocated
+        # wrapper body and we append to a dangling pointer).
+        # The push idiom: global.get $gc_sp; local.get $ptr;
+        # i32.store; ...; global.set $gc_sp.
+        push_before_collect = re.search(
+            r"global\.get \$gc_sp\s+"
+            r"local\.get \$ptr\s+"
+            r"i32\.store\s+"
+            r"global\.get \$gc_sp\s+"
+            r"i32\.const 4\s+"
+            r"i32\.add\s+"
+            r"global\.set \$gc_sp.*?"
+            r"call \$gc_collect",
+            body, re.DOTALL,
+        )
+        assert push_before_collect is not None, (
+            "#579 regression: $register_wrapper calls "
+            "$gc_collect but doesn't shadow-push $ptr first.  "
+            "Without rooting, Phase 2b marks the in-flight "
+            "wrapper unreachable, Phase 3 frees it, and the "
+            "post-collect append writes to a freed object."
+        )
+        # And there should be a re-check after the collect — two
+        # `i32.ge_u` operations (the initial overflow check, and
+        # the post-compaction re-check).
+        assert body.count("i32.ge_u") >= 2, (
+            "#579 regression: $register_wrapper has fewer than 2 "
+            "`i32.ge_u` ops; the post-compaction re-check is "
+            "likely missing."
+        )
+        # Shadow-stack must be balanced on the trap path.  The
+        # pop of the temporary root must appear BEFORE the
+        # re-check guard — if the trap fires, the pop has
+        # already executed and the shadow stack is balanced.
+        # Pop idiom: ``global.get $gc_sp; i32.const 4; i32.sub;
+        # global.set $gc_sp``.  Re-check idiom: ``global.get
+        # $gc_wrap_ptr; global.get $gc_wrap_end; i32.ge_u``.
+        # Match both with the pop strictly preceding the
+        # re-check (in the same slow-path region).
+        balance_pattern = re.search(
+            r"call \$gc_collect.*?"
+            r"global\.get \$gc_sp\s+"
+            r"i32\.const 4\s+"
+            r"i32\.sub\s+"
+            r"global\.set \$gc_sp.*?"
+            r"global\.get \$gc_wrap_ptr\s+"
+            r"global\.get \$gc_wrap_end\s+"
+            r"i32\.ge_u",
+            body, re.DOTALL,
+        )
+        assert balance_pattern is not None, (
+            "#579 regression: shadow-stack imbalance on trap "
+            "path.  The pop of the temporary root must appear "
+            "between $gc_collect and the post-compaction "
+            "re-check guard — otherwise the trap leaves $gc_sp "
+            "one slot above its caller-entry level.  Today the "
+            "trap is `unreachable` and the WASM module aborts, "
+            "so the imbalance has no observable effect, but "
+            "treating WAT shadow-stack discipline as a hard "
+            "invariant catches regressions before any future "
+            "change makes the trap recoverable."
+        )
+
+    def test_decimal_value_correct_after_gc_pressure(self) -> None:
+        """Functional integrity for Decimal under GC pressure.
+
+        Same shape as ``test_map_value_lookup_after_gc_pressure``:
+        if the Decimal destructor mechanism had a bug that evicted
+        live wrappers, ``decimal_eq`` would either return false or
+        trap on a missing host-store entry.
+        """
+        src = """
+public fn main(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Decimal = array_fold(
+    array_range(1, 1001),
+    decimal_from_int(0),
+    fn(@Decimal, @Int -> @Decimal) effects(pure) {
+      decimal_add(
+        @Decimal.0,
+        decimal_mul(decimal_from_int(@Int.0), decimal_from_int(2))
+      )
+    }
+  );
+  --Sum 2*(1+2+...+1000) = 2 * 500 500 = 1 001 000.
+  decimal_eq(@Decimal.0, decimal_from_int(1001000))
+}
+"""
         assert _run(src) == 1

@@ -266,27 +266,44 @@ def _is_pair_element_type(elem_type: str) -> bool:
 # Note: per-execute() handle leaks for these stores are tracked
 # separately as #346 — that's an active-reclamation problem
 # distinct from the rooting decision the classifier informs.
-_HOST_HANDLE_TYPES: frozenset[str] = frozenset({"Map", "Set", "Decimal"})
+#
+# #573 phases 1-3: ``Map``, ``Set``, and ``Decimal`` have all
+# migrated to the heap-wrap-as-ADT scheme.  Their values are now
+# pointers to GC-managed wrapper ADTs (8-byte objects holding the
+# real i32 host handle in field 0); they ARE Vera-heap pointers
+# and MUST be rooted, so the set is empty.  Any future host-
+# handle type added without wrapper migration would be added
+# here, but in practice all host-handle types should follow the
+# wrap-as-ADT pattern from the start.
+_HOST_HANDLE_TYPES: frozenset[str] = frozenset()
 
 
 def _is_host_handle_type(type_name: str | None) -> bool:
-    """Return True if `type_name` names an opaque host-handle type.
+    """Return True if `type_name` names an opaque host-handle type
+    that should be excluded from GC-rooting decisions.
 
-    Used at GC-rooting decision sites (`vera/codegen/functions.py`,
-    `vera/codegen/closures.py`, `vera/wasm/calls_arrays.py`) to
-    exclude `Map` / `Set` / `Decimal` handles from the shadow-stack
-    push set — they're i32 indices into Python-side host stores,
-    not Vera-heap pointers, so the conservative GC's mark phase
-    would either reject them via the heap-range check (the common
-    case) or incorrectly mark an unrelated heap object whose
-    address happens to coincide with the handle value.
+    Pre-#573 (v0.0.132): used to exclude ``Map`` / ``Set`` /
+    ``Decimal`` handles from shadow-stack rooting because those
+    values lowered to raw i32 host-store indices — not Vera-heap
+    pointers — and the conservative GC's mark phase would either
+    reject them via the heap-range check (the common case) or
+    spuriously mark an unrelated heap object whose address
+    happened to match a handle value.
+
+    Post-#573 (v0.0.134): all three types migrated to the
+    heap-wrap-as-ADT scheme.  Their values are now pointers to
+    GC-managed wrapper ADTs and DO require rooting, so the
+    underlying ``_HOST_HANDLE_TYPES`` set is empty and this
+    helper always returns False.  The function is kept rather
+    than deleted so future host-handle types added without
+    wrapper migration have an obvious place to register their
+    exclusion.
 
     Parametric forms like `Map<K, V>` strip to the bare head; we
-    match on prefix to handle both.  ``Regex`` was originally
-    listed in the #346/#347/#490 issue bodies but Vera doesn't
-    expose a `Regex` value type — regex operations take pattern
-    strings and return Result, with no persistent host-side
-    handle.  Excluded from this set.
+    match on prefix.  ``Regex`` was historically discussed for
+    inclusion but Vera doesn't expose a `Regex` value type —
+    regex operations take pattern strings and return Result, with
+    no persistent host-side handle.
     """
     if type_name is None:
         return False

@@ -96,6 +96,14 @@ class AssemblyMixin:
         if self._map_ops_used:
             self._needs_alloc = True
             self._needs_memory = True
+            # #573: Map / Set / Decimal all migrate to the heap-
+            # wrap-as-ADT scheme.  Any of them being used flips
+            # the wrap-table flag — ``assembly.py`` then allocates
+            # the 64 KiB side-table region, emits
+            # ``$register_wrapper``, adds Phase 2c to
+            # ``$gc_collect``, and (below, after all three blocks)
+            # imports the ``host_decref_handle`` helper.
+            self._needs_wrap_table = True
 
         # Import Set host-import builtins (per-type-instantiation)
         for import_line in sorted(self._set_imports):
@@ -103,6 +111,8 @@ class AssemblyMixin:
         if self._set_ops_used:
             self._needs_alloc = True
             self._needs_memory = True
+            # #573 phase 2: Set migrated to heap-wrap-as-ADT.
+            self._needs_wrap_table = True
 
         # Import Decimal host-import builtins
         for import_line in sorted(self._decimal_imports):
@@ -110,6 +120,37 @@ class AssemblyMixin:
         if self._decimal_ops_used:
             self._needs_alloc = True
             self._needs_memory = True
+            # #573 phase 3: Decimal migrated to heap-wrap-as-ADT.
+            self._needs_wrap_table = True
+
+        # #573: JSON and HTML host parsers allocate Map wrappers
+        # internally (for JObject's ``Map<String, Json>`` field
+        # and HtmlElement's ``Map<String, String>`` attrs) via
+        # ``_alloc_map_wrapper`` in ``vera/codegen/api.py``.
+        # Those allocations register with the wrap table and rely
+        # on Phase 2c + ``host_decref_handle`` for reclamation —
+        # without flipping the flag here, JSON/HTML-only programs
+        # (no user-level ``map_*`` ops) leak the underlying
+        # ``_map_store`` entries indefinitely because
+        # ``register_wrapper`` is unexported and Phase 2c isn't
+        # emitted.  Same flag flip; the gating cost is one extra
+        # 64 KiB region in linear memory.
+        if self._json_ops_used or self._html_ops_used:
+            self._needs_wrap_table = True
+
+        # #573: emit ``host_decref_handle`` import after the
+        # gating blocks above have all run.  Phase 2c of
+        # ``$gc_collect`` calls this for each unmarked wrapper.
+        # Must come after the per-type imports so the WAT
+        # ``(import "vera" ...)`` declarations stay grouped by
+        # subsystem, but before the GC infrastructure is emitted
+        # (which references the import).
+        if self._needs_wrap_table:
+            parts.append(
+                '  (import "vera" "host_decref_handle" '
+                "(func $vera.host_decref_handle "
+                "(param i32) (param i32)))"
+            )
 
         # Import Json host-import builtins
         if "json_parse" in self._json_ops_used:
@@ -280,7 +321,29 @@ class AssemblyMixin:
             # via iterative deepening or dynamic worklist growth is
             # tracked separately for follow-up.
             gc_worklist_size = 65536  # 64 KiB worklist (16 384 entries)
-            gc_heap_start = data_end + gc_stack_size + gc_worklist_size
+            # #573: wrap-table region for host-handle ADT wrappers.
+            # Sized for 4 096 simultaneously-live wrapper objects at
+            # 16 bytes per entry (obj_ptr / kind / handle / reserved).
+            # Sweep compacts in place, so the table grows with
+            # *live* wrappers, not total allocations.  Programs that
+            # don't use any wrap-table-backed type pay no memory
+            # cost — `_needs_wrap_table` gates inclusion of both
+            # this region and the corresponding sweep pass.
+            #
+            # Note: only Map<K, V> migrates in this release
+            # (#573 phase 1 — Plan B).  Set / Decimal / JSON / HTML
+            # follow in tracked follow-ups so each migration's
+            # design choices can be reviewed independently.
+            gc_wraptable_size = 65536  # 64 KiB / 4 096 wrapper entries
+            wrap_enabled = self._needs_wrap_table
+            wraptable_overhead = gc_wraptable_size if wrap_enabled else 0
+            gc_wraptable_base = (
+                data_end + gc_stack_size + gc_worklist_size
+            )
+            gc_heap_start = (
+                data_end + gc_stack_size + gc_worklist_size
+                + wraptable_overhead
+            )
             parts.append(
                 f"  (global $heap_ptr (export \"heap_ptr\") "
                 f"(mut i32) (i32.const {gc_heap_start}))"
@@ -302,10 +365,58 @@ class AssemblyMixin:
                 f"  (global $gc_heap_start i32 "
                 f"(i32.const {gc_heap_start}))"
             )
+            # #573: dedicated worklist-end constant.  Pre-#573
+            # the mark phase used ``$gc_heap_start`` as the
+            # worklist upper bound, on the (correct-at-the-time)
+            # assumption that the worklist sat directly before
+            # the heap.  After the wrap-table region was
+            # inserted between worklist and heap, that
+            # assumption broke: the worklist would think it had
+            # ``worklist_size + wraptable_size`` of capacity and
+            # could grow into the wrap-table, corrupting
+            # entries.  Phase 2c would then operate on garbage
+            # (wrong obj_ptr / kind / handle triples), evicting
+            # arbitrary host-store entries.  This dedicated
+            # constant is always exactly one ``gc_worklist_size``
+            # past ``gc_stack_limit`` regardless of whether the
+            # wrap-table is enabled.
+            gc_worklist_end = gc_stack_limit + gc_worklist_size
+            parts.append(
+                f"  (global $gc_worklist_end i32 "
+                f"(i32.const {gc_worklist_end}))"
+            )
             parts.append(
                 "  (global $gc_free_head (mut i32) (i32.const 0))"
             )
+            if wrap_enabled:
+                gc_wraptable_end = gc_wraptable_base + gc_wraptable_size
+                parts.append(
+                    f"  (global $gc_wrap_base i32 "
+                    f"(i32.const {gc_wraptable_base}))"
+                )
+                parts.append(
+                    f"  (global $gc_wrap_ptr (mut i32) "
+                    f"(i32.const {gc_wraptable_base}))"
+                )
+                parts.append(
+                    f"  (global $gc_wrap_end i32 "
+                    f"(i32.const {gc_wraptable_end}))"
+                )
             parts.append(self._emit_alloc())
+            if wrap_enabled:
+                parts.append(self._emit_register_wrapper())
+                # #573: export $register_wrapper so host helpers
+                # (JSON / HTML parsers in `vera/codegen/api.py`)
+                # can register wrappers for Map allocations they
+                # build internally — otherwise JObject /
+                # HtmlElement field Maps wouldn't get reclaimed
+                # and would also break ``map_contains`` / ``map_get``
+                # at the WASM layer (which now expects wrapper
+                # pointers, not raw handles, on the operand stack).
+                parts.append(
+                    '  (export "register_wrapper" '
+                    '(func $register_wrapper))'
+                )
             parts.append(self._emit_gc_collect())
 
         # Export $alloc when host functions need to allocate WASM memory,
@@ -573,14 +684,228 @@ class AssemblyMixin:
             "  )"
         )
 
+    def _emit_register_wrapper(self) -> str:
+        """Emit ``$register_wrapper(ptr, kind, handle)`` for #573.
+
+        Appends a 16-byte entry to the wrap-table region:
+
+        ::
+
+            offset 0: ptr   (i32) — pointer to wrapper ADT in the GC heap
+            offset 4: kind  (i32) — 1=Map, 2=Set, 3=Decimal, 4..N reserved
+            offset 8: handle (i32) — index into the host-side store
+            offset 12: reserved (zero) — alignment / future use
+
+        On overflow (4 096 simultaneously-live wrappers between
+        collections) the slow path triggers ``$gc_collect``, which
+        runs Phase 2c compaction — survivors are kept in place,
+        dead entries are dropped, ``$gc_wrap_ptr`` is reset to the
+        compacted end.  After the collect the overflow check is
+        re-evaluated; only if the table is *still* full do we trap
+        with ``unreachable`` (which means 4 096+ wrappers are
+        genuinely live and the program is over the budget; bumping
+        ``gc_wraptable_size`` is the cure).
+
+        The slow path roots the in-flight wrapper on the shadow
+        stack *before* calling ``$gc_collect`` because the wrapper
+        isn't in the wrap-table yet (that's what we're trying to
+        do) and its body has just been allocated by the caller —
+        without rooting, Phase 2b would mark it unreachable and
+        Phase 3 would link it into the free list, leaving us
+        appending to a freed object after the collect.  The pop
+        immediately after the collect keeps the shadow stack
+        stable so iterative builders' per-iteration push count
+        doesn't drift across calls.
+
+        The destructor side (firing ``host_decref_handle`` for
+        unmarked wrappers) lives in ``$gc_collect`` Phase 2c.
+        """
+        return (
+            "  (func $register_wrapper "
+            "(param $ptr i32) (param $kind i32) (param $handle i32)\n"
+            "    ;; Overflow check: try compaction first, only\n"
+            "    ;; trap if still full afterwards (#573 / #579).\n"
+            "    global.get $gc_wrap_ptr\n"
+            "    global.get $gc_wrap_end\n"
+            "    i32.ge_u\n"
+            "    if\n"
+            "      ;; Slow path: root the in-flight wrapper, then\n"
+            "      ;; collect.  Without the push, Phase 2b marks the\n"
+            "      ;; in-flight wrapper unreachable and Phase 3\n"
+            "      ;; frees it; we'd append to a freed object.\n"
+            "      global.get $gc_sp\n"
+            "      global.get $gc_stack_limit\n"
+            "      i32.ge_u\n"
+            "      if\n"
+            "        unreachable\n"
+            "      end\n"
+            "      global.get $gc_sp\n"
+            "      local.get $ptr\n"
+            "      i32.store\n"
+            "      global.get $gc_sp\n"
+            "      i32.const 4\n"
+            "      i32.add\n"
+            "      global.set $gc_sp\n"
+            "      ;; Compact: Phase 2c walks the wrap-table,\n"
+            "      ;; drops unmarked entries, resets $gc_wrap_ptr.\n"
+            "      call $gc_collect\n"
+            "      ;; Pop the temporary root.\n"
+            "      global.get $gc_sp\n"
+            "      i32.const 4\n"
+            "      i32.sub\n"
+            "      global.set $gc_sp\n"
+            "      ;; Re-check; trap only if still full.\n"
+            "      global.get $gc_wrap_ptr\n"
+            "      global.get $gc_wrap_end\n"
+            "      i32.ge_u\n"
+            "      if\n"
+            "        unreachable\n"
+            "      end\n"
+            "    end\n"
+            "    ;; entry[0] = ptr\n"
+            "    global.get $gc_wrap_ptr\n"
+            "    local.get $ptr\n"
+            "    i32.store offset=0\n"
+            "    ;; entry[4] = kind\n"
+            "    global.get $gc_wrap_ptr\n"
+            "    local.get $kind\n"
+            "    i32.store offset=4\n"
+            "    ;; entry[8] = handle\n"
+            "    global.get $gc_wrap_ptr\n"
+            "    local.get $handle\n"
+            "    i32.store offset=8\n"
+            "    ;; entry[12] = 0 (reserved; explicit init covers re-use\n"
+            "    ;; of compacted-out slots that may carry stale bytes).\n"
+            "    global.get $gc_wrap_ptr\n"
+            "    i32.const 0\n"
+            "    i32.store offset=12\n"
+            "    ;; Advance write pointer by 16 bytes.\n"
+            "    global.get $gc_wrap_ptr\n"
+            "    i32.const 16\n"
+            "    i32.add\n"
+            "    global.set $gc_wrap_ptr\n"
+            "  )"
+        )
+
+    def _emit_phase_2c(self) -> str:
+        """Emit Phase 2c of ``$gc_collect`` for #573.
+
+        Walks the wrap-table side index of host-handle wrapper
+        objects.  After Phase 2b has completed marking, every
+        wrapper-object's mark bit reflects reachability from the
+        live root set.  For each entry:
+
+        * **Marked** → wrapper is reachable.  Copy entry to the
+          compaction write pointer (``$wrap_write``) and advance.
+        * **Unmarked** → wrapper is unreachable.  Call the
+          ``host_decref_handle(kind, handle)`` host import, which
+          evicts the corresponding entry from the Python-side
+          (or browser-side) store.  Drop the entry by *not*
+          copying it forward.
+
+        After the walk, ``$gc_wrap_ptr := $wrap_write``, so the
+        wrap table tracks live wrappers only.  Runs **before**
+        Phase 3 (sweep) so an unmarked wrapper's body is still
+        intact when its kind/handle are read; Phase 3 then links
+        the unmarked wrapper object itself into the free list
+        like any other unreachable allocation.
+        """
+        return (
+            "    ;; === Phase 2c: Walk wrap table — fire destructors ===\n"
+            "    ;; #573: each wrap-table entry is 16 bytes:\n"
+            "    ;;   [0] obj_ptr — pointer to wrapper ADT body\n"
+            "    ;;   [4] kind    — 1=Map, 2=Set, 3=Decimal\n"
+            "    ;;   [8] handle  — i32 index into host-side store\n"
+            "    ;;   [12] reserved\n"
+            "    ;; Compact in place: write pointer trails read.\n"
+            "    global.get $gc_wrap_base\n"
+            "    local.set $wrap_read\n"
+            "    global.get $gc_wrap_base\n"
+            "    local.set $wrap_write\n"
+            "    block $wt_done\n"
+            "    loop $wt_loop\n"
+            "      local.get $wrap_read\n"
+            "      global.get $gc_wrap_ptr\n"
+            "      i32.ge_u\n"
+            "      br_if $wt_done\n"
+            "      ;; Load entry fields.\n"
+            "      local.get $wrap_read\n"
+            "      i32.load offset=0\n"
+            "      local.set $obj_ptr\n"
+            "      local.get $wrap_read\n"
+            "      i32.load offset=4\n"
+            "      local.set $wrap_kind\n"
+            "      local.get $wrap_read\n"
+            "      i32.load offset=8\n"
+            "      local.set $wrap_handle\n"
+            "      ;; Mark bit lives in header at obj_ptr - 4.\n"
+            "      local.get $obj_ptr\n"
+            "      i32.const 4\n"
+            "      i32.sub\n"
+            "      i32.load\n"
+            "      i32.const 1\n"
+            "      i32.and\n"
+            "      if\n"
+            "        ;; Marked → keep.  Copy to compaction position.\n"
+            "        local.get $wrap_write\n"
+            "        local.get $obj_ptr\n"
+            "        i32.store offset=0\n"
+            "        local.get $wrap_write\n"
+            "        local.get $wrap_kind\n"
+            "        i32.store offset=4\n"
+            "        local.get $wrap_write\n"
+            "        local.get $wrap_handle\n"
+            "        i32.store offset=8\n"
+            "        local.get $wrap_write\n"
+            "        i32.const 0\n"
+            "        i32.store offset=12\n"
+            "        local.get $wrap_write\n"
+            "        i32.const 16\n"
+            "        i32.add\n"
+            "        local.set $wrap_write\n"
+            "      else\n"
+            "        ;; Unmarked → fire destructor.  Evicts entry from\n"
+            "        ;; Python/JS host store; the wrapper-ADT object\n"
+            "        ;; itself is reclaimed by Phase 3 below like any\n"
+            "        ;; other unreachable allocation.\n"
+            "        local.get $wrap_kind\n"
+            "        local.get $wrap_handle\n"
+            "        call $vera.host_decref_handle\n"
+            "      end\n"
+            "      local.get $wrap_read\n"
+            "      i32.const 16\n"
+            "      i32.add\n"
+            "      local.set $wrap_read\n"
+            "      br $wt_loop\n"
+            "    end\n"
+            "    end\n"
+            "    ;; Truncate wrap table to compacted live entries.\n"
+            "    local.get $wrap_write\n"
+            "    global.set $gc_wrap_ptr\n"
+            "\n"
+        )
+
     def _emit_gc_collect(self) -> str:
         """Emit the $gc_collect function: mark-sweep garbage collector.
 
-        Three phases:
+        Three phases (plus Phase 2c when the wrap table is enabled):
           1. Clear all mark bits in the heap.
           2. Mark from shadow-stack roots (iterative, conservative).
+          2c. (#573) Walk the wrap table: fire ``host_decref_handle``
+              for unmarked wrapper entries; compact survivors in
+              place.  Only emitted when ``self._needs_wrap_table``
+              is true.
           3. Sweep: link unmarked objects into the free list.
         """
+        wrap_enabled = self._needs_wrap_table
+        wrap_locals = (
+            "    (local $wrap_read i32)\n"
+            "    (local $wrap_write i32)\n"
+            "    (local $wrap_kind i32)\n"
+            "    (local $wrap_handle i32)\n"
+            if wrap_enabled
+            else ""
+        )
         # Worklist region sits right after shadow stack, sized to match
         return (
             "  (func $gc_collect\n"
@@ -594,13 +919,19 @@ class AssemblyMixin:
             "    (local $wl_end i32)\n"
             "    (local $obj_ptr i32)\n"
             "    (local $free_head i32)\n"
-            "\n"
-            "    ;; Worklist region: gc_stack_limit .. gc_heap_start\n"
+            + wrap_locals
+            + "\n"
+            "    ;; Worklist region: gc_stack_limit .. gc_worklist_end.\n"
+            "    ;; #573: use the dedicated worklist-end constant\n"
+            "    ;; rather than $gc_heap_start — with the wrap-table\n"
+            "    ;; enabled, $gc_heap_start sits past the wrap-table\n"
+            "    ;; and the worklist could grow into and corrupt\n"
+            "    ;; wrap-table entries.\n"
             "    global.get $gc_stack_limit\n"
             "    local.set $wl_base\n"
             "    local.get $wl_base\n"
             "    local.set $wl_ptr\n"
-            "    global.get $gc_heap_start\n"
+            "    global.get $gc_worklist_end\n"
             "    local.set $wl_end\n"
             "\n"
             "    ;; === Phase 1: Clear all mark bits ===\n"
@@ -848,7 +1179,12 @@ class AssemblyMixin:
             "    end\n"
             "    end\n"
             "\n"
-            "    ;; === Phase 3: Sweep — build free list ===\n"
+            + (
+                self._emit_phase_2c()
+                if wrap_enabled
+                else ""
+            )
+            + "    ;; === Phase 3: Sweep — build free list ===\n"
             "    i32.const 0\n"
             "    local.set $free_head\n"
             "    global.get $gc_heap_start\n"

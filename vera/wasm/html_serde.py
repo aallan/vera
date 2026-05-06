@@ -37,7 +37,10 @@ import wasmtime
 AllocFn = Callable[[wasmtime.Caller, int], int]
 WriteI32Fn = Callable[[wasmtime.Caller, int, int], None]
 AllocStringFn = Callable[[wasmtime.Caller, str], tuple[int, int]]
-MapAllocFn = Callable[[dict[object, object]], int]
+# #573: map_alloc returns a wrapper-ADT pointer.  See json_serde.py
+# for the long version; the HTML side mirrors it for HtmlElement
+# attrs.
+MapAllocFn = Callable[[wasmtime.Caller, dict[object, object]], int]
 ReadI32Fn = Callable[[wasmtime.Caller, int], int]
 ReadStringFn = Callable[[wasmtime.Caller, int, int], str]
 
@@ -75,10 +78,16 @@ def write_html(
         # Keys and values are Python strings — the Map host runtime
         # stores Python values and converts to WASM on access (via
         # map_get which calls _alloc_option_some_string).
+        # #573: ``map_alloc`` returns a wrapper-ADT pointer (see
+        # ``vera/codegen/api.py::_alloc_map_wrapper``); store that
+        # in HtmlElement's attrs field so user-level
+        # ``map_get`` / ``map_contains`` calls unwrap correctly
+        # and the underlying ``_map_store`` entry is reclaimed
+        # when the wrapper becomes unreachable.
         map_dict: dict[object, object] = {}
         for k, v in attrs.items():
             map_dict[str(k)] = str(v)
-        handle = map_alloc(map_dict)
+        wrapper_ptr = map_alloc(caller, map_dict)
 
         # Allocate children array
         child_count = len(children)
@@ -98,7 +107,7 @@ def write_html(
         write_i32(caller, ptr, _TAG_HTML_ELEMENT)
         write_i32(caller, ptr + 4, name_ptr)
         write_i32(caller, ptr + 8, name_len)
-        write_i32(caller, ptr + 12, handle)
+        write_i32(caller, ptr + 12, wrapper_ptr)
         write_i32(caller, ptr + 16, arr_ptr)
         write_i32(caller, ptr + 20, child_count)
         return ptr
@@ -141,7 +150,12 @@ def read_html(
         name_ptr = read_i32(caller, ptr + 4)
         name_len = read_i32(caller, ptr + 8)
         name = read_string(caller, name_ptr, name_len)
-        handle = read_i32(caller, ptr + 12)
+        # #573: HtmlElement's i32 field at offset 12 is now a
+        # wrapper-ADT pointer (see write_html).  Unwrap to the
+        # raw Map handle before looking up the dict in
+        # ``map_store``.
+        wrapper_ptr = read_i32(caller, ptr + 12)
+        handle = read_i32(caller, wrapper_ptr + 4)
         arr_ptr = read_i32(caller, ptr + 16)
         arr_len = read_i32(caller, ptr + 20)
 

@@ -120,6 +120,17 @@ class WasmContext(
         # Map host-import tracking (propagated to codegen core)
         self._map_imports: set[str] = set()
         self._map_ops_used: set[str] = set()
+        # #573: wrap-table flag — set when any host-handle type
+        # migrates to the heap-wrap-as-ADT scheme so the GC
+        # sweep can reclaim host-side store entries.  Currently
+        # set by Map operations (phase 1 of #573).  Set / Decimal
+        # / JSON / HTML migrations track this same flag in
+        # follow-ups.  When true, `assembly.py` allocates a
+        # 64 KiB wrap-table region in linear memory, emits the
+        # `$register_wrapper` helper, and adds a Phase-2c walk
+        # to `$gc_collect` that fires `host_decref_handle` for
+        # unmarked wrappers.
+        self._needs_wrap_table: bool = False
         # Set host-import tracking (propagated to codegen core)
         self._set_imports: set[str] = set()
         self._set_ops_used: set[str] = set()

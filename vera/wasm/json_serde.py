@@ -35,7 +35,11 @@ AllocFn = Callable[[wasmtime.Caller, int], int]
 WriteI32Fn = Callable[[wasmtime.Caller, int, int], None]
 WriteF64Fn = Callable[[wasmtime.Caller, int, float], None]
 AllocStringFn = Callable[[wasmtime.Caller, str], tuple[int, int]]
-MapAllocFn = Callable[[dict[object, object]], int]
+# #573: map_alloc now returns a wrapper-ADT pointer, not a raw
+# handle.  The signature accepts ``caller`` so the helper can call
+# the exported ``$alloc`` and ``$register_wrapper`` to construct
+# the wrapper in WASM memory.
+MapAllocFn = Callable[[wasmtime.Caller, dict[object, object]], int]
 ReadI32Fn = Callable[[wasmtime.Caller, int], int]
 ReadF64Fn = Callable[[wasmtime.Caller, int], float]
 ReadStringFn = Callable[[wasmtime.Caller, int, int], str]
@@ -112,11 +116,24 @@ def write_json(
         return ptr
 
     if isinstance(value, dict):
-        # JObject(Map<String, Json>) — tag=5, i32 handle at offset 4, total=8
+        # JObject(Map<String, Json>) — tag=5, i32 at offset 4, total=8
         # Create a Map<String, Json> using the host map store.
         # Keys are stored as Python strings (matching map_contains$ks
         # which reads WASM strings and compares against Python strings).
         # Values are i32 Json heap pointers.
+        #
+        # #573: ``map_alloc`` is now ``_alloc_map_wrapper`` (in
+        # ``vera/codegen/api.py``), which both allocates the host
+        # dict AND emits an 8-byte wrapper ADT in WASM memory
+        # registered with ``$register_wrapper``.  The returned
+        # value is therefore a wrapper-ADT pointer, not a raw
+        # handle.  This makes the JObject's i32 field type-
+        # compatible with user-level ``map_get`` /
+        # ``map_contains`` calls (which now expect wrapper
+        # pointers and unwrap with ``i32.load offset=4`` before
+        # the host dispatch).  GC reclaims the JObject's Map
+        # entry from ``_map_store`` when the wrapper becomes
+        # unreachable, just like a user-allocated Map.
         map_dict: dict[object, object] = {}
         for k, v in value.items():
             val_ptr = write_json(
@@ -124,10 +141,10 @@ def write_json(
                 alloc_string, map_alloc, v,
             )
             map_dict[str(k)] = val_ptr
-        handle = map_alloc(map_dict)
+        wrapper_ptr = map_alloc(caller, map_dict)
         ptr = alloc(caller, 8)
         write_i32(caller, ptr, _TAG_JOBJECT)
-        write_i32(caller, ptr + 4, handle)
+        write_i32(caller, ptr + 4, wrapper_ptr)
         return ptr
 
     # Fallback: treat as string
@@ -178,7 +195,12 @@ def read_json(
         return items
 
     if tag == _TAG_JOBJECT:
-        handle = read_i32(caller, ptr + 4)
+        # #573: JObject's i32 field at offset 4 is now a wrapper-
+        # ADT pointer, not a raw handle.  Wrapper layout: tag at
+        # body[0], handle at body[4].  Unwrap before looking up
+        # the dict in ``map_store``.
+        wrapper_ptr = read_i32(caller, ptr + 4)
+        handle = read_i32(caller, wrapper_ptr + 4)
         if handle not in map_store:
             import warnings
             warnings.warn(

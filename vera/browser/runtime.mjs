@@ -1164,6 +1164,60 @@ function buildImportObject(module) {
     return h;
   }
 
+  // #573: heap-wrap-as-ADT mirror.  See vera/wasm/calls_containers.py
+  // and vera/codegen/api.py for the long version.
+  //
+  // host_decref_handle is called from Phase 2c of $gc_collect for
+  // every wrapper-ADT object that became unmarked.  It evicts the
+  // entry from the corresponding host store; kind=1 (Map),
+  // kind=2 (Set), kind=3 (Decimal) are all live post-#573 phase 3.
+  imports.vera.host_decref_handle = (kind, handle) => {
+    if (kind === 1) {
+      mapStore.delete(handle);
+    } else if (kind === 2) {
+      setStore.delete(handle);
+    } else if (kind === 3) {
+      decimalStore.delete(handle);
+    }
+    // Unknown kinds: silent no-op.
+  };
+
+  // #573 wrapper-ADT layout constants (must match
+  // vera/wasm/calls_containers.py).
+  const _MAP_HANDLE_TAG = 0xFEEDC001 | 0;
+  const _SET_HANDLE_TAG = 0xFEEDC002 | 0;
+  const _DECIMAL_HANDLE_TAG = 0xFEEDC003 | 0;
+  const _KIND_TO_TAG_JS = {
+    1: _MAP_HANDLE_TAG,
+    2: _SET_HANDLE_TAG,
+    3: _DECIMAL_HANDLE_TAG,
+  };
+
+  // wrapHandle(kind, rawHandle) — JS counterpart of `_wrap_handle`
+  // in vera/codegen/api.py.  Allocates an 8-byte wrapper ADT,
+  // writes tag + handle, calls the exported $register_wrapper.
+  // Used by host helpers that have already obtained a raw handle
+  // and need to lift it to a wrapper pointer before stuffing into
+  // an Option<T> Some payload (e.g. decimal_from_string).
+  function wrapHandle(kind, rawHandle) {
+    const tag = _KIND_TO_TAG_JS[kind];
+    const ptr = alloc(8);
+    writeI32(ptr, tag);
+    writeI32(ptr + 4, rawHandle);
+    if (wasm && typeof wasm.register_wrapper === "function") {
+      wasm.register_wrapper(ptr, kind, rawHandle);
+    }
+    return ptr;
+  }
+
+  // allocMapWrapper(d) : drop-in replacement for mapAlloc(d) used by
+  // writeJson / writeHtml.  Inserts d into mapStore and lifts the
+  // resulting handle to a wrapper pointer via wrapHandle.
+  function allocMapWrapper(d) {
+    const handle = mapAlloc(d);
+    return wrapHandle(1, handle);
+  }
+
   // Helper: allocate Option.None on heap (tag=0, 4 bytes)
   function mapAllocOptionNone() {
     const p = alloc(4);
@@ -1464,7 +1518,8 @@ function buildImportObject(module) {
       const s = readString(ptr, len);
       if (/^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s.trim())) {
         const h = decimalAlloc(s.trim());
-        return allocOptionSomeI32(h);
+        // #573 phase 3: wrap before stuffing into Some.
+        return allocOptionSomeI32(wrapHandle(3, h));
       }
       return allocOptionNone();
     };
@@ -1489,10 +1544,13 @@ function buildImportObject(module) {
   }
   if (needed.has("decimal_div")) {
     imports.vera.decimal_div = (a, b) => {
+      // #573 phase 3: a, b are raw handles (the WASM-side
+      // translator unwraps wrapper pointers).  Result is wrapped
+      // here before stuffing into Some, matching the Python side.
       const bVal = Number(decimalStore.get(b));
       if (bVal === 0) return allocOptionNone();
       const h = decimalAlloc(decStrDiv(decimalStore.get(a), decimalStore.get(b)));
-      return allocOptionSomeI32(h);
+      return allocOptionSomeI32(wrapHandle(3, h));
     };
   }
   if (needed.has("decimal_neg")) {
@@ -1586,16 +1644,15 @@ function buildImportObject(module) {
       return ptr;
     }
     if (typeof value === "object") {
-      // JObject(Map<String, Json>) — tag=5, i32 Map handle at offset 4
+      // JObject(Map<String, Json>) — tag=5, i32 wrapper ptr at offset 4 (#573)
       const m = new Map();
       for (const [k, v] of Object.entries(value)) {
         m.set(k, writeJson(v));
       }
-      const h = mapNextHandle++;
-      mapStore.set(h, m);
+      const wrapperPtr = allocMapWrapper(m);
       const ptr = alloc(8);
       writeI32(ptr, 5);
-      writeI32(ptr + 4, h);
+      writeI32(ptr + 4, wrapperPtr);
       return ptr;
     }
     // Fallback: stringify
@@ -1619,7 +1676,10 @@ function buildImportObject(module) {
       return result;
     }
     if (tag === 5) {
-      const handle = readI32(ptr + 4);
+      // #573: i32 at +4 is now a wrapper-ADT pointer; unwrap to
+      // the raw Map handle before the mapStore lookup.
+      const wrapperPtr = readI32(ptr + 4);
+      const handle = readI32(wrapperPtr + 4);
       const m = mapStore.get(handle);
       if (!m) {
         console.warn(`readJson: unknown JObject handle ${handle} at pointer ${ptr}; possible memory corruption`);
@@ -1835,8 +1895,10 @@ function buildImportObject(module) {
         m.set(k, v);
       }
     }
-    const h = mapNextHandle++;
-    mapStore.set(h, m);
+    // #573: store wrapper-ADT pointer, not raw handle, so user-
+    // level map_get / map_contains on the attrs field unwraps
+    // correctly and the entry is reclaimable by the GC.
+    const wrapperPtr = allocMapWrapper(m);
     // Children array
     const children = node.children || [];
     const count = children.length;
@@ -1851,7 +1913,7 @@ function buildImportObject(module) {
     writeI32(ptr, 0);
     writeI32(ptr + 4, np);
     writeI32(ptr + 8, nl);
-    writeI32(ptr + 12, h);
+    writeI32(ptr + 12, wrapperPtr);
     writeI32(ptr + 16, arrPtr);
     writeI32(ptr + 20, count);
     return ptr;
@@ -1874,7 +1936,9 @@ function buildImportObject(module) {
     const np = readI32(ptr + 4);
     const nl = readI32(ptr + 8);
     const name = readString(np, nl);
-    const handle = readI32(ptr + 12);
+    // #573: i32 at +12 is now a wrapper-ADT pointer; unwrap.
+    const wrapperPtr = readI32(ptr + 12);
+    const handle = readI32(wrapperPtr + 4);
     const arrPtr = readI32(ptr + 16);
     const arrLen = readI32(ptr + 20);
     const attrs = {};
