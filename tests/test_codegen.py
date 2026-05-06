@@ -16420,6 +16420,38 @@ public fn main(@Unit -> @Int)
             "`i32.ge_u` ops; the post-compaction re-check is "
             "likely missing."
         )
+        # Shadow-stack must be balanced on the trap path.  The
+        # pop of the temporary root must appear BEFORE the
+        # re-check guard — if the trap fires, the pop has
+        # already executed and the shadow stack is balanced.
+        # Pop idiom: ``global.get $gc_sp; i32.const 4; i32.sub;
+        # global.set $gc_sp``.  Re-check idiom: ``global.get
+        # $gc_wrap_ptr; global.get $gc_wrap_end; i32.ge_u``.
+        # Match both with the pop strictly preceding the
+        # re-check (in the same slow-path region).
+        balance_pattern = re.search(
+            r"call \$gc_collect.*?"
+            r"global\.get \$gc_sp\s+"
+            r"i32\.const 4\s+"
+            r"i32\.sub\s+"
+            r"global\.set \$gc_sp.*?"
+            r"global\.get \$gc_wrap_ptr\s+"
+            r"global\.get \$gc_wrap_end\s+"
+            r"i32\.ge_u",
+            body, re.DOTALL,
+        )
+        assert balance_pattern is not None, (
+            "#579 regression: shadow-stack imbalance on trap "
+            "path.  The pop of the temporary root must appear "
+            "between $gc_collect and the post-compaction "
+            "re-check guard — otherwise the trap leaves $gc_sp "
+            "one slot above its caller-entry level.  Today the "
+            "trap is `unreachable` and the WASM module aborts, "
+            "so the imbalance has no observable effect, but "
+            "treating WAT shadow-stack discipline as a hard "
+            "invariant catches regressions before any future "
+            "change makes the trap recoverable."
+        )
 
     def test_decimal_value_correct_after_gc_pressure(self) -> None:
         """Functional integrity for Decimal under GC pressure.
