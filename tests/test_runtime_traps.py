@@ -2057,44 +2057,82 @@ class TestHostSleepKeyboardInterrupt:
             "exit_code=130 (conventional SIGINT exit code)."
         )
 
-    def test_host_sleep_keyboard_interrupt_propagates_as_vera_exit(
-        self,
-    ) -> None:
-        """Behavioural test: a synthetic `KeyboardInterrupt` raised
-        inside `time.sleep` is caught and re-raised as `_VeraExit(130)`,
-        not allowed to escape to the wasmtime trampoline.
+    def test_host_sleep_keyboard_interrupt_end_to_end(self) -> None:
+        """End-to-end behavioural test: compile a real Vera program
+        that calls ``IO.sleep(...)``, monkey-patch ``time.sleep`` to
+        raise ``KeyboardInterrupt``, run via the production
+        ``execute()`` entrypoint, and assert the result surfaces as
+        ``ExecuteResult.exit_code == 130`` — not a raw Python
+        ``KeyboardInterrupt`` escaping wasmtime's trampoline.
+
+        Exercises the full import/trampoline path: WAT compile →
+        wasmtime instance → host_sleep callback (the production
+        closure, not a local mirror) → ctypes/ffi → KeyboardInterrupt
+        raised inside ``time.sleep`` → ``_VeraExit(130)`` propagates
+        through wasmtime → unwrapped by the ``_VeraExit`` chain in
+        ``execute()`` → returned as ``ExecuteResult(exit_code=130)``.
+
+        Replaced an earlier local-helper test that mirrored
+        ``host_sleep`` in test code and asserted Python's stdlib
+        behaviour rather than the production path.  CodeRabbit on
+        PR #594 correctly flagged the local-helper form as the same
+        "test-the-test" gap that #589's structural-only e2e test had
+        — fixing this one symmetrically.
         """
         import time as _time
         from unittest.mock import patch
 
-        from vera.codegen.api import _VeraExit
+        from vera.codegen import compile as compile_program, execute
+        from vera.parser import parse_to_ast
 
-        # Reach into the closure: build a synthetic host_sleep matching
-        # the production shape and verify the exception conversion.
-        # We can't easily hook the in-process host import without
-        # spinning a wasmtime instance, so test the conversion logic
-        # directly: any time.sleep call that raises KeyboardInterrupt
-        # must convert to _VeraExit(130).  Mirrors the production code.
-        def host_sleep_under_test(ms: int) -> None:
-            if ms > 0:
-                try:
-                    _time.sleep(ms / 1000.0)
-                except KeyboardInterrupt:
-                    raise _VeraExit(130) from None
+        # Vera program that calls IO.sleep with a value the host will
+        # see as positive (so the guard branch fires).  IO.print
+        # before the sleep gives us a tee point in stdout to
+        # observe the program reached the sleep call.
+        source = """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("before sleep");
+  IO.sleep(120);
+  IO.print("after sleep")
+}
+"""
+        program = parse_to_ast(source)
+        result = compile_program(program, source=source)
+        assert result.ok, (
+            f"compile failed: "
+            f"{[d.description for d in result.diagnostics]}"
+        )
 
-        # Patch time.sleep to raise KeyboardInterrupt unconditionally.
+        # Patch time.sleep to raise KeyboardInterrupt unconditionally
+        # — simulates the user pressing Ctrl-C the moment IO.sleep
+        # enters the host import.
         with patch.object(_time, "sleep", side_effect=KeyboardInterrupt):
             try:
-                host_sleep_under_test(120)
-            except _VeraExit as exit_exc:
-                assert exit_exc.code == 130
+                exec_result = execute(result)
             except KeyboardInterrupt:  # pragma: no cover
                 raise AssertionError(
-                    "KeyboardInterrupt escaped host_sleep — should have "
-                    "been converted to _VeraExit(130) (#594 follow-up)."
-                )
-            else:  # pragma: no cover
-                raise AssertionError(
-                    "host_sleep returned normally despite "
-                    "KeyboardInterrupt; expected _VeraExit(130)."
-                )
+                    "KeyboardInterrupt escaped execute() — host_sleep "
+                    "must convert to _VeraExit(130) so the wasmtime "
+                    "trampoline doesn't surface a raw Python "
+                    "traceback (#594 / #595)."
+                ) from None
+
+        assert exec_result.exit_code == 130, (
+            f"expected exit_code=130 (SIGINT), got {exec_result.exit_code}"
+        )
+        # The IO.print("before sleep") executed before the sleep was
+        # interrupted, so the captured stdout should contain it (with
+        # output preserved across the trap, per the #522 contract).
+        assert "before sleep" in exec_result.stdout, (
+            "Pre-sleep IO.print output should be preserved in "
+            "ExecuteResult.stdout even when the program exits via "
+            "_VeraExit(130) (#522 trap-preservation contract)."
+        )
+        # The IO.print("after sleep") should NOT have executed.
+        assert "after sleep" not in exec_result.stdout, (
+            "Post-sleep IO.print should not have run; KeyboardInterrupt "
+            "during sleep must propagate as _VeraExit(130) without "
+            "letting the program continue."
+        )
