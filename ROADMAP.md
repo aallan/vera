@@ -1,61 +1,36 @@
 # Roadmap
 
-Vera delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 164 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter. The core language is done. The first agent-written Conway's Game of Life ([`examples/life.vera`](examples/life.vera)) now runs cleanly end-to-end. What follows is the path from "working language" to "the language agents actually use."
-
-This roadmap is organised around four strategic milestones. Each milestone makes Vera meaningfully more useful to a concrete audience. Within each milestone, work is grouped into phases that can be executed roughly sequentially, though independent items can be interleaved.
-
-See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was built.
+Where the project is going.  See [HISTORY.md](HISTORY.md) for what's been built and [CHANGELOG.md](CHANGELOG.md) for per-release detail.
 
 ## Where we are
 
-The compiler is complete end-to-end: parse, type-check, verify contracts via Z3, compile to WebAssembly, and run — at the command line and in the browser. The language has 164 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter. Type inference for bare constructors (`None`, `Err`, `Ok`) now works correctly across all call sites. The compiler has 3,766 tests, 86 conformance programs, 34 examples, and a 13-chapter specification.
+3,766 tests, 86 conformance programs, 34 examples, 13 spec chapters.
 
-Significant progress has been made towards Vera being a viable agent target. [VeraBench](https://github.com/aallan/vera-bench) — a 50-problem benchmark across 5 difficulty tiers — now covers 6 models across 3 providers (v0.0.7). The headline result: Kimi K2.5 achieves 100% run_correct on Vera, beating both Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera. The flagship tier averages 93% Vera run_correct vs 93% Python — essentially parity. These are single-run results with high variance; stable rates will require pass@k evaluation. The remaining gaps are empirical breadth (repeated trials, more models), standard library depth (HTTP hardening, server effects), and tooling integration (LSP).
+## What's next
 
----
-
-## What's next — finish stabilisation, then agent-integration push
-
-The bug-killing campaign that ran from v0.0.120 through v0.0.138 closed sixteen runtime/codegen bugs that surfaced agent friction at the "compiled artefact misbehaves" layer, and the first agent-written Conway's Game of Life now runs cleanly end-to-end.  See [HISTORY.md](HISTORY.md) Stage 11 for the per-release narrative and Stage 12 for the close-out framing; [CHANGELOG.md](CHANGELOG.md) for the long form of each fix.
-
-The campaign uncovered four patterns worth closing out before declaring the runtime-correctness floor raised:
-
-1. **Scale-dependent bugs slip past the standard test suite.** [#515](https://github.com/aallan/vera/issues/515), [#570](https://github.com/aallan/vera/issues/570), [#487](https://github.com/aallan/vera/issues/487), and [#593](https://github.com/aallan/vera/issues/593) all required a real-world program at scale (40×20+ Conway's Life, 5,000+ element arrays, 1,000+ deep recursion) to surface — none would have been caught by the existing 3,766 small focused tests.  #593 was eventually cracked by adding a `VERA_EAGER_GC=1` diagnostic knob that fires `$gc_collect` on every allocation; the `VERA_EAGER_GC` lane is now permanent infrastructure for catching the next bug of this shape early.
-2. **Walker-completeness gaps are silent failures of the same shape.** [#588](https://github.com/aallan/vera/issues/588) found `_walk_free_vars` was missing **eight** AST node-type branches; the original implementation walked the obvious shapes and missed the long tail. We don't yet know if other walkers in the codebase have similar incompleteness.
-3. **Browser-target reliability is approximate, not real.** Two agent experiments writing Conway's Life on `--target browser` surfaced three concrete blockers: `IO.sleep` busy-waits and freezes the tab ([#609](https://github.com/aallan/vera/issues/609), JSPI fix), ANSI escapes render as literal text instead of cursor control ([#610](https://github.com/aallan/vera/issues/610), small interpreter), and string-marshalling helpers aren't exposed to JS ([#603](https://github.com/aallan/vera/issues/603)).  "Write once, run anywhere" is currently true for pure computation and approximate-to-false for anything with timing or screen output — closing the gap doesn't take a language change, just runtime work, and the agent's design memo at [#608](https://github.com/aallan/vera/issues/608) maps each obstacle to a concrete fix.
-4. **Codegen-side silent feature gaps.** Two distinct bugs revealed only by writing a real program: a String-returning function call inside string interpolation produces invalid WASM that fails wasmtime validation ([#602](https://github.com/aallan/vera/issues/602)) — `vera check` is silent about it; and five prelude combinators (`option_map` / `option_and_then` / `option_unwrap_or` / `result_map` / `result_unwrap_or`) are silently skipped from every WASM compile via an `[E602]` warning that's easy to miss ([#604](https://github.com/aallan/vera/issues/604)).  Both were dismissed during the original life.vera write-up as "noise" and turn out to be substantive — the same shape as #604's "no, actually this is real" reframe in its issue body.
-
-Closing these — by building infrastructure that prevents recurrence ([#596](https://github.com/aallan/vera/issues/596) stress harness, [#597](https://github.com/aallan/vera/issues/597) walker audit), by closing the codegen gaps surfaced by life.vera ([#602](https://github.com/aallan/vera/issues/602) string-interp WASM + [#604](https://github.com/aallan/vera/issues/604) prelude combinators), and by following through on the browser runtime ([#609](https://github.com/aallan/vera/issues/609) JSPI sleep + [#610](https://github.com/aallan/vera/issues/610) ANSI subset interpreter) — converts "I think we're stabilising" into evidence.  After that, agent integration (LSP, `vera context`, Inference controls) becomes the priority.
-
-### The ordering principle
-
-The phase numbering in the milestones below (Phase 1a/1b/etc) reflects **strategic grouping** — which audience the work serves — and is stable across releases.  This near-term section is a rolling view of the next few weeks of implementation; entries are pulled forward from the milestones when they become tractable, and removed once they ship.
-
-### Implementation order
-
-**Stabilisation tier** (close out before agent-integration; converts "I think we're stable" to "the harness proves we are"):
+**Stabilisation tier** — close these out before resuming agent-integration:
 
 | Order | Issue | Why now |
 |:---:|---|---|
-| 1 | [#602](https://github.com/aallan/vera/issues/602) — String-interp WASM `i64`/`i32` mismatch | Smallest, most concrete codegen bug from the life.vera campaign: `IO.print("\(make(()))\n")` (a String-returning function call inside a string interpolation) type-checks fine but produces invalid WASM — wasmtime fails validation with `expected i64, found i32` at the offending offset.  String-concat workaround works but the natural-style failure is the kind agents will hit repeatedly.  Bounded scope: a single missing slot-type fixup in the interpolation lowering. |
-| 2 | [#604](https://github.com/aallan/vera/issues/604) — Five prelude combinators silently skipped from WASM compile | `option_map` / `option_and_then` / `option_unwrap_or` / `result_map` / `result_unwrap_or` all emit `[E602]` warnings during every WASM compile and are then absent from the output module.  Two distinct backend gaps (param-type and body-expression).  Easy to dismiss as "noise" but means agents writing monadic Option/Result code on the browser target hit silent feature loss.  Pairs with #602 — both surfaced only by writing a real program. |
-| 3 | [#596](https://github.com/aallan/vera/issues/596) — Stress-test harness | `tests/test_stress.py` exercising programs at scale (10K-element `array_map`, 1K-deep recursion with allocating arg, 20×20×100 Conway's Life, long-running State handlers, etc.) — under a `@pytest.mark.stress` flag so it runs nightly rather than per-PR.  Should run a subset under `VERA_EAGER_GC=1` to catch GC-rooting regressions of the #593 class on the very first iteration rather than only at scale.  Surfaces the next #593-class bug before users do. |
-| 4 | [#597](https://github.com/aallan/vera/issues/597) — Walker-completeness audit | Audit every `isinstance(expr, ast.X)` dispatch chain in the codebase against the full set of `Expr` subclasses. Document each walker's coverage as a checklist comment; optional companion script (`scripts/check_walker_coverage.py`) for pre-commit enforcement. Triggered by #588 finding 8 missing branches in `_walk_free_vars` — converts "the walker had a long tail of incompleteness" from "we hope it's the only one" to "we've audited every walker". |
-| 5 | [#609](https://github.com/aallan/vera/issues/609) — Browser runtime: `IO.sleep` via JSPI | The timing half of the terminal-vs-browser seam.  `IO.sleep` currently busy-waits the main thread, so any animation or paced simulation freezes the tab for its full duration.  Implement against the [WebAssembly JSPI proposal](https://github.com/WebAssembly/js-promise-integration) — `WebAssembly.promising` wraps `setTimeout(resolve, ms)`, the WASM call suspends and resumes after the timer fires.  Asyncify is the fallback for browsers without JSPI.  No language change required.  Closing this lets terminal Vera programs animate in the browser without forking the source. |
-| 6 | [#610](https://github.com/aallan/vera/issues/610) — Browser runtime: ANSI subset interpreter | The rendering half of the same seam.  ANSI escape sequences (cursor positioning, screen clear, line erase) currently render as literal control characters in the DOM.  Implement a small subset interpreter (~200 lines of JS) in `runtime.mjs` that maintains a virtual screen buffer and applies the canonical cursor-addressable subset (`ESC[H`, `ESC[2J`, `ESC[K`, basic colors) into a target `<pre>` element.  Pairs with #609 — together they let `life.vera` (the terminal version) run unchanged on `vera compile --target browser`.  Bounded scope, well-defined acceptance criteria. |
-| 7 | [#595](https://github.com/aallan/vera/issues/595) — macOS malloc abort in wasmtime trampoline on Ctrl-C | Independent of #593 (which turned out to be a closure-return shadow-push asymmetry — see HISTORY for v0.0.138).  Filed upstream as [bytecodealliance/wasmtime-py#336](https://github.com/bytecodealliance/wasmtime-py/issues/336): root cause is `wasmtime/_func.py` catching `Exception` rather than `BaseException` in the trampoline.  Vera's local v0.0.137 `KeyboardInterrupt` guard already prevents the Python-traceback half; this issue tracks the residual cleanup-path abort, which is contingent on upstream landing the catch-broadening fix. |
+| 1 | [#615](https://github.com/aallan/vera/issues/615) — Non-contiguous outer-`Int` capture in closures miscompiles | Most severe codegen bug surfaced by the Tetris experiment.  Closure body that references captured `@Int.k` while skipping `@Int.j` (`0 < j < k`) emits malformed WASM: tail-shaped expressions trap at instantiation, body shapes with subsequent `let`-pushes silently produce wrong values.  Hit *everywhere* in the Tetris collision-check; the workaround was to hoist every closure body into a top-level helper.  `vera check` is silent; the silent-miscompute manifestation is the dangerous one.  Hypothesised same root cause as #614 in the closure-lifter's env-struct serialisation — one fix may close both. |
+| 2 | [#614](https://github.com/aallan/vera/issues/614) — Closure capturing `data` ADT and passing it to a function call emits malformed WASM | Second Tetris-discovered codegen bug.  Closure that captures an outer ADT and passes it to a function call inside the body traps at WASM instantiation with `unknown table 0: table index out of bounds`.  `vera check` is silent.  Single-variant ADTs reproduce identically.  Workaround is pre-extracting the inner field outside the closure.  Pairs with #615 — both share the closure-lifter env-struct serialisation suspect. |
+| 3 | [#602](https://github.com/aallan/vera/issues/602) — String-interp WASM `i64`/`i32` mismatch | Smallest, most concrete codegen bug from the life.vera campaign: `IO.print("\(make(()))\n")` (a String-returning function call inside a string interpolation) type-checks fine but produces invalid WASM — wasmtime fails validation with `expected i64, found i32` at the offending offset.  String-concat workaround works but the natural-style failure is the kind agents will hit repeatedly.  Bounded scope: a single missing slot-type fixup in the interpolation lowering. |
+| 4 | [#604](https://github.com/aallan/vera/issues/604) — Five prelude combinators silently skipped from WASM compile | `option_map` / `option_and_then` / `option_unwrap_or` / `result_map` / `result_unwrap_or` all emit `[E602]` warnings during every WASM compile and are then absent from the output module.  Two distinct backend gaps (param-type and body-expression).  Easy to dismiss as "noise" but means agents writing monadic Option/Result code on the browser target hit silent feature loss.  Pairs with #602 — both surfaced only by writing a real program. |
+| 5 | [#596](https://github.com/aallan/vera/issues/596) — Stress-test harness | `tests/test_stress.py` exercising programs at scale (10K-element `array_map`, 1K-deep recursion with allocating arg, 20×20×100 Conway's Life, long-running State handlers, etc.) — under a `@pytest.mark.stress` flag so it runs nightly rather than per-PR.  Should run a subset under `VERA_EAGER_GC=1` to catch GC-rooting regressions on the very first iteration rather than only at scale.  Surfaces the next scale-only GC bug before users do. |
+| 6 | [#597](https://github.com/aallan/vera/issues/597) — Walker-completeness audit | Audit every `isinstance(expr, ast.X)` dispatch chain in the codebase against the full set of `Expr` subclasses.  Document each walker's coverage as a checklist comment; optional companion script (`scripts/check_walker_coverage.py`) for pre-commit enforcement.  Converts "we hope our walkers are complete" to "we've audited every walker".  #614 / #615 may add a closure-lifter walker to this audit. |
+| 7 | [#609](https://github.com/aallan/vera/issues/609) — Browser runtime: `IO.sleep` via JSPI | The timing half of the terminal-vs-browser seam.  `IO.sleep` currently busy-waits the main thread, so any animation or paced simulation freezes the tab for its full duration.  Implement against the [WebAssembly JSPI proposal](https://github.com/WebAssembly/js-promise-integration) — `WebAssembly.promising` wraps `setTimeout(resolve, ms)`, the WASM call suspends and resumes after the timer fires.  Asyncify is the fallback for browsers without JSPI.  No language change required.  Closing this lets terminal Vera programs animate in the browser without forking the source. |
+| 8 | [#610](https://github.com/aallan/vera/issues/610) — Browser runtime: ANSI subset interpreter | The rendering half of the same seam.  ANSI escape sequences (cursor positioning, screen clear, line erase) currently render as literal control characters in the DOM.  Implement a small subset interpreter (~200 lines of JS) in `runtime.mjs` that maintains a virtual screen buffer and applies the canonical cursor-addressable subset (`ESC[H`, `ESC[2J`, `ESC[K`, basic colors) into a target `<pre>` element.  Pairs with #609 — together they let `life.vera` (the terminal version) run unchanged on `vera compile --target browser`.  Bounded scope, well-defined acceptance criteria. |
+| 9 | [#618](https://github.com/aallan/vera/issues/618) — `IO.read_char` portable across terminal and browser | The input half of the same write-once-run-anywhere seam.  Single-character input is currently impossible at any target — `IO.read_line` is line-buffered, so real-time CLI games (Tetris-class) can't be written in Vera at all.  Add `IO.read_char` to the existing `IO` effect with two host implementations: `termios` / `msvcrt` for terminal (raw mode entered implicitly per call), keypress event listener via JSPI for browser.  Pairs with #609 (timing) and #610 (rendering) — together those three close the input/timing/rendering trio that real-time programs need.  Symmetric to #609's argument: just as Game of Life shouldn't be terminal-only because sleep doesn't work in the browser, Tetris shouldn't be browser-only because read_char doesn't work in the terminal. |
 
-**Agent-integration tier** (resumes once stabilisation is done):
+**Agent-integration tier** — resumes once stabilisation is done:
 
 | Order | Issue | Why now |
 |:---:|---|---|
-| 8 | [#222](https://github.com/aallan/vera/issues/222) — LSP server | Standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf).  The `--json` infrastructure provides most of what's needed.  Real-time feedback as agents write — diagnostics, hover, completion — turns Vera from "compile-and-pray" into the tight loop agents are calibrated for.  Single highest-leverage adoption enabler. |
-| 9 | [#523](https://github.com/aallan/vera/issues/523) — `vera context` token-budgeted project export | New CLI command that walks a project's dependency graph and emits a compact LLM-consumable summary of public signatures, contracts, effects, and ADTs.  Mandatory contracts carry the semantic payload that named-variable languages convey via identifiers and docstrings, so the output is denser per byte than equivalent Python/TS exports.  Estimated 1–2 days; module system and function registry already exist internally. |
-| 10 | [#370](https://github.com/aallan/vera/issues/370) — Configurable `Inference.complete` `max_tokens` / `temperature` | Currently hardcoded.  Agent workloads need control over both — for cost gates, deterministic replays, and routing strategies.  Smallest of the Inference-hardening items but also the one that blocks the most concrete user requests. |
+| 11 | [#222](https://github.com/aallan/vera/issues/222) — LSP server | Standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf).  The `--json` infrastructure provides most of what's needed.  Real-time feedback as agents write — diagnostics, hover, completion — turns Vera from "compile-and-pray" into the tight loop agents are calibrated for.  Single highest-leverage adoption enabler. |
+| 12 | [#523](https://github.com/aallan/vera/issues/523) — `vera context` token-budgeted project export | New CLI command that walks a project's dependency graph and emits a compact LLM-consumable summary of public signatures, contracts, effects, and ADTs.  Mandatory contracts carry the semantic payload that named-variable languages convey via identifiers and docstrings, so the output is denser per byte than equivalent Python/TS exports.  Estimated 1–2 days; module system and function registry already exist internally. |
+| 13 | [#370](https://github.com/aallan/vera/issues/370) — Configurable `Inference.complete` `max_tokens` / `temperature` | Currently hardcoded.  Agent workloads need control over both — for cost gates, deterministic replays, and routing strategies.  Smallest of the Inference-hardening items but also the one that blocks the most concrete user requests. |
 
-### What moves when
-
-Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md).  Agent-integration items don't pull forward until the stabilisation tier is empty — order #8 starts when #1–#7 are closed (or explicitly deferred with an open follow-up).  When a tier shrinks to ~1 item the section gets repopulated from Phase 2a (Inference hardening), Phase 3a (further agent integration), or wherever the next batch of evidence points.
+Completed items get deleted from these tables and noted in [HISTORY.md](HISTORY.md).  When a tier shrinks the section gets repopulated from the milestones below.
 
 ---
 
@@ -63,51 +38,11 @@ Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md
 
 *Goal: answer the fundamental question — do LLMs write better code in Vera than in existing languages? Build the evidence base and fix the friction points that block honest evaluation.*
 
-This is the most important milestone. Everything else — adoption, ecosystem, research credibility — depends on having data that supports (or refutes) the core claim. Simultaneously, fix the small issues that would distort any benchmark or frustrate any agent trying to use the language seriously.
-
-Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.md) Stage 9 for details.
-
 ### Phase 1b: Benchmark suite
 
-**[VeraBench](https://github.com/aallan/vera-bench)** is a separate repository containing 50 problems across 5 difficulty tiers with canonical solutions written in Vera, Python, and Typescript.
+[VeraBench](https://github.com/aallan/vera-bench) — 50 problems across 5 difficulty tiers with canonical solutions in Vera, Python, and TypeScript.  See the vera-bench repository for current results.
 
-- [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — The benchmark covers five difficulty tiers:
-  1. **Pure arithmetic** — functions with 1–2 parameters, simple contracts (the easy case for `@T.n`)
-  2. **String and array manipulation** — functions using built-ins, testing whether agents find the right `domain_verb` names
-  3. **ADTs and pattern matching** — custom data types, exhaustive match, testing De Bruijn indices in match arms
-  4. **Recursive functions with termination proofs** — `decreases` clauses, testing whether agents produce provably terminating code
-  5. **Multi-function programs with effects** — IO, State, Http, Inference, testing cross-function contract coherence
-
-  Six models across three providers evaluated on all four modes (v0.0.7).
-
-  ### Summary (run_correct — Vera vs Python vs TypeScript)
-
-  **Flagship tier:**
-
-  | Model | Vera | Python | TypeScript |
-  |-------|------|--------|------------|
-  | **Kimi K2.5** | **100%** | 86% | 91% |
-  | GPT-4.1 | 91% | 96% | 96% |
-  | Claude Opus 4 | 88% | 96% | 96% |
-
-  **Sonnet tier:**
-
-  | Model | Vera | Python | TypeScript |
-  |-------|------|--------|------------|
-  | **Kimi K2 Turbo** | **83%** | 88% | 79% |
-  | Claude Sonnet 4 | 79% | 96% | 88% |
-  | GPT-4o | 78% | 93% | 83% |
-
-  ### Key findings
-
-  **Kimi K2.5 writes perfect Vera code.** 100% run_correct on both full-spec and spec-from-NL modes, beating Python (86%) and TypeScript (91%). This is the first model where Vera is the best language across the board.
-
-  **Three models beat TypeScript on Vera.** Kimi K2.5 (+9pp) and Kimi K2 Turbo (+4pp) both beat TypeScript across providers; Claude Sonnet 4 has flipped between TypeScript-leading and Vera-leading across reruns.
-
-  **Python remains the strongest target for most models.** The gap between Python and Vera varies from 0pp (Kimi K2.5) to 17pp (Claude Sonnet 4). The flagship tier averages 93% Vera vs 93% Python — essentially parity.
-
-  **These are early, single-run results** with high variance across reruns. Stable rates will require pass@k evaluation with multiple trials.
-
+- [#225](https://github.com/aallan/vera/issues/225) **Expand benchmark coverage** — pass@k evaluation with multiple trials (single-run results have high variance), additional models, additional difficulty tiers as the suite grows.
 
 ### Phase 1c: Expand contract-driven testing
 
@@ -121,11 +56,9 @@ Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.
 
 *Goal: a working MCP tool server written in Vera, with contracts guaranteeing tool schemas at compile time. This is the flagship demo — the thing that makes people understand why Vera exists.*
 
-This milestone follows the critical dependency chain that has driven the project since the roadmap was first written. Map, JSON, HTTP, and Inference are complete. What remains is the server side.
-
 ### Phase 2a: Inference effect hardening
 
-The `<Inference>` effect is the headline feature. Harden it before building on top of it.
+Harden `<Inference>` — the headline feature — before building on top of it.
 
 - [#370](https://github.com/aallan/vera/issues/370) **Configurable `max_tokens` / `temperature`** — currently hardcoded; agent workloads need control over both.
 - [#372](https://github.com/aallan/vera/issues/372) **User-defined `handle[Inference]` handlers** — currently the Inference effect cannot be handled in user code; full handler support enables mocking, caching, and routing strategies.
@@ -139,7 +72,7 @@ The `<Inference>` effect is the headline feature. Harden it before building on t
 
 ### Phase 2b: Server-side effects
 
-**Http effect hardening** — the Http effect shipped in v0.0.99 with basic GET/POST. These issues extend it to production capability:
+**Http effect hardening** — extend the existing GET/POST surface to production capability:
 
 - [#351](https://github.com/aallan/vera/issues/351) Custom headers support
 - [#352](https://github.com/aallan/vera/issues/352) HTTP status code access in responses
@@ -187,7 +120,7 @@ These are not strictly required for the MCP demo but would make it more compelli
 ### Phase 3c: Developer experience
 
 - [#224](https://github.com/aallan/vera/issues/224) **REPL** — interactive exploration for both agents and humans. Useful for rapid prototyping and debugging.
-- [#143](https://github.com/aallan/vera/issues/143) **Comprehensive example programs** — expand from 33 to 50+ examples covering every major pattern: API clients, data pipelines, text processing, LLM orchestration, effect composition.  (Canonical example count is enforced by `scripts/check_doc_counts.py` — when adding examples, run that script and update this baseline figure if it has drifted.)
+- [#143](https://github.com/aallan/vera/issues/143) **Comprehensive example programs** — expand to 50+ examples covering every major pattern: API clients, data pipelines, text processing, LLM orchestration, effect composition.
 
 ---
 
@@ -222,7 +155,7 @@ These are not strictly required for the MCP demo but would make it more compelli
 
 ## Continuous: quality and security hardening
 
-These are not milestone-gated — they should be addressed continuously alongside feature work. Prioritised by impact.
+Addressed alongside feature work, not milestone-gated.  Prioritised by impact.
 
 ### CI tooling
 
@@ -232,7 +165,6 @@ These are not milestone-gated — they should be addressed continuously alongsid
 | Add mutation testing with mutmut (detection only) | [#387](https://github.com/aallan/vera/issues/387) | 2–4 hours | Measures whether the test suite catches real bugs, not just execute paths |
 | Investigate parser fuzzing with Atheris | [#402](https://github.com/aallan/vera/issues/402) | 4–8 hours | Crash-inducing inputs for parser and type checker |
 | Improve browser runtime test coverage to >80% | [#349](https://github.com/aallan/vera/issues/349) | 2–4 hours | Parity with Python-side coverage gate |
-| Add `check_changelog_updated.py` pre-push hook + CI check | [#478](https://github.com/aallan/vera/issues/478) | 30–60 min | Fails PRs that touch `vera/`/`spec/`/`SKILL.md` without a CHANGELOG entry; prevents the #474 miss from recurring |
 | Auto-tag + auto-release on version bump in `pyproject.toml` | [#481](https://github.com/aallan/vera/issues/481) | 1–2 hours | A GitHub Actions workflow detects the version change, tags `main`, and creates the release using the matching CHANGELOG section as notes |
 | Replace line-numbered allowlists with inline HTML-comment fence annotations | [#538](https://github.com/aallan/vera/issues/538) | 4–6 hours | Removes `fix_allowlists.py` entirely — the recurring source of silent-duplicate-key bugs and the line-shift tax on every doc PR. One-shot migration script + check-script rewrite |
 | Add `lychee` + `markdownlint-cli2` MD051 for cross-doc anchor validation | [#540](https://github.com/aallan/vera/issues/540) | 30–60 min | Catches broken `file.md#anchor` references across the 30+ markdown files; today these break silently when headings are renamed |
@@ -244,7 +176,7 @@ These are not milestone-gated — they should be addressed continuously alongsid
 |------|-------|--------|--------|
 | Tier 2 verification — Z3 with hints from `assert` and lemma functions | [#427](https://github.com/aallan/vera/issues/427) | 2–4 days | Promotes function-call and quantifier contracts from runtime to statically proved; completes the three-tier pipeline specified in §6.3.2 |
 | Lift effect handler bodies out of Tier 3 | [#439](https://github.com/aallan/vera/issues/439) | 1–2 days | Handler bodies currently always fall to runtime even when their contracts are statically decidable; removes a false negative in Tier 1 coverage |
-| Generalize `@Nat` invariant check to all binding sites (let / arg / match-bind) | [#552](https://github.com/aallan/vera/issues/552) | 1–2 days | The `@Nat >= 0` invariant is currently checked only at function return positions. Narrowing from `@Int` into a `@Nat`-typed let binding or argument silently propagates negative values through subsequent expressions. Generalisation of the subtraction-specific fix in #520. Filed during #520 design discussion; ship after #520 + #551 land so the obligation infrastructure is reusable |
+| Generalize `@Nat` invariant check to all binding sites (let / arg / match-bind) | [#552](https://github.com/aallan/vera/issues/552) | 1–2 days | The `@Nat >= 0` invariant is currently checked only at function return positions.  Narrowing from `@Int` into a `@Nat`-typed let binding or argument silently propagates negative values through subsequent expressions.  Generalises the obligation-discharge infrastructure to every binding site. |
 
 ### Security
 
@@ -261,14 +193,8 @@ These are not milestone-gated — they should be addressed continuously alongsid
 
 ## Speculative
 
-Items here are **deferred decisions**, not scheduled work. Each captures the design analysis for a feature whose user driver has not yet emerged — so the rationale doesn't have to be re-derived if/when one does. Distinct from the milestone phases (planned future work) and Continuous hardening (incremental quality work). When a real driver shows up, the relevant entry promotes into a milestone phase or the near-term-priorities queue.
+Deferred decisions — features without a current driver, captured here so the design analysis isn't re-derived if one shows up.  Promotes into a milestone phase or the stabilisation queue when a real trigger appears.
 
 | Item | Issue | Trigger condition |
 |------|-------|-------------------|
-| Allow `@Byte` arithmetic with verified underflow + overflow guards | [#564](https://github.com/aallan/vera/issues/564) | A real Vera program (or proposed feature) requires byte arithmetic at the user-code level — e.g., a binary-format parser the stdlib doesn't cover; or VeraBench shows a measurable adoption tax from `byte_to_int` round-trips on byte-heavy benchmarks. Today: the type checker excludes `Byte` from `NUMERIC_TYPES`, so `@Byte - @Byte` etc. produce E140; the round-trip via `byte_to_int` / `int_to_byte` is the canonical idiom. |
-
----
-
-## Completed phases
-
-The compiler was built through eleven stages from February 2026 onwards, with Stage 12 (post-Game-of-Life close-out) now open. **810+ commits, 138 tagged releases (as of v0.0.138), 3,766 tests, 96% coverage, 86 conformance programs, 34 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the per-stage narrative and per-release table.
+| Allow `@Byte` arithmetic with verified underflow + overflow guards | [#564](https://github.com/aallan/vera/issues/564) | A real Vera program (or proposed feature) requires byte arithmetic at the user-code level — e.g., a binary-format parser the stdlib doesn't cover; or VeraBench shows a measurable adoption tax from `byte_to_int` round-trips on byte-heavy benchmarks.  Today: the type checker excludes `Byte` from `NUMERIC_TYPES`, so `@Byte - @Byte` etc. produce E140; the round-trip via `byte_to_int` / `int_to_byte` is the canonical idiom. |
