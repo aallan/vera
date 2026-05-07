@@ -1,6 +1,6 @@
 # Vera Examples
 
-32 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
+33 example programs demonstrating Vera's features. All examples pass `vera check` and `vera verify`.
 
 ## Running Examples
 
@@ -76,3 +76,4 @@ vera run examples/factorial.vera --fn factorial -- 10
 |---------|-----|-------------|
 | `modules.vera` | `vera run examples/modules.vera --fn clamp -- 100 0 42` | Module imports, qualified calls, cross-file composition |
 | `gc_pressure.vera` | `vera run examples/gc_pressure.vera` | GC behaviour under allocation pressure |
+| `life.vera` | `vera run examples/life.vera` | Conway's Game of Life — nested array combinators, recursive run_loop with `<IO>`, ANSI cursor-control rendering, formal Conway B3/S23 rule on `next_cell` |

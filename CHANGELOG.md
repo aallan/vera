@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **`examples/life.vera`** — Conway's Game of Life as a real-world Vera program: 80×22 grid, three classic patterns (Gosper Glider Gun, R-pentomino, Pentadecathlon) interacting, recursive `run_loop` driven by `<IO>` for animation timing, ANSI cursor-control rendering.  Demonstrates the canonical iterative shape (nested `array_mapi` over `array_mapi`, capturing the whole grid into the closure so `count_neighbors` can read each cell's eight neighbours), and carries the formal Conway B3/S23 transition rule on `next_cell`'s `ensures` clause — the verifier discharges all 32 contracts at Tier 1 by symbolic substitution, so any future edit that breaks the rule fails verification before it can run.  The first agent-written Conway's Life that runs cleanly end-to-end on Vera.
+
+### Changed
+- **ROADMAP.md** — stabilisation tier reworked: added [#602](https://github.com/aallan/vera/issues/602) (String-interp WASM `i64`/`i32` mismatch) and [#604](https://github.com/aallan/vera/issues/604) (five prelude combinators silently skipped from WASM compile) at the top of the queue as the codegen residue from the life.vera campaign.  Existing items renumbered; agent-integration tier deferred behind seven stabilisation items rather than five.
+- **HISTORY.md** — opened **Stage 12: After the Game of Life** with framing intro covering the four campaign-residue patterns (scale-only bugs, walker-completeness gaps, browser-runtime gaps, codegen-side silent feature gaps); trimmed the v0.0.135–v0.0.138 Stage 11 entries to the Stage 1/5/9 single-sentence style.
+
 ### Documentation
 - **SKILL.md** — three doc fixes surfaced by an agent writing Conway's Game of Life from scratch on current main.  `array_length`'s SKILL comment updated from *"returns Int (always >= 0)"* to *"returns Nat (the array length, flows to either Nat or Int positions)"* to match user-visible behaviour (the type checker permits `Int <: Nat` via verifier-enforced refinement, so the result flows freely into either).  `array_fold` example gains a three-line comment making the closure shape explicit (`fn(@Acc, @Elem -> @Acc)` with the rightmost-is-`.0` derivation), so agents no longer have to write a probe to determine the parameter order.  New "Tuples" subsection under "Composite types" showing `Tuple(...)` construction and `match` destructuring — previously SKILL mentioned `@Tuple<Int, String>` only as a type with no construction example, leading agents to hunt for tuple-literal syntax that doesn't exist and abandon valid approaches.
 
