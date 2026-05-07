@@ -67,7 +67,7 @@ public fn research_topic(@String -> @Result<String, String>)
 }
 ```
 
-Six lines of logic. The signature carries all the ceremony — parameter types, contracts, effect declarations — so the body reads like a pipeline. Run a real example with `VERA_ANTHROPIC_API_KEY=sk-ant-... vera run` [`examples/inference.vera`](examples/inference.vera).
+Six lines of logic. The signature carries all the ceremony — parameter types, contracts, effect declarations — so the body reads like a pipeline. Run a real example with `VERA_ANTHROPIC_API_KEY=sk-ant-... vera run` [`examples/inference.vera`](examples/inference.vera).  See [`ENVIRONMENT.md`](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, debug flags).
 
 ### Errors are instructions
 
@@ -181,7 +181,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.0.137 — 810+ commits, 137 releases, 3,745 tests, 96% code coverage, 86 conformance programs, 33 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.0.138 — 810+ commits, 138 releases, 3,751 tests, 96% code coverage, 86 conformance programs, 33 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [13 chapters](spec/).
 

@@ -6,6 +6,9 @@ and call_indirect compilation.
 
 from __future__ import annotations
 
+import os
+from unittest import mock
+
 import pytest
 import wasmtime
 
@@ -909,3 +912,247 @@ public fn test(@Unit -> @Int)
 }
 """
         assert _run(src, "test") == 200
+
+
+# =====================================================================
+# #593: Non-allocating closure return-value root must be pushed
+# =====================================================================
+
+
+class TestClosureReturnShadowPushBalance:
+    """Regression tests for #593.
+
+    The bug: ``_translate_array_map`` / ``_translate_array_mapi`` always
+    emit ``global.get $gc_sp; i32.const 4; i32.sub; global.set $gc_sp``
+    after each ``call_indirect`` when the element type is heap-pointer-
+    like (``b_needs_unwind`` at ``vera/wasm/calls_arrays.py:649-655``).
+    That pop assumes the closure's epilogue pushed a return-value root.
+
+    Pre-fix: ``_compile_lifted_closure`` only emitted that push when
+    ``ctx.needs_alloc=True``.  A closure body like ``render_cell(@Bool.0)``
+    that returns a String literal (data segment, no heap alloc) had
+    ``needs_alloc=False`` and thus emitted no push — so the array_map
+    pop went BELOW the surrounding function's prologue baseline,
+    corrupting earlier shadow-stack roots.  Manifested as silent string
+    corruption (Conway's Life rendering — the original #593 symptom) or
+    as ``call_indirect`` "out of bounds table access" trap (rebuilt
+    repro at smaller scale).
+
+    Post-fix: the return-value push is emitted whenever the return type
+    is a heap pointer, regardless of ``needs_alloc``.  This validates
+    that fix at three layers: structural (the WAT contains the push),
+    behavioural under eager-GC (output is correct when GC fires on
+    every alloc), and end-to-end (no corruption from a small Life-shape
+    program).
+    """
+
+    def test_non_allocating_closure_returns_string_via_array_map(
+        self,
+    ) -> None:
+        """A non-allocating closure returning a String literal through
+        ``array_map`` produces the correct joined output.
+
+        Pre-fix this output was usually correct at small scale (the
+        corruption only manifested when GC fired during the over-pop
+        window) — kept as a positive regression test that the fix
+        didn't break the fast path.  The eager-GC variants below
+        validate the rooting balance directly.
+        """
+        src = """\
+effect IO { op print(String -> Unit); }
+
+private fn pick(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { "X" } else { "." }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<Bool> = array_map(array_range(0, 8), fn(@Int -> @Bool) effects(pure) { @Int.0 == 3 });
+  IO.print(string_join(array_map(@Array<Bool>.0, fn(@Bool -> @String) effects(pure) { pick(@Bool.0) }), ""))
+}
+"""
+        assert _run_io(src) == "...X...."
+
+    def test_eager_gc_array_map_with_non_allocating_string_closure(
+        self,
+    ) -> None:
+        """Same shape as above, but compiled under ``VERA_EAGER_GC=1``
+        which fires ``$gc_collect`` on every allocation.
+
+        Pre-fix this would corrupt the output: each iteration of the
+        outer ``array_map`` over-popped the shadow stack by one slot,
+        and the eager GC's mark phase would miss the over-popped roots
+        and sweep their referents.  The visible failure was either a
+        ``call_indirect`` table OOB trap or wrong output with NULL
+        bytes / leftover heap content where String pointers should
+        have been.
+
+        Post-fix the closure's epilogue always pushes the return-value
+        root, balancing the array_map pop, so eager-GC produces the
+        same output as non-eager.
+        """
+        src = """\
+effect IO { op print(String -> Unit); }
+
+private fn pick(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { "X" } else { "." }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<Bool> = array_map(array_range(0, 8), fn(@Int -> @Bool) effects(pure) { @Int.0 == 3 });
+  IO.print(string_join(array_map(@Array<Bool>.0, fn(@Bool -> @String) effects(pure) { pick(@Bool.0) }), ""))
+}
+"""
+        with mock.patch.dict(os.environ, {"VERA_EAGER_GC": "1"}):
+            result = _compile_ok(src)
+        exec_result = execute(result)
+        assert exec_result.stdout == "...X...."
+
+    def test_eager_gc_recursive_render_no_corruption(self) -> None:
+        """Recursive ``run_loop`` calling ``render_grid`` with nested
+        ``array_map`` of non-allocating closures returning Strings.
+
+        This is the minimum shape that reproduced #593's silent string
+        corruption (Conway's Life rendering): nested ``array_map``
+        where the innermost closure body is a non-allocating String
+        return (a literal lookup), driven by a recursive loop that
+        builds heap pressure across iterations.
+
+        Compiled under ``VERA_EAGER_GC=1`` so the rooting imbalance
+        manifests on the first iteration rather than only at scale.
+        Pre-fix: traps in ``render_grid`` with "out of bounds table
+        access" or produces output containing NULL / U+FFFD bytes.
+        Post-fix: 5 iterations of ``.X..`` separated by newlines.
+        """
+        src = """\
+effect IO { op print(String -> Unit); }
+
+private fn render_cell(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { "X" } else { "." }
+}
+
+private fn render_grid(@Array<Array<Bool>> -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  string_join(array_map(@Array<Array<Bool>>.0, fn(@Array<Bool> -> @String) effects(pure) {
+    string_join(array_map(@Array<Bool>.0, fn(@Bool -> @String) effects(pure) {
+      render_cell(@Bool.0)
+    }), "")
+  }), "\\n")
+}
+
+private fn step(@Array<Array<Bool>> -> @Array<Array<Bool>>)
+  requires(true) ensures(true) effects(pure)
+{
+  array_mapi(@Array<Array<Bool>>.0, fn(@Array<Bool>, @Nat -> @Array<Bool>) effects(pure) {
+    array_mapi(@Array<Bool>.0, fn(@Bool, @Nat -> @Bool) effects(pure) {
+      @Bool.0
+    })
+  })
+}
+
+private fn run_loop(@Array<Array<Bool>>, @Int -> @Unit)
+  requires(true) ensures(true) decreases(@Int.0) effects(<IO>)
+{
+  if @Int.0 <= 0 then {
+    ()
+  } else {
+    IO.print(render_grid(@Array<Array<Bool>>.0));
+    IO.print("\\n");
+    run_loop(step(@Array<Array<Bool>>.0), @Int.0 - 1)
+  }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<Array<Bool>> = array_map(array_range(0, 3), fn(@Int -> @Array<Bool>) effects(pure) {
+    array_map(array_range(0, 4), fn(@Int -> @Bool) effects(pure) { @Int.0 == 1 })
+  });
+  run_loop(@Array<Array<Bool>>.0, 5)
+}
+"""
+        with mock.patch.dict(os.environ, {"VERA_EAGER_GC": "1"}):
+            result = _compile_ok(src)
+        exec_result = execute(result)
+        # Each frame is 3 rows of ".X..", separated by \n, then a
+        # trailing IO.print("\n") after each render_grid.  5 iterations.
+        expected_frame = ".X..\n.X..\n.X..\n"
+        assert exec_result.stdout == expected_frame * 5
+        # Specifically: no NULL or U+FFFD bytes (the canonical
+        # corruption signatures from #593).
+        assert "\x00" not in exec_result.stdout
+        assert "�" not in exec_result.stdout
+
+    def test_lifted_closure_emits_return_root_push_when_body_is_non_allocating(
+        self,
+    ) -> None:
+        """Structural assertion: a lifted closure whose body is
+        non-allocating but whose return type is a heap pointer must
+        contain at least one ``i32.store`` to ``$gc_sp`` in its
+        epilogue.
+
+        Without this, the ``b_needs_unwind`` pop in array_map /
+        array_mapi (`vera/wasm/calls_arrays.py:780-784, 1557-1561`) is
+        unbalanced.  Detecting the push at the WAT level prevents
+        regression even if the runtime test happens to produce correct
+        output by coincidence at small scale.
+        """
+        src = """\
+effect IO { op print(String -> Unit); }
+
+private fn pick(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { "X" } else { "." }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<String> = array_map(array_range(0, 3), fn(@Int -> @String) effects(pure) { pick(@Int.0 == 1) });
+  IO.print(string_join(@Array<String>.0, ""))
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        # Find every lifted closure ($anon_X) that returns an i32 pair
+        # (i.e., String or Array<T>).  At least one of them — the
+        # ``fn(@Int -> @String) { pick(...) }`` — has a non-allocating
+        # body (pick just selects between two String literals) and so
+        # has ``needs_alloc=False``.  Pre-fix that closure's epilogue
+        # was empty; post-fix it must emit the return-value
+        # ``gc_shadow_push``.  We detect the push by the presence of
+        # the canonical ``global.get $gc_sp`` + ``i32.store`` sequence
+        # in a body that contains no ``call $alloc``.
+        import re
+
+        pattern = re.compile(
+            r"\(func \$anon_\d+ \(param \$env i32\)[^)]*\) "
+            r"\(result i32 i32\)(.*?)\n  \)",
+            re.DOTALL,
+        )
+        candidate_bodies = [m.group(1) for m in pattern.finditer(wat)]
+        assert candidate_bodies, (
+            "Expected at least one $anon_X with i32-pair return in WAT"
+        )
+        non_alloc_with_push = [
+            body for body in candidate_bodies
+            if "global.set $gc_sp" in body
+            and "call $alloc" not in body
+        ]
+        assert non_alloc_with_push, (
+            "No non-allocating i32-pair-returning closure with a "
+            "shadow-push return-root was found.  The fix for #593 "
+            "requires the closure's epilogue to push the return-value "
+            "root regardless of needs_alloc."
+        )

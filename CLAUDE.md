@@ -46,6 +46,7 @@ vera version                      # Print the installed version (also --version,
 
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
 VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # Browser tests with JS coverage
+VERA_EAGER_GC=1 vera run file.vera  # Force GC on every alloc (see ENVIRONMENT.md, debug knob for #593-class GC-rooting bugs)
 mypy vera/                        # Type-check the compiler itself
 
 python scripts/check_conformance.py    # Verify all 86 conformance programs pass their declared level

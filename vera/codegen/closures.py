@@ -321,6 +321,42 @@ class ClosureLiftingMixin:
         gc_prologue: list[str] = []
         gc_capture_pushes: list[str] = []
         gc_epilogue: list[str] = []
+
+        # Determine if the return type is a heap pointer.  Computed
+        # unconditionally (even when the body doesn't allocate) because
+        # array_map / array_mapi loops always emit a per-iteration
+        # ``gc_sp -= 4`` pop when the element type is heap-pointer-like
+        # (see ``_translate_array_map``'s ``b_needs_unwind`` at
+        # ``vera/wasm/calls_arrays.py:649-655``).  That pop assumes the
+        # callee pushed a return-value root.  If the closure body
+        # doesn't allocate (``ctx.needs_alloc=False``), the ``if
+        # ctx.needs_alloc`` branch below skips the epilogue's
+        # return-value push — and the array_map pop then goes BELOW the
+        # caller's prologue baseline, corrupting earlier shadow-stack
+        # roots.  This was the latent bug surfaced by #593's Life
+        # reproducer: ``render_cell`` returns String literals (no alloc)
+        # so its lifted closure had ``needs_alloc=False``; the
+        # surrounding inner ``array_map(row, render_cell)`` over-popped
+        # by one slot per cell and corrupted the outer ``render_grid``
+        # closure-env / array roots, manifesting as silent string
+        # corruption (#593) or ``call_indirect`` table OOB.  Fix: emit
+        # the return-value push even when ``needs_alloc=False`` so the
+        # array_map pop is always balanced.
+        ret_is_pointer = False
+        if ret_wt == "i32":
+            ret_type_name = self._type_expr_to_slot_name(
+                anon_fn.return_type,
+            )
+            if (
+                ret_type_name not in ("Bool", "Byte", None)
+                and not _is_host_handle_type(ret_type_name)
+            ):
+                # #347: opaque host handles aren't Vera-heap pointers;
+                # same exclusion as param/capture cases.
+                ret_is_pointer = True
+        elif ret_wt == "i32_pair":
+            ret_is_pointer = True
+
         if ctx.needs_alloc:
             gc_sp_save = ctx.alloc_local("i32")
             gc_prologue.append("global.get $gc_sp")
@@ -345,23 +381,7 @@ class ClosureLiftingMixin:
                     # heap pointers.
                     gc_capture_pushes.extend(gc_shadow_push(cap_local))
 
-            # Determine if return type is a heap pointer
-            ret_is_pointer = False
-            if ret_wt == "i32":
-                ret_type_name = self._type_expr_to_slot_name(
-                    anon_fn.return_type,
-                )
-                if (
-                    ret_type_name not in ("Bool", "Byte", None)
-                    and not _is_host_handle_type(ret_type_name)
-                ):
-                    # #347: opaque host handles aren't Vera-heap
-                    # pointers; same exclusion as param/capture cases.
-                    ret_is_pointer = True
-            elif ret_wt == "i32_pair":  # pragma: no cover — String/Array closure return
-                ret_is_pointer = True
-
-            if ret_wt == "i32_pair":  # pragma: no cover — String/Array closure return
+            if ret_wt == "i32_pair":
                 gc_ret_ptr = ctx.alloc_local("i32")
                 gc_ret_len = ctx.alloc_local("i32")
                 gc_epilogue.append(f"local.set {gc_ret_len}")
@@ -383,6 +403,26 @@ class ClosureLiftingMixin:
             else:  # pragma: no cover — Unit closure return with allocation
                 gc_epilogue.append(f"local.get {gc_sp_save}")
                 gc_epilogue.append("global.set $gc_sp")
+        elif ret_is_pointer:
+            # Body doesn't allocate, but the return is a heap pointer.
+            # Push the return-value root unconditionally to balance the
+            # caller's per-iteration unwind in array_map / array_mapi.
+            # No ``gc_sp_save`` / restore needed because the body has no
+            # pushes to clean up — we just intercept the return value to
+            # publish it as a root.
+            if ret_wt == "i32_pair":
+                gc_ret_ptr = ctx.alloc_local("i32")
+                gc_ret_len = ctx.alloc_local("i32")
+                gc_epilogue.append(f"local.set {gc_ret_len}")
+                gc_epilogue.append(f"local.set {gc_ret_ptr}")
+                gc_epilogue.extend(gc_shadow_push(gc_ret_ptr))
+                gc_epilogue.append(f"local.get {gc_ret_ptr}")
+                gc_epilogue.append(f"local.get {gc_ret_len}")
+            else:  # ret_wt == "i32" ADT
+                gc_ret = ctx.alloc_local("i32")
+                gc_epilogue.append(f"local.set {gc_ret}")
+                gc_epilogue.extend(gc_shadow_push(gc_ret))
+                gc_epilogue.append(f"local.get {gc_ret}")
 
         # Assemble the lifted function WAT (not exported)
         fn_name = f"$anon_{closure_id}"
