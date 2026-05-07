@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.138] - 2026-05-07
+
+### Fixed
+- **[#593](https://github.com/aallan/vera/issues/593)** — Conway's Life string corruption from generation 1+ at 12×30 (the residual bug acknowledged at v0.0.137 release).  Root cause: `_compile_lifted_closure` in `vera/codegen/closures.py` only emitted the closure's return-value `gc_shadow_push` when the closure body itself allocated (`ctx.needs_alloc=True`).  But `_translate_array_map` and `_translate_array_mapi` in `vera/wasm/calls_arrays.py` *always* emit a per-iteration `global.get $gc_sp; i32.const 4; i32.sub; global.set $gc_sp` after each `call_indirect` when the element type is heap-pointer-like (the `b_needs_unwind` path at lines 649-655 and 1430-1439).  That pop assumed the closure pushed.  When a closure body is non-allocating but returns a heap pointer — e.g. `fn(@Bool -> @String) { render_cell(@Bool.0) }` where `render_cell` returns String literals from the data segment — there was no push, but the loop popped anyway, dropping `$gc_sp` *below* the surrounding function's prologue baseline.  Subsequent shadow-stack pushes then overwrote slots that were holding still-live roots, so the next GC mark phase missed those roots and swept their referents.  Manifested as silent string corruption (the original Conway's Life symptom — strings render with NULL or U+FFFD bytes interleaved) or as `call_indirect` "out of bounds table access" trap at smaller scales (the nested `array_map` of String-returning closure landed differently depending on heap layout).
+
+  Fix: lift the return-value push out of the `if ctx.needs_alloc:` branch in `_compile_lifted_closure`.  Always push the return-value root when the return type is a heap pointer (i32_pair or i32 ADT), regardless of whether the body allocated.  The non-allocating branch needs no `gc_sp` save/restore — the body has nothing to clean up — it just intercepts the return value to publish it as a root, balancing the caller's per-iteration unwind.
+
+  New `TestClosureReturnShadowPushBalance` test class in `tests/test_codegen_closures.py` covers four shapes: positive regression (correct output at small scale), behavioural under `VERA_EAGER_GC=1` for both flat `array_map` and recursive Life-style nested rendering, and a structural assertion that the WAT for a non-allocating String-returning closure contains the `gc_shadow_push` epilogue.  Both the agent-rebuilt minimal reproducer and the user's original 12×30 `life_full_program.vera` now run all 200 generations cleanly with zero U+FFFD corruption.
+
+### Added
+- **`VERA_EAGER_GC=1`** environment variable — diagnostic build knob that prepends an unconditional `call $gc_collect` to every `$alloc` invocation, surfacing latent missing-shadow-root bugs immediately rather than only at scale.  Documented in the new top-level [`ENVIRONMENT.md`](ENVIRONMENT.md) along with the full catalogue of `VERA_*` environment variables (eight total: four Inference provider keys, two Inference selection knobs, the existing `VERA_JS_COVERAGE` browser-test knob, and the new `VERA_EAGER_GC` debug knob).  This was the diagnostic that converted the #593 investigation from "static analysis can't find a smoking gun" to "the very first iteration of the rebuilt Life crashes with a clear root-imbalance signature".  Worth keeping permanently as a debugging aid for any future GC-rooting regression.
+
+### Documentation
+- New top-level **[`ENVIRONMENT.md`](ENVIRONMENT.md)** centralising the eight `VERA_*` environment variables (previously scattered across `README.md`, `AGENTS.md`, `TESTING.md`, `CONTRIBUTING.md`, and `CLAUDE.md`).  Cross-linked from the documents that previously had only one-line mentions, so future env vars have one canonical home.
+
 ## [0.0.137] - 2026-05-07
 
 ### Fixed
@@ -1957,7 +1972,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.137...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.138...HEAD
+[0.0.138]: https://github.com/aallan/vera/compare/v0.0.137...v0.0.138
 [0.0.137]: https://github.com/aallan/vera/compare/v0.0.136...v0.0.137
 [0.0.136]: https://github.com/aallan/vera/compare/v0.0.135...v0.0.136
 [0.0.135]: https://github.com/aallan/vera/compare/v0.0.134...v0.0.135

@@ -447,7 +447,47 @@ def main() -> int:
             )
 
     # ------------------------------------------------------------------
-    # 13. Check ROADMAP.md "Where we are" summary
+    # 13. Check docs/index.html status block
+    # ------------------------------------------------------------------
+    # The site landing page has a one-paragraph status block summarising
+    # conformance and example counts.  It's static HTML (not generated
+    # from any other source) so it drifts silently: at the time this
+    # check was added it had been stuck at 81 / 32 for several
+    # conformance and example additions.  Pinning it here keeps it
+    # honest.
+
+    index_html = (root / "docs/index.html").read_text()
+
+    m = re.search(r"An (\d+)-program conformance suite", index_html)
+    if not m:
+        errors.append(
+            "docs/index.html: could not find conformance count pattern"
+            " (`An NN-program conformance suite`)"
+        )
+    else:
+        doc_conf = int(m.group(1))
+        if doc_conf != live_conformance:
+            errors.append(
+                f"docs/index.html: conformance count: doc says {doc_conf},"
+                f" live is {live_conformance}"
+            )
+
+    m = re.search(r"and (\d+) worked examples", index_html)
+    if not m:
+        errors.append(
+            "docs/index.html: could not find example count pattern"
+            " (`and NN worked examples`)"
+        )
+    else:
+        doc_ex = int(m.group(1))
+        if doc_ex != live_examples:
+            errors.append(
+                f"docs/index.html: example count: doc says {doc_ex},"
+                f" live is {live_examples}"
+            )
+
+    # ------------------------------------------------------------------
+    # 14. Check ROADMAP.md "Where we are" summary
     # ------------------------------------------------------------------
     # Scope the search to the "Where we are" section only — ROADMAP.md
     # also contains historical per-release snapshots with older counts

@@ -321,6 +321,39 @@ class ClosureLiftingMixin:
         gc_prologue: list[str] = []
         gc_capture_pushes: list[str] = []
         gc_epilogue: list[str] = []
+
+        # Determine if the return type is a heap pointer.  Computed
+        # unconditionally — not just inside ``if ctx.needs_alloc:`` —
+        # because ``_translate_array_map`` and ``_translate_array_mapi``
+        # always emit a per-iteration ``gc_sp -= 4`` pop after each
+        # ``call_indirect`` when the element type is heap-pointer-like
+        # (the ``b_needs_unwind`` flag).  That pop assumes the callee
+        # pushed a return-value root.  Pre-#593 the push was gated on
+        # ``ctx.needs_alloc``: a closure body like
+        # ``fn(@Bool -> @String) { render_cell(@Bool.0) }`` (where
+        # ``render_cell`` returns String literals from the data segment,
+        # so the closure itself doesn't allocate) emitted no push, but
+        # the array_map loop popped anyway — dropping ``$gc_sp`` BELOW
+        # the caller's prologue baseline and corrupting earlier roots.
+        # Manifested as silent string corruption (Conway's Life rendering
+        # — the original #593 symptom) or ``call_indirect`` table-OOB at
+        # smaller scales.  Fix: emit the return-value push even when
+        # ``needs_alloc=False`` so the array_map pop is always balanced.
+        ret_is_pointer = False
+        if ret_wt == "i32":
+            ret_type_name = self._type_expr_to_slot_name(
+                anon_fn.return_type,
+            )
+            if (
+                ret_type_name not in ("Bool", "Byte", None)
+                and not _is_host_handle_type(ret_type_name)
+            ):
+                # #347: opaque host handles aren't Vera-heap pointers;
+                # same exclusion as param/capture cases.
+                ret_is_pointer = True
+        elif ret_wt == "i32_pair":
+            ret_is_pointer = True
+
         if ctx.needs_alloc:
             gc_sp_save = ctx.alloc_local("i32")
             gc_prologue.append("global.get $gc_sp")
@@ -345,23 +378,7 @@ class ClosureLiftingMixin:
                     # heap pointers.
                     gc_capture_pushes.extend(gc_shadow_push(cap_local))
 
-            # Determine if return type is a heap pointer
-            ret_is_pointer = False
-            if ret_wt == "i32":
-                ret_type_name = self._type_expr_to_slot_name(
-                    anon_fn.return_type,
-                )
-                if (
-                    ret_type_name not in ("Bool", "Byte", None)
-                    and not _is_host_handle_type(ret_type_name)
-                ):
-                    # #347: opaque host handles aren't Vera-heap
-                    # pointers; same exclusion as param/capture cases.
-                    ret_is_pointer = True
-            elif ret_wt == "i32_pair":  # pragma: no cover — String/Array closure return
-                ret_is_pointer = True
-
-            if ret_wt == "i32_pair":  # pragma: no cover — String/Array closure return
+            if ret_wt == "i32_pair":
                 gc_ret_ptr = ctx.alloc_local("i32")
                 gc_ret_len = ctx.alloc_local("i32")
                 gc_epilogue.append(f"local.set {gc_ret_len}")
@@ -383,6 +400,24 @@ class ClosureLiftingMixin:
             else:  # pragma: no cover — Unit closure return with allocation
                 gc_epilogue.append(f"local.get {gc_sp_save}")
                 gc_epilogue.append("global.set $gc_sp")
+        elif ret_is_pointer:
+            # Non-allocating body, heap-pointer return: emit only the
+            # return-value root push (no ``gc_sp`` save/restore — the
+            # body has no pushes to clean up).  Balances the caller's
+            # ``b_needs_unwind`` pop.  See the comment block above.
+            if ret_wt == "i32_pair":
+                gc_ret_ptr = ctx.alloc_local("i32")
+                gc_ret_len = ctx.alloc_local("i32")
+                gc_epilogue.append(f"local.set {gc_ret_len}")
+                gc_epilogue.append(f"local.set {gc_ret_ptr}")
+                gc_epilogue.extend(gc_shadow_push(gc_ret_ptr))
+                gc_epilogue.append(f"local.get {gc_ret_ptr}")
+                gc_epilogue.append(f"local.get {gc_ret_len}")
+            else:  # ret_wt == "i32" ADT
+                gc_ret = ctx.alloc_local("i32")
+                gc_epilogue.append(f"local.set {gc_ret}")
+                gc_epilogue.extend(gc_shadow_push(gc_ret))
+                gc_epilogue.append(f"local.get {gc_ret}")
 
         # Assemble the lifted function WAT (not exported)
         fn_name = f"$anon_{closure_id}"

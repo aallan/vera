@@ -6,6 +6,8 @@ memory, data sections, and closure infrastructure.
 
 from __future__ import annotations
 
+import os
+
 
 class AssemblyMixin:
     """Methods for assembling the WAT module."""
@@ -474,7 +476,30 @@ class AssemblyMixin:
           1. Try the free list (first-fit).
           2. Bump-allocate with a 4-byte object header.
           3. If OOM: run $gc_collect, retry free list, else memory.grow.
+
+        Diagnostic mode: when ``VERA_EAGER_GC=1`` (case-insensitive,
+        also accepts ``true``/``yes``/``on``) is set in the environment
+        at compile time, emit ``call $gc_collect`` as the first
+        instruction of the function body — immediately after the
+        ``(local ...)`` declarations, since WAT requires locals at the
+        top — so a collection runs on EVERY allocation.  This converts
+        latent missing-shadow-root bugs from "fires occasionally at
+        scale" into "fires on the very next allocation," giving a sharp
+        signal for debugging GC-rooting regressions (#593).  Slow —
+        orders of magnitude slower than normal — never enable in
+        production.
         """
+        eager = os.environ.get("VERA_EAGER_GC", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        eager_prefix = (
+            "    ;; VERA_EAGER_GC=1 — force GC on every alloc to surface\n"
+            "    ;; missing shadow-stack roots (debugging knob, see\n"
+            "    ;; AssemblyMixin._emit_alloc docstring).\n"
+            "    call $gc_collect\n"
+            if eager
+            else ""
+        )
         return (
             "  (func $alloc (param $size i32) (result i32)\n"
             "    (local $total i32)\n"
@@ -482,7 +507,8 @@ class AssemblyMixin:
             "    (local $prev i32)\n"
             "    (local $node i32)\n"
             "    (local $node_size i32)\n"
-            "    ;; Enforce the 31-bit size invariant: the header packs\n"
+            + eager_prefix
+            + "    ;; Enforce the 31-bit size invariant: the header packs\n"
             "    ;; (size << 1) | mark into an i32, so size >= 2^31 would\n"
             "    ;; wrap into bit 0 (mark) and silently produce a zero-\n"
             "    ;; size header.  Trap cleanly instead.\n"
