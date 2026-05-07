@@ -144,8 +144,24 @@ class ClosuresMixin:
             wt = self._infer_expr_wasm_type(arg)
             if wt == "i32_pair":
                 arg_wasm_types.extend(["i32", "i32"])
+            elif wt is None:
+                # Unit arg: `_infer_expr_wasm_type` returns None and
+                # `translate_expr` pushed nothing onto the stack
+                # above, so this entry must NOT contribute a phantom
+                # param to the call_indirect sig.  The closure-lift
+                # side at `vera/codegen/closures.py:85` likewise skips
+                # Unit params, so the two sides agree on omitting
+                # them (#586).  Per the type-checker invariant, the
+                # only well-typed expression for which
+                # `_infer_expr_wasm_type` returns None is a Unit-typed
+                # one — anything else would have failed type-check
+                # before reaching codegen, so an explicit branch here
+                # documents the intent without needing a runtime
+                # assert (which would have to re-run type inference
+                # to verify Unit-typedness, defeating the purpose).
+                pass
             else:
-                arg_wasm_types.append(wt or "i64")  # default to i64
+                arg_wasm_types.append(wt)
 
         # Load func_table_idx from closure struct
         instructions.append(f"local.get {tmp}")

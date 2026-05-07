@@ -1,0 +1,59 @@
+-- Conformance: apply_fn with Unit-arg closures (Chapter 5, #586)
+-- Tests: closure, unit_arg, apply_fn — exercises the _translate_apply_fn
+-- path that previously generated a phantom i64 param for None (Unit) args.
+-- Three positions: no-capture, Int-capture, Array<Bool>-capture.
+type UnitToInt = fn(Unit -> Int) effects(pure);
+
+type UnitToBool = fn(Unit -> Bool) effects(pure);
+
+-- Position 1: no capture, closure returns a constant.
+private fn make_const(@Unit -> @UnitToInt)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Unit -> @Int) effects(pure) { 42 }
+}
+
+-- Position 2: capture an Int from the outer scope.
+private fn make_int_capture(@Int -> @UnitToInt)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Unit -> @Int) effects(pure) { @Int.0 }
+}
+
+-- Position 3: capture an Array<Bool> and check it is non-empty.
+private fn make_array_capture(@Array<Bool> -> @UnitToBool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  fn(@Unit -> @Bool) effects(pure) { nat_to_int(array_length(@Array<Bool>.0)) > 0 }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- Position 1: no capture, expect 42.
+  let @UnitToInt = make_const(());
+  let @Int = apply_fn(@UnitToInt.0, ());
+  -- Position 2: capture 7, expect 7.
+  let @UnitToInt = make_int_capture(7);
+  let @Int = apply_fn(@UnitToInt.0, ());
+  -- Position 3: non-empty array is truthy → encode as 1.
+  let @Array<Bool> = [true, false];
+  let @UnitToBool = make_array_capture(@Array<Bool>.0);
+  let @Bool = apply_fn(@UnitToBool.0, ());
+  let @Int = if @Bool.0 then { 1 } else { 0 };
+  -- Sum: 42 + 7 + 1 = 50. Return 0 on success.
+  let @Int = @Int.2 + @Int.1 + @Int.0;
+  if @Int.0 == 50 then {
+    0
+  } else {
+    1
+  }
+}
