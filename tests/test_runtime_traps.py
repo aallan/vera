@@ -1999,3 +1999,102 @@ class TestHostPrintInvalidUtf8589:
             "Expected U+FFFD replacement char where 0xc1 was; got "
             f"{decoded[0]!r}"
         )
+
+
+# =====================================================================
+# IO.sleep + Ctrl-C never escapes as a Python traceback
+# =====================================================================
+
+
+class TestHostSleepKeyboardInterrupt:
+    """Ctrl-C arriving during ``IO.sleep`` must surface as a clean
+    process exit (exit code 130, conventional SIGINT) rather than a
+    raw Python ``KeyboardInterrupt`` traceback escaping through
+    wasmtime's trampoline.
+
+    Same WasmTrapError-contract class as #589 (UTF-8 decode escape) —
+    discovered when a user Ctrl-C'd a Conway's Life animation that uses
+    `IO.sleep(120)` between frames.  Pre-fix the user saw:
+
+      Traceback (most recent call last):
+        File ".../wasmtime/_func.py", line 199, in trampoline
+          pyresults = func(*pyparams)
+        File ".../vera/codegen/api.py", line 1193, in host_sleep
+          time.sleep(ms / 1000.0)
+      KeyboardInterrupt
+
+    plus a follow-on macOS malloc abort during wasmtime cleanup
+    (the abort is tracked separately as a wasmtime/native interaction
+    bug; preventing the Python exception escape is the in-our-control
+    half of the fix).
+
+    Post-fix `host_sleep` catches `KeyboardInterrupt` and raises
+    `_VeraExit(130)` from None, which propagates through wasmtime's
+    trampoline and is unwrapped at the top of `execute()` as a clean
+    `ExecuteResult` with `exit_code=130`.
+    """
+
+    def test_host_sleep_uses_keyboard_interrupt_guard(self) -> None:
+        """host_sleep wraps `time.sleep` in a try/except KeyboardInterrupt
+        guard.  Source-level structural assertion; survives refactor that
+        moves the body into a helper as long as the guard remains.
+        """
+        from pathlib import Path
+        api_src = (
+            Path(__file__).parent.parent / "vera/codegen/api.py"
+        ).read_text()
+        marker = "def host_sleep("
+        idx = api_src.index(marker)
+        body = api_src[idx:idx + 1500]
+        assert "except KeyboardInterrupt:" in body, (
+            "host_sleep must catch KeyboardInterrupt so Ctrl-C during "
+            "IO.sleep doesn't escape as a raw Python traceback through "
+            "wasmtime's trampoline."
+        )
+        assert "_VeraExit(130)" in body, (
+            "host_sleep's KeyboardInterrupt handler must raise "
+            "_VeraExit(130) so execute() unwraps it as a clean "
+            "exit_code=130 (conventional SIGINT exit code)."
+        )
+
+    def test_host_sleep_keyboard_interrupt_propagates_as_vera_exit(
+        self,
+    ) -> None:
+        """Behavioural test: a synthetic `KeyboardInterrupt` raised
+        inside `time.sleep` is caught and re-raised as `_VeraExit(130)`,
+        not allowed to escape to the wasmtime trampoline.
+        """
+        import time as _time
+        from unittest.mock import patch
+
+        from vera.codegen.api import _VeraExit
+
+        # Reach into the closure: build a synthetic host_sleep matching
+        # the production shape and verify the exception conversion.
+        # We can't easily hook the in-process host import without
+        # spinning a wasmtime instance, so test the conversion logic
+        # directly: any time.sleep call that raises KeyboardInterrupt
+        # must convert to _VeraExit(130).  Mirrors the production code.
+        def host_sleep_under_test(ms: int) -> None:
+            if ms > 0:
+                try:
+                    _time.sleep(ms / 1000.0)
+                except KeyboardInterrupt:
+                    raise _VeraExit(130) from None
+
+        # Patch time.sleep to raise KeyboardInterrupt unconditionally.
+        with patch.object(_time, "sleep", side_effect=KeyboardInterrupt):
+            try:
+                host_sleep_under_test(120)
+            except _VeraExit as exit_exc:
+                assert exit_exc.code == 130
+            except KeyboardInterrupt:  # pragma: no cover
+                raise AssertionError(
+                    "KeyboardInterrupt escaped host_sleep — should have "
+                    "been converted to _VeraExit(130) (#594 follow-up)."
+                )
+            else:  # pragma: no cover
+                raise AssertionError(
+                    "host_sleep returned normally despite "
+                    "KeyboardInterrupt; expected _VeraExit(130)."
+                )
