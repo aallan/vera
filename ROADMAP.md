@@ -155,12 +155,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 - [#509](https://github.com/aallan/vera/issues/509) **String + character built-ins (phase 2, Unicode)** — `string_codepoints`, `string_graphemes`, whole-string `string_to_upper` / `string_to_lower`, Unicode-aware classifiers, codepoint-level reverse. Phase 2 of [#470](https://github.com/aallan/vera/issues/470) + [#471](https://github.com/aallan/vera/issues/471); requires host imports (Python `unicodedata`, browser `Intl.Segmenter`) and is not blocking any current program.
 - [#187](https://github.com/aallan/vera/issues/187) → [#127](https://github.com/aallan/vera/issues/127) **Module-qualified call disambiguation → module re-exports** — sequential dependency; completes the module system.
 
-### Phase 4d: Cosmetic / advisory additions
-
-Strict-superset additions that are advisory-only — semantics unchanged, only documentation and tooling output gain new hooks.  Each carries explicit design constraints in its issue body to prevent erosion into named-binding territory.
-
-- [#620](https://github.com/aallan/vera/issues/620) **Optional field names in `data` declarations** — `MkState(board: Array<Int>, x: Int, y: Int, ...)` for `--explain-slots` and error-message use **only**.  Pattern bindings continue to use positional / De Bruijn slot references; field names are never bindable in patterns.  Slot semantics, type checking, and codegen are all unchanged — names are documentation that the compiler echoes back in diagnostics.  Helps writers distinguish `@Int.0` (rightmost) from `@Int.1` without a reminder comment under every match arm.  Issue body lists four load-bearing guardrails that prevent this from becoming named-binding-by-stealth.
-
 ---
 
 ## Continuous: quality and security hardening
