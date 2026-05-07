@@ -1,28 +1,14 @@
 # Roadmap
 
-Vera delivers a complete compiler pipeline — parse, transform, type-check, verify contracts via Z3, compile to WebAssembly, execute at the command line or in the browser — with 164 built-in functions, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), constrained generics, a module system, contract-driven testing, and a canonical formatter.  The core language is done.  What follows is the path from "working language" to "the language agents actually use."
-
-This roadmap is organised around four strategic milestones.  Each milestone makes Vera meaningfully more useful to a concrete audience.  Within each milestone, work is grouped into phases that can be executed roughly sequentially, though independent items can be interleaved.
-
-See [HISTORY.md](HISTORY.md) for a narrative account of how the compiler was built and [CHANGELOG.md](CHANGELOG.md) for per-release detail.
+Where the project is going.  See [HISTORY.md](HISTORY.md) for what's been built and [CHANGELOG.md](CHANGELOG.md) for per-release detail.
 
 ## Where we are
 
 3,766 tests, 86 conformance programs, 34 examples, 13 spec chapters.
 
----
+## What's next
 
-## What's next — finish stabilisation, then agent-integration push
-
-Two tiers of forward work.  **Stabilisation** closes out the codegen gaps surfaced by writing a real program ([#602](https://github.com/aallan/vera/issues/602), [#604](https://github.com/aallan/vera/issues/604)), builds infrastructure to prevent recurrence ([#596](https://github.com/aallan/vera/issues/596) stress harness, [#597](https://github.com/aallan/vera/issues/597) walker audit), finishes the browser runtime ([#609](https://github.com/aallan/vera/issues/609) JSPI sleep + [#610](https://github.com/aallan/vera/issues/610) ANSI subset interpreter), and clears one upstream-blocked cleanup ([#595](https://github.com/aallan/vera/issues/595)).  **Agent-integration** then becomes the priority: LSP ([#222](https://github.com/aallan/vera/issues/222)), `vera context` ([#523](https://github.com/aallan/vera/issues/523)), Inference controls ([#370](https://github.com/aallan/vera/issues/370)).
-
-### The ordering principle
-
-The phase numbering in the milestones below (Phase 1a/1b/etc) reflects **strategic grouping** — which audience the work serves — and is stable across releases.  This near-term section is a rolling view of the next few weeks of implementation; entries are pulled forward from the milestones when they become tractable, and removed once they ship.
-
-### Implementation order
-
-**Stabilisation tier** (close out before agent-integration; converts "I think we're stable" to "the harness proves we are"):
+**Stabilisation tier** — close these out before resuming agent-integration:
 
 | Order | Issue | Why now |
 |:---:|---|---|
@@ -34,7 +20,7 @@ The phase numbering in the milestones below (Phase 1a/1b/etc) reflects **strateg
 | 6 | [#610](https://github.com/aallan/vera/issues/610) — Browser runtime: ANSI subset interpreter | The rendering half of the same seam.  ANSI escape sequences (cursor positioning, screen clear, line erase) currently render as literal control characters in the DOM.  Implement a small subset interpreter (~200 lines of JS) in `runtime.mjs` that maintains a virtual screen buffer and applies the canonical cursor-addressable subset (`ESC[H`, `ESC[2J`, `ESC[K`, basic colors) into a target `<pre>` element.  Pairs with #609 — together they let `life.vera` (the terminal version) run unchanged on `vera compile --target browser`.  Bounded scope, well-defined acceptance criteria. |
 | 7 | [#595](https://github.com/aallan/vera/issues/595) — macOS malloc abort in wasmtime trampoline on Ctrl-C | Filed upstream as [bytecodealliance/wasmtime-py#336](https://github.com/bytecodealliance/wasmtime-py/issues/336): root cause is `wasmtime/_func.py` catching `Exception` rather than `BaseException` in the trampoline.  Vera's local `KeyboardInterrupt` guard already prevents the Python-traceback half; this issue tracks the residual cleanup-path abort, contingent on upstream landing the catch-broadening fix. |
 
-**Agent-integration tier** (resumes once stabilisation is done):
+**Agent-integration tier** — resumes once stabilisation is done:
 
 | Order | Issue | Why now |
 |:---:|---|---|
@@ -42,9 +28,7 @@ The phase numbering in the milestones below (Phase 1a/1b/etc) reflects **strateg
 | 9 | [#523](https://github.com/aallan/vera/issues/523) — `vera context` token-budgeted project export | New CLI command that walks a project's dependency graph and emits a compact LLM-consumable summary of public signatures, contracts, effects, and ADTs.  Mandatory contracts carry the semantic payload that named-variable languages convey via identifiers and docstrings, so the output is denser per byte than equivalent Python/TS exports.  Estimated 1–2 days; module system and function registry already exist internally. |
 | 10 | [#370](https://github.com/aallan/vera/issues/370) — Configurable `Inference.complete` `max_tokens` / `temperature` | Currently hardcoded.  Agent workloads need control over both — for cost gates, deterministic replays, and routing strategies.  Smallest of the Inference-hardening items but also the one that blocks the most concrete user requests. |
 
-### What moves when
-
-Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md).  Agent-integration items don't pull forward until the stabilisation tier is empty — order #8 starts when #1–#7 are closed (or explicitly deferred with an open follow-up).  When a tier shrinks to ~1 item the section gets repopulated from Phase 2a (Inference hardening), Phase 3a (further agent integration), or wherever the next batch of evidence points.
+Completed items get deleted from these tables and noted in [HISTORY.md](HISTORY.md).  When a tier shrinks the section gets repopulated from the milestones below.
 
 ---
 
@@ -52,51 +36,11 @@ Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md
 
 *Goal: answer the fundamental question — do LLMs write better code in Vera than in existing languages? Build the evidence base and fix the friction points that block honest evaluation.*
 
-This is the most important milestone. Everything else — adoption, ecosystem, research credibility — depends on having data that supports (or refutes) the core claim. Simultaneously, fix the small issues that would distort any benchmark or frustrate any agent trying to use the language seriously.
-
-Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.md) Stage 9 for details.
-
 ### Phase 1b: Benchmark suite
 
-**[VeraBench](https://github.com/aallan/vera-bench)** is a separate repository containing 50 problems across 5 difficulty tiers with canonical solutions written in Vera, Python, and Typescript.
+[VeraBench](https://github.com/aallan/vera-bench) — 50 problems across 5 difficulty tiers with canonical solutions in Vera, Python, and TypeScript.  See the vera-bench repository for current results.
 
-- [#225](https://github.com/aallan/vera/issues/225) **Benchmark suite** — The benchmark covers five difficulty tiers:
-  1. **Pure arithmetic** — functions with 1–2 parameters, simple contracts (the easy case for `@T.n`)
-  2. **String and array manipulation** — functions using built-ins, testing whether agents find the right `domain_verb` names
-  3. **ADTs and pattern matching** — custom data types, exhaustive match, testing De Bruijn indices in match arms
-  4. **Recursive functions with termination proofs** — `decreases` clauses, testing whether agents produce provably terminating code
-  5. **Multi-function programs with effects** — IO, State, Http, Inference, testing cross-function contract coherence
-
-  Six models across three providers evaluated on all four modes (v0.0.7).
-
-  ### Summary (run_correct — Vera vs Python vs TypeScript)
-
-  **Flagship tier:**
-
-  | Model | Vera | Python | TypeScript |
-  |-------|------|--------|------------|
-  | **Kimi K2.5** | **100%** | 86% | 91% |
-  | GPT-4.1 | 91% | 96% | 96% |
-  | Claude Opus 4 | 88% | 96% | 96% |
-
-  **Sonnet tier:**
-
-  | Model | Vera | Python | TypeScript |
-  |-------|------|--------|------------|
-  | **Kimi K2 Turbo** | **83%** | 88% | 79% |
-  | Claude Sonnet 4 | 79% | 96% | 88% |
-  | GPT-4o | 78% | 93% | 83% |
-
-  ### Key findings
-
-  **Kimi K2.5 writes perfect Vera code.** 100% run_correct on both full-spec and spec-from-NL modes, beating Python (86%) and TypeScript (91%). This is the first model where Vera is the best language across the board.
-
-  **Three models beat TypeScript on Vera.** Kimi K2.5 (+9pp) and Kimi K2 Turbo (+4pp) both beat TypeScript across providers; Claude Sonnet 4 has flipped between TypeScript-leading and Vera-leading across reruns.
-
-  **Python remains the strongest target for most models.** The gap between Python and Vera varies from 0pp (Kimi K2.5) to 17pp (Claude Sonnet 4). The flagship tier averages 93% Vera vs 93% Python — essentially parity.
-
-  **These are early, single-run results** with high variance across reruns. Stable rates will require pass@k evaluation with multiple trials.
-
+- [#225](https://github.com/aallan/vera/issues/225) **Expand benchmark coverage** — pass@k evaluation with multiple trials (single-run results have high variance), additional models, additional difficulty tiers as the suite grows.
 
 ### Phase 1c: Expand contract-driven testing
 
@@ -110,11 +54,9 @@ Phase 1a (evaluation friction removal) is complete — see [HISTORY.md](HISTORY.
 
 *Goal: a working MCP tool server written in Vera, with contracts guaranteeing tool schemas at compile time. This is the flagship demo — the thing that makes people understand why Vera exists.*
 
-This milestone follows the critical dependency chain that has driven the project since the roadmap was first written. Map, JSON, HTTP, and Inference are complete. What remains is the server side.
-
 ### Phase 2a: Inference effect hardening
 
-The `<Inference>` effect is the headline feature. Harden it before building on top of it.
+Harden `<Inference>` — the headline feature — before building on top of it.
 
 - [#370](https://github.com/aallan/vera/issues/370) **Configurable `max_tokens` / `temperature`** — currently hardcoded; agent workloads need control over both.
 - [#372](https://github.com/aallan/vera/issues/372) **User-defined `handle[Inference]` handlers** — currently the Inference effect cannot be handled in user code; full handler support enables mocking, caching, and routing strategies.
@@ -128,7 +70,7 @@ The `<Inference>` effect is the headline feature. Harden it before building on t
 
 ### Phase 2b: Server-side effects
 
-**Http effect hardening** — the Http effect shipped in v0.0.99 with basic GET/POST. These issues extend it to production capability:
+**Http effect hardening** — extend the existing GET/POST surface to production capability:
 
 - [#351](https://github.com/aallan/vera/issues/351) Custom headers support
 - [#352](https://github.com/aallan/vera/issues/352) HTTP status code access in responses
@@ -176,7 +118,7 @@ These are not strictly required for the MCP demo but would make it more compelli
 ### Phase 3c: Developer experience
 
 - [#224](https://github.com/aallan/vera/issues/224) **REPL** — interactive exploration for both agents and humans. Useful for rapid prototyping and debugging.
-- [#143](https://github.com/aallan/vera/issues/143) **Comprehensive example programs** — expand from 33 to 50+ examples covering every major pattern: API clients, data pipelines, text processing, LLM orchestration, effect composition.  (Canonical example count is enforced by `scripts/check_doc_counts.py` — when adding examples, run that script and update this baseline figure if it has drifted.)
+- [#143](https://github.com/aallan/vera/issues/143) **Comprehensive example programs** — expand to 50+ examples covering every major pattern: API clients, data pipelines, text processing, LLM orchestration, effect composition.
 
 ---
 
@@ -211,7 +153,7 @@ These are not strictly required for the MCP demo but would make it more compelli
 
 ## Continuous: quality and security hardening
 
-These are not milestone-gated — they should be addressed continuously alongside feature work. Prioritised by impact.
+Addressed alongside feature work, not milestone-gated.  Prioritised by impact.
 
 ### CI tooling
 
@@ -250,14 +192,8 @@ These are not milestone-gated — they should be addressed continuously alongsid
 
 ## Speculative
 
-Items here are **deferred decisions**, not scheduled work. Each captures the design analysis for a feature whose user driver has not yet emerged — so the rationale doesn't have to be re-derived if/when one does. Distinct from the milestone phases (planned future work) and Continuous hardening (incremental quality work). When a real driver shows up, the relevant entry promotes into a milestone phase or the near-term-priorities queue.
+Deferred decisions — features without a current driver, captured here so the design analysis isn't re-derived if one shows up.  Promotes into a milestone phase or the stabilisation queue when a real trigger appears.
 
 | Item | Issue | Trigger condition |
 |------|-------|-------------------|
-| Allow `@Byte` arithmetic with verified underflow + overflow guards | [#564](https://github.com/aallan/vera/issues/564) | A real Vera program (or proposed feature) requires byte arithmetic at the user-code level — e.g., a binary-format parser the stdlib doesn't cover; or VeraBench shows a measurable adoption tax from `byte_to_int` round-trips on byte-heavy benchmarks. Today: the type checker excludes `Byte` from `NUMERIC_TYPES`, so `@Byte - @Byte` etc. produce E140; the round-trip via `byte_to_int` / `int_to_byte` is the canonical idiom. |
-
----
-
-## Completed phases
-
-The compiler was built through eleven stages from February 2026 onwards, with Stage 12 (post-Game-of-Life close-out) now open. **810+ commits, 138 tagged releases (as of v0.0.138), 3,766 tests, 96% coverage, 86 conformance programs, 34 examples, 13 spec chapters.** See [HISTORY.md](HISTORY.md) for the per-stage narrative and per-release table.
+| Allow `@Byte` arithmetic with verified underflow + overflow guards | [#564](https://github.com/aallan/vera/issues/564) | A real Vera program (or proposed feature) requires byte arithmetic at the user-code level — e.g., a binary-format parser the stdlib doesn't cover; or VeraBench shows a measurable adoption tax from `byte_to_int` round-trips on byte-heavy benchmarks.  Today: the type checker excludes `Byte` from `NUMERIC_TYPES`, so `@Byte - @Byte` etc. produce E140; the round-trip via `byte_to_int` / `int_to_byte` is the canonical idiom. |
