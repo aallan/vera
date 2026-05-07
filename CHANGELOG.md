@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+- **SKILL.md** — three doc fixes surfaced by an agent writing Conway's Game of Life from scratch on current main.  `array_length`'s SKILL comment updated from *"returns Int (always >= 0)"* to *"returns Nat (the array length, flows to either Nat or Int positions)"* to match user-visible behaviour (the type checker permits `Int <: Nat` via verifier-enforced refinement, so the result flows freely into either).  `array_fold` example gains a three-line comment making the closure shape explicit (`fn(@Acc, @Elem -> @Acc)` with the rightmost-is-`.0` derivation), so agents no longer have to write a probe to determine the parameter order.  New "Tuples" subsection under "Composite types" showing `Tuple(...)` construction and `match` destructuring — previously SKILL mentioned `@Tuple<Int, String>` only as a type with no construction example, leading agents to hunt for tuple-literal syntax that doesn't exist and abandon valid approaches.
+
+### Tooling
+- **`scripts/check_skill_examples.py`** allowlist re-anchored after the SKILL line offsets shifted; one stale redundant entry pruned (the Non-exhaustive Match section had three allowlist entries but only two actual code blocks); one mis-anchored entry corrected (a "bare `@Int + @Int`" allowlist entry was parked on a parseable full-function example, suppressing it).
+
 ## [0.0.138] - 2026-05-07
 
 ### Fixed
