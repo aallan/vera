@@ -14,11 +14,16 @@ Significant progress has been made towards Vera being a viable agent target. [Ve
 
 ---
 
-## What's next — agent-integration push
+## What's next — finish stabilisation, then agent-integration push
 
-The bug-killing campaign that ran from v0.0.120 through v0.0.134 closed twelve runtime/codegen bugs that surfaced agent friction at the "compiled artefact misbehaves" layer.  See [HISTORY.md](HISTORY.md) Stage 11 for the per-release narrative; [CHANGELOG.md](CHANGELOG.md) for the long form of each fix.
+The bug-killing campaign that ran from v0.0.120 through v0.0.137 closed fifteen runtime/codegen bugs that surfaced agent friction at the "compiled artefact misbehaves" layer.  See [HISTORY.md](HISTORY.md) Stage 11 for the per-release narrative; [CHANGELOG.md](CHANGELOG.md) for the long form of each fix.
 
-With the runtime-correctness floor raised, the next phase of friction reduction is **integration with the tools agents already use**: editor LSPs, project-scoped context export, and Inference-effect ergonomics.  These are independent of compiler internals; each one adds capability that VeraBench-style harnesses can directly observe.
+The campaign uncovered two patterns worth closing out before declaring the runtime-correctness floor raised:
+
+1. **Scale-dependent bugs slip past the standard test suite.** [#515](https://github.com/aallan/vera/issues/515), [#570](https://github.com/aallan/vera/issues/570), [#487](https://github.com/aallan/vera/issues/487), and now [#593](https://github.com/aallan/vera/issues/593) all required a real-world program at scale (40×20+ Conway's Life, 5,000+ element arrays, 1,000+ deep recursion) to surface — none would have been caught by the existing 3,747 small focused tests.
+2. **Walker-completeness gaps are silent failures of the same shape.** [#588](https://github.com/aallan/vera/issues/588) found `_walk_free_vars` was missing **eight** AST node-type branches; the original implementation walked the obvious shapes and missed the long tail. We don't yet know if other walkers in the codebase have similar incompleteness.
+
+Closing these — both by fixing the residuals (#593, #595) and by building infrastructure that prevents recurrence (#596 stress harness, #597 walker audit) — converts "I think we're stabilising" into evidence.  After that, agent integration (LSP, `vera context`, Inference controls) becomes the priority.
 
 ### The ordering principle
 
@@ -26,15 +31,26 @@ The phase numbering in the milestones below (Phase 1a/1b/etc) reflects **strateg
 
 ### Implementation order
 
+**Stabilisation tier** (close out before agent-integration; converts "I think we're stable" to "the harness proves we are"):
+
 | Order | Issue | Why now |
 |:---:|---|---|
-| 1 | [#222](https://github.com/aallan/vera/issues/222) — LSP server | Standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf).  The `--json` infrastructure provides most of what's needed.  Real-time feedback as agents write — diagnostics, hover, completion — turns Vera from "compile-and-pray" into the tight loop agents are calibrated for.  Single highest-leverage adoption enabler. |
-| 2 | [#523](https://github.com/aallan/vera/issues/523) — `vera context` token-budgeted project export | New CLI command that walks a project's dependency graph and emits a compact LLM-consumable summary of public signatures, contracts, effects, and ADTs.  Mandatory contracts carry the semantic payload that named-variable languages convey via identifiers and docstrings, so the output is denser per byte than equivalent Python/TS exports.  Estimated 1–2 days; module system and function registry already exist internally. |
-| 3 | [#370](https://github.com/aallan/vera/issues/370) — Configurable `Inference.complete` `max_tokens` / `temperature` | Currently hardcoded.  Agent workloads need control over both — for cost gates, deterministic replays, and routing strategies.  Smallest of the Inference-hardening items but also the one that blocks the most concrete user requests. |
+| 1 | [#593](https://github.com/aallan/vera/issues/593) — Conway's Life corruption from gen 1+ at 12×30 | Largest open codegen unknown. Bisection narrows it to: 12×30 scale + recursive run_loop with allocating call argument across the recursive boundary. Smaller scales work cleanly. The v0.0.136 `errors="replace"` defensive layer (#589) prevents Python tracebacks but the underlying memory corruption remains. Until isolated, "WASM codegen is stable at scale" is unverified. |
+| 2 | [#596](https://github.com/aallan/vera/issues/596) — Stress-test harness | `tests/test_stress.py` exercising programs at scale (10K-element `array_map`, 1K-deep recursion with allocating arg, 20×20×100 Conway's Life, long-running State handlers, etc.) — under a `@pytest.mark.stress` flag so it runs nightly rather than per-PR. Surfaces the next #593-class bug before users do. Acts as a concrete reproducer for narrowing #593. |
+| 3 | [#597](https://github.com/aallan/vera/issues/597) — Walker-completeness audit | Audit every `isinstance(expr, ast.X)` dispatch chain in the codebase against the full set of `Expr` subclasses. Document each walker's coverage as a checklist comment; optional companion script (`scripts/check_walker_coverage.py`) for pre-commit enforcement. Triggered by #588 finding 8 missing branches in `_walk_free_vars` — converts "the walker had a long tail of incompleteness" from "we hope it's the only one" to "we've audited every walker". |
+| 4 | [#595](https://github.com/aallan/vera/issues/595) — macOS malloc abort in wasmtime trampoline on Ctrl-C | Likely shares a root cause with #593 (both surface together at 12×30 + 200 generations) — closing #593 may close this. If it survives #593's fix, narrowing the wasmtime-py vs Python 3.14 ABI gap is the next step. Lower priority than #593 itself because the v0.0.137 `KeyboardInterrupt` guard already prevents the Python-traceback half. |
+
+**Agent-integration tier** (resumes once stabilisation is done):
+
+| Order | Issue | Why now |
+|:---:|---|---|
+| 5 | [#222](https://github.com/aallan/vera/issues/222) — LSP server | Standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf).  The `--json` infrastructure provides most of what's needed.  Real-time feedback as agents write — diagnostics, hover, completion — turns Vera from "compile-and-pray" into the tight loop agents are calibrated for.  Single highest-leverage adoption enabler. |
+| 6 | [#523](https://github.com/aallan/vera/issues/523) — `vera context` token-budgeted project export | New CLI command that walks a project's dependency graph and emits a compact LLM-consumable summary of public signatures, contracts, effects, and ADTs.  Mandatory contracts carry the semantic payload that named-variable languages convey via identifiers and docstrings, so the output is denser per byte than equivalent Python/TS exports.  Estimated 1–2 days; module system and function registry already exist internally. |
+| 7 | [#370](https://github.com/aallan/vera/issues/370) — Configurable `Inference.complete` `max_tokens` / `temperature` | Currently hardcoded.  Agent workloads need control over both — for cost gates, deterministic replays, and routing strategies.  Smallest of the Inference-hardening items but also the one that blocks the most concrete user requests. |
 
 ### What moves when
 
-Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md).  When the table shrinks to ~1 item the section gets repopulated from Phase 2a (Inference hardening), Phase 3a (further agent integration), or wherever the next batch of evidence points.
+Completed items get deleted from this table and noted in [HISTORY.md](HISTORY.md).  Agent-integration items don't pull forward until the stabilisation tier is empty — order #5 starts when #1–#4 are closed (or explicitly deferred with an open follow-up).  When a tier shrinks to ~1 item the section gets repopulated from Phase 2a (Inference hardening), Phase 3a (further agent integration), or wherever the next batch of evidence points.
 
 ---
 
