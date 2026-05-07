@@ -19,6 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Tooling
 - **`scripts/check_skill_examples.py`** allowlist re-anchored after the SKILL line offsets shifted; one stale redundant entry pruned (the Non-exhaustive Match section had three allowlist entries but only two actual code blocks); one mis-anchored entry corrected (a "bare `@Int + @Int`" allowlist entry was parked on a parseable full-function example, suppressing it).
 
+### CI
+- **Test job parallelised with `pytest-xdist`** — added `pytest-xdist>=3.6` to `[dev]` extras; CI's `pytest` invocation now uses `-n auto` to fan tests across worker processes.  Local measurement (8-core Mac): full 3,752-test suite drops from **90.7s → 15.6s** (5.8× speedup, all tests pass).  GitHub Actions 2-core runners will see roughly half that.
+- **Eliminated duplicate suite run on the coverage cell.**  The `test (ubuntu-latest, 3.12) + coverage` cell previously ran `pytest -v` (full suite, ~3–4 min) followed by `pytest --cov=vera ...` (full suite again, ~5 min) — the entire suite executed twice.  Restructured to run a single `pytest -v -n auto --cov=vera ...` invocation on that cell, keeping coverage instrumentation but cutting the wall time roughly in half.  Combined with xdist, the gating cell is expected to drop from ~8 min to ~3 min.
+
 ## [0.0.138] - 2026-05-07
 
 ### Fixed
