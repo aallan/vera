@@ -97,6 +97,27 @@ def _run_trap(
         execute(result, fn_name=fn, args=args)
 
 
+def _has_gc_shadow_push(wat_body: str) -> bool:
+    """Detect the canonical ``gc_shadow_push`` SP-increment sequence in
+    a WAT body.
+
+    A bare ``global.set $gc_sp`` could in principle be a stack-restore
+    rather than a push — though only inside an allocating body, since
+    the prologue's ``$gc_sp_save`` save/restore is gated on
+    ``ctx.needs_alloc``.  This helper looks for the unique trailing
+    ``i32.const 4 / i32.add / global.set $gc_sp`` pattern that
+    ``vera/wasm/helpers.py::gc_shadow_push`` emits to advance the
+    shadow-stack pointer after writing the rooted value — distinct
+    from a restore (``local.get $gc_sp_save / global.set $gc_sp``).
+    Used by the structural #593 regression tests so a non-push
+    artefact in the body can never satisfy the assertion.
+    """
+    return bool(re.search(
+        r"i32\.const 4\s+i32\.add\s+global\.set \$gc_sp",
+        wat_body,
+    ))
+
+
 # =====================================================================
 # C6h: Closures
 # =====================================================================
@@ -1004,6 +1025,36 @@ public fn main(@Unit -> @Unit)
         exec_result = execute(result)
         assert exec_result.stdout == "...X...."
 
+    def test_eager_gc_array_mapi_with_non_allocating_string_closure(
+        self,
+    ) -> None:
+        """``array_mapi`` parallel of the array_map String eager-GC
+        test.  ``_translate_array_mapi`` has its own ``b_needs_unwind``
+        emission; this test pins the String (i32_pair) edge of that
+        path under eager-GC, complementing the ADT-shape variant
+        below.  Pre-fix: same imbalance and corruption as array_map.
+        """
+        src = """\
+effect IO { op print(String -> Unit); }
+
+private fn pick(@Bool -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Bool.0 then { "X" } else { "." }
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<Bool> = array_map(array_range(0, 8), fn(@Int -> @Bool) effects(pure) { @Int.0 == 3 });
+  IO.print(string_join(array_mapi(@Array<Bool>.0, fn(@Bool, @Nat -> @String) effects(pure) { pick(@Bool.0) }), ""))
+}
+"""
+        with mock.patch.dict(os.environ, {"VERA_EAGER_GC": "1"}):
+            result = _compile_ok(src)
+        exec_result = execute(result)
+        assert exec_result.stdout == "...X...."
+
     def test_eager_gc_recursive_render_no_corruption(self) -> None:
         """End-to-end Life-shape under eager-GC: recursive ``run_loop``
         calling ``render_grid`` with nested ``array_map`` of
@@ -1106,12 +1157,11 @@ public fn main(@Unit -> @Unit)
         result = _compile_ok(src)
         wat = result.wat
         # Find any ``$anon_X`` returning ``(result i32 i32)`` whose body
-        # has no ``call $alloc`` but does emit ``global.set $gc_sp`` —
-        # i.e. a non-allocating closure that still pushes a return-value
-        # root.  The fix for #593 requires this for every i32-pair-
-        # returning lifted closure regardless of body allocations.
-        import re
-
+        # has no ``call $alloc`` but contains the canonical
+        # ``gc_shadow_push`` increment sequence — i.e. a non-allocating
+        # closure that still pushes a return-value root.  The fix for
+        # #593 requires this for every i32-pair-returning lifted
+        # closure regardless of body allocations.
         pattern = re.compile(
             r"\(func \$anon_\d+ \(param \$env i32\)[^)]*\) "
             r"\(result i32 i32\)(.*?)\n  \)",
@@ -1123,7 +1173,7 @@ public fn main(@Unit -> @Unit)
         )
         non_alloc_with_push = [
             body for body in candidate_bodies
-            if "global.set $gc_sp" in body
+            if _has_gc_shadow_push(body)
             and "call $alloc" not in body
         ]
         assert non_alloc_with_push, (
@@ -1175,11 +1225,9 @@ public fn test(@Unit -> @Int)
         wat = result.wat
         # Find any ``$anon_X`` returning ``(result i32)`` (i.e. an ADT
         # or non-pair pointer) whose body has no ``call $alloc`` but
-        # does emit ``global.set $gc_sp`` — the i32 ADT identity-style
-        # closure.  At least the ``fn(@Box -> @Box) { @Box.0 }`` lift
-        # must match.
-        import re
-
+        # contains the canonical ``gc_shadow_push`` increment sequence
+        # — the i32 ADT identity-style closure.  At least the
+        # ``fn(@Box -> @Box) { @Box.0 }`` lift must match.
         pattern = re.compile(
             r"\(func \$anon_\d+ \(param \$env i32\)[^)]*\) "
             r"\(result i32\)(?!\s*\(result)(.*?)\n  \)",
@@ -1192,7 +1240,7 @@ public fn test(@Unit -> @Int)
         )
         non_alloc_with_push = [
             body for body in candidate_bodies
-            if "global.set $gc_sp" in body
+            if _has_gc_shadow_push(body)
             and "call $alloc" not in body
         ]
         assert non_alloc_with_push, (

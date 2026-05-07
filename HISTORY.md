@@ -297,6 +297,7 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | 26 Apr | Crash-debugging UX — runtime traps classified into a stable `kind` (`divide_by_zero`/`out_of_bounds`/`stack_exhausted`/`unreachable`/`overflow`/`contract_violation`/`unknown`), `IO.print` output preserved across traps via `WasmTrapError`, JSON envelope gains `trap_kind` |
 | 26 Apr | `veralang.dev` homepage redesign — editorial-research aesthetic, bilingual reading-path device (`@reader.0 → humans` / `@reader.1 → agents`), Agent Score improvements (3 fails + 2 warns → 2 fails + 1 warn; markdown content parity 90% miss → 21% miss) |
 | 27 Apr | `IO.print` writes flush live to `sys.stdout` in `vera run` text mode — animations, progress bars, REPL-style output, and ANSI cursor / clear-screen escapes render in real time instead of buffering until exit |
+| 7 May | `VERA_EAGER_GC=1` compile-time debug knob — prepends `call $gc_collect` to every `$alloc` so latent missing-shadow-root bugs surface on the very next allocation rather than at scale.  Diagnosed [#593](https://github.com/aallan/vera/issues/593); now permanent infrastructure for catching the next bug of this shape early.  Documented in [`ENVIRONMENT.md`](ENVIRONMENT.md) alongside the seven other `VERA_*` runtime / dev variables (previously scattered across README, AGENTS, TESTING, CONTRIBUTING, SKILL, CLAUDE) |
 
 ---
 
@@ -312,4 +313,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 137 tagged releases, 55 active development days.**
+Total: **810+ commits, 138 tagged releases, 55 active development days.**
