@@ -86,6 +86,40 @@ def main() -> int:
         print("ERROR: Could not find version string in README.md", file=sys.stderr)
         return 1
 
+    # uv.lock — the editable ``[[package]] name = "vera"`` entry holds
+    # the same version as ``pyproject.toml``.  CI runs ``uv lock --check``
+    # in the lint job (`.github/workflows/ci.yml`); a stale lockfile
+    # fails CI with a generic "lockfile needs to be updated" message
+    # and forces a round-trip.  Catching it here keeps the version-bump
+    # checklist self-contained: bump pyproject + __init__ + run
+    # ``uv lock`` (or ``uv sync``), and this script catches drift on
+    # any of the three.
+    lock = root / "uv.lock"
+    if not lock.is_file():
+        print("ERROR: uv.lock not found", file=sys.stderr)
+        return 1
+    # Match ``name = "vera"`` followed by ``version = "X.Y.Z"`` on the
+    # next non-blank line.  Anchored on the package boundary
+    # (``[[package]]``) so we don't accidentally pick up a transitive
+    # dependency that happens to be named ``vera`` in some far-future
+    # ecosystem expansion — the project's own entry is the only one
+    # with ``source = { editable = "." }``.
+    lock_match = re.search(
+        r'\[\[package\]\]\s*\n'
+        r'name\s*=\s*"vera"\s*\n'
+        r'version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"',
+        lock.read_text(),
+    )
+    if not lock_match:
+        print(
+            'ERROR: Could not find ``[[package]] name = "vera"`` block '
+            "with a version field in uv.lock — has the lockfile shape "
+            "changed?",
+            file=sys.stderr,
+        )
+        return 1
+    versions["uv.lock"] = lock_match.group(1)
+
     # Check they all match
     unique = set(versions.values())
     if len(unique) == 1:
