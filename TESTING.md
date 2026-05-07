@@ -6,9 +6,9 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,740 across 29 files (~34,800 lines of test code; 3,726 passed, 14 skipped) |
+| **Tests** | 3,745 across 29 files (~34,800 lines of test code; 3,731 passed, 14 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
-| **Conformance programs** | 85 programs across 9 spec chapters, validating every language feature |
+| **Conformance programs** | 86 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 33, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 164 parseable blocks from 13 spec chapters: 86 parse, 72 type-check, 71 verify |
 | **README code blocks** | 13 Vera blocks (12 validated, 1 allowlisted future syntax) |
@@ -36,7 +36,7 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # V8 coverage via c8
 mypy vera/                                           # strict mode
 
 # Validation scripts
-python scripts/check_conformance.py                  # conformance suite (85 programs, see manifest.json)
+python scripts/check_conformance.py                  # conformance suite (86 programs, see manifest.json)
 python scripts/check_examples.py                     # 33 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
@@ -73,7 +73,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_tester_coverage.py` | 34 | 901 | Tester coverage gaps: String/Float64/ADT parameter input generation, Bool/Byte parameters, unsatisfiable preconditions, type expression edge cases |
 | `test_markdown.py` | 59 | 394 | Markdown parser: block/inline parsing, rendering, round-trips, edge cases |
 | `test_browser.py` | 99 | 1,821 | Browser parity: Python/wasmtime vs Node.js/JS-runtime output equivalence across IO, State, contracts, Markdown, Regex, and all compilable examples |
-| `test_conformance.py` | 425 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 85 programs |
+| `test_conformance.py` | 430 | 102 | Parametrized conformance suite: parse, check, verify, run, format idempotency across 86 programs |
 | `test_prelude.py` | 24 | 422 | Prelude injection: Option/Result/array operation detection, combinator shadowing, type aliases, end-to-end compilation |
 | `test_readme.py` | 2 | 79 | README code sample parsing |
 | `test_html.py` | 4 | 166 | HTML landing page code samples: parse, check, verify |
@@ -83,7 +83,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 
 ## Conformance Suite
 
-The conformance suite is a collection of 85 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Each program is self-contained and imports nothing, with the single exception of `ch07_cross_module_contracts.vera` which depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
+The conformance suite is a collection of 86 small, focused programs in `tests/conformance/` that systematically validate every language feature against the spec. Each program is self-contained and imports nothing, with the single exception of `ch07_cross_module_contracts.vera` which depends on `ch07_cross_module_contracts_lib.vera`. Each program tests one feature or a small group of related features.
 
 Simon Willison [argues](https://simonwillison.net/tags/conformance-suites/) that conformance suites are a "huge unlock" for language projects — they transform development from trust-based to verification-based. The conformance suite serves as the definitive specification artifact that any implementation (or agent) can validate against.
 
@@ -108,7 +108,7 @@ Each conformance program declares the deepest pipeline stage it must pass:
 | `parse` | Source text is syntactically valid | 0 |
 | `check` | Parses and type-checks cleanly | 4 |
 | `verify` | Type-checks and all contracts verified by Z3 | 6 |
-| `run` | Compiles to WASM and executes correctly | 75 |
+| `run` | Compiles to WASM and executes correctly | 76 |
 
 Almost all programs are at the `run` level — they compile and execute, producing correct results. Four programs (`ch07_cross_module_contracts_lib`, `ch09_http`, `ch09_inference`, `ch03_typed_holes`) are at the `check` level. Six programs (`ch03_slot_let_chains`, `ch03_slot_noncommutative`, `ch07_cross_module_contracts`, `ch07_io_sleep`, `ch07_random_effect`, `ch09_math_builtins`) are at the `verify` level, using Z3-provable contracts.
 
@@ -150,7 +150,7 @@ tests/conformance/
 ├── ch01_int_literals.vera     # Chapter 1: Integer literals
 ├── ch01_float_literals.vera   # Chapter 1: Float64 literals
 ├── ch01_string_escapes.vera   # Chapter 1: String escape sequences
-├── ...                        # 85 programs total, organized by spec chapter
+├── ...                        # 86 programs total, organized by spec chapter
 ├── ch07_state_handler.vera    # Chapter 7: State<T> effect handler
 ├── ch07_exn_handler.vera      # Chapter 7: Exn<E> effect handler
 ├── ch09_numeric_builtins.vera # Chapter 9: Numeric built-in functions

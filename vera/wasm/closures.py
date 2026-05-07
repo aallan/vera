@@ -308,7 +308,90 @@ class ClosuresMixin:
                 if pname:
                     inner_counts[pname] = inner_counts.get(pname, 0) + 1
             self._walk_free_vars(expr.body, inner_counts, free, seen)
-        # Other expression types (literals, etc.) have no sub-expressions
+        elif isinstance(expr, ast.IndexExpr):
+            # #588: indexing inside a closure body — `coll[idx]`.  Both
+            # the collection and index sub-expressions can reference
+            # captured outer slots (e.g. `@Array<Int>.0[@Nat.1]` where
+            # both halves come from the outer scope).  Pre-fix this
+            # branch was missing entirely: the walker fell through the
+            # if/elif chain, the outer-scope SlotRef inside `[]` was
+            # never recognised as a capture, so `captures` was empty
+            # at the lift site.  The body translation then failed
+            # (the SlotRef couldn't be resolved against the empty
+            # capture-only env) and `_compile_lifted_closure` returned
+            # None — but the call site had already emitted a
+            # `call_indirect` to the now-absent function-table entry,
+            # producing "unknown table 0: table index out of bounds"
+            # at WASM validation (flat case) or runtime "indirect call
+            # type mismatch" (nested case).
+            self._walk_free_vars(expr.collection, param_counts, free, seen)
+            self._walk_free_vars(expr.index, param_counts, free, seen)
+        elif isinstance(expr, ast.ArrayLit):
+            # Array literals may contain captured slots in their
+            # elements (e.g. `[@Int.0, @Int.1, @Int.2]`).  Same silent-
+            # fail class as IndexExpr above — missing branch silently
+            # drops the captures.
+            for elem in expr.elements:
+                self._walk_free_vars(elem, param_counts, free, seen)
+        elif isinstance(expr, ast.InterpolatedString):
+            # Interpolated string parts alternate `str | Expr`.
+            # Captured slots can appear in the Expr parts
+            # (e.g. `"value: \(@Int.0)"`); the str fragments have none.
+            for part in expr.parts:
+                if isinstance(part, ast.Expr):
+                    self._walk_free_vars(part, param_counts, free, seen)
+        elif isinstance(expr, ast.HandleExpr):
+            # Handle expression: walk the handled body, the optional
+            # initial state expression, and each clause's body and
+            # optional state-update expression.  Clause params add to
+            # the scope before the clause body is walked so the op's
+            # own parameters aren't treated as captures.
+            self._walk_free_vars(expr.body, param_counts, free, seen)
+            if expr.state is not None:
+                self._walk_free_vars(
+                    expr.state.init_expr, param_counts, free, seen,
+                )
+            for clause in expr.clauses:
+                clause_counts = dict(param_counts)
+                for p in clause.params:
+                    pname = self._type_expr_name(p)
+                    if pname:
+                        clause_counts[pname] = (
+                            clause_counts.get(pname, 0) + 1
+                        )
+                # Handler state (@T) is also in scope inside the clause
+                # body so references to it aren't captures.
+                if expr.state is not None:
+                    sname = self._type_expr_name(expr.state.type_expr)
+                    if sname:
+                        clause_counts[sname] = (
+                            clause_counts.get(sname, 0) + 1
+                        )
+                self._walk_free_vars(
+                    clause.body, clause_counts, free, seen,
+                )
+                if clause.state_update is not None:
+                    _, update_expr = clause.state_update
+                    self._walk_free_vars(
+                        update_expr, clause_counts, free, seen,
+                    )
+        elif isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
+            # assert/assume wrap a Bool predicate that can reference
+            # outer slots.
+            self._walk_free_vars(expr.expr, param_counts, free, seen)
+        elif isinstance(expr, (ast.ForallExpr, ast.ExistsExpr)):
+            # Quantifiers walk both the domain (which may reference
+            # captures) and the predicate (an AnonFn — the existing
+            # AnonFn branch above already handles param-shadowing).
+            self._walk_free_vars(expr.domain, param_counts, free, seen)
+            self._walk_free_vars(expr.predicate, param_counts, free, seen)
+        elif isinstance(expr, ast.ModuleCall):
+            # Cross-module call: arguments may contain captured slots.
+            for arg in expr.args:
+                self._walk_free_vars(arg, param_counts, free, seen)
+        # Other expression types (literals: Int / Float / Bool / Unit /
+        # String / NullaryConstructor / HoleExpr / ResultRef / Old /
+        # New) have no sub-expressions that could reference captures.
 
     def _collect_pattern_bindings(
         self,

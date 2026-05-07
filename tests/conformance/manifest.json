@@ -521,6 +521,19 @@
     ]
   },
   {
+    "id": "ch05_capture_array_index",
+    "file": "ch05_capture_array_index.vera",
+    "chapter": 5,
+    "title": "Captured Array<T> indexed inside closure body (#588)",
+    "level": "run",
+    "spec_ref": "Section 5.4",
+    "features": [
+      "closure",
+      "closure_capture",
+      "array_index"
+    ]
+  },
+  {
     "id": "ch05_visibility",
     "file": "ch05_visibility.vera",
     "chapter": 5,

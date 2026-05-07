@@ -1,0 +1,95 @@
+-- Conformance: captured Array<T> indexed inside closure body (Chapter 5, #588)
+-- Tests: closure, closure_capture, array_index — exercises the IndexExpr branch
+-- in _walk_free_vars that was missing before #588.  Pre-fix: flat case caused
+-- a WASM validation failure ("unknown table 0: table index out of bounds");
+-- nested case trapped at runtime ("undefined element: out of bounds table
+-- access").  Post-fix: all three positions compile, validate, and execute
+-- correctly.
+-- ================================================================
+-- Case 1 (flat): array_map whose closure body indexes a captured
+-- outer @Array<Int>.  Every output element is the first element of
+-- the captured array (a constant projection).
+-- ================================================================
+private fn step_flat(@Array<Int> -> @Array<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_map(@Array<Int>.0, fn(@Int -> @Int) effects(pure) { @Array<Int>.0[0] })
+}
+
+-- ================================================================
+-- Case 2 (nested): array_mapi-of-array_mapi with two-level
+-- indexing through a captured @Array<Array<Int>>.  Each cell
+-- (r, c) of the output is outer[r][c] — the identity transform —
+-- so the result equals the input.
+-- ================================================================
+private fn step_nested(@Array<Array<Int>> -> @Array<Array<Int>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_mapi(@Array<Array<Int>>.0, fn(@Array<Int>, @Nat -> @Array<Int>) effects(pure) { array_mapi(@Array<Int>.0, fn(@Int, @Nat -> @Int) effects(pure) { @Array<Array<Int>>.0[@Nat.1][@Nat.0] }) })
+}
+
+-- ================================================================
+-- Case 3 (combined): closure body where the captured array appears
+-- both as an IndexExpr target and as an argument to array_length.
+-- This exercises the fact that the FnCall branch existed but
+-- IndexExpr was missing — both paths can co-occur in the same
+-- closure body.  For each element of the iteration array, the
+-- closure returns the captured element at index 0 plus the
+-- captured array's length.
+-- ================================================================
+private fn step_combined(@Array<Int>, @Array<Int> -> @Array<Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- @Array<Int>.0 = second param (captured array), @Array<Int>.1 = first param (iterated array).
+  -- The closure captures @Array<Int>.0 (outer_idx=0) and uses it for both IndexExpr
+  -- and FnCall — this is the combined case for #588.
+  array_map(@Array<Int>.1, fn(@Int -> @Int) effects(pure) { @Array<Int>.0[0] + nat_to_int(array_length(@Array<Int>.0)) })
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- Case 1: array = [4, 5, 6].  step_flat maps every element to arr[0] = 4.
+  -- Expect [4, 4, 4]; check length == 3 and first element == 4.
+  let @Array<Int> = [4, 5, 6];
+  let @Array<Int> = step_flat(@Array<Int>.0);
+  let @Nat = array_length(@Array<Int>.0);
+  let @Bool = nat_to_int(@Nat.0) == 3;
+  let @Int = @Array<Int>.0[0];
+  let @Bool = @Int.0 == 4;
+  -- Case 2: 2x2 grid [[0,1],[2,3]]; step_nested is identity.
+  -- Expect cell (0,0)=0, cell (1,1)=3.
+  let @Array<Array<Int>> = [[0, 1], [2, 3]];
+  let @Array<Array<Int>> = step_nested(@Array<Array<Int>>.0);
+  let @Array<Int> = @Array<Array<Int>>.0[0];
+  let @Int = @Array<Int>.0[0];
+  let @Bool = @Int.0 == 0;
+  let @Array<Int> = @Array<Array<Int>>.0[1];
+  let @Int = @Array<Int>.0[1];
+  let @Bool = @Int.0 == 3;
+  -- Case 3: captured = [5, 6], iterated = [0, 0, 0].
+  -- Each output element = captured[0] + array_length(captured) = 5 + 2 = 7.
+  -- step_combined(first_param=[5,6], second_param=[0,0,0]):
+  --   inside: @Array<Int>.0=[0,0,0] (second/iterated), @Array<Int>.1=[5,6] (first/captured).
+  let @Array<Int> = [5, 6];
+  let @Array<Int> = [0, 0, 0];
+  -- Pass [5,6] as first param, [0,0,0] as second param.
+  let @Array<Int> = step_combined(@Array<Int>.0, @Array<Int>.1);
+  let @Int = @Array<Int>.0[0];
+  let @Bool = @Int.0 == 7;
+  -- All five checks must be true.
+  let @Bool = @Bool.4 && @Bool.3 && @Bool.2 && @Bool.1 && @Bool.0;
+  if @Bool.0 then {
+    0
+  } else {
+    1
+  }
+}

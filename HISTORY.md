@@ -271,6 +271,7 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 | v0.0.134 | 6 May | **Active reclamation of host-store handles via heap-wrap-as-ADT — closes [#573](https://github.com/aallan/vera/issues/573), [#575](https://github.com/aallan/vera/issues/575), [#576](https://github.com/aallan/vera/issues/576), [#579](https://github.com/aallan/vera/issues/579)** (Map / Set / Decimal). |
 | v0.0.135 | 6 May | **Three codegen bug fixes — closes [#584](https://github.com/aallan/vera/issues/584), [#583](https://github.com/aallan/vera/issues/583), [#568](https://github.com/aallan/vera/issues/568)** (user `@Unit` fn in non-tail position; `Array<T>` type aliases in param/let/index/element positions; `url_parse(":foo")` → `Err` per RFC 3986 §3.1). |
 | v0.0.136 | 6 May | **Two host-runtime hygiene fixes — closes [#586](https://github.com/aallan/vera/issues/586) and [#589](https://github.com/aallan/vera/issues/589)** (`apply_fn(closure, ())` on a `(Unit -> X)` closure no longer registers a phantom `i64` param in the call_indirect signature; `host_print` / `host_stderr` / `host_contract_fail` / `_read_wasm_string` / `markdown::_read_string` / String-return decoder all use `errors="replace"` so corrupt String pointers from upstream codegen bugs surface as U+FFFD chars in user output rather than escape as Python tracebacks through wasmtime's trampoline). |
+| v0.0.137 | 7 May | **Captured-`Array<T>` indexing inside closure body — closes [#588](https://github.com/aallan/vera/issues/588)** (`_walk_free_vars` was missing branches for `IndexExpr` plus seven other AST node types; capture references inside those expressions silently dropped, closure-lift returned `None`, but the call site had already emitted `call_indirect` to a now-absent function-table entry — flat case failed WASM validation, nested case trapped at runtime). |
 
 ---
 
@@ -310,4 +311,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 136 tagged releases, 54 active development days.**
+Total: **810+ commits, 137 tagged releases, 55 active development days.**
