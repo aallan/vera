@@ -95,7 +95,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 - [#235](https://github.com/aallan/vera/issues/235) **Cryptographic hashing** (SHA-256, HMAC) — needed for API authentication (webhook signatures, OAuth).
 - [#229](https://github.com/aallan/vera/issues/229) **Database access effect** — `<DB>` with `query`/`execute` operations, parameterised queries only. Phase 1: positional rows, SQLite. Phase 2: named columns. Phase 3: JSON columns. See [#309](https://github.com/aallan/vera/issues/309) for contract-verified SQL injection prevention.
 - [#236](https://github.com/aallan/vera/issues/236) **CSV parsing and generation** — common data interchange format for agent workloads.
-- [#618](https://github.com/aallan/vera/issues/618) **`IO.read_char` (and `Terminal` effect)** — single-character / raw-mode terminal input.  Tetris-class real-time programs are blocked today because `IO.read_line` is line-buffered.  `IO.read_char` alone is the cheap minimum; a full `Terminal` effect (`set_raw_mode`, `enable_alternate_screen`, `get_size`) unlocks every interactive demo.  Pairs with [#609](https://github.com/aallan/vera/issues/609) and [#610](https://github.com/aallan/vera/issues/610) — together those three make terminal-style real-time programs portable to the browser.
 
 ---
 
@@ -122,8 +121,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 
 - [#224](https://github.com/aallan/vera/issues/224) **REPL** — interactive exploration for both agents and humans. Useful for rapid prototyping and debugging.
 - [#143](https://github.com/aallan/vera/issues/143) **Comprehensive example programs** — expand to 50+ examples covering every major pattern: API clients, data pipelines, text processing, LLM orchestration, effect composition.
-- [#621](https://github.com/aallan/vera/issues/621) **`<Debug>` effect — visible in the row, uniquely composable with `pure`** — single privileged escape hatch for diagnostic stderr output.  Declared in the effect row (e.g. `effects(pure | <Debug>)`) so signatures stay honest; verifier-invisible (treated as no-op in contract proofs); strippable in production builds.  Solves the closure-debugging friction that surfaced from #614 / #615 without breaking the effect-row visibility property. |
-- [#622](https://github.com/aallan/vera/issues/622) **SKILL.md polish: `array_join` cross-reference + `decreases`-with-+1 idiom example** — small documentation improvements surfaced by the Tetris experiment.
 
 ---
 
@@ -148,7 +145,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 
 ### Phase 4c: Standard library completeness
 
-- [#616](https://github.com/aallan/vera/issues/616) **Total `nat_add` / `nat_mul` built-ins** — eliminates the five-line `int_to_nat` round-trip currently required to add two `Nat`s.  Most painful gap by frequency surfaced by the Tetris experiment.  Both are total — verifier discharges totality directly via the `Nat` refinement.  The `nat_sub` half of the original friction-doc proposal was rejected on design-principle grounds (saturating semantics paper over the underflow obligation that refinement types are designed to make visible — fixed cheaper by [#552](https://github.com/aallan/vera/issues/552) generalising `@Nat` invariant checking).
 - [#367](https://github.com/aallan/vera/issues/367) **Markdown content extractors** — `md_blocks`, `md_inline_text`, `md_extract_headings`, `md_extract_links`, `md_filter_blocks`.
 - [#368](https://github.com/aallan/vera/issues/368) **HTML convenience accessors** — `html_query_one`, `html_tag`, `html_children`.
 - [#507](https://github.com/aallan/vera/issues/507) **Array utility built-ins (phase 2)** — `array_sort` (with `Ord<T>` ability dispatch), `array_contains`, `array_index_of` (both with `Eq<T>` dispatch). Phase 2 of [#466](https://github.com/aallan/vera/issues/466); needs the dispatch infrastructure to invoke `compare$T` / `eq$T` from inside an iterative WASM loop. See issue body for the architectural sketch.
