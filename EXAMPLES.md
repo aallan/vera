@@ -343,3 +343,30 @@ private fn classify_sentiment(@String -> @Result<String, String>)
 ```
 
 > [`examples/inference.vera`](examples/inference.vera) — run with `VERA_ANTHROPIC_API_KEY=sk-ant-... vera run examples/inference.vera`
+
+## Conway's Game of Life — putting it all together
+
+A real Vera program: 80×22 grid, three classic patterns interacting, recursive `run_loop` driven by `<IO>` for animation timing.  Three things worth noticing.
+
+`next_cell` carries a *formal specification* of Conway's B3/S23 transition rule in its `ensures` clause — the verifier discharges it at Tier 1 by symbolic substitution of the body, so any future edit that breaks the rule fails verification before it can run.
+
+`step` uses nested `array_mapi` over `array_mapi`, capturing the whole grid into the closure so each cell's transition can read its eight neighbours via `count_neighbors`.  This is the canonical iterative shape — no manual recursion over indices.
+
+`render` builds the entire frame (banner + grid) as a single string and emits it in one `IO.print`, prefixed with `\u{1B}[H` to home the cursor.  The frame overwrites the previous one in place; `IO.sleep(100)` between frames paces the animation at 10 fps.
+
+```vera
+-- Conway's B3/S23 transition rule, formally specified in `ensures`.
+private fn next_cell(@Bool, @Nat -> @Bool)
+  requires(true)
+  ensures(@Bool.result == (@Bool.0 && (@Nat.0 == 2 || @Nat.0 == 3) || !@Bool.0 && @Nat.0 == 3))
+  effects(pure)
+{
+  if @Bool.0 then {
+    @Nat.0 == 2 || @Nat.0 == 3
+  } else {
+    @Nat.0 == 3
+  }
+}
+```
+
+> [`examples/life.vera`](examples/life.vera) — run with `vera run examples/life.vera`

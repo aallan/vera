@@ -1,0 +1,253 @@
+-- Conway's Game of Life — a non-trivial Vera program demonstrating
+-- nested array combinators, recursive run_loop with `<IO>` effects,
+-- captured grid state, and ANSI cursor-control rendering.  Three
+-- classic Life patterns interact: a Gosper Glider Gun (top-left)
+-- emits a glider every 30 generations; the gliders march south-east
+-- and collide with a pentadecathlon oscillator sat in their flight
+-- path; an R-pentomino methuselah on the right adds chaotic bursts.
+--
+-- 80 columns × 22 rows, one character per cell, banner on row 1, so
+-- the whole frame fits inside a standard 80×24 terminal.  Cells
+-- outside the grid are dead (bounded universe).  Run for 300
+-- generations at 100 ms per frame.
+--
+-- All 32 contracts discharge at Tier 1, including a formal
+-- specification of Conway's B3/S23 transition rule on `next_cell`.
+-- =============================================================================
+-- Core: cell access, neighbour count, transition, next-generation step.
+-- =============================================================================
+-- Read a cell at (row, col).  Out-of-bounds reads return false (dead).
+private fn cell_at(@Array<Array<Bool>>, @Int, @Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- @Int.1 = row, @Int.0 = col (rightmost is .0)
+  match int_to_nat(@Int.1) {
+    None -> false,
+    Some(@Nat) -> if @Nat.0 >= array_length(@Array<Array<Bool>>.0) then { false } else { let @Array<Bool> = @Array<Array<Bool>>.0[@Nat.0]; match int_to_nat(@Int.0) { None -> false, Some(@Nat) -> if @Nat.0 >= array_length(@Array<Bool>.0) then { false } else { @Array<Bool>.0[@Nat.0] } } }
+  }
+}
+
+-- Count alive neighbours of (row, col).
+private fn count_neighbors(@Array<Array<Bool>>, @Int, @Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- @Int.1 = row, @Int.0 = col
+  let @Nat = 0;
+  let @Nat = if cell_at(@Array<Array<Bool>>.0, @Int.1 - 1, @Int.0 - 1) then { @Nat.0 + 1 } else { @Nat.0 };
+  let @Nat = if cell_at(@Array<Array<Bool>>.0, @Int.1 - 1, @Int.0) then { @Nat.0 + 1 } else { @Nat.0 };
+  let @Nat = if cell_at(@Array<Array<Bool>>.0, @Int.1 - 1, @Int.0 + 1) then { @Nat.0 + 1 } else { @Nat.0 };
+  let @Nat = if cell_at(@Array<Array<Bool>>.0, @Int.1, @Int.0 - 1) then { @Nat.0 + 1 } else { @Nat.0 };
+  let @Nat = if cell_at(@Array<Array<Bool>>.0, @Int.1, @Int.0 + 1) then { @Nat.0 + 1 } else { @Nat.0 };
+  let @Nat = if cell_at(@Array<Array<Bool>>.0, @Int.1 + 1, @Int.0 - 1) then { @Nat.0 + 1 } else { @Nat.0 };
+  let @Nat = if cell_at(@Array<Array<Bool>>.0, @Int.1 + 1, @Int.0) then { @Nat.0 + 1 } else { @Nat.0 };
+  let @Nat = if cell_at(@Array<Array<Bool>>.0, @Int.1 + 1, @Int.0 + 1) then { @Nat.0 + 1 } else { @Nat.0 };
+  @Nat.0
+}
+
+-- Conway's B3/S23 transition rule, formally specified in `ensures`:
+-- a live cell with 2 or 3 live neighbours survives; a dead cell with
+-- exactly 3 live neighbours becomes alive; everything else dies or
+-- stays dead.  The verifier discharges the postcondition by symbolic
+-- substitution of the body — Tier 1.
+private fn next_cell(@Bool, @Nat -> @Bool)
+  requires(true)
+  ensures(@Bool.result == (@Bool.0 && (@Nat.0 == 2 || @Nat.0 == 3) || !@Bool.0 && @Nat.0 == 3))
+  effects(pure)
+{
+  if @Bool.0 then {
+    @Nat.0 == 2 || @Nat.0 == 3
+  } else {
+    @Nat.0 == 3
+  }
+}
+
+-- Compute the next generation by mapping every cell.
+private fn step(@Array<Array<Bool>> -> @Array<Array<Bool>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_mapi(@Array<Array<Bool>>.0, fn(@Array<Bool>, @Nat -> @Array<Bool>) effects(pure) { array_mapi(@Array<Bool>.0, fn(@Bool, @Nat -> @Bool) effects(pure) { next_cell(@Bool.0, count_neighbors(@Array<Array<Bool>>.0, nat_to_int(@Nat.1), nat_to_int(@Nat.0))) }) })
+}
+
+-- @Array<Bool>.0 = current row; @Nat.0 = row index
+-- captured: @Array<Array<Bool>>.0 = the grid
+-- @Bool.0 = current cell value
+-- @Nat.0 = col index (own); @Nat.1 = row index (outer captured)
+-- =============================================================================
+-- Patterns.  Each `is_*_cell` takes coordinates RELATIVE to the
+-- pattern's bounding-box top-left and returns whether the cell is
+-- alive in that pattern.  Out-of-bounds coordinates fall through every
+-- disjunct and return false.
+-- =============================================================================
+-- Gosper Glider Gun.  36 live cells in a 9×37 bounding box.
+private fn is_gosper_cell(@Int, @Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- @Int.1 = relative row, @Int.0 = relative col
+  let @Bool = @Int.1 == 0 && @Int.0 == 24;
+  let @Bool = @Bool.0 || @Int.1 == 1 && @Int.0 == 22 || @Int.1 == 1 && @Int.0 == 24;
+  let @Bool = @Bool.0 || @Int.1 == 2 && @Int.0 == 12 || @Int.1 == 2 && @Int.0 == 13 || @Int.1 == 2 && @Int.0 == 20 || @Int.1 == 2 && @Int.0 == 21 || @Int.1 == 2 && @Int.0 == 34 || @Int.1 == 2 && @Int.0 == 35;
+  let @Bool = @Bool.0 || @Int.1 == 3 && @Int.0 == 11 || @Int.1 == 3 && @Int.0 == 15 || @Int.1 == 3 && @Int.0 == 20 || @Int.1 == 3 && @Int.0 == 21 || @Int.1 == 3 && @Int.0 == 34 || @Int.1 == 3 && @Int.0 == 35;
+  let @Bool = @Bool.0 || @Int.1 == 4 && @Int.0 == 0 || @Int.1 == 4 && @Int.0 == 1 || @Int.1 == 4 && @Int.0 == 10 || @Int.1 == 4 && @Int.0 == 16 || @Int.1 == 4 && @Int.0 == 20 || @Int.1 == 4 && @Int.0 == 21;
+  let @Bool = @Bool.0 || @Int.1 == 5 && @Int.0 == 0 || @Int.1 == 5 && @Int.0 == 1 || @Int.1 == 5 && @Int.0 == 10 || @Int.1 == 5 && @Int.0 == 14 || @Int.1 == 5 && @Int.0 == 16 || @Int.1 == 5 && @Int.0 == 17 || @Int.1 == 5 && @Int.0 == 22 || @Int.1 == 5 && @Int.0 == 24;
+  let @Bool = @Bool.0 || @Int.1 == 6 && @Int.0 == 10 || @Int.1 == 6 && @Int.0 == 16 || @Int.1 == 6 && @Int.0 == 24;
+  let @Bool = @Bool.0 || @Int.1 == 7 && @Int.0 == 11 || @Int.1 == 7 && @Int.0 == 15;
+  let @Bool = @Bool.0 || @Int.1 == 8 && @Int.0 == 12 || @Int.1 == 8 && @Int.0 == 13;
+  @Bool.0
+}
+
+-- R-pentomino: a 5-cell methuselah in a 3×3 bounding box.
+--   .##
+--   ##.
+--   .#.
+private fn is_rpent_cell(@Int, @Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.1 == 0 && @Int.0 == 1 || @Int.1 == 0 && @Int.0 == 2 || @Int.1 == 1 && @Int.0 == 0 || @Int.1 == 1 && @Int.0 == 1 || @Int.1 == 2 && @Int.0 == 1
+}
+
+-- Pentadecathlon (10-cell row form): period-15 oscillator.
+private fn is_pent_cell(@Int, @Int -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Int.1 == 0 && @Int.0 >= 0 && @Int.0 <= 9
+}
+
+-- =============================================================================
+-- Initial state and grid construction.
+-- =============================================================================
+-- Map an absolute (row, col) to whether it's alive in the initial pattern.
+private fn initial_cell(@Nat, @Nat -> @Bool)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- @Nat.1 = row, @Nat.0 = col
+  let @Int = nat_to_int(@Nat.1);
+  -- After let: @Int.0 = row, @Nat.1 = row Nat, @Nat.0 = col Nat
+  let @Int = nat_to_int(@Nat.0);
+  -- After let: @Int.0 = col, @Int.1 = row
+  is_gosper_cell(@Int.1 - 1, @Int.0 - 1) || is_rpent_cell(@Int.1 - 12, @Int.0 - 60) || is_pent_cell(@Int.1 - 19, @Int.0 - 50)
+}
+
+-- Build a height × width grid using `initial_cell`.
+private fn make_grid(@Nat, @Nat -> @Array<Array<Bool>>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  -- @Nat.1 = height, @Nat.0 = width
+  let @Array<Int> = array_range(0, nat_to_int(@Nat.1));
+  array_mapi(@Array<Int>.0, fn(@Int, @Nat -> @Array<Bool>) effects(pure) { let @Array<Int> = array_range(0, nat_to_int(@Nat.1)); array_mapi(@Array<Int>.0, fn(@Int, @Nat -> @Bool) effects(pure) { initial_cell(@Nat.1, @Nat.0) }) })
+}
+
+-- @Nat.0 = row index; captured: @Nat.1 = width, @Nat.2 = height
+-- @Nat.0 = col index; @Nat.1 = row index (captured from outer closure)
+-- =============================================================================
+-- Population statistics.
+-- =============================================================================
+-- Count live cells in a single row.
+private fn count_alive_in_row(@Array<Bool> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_fold(@Array<Bool>.0, 0, fn(@Nat, @Bool -> @Nat) effects(pure) { if @Bool.0 then { @Nat.0 + 1 } else { @Nat.0 } })
+}
+
+-- array_fold's closure shape is fn(@Acc, @Elem -> @Acc) — accumulator
+-- first.  By the rightmost = .0 rule, that puts the element at .0
+-- and the accumulator at .1 inside the body.
+-- Total live cells across the grid.
+private fn population(@Array<Array<Bool>> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  array_fold(@Array<Array<Bool>>.0, 0, fn(@Nat, @Array<Bool> -> @Nat) effects(pure) { @Nat.0 + count_alive_in_row(@Array<Bool>.0) })
+}
+
+-- @Nat.0 = accumulator, @Array<Bool>.0 = current row
+-- =============================================================================
+-- Rendering.
+-- =============================================================================
+-- One character per cell.  U+2588 FULL BLOCK for alive, space for dead.
+private fn cell_str(@Bool -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Bool.0 then {
+    "█"
+  } else {
+    " "
+  }
+}
+
+-- Render a row as a single string.
+private fn row_str(@Array<Bool> -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<String> = array_map(@Array<Bool>.0, fn(@Bool -> @String) effects(pure) { cell_str(@Bool.0) });
+  string_join(@Array<String>.0, "")
+}
+
+-- Build the entire frame (banner + grid) and emit it in one `IO.print`
+-- so the screen never tears mid-frame.  `ESC[H` homes the cursor to
+-- (1,1) so the new frame overwrites the old one in place; `ESC[K`
+-- erases stale banner characters from the previous frame.
+private fn render(@Array<Array<Bool>>, @Nat, @Nat, @Nat -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  -- Slot table: @Nat.2 = generation, @Nat.1 = max generation, @Nat.0 = population.
+  let @Array<String> = array_map(@Array<Array<Bool>>.0, fn(@Array<Bool> -> @String) effects(pure) { row_str(@Array<Bool>.0) });
+  let @String = string_join(@Array<String>.0, "\n");
+  -- After let: @String.0 = the joined grid
+  let @String = "[HConway's Game of Life - generation \(@Nat.2)/\(@Nat.1) - population \(@Nat.0)[K\n\(@String.0)\n";
+  IO.print(@String.0)
+}
+
+-- =============================================================================
+-- Entry point.
+-- =============================================================================
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  -- One-time full screen clear so the first frame paints over a blank canvas.
+  IO.print("[2J[H");
+  let @Array<Array<Bool>> = make_grid(22, 80);
+  run_loop(@Array<Array<Bool>>.0, 1, 300)
+}
+where {
+  fn run_loop(@Array<Array<Bool>>, @Nat, @Nat -> @Unit)
+    requires(true)
+    ensures(true)
+    effects(<IO>)
+  {
+    -- Slot table: @Nat.0 = limit (rightmost), @Nat.1 = current generation.
+    if @Nat.1 > @Nat.0 then {
+      ()
+    } else {
+      render(@Array<Array<Bool>>.0, @Nat.1, @Nat.0, population(@Array<Array<Bool>>.0));
+      IO.sleep(100);
+      run_loop(step(@Array<Array<Bool>>.0), @Nat.1 + 1, @Nat.0)
+    }
+  }
+}

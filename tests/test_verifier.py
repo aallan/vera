@@ -1758,7 +1758,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 222 T1 / 26 T3 / 248 total (current).
+        """All examples together: 254 T1 / 26 T3 / 280 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -1772,6 +1772,9 @@ private fn sum(@List<Int> -> @Int)
           obligations.  factorial.vera (+1) and mutual_recursion.vera
           (+2) each have @Nat.0 - 1 sites that the verifier now
           discharges from path conditions.
+        * 254/26/280 after `life.vera` (Stage 12 launch) contributed
+          32 T1 + 32 contracts including the formal Conway B3/S23
+          rule on `next_cell`.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -1782,9 +1785,9 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 222, f"Expected 222 T1, got {t1}"
+        assert t1 == 254, f"Expected 254 T1, got {t1}"
         assert t3 == 26, f"Expected 26 T3, got {t3}"
-        assert total == 248, f"Expected 248 total, got {total}"
+        assert total == 280, f"Expected 280 total, got {total}"
 
 
 # =====================================================================
