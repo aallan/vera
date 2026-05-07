@@ -1214,7 +1214,7 @@ Conditions guaranteed when the function returns. Use `@T.result` to refer to the
 
 ### decreases (termination)
 
-Required on recursive functions. The expression must decrease on each recursive call:
+Required on **pure** recursive functions: the expression must strictly decrease on each recursive call so Z3 can discharge termination.  Effectful recursive functions (`<IO>`, `<State>`, `<Http>`, etc.) do **not** require `decreases` — see the FizzBuzz example in the [Iteration](#iteration) section, which loops over `<IO>` recursively without one.
 
 ```vera
 private fn factorial(@Nat -> @Nat)
