@@ -323,25 +323,22 @@ class ClosureLiftingMixin:
         gc_epilogue: list[str] = []
 
         # Determine if the return type is a heap pointer.  Computed
-        # unconditionally (even when the body doesn't allocate) because
-        # array_map / array_mapi loops always emit a per-iteration
-        # ``gc_sp -= 4`` pop when the element type is heap-pointer-like
-        # (see ``_translate_array_map``'s ``b_needs_unwind`` at
-        # ``vera/wasm/calls_arrays.py:649-655``).  That pop assumes the
-        # callee pushed a return-value root.  If the closure body
-        # doesn't allocate (``ctx.needs_alloc=False``), the ``if
-        # ctx.needs_alloc`` branch below skips the epilogue's
-        # return-value push — and the array_map pop then goes BELOW the
-        # caller's prologue baseline, corrupting earlier shadow-stack
-        # roots.  This was the latent bug surfaced by #593's Life
-        # reproducer: ``render_cell`` returns String literals (no alloc)
-        # so its lifted closure had ``needs_alloc=False``; the
-        # surrounding inner ``array_map(row, render_cell)`` over-popped
-        # by one slot per cell and corrupted the outer ``render_grid``
-        # closure-env / array roots, manifesting as silent string
-        # corruption (#593) or ``call_indirect`` table OOB.  Fix: emit
-        # the return-value push even when ``needs_alloc=False`` so the
-        # array_map pop is always balanced.
+        # unconditionally — not just inside ``if ctx.needs_alloc:`` —
+        # because ``_translate_array_map`` and ``_translate_array_mapi``
+        # always emit a per-iteration ``gc_sp -= 4`` pop after each
+        # ``call_indirect`` when the element type is heap-pointer-like
+        # (the ``b_needs_unwind`` flag).  That pop assumes the callee
+        # pushed a return-value root.  Pre-#593 the push was gated on
+        # ``ctx.needs_alloc``: a closure body like
+        # ``fn(@Bool -> @String) { render_cell(@Bool.0) }`` (where
+        # ``render_cell`` returns String literals from the data segment,
+        # so the closure itself doesn't allocate) emitted no push, but
+        # the array_map loop popped anyway — dropping ``$gc_sp`` BELOW
+        # the caller's prologue baseline and corrupting earlier roots.
+        # Manifested as silent string corruption (Conway's Life rendering
+        # — the original #593 symptom) or ``call_indirect`` table-OOB at
+        # smaller scales.  Fix: emit the return-value push even when
+        # ``needs_alloc=False`` so the array_map pop is always balanced.
         ret_is_pointer = False
         if ret_wt == "i32":
             ret_type_name = self._type_expr_to_slot_name(
@@ -404,12 +401,10 @@ class ClosureLiftingMixin:
                 gc_epilogue.append(f"local.get {gc_sp_save}")
                 gc_epilogue.append("global.set $gc_sp")
         elif ret_is_pointer:
-            # Body doesn't allocate, but the return is a heap pointer.
-            # Push the return-value root unconditionally to balance the
-            # caller's per-iteration unwind in array_map / array_mapi.
-            # No ``gc_sp_save`` / restore needed because the body has no
-            # pushes to clean up — we just intercept the return value to
-            # publish it as a root.
+            # Non-allocating body, heap-pointer return: emit only the
+            # return-value root push (no ``gc_sp`` save/restore — the
+            # body has no pushes to clean up).  Balances the caller's
+            # ``b_needs_unwind`` pop.  See the comment block above.
             if ret_wt == "i32_pair":
                 gc_ret_ptr = ctx.alloc_local("i32")
                 gc_ret_len = ctx.alloc_local("i32")

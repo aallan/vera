@@ -477,16 +477,21 @@ class AssemblyMixin:
           2. Bump-allocate with a 4-byte object header.
           3. If OOM: run $gc_collect, retry free list, else memory.grow.
 
-        Diagnostic mode: when ``VERA_EAGER_GC=1`` is set in the
-        environment at compile time, prepend an unconditional
-        ``call $gc_collect`` to the body so a collection runs on EVERY
-        allocation.  This converts latent missing-shadow-root bugs from
-        "fires occasionally at scale" into "fires on the very next
-        allocation," giving a sharp signal for debugging GC-rooting
-        regressions (#593).  Slow — orders of magnitude slower than
-        normal — never enable in production.
+        Diagnostic mode: when ``VERA_EAGER_GC=1`` (case-insensitive,
+        also accepts ``true``/``yes``/``on``) is set in the environment
+        at compile time, emit ``call $gc_collect`` as the first
+        instruction of the function body — immediately after the
+        ``(local ...)`` declarations, since WAT requires locals at the
+        top — so a collection runs on EVERY allocation.  This converts
+        latent missing-shadow-root bugs from "fires occasionally at
+        scale" into "fires on the very next allocation," giving a sharp
+        signal for debugging GC-rooting regressions (#593).  Slow —
+        orders of magnitude slower than normal — never enable in
+        production.
         """
-        eager = os.environ.get("VERA_EAGER_GC", "").strip() in ("1", "true", "yes")
+        eager = os.environ.get("VERA_EAGER_GC", "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
         eager_prefix = (
             "    ;; VERA_EAGER_GC=1 — force GC on every alloc to surface\n"
             "    ;; missing shadow-stack roots (debugging knob, see\n"

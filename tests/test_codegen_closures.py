@@ -7,6 +7,7 @@ and call_indirect compilation.
 from __future__ import annotations
 
 import os
+import re
 from unittest import mock
 
 import pytest
@@ -925,8 +926,8 @@ class TestClosureReturnShadowPushBalance:
     The bug: ``_translate_array_map`` / ``_translate_array_mapi`` always
     emit ``global.get $gc_sp; i32.const 4; i32.sub; global.set $gc_sp``
     after each ``call_indirect`` when the element type is heap-pointer-
-    like (``b_needs_unwind`` at ``vera/wasm/calls_arrays.py:649-655``).
-    That pop assumes the closure's epilogue pushed a return-value root.
+    like (the ``b_needs_unwind`` flag).  That pop assumes the closure's
+    epilogue pushed a return-value root.
 
     Pre-fix: ``_compile_lifted_closure`` only emitted that push when
     ``ctx.needs_alloc=True``.  A closure body like ``render_cell(@Bool.0)``
@@ -939,25 +940,22 @@ class TestClosureReturnShadowPushBalance:
     repro at smaller scale).
 
     Post-fix: the return-value push is emitted whenever the return type
-    is a heap pointer, regardless of ``needs_alloc``.  This validates
-    that fix at three layers: structural (the WAT contains the push),
-    behavioural under eager-GC (output is correct when GC fires on
-    every alloc), and end-to-end (no corruption from a small Life-shape
-    program).
+    is a heap pointer, regardless of ``needs_alloc``.  Tests cover both
+    fix branches (i32_pair = String/Array, i32 = ADT) at four layers:
+    positive fast-path regression, behavioural under eager-GC,
+    end-to-end Life-shape rendering, and a structural WAT assertion
+    that the push is actually emitted for non-allocating bodies.  An
+    eager-GC injection self-test pins the diagnostic mechanism so a
+    silent regression there can't quietly disable the eager-GC tests.
     """
 
     def test_non_allocating_closure_returns_string_via_array_map(
         self,
     ) -> None:
-        """A non-allocating closure returning a String literal through
-        ``array_map`` produces the correct joined output.
-
-        Pre-fix this output was usually correct at small scale (the
-        corruption only manifested when GC fired during the over-pop
-        window) — kept as a positive regression test that the fix
-        didn't break the fast path.  The eager-GC variants below
-        validate the rooting balance directly.
-        """
+        """Positive regression for the fast path (no eager-GC): the
+        i32_pair-returning closure produces the expected joined output.
+        Pre-fix usually passed at small scale by coincidence; kept here
+        to ensure the fix didn't break the common case."""
         src = """\
 effect IO { op print(String -> Unit); }
 
@@ -979,20 +977,11 @@ public fn main(@Unit -> @Unit)
     def test_eager_gc_array_map_with_non_allocating_string_closure(
         self,
     ) -> None:
-        """Same shape as above, but compiled under ``VERA_EAGER_GC=1``
-        which fires ``$gc_collect`` on every allocation.
-
-        Pre-fix this would corrupt the output: each iteration of the
-        outer ``array_map`` over-popped the shadow stack by one slot,
-        and the eager GC's mark phase would miss the over-popped roots
-        and sweep their referents.  The visible failure was either a
-        ``call_indirect`` table OOB trap or wrong output with NULL
-        bytes / leftover heap content where String pointers should
-        have been.
-
-        Post-fix the closure's epilogue always pushes the return-value
-        root, balancing the array_map pop, so eager-GC produces the
-        same output as non-eager.
+        """Eager-GC variant of the previous test: pins the rooting
+        balance directly.  Pre-fix, eager-GC's mark phase missed the
+        over-popped roots and swept their referents — surfaced as a
+        ``call_indirect`` table OOB trap or NULL/U+FFFD bytes in place
+        of String content.  Post-fix, eager and non-eager outputs match.
         """
         src = """\
 effect IO { op print(String -> Unit); }
@@ -1016,20 +1005,13 @@ public fn main(@Unit -> @Unit)
         assert exec_result.stdout == "...X...."
 
     def test_eager_gc_recursive_render_no_corruption(self) -> None:
-        """Recursive ``run_loop`` calling ``render_grid`` with nested
-        ``array_map`` of non-allocating closures returning Strings.
-
-        This is the minimum shape that reproduced #593's silent string
-        corruption (Conway's Life rendering): nested ``array_map``
-        where the innermost closure body is a non-allocating String
-        return (a literal lookup), driven by a recursive loop that
-        builds heap pressure across iterations.
-
-        Compiled under ``VERA_EAGER_GC=1`` so the rooting imbalance
-        manifests on the first iteration rather than only at scale.
-        Pre-fix: traps in ``render_grid`` with "out of bounds table
-        access" or produces output containing NULL / U+FFFD bytes.
-        Post-fix: 5 iterations of ``.X..`` separated by newlines.
+        """End-to-end Life-shape under eager-GC: recursive ``run_loop``
+        calling ``render_grid`` with nested ``array_map`` of
+        non-allocating closures returning Strings.  This is the minimum
+        shape that reproduced #593's silent string corruption.  Five
+        iterations are enough for the imbalance to land on a corrupted
+        slot under eager-GC; the explicit NULL / U+FFFD assertions pin
+        the canonical corruption signatures from the issue.
         """
         src = """\
 effect IO { op print(String -> Unit); }
@@ -1098,14 +1080,12 @@ public fn main(@Unit -> @Unit)
     ) -> None:
         """Structural assertion: a lifted closure whose body is
         non-allocating but whose return type is a heap pointer must
-        contain at least one ``i32.store`` to ``$gc_sp`` in its
-        epilogue.
+        contain a return-value ``gc_shadow_push`` in its epilogue.
 
-        Without this, the ``b_needs_unwind`` pop in array_map /
-        array_mapi (`vera/wasm/calls_arrays.py:780-784, 1557-1561`) is
-        unbalanced.  Detecting the push at the WAT level prevents
-        regression even if the runtime test happens to produce correct
-        output by coincidence at small scale.
+        Without it, the ``b_needs_unwind`` pop in ``_translate_array_map``
+        / ``_translate_array_mapi`` is unbalanced.  Detecting the push
+        at the WAT level prevents regression even if a runtime test
+        happens to produce correct output by coincidence at small scale.
         """
         src = """\
 effect IO { op print(String -> Unit); }
@@ -1125,15 +1105,11 @@ public fn main(@Unit -> @Unit)
 """
         result = _compile_ok(src)
         wat = result.wat
-        # Find every lifted closure ($anon_X) that returns an i32 pair
-        # (i.e., String or Array<T>).  At least one of them — the
-        # ``fn(@Int -> @String) { pick(...) }`` — has a non-allocating
-        # body (pick just selects between two String literals) and so
-        # has ``needs_alloc=False``.  Pre-fix that closure's epilogue
-        # was empty; post-fix it must emit the return-value
-        # ``gc_shadow_push``.  We detect the push by the presence of
-        # the canonical ``global.get $gc_sp`` + ``i32.store`` sequence
-        # in a body that contains no ``call $alloc``.
+        # Find any ``$anon_X`` returning ``(result i32 i32)`` whose body
+        # has no ``call $alloc`` but does emit ``global.set $gc_sp`` —
+        # i.e. a non-allocating closure that still pushes a return-value
+        # root.  The fix for #593 requires this for every i32-pair-
+        # returning lifted closure regardless of body allocations.
         import re
 
         pattern = re.compile(
@@ -1155,4 +1131,196 @@ public fn main(@Unit -> @Unit)
             "shadow-push return-root was found.  The fix for #593 "
             "requires the closure's epilogue to push the return-value "
             "root regardless of needs_alloc."
+        )
+
+    def test_lifted_closure_emits_return_root_push_for_non_allocating_adt_return(
+        self,
+    ) -> None:
+        """Structural assertion for the second branch of the #593 fix.
+
+        ``_compile_lifted_closure`` has two heap-pointer-return branches:
+        ``i32_pair`` (String / Array<T>, covered by the previous test)
+        and ``i32`` ADT (Option, Result, custom data — covered here).
+        The previous test's regex matched only ``(result i32 i32)``;
+        the ADT branch returns ``(result i32)``.  A non-allocating
+        closure that just forwards an existing ADT pointer (identity
+        over a captured ADT) hits the i32 branch.
+
+        Pre-fix: the i32 ADT non-allocating branch emitted no push, so
+        ``array_map(arr, identity_closure)`` over an ADT array
+        over-popped one shadow-stack slot per iteration.  Post-fix the
+        push is unconditional for heap-pointer returns, so this branch
+        is balanced too.
+        """
+        src = """\
+private data Box { MkBox(Int) }
+
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Box> = array_map(
+    array_range(0, 5),
+    fn(@Int -> @Box) effects(pure) { MkBox(@Int.0) }
+  );
+  let @Array<Box> = array_map(
+    @Array<Box>.0,
+    fn(@Box -> @Box) effects(pure) { @Box.0 }
+  );
+  array_fold(@Array<Box>.0, 0, fn(@Int, @Box -> @Int) effects(pure) {
+    @Int.0 + match @Box.0 { MkBox(@Int) -> @Int.0 }
+  })
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        # Find any ``$anon_X`` returning ``(result i32)`` (i.e. an ADT
+        # or non-pair pointer) whose body has no ``call $alloc`` but
+        # does emit ``global.set $gc_sp`` — the i32 ADT identity-style
+        # closure.  At least the ``fn(@Box -> @Box) { @Box.0 }`` lift
+        # must match.
+        import re
+
+        pattern = re.compile(
+            r"\(func \$anon_\d+ \(param \$env i32\)[^)]*\) "
+            r"\(result i32\)(?!\s*\(result)(.*?)\n  \)",
+            re.DOTALL,
+        )
+        candidate_bodies = [m.group(1) for m in pattern.finditer(wat)]
+        assert candidate_bodies, (
+            "Expected at least one $anon_X with i32 (single, non-pair) "
+            "return in WAT"
+        )
+        non_alloc_with_push = [
+            body for body in candidate_bodies
+            if "global.set $gc_sp" in body
+            and "call $alloc" not in body
+        ]
+        assert non_alloc_with_push, (
+            "No non-allocating i32-ADT-returning closure with a "
+            "shadow-push return-root was found.  The i32 ADT branch "
+            "of the #593 fix is missing or regressed."
+        )
+        # Additionally: the existing i32-pair test checks the pair
+        # branch.  Both branches together cover the heap-pointer
+        # surface of _compile_lifted_closure's epilogue.
+
+    def test_array_mapi_non_allocating_closure_emits_balanced_push(
+        self,
+    ) -> None:
+        """Pin ``_translate_array_mapi``'s pop site independently of
+        ``_translate_array_map``'s.
+
+        ``array_mapi`` has its own ``b_needs_unwind`` pop emission, with
+        the same shape as ``array_map``'s but at a separate code path.
+        If a future refactor factored one but not both, the array_map
+        test would still pass while array_mapi quietly regressed.  This
+        test pins the array_mapi path by exercising it with a
+        non-allocating, heap-pointer-returning closure.
+        """
+        src = """\
+private data Box { MkBox(Int) }
+
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Box> = array_map(
+    array_range(0, 5),
+    fn(@Int -> @Box) effects(pure) { MkBox(@Int.0) }
+  );
+  -- array_mapi closure: non-allocating, ADT return (just forwards the
+  -- input box).  Pre-#593-fix this would over-pop one slot per element
+  -- without a matching push; post-fix the closure's epilogue pushes
+  -- the return-value root.
+  let @Array<Box> = array_mapi(
+    @Array<Box>.0,
+    fn(@Box, @Nat -> @Box) effects(pure) { @Box.0 }
+  );
+  array_fold(@Array<Box>.0, 0, fn(@Int, @Box -> @Int) effects(pure) {
+    @Int.0 + match @Box.0 { MkBox(@Int) -> @Int.0 }
+  })
+}
+"""
+        # Behavioural check first — the program must produce 0+1+2+3+4=10.
+        assert _run(src, "test") == 10
+        # And under eager-GC: the imbalance would land on the very first
+        # iteration if the array_mapi path regressed.
+        with mock.patch.dict(os.environ, {"VERA_EAGER_GC": "1"}):
+            result = _compile_ok(src)
+        exec_result = execute(result, fn_name="test")
+        assert exec_result.value == 10
+
+    def test_vera_eager_gc_injects_gc_collect_into_alloc_body(
+        self,
+    ) -> None:
+        """Pin the eager-GC diagnostic mechanism itself.
+
+        ``VERA_EAGER_GC=1`` is meant to force ``call $gc_collect`` as
+        the first instruction of ``$alloc``'s body (after the local
+        declarations).  If the env-var-reading code in
+        ``AssemblyMixin._emit_alloc`` silently regresses to a no-op,
+        the eager-GC behavioural tests above still pass — they
+        degenerate to the non-eager case and produce the same correct
+        output.  This test fails noisily in that scenario by checking
+        the WAT for ``$alloc`` directly.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_range(0, 3))
+}
+"""
+        # Without the env var, $alloc's body has no call $gc_collect
+        # before the size-invariant check (it does call $gc_collect on
+        # the OOM slow path, but not at the top of the body).
+        plain = _compile_ok(src).wat
+        plain_alloc = re.search(r"\(func \$alloc.*?\n  \)", plain, re.DOTALL)
+        assert plain_alloc is not None, "Could not locate $alloc in plain WAT"
+        # Strip the OOM slow path: anything before the size-invariant
+        # ``i32.const 0x80000000`` check is the function header + locals
+        # + (under eager-GC) the unconditional gc_collect.
+        plain_prologue = plain_alloc.group(0).split("0x80000000", 1)[0]
+        assert "call $gc_collect" not in plain_prologue, (
+            "Plain-mode $alloc should not have call $gc_collect before "
+            "the size-invariant check"
+        )
+
+        # With VERA_EAGER_GC=1, the prologue must contain call
+        # $gc_collect (the eager_prefix in _emit_alloc).
+        with mock.patch.dict(os.environ, {"VERA_EAGER_GC": "1"}):
+            eager = _compile_ok(src).wat
+        eager_alloc = re.search(r"\(func \$alloc.*?\n  \)", eager, re.DOTALL)
+        assert eager_alloc is not None, "Could not locate $alloc in eager WAT"
+        eager_prologue = eager_alloc.group(0).split("0x80000000", 1)[0]
+        assert "call $gc_collect" in eager_prologue, (
+            "VERA_EAGER_GC=1 did not inject call $gc_collect into "
+            "$alloc's prologue.  Either the env-var-reading code in "
+            "AssemblyMixin._emit_alloc regressed, or the eager_prefix "
+            "is being inserted in the wrong place."
+        )
+
+    @pytest.mark.parametrize("flag_value", ["1", "true", "TRUE", "Yes", "On", "true "])
+    def test_vera_eager_gc_accepts_case_insensitive_truthy_values(
+        self, flag_value: str,
+    ) -> None:
+        """The env-var allowlist is case-insensitive and tolerates
+        common truthy spellings.  Pre-fix only ``1``/``true``/``yes``
+        matched — ``True``, ``TRUE``, ``On``, etc. were silently
+        rejected, which would frustrate a user trying the obvious
+        spellings.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(array_range(0, 3))
+}
+"""
+        with mock.patch.dict(os.environ, {"VERA_EAGER_GC": flag_value}):
+            wat = _compile_ok(src).wat
+        alloc = re.search(r"\(func \$alloc.*?\n  \)", wat, re.DOTALL)
+        assert alloc is not None
+        prologue = alloc.group(0).split("0x80000000", 1)[0]
+        assert "call $gc_collect" in prologue, (
+            f"VERA_EAGER_GC={flag_value!r} did not enable eager mode"
         )
