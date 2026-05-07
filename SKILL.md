@@ -412,6 +412,19 @@ Empty arrays **must** appear in a position with a known type — a `let` binding
 
 `[` and `]` are context-disambiguated: in expression position (`let @Array<Int> = []`) they delimit an array literal; in postfix position (`@Array<Int>.0[@Int.0]`) they are the index operator — see the operator precedence table at the bottom of this file. The parser resolves the two by lookahead; there is no ambiguity you need to work around.
 
+### Tuples
+
+Tuples are constructed with the `Tuple(...)` constructor and destructured with the same shape inside `match`:
+
+```vera
+let @Tuple<Int, String> = Tuple(42, "hello");
+match @Tuple<Int, String>.0 {
+  Tuple(@Int, @String) -> @Int.0   -- => 42
+}
+```
+
+`Tuple` is just an upper-case constructor — there is no special tuple-literal syntax (no `(1, 2, 3)` form). The empty tuple `Tuple<>` is equivalent to `Unit`.
+
 ### Type aliases
 
 ```vera
@@ -626,6 +639,9 @@ public fn sum_plus_offset(@Unit -> @Int)
   array_fold(
     @Array<Int>.0,
     0,
+    -- array_fold's closure shape is fn(@Acc, @Elem -> @Acc) — accumulator
+    -- first.  By the rightmost = .0 rule, that puts the element at .0
+    -- and the accumulator at .1 inside the body.
     fn(@Int, @Int -> @Int) effects(pure) {
       -- Inside this closure body, two @Int params are in scope:
       --   @Int.0 = element (most recent, the iterator's current value)
@@ -747,7 +763,7 @@ These are generic functions that follow the `domain_verb` naming convention. The
 ### Array operations
 
 ```vera
-array_length(@Array<Int>.0)             -- returns Int (always >= 0)
+array_length(@Array<Int>.0)             -- returns Nat (the array length, flows to either Nat or Int positions)
 array_append(@Array<Int>.0, @Int.0)     -- returns Array<Int> (new array with element appended)
 array_range(@Int.0, @Int.1)             -- returns Array<Int> (integers [start, end))
 array_concat(@Array<Int>.0, @Array<Int>.1)  -- returns Array<Int> (merge two arrays)
