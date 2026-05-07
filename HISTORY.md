@@ -283,6 +283,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | Version | Date | What shipped |
 |---------|------|-------------|
 | — | 7 May | `examples/life.vera` — Conway's Game of Life as a real-world program: nested array combinators, recursive run_loop with `<IO>`, ANSI cursor-control rendering, formal Conway B3/S23 rule on `next_cell`. |
+| — | 7 May | Closed [#595](https://github.com/aallan/vera/issues/595) — macOS malloc abort in wasmtime trampoline on Ctrl-C; upstream [bytecodealliance/wasmtime-py#337](https://github.com/bytecodealliance/wasmtime-py/pull/337) merged. |
 
 ---
 
