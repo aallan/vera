@@ -31,12 +31,19 @@ jobs:
       - name: Install dependencies
         run: pip install -e ".[dev]"
 
+      # Two mutually-exclusive run-test steps so the gating cell
+      # (3.12 / ubuntu) does coverage in the SAME pytest invocation
+      # rather than running the full suite twice.  -n auto runs tests
+      # in parallel across CPU cores via pytest-xdist; the coverage
+      # cell takes the longest because instrumentation adds overhead,
+      # so it sets the wall time and gets parallelised too.
       - name: Run tests
-        run: pytest -v
+        if: ${{ !(matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest') }}
+        run: pytest -v -n auto
 
       - name: Run tests with coverage
         if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
-        run: pytest --cov=vera --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+        run: pytest -v -n auto --cov=vera --cov-report=term-missing --cov-report=xml --cov-fail-under=80
 
       - name: Upload coverage to Codecov
         if: matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest'
