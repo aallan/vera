@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.137] - 2026-05-07
+
+### Fixed
+- **[#588](https://github.com/aallan/vera/issues/588)** — Indexing a *captured* `Array<T>` inside a closure body no longer produces invalid WASM.  Pre-fix the `_walk_free_vars` free-variable detector in `vera/wasm/closures.py` had no `IndexExpr` branch — when the walker hit `coll[idx]` inside a closure body, the `coll` SlotRef referencing a captured outer slot was never recognised as a free variable.  The closure-lift's `captures` list came back empty, body translation failed (the SlotRef couldn't be resolved against an empty capture-only env), and `_compile_lifted_closure` returned `None` — but the call site at `_translate_apply_fn` had already emitted a `call_indirect` to the now-absent function-table entry.  Result: `unknown table 0: table index out of bounds` at WASM validation (flat case) or `undefined element: out of bounds table access` / `indirect call type mismatch` at runtime (nested case where the dispatch landed in-bounds on a wrong-typed function).  Fix adds the missing `IndexExpr` branch plus seven other AST node types that were silently falling through with the same bug class: `ArrayLit`, `InterpolatedString`, `HandleExpr` (with handler-clause param scoping), `AssertExpr` / `AssumeExpr`, `ForallExpr` / `ExistsExpr`, and `ModuleCall`.  Each silently dropped capture references inside its sub-expressions.  New conformance test `ch05_capture_array_index.vera` covers flat, nested, and combined-with-FnCall positions.
+
+  Note: the issue body acknowledged that scaling to a full Conway's Game of Life implementation may have additional triggers beyond captured-array indexing.  Both documented `repro_min.vera` and `repro_nested.vera` reproducers pass post-fix.  The remaining full-Life corruption (string-output corruption appearing from generation 1+ at 12×30 grid scale) is a separate not-yet-isolated bug class tracked separately as a follow-up, and is masked from the user as a Python traceback by the v0.0.136 `errors="replace"` defensive layer (surfaces as U+FFFD chars in output rather than crashing).
+
+- **`IO.sleep` no longer escapes `KeyboardInterrupt` as a raw Python traceback** when Ctrl-C arrives during the wait.  Pre-fix, `host_sleep`'s `time.sleep(ms / 1000.0)` let `KeyboardInterrupt` propagate up through wasmtime's trampoline as a "python exception" cause and the user saw a multi-line Python traceback ending in `KeyboardInterrupt`.  Same `WasmTrapError` contract violation class as #589's `UnicodeDecodeError` escape (#516 / #522 / #547 — runtime traps must surface as Vera-native errors).  Discovered when a user Ctrl-C'd a Conway's Life animation that uses `IO.sleep(120)` between frames.  Fix: `host_sleep` catches `KeyboardInterrupt` and raises `_VeraExit(130)` (conventional SIGINT exit code, 128 + signal-2) which is unwrapped at the top of `execute()` as a clean `ExecuteResult` with `exit_code=130`.  New `TestHostSleepKeyboardInterrupt` test class in `tests/test_runtime_traps.py` with one structural assertion (the guard is wired up at the source level) plus one behavioural test (synthetic `KeyboardInterrupt` → `_VeraExit(130)` conversion verified end-to-end with `unittest.mock.patch`).  A separate macOS malloc abort can still fire during wasmtime/ctypes cleanup after the clean exit; that's tracked as [#595](https://github.com/aallan/vera/issues/595) (cleanup-path issue, not data-integrity).
+
 ## [0.0.136] - 2026-05-06
 
 ### Fixed
@@ -1948,7 +1957,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.136...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.137...HEAD
+[0.0.137]: https://github.com/aallan/vera/compare/v0.0.136...v0.0.137
 [0.0.136]: https://github.com/aallan/vera/compare/v0.0.135...v0.0.136
 [0.0.135]: https://github.com/aallan/vera/compare/v0.0.134...v0.0.135
 [0.0.134]: https://github.com/aallan/vera/compare/v0.0.133...v0.0.134

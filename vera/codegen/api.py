@@ -1190,7 +1190,24 @@ def execute(
     # #463 — pause execution for `ms` milliseconds.
     def host_sleep(_caller: wasmtime.Caller, ms: int) -> None:
         if ms > 0:
-            time.sleep(ms / 1000.0)
+            try:
+                time.sleep(ms / 1000.0)
+            except KeyboardInterrupt:
+                # Ctrl-C during `IO.sleep` — convert to a clean
+                # `_VeraExit(130)` (conventional SIGINT exit code, 128
+                # + signal-2) that propagates through wasmtime's
+                # trampoline as the existing IO.exit pattern.  Without
+                # this, `KeyboardInterrupt` escaped the host import as
+                # a raw Python traceback through wasmtime's trampoline
+                # — a `WasmTrapError` contract violation in the same
+                # class as #589's `UnicodeDecodeError` escape.  The
+                # _VeraExit chain unwrap in `execute()` (around line
+                # 3161, 3179) recognises this exit code and returns
+                # an `ExecuteResult` with `exit_code=130` and any
+                # captured stdout/stderr, so the user sees a clean
+                # process exit instead of a Python traceback +
+                # follow-on malloc abort during wasmtime cleanup.
+                raise _VeraExit(130) from None
 
     sleep_type = wasmtime.FuncType(
         [wasmtime.ValType.i64()],

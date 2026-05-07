@@ -1999,3 +1999,140 @@ class TestHostPrintInvalidUtf8589:
             "Expected U+FFFD replacement char where 0xc1 was; got "
             f"{decoded[0]!r}"
         )
+
+
+# =====================================================================
+# IO.sleep + Ctrl-C never escapes as a Python traceback
+# =====================================================================
+
+
+class TestHostSleepKeyboardInterrupt:
+    """Ctrl-C arriving during ``IO.sleep`` must surface as a clean
+    process exit (exit code 130, conventional SIGINT) rather than a
+    raw Python ``KeyboardInterrupt`` traceback escaping through
+    wasmtime's trampoline.
+
+    Same WasmTrapError-contract class as #589 (UTF-8 decode escape) —
+    discovered when a user Ctrl-C'd a Conway's Life animation that uses
+    `IO.sleep(120)` between frames.  Pre-fix the user saw:
+
+      Traceback (most recent call last):
+        File ".../wasmtime/_func.py", line 199, in trampoline
+          pyresults = func(*pyparams)
+        File ".../vera/codegen/api.py", line 1193, in host_sleep
+          time.sleep(ms / 1000.0)
+      KeyboardInterrupt
+
+    plus a follow-on macOS malloc abort during wasmtime cleanup
+    (the abort is tracked separately as a wasmtime/native interaction
+    bug; preventing the Python exception escape is the in-our-control
+    half of the fix).
+
+    Post-fix `host_sleep` catches `KeyboardInterrupt` and raises
+    `_VeraExit(130)` from None, which propagates through wasmtime's
+    trampoline and is unwrapped at the top of `execute()` as a clean
+    `ExecuteResult` with `exit_code=130`.
+    """
+
+    def test_host_sleep_uses_keyboard_interrupt_guard(self) -> None:
+        """host_sleep wraps `time.sleep` in a try/except KeyboardInterrupt
+        guard.  Source-level structural assertion; survives refactor that
+        moves the body into a helper as long as the guard remains.
+        """
+        from pathlib import Path
+        api_src = (
+            Path(__file__).parent.parent / "vera/codegen/api.py"
+        ).read_text()
+        marker = "def host_sleep("
+        idx = api_src.index(marker)
+        body = api_src[idx:idx + 1500]
+        assert "except KeyboardInterrupt:" in body, (
+            "host_sleep must catch KeyboardInterrupt so Ctrl-C during "
+            "IO.sleep doesn't escape as a raw Python traceback through "
+            "wasmtime's trampoline."
+        )
+        assert "_VeraExit(130)" in body, (
+            "host_sleep's KeyboardInterrupt handler must raise "
+            "_VeraExit(130) so execute() unwraps it as a clean "
+            "exit_code=130 (conventional SIGINT exit code)."
+        )
+
+    def test_host_sleep_keyboard_interrupt_end_to_end(self) -> None:
+        """End-to-end behavioural test: compile a real Vera program
+        that calls ``IO.sleep(...)``, monkey-patch ``time.sleep`` to
+        raise ``KeyboardInterrupt``, run via the production
+        ``execute()`` entrypoint, and assert the result surfaces as
+        ``ExecuteResult.exit_code == 130`` — not a raw Python
+        ``KeyboardInterrupt`` escaping wasmtime's trampoline.
+
+        Exercises the full import/trampoline path: WAT compile →
+        wasmtime instance → host_sleep callback (the production
+        closure, not a local mirror) → ctypes/ffi → KeyboardInterrupt
+        raised inside ``time.sleep`` → ``_VeraExit(130)`` propagates
+        through wasmtime → unwrapped by the ``_VeraExit`` chain in
+        ``execute()`` → returned as ``ExecuteResult(exit_code=130)``.
+
+        Replaced an earlier local-helper test that mirrored
+        ``host_sleep`` in test code and asserted Python's stdlib
+        behaviour rather than the production path.  CodeRabbit on
+        PR #594 correctly flagged the local-helper form as the same
+        "test-the-test" gap that #589's structural-only e2e test had
+        — fixing this one symmetrically.
+        """
+        import time as _time
+        from unittest.mock import patch
+
+        from vera.codegen import compile as compile_program, execute
+        from vera.parser import parse_to_ast
+
+        # Vera program that calls IO.sleep with a value the host will
+        # see as positive (so the guard branch fires).  IO.print
+        # before the sleep gives us a tee point in stdout to
+        # observe the program reached the sleep call.
+        source = """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("before sleep");
+  IO.sleep(120);
+  IO.print("after sleep")
+}
+"""
+        program = parse_to_ast(source)
+        result = compile_program(program, source=source)
+        assert result.ok, (
+            f"compile failed: "
+            f"{[d.description for d in result.diagnostics]}"
+        )
+
+        # Patch time.sleep to raise KeyboardInterrupt unconditionally
+        # — simulates the user pressing Ctrl-C the moment IO.sleep
+        # enters the host import.
+        with patch.object(_time, "sleep", side_effect=KeyboardInterrupt):
+            try:
+                exec_result = execute(result)
+            except KeyboardInterrupt:  # pragma: no cover
+                raise AssertionError(
+                    "KeyboardInterrupt escaped execute() — host_sleep "
+                    "must convert to _VeraExit(130) so the wasmtime "
+                    "trampoline doesn't surface a raw Python "
+                    "traceback (#594 / #595)."
+                ) from None
+
+        assert exec_result.exit_code == 130, (
+            f"expected exit_code=130 (SIGINT), got {exec_result.exit_code}"
+        )
+        # The IO.print("before sleep") executed before the sleep was
+        # interrupted, so the captured stdout should contain it (with
+        # output preserved across the trap, per the #522 contract).
+        assert "before sleep" in exec_result.stdout, (
+            "Pre-sleep IO.print output should be preserved in "
+            "ExecuteResult.stdout even when the program exits via "
+            "_VeraExit(130) (#522 trap-preservation contract)."
+        )
+        # The IO.print("after sleep") should NOT have executed.
+        assert "after sleep" not in exec_result.stdout, (
+            "Post-sleep IO.print should not have run; KeyboardInterrupt "
+            "during sleep must propagate as _VeraExit(130) without "
+            "letting the program continue."
+        )
