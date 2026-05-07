@@ -574,7 +574,10 @@ For the bounds checking implementation, see Chapter 11, Section 11.12.
 
 ## 12.8 Limitations
 
-No open limitations.
+| Limitation | Issue |
+|-----------|-------|
+| Browser runtime: `IO.sleep` busy-waits on the main thread (freezing the tab for the sleep duration), because the current implementation uses `performance.now()` polling rather than yielding to the event loop.  Documented in §12.9.3.  Fix path: implement against the WebAssembly JavaScript Promise Integration (JSPI) proposal so the WASM call suspends on a `setTimeout` continuation; Asyncify is the fallback for browsers without JSPI. | [#609](https://github.com/aallan/vera/issues/609) |
+| Browser runtime: ANSI escape sequences are not interpreted — `IO.print("\u{1B}[2J\u{1B}[H")` appears as literal control bytes in the DOM rather than clearing the screen and homing the cursor.  Fix path: a small ANSI-subset interpreter (~200 lines of JS) maintaining a virtual screen buffer, applied against a target `<pre>` element. | [#610](https://github.com/aallan/vera/issues/610) |
 
 ## 12.9 Browser Runtime
 
