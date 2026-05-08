@@ -8265,6 +8265,57 @@ public fn main(-> @Unit)
 """
         assert _run_io(source, fn="main") == "hello\n"
 
+    def test_nested_refinement_string_in_interpolation(self) -> None:
+        """Fifth trigger of the #602 bug class — surfaced by the
+        silent-failure-hunter agent during PR #629's review.
+
+        The grammar admits `refinement_type` over any `type_expr`, so
+        a return type can wrap refinements in refinements:
+        `@{ @{ @String | p1 } | p2 }`.  PR #629's initial fix used
+        `if isinstance(ret_te, ast.RefinementType): base = ret_te.base_type`
+        — only one level of unwrap.  A nested refinement still fell
+        through to None, reproducing the original #602 trap.
+
+        Fix (in this PR's review pass): replaced the one-level unwrap
+        with a `while` loop that handles arbitrary nesting depth.
+        Same change applied symmetrically to the IndexExpr-of-FnCall
+        inference path.
+        """
+        source = _IO_PRELUDE + """\
+private fn make(-> @{ @{ @String | string_length(@String.0) > 0 } | string_length(@String.0) < 100 })
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_refinement_over_type_alias_in_interpolation(self) -> None:
+        """Sibling case to nested-refinement — refinement applied to a
+        type alias.  Worked already because `_resolve_base_type_name`
+        recursively follows alias chains.  Test pins the working
+        behaviour so a future change to the alias-resolution path
+        can't regress it silently.
+        """
+        source = _IO_PRELUDE + """\
+type Str = String;
+
+private fn make(-> @{ @Str | string_length(@Str.0) > 0 })
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
     def test_inline_refinement_array_in_indexed_interpolation(self) -> None:
         """A fn declared with an inline refinement return type over
         `Array<T>`, indexed inside an interpolation.

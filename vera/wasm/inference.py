@@ -777,7 +777,7 @@ class InferenceMixin:
             # called inside interpolation would still fall through to
             # `to_string(...)` — same #602 failure mode in a different
             # call shape.  `_register_fn` populates `_fn_ret_type_exprs`
-            # for monomorphised names too (`core.py:333`).  Currently
+            # for monomorphised names too (`codegen/core.py:333`).  Currently
             # latent — generic instantiation over `String` is blocked
             # upstream by the bare-type-var-param lowering gap (same
             # class as #604) — but kept symmetric with the non-generic
@@ -822,37 +822,51 @@ class InferenceMixin:
     ) -> str | None:
         """Canonicalise a fn's return TypeExpr for `i32_pair` lookup.
 
-        Both `NamedType` and `RefinementType` can appear at user-fn
-        return positions for `String` / `Array<T>` (i32_pair) returns:
+        Several shapes can appear at user-fn return positions for
+        `String` / `Array<T>` (i32_pair) returns:
 
           - `NamedType("String")` — bare type, common case.
           - `NamedType("MyAlias")` where the alias resolves to String —
             `_resolve_base_type_name` follows the chain to `"String"`.
           - `RefinementType(base_type=NamedType("String"), ...)` — the
-            inline `@{ @String | predicate }` form at the fn return
-            position.  `_register_fn` stores the literal AST, so the
-            registry holds a `RefinementType` directly.
+            inline `@{ @String | predicate }` form.  `_register_fn`
+            stores the literal AST, so the registry holds a
+            `RefinementType` directly.
+          - **Nested refinements** (`@{ @{ @String | p1 } | p2 }`) —
+            the grammar admits `refinement_type` over any `type_expr`,
+            so refinements can wrap refinements.  Empirically reachable
+            via valid Vera (the type checker accepts the nested form
+            at fn return positions).  The unwrap below loops to handle
+            arbitrary nesting depth.
 
-        Without unwrapping the third shape, a fn declared
-        ``private fn make(-> @{ @String | string_length(@String.0) > 0 })``
-        used inside interpolation reproduces the original #602 trap —
-        `_fn_ret_type_exprs.get(name)` returns the RefinementType, the
-        non-NamedType isinstance check fails, this returns None, and
-        `_translate_interpolated_string` falls through to `to_string(...)`
-        with `i32_pair` on the stack.  Same bug class as #602 / type-
-        alias, different trigger.
+        Without unwrapping these shapes, a fn declared with any of the
+        wrapper forms reproduces the original #602 trap inside
+        interpolation — `_fn_ret_type_exprs.get(name)` returns the
+        un-canonical AST, the downstream consumer's `vera_type ==
+        "String"` check fails, and `_translate_interpolated_string`
+        falls through to `to_string(...)` over an `i32_pair` value
+        (`expected i64, found i32` at WASM validation).
 
-        Returns the canonical Vera type name (`"String"` /
-        `"Array"` / etc.), or None if the expression isn't a recognised
-        i32_pair shape (e.g. an unsupported `FnType` or `RefinementType`
-        whose base isn't a `NamedType`).
+        See [#626](https://github.com/aallan/vera/issues/626) — every
+        `return None` here is an instance of the broader silent-skip
+        pattern.  The downstream `to_string` fallback at
+        `vera/wasm/operators.py` carries the matching commentary.
+
+        Returns the canonical Vera type name (`"String"` / `"Array"` /
+        etc.), or None for shapes the unwrap can't reduce to a
+        `NamedType` (e.g. `FnType`, or a `RefinementType` whose
+        innermost base is non-`NamedType`).  None-returns are
+        currently triggered for cross-module imports too (the
+        registry isn't populated cross-module — see #628).
         """
+        # Iteratively unwrap RefinementType layers — handles the
+        # single-layer case from #629's initial fix and the nested
+        # case (fifth trigger in the #602 bug class) discovered
+        # during PR #629's review.
+        while isinstance(ret_te, ast.RefinementType):
+            ret_te = ret_te.base_type
         if isinstance(ret_te, ast.NamedType):
             return self._resolve_base_type_name(ret_te.name)
-        if isinstance(ret_te, ast.RefinementType):
-            base = ret_te.base_type
-            if isinstance(base, ast.NamedType):
-                return self._resolve_base_type_name(base.name)
         return None
 
     def _ctor_to_adt_name(self, ctor_name: str) -> str | None:
@@ -936,17 +950,20 @@ class InferenceMixin:
         # table index out of bounds" (#614).
         if isinstance(coll, ast.FnCall):
             ret_te = self._fn_ret_type_exprs.get(coll.name)
-            # Unwrap a RefinementType to its base NamedType so that an
-            # inline-refinement return type like
-            # `@{ @Array<Int> | array_length(...) > 0 }` resolves the
-            # same as a plain `@Array<Int>` return.  Without this, an
+            # Unwrap RefinementType layers to the base NamedType so that
+            # inline-refinement return types — both single-layer
+            # `@{ @Array<Int> | predicate }` and nested
+            # `@{ @{ @Array<Int> | p1 } | p2 }` — resolve the same as a
+            # plain `@Array<Int>` return.  Without this, an
             # IndexExpr-of-FnCall against a refinement-returning fn
             # silently failed inference, the enclosing function got
             # dropped, and the symptom matched the original #614 bug.
-            # Same shape fix applied to `_resolve_i32_pair_ret_te` for
-            # the parallel return-type inference path.
-            if isinstance(ret_te, ast.RefinementType) and \
-                    isinstance(ret_te.base_type, ast.NamedType):
+            # Inlined here rather than reusing `_resolve_i32_pair_ret_te`
+            # because that helper returns a name `str` while this
+            # branch needs the unwrapped `NamedType` AST node to feed
+            # `_alias_array_element` (which inspects `.type_args` on
+            # the NamedType).  The unwrap shape itself is shared.
+            while isinstance(ret_te, ast.RefinementType):
                 ret_te = ret_te.base_type
             if isinstance(ret_te, ast.NamedType):
                 ta_te = self._alias_array_element(ret_te.name, ret_te.type_args)
