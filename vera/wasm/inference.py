@@ -483,6 +483,39 @@ class InferenceMixin:
                 return te.name
         return f"{te.name}<{', '.join(arg_names)}>"
 
+    def _format_named_type_canonical(self, te: ast.NamedType) -> str:
+        """Like `_format_named_type` but resolves `te.name` through
+        the type alias chain first.
+
+        `_resolve_base_type_name` follows `NamedType` aliases
+        recursively and unwraps any intervening `RefinementType`
+        layers, so this yields a canonical base name (e.g. `"String"`
+        rather than `"Str"` for `type Str = String;`) with the
+        original `type_args` preserved.
+
+        Used at the `apply_fn` return-type position in
+        `_infer_fncall_vera_type`.  Without canonicalisation, a
+        closure typed `fn(Unit -> Str) effects(pure)` (where
+        `type Str = String;`) had `_infer_fncall_vera_type` returning
+        `"Str"`, the downstream `_translate_interpolated_string`
+        check `vera_type == "String"` failed, and the value fell
+        through to the `to_string(...)` wrapper — same `expected
+        i64, found i32` trap as #602's root cause, with the
+        `apply_fn`-over-aliased-`FnType`-return trigger.  Same fix
+        shape as `_resolve_i32_pair_ret_te` for the regular FnCall
+        path.
+        """
+        base = self._resolve_base_type_name(te.name)
+        if not te.type_args:
+            return base
+        arg_names = []
+        for ta in te.type_args:
+            if isinstance(ta, ast.NamedType):
+                arg_names.append(self._format_named_type(ta))
+            else:
+                return base
+        return f"{base}<{', '.join(arg_names)}>"
+
     def _infer_vera_type(self, expr: ast.Expr) -> str | None:
         """Infer the Vera type name of an expression for call rewriting."""
         if isinstance(expr, ast.IntLit):
@@ -642,21 +675,74 @@ class InferenceMixin:
                 if isinstance(alias_te, ast.FnType):
                     alias_params = self._type_alias_params.get(
                         closure_arg.type_name)
+                    # Iteratively unwrap RefinementType layers at the
+                    # FnType return position before classifying — same
+                    # shape fix as the i32_pair branches above and the
+                    # FnType-WASM helpers below.  Without this, a
+                    # closure typed e.g.
+                    # `fn(Unit -> @{ @{ @String | p1 } | p2 })`
+                    # made `_infer_fncall_vera_type` return None for
+                    # the apply_fn call, downstream interpolation wrap
+                    # produced `to_string(...)` over an `i32_pair` and
+                    # WASM validation rejected the module.  Same bug
+                    # class as #602; this is the apply_fn-with-aliased-
+                    # FnType variant.
+                    base_ret = alias_te.return_type
+                    while isinstance(base_ret, ast.RefinementType):
+                        base_ret = base_ret.base_type
                     if (alias_params and closure_arg.type_args
                             and len(alias_params)
                             == len(closure_arg.type_args)):
-                        # Substitute type args into the return type
+                        # Substitute type args into the return type.
+                        # Both substitution and fallback go through
+                        # `_format_named_type_canonical` so alias
+                        # chains (`type Str = String;`) resolve to
+                        # canonical names — without this, the
+                        # apply_fn path returned the alias name and
+                        # downstream interpolation re-triggered the
+                        # #602 trap.  RefinementType layers in the
+                        # substituted type arg are unwrapped before
+                        # canonicalising, mirroring the same
+                        # `while`-loop on `alias_te.return_type`
+                        # above.
                         alias_map = dict(zip(alias_params,
                                              closure_arg.type_args))
-                        ret = alias_te.return_type
-                        if isinstance(ret, ast.NamedType):
-                            if ret.name in alias_map:
-                                ta = alias_map[ret.name]
+                        if isinstance(base_ret, ast.NamedType):
+                            if base_ret.name in alias_map:
+                                ta: ast.TypeExpr = (
+                                    alias_map[base_ret.name])
+                                while isinstance(
+                                        ta, ast.RefinementType):
+                                    ta = ta.base_type
                                 if isinstance(ta, ast.NamedType):
-                                    return self._format_named_type(ta)
-                            return self._format_named_type(ret)
-                    elif isinstance(alias_te.return_type, ast.NamedType):
-                        return self._format_named_type(alias_te.return_type)
+                                    return (self
+                                        ._format_named_type_canonical(
+                                            ta))
+                            return self._format_named_type_canonical(
+                                base_ret)
+                    elif isinstance(base_ret, ast.NamedType):
+                        return self._format_named_type_canonical(
+                            base_ret)
+            elif isinstance(closure_arg, ast.AnonFn):
+                # apply_fn called directly on an inline anonymous
+                # function literal — `apply_fn(fn(@Unit -> @String)
+                # effects(pure) { ... }, ())`.  Ninth trigger of the
+                # #602 bug class, surfaced by CodeRabbit during PR
+                # #629's review.  Pre-fix the SlotRef branch above
+                # was the only `apply_fn` arg shape handled; an inline
+                # `AnonFn` fell through, `_infer_fncall_vera_type`
+                # returned None, and downstream interpolation
+                # produced `to_string(...)` over an `i32_pair` —
+                # same `expected i64, found i32` WASM-validation
+                # surface.  Same canonicalisation shape as the
+                # SlotRef branch, simpler structure (AnonFn has
+                # `return_type: TypeExpr` directly; no alias
+                # substitution machinery needed).
+                anon_ret = closure_arg.return_type
+                while isinstance(anon_ret, ast.RefinementType):
+                    anon_ret = anon_ret.base_type
+                if isinstance(anon_ret, ast.NamedType):
+                    return self._format_named_type_canonical(anon_ret)
         # Map builtins
         if call.name in ("map_new", "map_insert", "map_remove"):
             return "Map"
@@ -777,19 +863,17 @@ class InferenceMixin:
             # called inside interpolation would still fall through to
             # `to_string(...)` — same #602 failure mode in a different
             # call shape.  `_register_fn` populates `_fn_ret_type_exprs`
-            # for monomorphised names too (`core.py:333`).  Currently
+            # for monomorphised names too (`codegen/core.py:333`).  Currently
             # latent — generic instantiation over `String` is blocked
             # upstream by the bare-type-var-param lowering gap (same
             # class as #604) — but kept symmetric with the non-generic
             # branch so the fix lands automatically when that gap closes.
             if ret_wt == "i32_pair":
-                ret_te = self._fn_ret_type_exprs.get(mangled)
-                if isinstance(ret_te, ast.NamedType):
-                    # Resolve type aliases (`type Str = String`) so
-                    # the downstream consumer sees the canonical name
-                    # — see the matching branch below for the bug
-                    # this prevents.
-                    return self._resolve_base_type_name(ret_te.name)
+                resolved = self._resolve_i32_pair_ret_te(
+                    self._fn_ret_type_exprs.get(mangled),
+                )
+                if resolved is not None:
+                    return resolved
             return None
         # Non-generic: map from WASM return type
         ret_wt = self._fn_ret_types.get(call.name)
@@ -812,22 +896,63 @@ class InferenceMixin:
         # *element-type* of an indexed FnCall result; this is the
         # *return-type* inference half.
         if ret_wt == "i32_pair":
-            ret_te = self._fn_ret_type_exprs.get(call.name)
-            if isinstance(ret_te, ast.NamedType):
-                # Resolve type aliases through `_resolve_base_type_name`
-                # so that `type Str = String; fn make() -> @Str` returns
-                # `"String"` here, not `"Str"`.  Without this, a fn
-                # whose declared return type is an alias would still
-                # mismatch the downstream consumer's `vera_type ==
-                # "String"` check in `_translate_interpolated_string`,
-                # falling through to the `to_string(...)` wrapper that
-                # produced the original #602 trap — same bug class,
-                # different trigger.  Verified reproducer:
-                # `type Str = String; private fn make(-> @Str) {"x"};
-                # public fn main(-> @Unit) { IO.print("\\(make(()))\\n") }`
-                # — pre-fix this trapped `expected i64, found i32` even
-                # with #602's i32_pair branch in place.
-                return self._resolve_base_type_name(ret_te.name)
+            resolved = self._resolve_i32_pair_ret_te(
+                self._fn_ret_type_exprs.get(call.name),
+            )
+            if resolved is not None:
+                return resolved
+        return None
+
+    def _resolve_i32_pair_ret_te(
+        self, ret_te: ast.TypeExpr | None,
+    ) -> str | None:
+        """Canonicalise a fn's return TypeExpr for `i32_pair` lookup.
+
+        Several shapes can appear at user-fn return positions for
+        `String` / `Array<T>` (i32_pair) returns:
+
+          - `NamedType("String")` — bare type, common case.
+          - `NamedType("MyAlias")` where the alias resolves to String —
+            `_resolve_base_type_name` follows the chain to `"String"`.
+          - `RefinementType(base_type=NamedType("String"), ...)` — the
+            inline `@{ @String | predicate }` form.  `_register_fn`
+            stores the literal AST, so the registry holds a
+            `RefinementType` directly.
+          - **Nested refinements** (`@{ @{ @String | p1 } | p2 }`) —
+            the grammar admits `refinement_type` over any `type_expr`,
+            so refinements can wrap refinements.  Empirically reachable
+            via valid Vera (the type checker accepts the nested form
+            at fn return positions).  The unwrap below loops to handle
+            arbitrary nesting depth.
+
+        Without unwrapping these shapes, a fn declared with any of the
+        wrapper forms reproduces the original #602 trap inside
+        interpolation — `_fn_ret_type_exprs.get(name)` returns the
+        un-canonical AST, the downstream consumer's `vera_type ==
+        "String"` check fails, and `_translate_interpolated_string`
+        falls through to `to_string(...)` over an `i32_pair` value
+        (`expected i64, found i32` at WASM validation).
+
+        See [#626](https://github.com/aallan/vera/issues/626) — every
+        `return None` here is an instance of the broader silent-skip
+        pattern.  The downstream `to_string` fallback at
+        `vera/wasm/operators.py` carries the matching commentary.
+
+        Returns the canonical Vera type name (`"String"` / `"Array"` /
+        etc.), or None for shapes the unwrap can't reduce to a
+        `NamedType` (e.g. `FnType`, or a `RefinementType` whose
+        innermost base is non-`NamedType`).  None-returns are
+        currently triggered for cross-module imports too (the
+        registry isn't populated cross-module — see #628).
+        """
+        # Iteratively unwrap RefinementType layers — handles the
+        # single-layer case from #629's initial fix and the nested
+        # case (fifth trigger in the #602 bug class) discovered
+        # during PR #629's review.
+        while isinstance(ret_te, ast.RefinementType):
+            ret_te = ret_te.base_type
+        if isinstance(ret_te, ast.NamedType):
+            return self._resolve_base_type_name(ret_te.name)
         return None
 
     def _ctor_to_adt_name(self, ctor_name: str) -> str | None:
@@ -911,6 +1036,21 @@ class InferenceMixin:
         # table index out of bounds" (#614).
         if isinstance(coll, ast.FnCall):
             ret_te = self._fn_ret_type_exprs.get(coll.name)
+            # Unwrap RefinementType layers to the base NamedType so that
+            # inline-refinement return types — both single-layer
+            # `@{ @Array<Int> | predicate }` and nested
+            # `@{ @{ @Array<Int> | p1 } | p2 }` — resolve the same as a
+            # plain `@Array<Int>` return.  Without this, an
+            # IndexExpr-of-FnCall against a refinement-returning fn
+            # silently failed inference, the enclosing function got
+            # dropped, and the symptom matched the original #614 bug.
+            # Inlined here rather than reusing `_resolve_i32_pair_ret_te`
+            # because that helper returns a name `str` while this
+            # branch needs the unwrapped `NamedType` AST node to feed
+            # `_alias_array_element` (which inspects `.type_args` on
+            # the NamedType).  The unwrap shape itself is shared.
+            while isinstance(ret_te, ast.RefinementType):
+                ret_te = ret_te.base_type
             if isinstance(ret_te, ast.NamedType):
                 ta_te = self._alias_array_element(ret_te.name, ret_te.type_args)
                 if ta_te is not None:
@@ -1019,8 +1159,29 @@ class InferenceMixin:
             # Closure literal passed directly — infer return type from its
             # declared return TypeExpr so call_indirect sig matches the
             # lifted function's actual return (i32_pair for String/Array).
+            #
+            # Iteratively unwrap RefinementType layers before the
+            # NamedType check.  The pre-fix shape was `if isinstance(ret,
+            # ast.RefinementType): base = ret.base_type` with a
+            # `# pragma: no cover — closure returns are not refinement
+            # types` justification — empirically disproved by the 9th and
+            # 10th triggers of the #602 bug class (PR #629).  An inline
+            # `AnonFn` *can* declare a `RefinementType` return per the
+            # grammar (`fn(@Unit -> @{ @String | p })`) and the type
+            # checker accepts it; nested refinements
+            # (`fn(@Unit -> @{ @{ @String | p1 } | p2 })`) trip the
+            # single-level unwrap, ret stays a `RefinementType`, the
+            # NamedType branch misses, and the method falls through to
+            # `return "i64"` — same #602 surface in inverse form
+            # (`expected i32, found i64` at WASM validation, because the
+            # call site emits `i32_pair` while this sig says `i64`).
+            #
+            # This whole block is queued for replacement by the
+            # centralised `_canonical_vera_type` proposed in #630;
+            # the `while`-loop shape is the local stop-gap.
             ret: ast.TypeExpr = closure_arg.return_type
-            # Fully resolve aliases and peel refinements to canonical name.
+            while isinstance(ret, ast.RefinementType):
+                ret = ret.base_type
             if isinstance(ret, ast.NamedType):
                 resolved_name = self._resolve_type_name_to_wasm_canonical(
                     ret.name,
@@ -1028,15 +1189,6 @@ class InferenceMixin:
                 if resolved_name in ("String", "Array"):
                     return "i32_pair"
                 return self._named_type_to_wasm(resolved_name)
-            if isinstance(ret, ast.RefinementType):  # pragma: no cover — closure returns are not refinement types
-                base = ret.base_type
-                if isinstance(base, ast.NamedType):
-                    resolved_name = self._resolve_type_name_to_wasm_canonical(
-                        base.name,
-                    )
-                    if resolved_name in ("String", "Array"):
-                        return "i32_pair"
-                    return self._named_type_to_wasm(resolved_name)
         return "i64"  # pragma: no cover — safe default for most cases
 
     def _resolve_generic_fn_return(
@@ -1057,7 +1209,15 @@ class InferenceMixin:
                 subst[param] = arg.name
 
         ret = fn_type.return_type
-        if isinstance(ret, ast.RefinementType):
+        # Iterative unwrap — handles nested refinements
+        # (`@{ @{ @String | p1 } | p2 }`) at FnType return positions.
+        # Pre-fix this peeled only one layer, so `apply_fn` of a
+        # closure typed with a nested-refinement return mis-classified
+        # the WASM return type and produced a `call_indirect type
+        # mismatch` trap at runtime.  Same bug class as #602 (#629
+        # closes the FnCall + IndexExpr halves; this site is the
+        # apply_fn / FnType-alias half).
+        while isinstance(ret, ast.RefinementType):
             ret = ret.base_type
         if isinstance(ret, ast.NamedType):
             # Substitute type variable, then fully resolve aliases/refinements
@@ -1109,7 +1269,12 @@ class InferenceMixin:
     def _fn_type_return_wasm(self, fn_type: ast.FnType) -> str | None:
         """Get the WASM return type from a FnType AST node."""
         ret = fn_type.return_type
-        if isinstance(ret, ast.RefinementType):
+        # Iterative unwrap matches `_infer_apply_fn_return_type` and
+        # `_resolve_i32_pair_ret_te` — nested refinements at FnType
+        # return positions otherwise mis-classify the WASM return
+        # type.  See the comment in `_infer_apply_fn_return_type` for
+        # the failure mode.
+        while isinstance(ret, ast.RefinementType):
             ret = ret.base_type
         if isinstance(ret, ast.NamedType):
             resolved = self._resolve_type_name_to_wasm_canonical(ret.name)

@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.141] - 2026-05-08
+
+### Fixed
+
+- **Inline-refinement return types** in `_infer_fncall_vera_type` and `_infer_index_element_type_expr` — third trigger of the same bug class as #602 (i64/i32 mismatch at WASM validation) and the type-alias case fixed in v0.0.140.  Surfaced during PR #627's review (CodeRabbit duplicate-comment escalation, merged before the fix landed in #627 itself).
+
+  When a fn declares an inline refinement return type (`@{ @String | predicate }`), `_register_fn` stores the literal `RefinementType` AST in `_fn_ret_type_exprs`.  v0.0.140's fix only handled the `NamedType` case via `isinstance` — `RefinementType` fell through to None, `_translate_interpolated_string` substituted `to_string(...)` for an `i32_pair` value, same #602 trap with a different trigger.  Same gap also lived in `_infer_index_element_type_expr`'s FnCall branch (the path #614 added) for refinement-`Array<T>` returns indexed via `f()[i]`.
+
+  Fix: extracted the i32_pair return-type resolution into a helper `_resolve_i32_pair_ret_te` that handles both `NamedType` (with alias resolution via `_resolve_base_type_name`) and `RefinementType` (recursive unwrap of arbitrary nesting depth, then resolve).  Applied to both i32_pair branches (non-generic + generic-mono) and to the parallel IndexExpr inference path.
+
+  PR review pass surfaced five more triggers of the same bug class.  **Nested refinements** (`@{ @{ @String | p1 } | p2 }`) are reachable per the grammar; the single-layer `if isinstance(...): unwrap` in the initial v0.0.141 fix fell through to None for nested forms.  Replaced with a `while isinstance(ret_te, ast.RefinementType): ret_te = ret_te.base_type` loop covering arbitrary nesting depth, applied to both `_resolve_i32_pair_ret_te` and the parallel IndexExpr branch.  The **`apply_fn` / `FnType`-alias** path (`apply_fn(@FnAlias.0, ())` where `FnAlias`'s return type wraps refinements) had three separate inference sites that walked `FnType.return_type` and only handled `NamedType` directly: `_infer_fncall_vera_type`'s apply_fn branch, `_resolve_generic_fn_return`, and `_fn_type_return_wasm`.  Same `while`-loop unwrap applied symmetrically at all three.  And the **`apply_fn`-over-aliased-`FnType`** path (e.g. `type Str = String; type Maker = fn(Unit -> Str) effects(pure);`) called `_format_named_type` directly on `NamedType("Str")`, returning the alias name; downstream interpolation's `vera_type == "String"` check missed and re-triggered the same trap.  Introduced `_format_named_type_canonical` (resolves `te.name` through the alias chain via `_resolve_base_type_name`, then formats with original `type_args`) and applied it to both branches of the apply_fn substitution.
+
+  And the **inline `AnonFn` to `apply_fn`** path (`apply_fn(fn(@Unit -> @String) effects(pure) { ... }, ())`) — the SlotRef branch above was the only `apply_fn` arg shape handled; an inline anonymous closure literal fell through, `_infer_fncall_vera_type` returned None, and downstream interpolation re-triggered the same trap.  Added an `elif isinstance(closure_arg, ast.AnonFn)` branch alongside the SlotRef branch, simpler than the SlotRef path (no alias substitution — AnonFn carries `return_type` directly) but with the same RefinementType-unwrap + `_format_named_type_canonical` shape.
+
+  And finally the **nested-refinement-`AnonFn`-on-the-WASM-side** path — same `apply_fn(fn(@Unit -> @{ @{ @String | p1 } | p2 }) ...)` shape but exercising `_infer_apply_fn_return_type` (call_indirect sig inference) rather than `_infer_fncall_vera_type` (Vera-type-name inference).  Inverse surface: `expected i32, found i64` rather than `expected i64, found i32`.  Pre-fix the AnonFn branch in `_infer_apply_fn_return_type` carried `# pragma: no cover — closure returns are not refinement types` with a single-level unwrap; the pragma was empirically disproved by the 9th and 10th triggers (an inline AnonFn *can* declare RefinementType returns per the grammar, and the type checker accepts nested forms).  Replaced single-level unwrap with the established `while`-loop shape and removed the disproven pragma.
+
+  Eight new regression tests in `TestStringInterpolation` cover the inline-refinement String, the nested-refinement String, the refinement-over-alias String, the nested-refinement Array indexed via FnCall, the apply_fn-with-FnType-nested-refinement path, the apply_fn-over-`FnType`-aliased-String path, the apply_fn-over-inline-`AnonFn` path, and the apply_fn-over-nested-refinement-`AnonFn` (WASM-side) path.  All ten return-type shapes now verified — `f()` baseline (#602), type alias over String, inline refinement over String, nested refinement over String, refinement-over-alias, nested refinement over Array indexed via FnCall, `apply_fn` over a `FnType`-aliased nested refinement, `apply_fn` over an aliased `FnType` return, `apply_fn` over an inline `AnonFn`, and `apply_fn` over a nested-refinement inline `AnonFn` (WASM-side).
+
+  The 9th and 10th triggers landing within hours of filing [#630](https://github.com/aallan/vera/issues/630) (the structural close-out tracking issue for this bug class) is the empirical argument for that issue: trigger discovery velocity outpaces local fix throughput.  Each new shape added to either dispatcher (Vera-type-name half or WASM-type half) is a fresh opportunity for the same bug.  The structural fix in #630 (centralised `_canonical_vera_type` + loud diagnostic on the silent fallthrough) is the queued close-out.
+
 ## [0.0.140] - 2026-05-08
 
 ### Fixed
@@ -2017,7 +2037,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.140...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.141...HEAD
+[0.0.141]: https://github.com/aallan/vera/compare/v0.0.140...v0.0.141
 [0.0.140]: https://github.com/aallan/vera/compare/v0.0.139...v0.0.140
 [0.0.139]: https://github.com/aallan/vera/compare/v0.0.138...v0.0.139
 [0.0.138]: https://github.com/aallan/vera/compare/v0.0.137...v0.0.138

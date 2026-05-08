@@ -8236,6 +8236,289 @@ public fn main(-> @Unit)
 """
         assert _run_io(source, fn="main") == "10"
 
+    def test_inline_refinement_string_in_interpolation(self) -> None:
+        """A fn declared with an inline refinement return type
+        (`@{ @String | predicate }`) used in interpolation.
+
+        Surfaced during PR #627's review (CodeRabbit, third trigger
+        in the same bug class as #602 and the type-alias case).
+        `_register_fn` stores the literal AST, so `_fn_ret_type_exprs`
+        holds a `RefinementType` directly.  My initial alias-resolving
+        fix only handled `NamedType` — `isinstance(ret_te, ast.NamedType)`
+        was False for a `RefinementType`, fell through to None, same
+        original #602 trap.
+
+        Fix: extracted the inference into `_resolve_i32_pair_ret_te`
+        which handles both `NamedType` (with alias resolution) and
+        `RefinementType` (unwrap to base, then resolve).
+        """
+        source = _IO_PRELUDE + """\
+private fn make(-> @{ @String | string_length(@String.0) > 0 })
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_nested_refinement_string_in_interpolation(self) -> None:
+        """Fifth trigger of the #602 bug class — surfaced by the
+        silent-failure-hunter agent during PR #629's review.
+
+        The grammar admits `refinement_type` over any `type_expr`, so
+        a return type can wrap refinements in refinements:
+        `@{ @{ @String | p1 } | p2 }`.  PR #629's initial fix used
+        `if isinstance(ret_te, ast.RefinementType): base = ret_te.base_type`
+        — only one level of unwrap.  A nested refinement still fell
+        through to None, reproducing the original #602 trap.
+
+        Fix (in this PR's review pass): replaced the one-level unwrap
+        with a `while` loop that handles arbitrary nesting depth.
+        Same change applied symmetrically to the IndexExpr-of-FnCall
+        inference path.
+        """
+        source = _IO_PRELUDE + """\
+private fn make(-> @{ @{ @String | string_length(@String.0) > 0 } | string_length(@String.0) < 100 })
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_apply_fn_nested_refinement_in_interpolation(self) -> None:
+        """Seventh trigger of the #602 bug class — surfaced by the
+        silent-failure-hunter agent during PR #629's review.
+
+        Path: `apply_fn(@FnAlias.0, ())` inside an interpolation,
+        where the `FnType` alias's return type is a *nested*
+        refinement.  Three separate inference sites in
+        `vera/wasm/inference.py` all walk the FnType's
+        `return_type` and only handled `NamedType` directly:
+
+        - `_infer_fncall_vera_type` (apply_fn branch) — for the
+          interpolation argument's vera-type lookup
+        - `_resolve_generic_fn_return` — for generic-instantiated
+          FnType returns
+        - `_fn_type_return_wasm` — for the WASM-canonical return type
+
+        Pre-fix, the apply_fn branch returned None for nested
+        refinements, the interpolation fell through to the
+        `to_string(...)` wrapper, and at validation time WASM
+        rejected the i32→i64 mismatch (`expected i64, found i32`)
+        that's been the canonical surface of this bug class since
+        #602.
+
+        Fix: `while isinstance(ret, ast.RefinementType): ret =
+        ret.base_type` at all three sites — same shape as the
+        FnCall path, applied symmetrically to the FnType-alias
+        path.
+        """
+        source = _IO_PRELUDE + """\
+type Maker = fn(Unit -> { @{ @String | string_length(@String.0) > 0 } | string_length(@String.0) < 100 }) effects(pure);
+
+private fn make_maker(@Unit -> @Maker)
+  requires(true) ensures(true) effects(pure)
+{ fn(@Unit -> @String) effects(pure) { "hello" } }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Maker = make_maker(());
+  IO.print("\\(apply_fn(@Maker.0, ()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_apply_fn_anon_inline_string_in_interpolation(self) -> None:
+        """Ninth trigger of the #602 bug class — surfaced by
+        CodeRabbit during PR #629's final review pass, less than an
+        hour after filing #630 (the structural close-out for this
+        bug class).  Empirical confirmation that the trigger rate
+        outpaces local fix throughput — exactly the argument made
+        for centralising canonicalisation.
+
+        Path: `apply_fn(fn(@Unit -> @String) effects(pure) { ... },
+        ())` — apply_fn called directly on an inline `AnonFn`
+        literal rather than a `SlotRef` to a let-bound closure.
+        Pre-fix `_infer_fncall_vera_type` only handled the SlotRef
+        arg shape; the AnonFn case fell through, return value was
+        None, and downstream interpolation re-triggered the canonical
+        `expected i64, found i32` WASM-validation surface.
+
+        Fix: added an `elif isinstance(closure_arg, ast.AnonFn)`
+        branch alongside the SlotRef branch in
+        `_infer_fncall_vera_type`.  Simpler than the SlotRef path
+        (no alias substitution — AnonFn has `return_type: TypeExpr`
+        directly), but the same RefinementType-unwrap +
+        `_format_named_type_canonical` shape applies.
+        """
+        source = _IO_PRELUDE + """\
+private fn helper(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(apply_fn(fn(@Unit -> @String) effects(pure) { helper(()) }, ()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_apply_fn_anon_nested_refinement_in_interpolation(
+        self,
+    ) -> None:
+        """Tenth trigger of the #602 bug class — surfaced by
+        CodeRabbit on PR #629 immediately after the 9th was fixed.
+        Inverse surface: `expected i32, found i64` rather than the
+        usual `expected i64, found i32`, because this site is on
+        the *WASM-type* inference half of the dispatcher
+        (`_infer_apply_fn_return_type`, which infers the
+        `call_indirect` sig) rather than the Vera-type-name half
+        (`_infer_fncall_vera_type`, which the 9th trigger hit).
+
+        Path: `apply_fn(fn(@Unit -> @{ @{ @String | p1 } | p2 })
+        effects(pure) { ... }, ())` — inline `AnonFn` declaring a
+        nested-refinement return.  Pre-fix
+        `_infer_apply_fn_return_type`'s `AnonFn` branch had a
+        single-level `if isinstance(ret, ast.RefinementType): base
+        = ret.base_type` unwrap with a `# pragma: no cover —
+        closure returns are not refinement types` claim — both
+        empirically disproved.  Single-level unwrap on a nested
+        refinement leaves `base` as another `RefinementType`, the
+        `NamedType` check misses, and the method falls through to
+        `return "i64"` — the call site emitted `i32_pair`, hence
+        the inverse-direction WASM-validation surface.
+
+        Fix: replaced the single-level `if`-unwrap with the
+        established `while`-loop shape used at every other
+        type-walking site, and removed the disproven
+        `# pragma: no cover` claim.
+
+        Queued for obsolescence by [#630](https://github.com/aallan/vera/issues/630)
+        when the centralised `_canonical_vera_type` lands; this
+        test will continue to pin the trigger through that
+        refactor.
+        """
+        source = _IO_PRELUDE + """\
+private fn helper(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(apply_fn(fn(@Unit -> @{ @{ @String | string_length(@String.0) > 0 } | string_length(@String.0) < 100 }) effects(pure) { helper(()) }, ()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_apply_fn_aliased_string_in_interpolation(self) -> None:
+        """Eighth trigger of the #602 bug class — surfaced by
+        CodeRabbit during PR #629's final review pass.
+
+        Path: `apply_fn(@Maker.0, ())` inside an interpolation,
+        where `Maker = fn(Unit -> Str) effects(pure)` and
+        `type Str = String;`.  Pre-fix `_infer_fncall_vera_type`'s
+        apply_fn branch called `_format_named_type` on
+        `NamedType("Str")` which returned the alias name "Str" —
+        downstream `_translate_interpolated_string` checks
+        `vera_type == "String"`, the alias name missed, and the
+        value fell through to the `to_string(...)` wrapper over an
+        `i32_pair`, reproducing the canonical `expected i64, found
+        i32` WASM-validation surface of this bug class.
+
+        Fix: introduced `_format_named_type_canonical` (resolves
+        `te.name` through the alias chain via
+        `_resolve_base_type_name`, then formats with original
+        `type_args`).  Replaced both `_format_named_type` calls in
+        the apply_fn branch — substitution and fallback — with the
+        canonical variant, mirroring the canonicalisation already
+        done in `_resolve_i32_pair_ret_te` for the regular FnCall
+        path.
+        """
+        source = _IO_PRELUDE + """\
+type Str = String;
+type Maker = fn(Unit -> Str) effects(pure);
+
+private fn make_maker(@Unit -> @Maker)
+  requires(true) ensures(true) effects(pure)
+{ fn(@Unit -> @String) effects(pure) { "hello" } }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Maker = make_maker(());
+  IO.print("\\(apply_fn(@Maker.0, ()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_refinement_over_type_alias_in_interpolation(self) -> None:
+        """Sibling case to nested-refinement — refinement applied to a
+        type alias.  Worked already because `_resolve_base_type_name`
+        recursively follows alias chains.  Test pins the working
+        behaviour so a future change to the alias-resolution path
+        can't regress it silently.
+        """
+        source = _IO_PRELUDE + """\
+type Str = String;
+
+private fn make(-> @{ @Str | string_length(@Str.0) > 0 })
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_inline_refinement_array_in_indexed_interpolation(self) -> None:
+        """A fn declared with a *nested* refinement return type over
+        `Array<T>`, indexed inside an interpolation.
+
+        Parallel instance of the same RefinementType gap, but in
+        `_infer_index_element_type_expr`'s FnCall branch (the path
+        added by #614).  Pre-fix the IndexExpr-of-FnCall element-type
+        inference failed for refinement-returning fns, the enclosing
+        function got dropped from the output module, and at top level
+        the symptom was the [E602] "main body contains unsupported
+        expressions — skipped" warning.
+
+        Uses the nested-refinement shape (`@{ @{ @Array<Int> | p1 } |
+        p2 }`) so this test exercises the `while`-loop unwrap added
+        in PR #629's review pass alongside the parallel string-side
+        nested test — without the loop, the array branch would only
+        peel one level and fall through.
+
+        Fix: same RefinementType `while`-loop unwrap applied to
+        `_infer_index_element_type_expr`'s FnCall branch.
+        """
+        source = _IO_PRELUDE + """\
+private fn make(-> @{ @{ @Array<Int> | array_length(@Array<Int>.0) > 0 } | array_length(@Array<Int>.0) < 100 })
+  requires(true) ensures(true) effects(pure)
+{ [10, 20, 30] }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(())[1])\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "20\n"
+
     def test_type_alias_string_in_interpolation(self) -> None:
         """A fn returning a type alias of `String` (e.g. `type Str =
         String; fn make(-> @Str)`) used in interpolation.
