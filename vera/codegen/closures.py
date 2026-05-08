@@ -299,7 +299,25 @@ class ClosureLiftingMixin:
 
         # Compile the body
         body_instrs = ctx.translate_block(anon_fn.body, env)
-        if body_instrs is None:  # pragma: no cover — defensive
+        if body_instrs is None:
+            # #630 Tier 2 — closure-body parallel of the harvest in
+            # `_compile_fn` (functions.py).  Without this, an
+            # interpolation segment in a closure body whose Vera type
+            # couldn't be inferred populated `ctx._interp_inference_failures`
+            # but the failures were silently dropped on the closure-
+            # path return-None — the closure_id was still registered
+            # at the call site, so `call_indirect` referenced a missing
+            # function-table entry and WASM validation rejected the
+            # module with no source-located diagnostic.  Same
+            # silent-drop shape that #614/#615 fixed for translation
+            # failures; this closes the parallel for the post-#630
+            # interpolation-failure path.  (silent-failure-hunter
+            # finding C1 on PR #631.)  Pre-this-fix the line below
+            # carried a `# pragma: no cover — defensive` claim that
+            # was empirically disproved as soon as #630's Tier 2
+            # added a non-defensive None-return path through
+            # `_translate_interpolated_string`.
+            self._harvest_interp_inference_failures(ctx)
             return None
 
         # Propagate host-import tracking from closure ctx to module level

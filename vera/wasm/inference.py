@@ -516,20 +516,37 @@ class InferenceMixin:
            wrapping the alias body is unwrapped on the next
            iteration.
 
-        Returns the final `NamedType` — with `type_args` preserved
-        from the **outermost** `NamedType` reached during the walk
-        — or `None` if the walk terminates at a non-`NamedType`
-        (`FnType`, refinement-over-non-`NamedType` base, alias body
-        that is itself a `FnType`, etc.).
+        Returns the final `NamedType` — with `type_args` taken from
+        the **terminal** `NamedType` reached during the walk — or
+        `None` if the walk terminates at a non-`NamedType` (`FnType`,
+        refinement-over-non-`NamedType` base, alias body that is
+        itself a `FnType`, etc.).
 
-        Type-args from the outermost `NamedType` are preserved
-        verbatim — this matches the pre-#630 behaviour of
-        `_format_named_type_canonical`.  Parameterised-alias
-        substitution (where `type Box<T> = Holder<T>` would push
-        the outer `T` into the resolved body) is **out of scope**
-        for #630 and remains a separate latent gap.
+        Type-args follow the *terminal* `NamedType` so that an alias
+        whose body carries type_args propagates them through.
+        Concrete cases:
+
+          - `type IntList = Array<Int>` resolves
+            `NamedType("IntList")` to `NamedType("Array", [Int])` —
+            the alias body's `type_args` are preserved.
+          - `alias_map["T"] = NamedType("Array", [Int])` resolves
+            `NamedType("T")` to `NamedType("Array", [Int])` — the
+            substituted type's `type_args` are preserved.
+          - `type Str = String` resolves `NamedType("Str")` to
+            `NamedType("String")` — neither has `type_args`,
+            unchanged.
+
+        Edge case: the outermost `NamedType` may carry `type_args`
+        that the alias body discards (e.g. `NamedType("Box", [Int])`
+        with a non-parameterised `type Box = Holder`).  Since
+        non-parameterised aliases applied with type_args are
+        ill-formed at the type-check level, we accept this
+        information loss; parameterised-alias substitution proper
+        (where `type Box<T> = Holder<T>` would push the outer `T`
+        into the resolved body via per-alias type-param binding)
+        is **out of scope** for #630 and remains a separate latent
+        gap.
         """
-        outer_type_args: tuple[ast.TypeExpr, ...] | None = None
         seen: set[str] = set()
         while True:
             # Unwrap RefinementType layers — any nesting depth.
@@ -537,9 +554,6 @@ class InferenceMixin:
                 te = te.base_type
             if not isinstance(te, ast.NamedType):
                 return None
-            # Capture outer type_args from the first NamedType reached.
-            if outer_type_args is None:
-                outer_type_args = te.type_args
             # alias_map substitution (generic type-param binding).
             if alias_map is not None and te.name in alias_map:
                 te = alias_map[te.name]
@@ -558,7 +572,8 @@ class InferenceMixin:
                 continue
             # FnType-bodied alias or other non-resolvable shape.
             return None
-        return ast.NamedType(name=te.name, type_args=outer_type_args)
+        # `te` is the terminal NamedType; preserve its type_args.
+        return ast.NamedType(name=te.name, type_args=te.type_args)
 
     def _canonical_wasm_type(
         self,
@@ -568,12 +583,23 @@ class InferenceMixin:
         """Walk a TypeExpr to its canonical WASM-type string.
 
         Same walk as `_canonical_named_type` but maps the resolved
-        name to the WASM representation: `"i32_pair"` for
-        `String`/`Array` (two-i32 layout), `"i64"`/`"i32"`/`"f64"`
-        for primitives via `_named_type_to_wasm`, and `"i64"` as
-        the safe default for shapes that don't reach a `NamedType`
-        (matches the pre-#630 fallthroughs at every WASM-type-walk
-        site).
+        name to the WASM representation:
+
+          - `"i32_pair"` for `String` / `Array` (two-i32 layout).
+          - `"i64"` for `Int` / `Nat`.
+          - `"f64"` for `Float64`.
+          - `"i32"` for `Bool` / `Byte` / ADTs / pointer types.
+          - `None` for `Unit` (no WASM representation — caller
+            usually omits the result clause entirely).
+          - `"i64"` as the safe default when the walker can't reach
+            a `NamedType` (matches the pre-#630 fallthroughs at
+            every WASM-type-walk site).
+
+        Note that the `Unit → None` and `unreachable-NamedType →
+        "i64"` cases are intentionally distinct: `None` says "no
+        WASM type, omit the slot"; `"i64"` says "we couldn't infer,
+        default to the i64 word size".  Callers handling `None` for
+        Unit must not conflate the two.
         """
         canonical = self._canonical_named_type(te, alias_map)
         if canonical is None:
@@ -588,18 +614,23 @@ class InferenceMixin:
         Resolves the outer name through the type alias chain (and
         any `RefinementType` wrappers along the way) via
         `_canonical_named_type`, then formats the result with the
-        outer `type_args` preserved.  Examples:
+        terminal `type_args`.  Examples:
 
           - `NamedType("Str")` where `type Str = String` → `"String"`
-          - `NamedType("Box", [Int])` where `type Box = Array` →
-            `"Array<Int>"`
+          - `NamedType("IntList")` where `type IntList = Array<Int>`
+            → `"Array<Int>"` — the terminal type's args propagate.
           - `NamedType("PosInt")` where `type PosInt = { @Int | p }`
             → `"Int"`
 
-        If the walk doesn't reach a `NamedType`, falls back to
-        `_format_named_type(te)` (no resolution) — matches the
-        pre-#630 fallback shape from when this helper was its own
-        ad-hoc walker.
+        If the walk can't reach a `NamedType` (e.g. terminates at a
+        `FnType`-bodied alias), falls back to `_format_named_type(te)`
+        — bare-name format without resolution.  This is a deliberate
+        post-#630 simplification: the pre-#630 fallback resolved the
+        outer name via `_resolve_base_type_name` and formatted with
+        the outer `type_args`, but that path is unreachable when the
+        canonical walker returns None (the walker covers every shape
+        the old fallback did and more), so the unresolved
+        `_format_named_type` fallback is structurally adequate.
         """
         canonical = self._canonical_named_type(te)
         if canonical is None:
@@ -767,11 +798,14 @@ class InferenceMixin:
         # 7 (SlotRef + nested-RefinementType return), 8 (SlotRef +
         # `FnType`-aliased-String return), 9 (AnonFn + plain return),
         # and 10 (AnonFn + nested-RefinementType return) of the #602
-        # bug class.  Future closure-arg shapes (`FnCall` returning a
-        # closure, `IfExpr` selecting between closures, etc.) plug
-        # in here without further `isinstance` ladders — extracting
-        # the closure's return TypeExpr and feeding it to the walker
-        # is the entire local responsibility.
+        # bug class.  Future closure-arg shapes (e.g. a `FnCall`
+        # returning a closure) can plug into the same walker call
+        # by adding an `elif` that extracts `ret_te` and reuses the
+        # canonicalisation below — no per-shape canonicalisation
+        # logic needed.  Shapes without a single `return_type` field
+        # (`IfExpr` between two closures with the same Vera-level
+        # type, `MatchExpr` arms, etc.) need a unifying step that's
+        # genuinely additional dispatch work, not "plug-in".
         if call.name == "apply_fn" and call.args:
             closure_arg = call.args[0]
             ret_te: ast.TypeExpr | None = None
@@ -1192,19 +1226,26 @@ class InferenceMixin:
             site like `OptionMapFn<Int, String>`).
           - `AnonFn` (inline closure literal).
 
-        Future closure-arg shapes (`FnCall` returning a closure,
-        `IfExpr` selecting between closures, etc.) plug in here
-        without further dispatch ladder — extract the closure's
-        return TypeExpr and feed it to the walker.
+        Future closure-arg shapes with a single `return_type` field
+        (e.g. `FnCall` returning a closure) can be added as an extra
+        `elif` that extracts `ret_te` and reuses the walker call —
+        no per-shape canonicalisation logic needed.  Shapes without
+        a single return type (e.g. `IfExpr` selecting between two
+        closures with the same Vera-level type) need a unifying
+        step that's genuinely additional dispatch work, not "plug-in".
 
-        Defaults to `"i64"` if no return TypeExpr can be extracted
-        — matches the pre-#630 fallthrough.  This default *is*
-        reachable (e.g. `apply_fn` on an FnCall-returning-closure
-        not yet wired here) so the pre-#630 `# pragma: no cover`
-        claim was load-bearing and wrong; the post-#630 walker
-        consolidation moves the soft-failure surface from
-        miscompilation to type-mismatch-at-validation, which is
-        diagnosable rather than silent.
+        Defaults to `"i64"` if no return TypeExpr can be extracted.
+        This default *is* reachable for unhandled shapes — the
+        pre-#630 `# pragma: no cover` claim that closure returns
+        weren't refinement types was disproved (#629); this method's
+        own fallthrough remains reachable for any closure-arg shape
+        not in the `if`/`elif` ladder.  Unlike the interpolation
+        path (where #630's Tier 2 wires a specific [E615]), this
+        site's fallthrough still surfaces only as a `call_indirect`
+        type mismatch at WASM validation — diagnosable but not
+        source-located.  Bringing this site under the same
+        diagnostic discipline as Tier 2 is queued for the #626
+        Layer 1 work.
         """
         ret_te: ast.TypeExpr | None = None
         alias_map: dict[str, ast.TypeExpr] | None = None

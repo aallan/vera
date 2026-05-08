@@ -35,6 +35,7 @@ from vera.codegen.compilability import CompilabilityMixin
 
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
+    from vera.wasm.context import WasmContext
 
 
 def _find_holes(program: ast.Program) -> list[ast.HoleExpr]:
@@ -234,6 +235,46 @@ class CodeGenerator(
         if 1 <= line <= len(lines):
             return lines[line - 1]
         return ""
+
+    def _harvest_interp_inference_failures(
+        self,
+        ctx: WasmContext,
+    ) -> None:
+        """Emit `[E615]` for each interpolation-segment inference failure
+        recorded on `ctx`.
+
+        Both `_compile_fn` (top-level functions) and
+        `_compile_lifted_closure` (lifted closure bodies) construct
+        a fresh `WasmContext` whose `_translate_interpolated_string`
+        appends to `_interp_inference_failures` when it can't classify
+        a segment's Vera type.  When `translate_block` then returns
+        None (the loud-skip path added in #630), this helper surfaces
+        the specific [E615] diagnostic per offending segment before
+        the caller emits the generic [E602] (top-level) or drops the
+        closure from the function table (closure body).
+
+        Centralised here so both call sites stay in lock-step — a
+        future change to E615 semantics (e.g. richer source ranges,
+        suggested fixes) lands in one place.  Pre-#630 the closure
+        path silently dropped the failure list and lost the diagnostic
+        entirely (silent-failure-hunter C1 finding on PR #631).
+        """
+        for failed_part in ctx._interp_inference_failures:
+            self._warning(
+                failed_part,
+                "Cannot interpolate value of unknown type — "
+                "the compiler couldn't determine the Vera type of "
+                "this expression, so it can't choose the right "
+                "to_string conversion.",
+                rationale="Interpolation inserts a `to_string`-style "
+                "wrapper based on the segment's Vera type. When type "
+                "inference returns None or an unrecognised name, the "
+                "wrapper would generate invalid WASM at validation "
+                "time. Likely cause: a function or expression whose "
+                "return-type shape isn't yet handled by the "
+                "canonicaliser in `vera/wasm/inference.py`. See #630.",
+                error_code="E615",
+            )
 
     # -----------------------------------------------------------------
     # Compilation entry point

@@ -8678,10 +8678,260 @@ public fn main(-> @Unit)
             f"Expected an [E602] skip diagnostic alongside E615; "
             f"warnings were: {warnings}"
         )
+        # E615 must precede the *matching* E602 — the one for the
+        # function that contained the offending interpolation — so
+        # the specific-cause-then-generic-skip narrative reads
+        # correctly per function.  Other E602s may interleave
+        # (e.g. prelude combinators that are independently skipped
+        # via #604), so we filter to the E602 mentioning `main` and
+        # assert the per-function ordering invariant only.
+        main_e602 = [d for d in e602 if "main" in d.description]
+        assert main_e602, (
+            f"Expected an [E602] mentioning `main`; e602: {e602}"
+        )
+        e615_idx = warnings.index(e615[0])
+        main_e602_idx = warnings.index(main_e602[0])
+        assert e615_idx < main_e602_idx, (
+            f"E615 should precede the matching E602 (main) in the "
+            f"warnings stream; got E615 at index {e615_idx}, "
+            f"main's E602 at {main_e602_idx}"
+        )
+        # The E615 has a source location attached.  Ideally it would
+        # point precisely at the offending interpolation segment
+        # (the `\(@Option<Int>.0)` SlotRef), but at the time of
+        # PR #631 the SlotRef-inside-InterpolatedString AST nodes
+        # have unreliable spans — the diagnostic carries a location
+        # but it can land on adjacent syntax (e.g. the closing brace
+        # of an earlier construct).  See follow-up issue tracking
+        # source-span propagation for interpolation segments.
+        # For now, pin the contract that *some* location is recorded
+        # so a future span fix is observable.
+        assert e615[0].location.line > 0, (
+            f"E615 should carry a source location; got line "
+            f"{e615[0].location.line}"
+        )
         # `main` is not in exports because the body was dropped.
         assert "main" not in result.exports, (
             f"main should be skipped; exports: {result.exports}"
         )
+
+    def test_e615_in_closure_body_emits_diagnostic(self) -> None:
+        """Closure-body parallel of the top-level E615 path.
+        Pre-this-PR the harvest in `_compile_fn` only ran for top-
+        level functions; `_compile_lifted_closure` returned None
+        without emitting [E615], silently dropping the closure from
+        the function table.  The call_indirect at the use site then
+        referenced a missing entry and WASM validation rejected the
+        module — same silent-drop shape that #614/#615 fixed for
+        translation failures, but for the post-#630 interpolation
+        path inside closure bodies.
+
+        Fix in this PR: extracted the harvest into
+        `CodeGenerator._harvest_interp_inference_failures` and
+        called it from both functions.py and closures.py.
+
+        (silent-failure-hunter finding C1 on PR #631.)
+        """
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Option<Int> = Some(42);
+  apply_fn(fn(@Unit -> @Unit) effects(<IO>) {
+    IO.print("\\(@Option<Int>.0)\\n")
+  }, ())
+}
+"""
+        result = _compile(source)
+        warnings = [
+            d for d in result.diagnostics if d.severity == "warning"
+        ]
+        e615 = [d for d in warnings if d.error_code == "E615"]
+        # Some E615 must fire — without the closure-body harvest,
+        # the closure was silently dropped with no [E615] anywhere.
+        assert e615, (
+            f"Expected at least one [E615] from the closure body; "
+            f"warnings were: {warnings}"
+        )
+
+    def test_per_function_isolation_of_failures_list(self) -> None:
+        """`_interp_inference_failures` lives on `WasmContext`,
+        which `_compile_fn` constructs fresh per top-level function.
+        This test pins per-function isolation: a clean function in
+        the same compilation unit as a function that triggers E615
+        must not inherit the failure list and falsely emit E615.
+
+        Pre-#630: not testable because the silent fallthrough wrapped
+        with `to_string`; cross-function leak wouldn't manifest as
+        [E615] regardless.  Post-#630: load-bearing — if a future
+        refactor reuses a context across functions or forgets to
+        clear the failure list, this test fires.
+
+        (comment-analyzer finding I4 on PR #631.)
+        """
+        source = _IO_PRELUDE + """\
+public fn clean(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("clean\\n")
+}
+
+public fn dirty(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Option<Int> = Some(42);
+  IO.print("\\(@Option<Int>.0)\\n")
+}
+"""
+        result = _compile(source)
+        warnings = [
+            d for d in result.diagnostics if d.severity == "warning"
+        ]
+        e615 = [d for d in warnings if d.error_code == "E615"]
+        # E615 fires for `dirty` (Option<Int> in interpolation).
+        assert e615, (
+            f"Expected [E615] for `dirty`; got warnings: {warnings}"
+        )
+        # `clean` must remain in exports — its context's failure
+        # list is independent of `dirty`'s.
+        assert "clean" in result.exports, (
+            f"clean should be exported (no inference failures in "
+            f"its body); exports: {result.exports}"
+        )
+        # `dirty` is dropped via the [E602] mechanism.
+        assert "dirty" not in result.exports, (
+            f"dirty should be skipped; exports: {result.exports}"
+        )
+
+    def test_e615_fires_on_result_in_interpolation(self) -> None:
+        """Adjacent E615 shape — `Result<T,E>` in interpolation.
+        Distinct from Option (separate ADT), pre-emptively pinned
+        so that a future change to canonicalisation or interpolation
+        narrowing that broadens `Option<T>` handling doesn't
+        accidentally regress the parallel `Result` path.
+
+        (test-analyzer finding C3 on PR #631.)
+        """
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Int, String> = Ok(42);
+  IO.print("\\(@Result<Int, String>.0)\\n")
+}
+"""
+        result = _compile(source)
+        warnings = [
+            d for d in result.diagnostics if d.severity == "warning"
+        ]
+        e615 = [d for d in warnings if d.error_code == "E615"]
+        assert e615, (
+            f"Expected [E615] for Result<Int, String> interpolation; "
+            f"got warnings: {warnings}"
+        )
+
+    def test_multiple_e615_in_one_interpolation(self) -> None:
+        """One [E615] per failing segment — not "first failure
+        aborts loop".  Pre-this-PR the silent-fallthrough returned
+        None on the first failure, so a user with N bad segments
+        in one interpolation got one [E615] per recompile, N
+        round-trips total.  Now the loop continues and records every
+        failing segment, then bails at the end if any failed.
+
+        (silent-failure-hunter finding H2 on PR #631.)
+        """
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Option<Int> = Some(1);
+  let @Result<Int, String> = Ok(2);
+  IO.print("\\(@Option<Int>.0) and \\(@Result<Int, String>.0)\\n")
+}
+"""
+        result = _compile(source)
+        warnings = [
+            d for d in result.diagnostics if d.severity == "warning"
+        ]
+        e615 = [d for d in warnings if d.error_code == "E615"]
+        # Two failing segments → two distinct E615 diagnostics.
+        assert len(e615) >= 2, (
+            f"Expected at least 2 [E615] diagnostics for two failing "
+            f"interpolation segments; got {len(e615)}: {e615}"
+        )
+
+    def test_canonical_named_type_terminal_args_propagation(
+        self,
+    ) -> None:
+        """The canonicaliser preserves `type_args` from the
+        *terminal* `NamedType`, not the outermost.  For
+        `type IntList = Array<Int>`, indexing a fn that returns
+        `@IntList` must resolve to the `Int` element type — the
+        alias body's [Int] propagates through.
+
+        Pre-PR-#631-review-pass the walker captured `outer_type_args`
+        from the first NamedType reached, which was correct for
+        plain alias-to-alias chains (where the outer has no type_args
+        and the alias body does, the `is None` sentinel allowed
+        re-capture) but wrong when the outer carried `type_args=()`
+        (empty tuple — not None) and an `alias_map` substitution
+        bound the param to a parameterised type.  The flagged case:
+        a generic `Mapper<A,B>` alias instantiated with a parameterised
+        type_arg.  Fix: always read from the terminal NamedType.
+
+        (CodeRabbit finding 3 + code-reviewer finding I1 on PR #631.)
+        """
+        source = _IO_PRELUDE + """\
+type IntList = Array<Int>;
+
+private fn make_list(@Unit -> @IntList)
+  requires(true) ensures(true) effects(pure)
+{ [10, 20, 30] }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make_list(())[1])\\n")
+}
+"""
+        # Runs end-to-end — IndexExpr-of-FnCall element-type inference
+        # walks IntList → Array<Int> via the canonicaliser, returns
+        # the Int element type, and `[1]` selects 20.
+        assert _run_io(source, fn="main") == "20\n"
+
+    def test_array_map_refinement_returning_closure(self) -> None:
+        """`_infer_closure_return_vera_type` in `calls_arrays.py`
+        was previously bare-NamedType-only; the #630 migration
+        broadened it to handle refinements + alias chains via
+        `_canonical_named_type`.  This test pins the broader
+        behaviour: an `array_map` over an inline closure whose
+        return type is a refinement should compile and execute,
+        not silently fail inference.
+
+        Pre-PR-#631-review-pass: no test exercised this path.
+        Post-fix: the canonicaliser walks the refinement to its
+        base name; `array_map`'s element-type inference returns
+        `"String"` and the loop emits the correct String-element
+        copy operations.
+
+        (test-analyzer finding C2 on PR #631.)
+        """
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<String> = array_map(
+    [1, 2, 3],
+    fn(@Int -> @{ @String | string_length(@String.0) > 0 })
+      effects(pure) { "x" }
+  );
+  IO.print(@Array<String>.0[0])
+}
+"""
+        # Should run cleanly — pre-fix, the closure-return inference
+        # silently returned None on the refinement, leading to wrong
+        # element size in the array_map loop.
+        assert _run_io(source, fn="main") == "x"
 
 
 # =====================================================================
