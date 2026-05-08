@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.142] - 2026-05-08
+
+### Fixed
+
+- **[#630](https://github.com/aallan/vera/issues/630)** — close the #602 bug class structurally.  After ten distinct triggers across PRs #627 and #629, each fixed locally with one more `isinstance` handler or one more inference site, the discovery rate (9th and 10th triggers landing within hours of #630 being filed) outpaced reactive fixing.  This release consolidates the canonicalisation surface into a single walker and makes the silent amplifier loud.
+
+  **Tier 1 — centralised canonicalisation.** The pre-#630 codebase carried six overlapping canonicalisation helpers in `vera/wasm/inference.py` (plus an unaudited seventh in `vera/wasm/calls_arrays.py`), each handling a subset of (a) `RefinementType` unwrap, (b) alias-chain follow, (c) generic substitution, (d) `type_args` formatting.  Site by site, ad-hoc walks at the apply_fn dispatchers, FnType-return helpers, and IndexExpr branch independently re-implemented combinations of these concerns and missed the rest — accumulating triggers 1–10 of the i32_pair-into-i64 mismatch bug class.
+
+  Replaced with two helpers — `_canonical_named_type` (the core walker: iteratively unwraps RefinementType, applies optional alias_map for generic substitution, follows NamedType alias chains, returns canonical `NamedType` or None) and `_canonical_wasm_type` (thin convenience wrapper that maps the canonical name to a WASM type).  Migrated all callers:
+
+  - `_format_named_type_canonical` — now a 3-line delegate.
+  - `_resolve_i32_pair_ret_te` — now a 2-line delegate (kept for #628 cross-module work; otherwise inline-able).
+  - `_fn_type_return_wasm` — single-line delegate.
+  - `_resolve_generic_fn_return` — builds `alias_map` from the generic params + concrete args, single delegate call.
+  - `_infer_fncall_vera_type` apply_fn dispatcher — collapsed from a 75-line nested `isinstance` ladder over `(SlotRef, AnonFn)` × `(generic, non-generic)` × `(NamedType, RefinementType)` shapes to 18 lines: extract closure return TypeExpr + alias_map, call walker once.  Future closure-arg shapes (`FnCall` returning a closure, `IfExpr` selecting between closures, etc.) plug into the same dispatch with no new isinstance ladder.
+  - `_infer_apply_fn_return_type` — same consolidation as above.
+  - `_infer_index_element_type_expr` FnCall branch — now uses the canonical `NamedType` (with `type_args` preserved) directly to feed `_alias_array_element`.
+  - `_infer_closure_return_vera_type` (in `calls_arrays.py`, used by `array_map`) — previously bare-`NamedType`-only; now handles refinements and alias chains.
+
+  Deleted `_resolve_type_name_to_wasm_canonical` — functionally identical to `_resolve_base_type_name`, an unnoticed duplicate that had evolved in parallel.  All callers redirected.
+
+  **Tier 2 — loud diagnostic on the silent amplifier.** The actual silent failure for ten triggers wasn't the inference miss itself — it was `vera/wasm/operators.py:482-486`, the `else` branch in `_translate_interpolated_string` that wrapped any unrecognised-type segment with `to_string(...)`.  `to_string` reads its argument as `i64`; an `i32_pair` (String/Array) value then tripped `expected i64, found i32` at WASM validation.  That fallthrough turned every canonicalisation gap into invalid emission rather than a clean compile-time skip.
+
+  Added new error code [E615] "Cannot interpolate value of unknown type — type inference failed".  Converted the silent fallthrough to record the offending segment on `WasmContext._interp_inference_failures`, then return None.  `CodeGenerator._compile_fn` harvests the failures and emits [E615] for each before falling through to the existing [E602] skip — same loud-skip mechanism that any other unsupported expression triggers, but now with a specific E-code pointing at the actual inference gap rather than a generic "unsupported expressions".
+
+  **Net effect.** Six canonicalisation helpers → two.  Seventy-five-line apply_fn dispatcher × two sites → eighteen lines × two.  Silent miscompilation on inference miss → clean compile-time skip with specific [E615] diagnostic.  All ten existing #602-class regression tests in `TestStringInterpolation` continue to pass — pure refactor + diagnostic conversion, no behavioural change for valid programs.  New regression test `TestE615LoudInterpolationFallthrough630::test_e615_fires_on_adt_in_interpolation` pins the new diagnostic surface (interpolating an ADT-typed value, which the canonicaliser correctly returns a non-recognised name for, now emits E615 + E602 instead of silently miscompiling).
+
+  Pragma audit closed for the canonicalisation cluster — the disproved `# pragma: no cover` on closure-return-RefinementType (PR #629) was removed during the cluster migration; the remaining bare `# pragma: no cover` claims in `vera/wasm/inference.py` are non-load-bearing defensive fallthroughs in unrelated machinery.  Broader audit (verifying every prose-bearing pragma claim across the WASM codegen) is queued as a follow-up.
+
+  Follow-ups still in scope: [#628](https://github.com/aallan/vera/issues/628) (cross-module `_fn_ret_type_exprs` propagation — same bug class, different machinery, unblocked by this PR's canonical helper), [#626](https://github.com/aallan/vera/issues/626) Layer 1 (pre-commit gate on [E602] across the conformance suite — the diagnostic infrastructure landed here generalises to the whole channel), and the duplicate `_type_expr_name` / `_type_expr_to_slot_name` in `inference.py` (separate concern from canonicalisation, surfaced during this audit, deferred to a cleanup PR).
+
 ## [0.0.141] - 2026-05-08
 
 ### Fixed
@@ -2037,7 +2068,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.141...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.142...HEAD
+[0.0.142]: https://github.com/aallan/vera/compare/v0.0.141...v0.0.142
 [0.0.141]: https://github.com/aallan/vera/compare/v0.0.140...v0.0.141
 [0.0.140]: https://github.com/aallan/vera/compare/v0.0.139...v0.0.140
 [0.0.139]: https://github.com/aallan/vera/compare/v0.0.138...v0.0.139

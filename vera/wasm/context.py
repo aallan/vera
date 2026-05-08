@@ -200,6 +200,19 @@ class WasmContext(
         # ``vera/codegen/closures.py``) emit plain ``call``.
         self._tail_call_sites: set[int] = set()
         self._self_ret_wt: str | None = None
+        # #630 Tier 2 — interpolation-segment inference failures.
+        # When `_translate_interpolated_string` can't classify a segment's
+        # Vera type, it appends the offending `Expr` here and returns
+        # None.  `CodeGenerator._compile_fn` harvests these and emits a
+        # specific [E615] diagnostic before the fall-through [E602].
+        # Pre-#630 the same path silently wrapped the segment in
+        # `to_string(...)` which reads `i64` — an `i32_pair` value
+        # (String/Array) would then trip `expected i64, found i32` at
+        # WASM validation.  Converting the silent miscompilation into a
+        # loud compile-time skip closes the ten triggers of the #602
+        # bug class against any future inference gap (ADT types in
+        # interpolation, novel composite kinds, etc.).
+        self._interp_inference_failures: list[ast.Expr] = []
 
     def set_fn_ret_types(
         self, ret_types: dict[str, str | None],

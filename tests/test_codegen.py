@@ -8614,6 +8614,76 @@ public fn main(-> @Unit)
         )
 
 
+class TestE615LoudInterpolationFallthrough630:
+    """[#630](https://github.com/aallan/vera/issues/630) Tier 2 — the
+    `_translate_interpolated_string` silent-fallthrough path now emits
+    a specific [E615] diagnostic and drops the function with [E602]
+    instead of silently miscompiling.
+
+    Pre-#630: when `_infer_vera_type` returned None or a name not in
+    `_INTERP_TO_STRING`, the segment got wrapped in `to_string(...)`
+    which reads its argument as `i64`.  An `i32_pair` (String/Array)
+    or any non-`i64`-shaped value then produced invalid WASM at
+    validation (`expected i64, found i32`) — the load-bearing
+    silent-amplifier behind the ten triggers of the #602 bug class
+    accumulated across PRs #627, #629.
+
+    Post-#630: the canonicaliser closes most of the inference gaps
+    on the producer side (Tier 1).  This test pins the consumer-side
+    half (Tier 2): for a residual gap the canonicaliser doesn't
+    cover, the failure manifests as a clean compile-time skip with
+    a specific E-code, not invalid WASM.
+    """
+
+    def test_e615_fires_on_adt_in_interpolation(self) -> None:
+        """Interpolating an ADT-typed slot — `IO.print("\\(@Option<Int>.0)")`
+        — yields a non-recognised `vera_type` name (`"Option<Int>"`)
+        and trips the post-#630 E615 fallthrough.
+
+        Pre-#630 this would have wrapped the slot in `to_string(...)`
+        and produced invalid WASM at instantiation; post-#630 it
+        emits [E615] and the function is skipped with [E602] before
+        any invalid emission.
+        """
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Option<Int> = Some(42);
+  IO.print("\\(@Option<Int>.0)\\n")
+}
+"""
+        result = _compile(source)
+        # No errors — the program parses + type-checks cleanly.
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert not errors, (
+            f"Expected no errors, got: {errors}"
+        )
+        # E615 fires on the interpolation segment.
+        warnings = [
+            d for d in result.diagnostics if d.severity == "warning"
+        ]
+        e615 = [d for d in warnings if d.error_code == "E615"]
+        assert e615, (
+            f"Expected an [E615] diagnostic; got warnings: {warnings}"
+        )
+        assert "interpolate" in e615[0].description.lower(), (
+            f"E615 message should mention interpolation; got: "
+            f"{e615[0].description}"
+        )
+        # Function gets dropped with the existing [E602] mechanism —
+        # E615 is the *specific* annotation, E602 is the loud skip.
+        e602 = [d for d in warnings if d.error_code == "E602"]
+        assert e602, (
+            f"Expected an [E602] skip diagnostic alongside E615; "
+            f"warnings were: {warnings}"
+        )
+        # `main` is not in exports because the body was dropped.
+        assert "main" not in result.exports, (
+            f"main should be skipped; exports: {result.exports}"
+        )
+
+
 # =====================================================================
 # Async / Future<T>
 # =====================================================================

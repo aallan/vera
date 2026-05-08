@@ -193,6 +193,33 @@ class FunctionCompilationMixin:
         # Compile body
         body_instrs = ctx.translate_block(decl.body, env)
         if body_instrs is None:
+            # #630 Tier 2 — surface specific [E615] for any
+            # interpolation segments whose Vera type couldn't be
+            # inferred.  Pre-#630 those segments silently fell through
+            # to `to_string(...)` which reads i64; an i32_pair value
+            # (String/Array) then tripped `expected i64, found i32` at
+            # WASM validation, decoupled from any source location.
+            # Now the failure is loud, source-located, and points at
+            # the specific `\(...)` segment whose inference returned
+            # None.  Closes the silent-amplifier half of the #602 bug
+            # class; the centralised canonicaliser closes the inference
+            # half (Tier 1, same PR).
+            for failed_part in ctx._interp_inference_failures:
+                self._warning(
+                    failed_part,
+                    "Cannot interpolate value of unknown type — "
+                    "the compiler couldn't determine the Vera type of "
+                    "this expression, so it can't choose the right "
+                    "to_string conversion.",
+                    rationale="Interpolation inserts a `to_string`-style "
+                    "wrapper based on the segment's Vera type. When type "
+                    "inference returns None or an unrecognised name, the "
+                    "wrapper would generate invalid WASM at validation "
+                    "time. Likely cause: a function or expression whose "
+                    "return-type shape isn't yet handled by the "
+                    "canonicaliser in `vera/wasm/inference.py`. See #630.",
+                    error_code="E615",
+                )
             self._warning(
                 decl,
                 f"Function '{decl.name}' body contains unsupported "

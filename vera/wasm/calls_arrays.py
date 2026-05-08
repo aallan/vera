@@ -576,11 +576,19 @@ class CallsArraysMixin:
         output element type.  Handles the common case of an anonymous
         function literal (``fn(...) -> T { ... }``).  Returns ``None``
         when the return type can't be inferred from the AST alone.
+
+        Post-#630: delegates to `_canonical_named_type` so that
+        closures with `RefinementType` returns (single-level or nested)
+        and aliased return types resolve to the canonical name.  The
+        pre-#630 shape only handled bare `NamedType` — a closure with
+        a refinement return passed to `array_map` would have silently
+        returned `None`, exactly the trigger pattern of the #602 /
+        #614 bug class.
         """
         if isinstance(closure_arg, ast.AnonFn):
-            ret = closure_arg.return_type
-            if isinstance(ret, ast.NamedType):
-                return self._resolve_type_name_to_wasm_canonical(ret.name)
+            canonical = self._canonical_named_type(closure_arg.return_type)
+            if canonical is not None:
+                return canonical.name
         return None
 
     def _translate_array_map(
