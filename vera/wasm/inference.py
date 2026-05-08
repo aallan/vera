@@ -642,21 +642,35 @@ class InferenceMixin:
                 if isinstance(alias_te, ast.FnType):
                     alias_params = self._type_alias_params.get(
                         closure_arg.type_name)
+                    # Iteratively unwrap RefinementType layers at the
+                    # FnType return position before classifying — same
+                    # shape fix as the i32_pair branches above and the
+                    # FnType-WASM helpers below.  Without this, a
+                    # closure typed e.g.
+                    # `fn(Unit -> @{ @{ @String | p1 } | p2 })`
+                    # made `_infer_fncall_vera_type` return None for
+                    # the apply_fn call, downstream interpolation wrap
+                    # produced `to_string(...)` over an `i32_pair` and
+                    # WASM validation rejected the module.  Same bug
+                    # class as #602; this is the apply_fn-with-aliased-
+                    # FnType variant.
+                    base_ret = alias_te.return_type
+                    while isinstance(base_ret, ast.RefinementType):
+                        base_ret = base_ret.base_type
                     if (alias_params and closure_arg.type_args
                             and len(alias_params)
                             == len(closure_arg.type_args)):
                         # Substitute type args into the return type
                         alias_map = dict(zip(alias_params,
                                              closure_arg.type_args))
-                        ret = alias_te.return_type
-                        if isinstance(ret, ast.NamedType):
-                            if ret.name in alias_map:
-                                ta = alias_map[ret.name]
+                        if isinstance(base_ret, ast.NamedType):
+                            if base_ret.name in alias_map:
+                                ta = alias_map[base_ret.name]
                                 if isinstance(ta, ast.NamedType):
                                     return self._format_named_type(ta)
-                            return self._format_named_type(ret)
-                    elif isinstance(alias_te.return_type, ast.NamedType):
-                        return self._format_named_type(alias_te.return_type)
+                            return self._format_named_type(base_ret)
+                    elif isinstance(base_ret, ast.NamedType):
+                        return self._format_named_type(base_ret)
         # Map builtins
         if call.name in ("map_new", "map_insert", "map_remove"):
             return "Map"
@@ -1111,7 +1125,15 @@ class InferenceMixin:
                 subst[param] = arg.name
 
         ret = fn_type.return_type
-        if isinstance(ret, ast.RefinementType):
+        # Iterative unwrap — handles nested refinements
+        # (`@{ @{ @String | p1 } | p2 }`) at FnType return positions.
+        # Pre-fix this peeled only one layer, so `apply_fn` of a
+        # closure typed with a nested-refinement return mis-classified
+        # the WASM return type and produced a `call_indirect type
+        # mismatch` trap at runtime.  Same bug class as #602 (#629
+        # closes the FnCall + IndexExpr halves; this site is the
+        # apply_fn / FnType-alias half).
+        while isinstance(ret, ast.RefinementType):
             ret = ret.base_type
         if isinstance(ret, ast.NamedType):
             # Substitute type variable, then fully resolve aliases/refinements
@@ -1163,7 +1185,12 @@ class InferenceMixin:
     def _fn_type_return_wasm(self, fn_type: ast.FnType) -> str | None:
         """Get the WASM return type from a FnType AST node."""
         ret = fn_type.return_type
-        if isinstance(ret, ast.RefinementType):
+        # Iterative unwrap matches `_infer_apply_fn_return_type` and
+        # `_resolve_i32_pair_ret_te` — nested refinements at FnType
+        # return positions otherwise mis-classify the WASM return
+        # type.  See the comment in `_infer_apply_fn_return_type` for
+        # the failure mode.
+        while isinstance(ret, ast.RefinementType):
             ret = ret.base_type
         if isinstance(ret, ast.NamedType):
             resolved = self._resolve_type_name_to_wasm_canonical(ret.name)

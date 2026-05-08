@@ -8294,6 +8294,50 @@ public fn main(-> @Unit)
 """
         assert _run_io(source, fn="main") == "hello\n"
 
+    def test_apply_fn_nested_refinement_in_interpolation(self) -> None:
+        """Seventh trigger of the #602 bug class — surfaced by the
+        silent-failure-hunter agent during PR #629's review.
+
+        Path: `apply_fn(@FnAlias.0, ())` inside an interpolation,
+        where the `FnType` alias's return type is a *nested*
+        refinement.  Three separate inference sites in
+        `vera/wasm/inference.py` all walk the FnType's
+        `return_type` and only handled `NamedType` directly:
+
+        - `_infer_fncall_vera_type` (apply_fn branch) — for the
+          interpolation argument's vera-type lookup
+        - `_resolve_generic_fn_return` — for generic-instantiated
+          FnType returns
+        - `_fn_type_return_wasm` — for the WASM-canonical return type
+
+        Pre-fix, the apply_fn branch returned None for nested
+        refinements, the interpolation fell through to the
+        `to_string(...)` wrapper, and at validation time WASM
+        rejected the i32→i64 mismatch (`expected i64, found i32`)
+        that's been the canonical surface of this bug class since
+        #602.
+
+        Fix: `while isinstance(ret, ast.RefinementType): ret =
+        ret.base_type` at all three sites — same shape as the
+        FnCall path, applied symmetrically to the FnType-alias
+        path.
+        """
+        source = _IO_PRELUDE + """\
+type Maker = fn(Unit -> { @{ @String | string_length(@String.0) > 0 } | string_length(@String.0) < 100 }) effects(pure);
+
+private fn make_maker(@Unit -> @Maker)
+  requires(true) ensures(true) effects(pure)
+{ fn(@Unit -> @String) effects(pure) { "hello" } }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Maker = make_maker(());
+  IO.print("\\(apply_fn(@Maker.0, ()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
     def test_refinement_over_type_alias_in_interpolation(self) -> None:
         """Sibling case to nested-refinement — refinement applied to a
         type alias.  Worked already because `_resolve_base_type_name`
@@ -8317,7 +8361,7 @@ public fn main(-> @Unit)
         assert _run_io(source, fn="main") == "hello\n"
 
     def test_inline_refinement_array_in_indexed_interpolation(self) -> None:
-        """A fn declared with an inline refinement return type over
+        """A fn declared with a *nested* refinement return type over
         `Array<T>`, indexed inside an interpolation.
 
         Parallel instance of the same RefinementType gap, but in
@@ -8328,11 +8372,17 @@ public fn main(-> @Unit)
         the symptom was the [E602] "main body contains unsupported
         expressions — skipped" warning.
 
-        Fix: same RefinementType-unwrap shape applied to
+        Uses the nested-refinement shape (`@{ @{ @Array<Int> | p1 } |
+        p2 }`) so this test exercises the `while`-loop unwrap added
+        in PR #629's review pass alongside the parallel string-side
+        nested test — without the loop, the array branch would only
+        peel one level and fall through.
+
+        Fix: same RefinementType `while`-loop unwrap applied to
         `_infer_index_element_type_expr`'s FnCall branch.
         """
         source = _IO_PRELUDE + """\
-private fn make(-> @{ @Array<Int> | array_length(@Array<Int>.0) > 0 })
+private fn make(-> @{ @{ @Array<Int> | array_length(@Array<Int>.0) > 0 } | array_length(@Array<Int>.0) < 100 })
   requires(true) ensures(true) effects(pure)
 { [10, 20, 30] }
 
