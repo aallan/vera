@@ -8374,6 +8374,54 @@ public fn main(-> @Unit)
 """
         assert _run_io(source, fn="main") == "hello\n"
 
+    def test_apply_fn_anon_nested_refinement_in_interpolation(
+        self,
+    ) -> None:
+        """Tenth trigger of the #602 bug class — surfaced by
+        CodeRabbit on PR #629 immediately after the 9th was fixed.
+        Inverse surface: `expected i32, found i64` rather than the
+        usual `expected i64, found i32`, because this site is on
+        the *WASM-type* inference half of the dispatcher
+        (`_infer_apply_fn_return_type`, which infers the
+        `call_indirect` sig) rather than the Vera-type-name half
+        (`_infer_fncall_vera_type`, which the 9th trigger hit).
+
+        Path: `apply_fn(fn(@Unit -> @{ @{ @String | p1 } | p2 })
+        effects(pure) { ... }, ())` — inline `AnonFn` declaring a
+        nested-refinement return.  Pre-fix
+        `_infer_apply_fn_return_type`'s `AnonFn` branch had a
+        single-level `if isinstance(ret, ast.RefinementType): base
+        = ret.base_type` unwrap with a `# pragma: no cover —
+        closure returns are not refinement types` claim — both
+        empirically disproved.  Single-level unwrap on a nested
+        refinement leaves `base` as another `RefinementType`, the
+        `NamedType` check misses, and the method falls through to
+        `return "i64"` — the call site emitted `i32_pair`, hence
+        the inverse-direction WASM-validation surface.
+
+        Fix: replaced the single-level `if`-unwrap with the
+        established `while`-loop shape used at every other
+        type-walking site, and removed the disproven
+        `# pragma: no cover` claim.
+
+        Queued for obsolescence by [#630](https://github.com/aallan/vera/issues/630)
+        when the centralised `_canonical_vera_type` lands; this
+        test will continue to pin the trigger through that
+        refactor.
+        """
+        source = _IO_PRELUDE + """\
+private fn helper(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(apply_fn(fn(@Unit -> @{ @{ @String | string_length(@String.0) > 0 } | string_length(@String.0) < 100 }) effects(pure) { helper(()) }, ()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
     def test_apply_fn_aliased_string_in_interpolation(self) -> None:
         """Eighth trigger of the #602 bug class — surfaced by
         CodeRabbit during PR #629's final review pass.

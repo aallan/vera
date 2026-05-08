@@ -1159,8 +1159,29 @@ class InferenceMixin:
             # Closure literal passed directly — infer return type from its
             # declared return TypeExpr so call_indirect sig matches the
             # lifted function's actual return (i32_pair for String/Array).
+            #
+            # Iteratively unwrap RefinementType layers before the
+            # NamedType check.  The pre-fix shape was `if isinstance(ret,
+            # ast.RefinementType): base = ret.base_type` with a
+            # `# pragma: no cover — closure returns are not refinement
+            # types` justification — empirically disproved by the 9th and
+            # 10th triggers of the #602 bug class (PR #629).  An inline
+            # `AnonFn` *can* declare a `RefinementType` return per the
+            # grammar (`fn(@Unit -> @{ @String | p })`) and the type
+            # checker accepts it; nested refinements
+            # (`fn(@Unit -> @{ @{ @String | p1 } | p2 })`) trip the
+            # single-level unwrap, ret stays a `RefinementType`, the
+            # NamedType branch misses, and the method falls through to
+            # `return "i64"` — same #602 surface in inverse form
+            # (`expected i32, found i64` at WASM validation, because the
+            # call site emits `i32_pair` while this sig says `i64`).
+            #
+            # This whole block is queued for replacement by the
+            # centralised `_canonical_vera_type` proposed in #630;
+            # the `while`-loop shape is the local stop-gap.
             ret: ast.TypeExpr = closure_arg.return_type
-            # Fully resolve aliases and peel refinements to canonical name.
+            while isinstance(ret, ast.RefinementType):
+                ret = ret.base_type
             if isinstance(ret, ast.NamedType):
                 resolved_name = self._resolve_type_name_to_wasm_canonical(
                     ret.name,
@@ -1168,15 +1189,6 @@ class InferenceMixin:
                 if resolved_name in ("String", "Array"):
                     return "i32_pair"
                 return self._named_type_to_wasm(resolved_name)
-            if isinstance(ret, ast.RefinementType):  # pragma: no cover — closure returns are not refinement types
-                base = ret.base_type
-                if isinstance(base, ast.NamedType):
-                    resolved_name = self._resolve_type_name_to_wasm_canonical(
-                        base.name,
-                    )
-                    if resolved_name in ("String", "Array"):
-                        return "i32_pair"
-                    return self._named_type_to_wasm(resolved_name)
         return "i64"  # pragma: no cover — safe default for most cases
 
     def _resolve_generic_fn_return(
