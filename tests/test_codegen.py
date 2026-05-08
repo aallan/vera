@@ -8338,6 +8338,47 @@ public fn main(-> @Unit)
 """
         assert _run_io(source, fn="main") == "hello\n"
 
+    def test_apply_fn_aliased_string_in_interpolation(self) -> None:
+        """Eighth trigger of the #602 bug class — surfaced by
+        CodeRabbit during PR #629's final review pass.
+
+        Path: `apply_fn(@Maker.0, ())` inside an interpolation,
+        where `Maker = fn(Unit -> Str) effects(pure)` and
+        `type Str = String;`.  Pre-fix `_infer_fncall_vera_type`'s
+        apply_fn branch called `_format_named_type` on
+        `NamedType("Str")` which returned the alias name "Str" —
+        downstream `_translate_interpolated_string` checks
+        `vera_type == "String"`, the alias name missed, and the
+        value fell through to the `to_string(...)` wrapper over an
+        `i32_pair`, reproducing the canonical `expected i64, found
+        i32` WASM-validation surface of this bug class.
+
+        Fix: introduced `_format_named_type_canonical` (resolves
+        `te.name` through the alias chain via
+        `_resolve_base_type_name`, then formats with original
+        `type_args`).  Replaced both `_format_named_type` calls in
+        the apply_fn branch — substitution and fallback — with the
+        canonical variant, mirroring the canonicalisation already
+        done in `_resolve_i32_pair_ret_te` for the regular FnCall
+        path.
+        """
+        source = _IO_PRELUDE + """\
+type Str = String;
+type Maker = fn(Unit -> Str) effects(pure);
+
+private fn make_maker(@Unit -> @Maker)
+  requires(true) ensures(true) effects(pure)
+{ fn(@Unit -> @String) effects(pure) { "hello" } }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Maker = make_maker(());
+  IO.print("\\(apply_fn(@Maker.0, ()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
     def test_refinement_over_type_alias_in_interpolation(self) -> None:
         """Sibling case to nested-refinement — refinement applied to a
         type alias.  Worked already because `_resolve_base_type_name`

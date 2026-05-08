@@ -483,6 +483,39 @@ class InferenceMixin:
                 return te.name
         return f"{te.name}<{', '.join(arg_names)}>"
 
+    def _format_named_type_canonical(self, te: ast.NamedType) -> str:
+        """Like `_format_named_type` but resolves `te.name` through
+        the type alias chain first.
+
+        `_resolve_base_type_name` follows `NamedType` aliases
+        recursively and unwraps any intervening `RefinementType`
+        layers, so this yields a canonical base name (e.g. `"String"`
+        rather than `"Str"` for `type Str = String;`) with the
+        original `type_args` preserved.
+
+        Used at the `apply_fn` return-type position in
+        `_infer_fncall_vera_type`.  Without canonicalisation, a
+        closure typed `fn(Unit -> Str) effects(pure)` (where
+        `type Str = String;`) had `_infer_fncall_vera_type` returning
+        `"Str"`, the downstream `_translate_interpolated_string`
+        check `vera_type == "String"` failed, and the value fell
+        through to the `to_string(...)` wrapper — same `expected
+        i64, found i32` trap as #602's root cause, with the
+        `apply_fn`-over-aliased-`FnType`-return trigger.  Same fix
+        shape as `_resolve_i32_pair_ret_te` for the regular FnCall
+        path.
+        """
+        base = self._resolve_base_type_name(te.name)
+        if not te.type_args:
+            return base
+        arg_names = []
+        for ta in te.type_args:
+            if isinstance(ta, ast.NamedType):
+                arg_names.append(self._format_named_type(ta))
+            else:
+                return base
+        return f"{base}<{', '.join(arg_names)}>"
+
     def _infer_vera_type(self, expr: ast.Expr) -> str | None:
         """Infer the Vera type name of an expression for call rewriting."""
         if isinstance(expr, ast.IntLit):
@@ -660,17 +693,36 @@ class InferenceMixin:
                     if (alias_params and closure_arg.type_args
                             and len(alias_params)
                             == len(closure_arg.type_args)):
-                        # Substitute type args into the return type
+                        # Substitute type args into the return type.
+                        # Both substitution and fallback go through
+                        # `_format_named_type_canonical` so alias
+                        # chains (`type Str = String;`) resolve to
+                        # canonical names — without this, the
+                        # apply_fn path returned the alias name and
+                        # downstream interpolation re-triggered the
+                        # #602 trap.  RefinementType layers in the
+                        # substituted type arg are unwrapped before
+                        # canonicalising, mirroring the same
+                        # `while`-loop on `alias_te.return_type`
+                        # above.
                         alias_map = dict(zip(alias_params,
                                              closure_arg.type_args))
                         if isinstance(base_ret, ast.NamedType):
                             if base_ret.name in alias_map:
-                                ta = alias_map[base_ret.name]
+                                ta: ast.TypeExpr = (
+                                    alias_map[base_ret.name])
+                                while isinstance(
+                                        ta, ast.RefinementType):
+                                    ta = ta.base_type
                                 if isinstance(ta, ast.NamedType):
-                                    return self._format_named_type(ta)
-                            return self._format_named_type(base_ret)
+                                    return (self
+                                        ._format_named_type_canonical(
+                                            ta))
+                            return self._format_named_type_canonical(
+                                base_ret)
                     elif isinstance(base_ret, ast.NamedType):
-                        return self._format_named_type(base_ret)
+                        return self._format_named_type_canonical(
+                            base_ret)
         # Map builtins
         if call.name in ("map_new", "map_insert", "map_remove"):
             return "Map"
