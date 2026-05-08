@@ -479,8 +479,25 @@ class OperatorsMixin:
                     parts.append(ast.FnCall(
                         name=fn_name, args=(p,), span=expr.span,
                     ))
-                else:  # pragma: no cover
-                    # Fallback: try to_string (Int-compatible types)
+                else:
+                    # Fallback when `_infer_vera_type` returns None or
+                    # an unrecognised type name.  Pre-#602 this branch
+                    # carried a `# pragma: no cover` claiming
+                    # unreachability — disproved by #602 (a
+                    # `String`-returning user FnCall mapped to None
+                    # because `_infer_fncall_vera_type` had no
+                    # `i32_pair` branch, fell here, and `to_string`
+                    # generated invalid WASM by reading `i32_pair` as
+                    # `i64`).  #602's fix closes that specific shape;
+                    # this branch remains reachable for any future
+                    # gap in inference (e.g. ADT types, novel
+                    # composite kinds).  When that next bug appears,
+                    # the symptom will be the same `expected i64,
+                    # found i32` at WASM validation — at which point
+                    # the right fix is whichever inference path
+                    # returned None, not this fallback.  Tracked as
+                    # part of #626 (the broader "translate returns
+                    # None → silent skip" pattern).
                     parts.append(ast.FnCall(
                         name="to_string", args=(p,), span=expr.span,
                     ))

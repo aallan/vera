@@ -770,6 +770,18 @@ class InferenceMixin:
                 return "Bool"
             if ret_wt == "f64":
                 return "Float64"
+            # Mirror the non-generic `i32_pair` branch below: a
+            # monomorphised generic fn returning `String` or `Array<T>`
+            # has the same disambiguation need.  Without this, a
+            # `forall<T> fn id(@T -> @T)` instantiated at `String` and
+            # called inside interpolation would still fall through to
+            # `to_string(...)` — same #602 failure mode in a different
+            # call shape.  `_register_fn` populates `_fn_ret_type_exprs`
+            # for monomorphised names too (`core.py:333`).
+            if ret_wt == "i32_pair":
+                ret_te = self._fn_ret_type_exprs.get(mangled)
+                if isinstance(ret_te, ast.NamedType):
+                    return ret_te.name
             return None
         # Non-generic: map from WASM return type
         ret_wt = self._fn_ret_types.get(call.name)
