@@ -202,11 +202,63 @@ class ClosuresMixin:
         from the enclosing scope (De Bruijn index >= param count for
         that type). Returns list of (type_name, adjusted_index, wasm_type).
         The adjusted_index is the De Bruijn index in the OUTER scope.
+
+        After walking, the captures are normalised per type so that the
+        lift-side env push (in `_compile_lifted_closure`) yields a
+        per-type stack where De Bruijn resolution works correctly.  Two
+        normalisations are applied (#615):
+
+        1. **Prefix fill.**  If the body references `@T.k` (outer_idx K)
+           while leaving some `@T.j` (j<K) unreferenced, the lift-side
+           stack is short by (K-j) entries and `env.resolve("T", k)`
+           returns None.  Synthetic entries for the unreferenced outer
+           indices in [0, max] are added so the prefix is contiguous.
+           Their `wasm_type` matches the type's other captures (same
+           `type_name` always maps to the same WAT type).
+        2. **Descending sort within type.**  `WasmSlotEnv.resolve` uses
+           `pos = len(stack) - 1 - index`, so the captured outer_idx K
+           must be at the bottom of the per-type stack and outer_idx 0
+           at the top (just below the closure's own param pushes).
+           Walker-order is determined by source position of the SlotRef
+           (DFS); body shapes like `@Int.1 - @Int.2` add (Int, 0) before
+           (Int, 1), producing an ascending list that pushes them in
+           the wrong order — body's `@Int.k` then resolves to the WRONG
+           captured local.  Pre-fix this manifested as a silent
+           miscompute (no trap, wrong result) for any closure capturing
+           multiple slots of the same type when walk order happened to
+           be ascending.  Sorting each per-type group in *descending*
+           outer_idx order before push gives the correct stack layout.
         """
         free: list[tuple[str, int, str]] = []
         seen: set[tuple[str, int]] = set()
         self._walk_free_vars(body, param_counts, free, seen)
-        return free
+
+        # Group by type so we can fill prefix and sort within each type
+        # independently.  `dict` preserves insertion order, so the
+        # cross-type ordering follows first-encounter order in the walk
+        # (irrelevant for resolution since each type has its own stack).
+        by_type: dict[str, list[tuple[int, str]]] = {}
+        for tname, idx, wt in free:
+            by_type.setdefault(tname, []).append((idx, wt))
+
+        result: list[tuple[str, int, str]] = []
+        for tname, entries in by_type.items():
+            # Same `type_name` → same `wasm_type` (the wt computation in
+            # `_walk_free_vars` is deterministic per type_name); use the
+            # first entry's wt for any synthetic prefix fills.
+            wt = entries[0][1]
+            seen_idxs = {idx for idx, _ in entries}
+            max_idx = max(seen_idxs)
+            for j in range(max_idx + 1):
+                if j not in seen_idxs:
+                    entries.append((j, wt))
+            # Descending outer_idx so the lift-side push lands the
+            # highest outer_idx at the deepest position in the stack.
+            entries.sort(key=lambda e: e[0], reverse=True)
+            for idx, ewt in entries:
+                result.append((tname, idx, ewt))
+
+        return result
 
     def _walk_free_vars(
         self,

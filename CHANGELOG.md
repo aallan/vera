@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.139] - 2026-05-08
+
+### Fixed
+
+- **[#614](https://github.com/aallan/vera/issues/614)** — `f()[i]` (indexing into a function-call result) silently dropped the enclosing function from the WAT output.  Root cause: `_infer_index_element_type_expr` in `vera/wasm/inference.py` only handled SlotRef and nested-IndexExpr collections; FnCall collections fell through to `return None`, propagating up until either `_compile_fn` skipped the function with an [E602] warning (top-level case — the same shape as #604) or `_compile_lifted_closure` returned None (closure case — silent: the registered closure_id was never added to the function table, so the call_indirect at the use site referenced a missing entry and WASM validation rejected the module with "unknown table 0: table index out of bounds at offset N").  Both manifestations close together.
+
+  Fix: register each FnDecl's full Vera return-type expression in a new `_fn_ret_type_exprs` dict on `CodeGenerator` (alongside the WAT-type `_fn_sigs`), propagate it to the per-function and closure WasmContexts, and extend `_infer_index_element_type_expr` to look up the called fn's return type and extract the `Array<T>` element when applicable.
+
+- **[#615](https://github.com/aallan/vera/issues/615)** — closure capture order miscompile, two failure shapes both rooted in `_collect_free_vars` returning captures unsorted and unfilled:
+
+  1. **Non-contiguous outer slot.**  Closure body refs `@Int.k` while skipping `@Int.j` (j<k).  The lift-side env had no entry for the unreferenced outer index, so `env.resolve("Int", k)` returned None inside the closure body, body translation failed, the closure was dropped from the function table, and the call_indirect at the use site referenced a missing entry — WASM validation trap.  Concrete repro: a closure capturing `@Int.2` from outer scope while having a `@Int.1` (which the body doesn't reference) in the same scope.
+
+  2. **Ascending walker-order silent miscompute.**  Even with contiguous captures, when source order put the lower outer_idx first (e.g. body `@Int.1 - @Int.2`), the walker added (Int,0) before (Int,1) → ascending lift-side push order → wrong stack layout under `WasmSlotEnv.resolve` (which uses `pos = len-1-index`) → body's slot refs resolved to the WRONG captured locals.  No trap, just wrong output.  This was independent of #615's original reproducer but shares the root cause.
+
+  Fix: in `_collect_free_vars`, after walking the body for free vars, group captures by type, fill the prefix [0, max] per type with synthetic entries (their `wasm_type` matches the type's other captures since `type_name` deterministically maps to a single WAT type), and sort each group descending by outer_idx so the lift-side push lands the highest outer_idx at the deepest stack position.  No changes needed to the per-call serialisation (`_translate_anon_fn`) or the lift-side env construction (`_compile_lifted_closure`) — both already iterate the captures list in order; the fix is to make that order correct.
+
+  New test classes `TestIndexExprOfFnCall614` (3 tests) and `TestNonContiguousCapture615` (4 tests) in `tests/test_codegen_closures.py` cover all five concrete failure shapes plus a baseline that prevents regression of the case that was previously coincidentally working.
+
 ### Added
 - **`examples/life.vera`** — Conway's Game of Life as a real-world Vera program: 80×22 grid, three classic patterns (Gosper Glider Gun, R-pentomino, Pentadecathlon) interacting, recursive `run_loop` driven by `<IO>` for animation timing, ANSI cursor-control rendering.  Demonstrates the canonical iterative shape (nested `array_mapi` over `array_mapi`, capturing the whole grid into the closure so `count_neighbors` can read each cell's eight neighbours), and carries the formal Conway B3/S23 transition rule on `next_cell`'s `ensures` clause — the verifier discharges all 32 contracts at Tier 1 by symbolic substitution, so any future edit that breaks the rule fails verification before it can run.  The first agent-written Conway's Life that runs cleanly end-to-end on Vera.
 
@@ -1989,7 +2007,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.138...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.139...HEAD
+[0.0.139]: https://github.com/aallan/vera/compare/v0.0.138...v0.0.139
 [0.0.138]: https://github.com/aallan/vera/compare/v0.0.137...v0.0.138
 [0.0.137]: https://github.com/aallan/vera/compare/v0.0.136...v0.0.137
 [0.0.136]: https://github.com/aallan/vera/compare/v0.0.135...v0.0.136

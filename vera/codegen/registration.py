@@ -36,6 +36,12 @@ class RegistrationMixin:
 
         ret_type = self._type_expr_to_wasm_type(decl.return_type)
         self._fn_sigs[decl.name] = (param_types, ret_type)
+        # #614: also register the full Vera return type expression so
+        # `_infer_index_element_type_expr` can extract the element type
+        # of an `Array<T>`-returning call inside `f()[i]`.  Without
+        # this, the inference walker falls through to `return None`
+        # for FnCall collections.
+        self._fn_ret_type_exprs[decl.name] = decl.return_type
 
         # #516 Stage 2 — record source location so wasmtime trap frames
         # naming this function can be resolved to (file, line) at runtime.

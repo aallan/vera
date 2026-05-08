@@ -849,6 +849,23 @@ class InferenceMixin:
                 ta = inner_te.type_args[0]
                 if isinstance(ta, ast.NamedType):
                     return ta
+        # FnCall returning Array<T>: e.g. `s_arr(x)[i]`.  Pre-fix this
+        # branch was missing — collection-is-a-call fell through to
+        # `return None` below, `_translate_index_expr` then returned
+        # None, and the enclosing function (or closure) was dropped
+        # from the WAT output.  At top level this surfaced as the #604-
+        # class "function body contains unsupported expressions —
+        # skipped" warning; inside a closure body the registered
+        # closure_id was never added to the function table, so the
+        # `call_indirect` at the use site referenced a missing entry
+        # and WASM validation rejected the module with "unknown table 0:
+        # table index out of bounds" (#614).
+        if isinstance(coll, ast.FnCall):
+            ret_te = self._fn_ret_type_exprs.get(coll.name)
+            if isinstance(ret_te, ast.NamedType):
+                ta_te = self._alias_array_element(ret_te.name, ret_te.type_args)
+                if ta_te is not None:
+                    return ta_te
         return None
 
     def _alias_array_element(

@@ -1372,3 +1372,253 @@ public fn test(@Unit -> @Int)
         assert "call $gc_collect" in prologue, (
             f"VERA_EAGER_GC={flag_value!r} did not enable eager mode"
         )
+
+
+class TestIndexExprOfFnCall614:
+    """Regression tests for #614 — `f()[i]` was silently dropped.
+
+    Pre-fix: ``_infer_index_element_type_expr`` in ``vera/wasm/inference.py``
+    only handled SlotRef and IndexExpr collections.  When the
+    collection was an ``FnCall`` returning ``Array<T>``, inference fell
+    through to ``return None``, ``_translate_index_expr`` returned
+    None too, and the enclosing function got dropped from the WAT.
+    At top level this surfaced as the [E602] "function body contains
+    unsupported expressions — skipped" warning; inside a closure body
+    the registered ``closure_id`` was never added to the function
+    table, so the call_indirect at the use site referenced a missing
+    entry and WASM validation rejected the module with "unknown
+    table 0: table index out of bounds".
+
+    Fix: extend ``_infer_index_element_type_expr`` to look up the
+    fn's full return TypeExpr via ``_fn_ret_type_exprs`` (a sibling
+    of ``_fn_ret_types`` populated by ``_register_fn``).
+    """
+
+    def test_top_level_fn_call_then_index(self) -> None:
+        """Top-level `f(x)[i]` where f returns Array<Int>."""
+        src = """\
+private data K { A, B }
+private data S { Mk(Array<Int>, K) }
+
+private fn s_arr(@S -> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{ match @S.0 { Mk(@Array<Int>, @K) -> @Array<Int>.0 } }
+
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @S = Mk([10, 20, 30], A);
+  s_arr(@S.0)[1]
+}
+"""
+        assert _run(src, "test") == 20
+
+    def test_closure_fn_call_then_index(self) -> None:
+        """Closure body `f(x)[i]` — Bug 1 minimum reproducer.
+
+        Pre-fix this trapped at WASM instantiation with
+        "unknown table 0: table index out of bounds at offset 1374"
+        because ``_compile_lifted_closure`` returned None and the
+        call_indirect referenced a missing table entry.
+        """
+        src = """\
+private data K { A, B }
+private data S { Mk(Array<Int>, K) }
+
+private fn s_arr(@S -> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{ match @S.0 { Mk(@Array<Int>, @K) -> @Array<Int>.0 } }
+
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @S = Mk([10, 20, 30], A);
+  let @Array<Int> = array_map(array_range(0, 3), fn(@Int -> @Int) effects(pure) {
+    s_arr(@S.0)[@Int.0]
+  });
+  @Array<Int>.0[1]
+}
+"""
+        assert _run(src, "test") == 20
+
+    def test_chained_fn_call_then_double_index(self) -> None:
+        """Chained `f(x)[i][j]` — exercise the IndexExpr-of-IndexExpr-
+        of-FnCall path, which existed pre-fix but only worked when the
+        outer collection was a SlotRef or IndexExpr.
+        """
+        src = """\
+private fn matrix(@Unit -> @Array<Array<Int>>)
+  requires(true) ensures(true) effects(pure)
+{
+  [[1, 2, 3], [4, 5, 6], [7, 8, 9]]
+}
+
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  matrix(())[1][2]
+}
+"""
+        assert _run(src, "test") == 6
+
+
+class TestNonContiguousCapture615:
+    """Regression tests for #615 — closure capture order miscompile.
+
+    Pre-fix, ``_collect_free_vars`` returned captures in walk order
+    without filling missing prefix indices or sorting per-type.  This
+    caused two failure shapes:
+
+    1. **Non-contiguous outer slot.** Closure body refs ``@Int.k``
+       while skipping ``@Int.j`` (j<k).  The lift-side env had no
+       entry for the unreferenced outer index, so ``env.resolve("Int",
+       k)`` returned None, body translation failed, the closure was
+       dropped from the function table, and the call_indirect at the
+       use site referenced a missing entry — WASM validation trap.
+
+    2. **Ascending walker order silently miscomputes.** Even with
+       contiguous captures, when source order put the lower outer_idx
+       first (e.g. body ``@Int.1 - @Int.2``), the walker added (Int,0)
+       before (Int,1) → ascending push order → wrong stack layout →
+       body's slot refs resolved to the WRONG captured locals.  No
+       trap, just wrong output.
+
+    Fix: in ``_collect_free_vars``, group captures by type, fill the
+    prefix [0, max] per type with synthetic entries, and sort each
+    group descending by outer_idx so the lift-side push produces the
+    correct stack.
+    """
+
+    def test_non_contiguous_int_capture_tail_shape(self) -> None:
+        """Bug 2a: closure body refs @Int.0 (param) and @Int.2 (outer)
+        but not @Int.1 (also outer).  Pre-fix: WASM validation trap.
+
+        Asserts a *specific* element rather than a sum so a silent-
+        miscompute manifestation that happened to preserve the sum
+        can't pass the test.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = [99, 99, 99, 99];
+  let @Array<Int> = [10, 20, 30, 40];
+  let @Int = 3;
+  let @Int = 0;
+
+  -- closure refs @Int.0 (param), @Int.2 (outer @Int.1=3) — skips @Int.1
+  let @Array<Int> = array_map(array_range(0, 4), fn(@Int -> @Int) effects(pure) {
+    let @Nat = match int_to_nat(@Int.0) {
+      Some(@Nat) -> @Nat.0,
+      None -> 0
+    };
+    @Array<Int>.0[@Nat.0] + @Int.2 + @Int.0
+  });
+  -- expected at index 2: arr[2] + 3 + 2 = 30 + 3 + 2 = 35
+  @Array<Int>.0[2]
+}
+"""
+        assert _run(src, "test") == 35
+
+    def test_non_contiguous_int_capture_silent_miscompute(self) -> None:
+        """Bug 2b: same skip pattern but with subsequent let pushes that
+        mask the trap into a silent wrong result.  Pre-fix: returned
+        ``false`` instead of ``true`` for an obviously-fitting Tetris
+        I-piece on an empty board.
+        """
+        src = """\
+private fn empty_board(@Unit -> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  array_map(array_range(0, 200), fn(@Int -> @Int) effects(pure) { 0 })
+}
+
+private fn cell_at(@Array<Int>, @Int, @Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  if @Int.1 < 0 then { 1 } else {
+    if @Int.1 >= 10 then { 1 } else {
+      if @Int.0 >= 20 then { 1 } else {
+        if @Int.0 < 0 then { 0 } else {
+          let @Int = @Int.0 * 10 + @Int.1;
+          match int_to_nat(@Int.0) {
+            Some(@Nat) -> @Array<Int>.0[@Nat.0],
+            None -> 0
+          }
+        }
+      }
+    }
+  }
+}
+
+private fn fits(@Array<Int>, @Int, @Int -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = [0, 1, 1, 1, 2, 1, 3, 1];
+  array_all(array_range(0, 4), fn(@Int -> @Bool) effects(pure) {
+    let @Nat = match int_to_nat(@Int.0 * 2) {
+      Some(@Nat) -> @Nat.0, None -> 0
+    };
+    let @Nat = match int_to_nat(@Int.0 * 2 + 1) {
+      Some(@Nat) -> @Nat.0, None -> 0
+    };
+    let @Int = @Array<Int>.0[@Nat.1] + @Int.2;
+    let @Int = @Array<Int>.0[@Nat.0] + @Int.2;
+    cell_at(@Array<Int>.1, @Int.1, @Int.0) == 0
+  })
+}
+
+public fn test(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Array<Int> = empty_board(());
+  fits(@Array<Int>.0, 3, 0)
+}
+"""
+        # Bool comes back as 1 (true) or 0 (false) at the WASM ABI.
+        # Pre-fix: returned 0; post-fix: returns 1 (the I-piece fits
+        # on an empty board).
+        assert _run(src, "test") == 1
+
+    def test_ascending_walker_order_silent_miscompute(self) -> None:
+        """Even contiguous captures miscompile when walker visits the
+        lower outer_idx first.  Body ``@Int.1 - @Int.2`` means
+        outer @Int.0 - outer @Int.1.  Pre-fix this returned the
+        opposite (outer @Int.1 - outer @Int.0) because ascending
+        capture order produced a mirror-image lift-side stack.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 100;
+  let @Int = 10;
+  -- body's @Int.1 = outer @Int.0 = 10, @Int.2 = outer @Int.1 = 100
+  -- expect 10 - 100 = -90
+  let @Array<Int> = array_map(array_range(0, 1), fn(@Int -> @Int) effects(pure) {
+    @Int.1 - @Int.2
+  });
+  @Array<Int>.0[0]
+}
+"""
+        assert _run(src, "test") == -90
+
+    def test_descending_walker_order_baseline(self) -> None:
+        """Mirror of the above — body ``@Int.2 - @Int.1`` (descending
+        walker order).  Should produce 100 - 10 = 90 both pre- and
+        post-fix; the test exists to prevent the fix from regressing
+        the case that *was* working.
+        """
+        src = """\
+public fn test(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Int = 100;
+  let @Int = 10;
+  let @Array<Int> = array_map(array_range(0, 1), fn(@Int -> @Int) effects(pure) {
+    @Int.2 - @Int.1
+  });
+  @Array<Int>.0[0]
+}
+"""
+        assert _run(src, "test") == 90

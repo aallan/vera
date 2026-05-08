@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,766 across 29 files (~35,300 lines of test code; 3,752 passed, 14 skipped) |
+| **Tests** | 3,773 across 29 files (~35,550 lines of test code; 3,759 passed, 14 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 86 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 34, all validated through `vera check` + `vera verify` |
@@ -61,7 +61,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen.py` | 1,067 | 16,521 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env, sleep, time, stderr), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, Random effect, example round-trips, GC shadow stack overflow, **WASM tail-call optimization** (#517 — `return_call` emission for tail-position calls, 50K- and 1M-iteration stress, structural assertions on `return_call`/plain `call` boundary, allocating-function fallback, postcondition-fallback regression, analyzer unit tests covering Block-trailing / IfExpr-both-branches / MatchExpr-arm-bodies / let-value-NOT-marked / call-args-NOT-marked / ExprStmt-statement-NOT-marked / IfExpr-condition-NOT-marked / MatchExpr-scrutinee-NOT-marked) |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 71 | 1,326 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
-| `test_codegen_closures.py` | 43 | 1,374 | Closure lifting, captured variables, higher-order functions, iterative-builder shadow-stack regressions (#570), closure return-value shadow-push balance for both i32-pair and i32-ADT branches across array_map and array_mapi, plus VERA_EAGER_GC injection self-test (#593) |
+| `test_codegen_closures.py` | 50 | 1,624 | Closure lifting, captured variables, higher-order functions, iterative-builder shadow-stack regressions (#570), closure return-value shadow-push balance for both i32-pair and i32-ADT branches across array_map and array_mapi, plus VERA_EAGER_GC injection self-test (#593), IndexExpr-of-FnCall element-type inference (#614), non-contiguous capture and walker-order miscompiles (#615) |
 | `test_codegen_modules.py` | 19 | 565 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |

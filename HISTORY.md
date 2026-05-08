@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through Stage 11, across 55 active development days.
+How the Vera compiler was built, from initial commit through Stage 12, across 56 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -283,6 +283,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | Version | Date | What shipped |
 |---------|------|-------------|
 | — | 7 May | `examples/life.vera` — Conway's Game of Life as a real-world program: nested array combinators, recursive run_loop with `<IO>`, ANSI cursor-control rendering, formal Conway B3/S23 rule on `next_cell`. |
+| v0.0.139 | 8 May | Closure codegen pair — closes [#614](https://github.com/aallan/vera/issues/614) (`f()[i]` element-type inference for FnCall collections) and [#615](https://github.com/aallan/vera/issues/615) (closure capture order: prefix-fill + descending-sort per type so `WasmSlotEnv.resolve` lands on the right local).  Two distinct root causes, one shared failure path (closure dropped from function table → `unknown table 0` at WASM validation, or silent miscompute when later `let` pushes mask the bad index). |
 
 ---
 
@@ -323,4 +324,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 138 tagged releases, 55 active development days.**
+Total: **810+ commits, 139 tagged releases, 56 active development days.**
