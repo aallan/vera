@@ -8187,6 +8187,55 @@ public fn main(-> @Unit)
 """
         assert _run_io(source, fn="main") == "len=5"
 
+    def test_string_returning_fncall_inside_interpolation_602(self) -> None:
+        """#602 — interpolating a String-returning function call directly.
+
+        Pre-fix: `_infer_fncall_vera_type` had no `i32_pair` branch in
+        the WAT-type → Vera-type fallback, so a user fn returning
+        `String` mapped to `None` here.  `_translate_interpolated_string`
+        then fell through to the `to_string(...)` Int-conversion
+        wrapper, which reads its arg as `i64` — but the FnCall pushed
+        `i32_pair`.  WASM validation rejected the module with
+        `expected i64, found i32` at the offending offset.
+
+        Post-fix: the inference path consults `_fn_ret_type_exprs`
+        (the same registry added by #614) when WAT type is `i32_pair`,
+        returns the proper `String` Vera-type name, and the
+        interpolation desugars to `string_concat(make_str(()), "\\n")`
+        with both args correctly typed as i32_pair.
+        """
+        source = _IO_PRELUDE + """\
+private fn make(-> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_array_returning_fncall_indexed_inside_interpolation(self) -> None:
+        """Sibling case: an `Array<T>`-returning fn indexed into Int,
+        used in interpolation.  Same `i32_pair` return type as the
+        String case but the index strips back to an `Int` element —
+        exercises both halves of the inference path together.
+        """
+        source = _IO_PRELUDE + """\
+private fn make_arr(-> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{ [10, 20, 30] }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make_arr(())[0])")
+}
+"""
+        assert _run_io(source, fn="main") == "10"
+
 
 # =====================================================================
 # Async / Future<T>

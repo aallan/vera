@@ -779,6 +779,22 @@ class InferenceMixin:
             return "Bool"
         if ret_wt == "f64":
             return "Float64"
+        # i32_pair → String or Array.  WAT type alone can't
+        # disambiguate, so consult the full Vera return-type registry
+        # populated by `_register_fn` (see #614 — same registry, same
+        # pattern).  Without this branch, a user fn returning `String`
+        # was mapped to `None` here, which made
+        # `_translate_interpolated_string` fall through to the
+        # `to_string(...)` fallback wrapper.  `to_string` reads its
+        # arg as an `i64`, but the FnCall pushed `i32_pair` — hence
+        # the `expected i64, found i32` trap at WASM validation
+        # (#602).  Same inference gap that #614 exposed for the
+        # *element-type* of an indexed FnCall result; this is the
+        # *return-type* inference half.
+        if ret_wt == "i32_pair":
+            ret_te = self._fn_ret_type_exprs.get(call.name)
+            if isinstance(ret_te, ast.NamedType):
+                return ret_te.name
         return None
 
     def _ctor_to_adt_name(self, ctor_name: str) -> str | None:
