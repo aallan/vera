@@ -286,7 +286,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.139 | 8 May | Closure codegen pair — [#614](https://github.com/aallan/vera/issues/614) (`f()[i]` element-type inference) and [#615](https://github.com/aallan/vera/issues/615) (closure capture ordering). |
 | v0.0.140 | 8 May | String-returning FnCall in interpolation — closes [#602](https://github.com/aallan/vera/issues/602). |
 | v0.0.141 | 8 May | Inline-refinement return types in interpolation — third trigger in the #602 bug class. |
-| v0.0.142 | 8 May | Closed the #602 bug class structurally — [#630](https://github.com/aallan/vera/issues/630).  Six canonicalisation helpers collapsed to one `_canonical_named_type` walker; silent `to_string` fallthrough converted to [E615]. |
+| v0.0.142 | 8 May | Closed the #602 bug class structurally — [#630](https://github.com/aallan/vera/issues/630).  Six canonicalisation helpers consolidated into `_canonical_named_type` (walker) + `_canonical_wasm_type` (convenience wrapper); silent `to_string` fallthrough converted to [E615]. |
 
 ---
 
