@@ -249,8 +249,34 @@ class FunctionCompilationMixin:
             if body_result_type == "i64":
                 body_instrs.append("i32.wrap_i64")
 
-        # Collect closures created during body compilation and lift them
-        self._lift_pending_closures(ctx)
+        # Collect closures created during body compilation and lift them.
+        # If any closure body failed to compile, drop the enclosing fn
+        # rather than emit a module with a `call_indirect` to a missing
+        # function-table entry — closes #636.  The closure body's own
+        # diagnostics (E615 from interpolation failures, generic E602
+        # from translation failures) were already emitted by
+        # `_compile_lifted_closure`'s harvest; here we add a specific
+        # E602 noting that the parent is being dropped *because* of
+        # the closure failure, so the user can correlate the cause
+        # diagnostic with the effect.
+        closure_failed = self._lift_pending_closures(ctx)
+        if closure_failed:
+            self._warning(
+                decl,
+                f"Function '{decl.name}' contains a closure whose "
+                f"body failed to compile — skipped to avoid emitting "
+                f"an invalid module.",
+                rationale="A closure body inside this function failed "
+                "to translate (see preceding diagnostics for the "
+                "specific cause). The closure was dropped from the "
+                "function table; the enclosing function references it "
+                "via call_indirect, which would fail at WASM "
+                "validation. Dropping the enclosing function lets the "
+                "build complete with diagnostics only, no invalid "
+                "module emission.",
+                error_code="E602",
+            )
+            return None
 
         # Compile postcondition checks (wrap around body result)
         post_instrs = self._compile_postconditions(ctx, decl, env, ret_wt)

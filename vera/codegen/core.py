@@ -23,6 +23,7 @@ from vera import ast
 from vera.codegen.api import CompileResult, ConstructorLayout
 from vera.errors import Diagnostic, SourceLocation
 from vera.wasm import StringPool
+from vera.wasm.inference import substitute_type_vars
 
 from vera.codegen.modules import CrossModuleMixin
 from vera.codegen.registration import RegistrationMixin
@@ -240,24 +241,27 @@ class CodeGenerator(
         self,
         ctx: WasmContext,
     ) -> None:
-        """Emit `[E615]` for each interpolation-segment inference failure
-        recorded on `ctx`.
+        """Emit specific diagnostics for each inference-failure list
+        recorded on `ctx`, before the caller emits the generic
+        `[E602]` skip / drops the closure from the function table.
+
+        Two lists are harvested:
+
+        - `_interp_inference_failures` → `[E615]` per segment.
+          Populated by `_translate_interpolated_string` when a
+          `\\(...)` segment's Vera type can't be classified
+          (#630 Tier 2).
+        - `_apply_fn_inference_failures` → `[E616]` per closure_arg.
+          Populated by `_translate_apply_fn` when the closure-arg
+          shape isn't one the dispatcher recognises (#632).
 
         Both `_compile_fn` (top-level functions) and
         `_compile_lifted_closure` (lifted closure bodies) construct
-        a fresh `WasmContext` whose `_translate_interpolated_string`
-        appends to `_interp_inference_failures` when it can't classify
-        a segment's Vera type.  When `translate_block` then returns
-        None (the loud-skip path added in #630), this helper surfaces
-        the specific [E615] diagnostic per offending segment before
-        the caller emits the generic [E602] (top-level) or drops the
-        closure from the function table (closure body).
-
-        Centralised here so both call sites stay in lock-step — a
-        future change to E615 semantics (e.g. richer source ranges,
-        suggested fixes) lands in one place.  Pre-#630 the closure
-        path silently dropped the failure list and lost the diagnostic
-        entirely (silent-failure-hunter C1 finding on PR #631).
+        a fresh `WasmContext` and call this helper before their
+        own None-return paths, so the centralised harvest stays in
+        lock-step across both call sites — a future change to
+        either E615 or E616 semantics (richer source ranges,
+        suggested fixes) lands in one place.
         """
         for failed_part in ctx._interp_inference_failures:
             self._warning(
@@ -274,6 +278,23 @@ class CodeGenerator(
                 "return-type shape isn't yet handled by the "
                 "canonicaliser in `vera/wasm/inference.py`. See #630.",
                 error_code="E615",
+            )
+        for closure_arg in ctx._apply_fn_inference_failures:
+            self._warning(
+                closure_arg,
+                "Cannot infer closure return type for call_indirect — "
+                "the apply_fn dispatcher doesn't recognise this "
+                "argument shape, so it can't construct the right "
+                "call_indirect signature.",
+                rationale="apply_fn's call_indirect emission needs the "
+                "closure's return type to construct a matching WASM "
+                "signature. Today the dispatcher recognises SlotRef "
+                "into a FnType alias and inline AnonFn literals; "
+                "other expression shapes (e.g. a FnCall returning a "
+                "closure) fall through. Without this guard, the "
+                "default 'i64' signature mismatches the actual i32_pair "
+                "/ other return at WASM validation. See #632.",
+                error_code="E616",
             )
 
     # -----------------------------------------------------------------
@@ -588,9 +609,23 @@ class CodeGenerator(
             # ADT types compile to i32 (heap pointer)
             if name in self._adt_layouts:
                 return "i32"
-            # Type aliases — recurse to resolve the underlying type
+            # Type aliases — recurse to resolve the underlying type.
+            # When the alias is parameterised (`type Box<T> =
+            # Array<T>`), substitute the alias's own type params with
+            # the concrete `te.type_args` *before* recursing, so type
+            # variables in the alias body don't leak through and get
+            # mis-classified as `"unsupported"`.  Closes #635 — the
+            # parallel of the walker fix landed in PR #631 for
+            # `_canonical_named_type`, applied to this compilability
+            # check.
             if name in self._type_aliases:
-                return self._type_expr_to_wasm_type(self._type_aliases[name])
+                alias = self._type_aliases[name]
+                alias_params = self._type_alias_params.get(name)
+                if (alias_params and te.type_args
+                        and len(alias_params) == len(te.type_args)):
+                    local_subst = dict(zip(alias_params, te.type_args))
+                    alias = substitute_type_vars(alias, local_subst)
+                return self._type_expr_to_wasm_type(alias)
             return "unsupported"
         if isinstance(te, ast.RefinementType):
             return self._type_expr_to_wasm_type(te.base_type)

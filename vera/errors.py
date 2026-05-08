@@ -513,6 +513,7 @@ ERROR_CODES: dict[str, str] = {
     "E613": "Type does not satisfy ability constraint",
     "E614": "Program contains typed holes",
     "E615": "Cannot interpolate value of unknown type",
+    "E616": "Cannot infer closure return type for call_indirect",
     # E7xx — Testing
     "E700": "Contract violation during testing",
     "E701": "Cannot generate test inputs",

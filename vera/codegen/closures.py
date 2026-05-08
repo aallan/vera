@@ -17,7 +17,7 @@ from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push
 class ClosureLiftingMixin:
     """Methods for lifting closures to module-level functions."""
 
-    def _lift_pending_closures(self, ctx: WasmContext) -> None:
+    def _lift_pending_closures(self, ctx: WasmContext) -> bool:
         """Lift all anonymous functions created during body compilation.
 
         Each pending closure is compiled to a module-level WASM function
@@ -33,6 +33,17 @@ class ClosureLiftingMixin:
         function and the inner's call_indirect targeted a missing table
         entry.  The worklist below collects each lift's inner-pending
         list and feeds it back, lifting to arbitrary depth.
+
+        Returns ``True`` if **any** closure body in the worklist
+        failed to compile (``_compile_lifted_closure`` returned
+        ``None``).  The caller (``_compile_fn``) uses this to drop
+        the enclosing top-level function rather than emitting a
+        module with a ``call_indirect`` to a missing function-table
+        entry — closes #636.  Pre-this-fix the failed closure was
+        silently dropped from the table while the parent fn's WAT
+        (containing the now-dangling ``call_indirect``) was still
+        emitted, producing a WASM-validation trap with no
+        source-located parent-fn diagnostic.
         """
         # ``deque`` (rather than a plain list) because ``popleft`` is
         # O(1) where ``list.pop(0)`` would shift every remaining entry.
@@ -49,6 +60,7 @@ class ClosureLiftingMixin:
             if sig_content not in self._closure_sigs:
                 self._closure_sigs[sig_content] = sig_name
 
+        any_failed = False
         while worklist:
             anon_fn, captures, closure_id = worklist.popleft()
             inner_pending: list[tuple[ast.AnonFn, list[tuple[str, int, str]], int]] = []
@@ -56,6 +68,12 @@ class ClosureLiftingMixin:
                 closure_id, anon_fn, captures,
                 collect_pending=inner_pending,
             )
+            if lifted_wat is None:
+                # Closure body failed — diagnostics already emitted by
+                # `_compile_lifted_closure`'s harvest.  Record the
+                # failure so the caller can drop the enclosing fn (#636).
+                any_failed = True
+                continue
             if lifted_wat is not None:
                 self._closure_fns_wat.append(lifted_wat)
                 self._closure_table.append(f"$anon_{closure_id}")
@@ -104,6 +122,8 @@ class ClosureLiftingMixin:
                 # Bubble up nested closures + any new sigs / IDs the
                 # inner ctx registered while translating this body.
                 worklist.extend(inner_pending)
+
+        return any_failed
 
     def _compile_lifted_closure(
         self,

@@ -213,6 +213,18 @@ class WasmContext(
         # bug class against any future inference gap (ADT types in
         # interpolation, novel composite kinds, etc.).
         self._interp_inference_failures: list[ast.Expr] = []
+        # #632 — apply_fn closure-arg shapes that the inference
+        # dispatcher in `_infer_apply_fn_return_type` doesn't
+        # recognise (today: anything other than SlotRef-into-FnType
+        # alias or AnonFn — e.g. `apply_fn(make_mapper(), 7)` where
+        # `make_mapper` is a FnCall returning a closure).  Pre-#632
+        # the apply_fn translation site silently used the `"i64"`
+        # default for the call_indirect sig, producing a WASM
+        # validation trap with no source-located diagnostic.
+        # Post-#632 the failing closure_arg is appended here and the
+        # codegen base's `_harvest_inference_failures` emits a
+        # specific [E616] before falling through to [E602].
+        self._apply_fn_inference_failures: list[ast.Expr] = []
 
     def set_fn_ret_types(
         self, ret_types: dict[str, str | None],

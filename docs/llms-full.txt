@@ -2868,6 +2868,7 @@ Every diagnostic has a stable error code. Codes are grouped by compiler phase:
 - **E613**: Type does not satisfy ability constraint
 - **E614**: Program contains typed holes
 - **E615**: Cannot interpolate value of unknown type
+- **E616**: Cannot infer closure return type for call_indirect
 - **E700**: Contract violation during testing
 - **E701**: Cannot generate test inputs
 - **E702**: Test execution error

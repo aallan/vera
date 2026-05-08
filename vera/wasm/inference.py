@@ -6,6 +6,48 @@ from vera import ast
 from vera.wasm.helpers import _element_wasm_type
 
 
+def substitute_type_vars(
+    te: ast.TypeExpr,
+    subst: dict[str, ast.TypeExpr],
+) -> ast.TypeExpr:
+    """Substitute type variables inside a TypeExpr.
+
+    Module-level so it's accessible from both `InferenceMixin`
+    (`vera/wasm/inference.py` — the canonicaliser, called from
+    interpolation/apply_fn inference) and `CodeGenerator`
+    (`vera/codegen/core.py` — the compilability check
+    `_type_expr_to_wasm_type`).  Both sites need the same
+    substitution semantics when following a parameterised alias
+    (`type Box<T> = Array<T>`) so the alias's own type-param
+    references in the body get bound to the concrete type arguments
+    from the call site (#635 closes the compilability-side gap that
+    PR #631's walker fix didn't reach).
+
+    A "type variable reference" is a bare `NamedType(name=X,
+    type_args=None|())` whose name is a key in `subst`; it gets
+    replaced wholesale by `subst[X]`.  `NamedType` with non-bare
+    type_args is recursed into (substituting in each arg).
+    `RefinementType` substitutes its `base_type`; the `predicate`
+    is left untouched (predicates are `Expr`, not `TypeExpr`, and
+    canonicalisation is type-level only).  Other shapes (`FnType`,
+    etc.) pass through unchanged.
+    """
+    if isinstance(te, ast.NamedType):
+        if not te.type_args and te.name in subst:
+            return subst[te.name]
+        if te.type_args:
+            new_args = tuple(
+                substitute_type_vars(a, subst) for a in te.type_args
+            )
+            return ast.NamedType(name=te.name, type_args=new_args)
+        return te
+    if isinstance(te, ast.RefinementType):
+        new_base = substitute_type_vars(te.base_type, subst)
+        return ast.RefinementType(
+            base_type=new_base, predicate=te.predicate)
+    return te
+
+
 class InferenceMixin:
     """Mixin providing type inference and type-mapping utilities.
 
@@ -596,37 +638,12 @@ class InferenceMixin:
         te: ast.TypeExpr,
         subst: dict[str, ast.TypeExpr],
     ) -> ast.TypeExpr:
-        """Substitute type variables inside a TypeExpr.
-
-        Used by `_canonical_named_type` when following a
-        parameterised alias (`type Box<T> = Array<T>`) so the
-        alias's own type-param references in the body get bound to
-        the concrete type arguments from the call site.
-
-        A "type variable reference" is a bare `NamedType(name=X,
-        type_args=None|())` whose name is a key in `subst`; it gets
-        replaced wholesale by `subst[X]`.  `NamedType` with non-bare
-        type_args is recursed into (substituting in each arg).
-        `RefinementType` substitutes its `base_type`; the `predicate`
-        is left untouched (predicates are `Expr`, not `TypeExpr`,
-        and #630's scope is type-level substitution only).  Other
-        shapes pass through unchanged.
+        """Instance-method wrapper around the module-level
+        `substitute_type_vars` so existing call sites on
+        `InferenceMixin` keep working.  See the free function for
+        full documentation of the substitution contract.
         """
-        if isinstance(te, ast.NamedType):
-            if not te.type_args and te.name in subst:
-                return subst[te.name]
-            if te.type_args:
-                new_args = tuple(
-                    self._substitute_type_vars(a, subst)
-                    for a in te.type_args
-                )
-                return ast.NamedType(name=te.name, type_args=new_args)
-            return te
-        if isinstance(te, ast.RefinementType):
-            new_base = self._substitute_type_vars(te.base_type, subst)
-            return ast.RefinementType(
-                base_type=new_base, predicate=te.predicate)
-        return te
+        return substitute_type_vars(te, subst)
 
     def _canonical_wasm_type(
         self,

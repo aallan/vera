@@ -119,6 +119,20 @@ class ClosuresMixin:
         closure_arg = call.args[0]
         value_args = call.args[1:]
 
+        # #632 — early diagnostic for apply_fn closure-arg shapes the
+        # return-type inference dispatcher doesn't recognise.  Pre-fix
+        # the dispatcher's `return "i64"` fallthrough silently chose
+        # the wrong call_indirect sig type for any non-(SlotRef,
+        # AnonFn) closure_arg (e.g. `apply_fn(make_mapper(), 7)` where
+        # `make_mapper` is a FnCall returning a closure), producing a
+        # WASM validation trap with no source-located diagnostic.
+        # Now we record the failure on `_apply_fn_inference_failures`
+        # and bail; the codegen base's harvest emits [E616] before
+        # the function-skip [E602].
+        if not isinstance(closure_arg, (ast.SlotRef, ast.AnonFn)):
+            self._apply_fn_inference_failures.append(closure_arg)
+            return None
+
         # Translate the closure argument — get i32 pointer
         closure_instrs = self.translate_expr(closure_arg, env)
         if closure_instrs is None:
