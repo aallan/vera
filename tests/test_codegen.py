@@ -8882,9 +8882,13 @@ public fn main(-> @Unit)
             d for d in result.diagnostics if d.severity == "warning"
         ]
         e615 = [d for d in warnings if d.error_code == "E615"]
-        # Two failing segments → two distinct E615 diagnostics.
-        assert len(e615) >= 2, (
-            f"Expected at least 2 [E615] diagnostics for two failing "
+        # Two failing segments → exactly two distinct E615
+        # diagnostics.  Pinning the exact count (rather than `>= 2`)
+        # catches a duplicate-emit regression where the harvest
+        # accidentally walks the failures list more than once or
+        # the per-segment recording emits N>1 entries per failure.
+        assert len(e615) == 2, (
+            f"Expected exactly 2 [E615] diagnostics for two failing "
             f"interpolation segments; got {len(e615)}: {e615}"
         )
 
