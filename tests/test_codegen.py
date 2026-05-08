@@ -8757,23 +8757,32 @@ public fn main(-> @Unit)
     def test_per_function_isolation_of_failures_list(self) -> None:
         """`_interp_inference_failures` lives on `WasmContext`,
         which `_compile_fn` constructs fresh per top-level function.
-        This test pins per-function isolation: a clean function in
-        the same compilation unit as a function that triggers E615
-        must not inherit the failure list and falsely emit E615.
+        This test pins per-function isolation: a clean function
+        compiled **after** a function that triggers E615 must not
+        inherit the failure list and falsely emit E615.
 
-        Pre-#630: not testable because the silent fallthrough wrapped
-        with `to_string`; cross-function leak wouldn't manifest as
-        [E615] regardless.  Post-#630: load-bearing — if a future
-        refactor reuses a context across functions or forgets to
-        clear the failure list, this test fires.
+        Test layout: `clean_before` → `dirty` → `clean_after`.
+        Both `clean_*` functions must remain in exports.  Without
+        the `clean_after` (only `clean_before`), a forward leak
+        from `dirty` would never reach a clean function and the
+        test would silently pass even with broken isolation —
+        the pre-PR-#631-review-pass version of this test had this
+        gap (CodeRabbit finding 2 on PR #631).
 
-        (comment-analyzer finding I4 on PR #631.)
+        Pre-#630: not testable because the silent fallthrough
+        wrapped with `to_string`; cross-function leak wouldn't
+        manifest as [E615] regardless.  Post-#630: load-bearing —
+        if a future refactor reuses a context across functions or
+        forgets to clear the failure list, this test fires.
+
+        (comment-analyzer finding I4 + later CodeRabbit finding 2
+        on PR #631.)
         """
         source = _IO_PRELUDE + """\
-public fn clean(-> @Unit)
+public fn clean_before(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print("clean\\n")
+  IO.print("clean_before\\n")
 }
 
 public fn dirty(-> @Unit)
@@ -8782,21 +8791,40 @@ public fn dirty(-> @Unit)
   let @Option<Int> = Some(42);
   IO.print("\\(@Option<Int>.0)\\n")
 }
+
+public fn clean_after(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("clean_after\\n")
+}
 """
         result = _compile(source)
         warnings = [
             d for d in result.diagnostics if d.severity == "warning"
         ]
         e615 = [d for d in warnings if d.error_code == "E615"]
-        # E615 fires for `dirty` (Option<Int> in interpolation).
+        # E615 fires exactly once — for `dirty` (Option<Int> in
+        # interpolation).  If `clean_after` inherited `dirty`'s
+        # failure list, we'd see a second E615 (or `clean_after`
+        # would be dropped via E602).
         assert e615, (
             f"Expected [E615] for `dirty`; got warnings: {warnings}"
         )
-        # `clean` must remain in exports — its context's failure
-        # list is independent of `dirty`'s.
-        assert "clean" in result.exports, (
-            f"clean should be exported (no inference failures in "
-            f"its body); exports: {result.exports}"
+        assert len(e615) == 1, (
+            f"Expected exactly one [E615]; got {len(e615)}: {e615}"
+        )
+        # Both clean functions must remain in exports.  The
+        # `clean_after` assertion is the one that catches forward
+        # leakage — pre-fix would still pass `clean_before` but
+        # fail this.
+        assert "clean_before" in result.exports, (
+            f"clean_before should be exported; "
+            f"exports: {result.exports}"
+        )
+        assert "clean_after" in result.exports, (
+            f"clean_after should be exported (no inference failures "
+            f"in its own body, must not inherit dirty's failure "
+            f"list); exports: {result.exports}"
         )
         # `dirty` is dropped via the [E602] mechanism.
         assert "dirty" not in result.exports, (
@@ -8864,39 +8892,52 @@ public fn main(-> @Unit)
         self,
     ) -> None:
         """The canonicaliser preserves `type_args` from the
-        *terminal* `NamedType`, not the outermost.  For
-        `type IntList = Array<Int>`, indexing a fn that returns
-        `@IntList` must resolve to the `Int` element type — the
-        alias body's [Int] propagates through.
+        *terminal* `NamedType`, not the outermost — and walks
+        through parameterised alias substitution to get there.
+        For `type Box<T> = Array<T>`, indexing a fn that returns
+        `@Box<Int>` must resolve to the `Int` element type: the
+        walker substitutes the alias's `T` parameter with the
+        concrete `Int` from the call site, follows to
+        `Array<Int>`, and reports `Int` as the IndexExpr element
+        type.
 
-        Pre-PR-#631-review-pass the walker captured `outer_type_args`
-        from the first NamedType reached, which was correct for
-        plain alias-to-alias chains (where the outer has no type_args
-        and the alias body does, the `is None` sentinel allowed
-        re-capture) but wrong when the outer carried `type_args=()`
-        (empty tuple — not None) and an `alias_map` substitution
-        bound the param to a parameterised type.  The flagged case:
-        a generic `Mapper<A,B>` alias instantiated with a parameterised
-        type_arg.  Fix: always read from the terminal NamedType.
+        Pre-PR-#631-review-pass the walker captured
+        `outer_type_args` from the first NamedType reached and
+        ignored `_type_alias_params` entirely.  Both gaps closed
+        in this PR's review pass — the walker now (a) reads
+        type_args from the terminal NamedType and (b) substitutes
+        parameterised-alias type params before continuing.
 
-        (CodeRabbit finding 3 + code-reviewer finding I1 on PR #631.)
+        Note: a more direct test using `type Id<T> = T;` (per
+        CodeRabbit's suggestion) hits a parallel
+        parameterised-alias gap in `_type_expr_to_wasm_type`
+        (codegen/core.py compilability check) that's outside
+        #630's scope and tracked as a follow-up.  `Box<T> =
+        Array<T>` exercises the walker substitution path
+        end-to-end via the IndexExpr-of-FnCall element-type
+        lookup, which doesn't go through the compilability
+        check.
+
+        (CodeRabbit finding 3 + code-reviewer finding I1 + later
+        CodeRabbit findings 1 + 5 on PR #631.)
         """
         source = _IO_PRELUDE + """\
-type IntList = Array<Int>;
+type Box<T> = Array<T>;
 
-private fn make_list(@Unit -> @IntList)
+private fn make_box(@Unit -> @Box<Int>)
   requires(true) ensures(true) effects(pure)
 { [10, 20, 30] }
 
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
-  IO.print("\\(make_list(())[1])\\n")
+  IO.print("\\(make_box(())[1])\\n")
 }
 """
         # Runs end-to-end — IndexExpr-of-FnCall element-type inference
-        # walks IntList → Array<Int> via the canonicaliser, returns
-        # the Int element type, and `[1]` selects 20.
+        # walks Box<Int> → (substitute T→Int) → Array<Int> via the
+        # canonicaliser, returns the Int element type, and `[1]`
+        # selects 20.
         assert _run_io(source, fn="main") == "20\n"
 
     def test_array_map_refinement_returning_closure(self) -> None:

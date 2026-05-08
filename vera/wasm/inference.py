@@ -554,26 +554,79 @@ class InferenceMixin:
                 te = te.base_type
             if not isinstance(te, ast.NamedType):
                 return None
+            # Unified cycle guard for both `alias_map` substitution
+            # and `_type_aliases` chain following.  Without this, an
+            # alias_map self-reference (`{T: NamedType("T")}`) or a
+            # cyclic chain through a mix of substitutions and follows
+            # would loop forever.
+            if te.name in seen:
+                break
+            seen.add(te.name)
             # alias_map substitution (generic type-param binding).
+            # Checked before alias-chain follow so generic params
+            # take precedence over any same-named type alias.
             if alias_map is not None and te.name in alias_map:
                 te = alias_map[te.name]
                 continue
             # Follow NamedType alias chain — one step per iteration so
             # any RefinementType wrapping the alias body is unwrapped
-            # on the next pass.  Cycle guard via `seen`.
-            if te.name in seen:
-                break
-            seen.add(te.name)
+            # on the next pass.  When the alias is parameterised
+            # (`type Box<T> = Array<T>` etc.), substitute the alias's
+            # type params with the concrete `te.type_args` *before*
+            # continuing — otherwise the alias body's type variables
+            # leak into the returned NamedType.
             alias = self._type_aliases.get(te.name)
             if alias is None:
                 break
             if isinstance(alias, (ast.NamedType, ast.RefinementType)):
+                alias_params = self._type_alias_params.get(te.name)
+                if (alias_params and te.type_args
+                        and len(alias_params) == len(te.type_args)):
+                    local_subst = dict(zip(alias_params, te.type_args))
+                    alias = self._substitute_type_vars(alias, local_subst)
                 te = alias
                 continue
             # FnType-bodied alias or other non-resolvable shape.
             return None
         # `te` is the terminal NamedType; preserve its type_args.
         return ast.NamedType(name=te.name, type_args=te.type_args)
+
+    def _substitute_type_vars(
+        self,
+        te: ast.TypeExpr,
+        subst: dict[str, ast.TypeExpr],
+    ) -> ast.TypeExpr:
+        """Substitute type variables inside a TypeExpr.
+
+        Used by `_canonical_named_type` when following a
+        parameterised alias (`type Box<T> = Array<T>`) so the
+        alias's own type-param references in the body get bound to
+        the concrete type arguments from the call site.
+
+        A "type variable reference" is a bare `NamedType(name=X,
+        type_args=None|())` whose name is a key in `subst`; it gets
+        replaced wholesale by `subst[X]`.  `NamedType` with non-bare
+        type_args is recursed into (substituting in each arg).
+        `RefinementType` substitutes its `base_type`; the `predicate`
+        is left untouched (predicates are `Expr`, not `TypeExpr`,
+        and #630's scope is type-level substitution only).  Other
+        shapes pass through unchanged.
+        """
+        if isinstance(te, ast.NamedType):
+            if not te.type_args and te.name in subst:
+                return subst[te.name]
+            if te.type_args:
+                new_args = tuple(
+                    self._substitute_type_vars(a, subst)
+                    for a in te.type_args
+                )
+                return ast.NamedType(name=te.name, type_args=new_args)
+            return te
+        if isinstance(te, ast.RefinementType):
+            new_base = self._substitute_type_vars(te.base_type, subst)
+            return ast.RefinementType(
+                base_type=new_base, predicate=te.predicate)
+        return te
 
     def _canonical_wasm_type(
         self,
@@ -600,10 +653,24 @@ class InferenceMixin:
         WASM type, omit the slot"; `"i64"` says "we couldn't infer,
         default to the i64 word size".  Callers handling `None` for
         Unit must not conflate the two.
+
+        `Future<T>` is treated as transparent (same WASM
+        representation as `T`), parallel to `_slot_name_to_wasm_type`'s
+        `Future<...>` strip-and-recurse handling.  Without this, a
+        `Future<String>` return at an `apply_fn` / FnType-alias
+        position would canonicalise to `NamedType("Future", [String])`
+        and `_named_type_to_wasm("Future")` would default to `"i32"`
+        — producing a `call_indirect` sig mismatch against the
+        actual `i32_pair` emit.
         """
         canonical = self._canonical_named_type(te, alias_map)
         if canonical is None:
             return "i64"
+        # Future<T> is transparent — recurse on the inner type.
+        if (canonical.name == "Future" and canonical.type_args
+                and len(canonical.type_args) == 1):
+            return self._canonical_wasm_type(
+                canonical.type_args[0], alias_map)
         if canonical.name in ("String", "Array"):
             return "i32_pair"
         return self._named_type_to_wasm(canonical.name)
