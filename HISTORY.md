@@ -283,6 +283,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | Version | Date | What shipped |
 |---------|------|-------------|
 | — | 7 May | `examples/life.vera` — Conway's Game of Life as a real-world program: nested array combinators, recursive run_loop with `<IO>`, ANSI cursor-control rendering, formal Conway B3/S23 rule on `next_cell`. |
+| v0.0.139 | 8 May | Closure codegen pair — closes [#614](https://github.com/aallan/vera/issues/614) (`f()[i]` element-type inference for FnCall collections) and [#615](https://github.com/aallan/vera/issues/615) (closure capture order: prefix-fill + descending-sort per type so `WasmSlotEnv.resolve` lands on the right local).  Two distinct root causes, one shared failure path (closure dropped from function table → `unknown table 0` at WASM validation, or silent miscompute when later `let` pushes mask the bad index). |
 
 ---
 

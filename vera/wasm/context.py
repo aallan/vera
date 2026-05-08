@@ -152,6 +152,17 @@ class WasmContext(
         # Function return WASM types for type inference:
         # fn_name → return_wasm_type (str | None)
         self._fn_ret_types: dict[str, str | None] = {}
+        # Function return *Vera* type expressions, retained alongside
+        # `_fn_ret_types` because some inference paths need the full
+        # NamedType (with type_args) — e.g. resolving the element type
+        # of an Array returned from a function call so `f()[i]` can
+        # type-infer (#614).  Pre-fix this dict didn't exist and
+        # `_infer_index_element_type_expr` only handled SlotRef and
+        # nested-IndexExpr collections, silently returning None for
+        # FnCall collections — `_translate_index_expr` then returned
+        # None too, causing the enclosing function (or closure) to
+        # be dropped from the output.
+        self._fn_ret_type_exprs: dict[str, ast.TypeExpr] = {}
         # Closure compilation state — accumulated during translation
         # Each entry: (anon_fn, captures, closure_id)
         # captures: list of (type_name, outer_de_bruijn, wasm_type)
@@ -195,6 +206,12 @@ class WasmContext(
     ) -> None:
         """Set function return WASM types for FnCall type inference."""
         self._fn_ret_types = ret_types
+
+    def set_fn_ret_type_exprs(
+        self, ret_type_exprs: dict[str, ast.TypeExpr],
+    ) -> None:
+        """Set function return Vera-type exprs for richer inference (#614)."""
+        self._fn_ret_type_exprs = ret_type_exprs
 
     def set_type_aliases(
         self, aliases: dict[str, ast.TypeExpr],

@@ -87,6 +87,12 @@ class CodeGenerator(
 
         # Registered function signatures: name -> (param_types, return_type)
         self._fn_sigs: dict[str, tuple[list[str | None], str | None]] = {}
+        # Registered function return Vera-type expressions (#614).
+        # Carries the full NamedType (with type_args) alongside the WAT
+        # type kept in `_fn_sigs`, so inference paths that need to
+        # extract the element type of e.g. `Array<Int>` returned from
+        # a call (`f()[i]`) can reach into the type_args.
+        self._fn_ret_type_exprs: dict[str, ast.TypeExpr] = {}
         # Track which effect operations are needed
         self._io_ops_used: set[str] = set()
         self._needs_contract_fail: bool = False

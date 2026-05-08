@@ -158,6 +158,11 @@ class ClosureLiftingMixin:
             if ret_wt != "unsupported":
                 fn_ret_types[fn_name] = ret_wt
         ctx.set_fn_ret_types(fn_ret_types)
+        # #614: closure body may contain `fn_call(...)[i]` patterns
+        # whose element-type inference needs the full return TypeExpr,
+        # not just the WAT type — same propagation as the per-function
+        # ctx in `functions.py`.
+        ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
         ctx.set_type_aliases(self._type_aliases)
         ctx.set_type_alias_params(self._type_alias_params)
         env = WasmSlotEnv()
