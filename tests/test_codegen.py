@@ -8338,6 +8338,42 @@ public fn main(-> @Unit)
 """
         assert _run_io(source, fn="main") == "hello\n"
 
+    def test_apply_fn_anon_inline_string_in_interpolation(self) -> None:
+        """Ninth trigger of the #602 bug class — surfaced by
+        CodeRabbit during PR #629's final review pass, less than an
+        hour after filing #630 (the structural close-out for this
+        bug class).  Empirical confirmation that the trigger rate
+        outpaces local fix throughput — exactly the argument made
+        for centralising canonicalisation.
+
+        Path: `apply_fn(fn(@Unit -> @String) effects(pure) { ... },
+        ())` — apply_fn called directly on an inline `AnonFn`
+        literal rather than a `SlotRef` to a let-bound closure.
+        Pre-fix `_infer_fncall_vera_type` only handled the SlotRef
+        arg shape; the AnonFn case fell through, return value was
+        None, and downstream interpolation re-triggered the canonical
+        `expected i64, found i32` WASM-validation surface.
+
+        Fix: added an `elif isinstance(closure_arg, ast.AnonFn)`
+        branch alongside the SlotRef branch in
+        `_infer_fncall_vera_type`.  Simpler than the SlotRef path
+        (no alias substitution — AnonFn has `return_type: TypeExpr`
+        directly), but the same RefinementType-unwrap +
+        `_format_named_type_canonical` shape applies.
+        """
+        source = _IO_PRELUDE + """\
+private fn helper(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(apply_fn(fn(@Unit -> @String) effects(pure) { helper(()) }, ()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
     def test_apply_fn_aliased_string_in_interpolation(self) -> None:
         """Eighth trigger of the #602 bug class — surfaced by
         CodeRabbit during PR #629's final review pass.

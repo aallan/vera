@@ -723,6 +723,26 @@ class InferenceMixin:
                     elif isinstance(base_ret, ast.NamedType):
                         return self._format_named_type_canonical(
                             base_ret)
+            elif isinstance(closure_arg, ast.AnonFn):
+                # apply_fn called directly on an inline anonymous
+                # function literal — `apply_fn(fn(@Unit -> @String)
+                # effects(pure) { ... }, ())`.  Ninth trigger of the
+                # #602 bug class, surfaced by CodeRabbit during PR
+                # #629's review.  Pre-fix the SlotRef branch above
+                # was the only `apply_fn` arg shape handled; an inline
+                # `AnonFn` fell through, `_infer_fncall_vera_type`
+                # returned None, and downstream interpolation
+                # produced `to_string(...)` over an `i32_pair` —
+                # same `expected i64, found i32` WASM-validation
+                # surface.  Same canonicalisation shape as the
+                # SlotRef branch, simpler structure (AnonFn has
+                # `return_type: TypeExpr` directly; no alias
+                # substitution machinery needed).
+                anon_ret = closure_arg.return_type
+                while isinstance(anon_ret, ast.RefinementType):
+                    anon_ret = anon_ret.base_type
+                if isinstance(anon_ret, ast.NamedType):
+                    return self._format_named_type_canonical(anon_ret)
         # Map builtins
         if call.name in ("map_new", "map_insert", "map_remove"):
             return "Map"
