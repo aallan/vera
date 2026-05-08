@@ -284,6 +284,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 |---------|------|-------------|
 | — | 7 May | `examples/life.vera` — Conway's Game of Life as a real-world program: nested array combinators, recursive run_loop with `<IO>`, ANSI cursor-control rendering, formal Conway B3/S23 rule on `next_cell`. |
 | v0.0.139 | 8 May | Closure codegen pair — closes [#614](https://github.com/aallan/vera/issues/614) (`f()[i]` element-type inference for FnCall collections) and [#615](https://github.com/aallan/vera/issues/615) (closure capture order: prefix-fill + descending-sort per type so `WasmSlotEnv.resolve` lands on the right local).  Two distinct root causes, one shared failure path (closure dropped from function table → `unknown table 0` at WASM validation, or silent miscompute when later `let` pushes mask the bad index). |
+| v0.0.140 | 8 May | String-returning FnCall in interpolation — closes [#602](https://github.com/aallan/vera/issues/602) (the `i32_pair` branch was missing in `_infer_fncall_vera_type`'s WAT-type → Vera-type fallback; `to_string(...)` wrapped a FnCall whose result was already `String`, producing `expected i64, found i32` at WASM validation).  Re-uses the `_fn_ret_type_exprs` registry added by #614 to disambiguate `String` vs `Array<T>` for `i32_pair` returns. |
 
 ---
 
@@ -324,4 +325,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 139 tagged releases, 56 active development days.**
+Total: **810+ commits, 140 tagged releases, 56 active development days.**

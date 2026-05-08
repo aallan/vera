@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.140] - 2026-05-08
+
+### Fixed
+
+- **[#602](https://github.com/aallan/vera/issues/602)** — `IO.print("\(make())")` (a `String`-returning function call as an interpolation segment) produced invalid WASM with `expected i64, found i32` at instantiation.  Root cause: `_infer_fncall_vera_type` in `vera/wasm/inference.py` mapped user-fn WAT return types back to Vera-type names for the `i64` / `i32` / `f64` cases but had no `i32_pair` branch; a fn returning `String` mapped to `None` here.  `_translate_interpolated_string` then fell through to the `to_string(...)` Int-conversion fallback wrapper, which reads its arg as `i64` — but the FnCall pushed `i32_pair`.  Same inference-gap shape as #614 (which was the *element-type* of an indexed FnCall result; this is the *return-type* inference half).
+
+  Fix: extend the WAT-type → Vera-type fallback to consult `_fn_ret_type_exprs` (the registry added by #614) when the WAT type is `i32_pair`, so `String` and `Array<T>` returns are disambiguated.  Same registry, same pattern, same load-bearing infrastructure paying off twice.
+
+  Two new tests in `TestStringInterpolation` cover the String-returning FnCall and an Array-returning FnCall indexed in interpolation — both classes of `i32_pair` return.
+
 ## [0.0.139] - 2026-05-08
 
 ### Fixed
@@ -2007,7 +2017,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.139...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.140...HEAD
+[0.0.140]: https://github.com/aallan/vera/compare/v0.0.139...v0.0.140
 [0.0.139]: https://github.com/aallan/vera/compare/v0.0.138...v0.0.139
 [0.0.138]: https://github.com/aallan/vera/compare/v0.0.137...v0.0.138
 [0.0.137]: https://github.com/aallan/vera/compare/v0.0.136...v0.0.137

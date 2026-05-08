@@ -8187,6 +8187,149 @@ public fn main(-> @Unit)
 """
         assert _run_io(source, fn="main") == "len=5"
 
+    def test_string_returning_fncall_inside_interpolation_602(self) -> None:
+        """#602 — interpolating a String-returning function call directly.
+
+        Pre-fix: `_infer_fncall_vera_type` had no `i32_pair` branch in
+        the WAT-type → Vera-type fallback, so a user fn returning
+        `String` mapped to `None` here.  `_translate_interpolated_string`
+        then fell through to the `to_string(...)` Int-conversion
+        wrapper, which reads its arg as `i64` — but the FnCall pushed
+        `i32_pair`.  WASM validation rejected the module with
+        `expected i64, found i32` at the offending offset.
+
+        Post-fix: the inference path consults `_fn_ret_type_exprs`
+        (the same registry added by #614) when WAT type is `i32_pair`,
+        returns the proper `String` Vera-type name, and the
+        interpolation desugars to `string_concat(make_str(()), "\\n")`
+        with both args correctly typed as i32_pair.
+        """
+        source = _IO_PRELUDE + """\
+private fn make(-> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_array_returning_fncall_indexed_inside_interpolation(self) -> None:
+        """Sibling case: an `Array<T>`-returning fn indexed into Int,
+        used in interpolation.  Same `i32_pair` return type as the
+        String case but the index strips back to an `Int` element —
+        exercises both halves of the inference path together.
+        """
+        source = _IO_PRELUDE + """\
+private fn make_arr(-> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{ [10, 20, 30] }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make_arr(())[0])")
+}
+"""
+        assert _run_io(source, fn="main") == "10"
+
+    def test_type_alias_string_in_interpolation(self) -> None:
+        """A fn returning a type alias of `String` (e.g. `type Str =
+        String; fn make(-> @Str)`) used in interpolation.
+
+        Surfaced during PR #627's review (CodeRabbit, post-#602 fix):
+        my initial fix returned `ret_te.name` directly from the
+        `_fn_ret_type_exprs` registry — which stores the *declared*
+        TypeExpr `NamedType("Str")`, not the resolved
+        `NamedType("String")`.  Downstream `_translate_interpolated_string`
+        checks `vera_type == "String"` (and the conversion-map check)
+        — both miss for `"Str"` — so the value fell through to the
+        `to_string(...)` fallback wrapper, reproducing the original
+        #602 trap (`expected i64, found i32` at WASM validation) for
+        a *different* trigger.
+
+        Fix: resolve aliases via `_resolve_base_type_name` before
+        returning.  Same shape applies symmetrically to the generic-
+        branch `i32_pair` lookup added in `d78b4dc`, which now also
+        canonicalises (currently latent — see code comment).
+        """
+        source = _IO_PRELUDE + """\
+type Str = String;
+
+private fn make(-> @Str)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_no_to_string_wrap_on_string_returning_fncall_602(self) -> None:
+        """Structural assertion for the #602 fix.
+
+        Pre-fix: `_infer_fncall_vera_type` returned None for a user fn
+        whose WAT return type was `i32_pair`, so
+        `_translate_interpolated_string` wrapped the FnCall with
+        `to_string(...)`.  That wrapping was the *cause* of the WASM
+        validation trap (`to_string` reads its arg as `i64` but
+        `i32_pair` is two `i32`s).
+
+        Post-fix the wrap should never occur for a `String`-returning
+        FnCall — the inference walker now returns `"String"`, the
+        early `vera_type == "String"` branch fires, and the FnCall
+        flows directly into `string_concat` un-wrapped.
+
+        This is a *structural* test that locks the fix at the codegen
+        layer.  The companion runtime test
+        (`test_string_returning_fncall_inside_interpolation_602`)
+        catches behavioural regressions; this one catches inference
+        regressions whose downstream output happens to look right by
+        coincidence.
+        """
+        source = _IO_PRELUDE + """\
+private fn make(-> @String)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  -- Two parts so the desugar produces `string_concat(make(()), "\\n")`
+  -- (a single-part interpolation short-circuits to `translate_expr(p)`
+  -- without going through string_concat).
+  IO.print("\\(make(()))\\n")
+}
+"""
+        wat = _compile_ok(source).wat
+        # Pull out main's body so a `to_string` reference elsewhere
+        # in the module (e.g. helper fns from the prelude) doesn't
+        # produce a false negative.
+        main_match = re.search(
+            r"\(func \$main.*?(?=\n\s*\(func |\n\s*\)\s*$)",
+            wat,
+            re.DOTALL,
+        )
+        assert main_match is not None, "main function not found in WAT"
+        main_body = main_match.group(0)
+        # `to_string` was the bug's wrapper — its absence is the
+        # load-bearing structural property of the fix.  (`string_concat`
+        # is inlined as byte-copy loops in the WAT rather than emitted
+        # as a separate `call $string_concat`, so we don't assert on
+        # it directly.)
+        assert "call $to_string" not in main_body, (
+            "Pre-#602 bug shape: `String`-returning FnCall in "
+            "interpolation should NOT be wrapped with `to_string`. "
+            "If this assertion fires, `_infer_fncall_vera_type` has "
+            "regressed for `i32_pair` returns."
+        )
+
 
 # =====================================================================
 # Async / Future<T>
