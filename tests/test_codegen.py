@@ -8236,6 +8236,41 @@ public fn main(-> @Unit)
 """
         assert _run_io(source, fn="main") == "10"
 
+    def test_type_alias_string_in_interpolation(self) -> None:
+        """A fn returning a type alias of `String` (e.g. `type Str =
+        String; fn make(-> @Str)`) used in interpolation.
+
+        Surfaced during PR #627's review (CodeRabbit, post-#602 fix):
+        my initial fix returned `ret_te.name` directly from the
+        `_fn_ret_type_exprs` registry — which stores the *declared*
+        TypeExpr `NamedType("Str")`, not the resolved
+        `NamedType("String")`.  Downstream `_translate_interpolated_string`
+        checks `vera_type == "String"` (and the conversion-map check)
+        — both miss for `"Str"` — so the value fell through to the
+        `to_string(...)` fallback wrapper, reproducing the original
+        #602 trap (`expected i64, found i32` at WASM validation) for
+        a *different* trigger.
+
+        Fix: resolve aliases via `_resolve_base_type_name` before
+        returning.  Same shape applies symmetrically to the generic-
+        branch `i32_pair` lookup added in `d78b4dc`, which now also
+        canonicalises (currently latent — see code comment).
+        """
+        source = _IO_PRELUDE + """\
+type Str = String;
+
+private fn make(-> @Str)
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
     def test_no_to_string_wrap_on_string_returning_fncall_602(self) -> None:
         """Structural assertion for the #602 fix.
 

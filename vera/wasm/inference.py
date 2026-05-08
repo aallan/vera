@@ -777,11 +777,19 @@ class InferenceMixin:
             # called inside interpolation would still fall through to
             # `to_string(...)` — same #602 failure mode in a different
             # call shape.  `_register_fn` populates `_fn_ret_type_exprs`
-            # for monomorphised names too (`core.py:333`).
+            # for monomorphised names too (`core.py:333`).  Currently
+            # latent — generic instantiation over `String` is blocked
+            # upstream by the bare-type-var-param lowering gap (same
+            # class as #604) — but kept symmetric with the non-generic
+            # branch so the fix lands automatically when that gap closes.
             if ret_wt == "i32_pair":
                 ret_te = self._fn_ret_type_exprs.get(mangled)
                 if isinstance(ret_te, ast.NamedType):
-                    return ret_te.name
+                    # Resolve type aliases (`type Str = String`) so
+                    # the downstream consumer sees the canonical name
+                    # — see the matching branch below for the bug
+                    # this prevents.
+                    return self._resolve_base_type_name(ret_te.name)
             return None
         # Non-generic: map from WASM return type
         ret_wt = self._fn_ret_types.get(call.name)
@@ -806,7 +814,20 @@ class InferenceMixin:
         if ret_wt == "i32_pair":
             ret_te = self._fn_ret_type_exprs.get(call.name)
             if isinstance(ret_te, ast.NamedType):
-                return ret_te.name
+                # Resolve type aliases through `_resolve_base_type_name`
+                # so that `type Str = String; fn make() -> @Str` returns
+                # `"String"` here, not `"Str"`.  Without this, a fn
+                # whose declared return type is an alias would still
+                # mismatch the downstream consumer's `vera_type ==
+                # "String"` check in `_translate_interpolated_string`,
+                # falling through to the `to_string(...)` wrapper that
+                # produced the original #602 trap — same bug class,
+                # different trigger.  Verified reproducer:
+                # `type Str = String; private fn make(-> @Str) {"x"};
+                # public fn main(-> @Unit) { IO.print("\\(make(()))\\n") }`
+                # — pre-fix this trapped `expected i64, found i32` even
+                # with #602's i32_pair branch in place.
+                return self._resolve_base_type_name(ret_te.name)
         return None
 
     def _ctor_to_adt_name(self, ctor_name: str) -> str | None:
