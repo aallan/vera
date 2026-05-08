@@ -8236,6 +8236,63 @@ public fn main(-> @Unit)
 """
         assert _run_io(source, fn="main") == "10"
 
+    def test_inline_refinement_string_in_interpolation(self) -> None:
+        """A fn declared with an inline refinement return type
+        (`@{ @String | predicate }`) used in interpolation.
+
+        Surfaced during PR #627's review (CodeRabbit, third trigger
+        in the same bug class as #602 and the type-alias case).
+        `_register_fn` stores the literal AST, so `_fn_ret_type_exprs`
+        holds a `RefinementType` directly.  My initial alias-resolving
+        fix only handled `NamedType` — `isinstance(ret_te, ast.NamedType)`
+        was False for a `RefinementType`, fell through to None, same
+        original #602 trap.
+
+        Fix: extracted the inference into `_resolve_i32_pair_ret_te`
+        which handles both `NamedType` (with alias resolution) and
+        `RefinementType` (unwrap to base, then resolve).
+        """
+        source = _IO_PRELUDE + """\
+private fn make(-> @{ @String | string_length(@String.0) > 0 })
+  requires(true) ensures(true) effects(pure)
+{ "hello" }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(()))\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "hello\n"
+
+    def test_inline_refinement_array_in_indexed_interpolation(self) -> None:
+        """A fn declared with an inline refinement return type over
+        `Array<T>`, indexed inside an interpolation.
+
+        Parallel instance of the same RefinementType gap, but in
+        `_infer_index_element_type_expr`'s FnCall branch (the path
+        added by #614).  Pre-fix the IndexExpr-of-FnCall element-type
+        inference failed for refinement-returning fns, the enclosing
+        function got dropped from the output module, and at top level
+        the symptom was the [E602] "main body contains unsupported
+        expressions — skipped" warning.
+
+        Fix: same RefinementType-unwrap shape applied to
+        `_infer_index_element_type_expr`'s FnCall branch.
+        """
+        source = _IO_PRELUDE + """\
+private fn make(-> @{ @Array<Int> | array_length(@Array<Int>.0) > 0 })
+  requires(true) ensures(true) effects(pure)
+{ [10, 20, 30] }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make(())[1])\\n")
+}
+"""
+        assert _run_io(source, fn="main") == "20\n"
+
     def test_type_alias_string_in_interpolation(self) -> None:
         """A fn returning a type alias of `String` (e.g. `type Str =
         String; fn make(-> @Str)`) used in interpolation.

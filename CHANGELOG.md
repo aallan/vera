@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.141] - 2026-05-08
+
+### Fixed
+
+- **Inline-refinement return types** in `_infer_fncall_vera_type` and `_infer_index_element_type_expr` — third trigger of the same bug class as #602 (i64/i32 mismatch at WASM validation) and the type-alias case fixed in v0.0.140.  Surfaced during PR #627's review (CodeRabbit duplicate-comment escalation, merged before the fix landed in #627 itself).
+
+  When a fn declares an inline refinement return type (`@{ @String | predicate }`), `_register_fn` stores the literal `RefinementType` AST in `_fn_ret_type_exprs`.  v0.0.140's fix only handled the `NamedType` case via `isinstance` — `RefinementType` fell through to None, `_translate_interpolated_string` substituted `to_string(...)` for an `i32_pair` value, same #602 trap with a different trigger.  Same gap also lived in `_infer_index_element_type_expr`'s FnCall branch (the path #614 added) for refinement-`Array<T>` returns indexed via `f()[i]`.
+
+  Fix: extracted the i32_pair return-type resolution into a helper `_resolve_i32_pair_ret_te` that handles both `NamedType` (with alias resolution via `_resolve_base_type_name`) and `RefinementType` (unwrap to `base_type`, then resolve).  Applied to both i32_pair branches (non-generic + generic-mono) and to the parallel IndexExpr inference path.  Two new regression tests in `TestStringInterpolation` cover the inline-refinement String and Array-indexed cases.
+
+  All four shapes verified post-fix: `string_concat` baseline, `f()` direct in interpolation (#602), type alias over String, inline refinement over String, and IndexExpr-of-FnCall returning refinement-Array.
+
 ## [0.0.140] - 2026-05-08
 
 ### Fixed
@@ -2017,7 +2029,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.140...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.141...HEAD
+[0.0.141]: https://github.com/aallan/vera/compare/v0.0.140...v0.0.141
 [0.0.140]: https://github.com/aallan/vera/compare/v0.0.139...v0.0.140
 [0.0.139]: https://github.com/aallan/vera/compare/v0.0.138...v0.0.139
 [0.0.138]: https://github.com/aallan/vera/compare/v0.0.137...v0.0.138

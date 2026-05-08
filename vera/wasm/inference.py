@@ -783,13 +783,11 @@ class InferenceMixin:
             # class as #604) — but kept symmetric with the non-generic
             # branch so the fix lands automatically when that gap closes.
             if ret_wt == "i32_pair":
-                ret_te = self._fn_ret_type_exprs.get(mangled)
-                if isinstance(ret_te, ast.NamedType):
-                    # Resolve type aliases (`type Str = String`) so
-                    # the downstream consumer sees the canonical name
-                    # — see the matching branch below for the bug
-                    # this prevents.
-                    return self._resolve_base_type_name(ret_te.name)
+                resolved = self._resolve_i32_pair_ret_te(
+                    self._fn_ret_type_exprs.get(mangled),
+                )
+                if resolved is not None:
+                    return resolved
             return None
         # Non-generic: map from WASM return type
         ret_wt = self._fn_ret_types.get(call.name)
@@ -812,22 +810,49 @@ class InferenceMixin:
         # *element-type* of an indexed FnCall result; this is the
         # *return-type* inference half.
         if ret_wt == "i32_pair":
-            ret_te = self._fn_ret_type_exprs.get(call.name)
-            if isinstance(ret_te, ast.NamedType):
-                # Resolve type aliases through `_resolve_base_type_name`
-                # so that `type Str = String; fn make() -> @Str` returns
-                # `"String"` here, not `"Str"`.  Without this, a fn
-                # whose declared return type is an alias would still
-                # mismatch the downstream consumer's `vera_type ==
-                # "String"` check in `_translate_interpolated_string`,
-                # falling through to the `to_string(...)` wrapper that
-                # produced the original #602 trap — same bug class,
-                # different trigger.  Verified reproducer:
-                # `type Str = String; private fn make(-> @Str) {"x"};
-                # public fn main(-> @Unit) { IO.print("\\(make(()))\\n") }`
-                # — pre-fix this trapped `expected i64, found i32` even
-                # with #602's i32_pair branch in place.
-                return self._resolve_base_type_name(ret_te.name)
+            resolved = self._resolve_i32_pair_ret_te(
+                self._fn_ret_type_exprs.get(call.name),
+            )
+            if resolved is not None:
+                return resolved
+        return None
+
+    def _resolve_i32_pair_ret_te(
+        self, ret_te: ast.TypeExpr | None,
+    ) -> str | None:
+        """Canonicalise a fn's return TypeExpr for `i32_pair` lookup.
+
+        Both `NamedType` and `RefinementType` can appear at user-fn
+        return positions for `String` / `Array<T>` (i32_pair) returns:
+
+          - `NamedType("String")` — bare type, common case.
+          - `NamedType("MyAlias")` where the alias resolves to String —
+            `_resolve_base_type_name` follows the chain to `"String"`.
+          - `RefinementType(base_type=NamedType("String"), ...)` — the
+            inline `@{ @String | predicate }` form at the fn return
+            position.  `_register_fn` stores the literal AST, so the
+            registry holds a `RefinementType` directly.
+
+        Without unwrapping the third shape, a fn declared
+        ``private fn make(-> @{ @String | string_length(@String.0) > 0 })``
+        used inside interpolation reproduces the original #602 trap —
+        `_fn_ret_type_exprs.get(name)` returns the RefinementType, the
+        non-NamedType isinstance check fails, this returns None, and
+        `_translate_interpolated_string` falls through to `to_string(...)`
+        with `i32_pair` on the stack.  Same bug class as #602 / type-
+        alias, different trigger.
+
+        Returns the canonical Vera type name (`"String"` /
+        `"Array"` / etc.), or None if the expression isn't a recognised
+        i32_pair shape (e.g. an unsupported `FnType` or `RefinementType`
+        whose base isn't a `NamedType`).
+        """
+        if isinstance(ret_te, ast.NamedType):
+            return self._resolve_base_type_name(ret_te.name)
+        if isinstance(ret_te, ast.RefinementType):
+            base = ret_te.base_type
+            if isinstance(base, ast.NamedType):
+                return self._resolve_base_type_name(base.name)
         return None
 
     def _ctor_to_adt_name(self, ctor_name: str) -> str | None:
@@ -911,6 +936,18 @@ class InferenceMixin:
         # table index out of bounds" (#614).
         if isinstance(coll, ast.FnCall):
             ret_te = self._fn_ret_type_exprs.get(coll.name)
+            # Unwrap a RefinementType to its base NamedType so that an
+            # inline-refinement return type like
+            # `@{ @Array<Int> | array_length(...) > 0 }` resolves the
+            # same as a plain `@Array<Int>` return.  Without this, an
+            # IndexExpr-of-FnCall against a refinement-returning fn
+            # silently failed inference, the enclosing function got
+            # dropped, and the symptom matched the original #614 bug.
+            # Same shape fix applied to `_resolve_i32_pair_ret_te` for
+            # the parallel return-type inference path.
+            if isinstance(ret_te, ast.RefinementType) and \
+                    isinstance(ret_te.base_type, ast.NamedType):
+                ret_te = ret_te.base_type
             if isinstance(ret_te, ast.NamedType):
                 ta_te = self._alias_array_element(ret_te.name, ret_te.type_args)
                 if ta_te is not None:
