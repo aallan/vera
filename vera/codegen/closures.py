@@ -17,7 +17,7 @@ from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push
 class ClosureLiftingMixin:
     """Methods for lifting closures to module-level functions."""
 
-    def _lift_pending_closures(self, ctx: WasmContext) -> None:
+    def _lift_pending_closures(self, ctx: WasmContext) -> bool:
         """Lift all anonymous functions created during body compilation.
 
         Each pending closure is compiled to a module-level WASM function
@@ -33,6 +33,17 @@ class ClosureLiftingMixin:
         function and the inner's call_indirect targeted a missing table
         entry.  The worklist below collects each lift's inner-pending
         list and feeds it back, lifting to arbitrary depth.
+
+        Returns ``True`` if **any** closure body in the worklist
+        failed to compile (``_compile_lifted_closure`` returned
+        ``None``).  The caller (``_compile_fn``) uses this to drop
+        the enclosing top-level function rather than emitting a
+        module with a ``call_indirect`` to a missing function-table
+        entry — closes #636.  Pre-this-fix the failed closure was
+        silently dropped from the table while the parent fn's WAT
+        (containing the now-dangling ``call_indirect``) was still
+        emitted, producing a WASM-validation trap with no
+        source-located parent-fn diagnostic.
         """
         # ``deque`` (rather than a plain list) because ``popleft`` is
         # O(1) where ``list.pop(0)`` would shift every remaining entry.
@@ -42,13 +53,40 @@ class ClosureLiftingMixin:
         worklist: deque[
             tuple[ast.AnonFn, list[tuple[str, int, str]], int]
         ] = deque(ctx._pending_closures)
-        # Carry the running ID counter and accumulated sigs forward
-        # as each iteration may register new ones in its inner ctx.
+        # Snapshot `_next_closure_id` BEFORE this fn's worklist so we
+        # can recycle the consumed range on failure.  closure_id is
+        # module-monotonic and is stored as `func_table_idx` in each
+        # closure struct's body emit — it must equal the closure's
+        # eventual position in `_closure_table`.  When this fn's
+        # worklist fails, the parent fn is dropped (#636) and its
+        # closure structs aren't emitted, so the consumed closure_ids
+        # are observably free; recycling them keeps the next fn's
+        # closure_id ↔ table_index correspondence intact.
+        prev_next_closure_id = self._next_closure_id
+        # Sync forward from the ctx so the worklist sees the correct
+        # current id counter; we'll restore on failure.
         self._next_closure_id = ctx._next_closure_id
         for sig_content, sig_name in ctx._closure_sigs.items():
             if sig_content not in self._closure_sigs:
                 self._closure_sigs[sig_content] = sig_name
 
+        # Accumulate successful lifts in local buffers; commit to
+        # module-level state only if the entire worklist succeeds.
+        # If any closure body fails, the parent fn will be dropped
+        # (#636) and these would be orphan dead code in the output
+        # module — but more critically, they'd shift table indices
+        # for *subsequent* top-level fns' closures, breaking the
+        # closure_id ↔ table_index correspondence for the rest of
+        # the module (closure_id is a monotonic module-wide counter
+        # while table position is determined by appending order in
+        # `_closure_table`; a gap in successful lifts within one
+        # fn's worklist desyncs the two for everything that follows).
+        # Snapshot + commit-on-success preserves the invariant.
+        new_closure_fns_wat: list[str] = []
+        new_closure_table: list[str] = []
+        new_source_map: list[tuple[str, tuple[str, int, int]]] = []
+        new_sigs: list[tuple[str, str]] = []
+        any_failed = False
         while worklist:
             anon_fn, captures, closure_id = worklist.popleft()
             inner_pending: list[tuple[ast.AnonFn, list[tuple[str, int, str]], int]] = []
@@ -56,54 +94,84 @@ class ClosureLiftingMixin:
                 closure_id, anon_fn, captures,
                 collect_pending=inner_pending,
             )
-            if lifted_wat is not None:
-                self._closure_fns_wat.append(lifted_wat)
-                self._closure_table.append(f"$anon_{closure_id}")
+            if lifted_wat is None:
+                # Closure body failed — diagnostics already emitted by
+                # `_compile_lifted_closure`'s harvest.  Record the
+                # failure so the caller can drop the enclosing fn (#636).
+                any_failed = True
+                continue
+            new_closure_fns_wat.append(lifted_wat)
+            new_closure_table.append(f"$anon_{closure_id}")
+
+            # #516 Stage 2 — record source location for trap mapping.
+            # The lifted WAT name is `$anon_N`; trap frames will see
+            # `anon_N` (no leading `$`) in func_name.  Use the source
+            # span of the original `fn(...) { ... }` expression so a
+            # trap inside a closure points back to the syntactic
+            # `fn` site, not to the synthetic top-level wrapper.
+            if anon_fn.span is not None:
+                new_source_map.append((
+                    f"anon_{closure_id}",
+                    (
+                        self.file or "<unknown>",
+                        anon_fn.span.line,
+                        anon_fn.span.end_line,
+                    ),
+                ))
+
+            # Register the closure signature for call_indirect
+            param_wasm: list[str] = ["i32"]  # env param
+            for p in anon_fn.params:
+                pwt = self._type_expr_to_wasm_type(p)
+                if pwt == "i32_pair":  # pragma: no cover — String/Array closure params
+                    param_wasm.extend(["i32", "i32"])
+                elif pwt and pwt != "unsupported":
+                    param_wasm.append(pwt)
+            ret_wt = self._type_expr_to_wasm_type(anon_fn.return_type)
+            param_part = " ".join(
+                f"(param {wt})" for wt in param_wasm
+            )
+            if ret_wt == "i32_pair":
+                result_part = " (result i32 i32)"
+            elif ret_wt:
+                result_part = f" (result {ret_wt})"
+            else:
+                result_part = ""  # pragma: no cover — Unit closure returns
+            sig_content = f"{param_part}{result_part}"
+            if sig_content not in self._closure_sigs:
+                # Pre-compute the index outside the f-string so the
+                # whole expression fits on one line — Python 3.11
+                # doesn't support multi-line f-string interpolations
+                # (only 3.12+ does).
+                sig_idx = len(self._closure_sigs) + len(new_sigs)
+                sig_name = f"$closure_sig_{sig_idx}"
+                new_sigs.append((sig_content, sig_name))
+
+            # Bubble up nested closures + any new sigs / IDs the
+            # inner ctx registered while translating this body.
+            worklist.extend(inner_pending)
+
+        # Commit-on-success: only extend module-level state if every
+        # closure in the worklist succeeded.  On failure, the parent
+        # fn is dropped (#636) and these locals are discarded along
+        # with the would-be orphans; `_next_closure_id` rolls back so
+        # subsequent fns recycle the consumed range.
+        if any_failed:
+            self._next_closure_id = prev_next_closure_id
+        else:
+            self._closure_fns_wat.extend(new_closure_fns_wat)
+            self._closure_table.extend(new_closure_table)
+            for fn_name, span_info in new_source_map:
+                self._fn_source_map[fn_name] = span_info
+            for sig_content, sig_name in new_sigs:
+                if sig_content not in self._closure_sigs:
+                    self._closure_sigs[sig_content] = sig_name
+            if new_closure_fns_wat:
                 self._needs_table = True
                 self._needs_alloc = True
                 self._needs_memory = True
 
-                # #516 Stage 2 — record source location for trap mapping.
-                # The lifted WAT name is `$anon_N`; trap frames will see
-                # `anon_N` (no leading `$`) in func_name.  Use the source
-                # span of the original `fn(...) { ... }` expression so a
-                # trap inside a closure points back to the syntactic
-                # `fn` site, not to the synthetic top-level wrapper.
-                if anon_fn.span is not None:
-                    self._fn_source_map[f"anon_{closure_id}"] = (
-                        self.file or "<unknown>",
-                        anon_fn.span.line,
-                        anon_fn.span.end_line,
-                    )
-
-                # Register the closure signature for call_indirect
-                param_wasm: list[str] = ["i32"]  # env param
-                for p in anon_fn.params:
-                    pwt = self._type_expr_to_wasm_type(p)
-                    if pwt == "i32_pair":  # pragma: no cover — String/Array closure params
-                        param_wasm.extend(["i32", "i32"])
-                    elif pwt and pwt != "unsupported":
-                        param_wasm.append(pwt)
-                ret_wt = self._type_expr_to_wasm_type(anon_fn.return_type)
-                param_part = " ".join(
-                    f"(param {wt})" for wt in param_wasm
-                )
-                if ret_wt == "i32_pair":
-                    result_part = " (result i32 i32)"
-                elif ret_wt:
-                    result_part = f" (result {ret_wt})"
-                else:
-                    result_part = ""  # pragma: no cover — Unit closure returns
-                sig_content = f"{param_part}{result_part}"
-                if sig_content not in self._closure_sigs:
-                    sig_name = (
-                        f"$closure_sig_{len(self._closure_sigs)}"
-                    )
-                    self._closure_sigs[sig_content] = sig_name
-
-                # Bubble up nested closures + any new sigs / IDs the
-                # inner ctx registered while translating this body.
-                worklist.extend(inner_pending)
+        return any_failed
 
     def _compile_lifted_closure(
         self,
@@ -299,7 +367,25 @@ class ClosureLiftingMixin:
 
         # Compile the body
         body_instrs = ctx.translate_block(anon_fn.body, env)
-        if body_instrs is None:  # pragma: no cover — defensive
+        if body_instrs is None:
+            # #630 Tier 2 — closure-body parallel of the harvest in
+            # `_compile_fn` (functions.py).  Without this, an
+            # interpolation segment in a closure body whose Vera type
+            # couldn't be inferred populated `ctx._interp_inference_failures`
+            # but the failures were silently dropped on the closure-
+            # path return-None — the closure_id was still registered
+            # at the call site, so `call_indirect` referenced a missing
+            # function-table entry and WASM validation rejected the
+            # module with no source-located diagnostic.  Same
+            # silent-drop shape that #614/#615 fixed for translation
+            # failures; this closes the parallel for the post-#630
+            # interpolation-failure path.  (silent-failure-hunter
+            # finding C1 on PR #631.)  Pre-this-fix the line below
+            # carried a `# pragma: no cover — defensive` claim that
+            # was empirically disproved as soon as #630's Tier 2
+            # added a non-defensive None-return path through
+            # `_translate_interpolated_string`.
+            self._harvest_interp_inference_failures(ctx)
             return None
 
         # Propagate host-import tracking from closure ctx to module level

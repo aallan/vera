@@ -200,6 +200,31 @@ class WasmContext(
         # ``vera/codegen/closures.py``) emit plain ``call``.
         self._tail_call_sites: set[int] = set()
         self._self_ret_wt: str | None = None
+        # #630 Tier 2 — interpolation-segment inference failures.
+        # When `_translate_interpolated_string` can't classify a segment's
+        # Vera type, it appends the offending `Expr` here and returns
+        # None.  `CodeGenerator._compile_fn` harvests these and emits a
+        # specific [E615] diagnostic before the fall-through [E602].
+        # Pre-#630 the same path silently wrapped the segment in
+        # `to_string(...)` which reads `i64` — an `i32_pair` value
+        # (String/Array) would then trip `expected i64, found i32` at
+        # WASM validation.  Converting the silent miscompilation into a
+        # loud compile-time skip closes the ten triggers of the #602
+        # bug class against any future inference gap (ADT types in
+        # interpolation, novel composite kinds, etc.).
+        self._interp_inference_failures: list[ast.Expr] = []
+        # #632 — apply_fn closure-arg shapes that the inference
+        # dispatcher in `_infer_apply_fn_return_type` doesn't
+        # recognise (today: anything other than SlotRef-into-FnType
+        # alias or AnonFn — e.g. `apply_fn(make_mapper(), 7)` where
+        # `make_mapper` is a FnCall returning a closure).  Pre-#632
+        # the apply_fn translation site silently used the `"i64"`
+        # default for the call_indirect sig, producing a WASM
+        # validation trap with no source-located diagnostic.
+        # Post-#632 the failing closure_arg is appended here and the
+        # codegen base's `_harvest_inference_failures` emits a
+        # specific [E616] before falling through to [E602].
+        self._apply_fn_inference_failures: list[ast.Expr] = []
 
     def set_fn_ret_types(
         self, ret_types: dict[str, str | None],

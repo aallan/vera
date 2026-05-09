@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.142] - 2026-05-08
+
+### Fixed
+
+- **[#630](https://github.com/aallan/vera/issues/630)** + **[#632](https://github.com/aallan/vera/issues/632)** + **[#635](https://github.com/aallan/vera/issues/635)** + **[#636](https://github.com/aallan/vera/issues/636)** — close the #602 bug class structurally across all four sites.  After ten distinct triggers across PRs #627 and #629, each fixed locally with one more `isinstance` handler or one more inference site, the discovery rate (9th and 10th triggers landing within hours of #630 being filed) outpaced reactive fixing.  This release consolidates the canonicalisation surface into a single walker, makes the silent amplifier loud at every site (interpolation, apply_fn / call_indirect), substitutes parameterised aliases in both inference and compilability paths, and propagates closure-body failures up to drop enclosing functions cleanly.
+
+  **Tier 1 — centralised canonicalisation.** The pre-#630 codebase carried six overlapping canonicalisation helpers in `vera/wasm/inference.py` (plus an unaudited seventh in `vera/wasm/calls_arrays.py`), each handling a subset of (a) `RefinementType` unwrap, (b) alias-chain follow, (c) generic substitution, (d) `type_args` formatting.  Site by site, ad-hoc walks at the apply_fn dispatchers, FnType-return helpers, and IndexExpr branch independently re-implemented combinations of these concerns and missed the rest — accumulating triggers 1–10 of the i32_pair-into-i64 mismatch bug class.
+
+  Replaced with two helpers — `_canonical_named_type` (the core walker: iteratively unwraps RefinementType, applies optional alias_map for generic substitution, follows NamedType alias chains, returns canonical `NamedType` or None) and `_canonical_wasm_type` (thin convenience wrapper that maps the canonical name to a WASM type).  Migrated all callers:
+
+  - `_format_named_type_canonical` — now a 3-line delegate.
+  - `_resolve_i32_pair_ret_te` — now a 2-line delegate (kept for #628 cross-module work; otherwise inline-able).
+  - `_fn_type_return_wasm` — single-line delegate.
+  - `_resolve_generic_fn_return` — builds `alias_map` from the generic params + concrete args, single delegate call.
+  - `_infer_fncall_vera_type` apply_fn dispatcher — collapsed from a 75-line nested `isinstance` ladder over `(SlotRef, AnonFn)` × `(generic, non-generic)` × `(NamedType, RefinementType)` shapes to 18 lines: extract closure return TypeExpr + alias_map, call walker once.  Future closure-arg shapes (`FnCall` returning a closure, `IfExpr` selecting between closures, etc.) plug into the same dispatch with no new isinstance ladder.
+  - `_infer_apply_fn_return_type` — same consolidation as above.
+  - `_infer_index_element_type_expr` FnCall branch — now uses the canonical `NamedType` (with `type_args` preserved) directly to feed `_alias_array_element`.
+  - `_infer_closure_return_vera_type` (in `calls_arrays.py`, used by `array_map`) — previously bare-`NamedType`-only; now handles refinements and alias chains.
+
+  Deleted `_resolve_type_name_to_wasm_canonical` — functionally identical to `_resolve_base_type_name`, an unnoticed duplicate that had evolved in parallel.  All callers redirected.
+
+  **Tier 2 — loud diagnostic on the silent amplifier.** The actual silent failure for ten triggers wasn't the inference miss itself — it was `vera/wasm/operators.py:482-486`, the `else` branch in `_translate_interpolated_string` that wrapped any unrecognised-type segment with `to_string(...)`.  `to_string` reads its argument as `i64`; an `i32_pair` (String/Array) value then tripped `expected i64, found i32` at WASM validation.  That fallthrough turned every canonicalisation gap into invalid emission rather than a clean compile-time skip.
+
+  Added new error code [E615] "Cannot interpolate value of unknown type — type inference failed".  Converted the silent fallthrough to record the offending segment on `WasmContext._interp_inference_failures`, then return None.  `CodeGenerator._compile_fn` harvests the failures and emits [E615] for each before falling through to the existing [E602] skip — same loud-skip mechanism that any other unsupported expression triggers, but now with a specific E-code pointing at the actual inference gap rather than a generic "unsupported expressions".
+
+  **Net effect.** Six canonicalisation helpers → two.  Seventy-five-line apply_fn dispatcher × two sites → eighteen lines × two.  Silent miscompilation on inference miss → clean compile-time skip with specific [E615] diagnostic.  All ten existing #602-class regression tests in `TestStringInterpolation` continue to pass — pure refactor + diagnostic conversion, no behavioural change for valid programs.  Seven new regression tests under `TestE615LoudInterpolationFallthrough630` cover: ADT interpolation (the canonical E615 trigger), `Result<T,E>` interpolation (parallel ADT shape), closure-body E615 (the silent-failure-hunter C1 finding — without harvest in `closures.py` the closure was silently dropped), per-function isolation of `_interp_inference_failures`, multiple-failures-per-function (UX — one [E615] per failing segment instead of N round-trips), terminal-NamedType type_args propagation (the CodeRabbit + code-reviewer flagged latent bug — alias-bound type_args propagate through the walker), and `array_map` over a refinement-returning closure (previously-unaudited `_infer_closure_return_vera_type` path now handling refinements).
+
+  PR review pass found four additional review-pass items addressed in the same PR.  CodeRabbit + the code-reviewer agent independently identified that `_canonical_named_type`'s `outer_type_args` capture rule (always read from the *first* NamedType) lost type_args when an `alias_map` substitution bound a generic param to a parameterised type — fixed by always reading from the *terminal* NamedType.  The silent-failure-hunter agent caught the closure-body harvest gap — fixed by extracting the harvest into `CodeGenerator._harvest_interp_inference_failures` and calling it from both `_compile_fn` and `_compile_lifted_closure`.  Comment-analyzer flagged trigger-count drift in `operators.py` and a "plug in here" overstatement — both corrected.  Multiple-failures-per-function was added as a UX improvement (`had_failure` flag in `_translate_interpolated_string` so all failing segments surface in one compile pass).
+
+  A second CodeRabbit review pass added five more findings, all addressed.  The `_canonical_named_type` walker gained: (a) a unified cycle guard via a single `seen` set covering both `alias_map` substitution and `_type_aliases` chain following, so a self-referential alias_map (`{T: NamedType("T")}`) can no longer loop forever; (b) `Future<T>` transparency in the `_canonical_wasm_type` convenience wrapper, parallel to `_slot_name_to_wasm_type`'s existing `Future<T>` strip-and-recurse handling; (c) parameterised-alias substitution via a new `_substitute_type_vars` helper, so following `type Box<T> = Array<T>` with a concrete `Box<Int>` substitutes `T → Int` in the alias body before continuing the walk.  Tests strengthened: `test_canonical_named_type_terminal_args_propagation` switched from a non-parameterised alias (`type IntList = Array<Int>`) to a parameterised one (`type Box<T> = Array<T>`) so it actually exercises the substitution path; `test_per_function_isolation_of_failures_list` added a `clean_after` function so the test catches forward leakage from `dirty` rather than only backward.
+
+  Pragma audit closed for the canonicalisation cluster — the disproved `# pragma: no cover` on closure-return-RefinementType (PR #629) was removed during the cluster migration, plus a `# pragma: no cover — defensive` claim on `_compile_lifted_closure`'s body-instrs-None path (now provably reachable through the new E615 path).  Broader audit (verifying every prose-bearing pragma claim across the WASM codegen) is queued as a follow-up.
+
+  Final review pass closed three more sites in the same PR rather than landing them as follow-ups.  **#635** (parameterised-alias substitution in `_type_expr_to_wasm_type` — the compilability check's parallel of the walker fix): extracted `substitute_type_vars` as a module-level free function so both `InferenceMixin` and `CodeGenerator` can use it; `type Id<T> = T; @Id<Array<Int>>` now compiles end-to-end.  **#632** (apply_fn / call_indirect E616 diagnostic): `_translate_apply_fn` now records unhandled closure-arg shapes on `_apply_fn_inference_failures`, harvested as `[E616]` before the function-skip `[E602]`, so `apply_fn(make_mapper(()), 7)` (where `make_mapper` is a FnCall returning a closure) now produces a source-located diagnostic instead of a WASM-validation trap.  **#636** (closure-body fail drops enclosing fn): `_lift_pending_closures` now reports whether any closure body failed; `_compile_fn` checks the flag and drops the enclosing top-level fn with a specific `[E602]`, so the module no longer carries a `call_indirect` to a missing function-table entry.
+
+  **Final state.** Six canonicalisation helpers → two; ten triggers structurally closed at four sites (interpolation `[E615]`, IndexExpr-of-FnCall, FnType-alias / generic FnType return, apply_fn `[E616]`, compilability `_type_expr_to_wasm_type`, closure-body propagation).  Every silent miscompilation in the bug class is now either structurally impossible or surfaces as a source-located diagnostic + clean function skip.  Eleven regression tests in `TestE615LoudInterpolationFallthrough630` pin the closures.
+
+  Remaining follow-ups (out of scope for this PR, smaller polish items): [#628](https://github.com/aallan/vera/issues/628) (cross-module `_fn_ret_type_exprs` propagation), [#626](https://github.com/aallan/vera/issues/626) Layer 1 (pre-commit gate on `[E602]` across the conformance suite), [#633](https://github.com/aallan/vera/issues/633) (cycle-guard alignment for `_resolve_base_type_name`), [#634](https://github.com/aallan/vera/issues/634) (SlotRef-in-interpolation source-span fidelity), and the duplicate `_type_expr_name` / `_type_expr_to_slot_name` in `inference.py`.
+
 ## [0.0.141] - 2026-05-08
 
 ### Fixed
@@ -2037,7 +2076,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.141...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.142...HEAD
+[0.0.142]: https://github.com/aallan/vera/compare/v0.0.141...v0.0.142
 [0.0.141]: https://github.com/aallan/vera/compare/v0.0.140...v0.0.141
 [0.0.140]: https://github.com/aallan/vera/compare/v0.0.139...v0.0.140
 [0.0.139]: https://github.com/aallan/vera/compare/v0.0.138...v0.0.139

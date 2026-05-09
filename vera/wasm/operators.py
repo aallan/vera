@@ -462,8 +462,15 @@ class OperatorsMixin:
         Each part is translated to ``(ptr, len)`` on the stack, then
         folded left with ``string_concat``.
         """
-        # Collect non-empty parts as AST nodes ready for translation
+        # Collect non-empty parts as AST nodes ready for translation.
+        # Continue iterating even after the first inference failure so
+        # that every offending segment in a single interpolation surfaces
+        # as its own [E615] diagnostic — N reports per N failures, not
+        # one report per recompile.  `had_failure` tracks whether any
+        # segment hit the silent-amplifier-now-loud path so we still
+        # return None at the end (the function is dropped via [E602]).
         parts: list[ast.Expr] = []
+        had_failure = False
         for p in expr.parts:
             if isinstance(p, str):
                 if p:  # skip empty string fragments
@@ -480,27 +487,36 @@ class OperatorsMixin:
                         name=fn_name, args=(p,), span=expr.span,
                     ))
                 else:
-                    # Fallback when `_infer_vera_type` returns None or
-                    # an unrecognised type name.  Pre-#602 this branch
-                    # carried a `# pragma: no cover` claiming
-                    # unreachability — disproved by #602 (a
-                    # `String`-returning user FnCall mapped to None
-                    # because `_infer_fncall_vera_type` had no
-                    # `i32_pair` branch, fell here, and `to_string`
-                    # generated invalid WASM by reading `i32_pair` as
-                    # `i64`).  #602's fix closes that specific shape;
-                    # this branch remains reachable for any future
-                    # gap in inference (e.g. ADT types, novel
-                    # composite kinds).  When that next bug appears,
-                    # the symptom will be the same `expected i64,
-                    # found i32` at WASM validation — at which point
-                    # the right fix is whichever inference path
-                    # returned None, not this fallback.  Tracked as
-                    # part of #626 (the broader "translate returns
-                    # None → silent skip" pattern).
-                    parts.append(ast.FnCall(
-                        name="to_string", args=(p,), span=expr.span,
-                    ))
+                    # #630 Tier 2 — record every inference failure and
+                    # bail at the end.  Pre-#630 this branch silently
+                    # wrapped `p` in `to_string(...)`, which reads its
+                    # arg as `i64`.  When `_infer_vera_type(p)` returns
+                    # None or a non-recognised name (e.g. an `i32_pair`
+                    # String/Array value the canonicaliser couldn't
+                    # walk), the `to_string` wrapper produced invalid
+                    # WASM — `expected i64, found i32` at validation.
+                    # That silent fallthrough was the amplifier that
+                    # turned every canonicalisation gap (the ten
+                    # triggers of the #602 bug class accumulated
+                    # across PRs #627 + #629) into invalid emission
+                    # rather than a clean compile-time skip.
+                    #
+                    # Post-#630: append the failing segment to the
+                    # WasmContext failure list so the codegen base's
+                    # `_harvest_interp_inference_failures` (called from
+                    # `_compile_fn` and `_compile_lifted_closure`) can
+                    # emit one [E615] diagnostic per offending segment,
+                    # then fall through to the existing [E602] /
+                    # closure-drop mechanism — same loud-skip behaviour
+                    # that any other unsupported expression triggers,
+                    # but now with a specific E-code pointing at the
+                    # actual inference gap rather than a generic
+                    # "unsupported expressions".  No more silent
+                    # miscompilation.
+                    self._interp_inference_failures.append(p)
+                    had_failure = True
+        if had_failure:
+            return None
 
         if not parts:  # pragma: no cover
             # All fragments were empty -> empty string
