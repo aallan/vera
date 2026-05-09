@@ -8866,7 +8866,12 @@ public fn clean_after(-> @Unit)
         narrowing that broadens `Option<T>` handling doesn't
         accidentally regress the parallel `Result` path.
 
-        (test-analyzer finding C3 on PR #631.)
+        Pins the full loud-skip surface (parallel to the ADT test):
+        E615 fires for the inference miss, E602 fires for the
+        function skip, and `main` is dropped from `result.exports`.
+
+        (test-analyzer finding C3 + later CodeRabbit follow-up on
+        PR #631.)
         """
         source = _IO_PRELUDE + """\
 public fn main(-> @Unit)
@@ -8884,6 +8889,23 @@ public fn main(-> @Unit)
         assert e615, (
             f"Expected [E615] for Result<Int, String> interpolation; "
             f"got warnings: {warnings}"
+        )
+        # Loud-skip surface: E602 must also fire for `main`, and
+        # main must be dropped from exports.  Parallel to the ADT
+        # test's assertions — without these, a regression that
+        # emits E615 but fails to propagate the function-skip
+        # would silently slip past this test.
+        e602_main = [
+            d for d in warnings
+            if d.error_code == "E602" and "main" in d.description
+        ]
+        assert e602_main, (
+            f"Expected an [E602] for `main` after Result-in-"
+            f"interpolation E615; warnings: {warnings}"
+        )
+        assert "main" not in result.exports, (
+            f"main should be skipped when interpolation E615 fires; "
+            f"exports: {result.exports}"
         )
 
     def test_multiple_e615_in_one_interpolation(self) -> None:
