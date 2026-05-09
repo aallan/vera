@@ -682,6 +682,18 @@ class InferenceMixin:
         """
         canonical = self._canonical_named_type(te, alias_map)
         if canonical is None:
+            # Walker bailed without reaching a NamedType.  The most
+            # common reachable case is a `FnType` (or an alias chain
+            # terminating in `FnType`) at a closure-pointer return
+            # position — e.g. `type Outer = fn(Int -> Inner)
+            # effects(pure)` where `Inner` is itself a `FnType`
+            # alias.  Higher-order returns must use the `i32`
+            # closure-pointer ABI; defaulting to `"i64"` mismatches
+            # the call_indirect sig vs the actual emit and traps at
+            # WASM validation.  Symmetric to the explicit FnType
+            # branch in `_type_expr_to_wasm_type` (codegen/core.py).
+            if self._reaches_fn_type(te, alias_map):
+                return "i32"
             return "i64"
         # Future<T> is transparent — recurse on the inner type.
         if (canonical.name == "Future" and canonical.type_args
@@ -691,6 +703,46 @@ class InferenceMixin:
         if canonical.name in ("String", "Array"):
             return "i32_pair"
         return self._named_type_to_wasm(canonical.name)
+
+    def _reaches_fn_type(
+        self,
+        te: ast.TypeExpr,
+        alias_map: dict[str, ast.TypeExpr] | None = None,
+    ) -> bool:
+        """True if walking `te` through `RefinementType` /
+        `alias_map` / `_type_aliases` lands on a `FnType`.
+
+        Used by `_canonical_wasm_type` to distinguish the
+        FnType-return case (closure-pointer ABI, `"i32"`) from
+        other walker-bail cases (default `"i64"`).  Mirrors the
+        traversal logic in `_canonical_named_type` but with a
+        different terminal classification — needed because the
+        walker collapses both terminal kinds into `None` for the
+        NamedType-returning contract, losing the FnType signal.
+        """
+        seen: set[str] = set()
+        while True:
+            while isinstance(te, ast.RefinementType):
+                te = te.base_type
+            if isinstance(te, ast.FnType):
+                return True
+            if not isinstance(te, ast.NamedType):
+                return False
+            if te.name in seen:
+                return False
+            seen.add(te.name)
+            if alias_map is not None and te.name in alias_map:
+                te = alias_map[te.name]
+                continue
+            alias = self._type_aliases.get(te.name)
+            if alias is None:
+                return False
+            if isinstance(alias, ast.FnType):
+                return True
+            if isinstance(alias, (ast.NamedType, ast.RefinementType)):
+                te = alias
+                continue
+            return False
 
     def _format_named_type_canonical(self, te: ast.NamedType) -> str:
         """Format a NamedType to its canonical Vera-type-name string.

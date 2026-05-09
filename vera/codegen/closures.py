@@ -53,13 +53,39 @@ class ClosureLiftingMixin:
         worklist: deque[
             tuple[ast.AnonFn, list[tuple[str, int, str]], int]
         ] = deque(ctx._pending_closures)
-        # Carry the running ID counter and accumulated sigs forward
-        # as each iteration may register new ones in its inner ctx.
+        # Snapshot `_next_closure_id` BEFORE this fn's worklist so we
+        # can recycle the consumed range on failure.  closure_id is
+        # module-monotonic and is stored as `func_table_idx` in each
+        # closure struct's body emit — it must equal the closure's
+        # eventual position in `_closure_table`.  When this fn's
+        # worklist fails, the parent fn is dropped (#636) and its
+        # closure structs aren't emitted, so the consumed closure_ids
+        # are observably free; recycling them keeps the next fn's
+        # closure_id ↔ table_index correspondence intact.
+        prev_next_closure_id = self._next_closure_id
+        # Sync forward from the ctx so the worklist sees the correct
+        # current id counter; we'll restore on failure.
         self._next_closure_id = ctx._next_closure_id
         for sig_content, sig_name in ctx._closure_sigs.items():
             if sig_content not in self._closure_sigs:
                 self._closure_sigs[sig_content] = sig_name
 
+        # Accumulate successful lifts in local buffers; commit to
+        # module-level state only if the entire worklist succeeds.
+        # If any closure body fails, the parent fn will be dropped
+        # (#636) and these would be orphan dead code in the output
+        # module — but more critically, they'd shift table indices
+        # for *subsequent* top-level fns' closures, breaking the
+        # closure_id ↔ table_index correspondence for the rest of
+        # the module (closure_id is a monotonic module-wide counter
+        # while table position is determined by appending order in
+        # `_closure_table`; a gap in successful lifts within one
+        # fn's worklist desyncs the two for everything that follows).
+        # Snapshot + commit-on-success preserves the invariant.
+        new_closure_fns_wat: list[str] = []
+        new_closure_table: list[str] = []
+        new_source_map: list[tuple[str, tuple[str, int, int]]] = []
+        new_sigs: list[tuple[str, str]] = []
         any_failed = False
         while worklist:
             anon_fn, captures, closure_id = worklist.popleft()
@@ -74,54 +100,74 @@ class ClosureLiftingMixin:
                 # failure so the caller can drop the enclosing fn (#636).
                 any_failed = True
                 continue
-            if lifted_wat is not None:
-                self._closure_fns_wat.append(lifted_wat)
-                self._closure_table.append(f"$anon_{closure_id}")
-                self._needs_table = True
-                self._needs_alloc = True
-                self._needs_memory = True
+            new_closure_fns_wat.append(lifted_wat)
+            new_closure_table.append(f"$anon_{closure_id}")
 
-                # #516 Stage 2 — record source location for trap mapping.
-                # The lifted WAT name is `$anon_N`; trap frames will see
-                # `anon_N` (no leading `$`) in func_name.  Use the source
-                # span of the original `fn(...) { ... }` expression so a
-                # trap inside a closure points back to the syntactic
-                # `fn` site, not to the synthetic top-level wrapper.
-                if anon_fn.span is not None:
-                    self._fn_source_map[f"anon_{closure_id}"] = (
+            # #516 Stage 2 — record source location for trap mapping.
+            # The lifted WAT name is `$anon_N`; trap frames will see
+            # `anon_N` (no leading `$`) in func_name.  Use the source
+            # span of the original `fn(...) { ... }` expression so a
+            # trap inside a closure points back to the syntactic
+            # `fn` site, not to the synthetic top-level wrapper.
+            if anon_fn.span is not None:
+                new_source_map.append((
+                    f"anon_{closure_id}",
+                    (
                         self.file or "<unknown>",
                         anon_fn.span.line,
                         anon_fn.span.end_line,
-                    )
+                    ),
+                ))
 
-                # Register the closure signature for call_indirect
-                param_wasm: list[str] = ["i32"]  # env param
-                for p in anon_fn.params:
-                    pwt = self._type_expr_to_wasm_type(p)
-                    if pwt == "i32_pair":  # pragma: no cover — String/Array closure params
-                        param_wasm.extend(["i32", "i32"])
-                    elif pwt and pwt != "unsupported":
-                        param_wasm.append(pwt)
-                ret_wt = self._type_expr_to_wasm_type(anon_fn.return_type)
-                param_part = " ".join(
-                    f"(param {wt})" for wt in param_wasm
+            # Register the closure signature for call_indirect
+            param_wasm: list[str] = ["i32"]  # env param
+            for p in anon_fn.params:
+                pwt = self._type_expr_to_wasm_type(p)
+                if pwt == "i32_pair":  # pragma: no cover — String/Array closure params
+                    param_wasm.extend(["i32", "i32"])
+                elif pwt and pwt != "unsupported":
+                    param_wasm.append(pwt)
+            ret_wt = self._type_expr_to_wasm_type(anon_fn.return_type)
+            param_part = " ".join(
+                f"(param {wt})" for wt in param_wasm
+            )
+            if ret_wt == "i32_pair":
+                result_part = " (result i32 i32)"
+            elif ret_wt:
+                result_part = f" (result {ret_wt})"
+            else:
+                result_part = ""  # pragma: no cover — Unit closure returns
+            sig_content = f"{param_part}{result_part}"
+            if sig_content not in self._closure_sigs:
+                sig_name = (
+                    f"$closure_sig_{len(self._closure_sigs)
+                                    + len(new_sigs)}"
                 )
-                if ret_wt == "i32_pair":
-                    result_part = " (result i32 i32)"
-                elif ret_wt:
-                    result_part = f" (result {ret_wt})"
-                else:
-                    result_part = ""  # pragma: no cover — Unit closure returns
-                sig_content = f"{param_part}{result_part}"
-                if sig_content not in self._closure_sigs:
-                    sig_name = (
-                        f"$closure_sig_{len(self._closure_sigs)}"
-                    )
-                    self._closure_sigs[sig_content] = sig_name
+                new_sigs.append((sig_content, sig_name))
 
-                # Bubble up nested closures + any new sigs / IDs the
-                # inner ctx registered while translating this body.
-                worklist.extend(inner_pending)
+            # Bubble up nested closures + any new sigs / IDs the
+            # inner ctx registered while translating this body.
+            worklist.extend(inner_pending)
+
+        # Commit-on-success: only extend module-level state if every
+        # closure in the worklist succeeded.  On failure, the parent
+        # fn is dropped (#636) and these locals are discarded along
+        # with the would-be orphans; `_next_closure_id` rolls back so
+        # subsequent fns recycle the consumed range.
+        if any_failed:
+            self._next_closure_id = prev_next_closure_id
+        else:
+            self._closure_fns_wat.extend(new_closure_fns_wat)
+            self._closure_table.extend(new_closure_table)
+            for fn_name, span_info in new_source_map:
+                self._fn_source_map[fn_name] = span_info
+            for sig_content, sig_name in new_sigs:
+                if sig_content not in self._closure_sigs:
+                    self._closure_sigs[sig_content] = sig_name
+            if new_closure_fns_wat:
+                self._needs_table = True
+                self._needs_alloc = True
+                self._needs_memory = True
 
         return any_failed
 

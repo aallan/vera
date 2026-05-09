@@ -9058,6 +9058,120 @@ public fn main(-> @Unit)
         # Array<Int>, returns Int element type.
         assert _run_io(source, fn="main") == "20\n"
 
+    def test_fntype_return_uses_closure_pointer_abi(self) -> None:
+        """A higher-order fn returning a `FnType`-aliased closure
+        — `type Outer = fn(Int -> Inner) effects(pure)` where
+        `Inner` is itself a `FnType` alias.  Pre-fix
+        `_canonical_wasm_type` returned `"i64"` (the walker
+        couldn't reach a NamedType, fell to the default), producing
+        a `call_indirect` sig mismatch at WASM validation.
+
+        Closes the FnType-return half of the bug class — the
+        codegen base's `_type_expr_to_wasm_type` already handled
+        FnType correctly via an explicit branch; the inference
+        walker's silent default to `"i64"` was the asymmetric gap.
+
+        Fix: `_canonical_wasm_type` falls back to a `_reaches_fn_type`
+        check when the walker returns None; if the walk would have
+        terminated at a `FnType`, return `"i32"` (closure-pointer
+        ABI) instead of the `"i64"` default.
+
+        (CodeRabbit finding 3, third review pass on PR #631.)
+        """
+        source = _IO_PRELUDE + """\
+type Inner = fn(Int -> Int) effects(pure);
+type Outer = fn(Int -> Inner) effects(pure);
+
+private fn make_outer(@Unit -> @Outer)
+  requires(true) ensures(true) effects(pure)
+{
+  fn(@Int -> @Inner) effects(pure) {
+    fn(@Int -> @Int) effects(pure) { @Int.0 + @Int.1 }
+  }
+}
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Outer = make_outer(());
+  let @Inner = apply_fn(@Outer.0, 5);
+  IO.print(int_to_string(apply_fn(@Inner.0, 3)))
+}
+"""
+        # 5 + 3 = 8; runs end-to-end via correct closure-pointer ABI.
+        assert _run_io(source, fn="main") == "8"
+
+    def test_closure_orphans_not_committed_on_partial_fail(
+        self,
+    ) -> None:
+        """When `_lift_pending_closures` fails on any closure in
+        the worklist, the parent fn is dropped (#636) — but the
+        successful sibling closures must NOT be left in the
+        module-level `_closure_fns_wat` / `_closure_table` state,
+        otherwise their entries shift table indices for
+        *subsequent* top-level fns' closures.
+
+        Concretely: `bad` has one closure that fails E615, `good`
+        compiled afterwards has its own closure.  Without
+        commit-on-success, `bad`'s would-be orphan would land in
+        `_closure_table` and `good`'s closure_id would no longer
+        match its actual table index, producing a `call_indirect`
+        to the wrong function at runtime.
+
+        Fix: accumulate worklist results in local buffers; only
+        extend `_closure_fns_wat` / `_closure_table` /
+        `_fn_source_map` / `_closure_sigs` if every closure
+        succeeded.
+
+        (CodeRabbit finding 1, third review pass on PR #631.)
+        """
+        source = _IO_PRELUDE + """\
+public fn bad(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Option<Int> = Some(42);
+  apply_fn(fn(@Unit -> @Unit) effects(<IO>) {
+    IO.print("\\(@Option<Int>.0)\\n")
+  }, ())
+}
+
+public fn good(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Array<Int> = array_map(
+    [10, 20, 30],
+    fn(@Int -> @Int) effects(pure) { @Int.0 + 1 }
+  );
+  IO.print(int_to_string(@Array<Int>.0[1]))
+}
+"""
+        result = _compile(source)
+        # `bad` is dropped via the closure-fail propagation (#636).
+        assert "bad" not in result.exports, (
+            f"bad should be dropped; exports: {result.exports}"
+        )
+        # `good` must remain — its closure is independent.
+        assert "good" in result.exports, (
+            f"good should be exported; exports: {result.exports}"
+        )
+        # Run `good` to confirm its closure references the correct
+        # table entry.  Pre-fix `bad`'s orphan closure would have
+        # been at table index 0, shifting `good`'s closure to index
+        # 1 while its closure_id stored in the closure struct
+        # remained 1 (because `_next_closure_id` is module-monotonic)
+        # — call_indirect would target index 1 expecting `$anon_1`
+        # but actually find `good`'s closure (originally meant for
+        # index 1 with $anon_2 closure_id).  In this specific
+        # fixture either trap or wrong output; the `_run_io` below
+        # exercises the path.
+        from vera.codegen import execute
+        exec_result = execute(result, fn_name="good")
+        # `good` is `Unit`-returning so no value to assert beyond
+        # not trapping.
+        assert exec_result.value is None or exec_result.value == 0, (
+            f"good() should run cleanly; got: {exec_result.value!r}"
+        )
+
     def test_array_map_refinement_returning_closure(self) -> None:
         """`_infer_closure_return_vera_type` in `calls_arrays.py`
         was previously bare-NamedType-only; the #630 migration
