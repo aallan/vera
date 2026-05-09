@@ -9039,6 +9039,27 @@ public fn main(-> @Unit)
             f"E616 message should mention apply_fn / closure; got: "
             f"{e616[0].description}"
         )
+        # E616 must precede the matching E602 in the warnings
+        # stream so the specific-cause-then-generic-skip narrative
+        # reads correctly per function.  Filter to the E602
+        # mentioning `main` so unrelated prelude E602s don't
+        # confound (parallel to the E615 ordering assertion in
+        # `test_e615_fires_on_adt_in_interpolation`).
+        e602_main = [
+            d for d in warnings
+            if d.error_code == "E602" and "main" in d.description
+        ]
+        assert e602_main, (
+            f"Expected an [E602] for `main` after E616; warnings: "
+            f"{warnings}"
+        )
+        e616_idx = warnings.index(e616[0])
+        main_e602_idx = warnings.index(e602_main[0])
+        assert e616_idx < main_e602_idx, (
+            f"E616 should precede the matching E602 (main) in the "
+            f"warnings stream; got E616 at index {e616_idx}, main's "
+            f"E602 at {main_e602_idx}"
+        )
         # `main` is dropped via [E602] (the call_indirect would
         # have referenced a missing return-type signature).
         assert "main" not in result.exports, (
