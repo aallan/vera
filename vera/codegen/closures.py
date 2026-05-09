@@ -139,10 +139,12 @@ class ClosureLiftingMixin:
                 result_part = ""  # pragma: no cover — Unit closure returns
             sig_content = f"{param_part}{result_part}"
             if sig_content not in self._closure_sigs:
-                sig_name = (
-                    f"$closure_sig_{len(self._closure_sigs)
-                                    + len(new_sigs)}"
-                )
+                # Pre-compute the index outside the f-string so the
+                # whole expression fits on one line — Python 3.11
+                # doesn't support multi-line f-string interpolations
+                # (only 3.12+ does).
+                sig_idx = len(self._closure_sigs) + len(new_sigs)
+                sig_name = f"$closure_sig_{sig_idx}"
                 new_sigs.append((sig_content, sig_name))
 
             # Bubble up nested closures + any new sigs / IDs the
