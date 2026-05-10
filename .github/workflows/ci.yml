@@ -17,13 +17,19 @@ jobs:
 
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})${{ matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && ' + coverage' || '' }}
     runs-on: ${{ matrix.os }}
-    # #637 advisory mode for Windows: failures don't block merges
-    # while the underlying Windows-compatibility bugs are being
-    # fixed in their own focused PRs (sub-issues filed alongside
-    # this change).  Drop this once the sub-issues land and Windows
-    # entries pass cleanly — at that point the matrix becomes
-    # fully strict again.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    env:
+      # #641: force Python UTF-8 mode (PEP 540) so file I/O without an
+      # explicit `encoding=` kwarg defaults to UTF-8 on every platform
+      # rather than the locale's preferred encoding (cp1252 on Windows
+      # in en-US locales).  Without this, tests that read/write source
+      # files containing `→` (right arrow) or `—` (em-dash) tripped
+      # `'charmap' codec can't encode` errors on Windows.  Locally,
+      # users without `PYTHONUTF8=1` set in their shell environment
+      # will still hit the bug on the affected files — the durable
+      # fix is to audit `open()` / `read_text()` / `write_text()`
+      # call sites for explicit `encoding='utf-8'`.  Tracked as a
+      # follow-up.
+      PYTHONUTF8: 1
 
     steps:
       - uses: actions/checkout@v6
