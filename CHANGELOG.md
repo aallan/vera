@@ -6,9 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.143] - 2026-05-10
+
 ### Fixed
 
-- **[#640](https://github.com/aallan/vera/issues/640)** — Vera CLI's `/dev/stdin` path is Unix-only.  `_load_and_parse(path)` in `vera/cli.py` previously called `Path('/dev/stdin').read_text()`; on Windows the path doesn't exist as a filesystem entry and `vera <subcmd> /dev/stdin` failed with `Error: file not found: /dev/stdin`.  Now reads from `sys.stdin` directly when `path in _STDIN_PATHS` — portable across Unix and Windows.  Closes 6 failing tests in `tests/test_cli.py::TestStdinInput`.
+- **Windows compatibility** — three Windows-specific bugs surfaced when PR #639 added `windows-latest` to the CI test matrix in advisory mode (`continue-on-error`).  All three close in this release, and the matrix flips to fully strict (Windows entries are now merge gates alongside Ubuntu / macOS):
+
+  - **[#640](https://github.com/aallan/vera/issues/640)** — Vera CLI's `/dev/stdin` path is Unix-only.  `_load_and_parse(path)` in `vera/cli.py` previously called `Path('/dev/stdin').read_text()`; on Windows the path doesn't exist as a filesystem entry and `vera <subcmd> /dev/stdin` failed with `Error: file not found: /dev/stdin`.  Now reads from `sys.stdin` directly when `path in _STDIN_PATHS` — portable across Unix and Windows, and more semantically correct (the user's intent is "read from stdin", not "read from a specific file path").  Closes 6 failing tests in `tests/test_cli.py::TestStdinInput`.
+
+  - **[#641](https://github.com/aallan/vera/issues/641)** — default cp1252 file I/O encoding caused `UnicodeEncodeError` / `UnicodeDecodeError` on Windows for tests reading or writing files containing `→` or `—` characters.  Set `PYTHONUTF8=1` in the CI test job environment so Python's text-mode `open()` defaults to UTF-8 regardless of locale (PEP 540), and added explicit `encoding='utf-8'` to `vera/parser.py`'s grammar load (the load-bearing site that runs on every parse).  Closes ~9 failing tests across `test_codegen.py`, `test_codegen_monomorphize.py`, `test_codegen_closures.py`, `test_html.py`.  Broader audit of `open()` / `read_text()` / `write_text()` call sites for explicit `encoding='utf-8'` queued as a follow-up — for now CI is covered via `PYTHONUTF8=1`, and locally users on Windows without `PYTHONUTF8=1` may still hit the bug on individual files.
+
+  - **[#642](https://github.com/aallan/vera/issues/642)** — `tests/test_codegen.py::TestIOOperations::test_io_read_file_success` and `test_io_read_file_roundtrip` embedded Windows tempfile paths (e.g. `C:\Users\runner\AppData\...`) into Vera string literals via f-string interpolation.  Vera's grammar correctly rejected `\U` as an invalid escape sequence, producing `[E009]` at parse time.  Fix in test fixtures: convert the path to POSIX form via `tmp_path.replace(os.sep, '/')` before embedding (Windows file APIs accept forward slashes).
+
+### Changed
+
+- **CI test matrix is now fully strict on Windows.**  PR #639's advisory `continue-on-error: ${{ matrix.os == 'windows-latest' }}` is removed in this release — the three Windows entries (`{3.11, 3.12, 3.13}`) now block merges alongside Ubuntu and macOS.  Total matrix coverage: 9 entries (3 OSes × 3 Python versions).
 
 ## [0.0.142] - 2026-05-08
 
@@ -2080,7 +2092,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.142...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.143...HEAD
+[0.0.143]: https://github.com/aallan/vera/compare/v0.0.142...v0.0.143
 [0.0.142]: https://github.com/aallan/vera/compare/v0.0.141...v0.0.142
 [0.0.141]: https://github.com/aallan/vera/compare/v0.0.140...v0.0.141
 [0.0.140]: https://github.com/aallan/vera/compare/v0.0.139...v0.0.140

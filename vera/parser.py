@@ -25,8 +25,14 @@ def _get_parser() -> Lark:
     """Lazily construct the Lark parser (cached)."""
     global _parser
     if _parser is None:
+        # Explicit UTF-8 so users on Windows without PYTHONUTF8=1
+        # in their shell still get correct grammar loading (the
+        # default locale-encoded read would be cp1252 in en-US
+        # Windows; harmless for the current pure-ASCII grammar
+        # but defensive for future grammar additions).  See #641
+        # for the broader cp1252 audit context.
         _parser = Lark(
-            _GRAMMAR_PATH.read_text(),
+            _GRAMMAR_PATH.read_text(encoding="utf-8"),
             parser="lalr",
             start="start",
             propagate_positions=True,
