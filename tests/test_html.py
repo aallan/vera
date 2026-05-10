@@ -102,11 +102,19 @@ class TestHtmlCodeSamples:
         for line_no, content in blocks:
             if line_no in ALLOWLIST:
                 continue
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".vera", dir=str(ROOT), delete=True
-            ) as f:
+            # `delete=False` + manual unlink: on Windows you can't open
+            # a file twice while one handle is still held, so the
+            # `with`-block's open handle blocks the subprocess from
+            # reading it.  Closing the handle before the subprocess
+            # runs (and unlinking after) is portable; on Unix the
+            # original `delete=True` worked because Unix allows
+            # concurrent file handles.
+            f = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".vera", dir=str(ROOT), delete=False,
+            )
+            try:
                 f.write(content)
-                f.flush()
+                f.close()
                 result = subprocess.run(
                     [sys.executable, "-m", "vera.cli", "check", f.name],
                     capture_output=True,
@@ -117,6 +125,8 @@ class TestHtmlCodeSamples:
                 if "OK:" not in result.stdout:
                     err = result.stderr.strip() or result.stdout.strip()
                     failures.append((line_no, err.split("\n")[0][:200]))
+            finally:
+                Path(f.name).unlink(missing_ok=True)
 
         if failures:
             msg_parts = [f"{len(failures)} HTML code block(s) failed type-check:"]
@@ -133,11 +143,14 @@ class TestHtmlCodeSamples:
         for line_no, content in blocks:
             if line_no in ALLOWLIST:
                 continue
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".vera", dir=str(ROOT), delete=True
-            ) as f:
+            # See `test_all_vera_blocks_check` above for the
+            # `delete=False` rationale (Windows-portable tempfile use).
+            f = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".vera", dir=str(ROOT), delete=False,
+            )
+            try:
                 f.write(content)
-                f.flush()
+                f.close()
                 result = subprocess.run(
                     [sys.executable, "-m", "vera.cli", "verify", f.name],
                     capture_output=True,
@@ -148,6 +161,8 @@ class TestHtmlCodeSamples:
                 if "OK:" not in result.stdout:
                     err = result.stderr.strip() or result.stdout.strip()
                     failures.append((line_no, err.split("\n")[0][:200]))
+            finally:
+                Path(f.name).unlink(missing_ok=True)
 
         if failures:
             msg_parts = [f"{len(failures)} HTML code block(s) failed verification:"]
