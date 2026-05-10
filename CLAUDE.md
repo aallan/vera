@@ -175,3 +175,11 @@ This repo uses [CodeRabbit](https://coderabbit.ai) for AI code review on pull re
 ## Shell pitfalls
 
 - **Heredocs with single quotes in `gh` commands**: `gh issue create --body "$(cat <<'EOF' ... EOF)"` breaks if the body contains single quotes (apostrophes, contractions). Use plain double-quoted `--body "..."` instead.
+
+## Cross-platform pitfalls (test fixtures)
+
+The CI matrix tests on `{ubuntu, macos, windows} × {3.11, 3.12, 3.13}`.  When writing test fixtures, three Windows-portability rules apply — see the **Test Fixture Conventions** section in `TESTING.md` for full examples:
+
+- `tempfile.NamedTemporaryFile` handed off to a subprocess MUST use `delete=False` + manual `Path.unlink()` (Windows can't reopen a held file).
+- Paths embedded into Vera string literals MUST be POSIX-form (`tmp_path.replace(os.sep, "/")`); Windows backslashes trip Vera's `\U` escape grammar.
+- `open()` / `read_text()` / `write_text()` should pass `encoding="utf-8"` explicitly; CI sets `PYTHONUTF8=1` as a backstop, but the explicit form is portable to local Windows shells without that variable.

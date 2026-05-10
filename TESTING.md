@@ -332,6 +332,64 @@ Every one of the 34 example programs in `examples/` is tested through **every pi
 
 The formatter has **idempotency tests**: `format(format(x)) == format(x)` for all tested programs.
 
+## Test Fixture Conventions
+
+Cross-platform footguns hit by the post-#637 Windows CI rollout (PRs #639/#643/#644/#646).  Each has a workaround that makes the fixture portable across Linux / macOS / Windows.
+
+### Tempfiles handed off to subprocesses must use `delete=False`
+
+Windows can't reopen a file while another handle is still held; if a test fixture writes to a tempfile via `with tempfile.NamedTemporaryFile(delete=True) as f:` and then runs `subprocess.run([..., f.name])` inside the `with` block, the subprocess fails with a `PermissionError` because the parent still holds the handle.  Unix allows concurrent handles so the same fixture works there.
+
+```python
+# Wrong — fails on Windows:
+with tempfile.NamedTemporaryFile(mode="w", suffix=".vera", delete=True) as f:
+    f.write(content)
+    f.flush()
+    subprocess.run([sys.executable, "-m", "vera.cli", "check", f.name])
+
+# Right — portable:
+f = tempfile.NamedTemporaryFile(mode="w", suffix=".vera", delete=False)
+try:
+    f.write(content)
+    f.close()
+    subprocess.run([sys.executable, "-m", "vera.cli", "check", f.name])
+finally:
+    Path(f.name).unlink(missing_ok=True)
+```
+
+Surfaced via `tests/test_html.py::TestHtmlCodeSamples` — see PR #646 for the fix.
+
+### Paths embedded into Vera string literals must use POSIX form
+
+Windows tempfile paths look like `C:\Users\runner\AppData\Local\Temp\...`.  Vera's grammar (correctly) rejects `\U` as an invalid string-literal escape, so embedding such a path via f-string interpolation trips `[E009] Invalid escape sequence: \U` at parse time.  Convert to POSIX form before embedding:
+
+```python
+# Wrong — fails on Windows:
+source = f'IO.read_file("{tmp_path}")'
+
+# Right — portable (Windows file APIs accept forward slashes):
+vera_path = tmp_path.replace(os.sep, "/")
+source = f'IO.read_file("{vera_path}")'
+```
+
+Surfaced via `tests/test_codegen.py::TestIOOperations::test_io_read_file_*` — see PR #643 for the fix.
+
+### File I/O without explicit encoding falls back to the locale default
+
+Python's text-mode `open()` / `read_text()` / `write_text()` without an explicit `encoding=` kwarg defaults to `locale.getpreferredencoding()`, which is **cp1252 on en-US Windows**.  Tests that read or write files containing `→` (right arrow), `—` (em-dash), or other non-ASCII characters fail on Windows with `UnicodeEncodeError: 'charmap' codec can't encode '→'` or `UnicodeDecodeError: ... 0x97`.
+
+CI sets `PYTHONUTF8=1` (PEP 540) globally so all text-mode I/O defaults to UTF-8 regardless of locale.  For local-developer ergonomics on Windows without `PYTHONUTF8=1` in the shell, the durable fix is explicit `encoding='utf-8'` at every `open()` site — tracked as a follow-up audit in #645.  When adding new test fixtures or scripts that touch text files, prefer the explicit form:
+
+```python
+# Implicit — works only when PYTHONUTF8=1 is set:
+text = path.read_text()
+
+# Explicit — works everywhere:
+text = path.read_text(encoding="utf-8")
+```
+
+Surfaced via ~9 tests across `test_codegen.py`, `test_codegen_monomorphize.py`, `test_codegen_closures.py`, `test_html.py` — see PR #646 for the CI-side fix.
+
 ## Adding Tests
 
 When extending the compiler, add tests following the existing patterns:
