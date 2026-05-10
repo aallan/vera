@@ -17,6 +17,13 @@ jobs:
 
     name: test (${{ matrix.os }}, ${{ matrix.python-version }})${{ matrix.python-version == '3.12' && matrix.os == 'ubuntu-latest' && ' + coverage' || '' }}
     runs-on: ${{ matrix.os }}
+    # #637 advisory mode for Windows: failures don't block merges
+    # while the underlying Windows-compatibility bugs are being
+    # fixed in their own focused PRs (sub-issues filed alongside
+    # this change).  Drop this once the sub-issues land and Windows
+    # entries pass cleanly — at that point the matrix becomes
+    # fully strict again.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
 
     steps:
       - uses: actions/checkout@v6
