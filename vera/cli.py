@@ -62,19 +62,27 @@ def _load_and_parse(path: str) -> tuple[Path, str, Tree[object]]:
     which re-opened the same path.  For non-seekable inputs such as
     /dev/stdin the second open returns empty content.
 
-    For stdin paths ("-" or "/dev/stdin") the returned logical path is
+    For stdin paths ("-" or "/dev/stdin") the source is read directly
+    from ``sys.stdin`` and the returned logical path is
     ``Path.cwd() / "stdin.vera"`` rather than the raw special-file path.
-    This ensures callers use CWD for module resolution (ModuleResolver
-    _root) and produce sensible default output names (stdin.wasm) rather
-    than erroneously resolving imports under ``/dev/`` or writing output
-    to ``/dev/stdin.wasm``.  Diagnostics still reference the original
-    *path* string for readable error locations.
+    Reading ``sys.stdin`` directly (rather than ``Path("/dev/stdin")
+    .read_text()``) is portable across Unix and Windows — Windows
+    doesn't have a ``/dev/stdin`` filesystem entry, so the path-based
+    read raised ``FileNotFoundError`` there pre-#640.  The CWD-relative
+    logical path ensures callers use CWD for module resolution
+    (ModuleResolver _root) and produce sensible default output names
+    (stdin.wasm) rather than erroneously resolving imports under
+    ``/dev/`` or writing output to ``/dev/stdin.wasm``.  Diagnostics
+    still reference the original *path* string for readable error
+    locations.
     """
-    raw_p = Path(path)
-    source = raw_p.read_text(encoding="utf-8")
-    # Normalise stdin to a CWD-relative logical path so that module
-    # resolution and output naming work correctly.
-    p = Path.cwd() / "stdin.vera" if path in _STDIN_PATHS else raw_p
+    if path in _STDIN_PATHS:
+        source = sys.stdin.read()
+        p = Path.cwd() / "stdin.vera"
+    else:
+        raw_p = Path(path)
+        source = raw_p.read_text(encoding="utf-8")
+        p = raw_p
     tree = parse(source, file=path)
     return p, source, tree
 
