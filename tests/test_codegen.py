@@ -7752,12 +7752,17 @@ public fn main(-> @Unit)
             f.flush()
             tmp_path = f.name
         # Hardcode the path in the Vera source (can't pass String args
-        # to WASM functions from the host)
+        # to WASM functions from the host).  Convert to POSIX form so
+        # backslashes in Windows paths (e.g. `C:\Users\...`) don't
+        # collide with Vera's string-literal escape grammar — `\U`
+        # would trip [E009] "invalid escape sequence" at parse time.
+        # Windows file APIs accept forward slashes natively.  (#642)
+        vera_path = tmp_path.replace(os.sep, "/")
         source = f"""\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {{
-  match IO.read_file("{tmp_path}") {{
+  match IO.read_file("{vera_path}") {{
     Ok(@String) -> IO.print(@String.0),
     Err(@String) -> IO.print(@String.0)
   }}
@@ -7775,14 +7780,18 @@ public fn main(-> @Unit)
         import tempfile, os
         tmp_dir = tempfile.mkdtemp()
         tmp_file = os.path.join(tmp_dir, "vera_test.txt")
-        # Write a file from Vera, then read it back
+        # Write a file from Vera, then read it back.  Convert to POSIX
+        # form so backslashes in Windows paths don't trip Vera's
+        # string-literal escape grammar — see `test_io_read_file_success`
+        # for the same fix and #642 for the original repro.
+        vera_path = tmp_file.replace(os.sep, "/")
         source = f"""\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {{
-  match IO.write_file("{tmp_file}", "hello from vera") {{
+  match IO.write_file("{vera_path}", "hello from vera") {{
     Ok(_) -> {{
-      match IO.read_file("{tmp_file}") {{
+      match IO.read_file("{vera_path}") {{
         Ok(@String) -> IO.print(@String.0),
         Err(@String) -> IO.print(@String.0)
       }}
