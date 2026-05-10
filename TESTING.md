@@ -15,7 +15,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 allowlisted snippet) |
 | **HTML code blocks** | 4 Vera blocks in docs/index.html (4 validated: parse + check + verify) |
 | **Contract verification** | 162 of 179 contracts (90.5%) verified statically (Tier 1) |
-| **CI matrix** | 6 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS) + browser parity (Node.js 22) |
+| **CI matrix** | 9 combinations (Python 3.11/3.12/3.13 x Ubuntu/macOS/Windows) + browser parity (Node.js 22) |
 
 ## Running Tests
 
@@ -367,8 +367,13 @@ Windows tempfile paths look like `C:\Users\runner\AppData\Local\Temp\...`.  Vera
 # Wrong — fails on Windows:
 source = f'IO.read_file("{tmp_path}")'
 
-# Right — portable (Windows file APIs accept forward slashes):
-vera_path = tmp_path.replace(os.sep, "/")
+# Right — portable (Windows file APIs accept forward slashes).
+# `Path(tmp_path).as_posix()` works whether `tmp_path` is a str
+# (from `tempfile.NamedTemporaryFile().name`) or a `pathlib.Path`
+# (from pytest's `tmp_path` fixture).  Don't use `tmp_path.replace`
+# — that's `str.replace` on a string but `Path.replace` (the
+# rename method!) on a Path, which would silently move the file.
+vera_path = Path(tmp_path).as_posix()
 source = f'IO.read_file("{vera_path}")'
 ```
 
@@ -476,7 +481,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs sev
 
 | Job | Matrix / Runner | What it checks |
 |-----|----------------|---------------|
-| **test** | Python 3.11, 3.12, 3.13 x Ubuntu, macOS (6 combos) | `pytest -v` passes on all combinations |
+| **test** | Python 3.11, 3.12, 3.13 x Ubuntu, macOS, Windows (9 combos) | `pytest -v` passes on all combinations |
 | **test** (coverage) | Python 3.12 x Ubuntu only | `pytest --cov=vera --cov-fail-under=80` |
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
 | **lint** | Python 3.12 x Ubuntu | `check_conformance.py`, `check_examples.py`, `check_examples_readme.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_site_assets.py`, `check_licenses.py`, `ruff check --select S vera/` (security rules) |
