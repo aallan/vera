@@ -110,7 +110,11 @@ class TestHtmlCodeSamples:
             # original `delete=True` worked because Unix allows
             # concurrent file handles.
             f = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".vera", dir=str(ROOT), delete=False,
+                mode="w",
+                suffix=".vera",
+                dir=str(ROOT),
+                delete=False,
+                encoding="utf-8",
             )
             try:
                 f.write(content)
@@ -146,7 +150,11 @@ class TestHtmlCodeSamples:
             # See `test_all_vera_blocks_check` above for the
             # `delete=False` rationale (Windows-portable tempfile use).
             f = tempfile.NamedTemporaryFile(
-                mode="w", suffix=".vera", dir=str(ROOT), delete=False,
+                mode="w",
+                suffix=".vera",
+                dir=str(ROOT),
+                delete=False,
+                encoding="utf-8",
             )
             try:
                 f.write(content)
