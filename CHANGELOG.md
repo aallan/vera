@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **[#640](https://github.com/aallan/vera/issues/640)** — Vera CLI's `/dev/stdin` path is Unix-only.  `_load_and_parse(path)` in `vera/cli.py` previously called `Path('/dev/stdin').read_text()`; on Windows the path doesn't exist as a filesystem entry and `vera <subcmd> /dev/stdin` failed with `Error: file not found: /dev/stdin`.  Now reads from `sys.stdin` directly when `path in _STDIN_PATHS` — portable across Unix and Windows.  Closes 6 failing tests in `tests/test_cli.py::TestStdinInput`.
+
 ## [0.0.142] - 2026-05-08
 
 ### Fixed
