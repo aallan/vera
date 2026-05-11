@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from vera import ast
+from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
     WasmSlotEnv,
     _element_mem_size,
@@ -34,7 +35,9 @@ class DataMixin:
         """
         layout = self._ctor_layouts.get(expr.name)
         if layout is None:
-            return None
+            raise CodegenSkip(
+                expr, f"unknown nullary constructor {expr.name!r}"
+            )
 
         self.needs_alloc = True
         tmp = self.alloc_local("i32")
@@ -60,7 +63,9 @@ class DataMixin:
         """
         layout = self._ctor_layouts.get(expr.name)
         if layout is None:
-            return None
+            raise CodegenSkip(
+                expr, f"unknown constructor {expr.name!r}"
+            )
 
         # Translate all arguments and infer their concrete WASM types
         arg_instrs_list: list[list[str]] = []
@@ -71,7 +76,10 @@ class DataMixin:
                 return None
             arg_wt = self._infer_expr_wasm_type(arg)
             if arg_wt is None:
-                return None
+                raise CodegenSkip(
+                    arg,
+                    "could not infer constructor argument WASM type",
+                )
             arg_instrs_list.append(arg_instrs)
             arg_wasm_types.append(arg_wt)
 
@@ -155,7 +163,9 @@ class DataMixin:
         for te in stmt.type_bindings:
             type_name = self._type_expr_to_slot_name(te)
             if type_name is None:
-                return None
+                raise CodegenSkip(
+                    stmt, "let-destruct binding type has no slot name"
+                )
             # Unit bindings: no WASM representation, just bind with dummy
             if type_name == "Unit":
                 continue
@@ -176,7 +186,10 @@ class DataMixin:
                 continue
             wt = self._slot_name_to_wasm_type(type_name)
             if wt is None:
-                return None
+                raise CodegenSkip(
+                    stmt,
+                    f"let-destruct type {type_name!r} has no WASM representation",
+                )
             align = _aligns.get(wt, 8)
             offset = (offset + align - 1) & ~(align - 1)
             local_idx = self.alloc_local(wt)
@@ -207,7 +220,17 @@ class DataMixin:
 
         scr_wasm_type = self._infer_expr_wasm_type(expr.scrutinee)
         if scr_wasm_type is None:
-            return None
+            raise CodegenSkip(
+                expr.scrutinee,
+                "could not infer match scrutinee WASM type",
+            )
+
+        # Type-check rejects empty match expressions, but a cross-module
+        # import could still hand us one (#626 audit borderline).  Raise
+        # CodegenSkip with the MatchExpr's span rather than the legacy
+        # silent-bail-through-_compile_match_arms.
+        if not expr.arms:
+            raise CodegenSkip(expr, "match expression has no arms")
 
         # Save scrutinee to a local
         scr_local = self.alloc_local(scr_wasm_type)
@@ -321,7 +344,10 @@ class DataMixin:
             name = pattern.name
             layout = self._ctor_layouts.get(name)
             if layout is None:
-                return None
+                raise CodegenSkip(
+                    pattern,
+                    f"unknown constructor {name!r} in match pattern",
+                )
             instrs = [
                 f"local.get {scr_local}",
                 "i32.load",
@@ -375,7 +401,10 @@ class DataMixin:
             # Bind the scrutinee itself to a new local
             type_name = self._type_expr_to_slot_name(pattern.type_expr)
             if type_name is None:
-                return None
+                raise CodegenSkip(
+                    pattern,
+                    "binding pattern type has no slot name",
+                )
             local_idx = self.alloc_local(scr_wasm_type)
             instrs = [
                 f"local.get {scr_local}",
@@ -387,12 +416,18 @@ class DataMixin:
         if isinstance(pattern, ast.ConstructorPattern):
             layout = self._ctor_layouts.get(pattern.name)
             if layout is None:
-                return None
+                raise CodegenSkip(
+                    pattern,
+                    f"unknown constructor {pattern.name!r} in match arm pattern",
+                )
             return self._extract_constructor_fields(
                 pattern, scr_local, layout, env
             )
 
-        return None
+        raise CodegenSkip(
+            pattern,
+            f"unsupported match pattern type {type(pattern).__name__}",
+        )
 
     def _extract_constructor_fields(
         self,
@@ -417,7 +452,10 @@ class DataMixin:
                 # Resolve concrete WASM type from the binding's type_expr
                 type_name = self._type_expr_to_slot_name(sub_pat.type_expr)
                 if type_name is None:
-                    return None
+                    raise CodegenSkip(
+                        sub_pat,
+                        "constructor field binding has no slot name",
+                    )
                 # Unit bindings: no WASM representation, skip extraction
                 if type_name == "Unit":
                     continue
@@ -438,7 +476,10 @@ class DataMixin:
                     continue
                 wt = self._slot_name_to_wasm_type(type_name)
                 if wt is None:
-                    return None
+                    raise CodegenSkip(
+                        sub_pat,
+                        f"constructor field type {type_name!r} has no WASM type",
+                    )
                 # Compute aligned offset for this field
                 align = _aligns.get(wt, 8)
                 offset = (offset + align - 1) & ~(align - 1)
@@ -465,7 +506,10 @@ class DataMixin:
                 offset = (offset + align - 1) & ~(align - 1)
                 sub_layout = self._ctor_layouts.get(sub_pat.name)
                 if sub_layout is None:
-                    return None
+                    raise CodegenSkip(
+                        sub_pat,
+                        f"unknown nested constructor {sub_pat.name!r} in pattern",
+                    )
                 sub_local = self.alloc_local("i32")
                 instrs.append(f"local.get {scr_local}")
                 instrs.append(f"i32.load offset={offset}")
@@ -489,7 +533,10 @@ class DataMixin:
 
             else:
                 # Unknown sub-pattern type
-                return None
+                raise CodegenSkip(
+                    sub_pat,
+                    f"unsupported nested pattern type {type(sub_pat).__name__}",
+                )
 
         return (instrs, new_env)
 
@@ -510,7 +557,10 @@ class DataMixin:
         if isinstance(sub_pat, ast.BindingPattern):
             type_name = self._type_expr_to_slot_name(sub_pat.type_expr)
             if type_name is None:
-                return None
+                raise CodegenSkip(
+                    sub_pat,
+                    "sub-pattern binding has no slot name",
+                )
             # Unit bindings: no WASM representation — use generic layout type
             if type_name == "Unit":
                 if field_index < len(layout.field_offsets):
@@ -557,7 +607,10 @@ class DataMixin:
         for i, sub_pat in enumerate(pattern.sub_patterns):
             wt = self._sub_pattern_wasm_type(sub_pat, i, layout)
             if wt is None:
-                return None
+                raise CodegenSkip(
+                    sub_pat,
+                    "nested pattern field has no WASM type",
+                )
             align = _aligns.get(wt, 8)
             offset = (offset + align - 1) & ~(align - 1)
 
@@ -565,7 +618,10 @@ class DataMixin:
                 name = sub_pat.name
                 sub_layout = self._ctor_layouts.get(name)
                 if sub_layout is None:
-                    return None
+                    raise CodegenSkip(
+                        sub_pat,
+                        f"unknown nested constructor {name!r} in pattern",
+                    )
                 # Load the nested ADT pointer, stash in a temp,
                 # then load the tag and compare.
                 tmp = self.alloc_local("i32")
@@ -610,7 +666,10 @@ class DataMixin:
 
         elem_type = self._infer_array_element_type(expr)
         if elem_type is None:
-            return None
+            raise CodegenSkip(
+                expr,
+                "could not infer array literal element type",
+            )
         # Resolve type aliases — `type Row = Array<Bool>` makes the
         # inferred element name "Row", but the element-layout helpers
         # below match on bare "Array" / "Array<...>".  Without this,
@@ -619,12 +678,18 @@ class DataMixin:
         elem_type = self._resolve_base_type_name(elem_type)
         elem_size = _element_mem_size(elem_type)
         if elem_size is None:
-            return None
+            raise CodegenSkip(
+                expr,
+                f"unsupported array literal element type {elem_type!r}",
+            )
         is_pair = _is_pair_element_type(elem_type)
         store_op = _element_store_op(elem_type)
         # store_op is None only for pair types — handled below
         if store_op is None and not is_pair:
-            return None
+            raise CodegenSkip(
+                expr,
+                f"no store op for array literal element type {elem_type!r}",
+            )
 
         self.needs_alloc = True
         total_bytes = n * elem_size
@@ -679,15 +744,24 @@ class DataMixin:
         """
         elem_type = self._infer_index_element_type(expr)
         if elem_type is None:
-            return None
+            raise CodegenSkip(
+                expr,
+                "could not infer index expression element type",
+            )
         elem_size = _element_mem_size(elem_type)
         if elem_size is None:
-            return None
+            raise CodegenSkip(
+                expr,
+                f"unsupported index expression element type {elem_type!r}",
+            )
         is_pair = _is_pair_element_type(elem_type)
         load_op = _element_load_op(elem_type)
         # load_op is None only for pair types — handled below
         if load_op is None and not is_pair:
-            return None
+            raise CodegenSkip(
+                expr,
+                f"no load op for index expression element type {elem_type!r}",
+            )
 
         # Evaluate collection → (ptr, len) on stack
         coll_instrs = self.translate_expr(expr.collection, env)

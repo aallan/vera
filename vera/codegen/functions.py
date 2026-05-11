@@ -7,6 +7,7 @@ parameter allocation, body translation, and function assembly.
 from __future__ import annotations
 
 from vera import ast
+from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.codegen.tail_position import compute_tail_call_sites
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push
@@ -190,8 +191,67 @@ class FunctionCompilationMixin:
         # Snapshot old state for postcondition old() references
         snapshot_instrs = self._snapshot_old_state(ctx, decl)
 
-        # Compile body
-        body_instrs = ctx.translate_block(decl.body, env)
+        # Compile body.
+        #
+        # Two failure modes are handled here:
+        #
+        # 1. ``CodegenSkip`` — a translator hit an AST shape it
+        #    recognises but doesn't yet support.  We attach the
+        #    unsupported-node's span to the [E602] diagnostic so the
+        #    user sees exactly which expression we couldn't compile,
+        #    rather than just "function 'foo' has an unsupported
+        #    expression somewhere".  This is the #626 Layer 3 path:
+        #    new translator code raises ``CodegenSkip``; old translator
+        #    code still returns None and falls through to the legacy
+        #    branch below.  See vera/skip.py.
+        # 2. ``body_instrs is None`` — legacy silent-skip return.
+        #    Pre-#626-Layer-3 every unsupported shape went this way.
+        #    The audit-and-convert pass (Phase 3, tracked in #657) is
+        #    migrating these sites to ``raise CodegenSkip``; until
+        #    that's complete this branch stays as the catch-all.
+        try:
+            body_instrs = ctx.translate_block(decl.body, env)
+        except CodegenSkip as skip:
+            # #626 Layer 3 — structured skip with node-level span.
+            self._harvest_interp_inference_failures(ctx)
+            self._warning(
+                skip.node if getattr(skip.node, "span", None) else decl,
+                f"Function '{decl.name}' body contains unsupported "
+                f"{type(skip.node).__name__}: {skip.reason} — "
+                f"function skipped.",
+                rationale="The WASM backend does not yet support all "
+                "Vera expression types. This function will not appear "
+                "in the compiled output.",
+                error_code="E602",
+            )
+            return None
+        except CodegenInvariantError as inv:  # pragma: no cover — no production code raises CodegenInvariantError yet; the handler is the catch-side contract for future raises tracked in #657 (Track 2: INVARIANT_DEFENSIVE conversions).
+            # #626 Layer 3 — compiler bug, not a user error.  Surface
+            # as [E699] at severity="error" so `vera compile` exits
+            # non-zero — these should never fire in production; if
+            # you see one, file a bug, and don't let CI mask it as a
+            # warning.
+            #
+            # Harvest interpolation failures before the [E699] for the
+            # same reason the CodegenSkip handler does: if the invariant
+            # fires after some interp segments have already populated
+            # `ctx._interp_inference_failures`, those would otherwise be
+            # silently dropped.  Empirically invariants fire early
+            # (before interp translation runs) so this is mostly
+            # symmetry insurance — CodeRabbit nitpick on #658.
+            self._harvest_interp_inference_failures(ctx)
+            self._error(
+                inv.node if inv.node is not None else decl,
+                f"Internal compiler error while compiling "
+                f"'{decl.name}': {inv.msg}",
+                rationale="This is a codegen invariant violation — "
+                "the type checker should have rejected the input "
+                "before it reached this point.  Please file a bug "
+                "report with the offending program.",
+                error_code="E699",
+            )
+            return None
+
         if body_instrs is None:
             # #630 Tier 2 — surface a specific [E615] for each
             # interpolation segment whose Vera type couldn't be

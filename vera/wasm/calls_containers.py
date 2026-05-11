@@ -21,6 +21,7 @@ independently.
 from __future__ import annotations
 
 from vera import ast
+from vera.skip import CodegenSkip
 from vera.wasm.helpers import WasmSlotEnv, gc_shadow_push
 
 # #573: kind discriminators passed to ``host_decref_handle`` and
@@ -502,7 +503,12 @@ class CallsContainersMixin:
         vt = self._map_wasm_tag(val_type)
 
         if kt is None or vt is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
 
         params = ["i32"]  # map handle
         params.extend(self._map_wasm_types(kt))  # key
@@ -549,14 +555,24 @@ class CallsContainersMixin:
         kt = self._map_wasm_tag(key_type)
 
         if kt is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
         # We need the value tag too, so the host knows how to build Option<V>.
         # Infer from the map's type — look at the slot ref for arg[0].
         val_type = self._infer_map_value_from_map_arg(call.args[0])
         vt = self._map_wasm_tag(val_type)
 
         if vt is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
 
         params = ["i32"]  # map handle
         params.extend(self._map_wasm_types(kt))  # key
@@ -619,7 +635,12 @@ class CallsContainersMixin:
         kt = self._map_wasm_tag(key_type)
 
         if kt is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
 
         params = ["i32"]  # map handle
         params.extend(self._map_wasm_types(kt))  # key
@@ -650,7 +671,12 @@ class CallsContainersMixin:
         kt = self._map_wasm_tag(key_type)
 
         if kt is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
 
         params = ["i32"]  # map handle
         params.extend(self._map_wasm_types(kt))  # key
@@ -711,7 +737,12 @@ class CallsContainersMixin:
         kt = self._map_wasm_tag(key_type)
 
         if kt is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
 
         wasm_name = self._register_map_import(
             "map_keys", kt, None,
@@ -734,7 +765,12 @@ class CallsContainersMixin:
         vt = self._map_wasm_tag(val_type)
 
         if vt is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
 
         wasm_name = self._register_map_import(
             "map_values", val_tag=vt,
@@ -885,7 +921,12 @@ class CallsContainersMixin:
         et = self._map_wasm_tag(elem_type)
 
         if et is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
 
         params = ["i32"]  # set handle
         params.extend(self._map_wasm_types(et))  # element
@@ -924,7 +965,12 @@ class CallsContainersMixin:
         et = self._map_wasm_tag(elem_type)
 
         if et is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
 
         params = ["i32"]  # set handle
         params.extend(self._map_wasm_types(et))  # element
@@ -954,7 +1000,12 @@ class CallsContainersMixin:
         et = self._map_wasm_tag(elem_type)
 
         if et is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
 
         params = ["i32"]  # set handle
         params.extend(self._map_wasm_types(et))  # element
@@ -1009,7 +1060,12 @@ class CallsContainersMixin:
         et = self._map_wasm_tag(elem_type)
 
         if et is None:
-            return None  # Map<K, Array<T>> not supported (#475 finding 5)
+            # #475 finding 5 — Map<K, V> / Set<T> with Array-typed
+            # K, V, or element doesn't have a host-import shape yet.
+            raise CodegenSkip(
+                call,
+                "Map/Set with Array-typed key, value, or element is not supported",
+            )
 
         wasm_name = self._register_set_import(
             "set_to_array", et,

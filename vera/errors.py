@@ -514,6 +514,7 @@ ERROR_CODES: dict[str, str] = {
     "E614": "Program contains typed holes",
     "E615": "Cannot interpolate value of unknown type",
     "E616": "Cannot infer closure return type for call_indirect",
+    "E699": "Internal compiler error",
     # E7xx — Testing
     "E700": "Contract violation during testing",
     "E701": "Cannot generate test inputs",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from vera import ast
+from vera.skip import CodegenSkip
 from vera.wasm.helpers import WasmSlotEnv
 
 
@@ -453,11 +454,20 @@ class CallsMixin:
             if resolved is not None:
                 call_target = resolved
 
-        # Guard rail: reject calls to functions not defined in this module
+        # Guard rail: reject calls to functions not defined in this module.
+        # In practice the cross-module check upstream has already emitted
+        # a diagnostic for genuine unknown-fn cases.  This path also fires
+        # for prelude-mangled / forward-reference edge cases (e.g. the
+        # #604 option_map mono-suffix mismatch) where the call target's
+        # name was rewritten by mono but the rewritten name isn't yet
+        # in `_known_fns`.
         if (self._known_fns
                 and call_target not in self._known_fns
                 and call_target not in self._ctor_layouts):
-            return None
+            raise CodegenSkip(
+                call,
+                f"call target {call_target!r} not registered in this module",
+            )
 
         # Regular function call
         instructions = []
