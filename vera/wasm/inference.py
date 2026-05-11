@@ -1514,7 +1514,10 @@ class InferenceMixin:
         return None  # pragma: no cover
 
     def _resolve_base_type_name(
-        self, name: str, _seen: frozenset[str] = frozenset(),
+        self,
+        name: str,
+        _seen: frozenset[str] = frozenset(),
+        _root_name: str | None = None,
     ) -> str:
         """Resolve a type alias to its base type name.
 
@@ -1524,25 +1527,42 @@ class InferenceMixin:
         ``_seen`` is an internal cycle-detection accumulator — when the
         same name is encountered twice along an alias chain (cyclic
         aliases such as ``type A = B; type B = A``), the recursion is
-        cut and the originally-requested name is returned.  Cyclic
-        aliases are user errors that should be caught by the type
-        checker (see issue #648); this guard is defence-in-depth so a
-        bug in the upstream check cannot turn into a ``RecursionError``
-        inside codegen.  Closes #633 — the sibling walker
-        ``_canonical_named_type`` (PR #631) already has this guard;
-        this restores consistency.
+        cut and the **caller's original** name is returned via the
+        threaded ``_root_name``.  This matters for prefix-chain cycles
+        like ``{A: B, B: C, C: B}`` (A leads into a B↔C cycle that
+        doesn't include A): the caller asked about ``A``, so the
+        return must be ``A``, not the revisited-cycle node ``B``.
+        Cyclic aliases are user errors that should be caught by the
+        type checker (see issue #648); this guard is defence-in-depth
+        so a bug in the upstream check cannot turn into a
+        ``RecursionError`` inside codegen.  Closes #633 — the sibling
+        walker ``_canonical_named_type`` (PR #631) already has this
+        guard; this restores consistency.
+
+        ``_root_name`` defaults to ``None`` on the public-entry call;
+        the first recursion sets it to the original ``name`` so all
+        deeper calls share the same caller-visible identity.
         """
-        if name in _seen or name not in self._type_aliases:
+        if _root_name is None:
+            _root_name = name
+        if name in _seen:
+            # Cycle — return the caller's original name unchanged
+            # (treat as opaque, no resolution available).
+            return _root_name
+        if name not in self._type_aliases:
+            # Not an alias — this is the underlying base name.
             return name
         _seen = _seen | {name}
         alias = self._type_aliases[name]
         if isinstance(alias, ast.RefinementType):
             if isinstance(alias.base_type, ast.NamedType):
                 return self._resolve_base_type_name(
-                    alias.base_type.name, _seen,
+                    alias.base_type.name, _seen, _root_name,
                 )
         if isinstance(alias, ast.NamedType):
-            return self._resolve_base_type_name(alias.name, _seen)
+            return self._resolve_base_type_name(
+                alias.name, _seen, _root_name,
+            )
         return name
 
     def _slot_name_to_wasm_type(self, name: str) -> str | None:

@@ -8702,6 +8702,47 @@ public fn main(-> @Unit)
             "regressed for `i32_pair` returns."
         )
 
+    def test_escaped_backslash_before_paren_is_literal(self) -> None:
+        r"""``"\\("`` (a literal backslash followed by a literal
+        ``(``) must be treated as two literal characters, NOT as an
+        interpolation opener.
+
+        Pre-#649-review-pass-2 the two helpers in
+        ``vera/transform.py`` disagreed: ``_has_interpolation``
+        correctly skipped escaped pairs (so a string with only
+        ``\\(`` was treated as having no interpolation at all), but
+        ``_split_interpolation`` rescanned the second character as a
+        fresh start and mis-parsed the ``\\(`` as the opener of an
+        interpolation segment.  The result for a string like
+        ``"a\\(b"`` was a parse-time crash (no matching ``)``) where
+        the user expected a literal ``a\(b``.  CodeRabbit flagged
+        the divergence on PR #649.
+
+        This test verifies the escape-skipping logic is now
+        consistent across both helpers by compiling a program that
+        prints a literal backslash-paren sequence and asserting the
+        output preserves the literal characters.
+        """
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("a\\\\(b)c")
+}
+"""
+        # In the Python source above, "a\\\\(b)c" is a 9-char Python
+        # string literal that produces the 7-char Vera source-text
+        # `a\\(b)c` — which is the 5-char Vera string value
+        # `a\(b)c` after escape decoding.  The compiler must accept
+        # this without trying to interpret `\(` as an interpolation
+        # opener (because the preceding `\\` already consumed the
+        # backslash).
+        assert _run_io(source, fn="main") == "a\\(b)c", (
+            "Expected literal `a\\(b)c`; the `\\\\(` escape pair "
+            "should be two literal characters, not an interpolation "
+            "opener."
+        )
+
 
 class TestE615LoudInterpolationFallthrough630:
     """[#630](https://github.com/aallan/vera/issues/630) Tier 2 — the

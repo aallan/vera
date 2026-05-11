@@ -226,33 +226,57 @@ def _split_interpolation(
     buf: list[str] = []
     i = 0
     while i < len(raw):
-        if raw[i] == "\\" and i + 1 < len(raw) and raw[i + 1] == "(":
-            # Flush literal buffer
-            parts.append("".join(buf))
-            buf = []
-            # Find matching ')' tracking paren depth
-            depth = 1
-            j = i + 2
-            while j < len(raw) and depth > 0:
-                if raw[j] == "(":
-                    depth += 1
-                elif raw[j] == ")":
-                    depth -= 1
-                j += 1
-            if depth != 0:
-                raise _transform_error(
-                    "Unmatched '\\(' in string interpolation — "
-                    "missing closing ')'.",
-                    meta, error_code="E009",
-                )
-            expr_text = raw[i + 2:j - 1]
-            if not expr_text.strip():
-                raise _transform_error(
-                    "Empty expression in string interpolation '\\()'.",
-                    meta, error_code="E009",
-                )
-            parts.append((expr_text, i))
-            i = j
+        if raw[i] == "\\" and i + 1 < len(raw):
+            # An escape sequence — either ``\(`` which opens an
+            # interpolation, or one of the literal escapes (``\\``,
+            # ``\n``, ``\t``, ``\"``, ``\u{...}``) that the
+            # downstream ``_decode_string_escapes`` will resolve on
+            # the literal fragments.  Mirror the escape-skipping
+            # logic from ``_has_interpolation`` so a literal
+            # ``\\(`` (backslash + literal paren, NOT an
+            # interpolation opener) is treated as two literal
+            # characters rather than mis-segmented as the second
+            # ``\(`` opening a new interpolation.  Pre-fix, the two
+            # helpers disagreed: ``_has_interpolation`` saw a string
+            # like ``"\\("`` as having no interpolation, but
+            # ``_split_interpolation`` mis-parsed it.  CodeRabbit
+            # caught the divergence on PR #649.
+            if raw[i + 1] == "(":
+                # Flush literal buffer
+                parts.append("".join(buf))
+                buf = []
+                # Find matching ')' tracking paren depth
+                depth = 1
+                j = i + 2
+                while j < len(raw) and depth > 0:
+                    if raw[j] == "(":
+                        depth += 1
+                    elif raw[j] == ")":
+                        depth -= 1
+                    j += 1
+                if depth != 0:
+                    raise _transform_error(
+                        "Unmatched '\\(' in string interpolation — "
+                        "missing closing ')'.",
+                        meta, error_code="E009",
+                    )
+                expr_text = raw[i + 2:j - 1]
+                if not expr_text.strip():
+                    raise _transform_error(
+                        "Empty expression in string interpolation '\\()'.",
+                        meta, error_code="E009",
+                    )
+                parts.append((expr_text, i))
+                i = j
+            else:
+                # Any other escape: pass both chars through as
+                # literal text and advance by 2 so we don't re-scan
+                # the escaped character (the downstream
+                # ``_decode_string_escapes`` on the literal fragment
+                # is what actually performs the decode).
+                buf.append(raw[i])
+                buf.append(raw[i + 1])
+                i += 2
         else:
             buf.append(raw[i])
             i += 1

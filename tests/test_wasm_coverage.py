@@ -3025,6 +3025,32 @@ public fn use_alias(@MyInt -> @Int)
         }
         assert ctx._resolve_base_type_name("X") == "X"
 
+        # Prefix-chain cycle: A leads into a B↔C cycle that doesn't
+        # include A itself.  The caller asked about A, so the return
+        # must be A — not the revisited-cycle node B.  Pre-PR-#649-
+        # review-pass-2 this returned B (the "revisited alias"), which
+        # the cycle-guard sentinel happened to hit on first re-visit;
+        # CodeRabbit caught this on PR #649.  The fix threads a
+        # `_root_name` parameter through the recursion so cycles
+        # always return the caller's original input.
+        ctx._type_aliases = {
+            "A": ast.NamedType(name="B", type_args=[]),
+            "B": ast.NamedType(name="C", type_args=[]),
+            "C": ast.NamedType(name="B", type_args=[]),
+        }
+        assert ctx._resolve_base_type_name("A") == "A", (
+            "Prefix-chain cycle (A → B → C → B): caller asked about "
+            "A, must get A back, not the revisited cycle node B."
+        )
+        assert ctx._resolve_base_type_name("B") == "B", (
+            "Calling with B (entering its own cycle): the caller's "
+            "input is preserved even when it's the cycle entry point."
+        )
+        assert ctx._resolve_base_type_name("C") == "C", (
+            "Calling with C (inside the cycle): caller's input "
+            "preserved as the function's identity-on-cycle contract."
+        )
+
 
 # =====================================================================
 # TestOperatorsADTEquality — ADT structural equality (operators.py 182-236)
