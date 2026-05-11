@@ -753,7 +753,23 @@ def _call_inference_provider(
 
     req = _urlreq.Request(cfg.url, data=body, headers=headers, method="POST")  # noqa: S310
     with _urlreq.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
-        data = _json.loads(resp.read().decode("utf-8"))
+        raw = resp.read()
+        # #591 — strict-mode `.decode("utf-8")` previously leaked
+        # the raw `UnicodeDecodeError` message (including byte
+        # offsets and Python-internals jargon) into the
+        # `Result::Err` string the user sees from
+        # `Inference.complete`.  An LLM-API response that isn't
+        # valid UTF-8 is genuinely broken — we want to fail loudly
+        # but with a Vera-native message, not Python noise.
+        try:
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError as ude:
+            raise RuntimeError(
+                f"Inference provider '{provider}' returned a "
+                f"response body that is not valid UTF-8 "
+                f"(invalid byte at position {ude.start}).",
+            ) from None
+        data = _json.loads(decoded)
 
     if cfg.response_style == "anthropic":
         return str(data["content"][0]["text"])
@@ -2823,7 +2839,18 @@ def execute(
                 try:
                     import urllib.request
                     with urllib.request.urlopen(url, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
-                        body = resp.read().decode("utf-8")
+                        # #591 — `errors="replace"` keeps the response
+                        # data flowing to the user even when the
+                        # remote server's Content-Type lies about
+                        # the encoding.  Invalid bytes surface as
+                        # U+FFFD inside the OK-branch string rather
+                        # than as a Python `UnicodeDecodeError`
+                        # message leaking into the Err branch.  The
+                        # data trade-off is acceptable for a generic
+                        # HTTP GET — the user's intent is "fetch
+                        # this URL's body", not "fail if it isn't
+                        # cleanly UTF-8".
+                        body = resp.read().decode("utf-8", errors="replace")
                     return _alloc_result_ok_string(caller, body)
                 except Exception as exc:
                     return _alloc_result_err_string(caller, str(exc))
@@ -2855,7 +2882,14 @@ def execute(
                         headers={"Content-Type": "application/json"},
                     )
                     with urllib.request.urlopen(req, timeout=_INFERENCE_TIMEOUT) as resp:  # noqa: S310
-                        response_body = resp.read().decode("utf-8")
+                        # #591 — `errors="replace"` for the same
+                        # reason as `http_get`: keep response data
+                        # flowing as U+FFFD substitutions rather
+                        # than letting a `UnicodeDecodeError`
+                        # message leak into the Err branch.
+                        response_body = resp.read().decode(
+                            "utf-8", errors="replace",
+                        )
                     return _alloc_result_ok_string(caller, response_body)
                 except Exception as exc:
                     return _alloc_result_err_string(caller, str(exc))

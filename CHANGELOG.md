@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **[#633](https://github.com/aallan/vera/issues/633)** — `_resolve_base_type_name` (in `vera/wasm/inference.py`) now carries an explicit `_seen` cycle-detection accumulator, restoring consistency with the post-#630 `_canonical_named_type` walker that already had one.  Defence-in-depth: cyclic type aliases are user errors that should be rejected upfront by the type checker (tracked separately as [#648](https://github.com/aallan/vera/issues/648)), but a bug in the upstream rejection must not turn into a `RecursionError` inside codegen.
+
+- **[#634](https://github.com/aallan/vera/issues/634)** — `SlotRef` and other AST nodes constructed inside `InterpolatedString.parts` now carry source spans in **original-source coordinates** instead of synthetic-wrapper coordinates.  `_parse_interp_expr` previously wrapped each interpolation expression in a dummy `private fn interpExpr(...) { <SEGMENT> }` function for parsing, with the segment placed at wrapper line 3, column 3 — and Lark-emitted spans inside the parsed body were never translated back to the original source.  The result: `[E615]` (and other) diagnostics on interpolated expressions landed on line 3 of the user's file, regardless of where the offending string literal actually was.  `_split_interpolation` now records each segment's offset within the raw string, `string_lit` computes the segment's original line/column from the outer string-literal span, and `_parse_interp_expr` walks the parsed AST and remaps every `Span` field via a new `_remap_spans_inplace` helper.  The previously-softened assertion in `TestE615LoudInterpolationFallthrough630::test_e615_fires_on_adt_in_interpolation` is tightened to pin both line **and** column of the diagnostic at the SlotRef's position, and `test_multiple_e615_in_one_interpolation` now pins per-segment column fidelity (two SlotRefs in the same string get two distinct, correct columns).
+
+- **[#556](https://github.com/aallan/vera/issues/556)** — the user-visible bug class (calling a user-defined `@Unit`-returning function in statement position trips a WASM `type mismatch: expected a type but nothing on stack` validation error) was already fixed by #584's `_is_void_expr` work in v0.0.135.  The specific repro shape from the original #556 report — a *pure* helper (no IO effect) followed by a unit-literal final expression — wasn't pinned by the existing conformance test (which covered IO-effect variants only).  Added `TestUserUnitFnInStatementPosition556` to `tests/test_codegen.py` with two cases: the exact #556 repro plus the where-block variant from the follow-up comment.  Pinning the specific shape so it can't silently regress.
+
+- **[#591](https://github.com/aallan/vera/issues/591)** — three network-response UTF-8 decode sites in `vera/codegen/api.py` no longer leak Python `UnicodeDecodeError` text into Vera-level `Result::Err` strings.  Two strategies, chosen per-site based on user intent:
+  - **`Http.get` / `Http.post`** — now decode response bodies with `errors="replace"`.  A remote server returning non-UTF-8 bytes (rare but real with misconfigured `Content-Type`) surfaces as U+FFFD substitutions inside the Ok-branch string, preserving the data.  User intent for these calls is "fetch this URL"; preserving the body beats preserving the (already-rare) signal that bytes weren't cleanly UTF-8.
+  - **`Inference.complete`** — `_call_inference_provider` now catches `UnicodeDecodeError` explicitly and re-raises as `RuntimeError("Inference provider '<name>' returned a response body that is not valid UTF-8 (invalid byte at position N).")`.  The `host_inference_complete` wrapper's existing `except Exception` catches this and writes the Vera-shaped message into the Err branch.  Non-UTF-8 from an LLM API is genuinely broken; we want loud failure with a Vera-native message, not the `codec can't decode byte 0x...` Python form.  Three structural assertions added in `tests/test_runtime_traps.py::TestNetworkResponseUtf8Hygiene591`, mirroring the #589 coverage shape.
+
+### Documentation
+
+- **KNOWN_ISSUES.md** — removed entries for #633, #634, and #591 (closed in this release); added entry for the newly-filed [#648](https://github.com/aallan/vera/issues/648) (cyclic-alias `RecursionError` — the upstream bug discovered while implementing #633).
+
 ## [0.0.143] - 2026-05-10
 
 ### Fixed
