@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through Stage 12, across 57 active development days.
+How the Vera compiler was built, from initial commit through Stage 12, across 58 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -286,8 +286,9 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.139 | 8 May | Closure codegen pair — [#614](https://github.com/aallan/vera/issues/614) (`f()[i]` element-type inference) and [#615](https://github.com/aallan/vera/issues/615) (closure capture ordering). |
 | v0.0.140 | 8 May | String-returning FnCall in interpolation — closes [#602](https://github.com/aallan/vera/issues/602). |
 | v0.0.141 | 8 May | Inline-refinement return types in interpolation — third trigger in the #602 bug class. |
-| v0.0.142 | 8 May | Closed the #602 bug class structurally across four sites — [#630](https://github.com/aallan/vera/issues/630), [#632](https://github.com/aallan/vera/issues/632), [#635](https://github.com/aallan/vera/issues/635), [#636](https://github.com/aallan/vera/issues/636).  Six canonicalisation helpers consolidated into `_canonical_named_type` + `_canonical_wasm_type`; silent fallthroughs converted to [E615] (interpolation) and [E616] (apply_fn); parameterised-alias substitution in compilability check; closure-body failures propagate to drop enclosing fn. |
-| v0.0.143 | 10 May | Windows CI fully strict — closes [#640](https://github.com/aallan/vera/issues/640) (CLI reads `sys.stdin` for `/dev/stdin` cross-platform), [#641](https://github.com/aallan/vera/issues/641) (`PYTHONUTF8=1` in CI + explicit UTF-8 on grammar load), [#642](https://github.com/aallan/vera/issues/642) (POSIX-form paths in IO test fixtures).  `continue-on-error` advisory removed; matrix is now `{ubuntu, macos, windows} × {3.11, 3.12, 3.13}` = 9 strict entries. |
+| v0.0.142 | 8 May | Closed the #602 bug class structurally across four sites — [#630](https://github.com/aallan/vera/issues/630), [#632](https://github.com/aallan/vera/issues/632), [#635](https://github.com/aallan/vera/issues/635), [#636](https://github.com/aallan/vera/issues/636). |
+| v0.0.143 | 10 May | Windows added to CI matrix as fully-strict — closes [#640](https://github.com/aallan/vera/issues/640), [#641](https://github.com/aallan/vera/issues/641), [#642](https://github.com/aallan/vera/issues/642). |
+| v0.0.144 | 11 May | Tier A bug burn-down — closes [#633](https://github.com/aallan/vera/issues/633), [#634](https://github.com/aallan/vera/issues/634), [#556](https://github.com/aallan/vera/issues/556), [#591](https://github.com/aallan/vera/issues/591). |
 
 ---
 
@@ -328,4 +329,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 143 tagged releases, 57 active development days.**
+Total: **810+ commits, 144 tagged releases, 58 active development days.**

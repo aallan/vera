@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.144] - 2026-05-11
+
 ### Fixed
 
 - **[#633](https://github.com/aallan/vera/issues/633)** — `_resolve_base_type_name` (in `vera/wasm/inference.py`) now carries an explicit `_seen` cycle-detection accumulator, restoring consistency with the post-#630 `_canonical_named_type` walker that already had one.  Defence-in-depth: cyclic type aliases are user errors that should be rejected upfront by the type checker (tracked separately as [#648](https://github.com/aallan/vera/issues/648)), but a bug in the upstream rejection must not turn into a `RecursionError` inside codegen.
@@ -2108,7 +2110,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.143...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.144...HEAD
+[0.0.144]: https://github.com/aallan/vera/compare/v0.0.143...v0.0.144
 [0.0.143]: https://github.com/aallan/vera/compare/v0.0.142...v0.0.143
 [0.0.142]: https://github.com/aallan/vera/compare/v0.0.141...v0.0.142
 [0.0.141]: https://github.com/aallan/vera/compare/v0.0.140...v0.0.141

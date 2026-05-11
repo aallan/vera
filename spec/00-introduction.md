@@ -175,6 +175,5 @@ For features that have already shipped, see [HISTORY.md](https://github.com/aall
 
 | Feature | Issue | Specification |
 |---------|-------|---------------|
-| Typed holes | [#226](https://github.com/aallan/vera/issues/226) | Chapter 4 |
 | Timeout and cancellation effects | [#227](https://github.com/aallan/vera/issues/227) | Chapter 7, Chapter 9 |
 | Date and time handling | [#233](https://github.com/aallan/vera/issues/233) | Chapter 9 |
