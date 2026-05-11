@@ -168,6 +168,26 @@ def _extract_skips(
         # Surface as a failure with the stderr text inline.
         return [("PARSE_ERROR", file, result.stderr.strip()[:200])]
 
+    # Hard compile failure (e.g. parse error, type error, unresolved
+    # symbol) — the envelope is well-formed JSON but `ok` is False
+    # and the error sits in `diagnostics`, not `warnings`.  Without
+    # this check the script would treat the file as clean (because
+    # `warnings` has no `[E602]` / `[E604]`), letting a real compile
+    # failure slip through the gate.  Surface as a hard failure with
+    # the first error's description (the gate's caller treats
+    # COMPILE_ERROR identically to PARSE_ERROR / TIMEOUT — all three
+    # are non-skip failures).
+    if not envelope.get("ok", True):
+        diagnostics = envelope.get("diagnostics", [])
+        if diagnostics:
+            first_err = diagnostics[0]
+            err_code = first_err.get("error_code", "")
+            err_desc = first_err.get("description", "")[:200]
+            msg = f"[{err_code}] {err_desc}" if err_code else err_desc
+        else:
+            msg = (result.stderr.strip() or "compile failed")[:200]
+        return [("COMPILE_ERROR", file, msg)]
+
     skips: list[tuple[str, str, str]] = []
     for w in envelope.get("warnings", []):
         code = w.get("error_code", "")
@@ -198,7 +218,7 @@ def _scan_paths(paths: list[str]) -> tuple[int, list[str]]:
         skips = _extract_skips(path)
         unexpected: list[tuple[str, str, str]] = []
         for code, fn_name, desc in skips:
-            if code in ("PARSE_ERROR", "TIMEOUT"):
+            if code in ("PARSE_ERROR", "TIMEOUT", "COMPILE_ERROR"):
                 unexpected.append((code, fn_name, desc))
                 continue
             if fn_name in ALLOWED_SKIPS:
@@ -229,9 +249,26 @@ def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
 
     examples = sorted(glob.glob(str(repo_root / "examples/*.vera")))
-    conformance = sorted(
-        glob.glob(str(repo_root / "tests/conformance/*.vera"))
-    )
+
+    # Filter conformance programs to those declared compilable in the
+    # manifest.  `level: "check"` programs are intentionally
+    # uncompilable — e.g. `ch03_typed_holes.vera` exists specifically
+    # to demonstrate `[E614] Program contains a typed hole; fill all
+    # holes before compiling` and is expected to fail at compile
+    # time.  Only `verify` and `run` level programs are required to
+    # compile cleanly; those are the ones a `[E602]` / `[E604]`
+    # silent skip would actually regress.
+    manifest_path = repo_root / "tests/conformance/manifest.json"
+    conformance: list[str] = []
+    if manifest_path.is_file():
+        with manifest_path.open(encoding="utf-8") as f:
+            manifest = json.load(f)
+        for entry in manifest:
+            if entry.get("level") in ("verify", "run"):
+                path = repo_root / "tests/conformance" / entry["file"]
+                if path.is_file():
+                    conformance.append(str(path))
+        conformance.sort()
 
     if not examples and not conformance:
         print("No .vera files found to scan.", file=sys.stderr)
