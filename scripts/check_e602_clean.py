@@ -258,17 +258,58 @@ def main() -> int:
     # time.  Only `verify` and `run` level programs are required to
     # compile cleanly; those are the ones a `[E602]` / `[E604]`
     # silent skip would actually regress.
+    #
+    # Fail fast on missing manifest or missing-but-listed file: the
+    # manifest is the source of truth for the conformance suite and
+    # a missing file is a state-inconsistency bug we want surfaced
+    # loudly, not silently masked as "fewer programs to scan".
     manifest_path = repo_root / "tests/conformance/manifest.json"
-    conformance: list[str] = []
-    if manifest_path.is_file():
-        with manifest_path.open(encoding="utf-8") as f:
-            manifest = json.load(f)
-        for entry in manifest:
-            if entry.get("level") in ("verify", "run"):
-                path = repo_root / "tests/conformance" / entry["file"]
-                if path.is_file():
-                    conformance.append(str(path))
-        conformance.sort()
+    if not manifest_path.is_file():
+        print(
+            f"ERROR: conformance manifest not found at {manifest_path}",
+            file=sys.stderr,
+        )
+        return 1
+
+    with manifest_path.open(encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    # Validate every entry's file exists before populating the
+    # scan list.  Surfacing missing-file errors *after* the scan
+    # would let the gate run on an incomplete set silently.
+    missing_files: list[tuple[str, str]] = []
+    candidate_paths: list[str] = []
+    for entry in manifest:
+        if entry.get("level") not in ("verify", "run"):
+            continue
+        path = repo_root / "tests/conformance" / entry["file"]
+        if not path.is_file():
+            missing_files.append((entry.get("id", "?"), entry["file"]))
+            continue
+        candidate_paths.append(str(path))
+
+    if missing_files:
+        print(
+            f"ERROR: conformance manifest references "
+            f"{len(missing_files)} file(s) that don't exist on disk:",
+            file=sys.stderr,
+        )
+        for entry_id, fname in missing_files:
+            print(
+                f"  id={entry_id!r}: tests/conformance/{fname}",
+                file=sys.stderr,
+            )
+        print(
+            "\nManifest and filesystem are out of sync — fix by "
+            "adding the missing files or removing the manifest "
+            "entries.  The gate refuses to run on an incomplete "
+            "scan set because a partial pass would silently hide "
+            "regressions in the missing programs.",
+            file=sys.stderr,
+        )
+        return 1
+
+    conformance = sorted(candidate_paths)
 
     if not examples and not conformance:
         print("No .vera files found to scan.", file=sys.stderr)
