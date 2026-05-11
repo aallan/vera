@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from vera import ast
+from vera.skip import CodegenSkip
 
 if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
@@ -423,7 +424,9 @@ class WasmContext(
         if isinstance(expr, ast.NewExpr):
             return self._translate_new_expr(expr)
 
-        return None
+        raise CodegenSkip(
+            expr, f"no translator for expression type {type(expr).__name__}"
+        )
 
     # -----------------------------------------------------------------
     # Blocks and statements
@@ -444,7 +447,9 @@ class WasmContext(
                 # Determine WAT type for this let binding
                 type_name = self._type_expr_to_slot_name(stmt.type_expr)
                 if type_name is None:
-                    return None
+                    raise CodegenSkip(
+                        stmt, "let binding type has no slot name"
+                    )
                 # Pair bindings (String, Array<T>) need two locals: (ptr, len)
                 if self._is_pair_type_name(type_name):
                     ptr_idx = self.alloc_local("i32")
@@ -456,7 +461,10 @@ class WasmContext(
                     continue
                 wat_t = self._slot_name_to_wasm_type(type_name)
                 if wat_t is None:
-                    return None
+                    raise CodegenSkip(
+                        stmt,
+                        f"let binding type {type_name!r} has no WASM representation",
+                    )
                 local_idx = self.alloc_local(wat_t)
                 instructions.extend(val_instrs)
                 instructions.append(f"local.set {local_idx}")
@@ -482,7 +490,10 @@ class WasmContext(
                 instructions.extend(destr_instrs)
             else:
                 # Unknown statement type
-                return None
+                raise CodegenSkip(
+                    stmt,
+                    f"unsupported statement type {type(stmt).__name__}",
+                )
 
         # Final expression
         expr_instrs = self.translate_expr(block.expr, current_env)
