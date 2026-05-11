@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -2063,19 +2064,31 @@ class TestNetworkResponseUtf8Hygiene591:
     def test_http_post_uses_errors_replace(self) -> None:
         """``host_http_post`` decodes the response body with
         ``errors="replace"`` for the same reason as ``host_http_get``.
+
+        Asserts on the **contiguous decode expression** rather than
+        the bare substring ``errors="replace"`` (which also appears
+        in the explanatory comment above the call site).  Removing
+        ``errors="replace"`` from the actual decode call while
+        leaving the comment intact must fail this assertion.
+        CodeRabbit-flagged pre-fix vulnerability on PR #649.
         """
         body = self._api_body_after("def host_http_post(")
-        # The actual line is split across two source lines in the
-        # call to keep line length sane; assert on the substring
-        # rather than the exact one-line form.
-        assert 'errors="replace"' in body, (
-            "host_http_post must decode the response body with "
-            "errors='replace' (#591)."
+        # Use regex with DOTALL-like matching so the multi-line
+        # form (decode call wrapped across two source lines) still
+        # matches.  The pattern requires `errors="replace"` to be
+        # part of the same `resp.read().decode(...)` expression —
+        # whitespace and the `"utf-8"` argument between
+        # ``decode(`` and ``errors=`` are allowed, but no closing
+        # paren can appear before ``errors="replace"``.
+        m = re.search(
+            r'resp\.read\(\)\.decode\([^)]*errors="replace"',
+            body,
         )
-        assert 'resp.read().decode(' in body, (
-            "host_http_post must call resp.read().decode(...) "
-            "(structural sanity check anchoring the errors='replace' "
-            "assertion above)."
+        assert m, (
+            "host_http_post must decode the response body with "
+            "errors='replace' as part of the same resp.read().decode(...) "
+            "expression — a bare `errors=\"replace\"` substring in a "
+            "comment does not satisfy this (#591)."
         )
 
     def test_inference_complete_catches_unicode_decode_error(self) -> None:
@@ -2089,21 +2102,53 @@ class TestNetworkResponseUtf8Hygiene591:
         that performs the urlopen + decode), not the public
         ``host_inference_complete`` which only handles the
         provider-config validation around the call.
+
+        Asserts on the **contiguous except-then-raise expression**
+        rather than the bare substrings ``"except UnicodeDecodeError"``
+        and ``"not valid UTF-8"`` (which could in principle appear
+        independently in comments or unrelated code paths).  The
+        regex requires the catch + raise + message to form one
+        coherent handler block.  CodeRabbit-flagged hardening on
+        PR #649.
         """
         body = self._api_body_after(
             "def _call_inference_provider(", span=3000,
         )
-        assert "except UnicodeDecodeError" in body, (
-            "_call_inference_provider must catch UnicodeDecodeError "
-            "specifically and re-raise as a Vera-shaped RuntimeError "
-            "so the Result::Err string is free of Python-internals "
-            "text (#591)."
+        m = re.search(
+            r"except\s+UnicodeDecodeError[^\n]*?:\s*\n"
+            r"(?:[^\n]*\n){0,10}?"  # up to 10 lines until raise
+            r"\s*raise\s+RuntimeError\(",
+            body,
         )
-        assert "not valid UTF-8" in body, (
+        assert m, (
+            "_call_inference_provider must catch UnicodeDecodeError "
+            "and re-raise as a RuntimeError in the same handler "
+            "block (#591).  Both substrings must appear in a "
+            "contiguous except/raise structure — a stray "
+            "`except UnicodeDecodeError` comment does not satisfy."
+        )
+        # The Vera-shaped error message must include "not valid UTF-8"
+        # within the raise call's argument string(s).  Python permits
+        # implicit adjacent-literal concatenation, so the production
+        # code splits the message across multiple ``f"..."`` lines for
+        # readability; the phrase can appear in any one of them.
+        # Match `raise RuntimeError(` followed by `"..."` (possibly
+        # `f"..."`, possibly preceded by other `f"..."` adjacent
+        # literals, possibly spanning multiple lines), as long as the
+        # phrase lands inside a string-literal token before the
+        # matching `)`.  DOTALL handles the multi-line case; the
+        # bounded `.{0,400}?` keeps the regex non-greedy enough to
+        # stop at the close of the raise.
+        m_msg = re.search(
+            r'raise\s+RuntimeError\(.{0,400}?"[^"]*not valid UTF-8',
+            body,
+            flags=re.DOTALL,
+        )
+        assert m_msg, (
             "The Vera-shaped error message for the UnicodeDecodeError "
-            "case must include the phrase 'not valid UTF-8' so the "
-            "user understands what went wrong with their inference "
-            "call (#591)."
+            "case must include 'not valid UTF-8' as part of the "
+            "raise's string argument (#591) — a bare substring in a "
+            "comment does not satisfy."
         )
 
 
