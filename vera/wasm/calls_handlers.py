@@ -7,6 +7,7 @@ _translate_hash_string), and effect handlers (State<T>, Exn<E>).
 from __future__ import annotations
 
 from vera import ast
+from vera.skip import CodegenSkip
 from vera.wasm.helpers import WasmSlotEnv
 
 
@@ -38,7 +39,9 @@ class CallsHandlersMixin:
         """
         vera_type = self._infer_vera_type(arg)
         if vera_type is None:
-            return None
+            raise CodegenSkip(
+                arg, "could not infer show() argument type"
+            )
 
         # String → identity: show("hello") == "hello"
         if vera_type == "String":
@@ -65,7 +68,9 @@ class CallsHandlersMixin:
             )
             return self._translate_call(desugared, env)
 
-        return None
+        raise CodegenSkip(
+            arg, f"show() not supported for type {vera_type!r}"
+        )
 
     def _translate_hash(
         self, arg: ast.Expr, env: WasmSlotEnv,
@@ -81,7 +86,9 @@ class CallsHandlersMixin:
         """
         vera_type = self._infer_vera_type(arg)
         if vera_type is None:
-            return None
+            raise CodegenSkip(
+                arg, "could not infer hash() argument type"
+            )
 
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
@@ -107,7 +114,9 @@ class CallsHandlersMixin:
         if vera_type == "String":
             return self._translate_hash_string(arg_instrs)
 
-        return None
+        raise CodegenSkip(
+            arg, f"hash() not supported for type {vera_type!r}"
+        )
 
     def _translate_hash_string(
         self, arg_instrs: list[str],
@@ -191,7 +200,9 @@ class CallsHandlersMixin:
         """
         effect = expr.effect
         if not isinstance(effect, ast.EffectRef):
-            return None
+            raise CodegenSkip(
+                expr, "handle expression effect must be an EffectRef"
+            )
 
         if effect.name == "State" and effect.type_args and len(effect.type_args) == 1:
             return self._translate_handle_state(expr, env)
@@ -200,7 +211,10 @@ class CallsHandlersMixin:
             return self._translate_handle_exn(expr, env)
 
         # Unsupported handler type
-        return None
+        raise CodegenSkip(
+            expr,
+            f"only State<T> and Exn<E> handlers supported (got {effect.name})",
+        )
 
     def _translate_handle_state(
         self, expr: ast.HandleExpr, env: WasmSlotEnv,
@@ -218,7 +232,9 @@ class CallsHandlersMixin:
         if isinstance(type_arg, ast.NamedType):
             type_name = type_arg.name
         else:
-            return None
+            raise CodegenSkip(
+                expr, "State<T> type argument must be a named type"
+            )
 
         wasm_type = self._type_name_to_wasm(type_name)
         put_import = f"$vera.state_put_{type_name}"
@@ -285,7 +301,9 @@ class CallsHandlersMixin:
         assert isinstance(expr.effect, ast.EffectRef)  # noqa: S101
         type_arg = expr.effect.type_args[0]  # type: ignore[index]
         if not isinstance(type_arg, ast.NamedType):
-            return None
+            raise CodegenSkip(
+                expr, "Exn<E> type argument must be a named type"
+            )
         type_name = type_arg.name
         tag_name = f"$exn_{type_name}"
         is_pair = self._is_pair_type_name(type_name)
@@ -329,7 +347,9 @@ class CallsHandlersMixin:
 
         # Compile handler clause body
         if not expr.clauses:
-            return None
+            raise CodegenSkip(
+                expr, "handle[Exn<E>] requires at least one clause"
+            )
         clause = expr.clauses[0]  # Exn<E> has exactly one op: throw
 
         # Allocate locals for the caught exception value.
