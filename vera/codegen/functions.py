@@ -7,7 +7,7 @@ parameter allocation, body translation, and function assembly.
 from __future__ import annotations
 
 from vera import ast
-from vera.codegen.skip import CodegenInvariantError, CodegenSkip
+from vera.skip import CodegenInvariantError, CodegenSkip
 from vera.codegen.tail_position import compute_tail_call_sites
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push
