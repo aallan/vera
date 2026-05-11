@@ -5,6 +5,7 @@ from __future__ import annotations
 from vera import ast
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import WasmSlotEnv
+from vera.wasm.inference import substitute_type_vars
 
 
 class CallsMixin:
@@ -645,12 +646,36 @@ class CallsMixin:
         Mirrors :meth:`MonomorphizationMixin._resolve_arg_fn_shape` for
         WASM call-site rewriting.  Handles both ``AnonFn`` literals and
         ``SlotRef`` args whose static type is an FnType alias (#604).
+        For parameterised aliases like
+        ``type Mapper<T> = fn(T -> T)``, the SlotRef's type_args are
+        substituted into the alias body so the resolver returns the
+        instantiated shape (CR-5 on PR #659).  Without substitution,
+        ``_resolve_generic_call`` would mangle the call to a name like
+        ``$option_map$T_T`` that doesn't match the mono-clone names
+        Pass 1.5 registered.
         """
         if isinstance(arg, ast.AnonFn):
             return (tuple(arg.params), arg.return_type)
         if isinstance(arg, ast.SlotRef):
             alias_te = self._type_aliases.get(arg.type_name)
             if isinstance(alias_te, ast.FnType):
+                # Parameterised alias — substitute the SlotRef's
+                # type_args into the alias body before returning.
+                alias_params = self._type_alias_params.get(arg.type_name)
+                if (alias_params
+                        and arg.type_args
+                        and len(alias_params) == len(arg.type_args)):
+                    subst: dict[str, ast.TypeExpr] = dict(
+                        zip(alias_params, arg.type_args),
+                    )
+                    substituted_params = tuple(
+                        substitute_type_vars(p, subst)
+                        for p in alias_te.params
+                    )
+                    substituted_return = substitute_type_vars(
+                        alias_te.return_type, subst,
+                    )
+                    return (substituted_params, substituted_return)
                 return (tuple(alias_te.params), alias_te.return_type)
         return None
 

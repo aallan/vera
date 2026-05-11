@@ -171,7 +171,12 @@ def _extract_skips(
     skips: list[tuple[str, str, str]] = []
     for w in envelope.get("warnings", []):
         code = w.get("error_code", "")
-        if code not in ("E602", "E604"):
+        # E605 is part of the same template-warning surface as E602/E604
+        # — see the suppression pass in vera/codegen/core.py and the
+        # CHANGELOG entry for v0.0.145.  A future E605 silent skip (e.g.
+        # generic decl with unsupported return type) should hit the gate
+        # too, not slip past with the existing allowlist machinery.
+        if code not in ("E602", "E604", "E605"):
             continue
         desc = w.get("description", "")
         # Function name is parsed from the description; format is

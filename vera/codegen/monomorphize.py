@@ -11,6 +11,7 @@ from dataclasses import fields, replace
 from typing import Any
 
 from vera import ast
+from vera.wasm.inference import substitute_type_vars
 
 # Types that satisfy the built-in abilities.
 _EQ_TYPES: frozenset[str] = frozenset({
@@ -606,7 +607,17 @@ class MonomorphizationMixin:
         * ``AnonFn`` literal — its declared params + return type.
         * ``SlotRef`` whose static type is an FnType alias (e.g.
           ``@Doubler.0`` where ``type Doubler = fn(Int -> Int)``) —
-          the alias's resolved params + return type.
+          the alias's resolved params + return type.  For a
+          *parameterised* alias like
+          ``type Mapper<T> = fn(T -> T) effects(pure)``, the
+          ``SlotRef``'s type-args are substituted into the alias body
+          first so ``@Mapper<Int>.0`` returns
+          ``(NamedType("Int"),), NamedType("Int")`` rather than the
+          unsubstituted ``T``.  Without substitution, the downstream
+          ``_infer_fn_alias_type_args`` matcher would bind alias-local
+          names instead of concrete ones, producing mono suffixes
+          like ``option_map$T_T`` rather than ``option_map$Int_Int``
+          (CR-4 on PR #659).
 
         Returns ``None`` for any other arg shape.  Used by
         :meth:`_infer_fn_alias_type_args` to bind generic type variables
@@ -626,8 +637,28 @@ class MonomorphizationMixin:
             type_aliases: dict[str, ast.TypeExpr] = getattr(
                 self, "_type_aliases", {},
             )
+            type_alias_params: dict[str, tuple[str, ...]] = getattr(
+                self, "_type_alias_params", {},
+            )
             alias_te = type_aliases.get(arg.type_name)
             if isinstance(alias_te, ast.FnType):
+                # Parameterised alias — substitute the SlotRef's
+                # type_args into the alias body before returning.
+                alias_params = type_alias_params.get(arg.type_name)
+                if (alias_params
+                        and arg.type_args
+                        and len(alias_params) == len(arg.type_args)):
+                    subst: dict[str, ast.TypeExpr] = dict(
+                        zip(alias_params, arg.type_args),
+                    )
+                    substituted_params = tuple(
+                        substitute_type_vars(p, subst)
+                        for p in alias_te.params
+                    )
+                    substituted_return = substitute_type_vars(
+                        alias_te.return_type, subst,
+                    )
+                    return (substituted_params, substituted_return)
                 return (tuple(alias_te.params), alias_te.return_type)
         return None
 

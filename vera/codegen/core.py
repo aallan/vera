@@ -495,13 +495,24 @@ class CodeGenerator(
                             if wfn_wat is not None:
                                 functions_wat.append(wfn_wat)
 
-        # Compile monomorphized functions
+        # Compile monomorphized functions.
+        #
+        # Track base names whose mono bodies compiled successfully —
+        # not merely registered in `_fn_sigs` (which happens earlier in
+        # Pass 1.5 for every clone the monomorphizer generates,
+        # including ones whose body later fails to compile).  This set
+        # feeds the template-warning suppression below: we suppress
+        # only when at least one mono clone actually emitted WAT,
+        # preserving the diagnostic surface for genuinely-broken
+        # generics whose clones all fail.
+        compiled_mono_bases: set[str] = set()
         for mdecl in mono_decls:
             orig_name = mdecl.name.split("$")[0]
             is_public = fn_visibility.get(orig_name) == "public"
             fn_wat = self._compile_fn(mdecl, export=is_public)
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
+                compiled_mono_bases.add(orig_name)
                 if is_public:
                     exports.append(mdecl.name)
 
@@ -531,11 +542,18 @@ class CodeGenerator(
         #
         # Targeted suppression: drop every E602/E604/E605 diagnostic
         # whose source is a forall-decl IF at least one mono clone of
-        # that decl successfully compiled (appears in `_fn_sigs` as
-        # `<name>$<types>`).  If no mono clone exists, the warning
-        # stays — that signals either a genuinely-broken generic or
-        # an unused declaration the user wanted to compile but
-        # couldn't.
+        # that decl successfully *compiled* (`_compile_fn` returned
+        # non-None, recorded in `compiled_mono_bases` above).  CR-3
+        # on PR #659: pre-fix this checked `_fn_sigs`, which is
+        # populated in Pass 1.5 *before* mono bodies are compiled —
+        # so a broken-but-registered clone would have wrongly
+        # suppressed its template's diagnostic, hiding the only
+        # pre-runtime signal of a broken generic.  Now we track
+        # actually-compiled clones explicitly.
+        #
+        # If no mono clone compiled, the warning stays — that signals
+        # either a genuinely-broken generic or an unused declaration
+        # the user wanted to compile but couldn't.
         #
         # This is audit recommendation 2 from the #604 investigation
         # comment.  Pre-fix, the warnings were the only signal that
@@ -548,12 +566,7 @@ class CodeGenerator(
             if isinstance(decl, ast.FnDecl) and decl.forall_vars:
                 forall_decl_names.add(decl.name)
         if forall_decl_names:
-            mono_compiled: set[str] = set()
-            for fn_name in self._fn_sigs:
-                if "$" in fn_name:
-                    base = fn_name.split("$", 1)[0]
-                    if base in forall_decl_names:
-                        mono_compiled.add(base)
+            mono_compiled = compiled_mono_bases & forall_decl_names
             if mono_compiled:
                 # Filter out template warnings for fns whose mono
                 # clones compiled.  Keep all other diagnostics intact.

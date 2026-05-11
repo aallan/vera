@@ -12,13 +12,16 @@ def substitute_type_vars(
 ) -> ast.TypeExpr:
     """Substitute type variables inside a TypeExpr.
 
-    Module-level so it's accessible from both `InferenceMixin`
+    Module-level so it's accessible from `InferenceMixin`
     (`vera/wasm/inference.py` — the canonicaliser, called from
-    interpolation/apply_fn inference) and `CodeGenerator`
+    interpolation/apply_fn inference), `CodeGenerator`
     (`vera/codegen/core.py` — the compilability check
-    `_type_expr_to_wasm_type`).  Both sites need the same
-    substitution semantics when following a parameterised alias
-    (`type Box<T> = Array<T>`) so the alias's own type-param
+    `_type_expr_to_wasm_type`), and the parameterised-FnType-alias
+    resolver in `MonomorphizationMixin._resolve_arg_fn_shape` /
+    `CallsMixin._resolve_arg_fn_shape_wasm` (#604 / #659 CR-4 +
+    CR-5).  All sites need the same substitution semantics when
+    following a parameterised alias (`type Box<T> = Array<T>`,
+    `type Mapper<T> = fn(T -> T)`) so the alias's own type-param
     references in the body get bound to the concrete type arguments
     from the call site (#635 closes the compilability-side gap that
     PR #631's walker fix didn't reach).
@@ -29,8 +32,10 @@ def substitute_type_vars(
     type_args is recursed into (substituting in each arg).
     `RefinementType` substitutes its `base_type`; the `predicate`
     is left untouched (predicates are `Expr`, not `TypeExpr`, and
-    canonicalisation is type-level only).  Other shapes (`FnType`,
-    etc.) pass through unchanged.
+    canonicalisation is type-level only).  `FnType` substitutes
+    through each param and the return type (added by #659 CR-4 +
+    CR-5 for parameterised FnType aliases).  Other shapes pass
+    through unchanged.
     """
     if isinstance(te, ast.NamedType):
         if not te.type_args and te.name in subst:
@@ -45,6 +50,16 @@ def substitute_type_vars(
         new_base = substitute_type_vars(te.base_type, subst)
         return ast.RefinementType(
             base_type=new_base, predicate=te.predicate)
+    if isinstance(te, ast.FnType):
+        new_params = tuple(
+            substitute_type_vars(p, subst) for p in te.params
+        )
+        new_return = substitute_type_vars(te.return_type, subst)
+        return ast.FnType(
+            params=new_params,
+            return_type=new_return,
+            effect=te.effect,
+        )
     return te
 
 

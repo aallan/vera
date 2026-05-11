@@ -15886,6 +15886,13 @@ public fn main(@Unit -> @Int)
         runtime with ``wasm trap: indirect call type mismatch`` because
         the closure's i64 return mismatched the i32 (Bool) the wrongly-
         suffixed mono clone expected.
+
+        CR-2 on PR #659 — the WAT-only assertions pinned suffix
+        correctness but didn't catch the actual user-visible failure
+        mode (the runtime trap).  Add a runtime execution assertion
+        so a regression in indirect-call signature wiring fails the
+        test rather than silently slipping through with the right
+        suffix in WAT but wrong execution.
         """
         result = _compile_ok(self._SLOT_FN_SRC)
         # The compiled module should contain the correctly-suffixed
@@ -15901,6 +15908,56 @@ public fn main(@Unit -> @Int)
             f"Wrong-suffix mono clone `$option_map$Int_Bool` "
             f"should not appear post-#604 fix; found in WAT"
         )
+        # Runtime pin: execute and confirm no trap.  `Some(10) * 2 = 20`.
+        # Pre-fix this would have trapped with
+        # `wasm trap: indirect call type mismatch`.
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.value == 20, (
+            f"Expected main() to return 20 (Some(10) * 2 unwrapped); "
+            f"got {exec_result.value!r}.  A non-20 result OR a trap "
+            f"signals indirect-call signature regression."
+        )
+
+    def test_parameterised_alias_substitutes_type_args(self) -> None:
+        """`option_map(opt, @Mapper<Int>.0)` where
+        ``type Mapper<T> = fn(T -> T)`` substitutes ``T → Int`` in
+        the alias body before unifying against the generic call's
+        ``OptionMapFn<A, B>`` param.
+
+        CR-4 / CR-5 on PR #659: without substitution, the
+        ``_resolve_arg_fn_shape`` helper returned the raw alias body
+        ``fn(T -> T)`` and the downstream
+        ``_infer_fn_alias_type_args`` matcher bound alias-local names
+        (``A → T``, ``B → T``) instead of concrete ones.  The mono
+        suffix would have been ``option_map$T_T`` rather than
+        ``option_map$Int_Int`` — wrong shape, wouldn't match the
+        clone Pass 1.5 registered, runtime trap.
+        """
+        src = """
+type Mapper<T> = fn(T -> T) effects(pure);
+
+private fn use_map(@Option<Int>, @Mapper<Int> -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  option_map(@Option<Int>.0, @Mapper<Int>.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(use_map(Some(7), fn(@Int -> @Int) effects(pure) { @Int.0 * 3 }), 0)
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat or ""
+        assert "$option_map$Int_Int" in wat, (
+            f"Expected `$option_map$Int_Int` from parameterised "
+            f"alias `Mapper<Int>`; got option_map suffixes: "
+            f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
+        )
+        # Runtime pin — `Some(7) * 3 = 21`.
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.value == 21
 
     def test_template_warning_suppressed_when_mono_clone_compiles(
         self,
