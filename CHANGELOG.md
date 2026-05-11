@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **mypy 1.20.2 → 2.0.0** (`pyproject.toml`, `uv.lock`).  Mypy 2.0 enables three flags by default that were opt-in under 1.x: `--local-partial-types` (changes inference of types based on assignments in other scopes), `--strict-bytes` (per [PEP 688](https://peps.python.org/pep-0688): `bytearray` and `memoryview` no longer assignable to `bytes`), and `--allow-redefinition` behaves like 1.x's `--allow-redefinition-new` (more flexible variable redefinition across blocks).  Running mypy 2.0 against `vera/` produced **zero errors** with the existing source — no compiler-source changes needed to clear the upgrade.  Manual upgrade in favour of dependabot PR #647 (closed in favour of this change).
+
 ## [0.0.144] - 2026-05-11
 
 ### Fixed
