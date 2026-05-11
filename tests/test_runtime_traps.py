@@ -2002,6 +2002,112 @@ class TestHostPrintInvalidUtf8589:
 
 
 # =====================================================================
+# #591 — HTTP / Inference network-response UTF-8 decode hygiene
+# =====================================================================
+
+
+class TestNetworkResponseUtf8Hygiene591:
+    """#591 — network-response decode sites in ``vera/codegen/api.py``
+    must not leak Python ``UnicodeDecodeError`` text into Vera-level
+    ``Result::Err`` strings.
+
+    The three sites are siblings of the WASM-memory-decode sites in
+    #589 (covered by ``TestHostPrintInvalidUtf8589`` above) but with
+    different ergonomics: the bytes here come from a *remote* server,
+    not a corrupt-program codegen bug.  A failure here surfaces as a
+    Vera-level ``Result::Err`` (via the ``try/except Exception``
+    wrappers) rather than a wasmtime-trampoline-wrapped Python
+    crash — so the practical impact is "bad error message" rather
+    than "Python traceback escapes".  Two strategies in use:
+
+    - ``Http.get`` / ``Http.post`` — ``errors="replace"`` so the user
+      gets the response body with U+FFFD substitutions for bad bytes.
+      Their intent is "fetch this URL"; preserving data beats
+      preserving the (rare) signal that bytes were non-UTF-8.
+
+    - ``Inference.complete`` — explicit ``UnicodeDecodeError`` catch
+      that raises a Vera-shaped ``RuntimeError`` ("provider returned
+      a response body that is not valid UTF-8 (invalid byte at
+      position N)").  Non-UTF-8 from an LLM API is genuinely broken;
+      we want loud failure with a Vera-native message, not the
+      ``codec can't decode byte 0x...`` Python form.
+
+    Structural assertions on the source: the same shape as #589's
+    coverage above, anchored on each function's definition.
+    """
+
+    def _api_body_after(self, marker: str, *, span: int = 1500) -> str:
+        from pathlib import Path
+        repo_root = Path(__file__).parent.parent
+        src = (repo_root / "vera/codegen/api.py").read_text(
+            encoding="utf-8",
+        )
+        idx = src.index(marker)
+        return src[idx:idx + span]
+
+    def test_http_get_uses_errors_replace(self) -> None:
+        """``host_http_get`` decodes the response body with
+        ``errors="replace"`` so a remote server's invalid UTF-8
+        produces U+FFFD substitutions in the OK-branch string rather
+        than a ``UnicodeDecodeError`` message leaking into the
+        Err-branch string.
+        """
+        body = self._api_body_after("def host_http_get(")
+        assert 'resp.read().decode("utf-8", errors="replace")' in body, (
+            "host_http_get must decode the response body with "
+            "errors='replace' so non-UTF-8 bytes from a misconfigured "
+            "remote server don't surface as Python error noise in "
+            "the Result::Err string (#591)."
+        )
+
+    def test_http_post_uses_errors_replace(self) -> None:
+        """``host_http_post`` decodes the response body with
+        ``errors="replace"`` for the same reason as ``host_http_get``.
+        """
+        body = self._api_body_after("def host_http_post(")
+        # The actual line is split across two source lines in the
+        # call to keep line length sane; assert on the substring
+        # rather than the exact one-line form.
+        assert 'errors="replace"' in body, (
+            "host_http_post must decode the response body with "
+            "errors='replace' (#591)."
+        )
+        assert 'resp.read().decode(' in body, (
+            "host_http_post must call resp.read().decode(...) "
+            "(structural sanity check anchoring the errors='replace' "
+            "assertion above)."
+        )
+
+    def test_inference_complete_catches_unicode_decode_error(self) -> None:
+        """``Inference.complete``'s network-response decode site
+        catches ``UnicodeDecodeError`` explicitly and raises a
+        ``RuntimeError`` with a Vera-shaped message, so the Err
+        string the user sees doesn't contain Python-internals text
+        like ``'utf-8' codec can't decode byte 0x...`` (#591).
+
+        Anchored on ``_call_inference_provider`` (the private helper
+        that performs the urlopen + decode), not the public
+        ``host_inference_complete`` which only handles the
+        provider-config validation around the call.
+        """
+        body = self._api_body_after(
+            "def _call_inference_provider(", span=3000,
+        )
+        assert "except UnicodeDecodeError" in body, (
+            "_call_inference_provider must catch UnicodeDecodeError "
+            "specifically and re-raise as a Vera-shaped RuntimeError "
+            "so the Result::Err string is free of Python-internals "
+            "text (#591)."
+        )
+        assert "not valid UTF-8" in body, (
+            "The Vera-shaped error message for the UnicodeDecodeError "
+            "case must include the phrase 'not valid UTF-8' so the "
+            "user understands what went wrong with their inference "
+            "call (#591)."
+        )
+
+
+# =====================================================================
 # IO.sleep + Ctrl-C never escapes as a Python traceback
 # =====================================================================
 

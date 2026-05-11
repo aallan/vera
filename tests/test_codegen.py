@@ -1710,6 +1710,86 @@ public fn f(-> @Int)
         assert "(memory" in result.wat
 
 
+class TestUserUnitFnInStatementPosition556:
+    """#556 — calling a user-defined ``@Unit``-returning function in
+    statement position (followed by ``;`` and a separate final
+    expression) used to fail WASM validation with ``type mismatch:
+    expected a type but nothing on stack``.
+
+    The user-visible bug class was actually closed by #584's fix in
+    v0.0.135 (``_is_void_expr`` in ``vera/wasm/context.py`` now
+    recognises user-defined ``@Unit`` fns via the ``_fn_ret_types``
+    registry).  But the specific repro shape from #556 — a *pure*
+    helper (no IO effect) followed by a unit-literal final expression,
+    rather than another effectful statement — wasn't pinned by the
+    existing conformance test ``ch07_unit_fn_nontail.vera`` (which
+    covers IO-effect variants).  This class adds the missing
+    coverage so the exact #556 repro can't silently regress.
+    """
+
+    def test_pure_unit_helper_then_unit_literal(self) -> None:
+        """The exact repro from issue #556: a pure ``@Unit``-returning
+        helper called in statement position, followed by a trailing
+        ``()`` as the block's final expression.  Both ``check`` and
+        ``compile`` must succeed; the resulting WAT must call the
+        helper and not emit a stray ``drop``.
+        """
+        source = """\
+private fn pure_helper(@Nat -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{
+  ()
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  pure_helper(1);
+  ()
+}
+"""
+        result = _compile_ok(source)
+        # The helper must be called.
+        assert "call $pure_helper" in result.wat, (
+            f"Expected `call $pure_helper` in WAT; got:\n{result.wat}"
+        )
+        # No stray drop on the Unit-returning call — that's what
+        # tripped the validator pre-#584.
+        main_func = result.wat.split('(func $main')[1].split('(func ')[0]
+        assert "drop" not in main_func, (
+            f"Expected no `drop` in `$main` (Unit-returning user fn "
+            f"in statement position must not leave a stack value "
+            f"that needs dropping).  $main body:\n{main_func}"
+        )
+
+    def test_pure_unit_helper_in_where_block(self) -> None:
+        """The where-block variant reported in the #556 follow-up
+        comment: helper lives in a ``where { ... }`` block, called in
+        statement position, followed by a unit-literal.  Same shape,
+        same fix.
+        """
+        source = _IO_PRELUDE + """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  helper(1);
+  ()
+}
+where {
+  fn helper(@Nat -> @Unit)
+    requires(true) ensures(true) effects(<IO>)
+  {
+    IO.print(nat_to_string(@Nat.0))
+  }
+}
+"""
+        # Runs end-to-end — exercises the full pipeline including
+        # where-block hoisting, so a regression in either layer
+        # (Unit-fn detection or where-block name resolution) is
+        # caught.
+        assert _run_io(source, fn="main") == "1"
+
+
 class TestTailCallOptimization517:
     """#517 — WASM `return_call` emission for tail-position calls.
 
