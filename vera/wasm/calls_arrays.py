@@ -504,7 +504,8 @@ class CallsArraysMixin:
                 raise CodegenSkip(
                     arr_arg,
                     "could not infer array_slice element type "
-                    "(non-empty array literal required)",
+                    "(provide an explicit element type or ensure "
+                    "elements are recoverable from the expression)",
                 )
         else:
             size = _element_mem_size(elem_type)
@@ -1649,6 +1650,7 @@ class CallsArraysMixin:
         return self._translate_array_any_all_common(
             arr_arg, fn_arg, env,
             short_circuit_on_true=True,
+            name="array_any",
         )
 
     def _translate_array_all(
@@ -1662,6 +1664,7 @@ class CallsArraysMixin:
         return self._translate_array_any_all_common(
             arr_arg, fn_arg, env,
             short_circuit_on_true=False,
+            name="array_all",
         )
 
     def _translate_array_any_all_common(
@@ -1671,6 +1674,7 @@ class CallsArraysMixin:
         env: WasmSlotEnv,
         *,
         short_circuit_on_true: bool,
+        name: str,
     ) -> list[str] | None:
         """Shared body for array_any / array_all.
 
@@ -1684,7 +1688,7 @@ class CallsArraysMixin:
             return None
 
         t_type, t_size, t_wasm = self._array_elem_triad_or_skip(
-            arr_arg, role="array_any_all"
+            arr_arg, role=name
         )
         t_is_pair = _is_pair_element_type(t_type)
 
@@ -1749,7 +1753,7 @@ class CallsArraysMixin:
         else:
             t_load = _element_load_op(t_type)
             if t_load is None:  # pragma: no cover — defensive: helper returns None only for pair types, and this branch is the non-pair else
-                raise CodegenSkip(arr_arg, "no load op for array_any_all_common element")
+                raise CodegenSkip(arr_arg, f"no load op for {name} element")
             ins.append(f"    local.get {src_slot}")
             ins.append(f"    {t_load} offset=0")
         ins.append(f"    local.get {fn_tmp}")
