@@ -203,12 +203,12 @@ class FunctionCompilationMixin:
         #    expression somewhere".  This is the #626 Layer 3 path:
         #    new translator code raises ``CodegenSkip``; old translator
         #    code still returns None and falls through to the legacy
-        #    branch below.  See vera/codegen/skip.py.
+        #    branch below.  See vera/skip.py.
         # 2. ``body_instrs is None`` — legacy silent-skip return.
         #    Pre-#626-Layer-3 every unsupported shape went this way.
-        #    The audit-and-convert pass (Phase 3) is migrating these
-        #    sites to ``raise CodegenSkip``; until that's complete
-        #    this branch stays as the catch-all.
+        #    The audit-and-convert pass (Phase 3, tracked in #657) is
+        #    migrating these sites to ``raise CodegenSkip``; until
+        #    that's complete this branch stays as the catch-all.
         try:
             body_instrs = ctx.translate_block(decl.body, env)
         except CodegenSkip as skip:
@@ -225,11 +225,12 @@ class FunctionCompilationMixin:
                 error_code="E602",
             )
             return None
-        except CodegenInvariantError as inv:
+        except CodegenInvariantError as inv:  # pragma: no cover — no production code raises CodegenInvariantError yet; the handler is the catch-side contract for future raises tracked in #657 (Track 2: INVARIANT_DEFENSIVE conversions).
             # #626 Layer 3 — compiler bug, not a user error.  Surface
-            # as [E699] so it can't be confused with a legitimate
-            # "not yet supported" skip.  These should never fire in
-            # production; if you see one, file a bug.
+            # as [E699] at severity="error" so `vera compile` exits
+            # non-zero — these should never fire in production; if
+            # you see one, file a bug, and don't let CI mask it as a
+            # warning.
             #
             # Harvest interpolation failures before the [E699] for the
             # same reason the CodegenSkip handler does: if the invariant
@@ -239,7 +240,7 @@ class FunctionCompilationMixin:
             # (before interp translation runs) so this is mostly
             # symmetry insurance — CodeRabbit nitpick on #658.
             self._harvest_interp_inference_failures(ctx)
-            self._warning(
+            self._error(
                 inv.node if inv.node is not None else decl,
                 f"Internal compiler error while compiling "
                 f"'{decl.name}': {inv.msg}",

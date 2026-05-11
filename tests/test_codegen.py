@@ -15834,6 +15834,111 @@ public fn main(@Unit -> @Unit)
         )
 
 
+class TestE602NodeLevelReasons626Layer3:
+    """`#626` Layer 3 (PR #658) — `[E602]` diagnostics now carry a
+    node-level span and a specific reason string, rather than the
+    pre-Layer-3 generic enclosing-function-level message.
+
+    Pre-Layer-3 the diagnostic looked like::
+
+        [E602] Function 'main' body contains unsupported expressions
+        — skipped.   ← span: declaration of `main` (line N)
+
+    Post-Layer-3::
+
+        [E602] Function 'main' body contains unsupported FnCall:
+        Map/Set with Array-typed key, value, or element is not
+        supported — function skipped.   ← span: the offending
+        map_insert(...) call (line N+M)
+
+    These two tests pin the user-visible contract:
+
+    1. the diagnostic's ``description`` includes the specific reason
+       text that the ``raise CodegenSkip(node, reason)`` site passed
+       — preventing a future refactor from dropping back to a generic
+       message.
+    2. the diagnostic's ``location.line`` matches the offending node
+       (the FnCall), not the enclosing function declaration — preventing
+       a future refactor from dropping the per-node span.
+
+    See `vera/codegen/functions.py::_compile_fn` for the catch handler
+    that turns ``CodegenSkip(node, reason)`` into the user-visible
+    ``[E602]`` shape.
+    """
+
+    _MAP_OF_ARRAY_SRC = """
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Map<Nat, Array<Nat>> = map_insert(map_new(), 1, [1, 2, 3]);
+  IO.print("ok")
+}
+"""
+
+    def test_e602_description_contains_node_specific_reason(self) -> None:
+        """The `[E602]` description for `Map<Nat, Array<Nat>>` carries
+        the specific reason text from the `_translate_map_insert`
+        raise site, not just the generic ``"unsupported expressions"``.
+
+        Locks in the user-visible improvement from PR #658:
+        ``CodegenSkip(call, "Map/Set with Array-typed key, value, or
+        element is not supported")`` flows through the catch handler
+        as ``f"Function '{decl.name}' body contains unsupported
+        {type(skip.node).__name__}: {skip.reason}"``.
+        """
+        result = _compile(self._MAP_OF_ARRAY_SRC)
+        e602 = [
+            d for d in result.diagnostics
+            if d.error_code == "E602" and "main" in d.description
+        ]
+        assert e602, (
+            f"Expected an [E602] for `main`; diagnostics: "
+            f"{result.diagnostics}"
+        )
+        # The reason string from `vera/wasm/calls_containers.py`'s
+        # CodegenSkip raise should appear verbatim in the diagnostic.
+        assert "Array-typed" in e602[0].description, (
+            f"Expected node-specific reason in [E602] description; "
+            f"got: {e602[0].description!r}"
+        )
+        # And the AST-node-type label too — confirms the catch handler
+        # is composing from `type(skip.node).__name__`.
+        assert "FnCall" in e602[0].description, (
+            f"Expected FnCall node-type label in [E602] description; "
+            f"got: {e602[0].description!r}"
+        )
+
+    def test_e602_location_points_at_offending_call_not_fn_header(
+        self,
+    ) -> None:
+        """The `[E602]` source location points at the offending
+        `map_insert(...)` call (line 5 of the test source), not the
+        `public fn main(...)` declaration (line 2).
+
+        Pre-Layer-3 the legacy `_warning(decl, ...)` call attached
+        the function-declaration span; Post-Layer-3 the catch handler
+        passes `skip.node` (the FnCall), giving a per-node span.
+        """
+        result = _compile(self._MAP_OF_ARRAY_SRC)
+        e602 = [
+            d for d in result.diagnostics
+            if d.error_code == "E602" and "main" in d.description
+        ]
+        assert e602, (
+            f"Expected an [E602] for `main`; got: {result.diagnostics}"
+        )
+        # `public fn main(@Unit -> @Unit)` is line 2 in _MAP_OF_ARRAY_SRC;
+        # the offending `map_insert(...)` is line 5.  The diagnostic
+        # must point at the call, not the declaration.
+        loc_line = e602[0].location.line
+        assert loc_line > 2, (
+            f"Expected [E602] location to point past the fn header "
+            f"(line 2); got line {loc_line}.  Pre-#658 this would have "
+            f"been line 2 (the legacy enclosing-fn span).  Post-#658 "
+            f"it should be line 5 (the `map_insert(...)` call)."
+        )
+
+
 class TestUrlParseJoinRoundTrip475:
     """`#475` finding 6: `url_parse` / `url_join` round-trip preserves shape.
 

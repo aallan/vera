@@ -394,9 +394,18 @@ class ClosureLiftingMixin:
                 error_code="E602",
             )
             return None
-        except CodegenInvariantError as inv:
+        except CodegenInvariantError as inv:  # pragma: no cover — no production code raises CodegenInvariantError yet; the handler is the catch-side contract for future raises tracked in #657 (Track 2: INVARIANT_DEFENSIVE conversions).
             # Closure-body invariant violation — codegen bug.
-            self._warning(
+            # Surfaced as [E699] at severity="error" so `vera compile`
+            # exits non-zero.  Symmetric with the parent-boundary
+            # handler in `vera/codegen/functions.py::_compile_fn`.
+            #
+            # Harvest interpolation failures before the [E699] for the
+            # same reason the CodegenSkip handler above does — symmetry
+            # insurance against future raise sites that fire mid-
+            # interpolation-translation.
+            self._harvest_interp_inference_failures(ctx)
+            self._error(
                 inv.node if inv.node is not None else anon_fn,
                 f"Internal compiler error in closure body: {inv.msg}",
                 rationale="This is a codegen invariant violation. "

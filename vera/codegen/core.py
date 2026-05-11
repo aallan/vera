@@ -230,6 +230,39 @@ class CodeGenerator(
             error_code=error_code,
         ))
 
+    def _error(
+        self,
+        node: ast.Node,
+        description: str,
+        *,
+        rationale: str = "",
+        error_code: str = "",
+    ) -> None:
+        """Record a compilation error (compiler bug / fatal).
+
+        Unlike `_warning`, an error makes the overall compile
+        non-zero-exit at the CLI boundary.  Used for [E699]
+        "internal compiler error" diagnostics where the type
+        checker should have rejected the input before reaching
+        codegen — these indicate a compiler bug, not a user
+        limitation, and the user-visible signal needs to be
+        loud enough that CI logs can't mask it.  See
+        `vera/skip.py::CodegenInvariantError` for the raise
+        contract.
+        """
+        loc = SourceLocation(file=self.file)
+        if node.span:
+            loc.line = node.span.line
+            loc.column = node.span.column
+        self.diagnostics.append(Diagnostic(
+            description=description,
+            location=loc,
+            source_line=self._get_source_line(loc.line),
+            rationale=rationale,
+            severity="error",
+            error_code=error_code,
+        ))
+
     def _get_source_line(self, line: int) -> str:
         """Extract a line from the source text."""
         lines = self.source.splitlines()

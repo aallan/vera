@@ -32,15 +32,24 @@ Migration plan (#626 Layer 3, Phase 2):
 
 Before this refactor, every codegen translator that hit an
 unsupported shape returned ``None`` and relied on the caller chain
-propagating the ``None`` upward.  An audit identified ~367 ``return
-None`` sites across ``vera/codegen/`` and ``vera/wasm/``, of which
-~30 are silent-skip sites (caller propagates None without emitting
-a diagnostic — the silent translator-skip class of bug #626 was
-opened to address).  This module's exception classes provide the
-mechanism for those sites to surface as loud, source-located
-``[E602]`` warnings.  See the follow-up issue (filed when #626
-closes) for the full audit table and the conversion checklist for
-the remaining sites.
+propagating the ``None`` upward.  An audit identified 372 ``return
+None`` sites across ``vera/codegen/`` and ``vera/wasm/``, classified
+as:
+
+* SILENT_SKIP (105) — caller propagates None without emitting a
+  diagnostic.  This is the silent translator-skip class of bug
+  #626.  104 were converted to ``raise CodegenSkip`` in PR #658
+  (one borderline site reclassified to PROPAGATE on inspection).
+* PROPAGATE (154) — pure None-forwarding after a sub-translation
+  call.  Reachable only on PROPAGATE-of-PROPAGATE chains; many
+  are now unreachable.  Track 1 cleanup tracked in #657.
+* OPTIONAL_RETURN (74) — legitimate ``Optional[X]`` design (lookup
+  helpers, inference helpers).  Left alone.
+* INVARIANT_DEFENSIVE (39) — guards on type-check-impossible states.
+  Candidates for conversion to ``CodegenInvariantError``.  Track 2
+  tracked in #657.
+
+See #657 for the full per-site audit table and the cleanup tracks.
 """
 
 from __future__ import annotations
