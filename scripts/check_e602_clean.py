@@ -5,7 +5,7 @@
 Layer 1 of #626 ("convert 'translate returns None → silent skip'
 failures into loud diagnostics").  The `[E602]` warning channel was
 the project's *only* signal for silent translator-skip failures, and
-five prelude-combinator instances of it were buried in every WASM
+several long-standing instances of it were buried in every WASM
 compile — making it impossible to spot a new genuine skip without
 manually sifting through expected-noise warnings.
 
@@ -19,11 +19,24 @@ either:
 - the function name is added to `ALLOWED_SKIPS` with a tracking
   issue reference, so the gap is explicit rather than buried.
 
-Currently allowed: the five #604 prelude combinators that emit
-spurious warnings on every compile (their mono clones either work
-correctly — for the `_unwrap_or` pair — or trap at runtime — for
-the `_map`/`_and_then` triplet; see issue #604 for the full
-diagnosis).
+Current allowlist groups (each entry tagged with its tracking issue):
+
+- **5 prelude combinators tracked by #604**: `option_unwrap_or`,
+  `result_unwrap_or` (mono clones work; warning is spurious),
+  plus `option_map`, `option_and_then`, `result_map` (mono clones
+  produce wrong type-arg suffix and trap at runtime — real bug
+  in monomorphizer's apply_fn-in-match-arm type inference).
+
+- **6 cases tracked by #655** (surfaced by this gate's first
+  run across `examples/*.vera` + `tests/conformance/*.vera`):
+  5 user-code generics with spurious warnings (`identity`,
+  `const`, `is_some`, `are_equal`, `cmp_sign` — mono clones
+  work), plus 1 real codegen gap (`head` over a refinement-
+  alias-of-Array param — calling `head([1,2,3])` actually
+  fails with `unknown func: $head`).
+
+See `ALLOWED_SKIPS` below for the full table with per-entry
+diagnoses and #604 / #655 for the underlying bug tracking.
 """
 
 from __future__ import annotations
@@ -125,12 +138,29 @@ def _extract_skips(
     # producing an output directory; the WAT-only path still runs
     # the full compilability pipeline so all `[E602]` / `[E604]`
     # warnings surface.
-    result = subprocess.run(
-        [sys.executable, "-m", "vera.cli", "compile", "--wat",
-         "--json", file],
-        capture_output=True,
-        text=True,
-    )
+    #
+    # 60-second per-file timeout matches `check_html_examples.py`'s
+    # `vera verify` subprocess timeout (the longest existing
+    # per-file budget in any check script) — compile is faster
+    # than verify, but a pathological program could hang on Z3
+    # discharge inside the verify pass that compile triggers as
+    # a side effect.  TimeoutExpired surfaces as a failure (same
+    # shape as a JSON-decode failure), so the script never blocks
+    # CI / pre-commit indefinitely.
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "compile", "--wat",
+             "--json", file],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return [(
+            "TIMEOUT", file,
+            "compile exceeded 60s — pathological program or "
+            "infinite loop in compilation pipeline",
+        )]
     try:
         envelope = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -168,7 +198,7 @@ def _scan_paths(paths: list[str]) -> tuple[int, list[str]]:
         skips = _extract_skips(path)
         unexpected: list[tuple[str, str, str]] = []
         for code, fn_name, desc in skips:
-            if code == "PARSE_ERROR":
+            if code in ("PARSE_ERROR", "TIMEOUT"):
                 unexpected.append((code, fn_name, desc))
                 continue
             if fn_name in ALLOWED_SKIPS:
