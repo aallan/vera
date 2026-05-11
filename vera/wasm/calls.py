@@ -604,20 +604,24 @@ class CallsMixin:
 
         # Parameterized type like Option<T>
         if param_te.type_args:
-            # Handle type alias for FnType matched against AnonFn arg
-            if isinstance(arg, ast.AnonFn):
-                alias_concrete = self._infer_fn_alias_type_args_wasm(
-                    param_te, arg,
-                )
-                if alias_concrete is not None:
-                    for param_ta, concrete_name in zip(
-                        param_te.type_args, alias_concrete,
-                    ):
-                        if (isinstance(param_ta, ast.NamedType)
-                                and param_ta.name in forall_vars
-                                and param_ta.name not in mapping):
-                            mapping[param_ta.name] = concrete_name
-                    return
+            # Handle type alias for FnType matched against a callable
+            # arg (AnonFn literal or SlotRef typed as an FnType alias).
+            # #604 parallel to the monomorphizer-side fix in
+            # vera/codegen/monomorphize.py — see
+            # MonomorphizationMixin._resolve_arg_fn_shape for the
+            # full rationale.
+            alias_concrete = self._infer_fn_alias_type_args_wasm(
+                param_te, arg,
+            )
+            if alias_concrete is not None:
+                for param_ta, concrete_name in zip(
+                    param_te.type_args, alias_concrete,
+                ):
+                    if (isinstance(param_ta, ast.NamedType)
+                            and param_ta.name in forall_vars
+                            and param_ta.name not in mapping):
+                        mapping[param_ta.name] = concrete_name
+                return
 
             arg_info = self._get_arg_type_info_wasm(arg)
             if arg_info and arg_info[0] == param_te.name:
@@ -632,16 +636,40 @@ class CallsMixin:
                             and param_ta.name not in mapping):
                         mapping[param_ta.name] = arg_ta_name
 
+    def _resolve_arg_fn_shape_wasm(
+        self,
+        arg: ast.Expr,
+    ) -> tuple[tuple[ast.TypeExpr, ...], ast.TypeExpr] | None:
+        """Return ``(param_types, return_type)`` for a callable arg.
+
+        Mirrors :meth:`MonomorphizationMixin._resolve_arg_fn_shape` for
+        WASM call-site rewriting.  Handles both ``AnonFn`` literals and
+        ``SlotRef`` args whose static type is an FnType alias (#604).
+        """
+        if isinstance(arg, ast.AnonFn):
+            return (tuple(arg.params), arg.return_type)
+        if isinstance(arg, ast.SlotRef):
+            alias_te = self._type_aliases.get(arg.type_name)
+            if isinstance(alias_te, ast.FnType):
+                return (tuple(alias_te.params), alias_te.return_type)
+        return None
+
     def _infer_fn_alias_type_args_wasm(
         self,
         param_te: ast.NamedType,
-        anon_fn: ast.AnonFn,
+        arg: ast.Expr,
     ) -> tuple[str, ...] | None:
-        """Infer concrete types for a type alias's params from an AnonFn.
+        """Infer concrete types for a type alias's params from a callable arg.
 
-        Mirrors MonomorphizationMixin._infer_fn_alias_type_args for use
-        during WASM call-site rewriting.
+        Mirrors :meth:`MonomorphizationMixin._infer_fn_alias_type_args`
+        for use during WASM call-site rewriting.  Accepts either an
+        ``AnonFn`` literal or a ``SlotRef`` typed as an FnType alias.
         """
+        arg_shape = self._resolve_arg_fn_shape_wasm(arg)
+        if arg_shape is None:
+            return None
+        arg_params, arg_return = arg_shape
+
         alias_te = self._type_aliases.get(param_te.name)
         if not isinstance(alias_te, ast.FnType):
             return None
@@ -657,29 +685,29 @@ class CallsMixin:
         alias_mapping: dict[str, str] = {}
 
         # Match parameter types positionally
-        for fn_param_te, anon_param_te in zip(
-            alias_te.params, anon_fn.params,
+        for fn_param_te, arg_param_te in zip(
+            alias_te.params, arg_params,
         ):
             if (
                 isinstance(fn_param_te, ast.NamedType)
                 and fn_param_te.name in alias_params
-                and isinstance(anon_param_te, ast.NamedType)
+                and isinstance(arg_param_te, ast.NamedType)
             ):
-                alias_mapping[fn_param_te.name] = anon_param_te.name
+                alias_mapping[fn_param_te.name] = arg_param_te.name
 
         # Match return type
         ret = alias_te.return_type
         if isinstance(ret, ast.NamedType) and ret.name in alias_params:
-            if isinstance(anon_fn.return_type, ast.NamedType):
-                alias_mapping[ret.name] = anon_fn.return_type.name
+            if isinstance(arg_return, ast.NamedType):
+                alias_mapping[ret.name] = arg_return.name
         # Handle ADT return types like Option<B>
         if isinstance(ret, ast.NamedType) and ret.type_args:
             for ret_ta in ret.type_args:
                 if (
                     isinstance(ret_ta, ast.NamedType)
                     and ret_ta.name in alias_params
-                    and isinstance(anon_fn.return_type, ast.NamedType)
-                    and anon_fn.return_type.type_args
+                    and isinstance(arg_return, ast.NamedType)
+                    and arg_return.type_args
                 ):
                     idx = [
                         i for i, rta in enumerate(ret.type_args)
@@ -688,8 +716,8 @@ class CallsMixin:
                     ]
                     if idx:
                         pos = idx[0]
-                        if pos < len(anon_fn.return_type.type_args):
-                            art = anon_fn.return_type.type_args[pos]
+                        if pos < len(arg_return.type_args):
+                            art = arg_return.type_args[pos]
                             if isinstance(art, ast.NamedType):
                                 alias_mapping[ret_ta.name] = art.name
 

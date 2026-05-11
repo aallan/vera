@@ -82,35 +82,15 @@ ALLOWED_SKIPS: dict[str, tuple[str, int, str]] = {
         "Same shape as option_map — apply_fn-in-match-arm body.",
     ),
 
-    # ----- User-code generics tracked by #655 (Shape A — same root
-    # cause as #604's _unwrap_or half: warning fires on generic
-    # template, mono clones work) -----
-    "identity": (
-        "E604", 655,
-        "Generic forall<T> fn(@T -> @T) — bare type-var @T param. "
-        "Mono identity$<T> works end-to-end.",
-    ),
-    "const": (
-        "E604", 655,
-        "Generic forall<A, B> fn(@A, @B -> @A) — bare type-var "
-        "params.  Mono works end-to-end.",
-    ),
-    "is_some": (
-        "E602", 655,
-        "Generic forall<T> fn(@Option<T> -> @Bool) — match on "
-        "@Option<T>.0 with type-var-typed Some arm.  Mono "
-        "is_some$<T> works end-to-end.",
-    ),
-    "are_equal": (
-        "E604", 655,
-        "Generic forall<T where Eq<T>> — bare type-var @T param "
-        "with ability constraint.  Mono works end-to-end.",
-    ),
-    "cmp_sign": (
-        "E604", 655,
-        "Generic forall<T where Ord<T>> — bare type-var @T param "
-        "with ability constraint.  Mono works end-to-end.",
-    ),
+    # NOTE: 5 user-code generic entries from #655 Shape A (identity,
+    # const, is_some, are_equal, cmp_sign) were removed when the
+    # template-only [E602]/[E604]/[E605] warnings stopped firing for
+    # forall decls whose mono clones successfully compile (audit
+    # recommendation 2 from #604, implemented in
+    # vera/codegen/core.py::compile_program post-compile suppression
+    # pass).  Each conformance/example program that exercises those
+    # generics now produces a working mono clone with no template
+    # noise.  See PR #<TBD> for the fix.
 
     # ----- Real codegen gap tracked by #655 (Shape B — non-generic
     # refinement-of-Array param) -----

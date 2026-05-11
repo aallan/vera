@@ -15834,6 +15834,112 @@ public fn main(@Unit -> @Unit)
         )
 
 
+class TestGenericMonoSuffixFromSlotRef604:
+    """`#604` / `#655` — generic prelude combinator mono clones now
+    produce the correct type-arg suffix when the closure argument is
+    a ``SlotRef`` typed as an FnType alias (e.g. ``@Doubler.0``).
+
+    Pre-fix `_unify_param_arg` in `vera/codegen/monomorphize.py` had
+    an AnonFn-specific alias-resolution path; `SlotRef` args typed as
+    FnType aliases skipped that path and left the closure's return
+    type variable unbound.  The unbound type var fell to the
+    ``"Bool"`` phantom-var fallback at result-building time, producing
+    mono suffixes like ``option_map$Int_Bool`` instead of
+    ``option_map$Int_Int`` and trapping at runtime with ``indirect
+    call type mismatch``.
+
+    Post-fix (this commit): both AnonFn literals AND SlotRef-typed-as-
+    FnType-alias args flow through the shared ``_resolve_arg_fn_shape``
+    helper, binding the closure's return type uniformly.
+
+    Two tests below pin the contract:
+
+    1. ``option_map(opt, fn_alias_slot)`` produces ``option_map$Int_Int``
+       and runs correctly (not a runtime trap).
+    2. The template-only ``[E602]``/``[E604]`` warnings on the prelude
+       generics are suppressed in programs that successfully call them
+       — audit recommendation 2 from #604.
+    """
+
+    _SLOT_FN_SRC = """
+type Doubler = fn(Int -> Int) effects(pure);
+
+private fn use_map(@Option<Int>, @Doubler -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  option_map(@Option<Int>.0, @Doubler.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(use_map(Some(10), fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }), 0)
+}
+"""
+
+    def test_mono_suffix_correct_for_slotref_fn_alias_arg(self) -> None:
+        """`option_map(opt, @Doubler.0)` where ``Doubler = fn(Int -> Int)``
+        produces a mono clone with suffix ``$Int_Int`` (not ``$Int_Bool``)
+        and runs without trapping.
+
+        Pre-fix this produced ``option_map$Int_Bool`` and trapped at
+        runtime with ``wasm trap: indirect call type mismatch`` because
+        the closure's i64 return mismatched the i32 (Bool) the wrongly-
+        suffixed mono clone expected.
+        """
+        result = _compile_ok(self._SLOT_FN_SRC)
+        # The compiled module should contain the correctly-suffixed
+        # mono clone, not the wrongly-suffixed one.
+        wat = result.wat or ""
+        assert "$option_map$Int_Int" in wat, (
+            f"Expected correctly-suffixed mono clone "
+            f"`$option_map$Int_Int` in WAT; got WAT containing "
+            f"option_map suffixes: "
+            f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
+        )
+        assert "$option_map$Int_Bool" not in wat, (
+            f"Wrong-suffix mono clone `$option_map$Int_Bool` "
+            f"should not appear post-#604 fix; found in WAT"
+        )
+
+    def test_template_warning_suppressed_when_mono_clone_compiles(
+        self,
+    ) -> None:
+        """Audit recommendation 2 from #604: template-only `[E602]` /
+        `[E604]` warnings on a generic decl are suppressed when at
+        least one mono clone of that decl successfully compiles.
+
+        Pre-fix every program that imported the prelude saw 5 spurious
+        warnings about ``option_unwrap_or`` / ``option_map`` / etc.
+        even when those functions worked end-to-end via mono.  The
+        warnings were misleading (they suggested a problem when there
+        was none) and drowned out genuine `[E602]` skips in the
+        Layer 1 e602 gate (#656).
+
+        Post-fix the post-compile suppression pass in
+        ``vera/codegen/core.py::compile_program`` drops the spurious
+        warnings.  Programs that never call a given generic still see
+        the warning (preserving the "this generic can't compile and
+        you're never using a mono clone" signal).
+        """
+        result = _compile_ok(self._SLOT_FN_SRC)
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        # The two generics actually called in `main` — `option_map`
+        # and `option_unwrap_or` — must not appear in template-only
+        # warning diagnostics.
+        for fn_name in ("option_map", "option_unwrap_or"):
+            offending = [
+                d for d in warnings
+                if d.error_code in {"E602", "E604", "E605"}
+                and d.description.startswith(f"Function '{fn_name}' ")
+            ]
+            assert not offending, (
+                f"Template-only warning for '{fn_name}' should be "
+                f"suppressed (mono clones compiled); got: "
+                f"{[d.description for d in offending]}"
+            )
+
+
 class TestE602NodeLevelReasons626Layer3:
     """`#626` Layer 3 (PR #658) — `[E602]` diagnostics now carry a
     node-level span and a specific reason string, rather than the
