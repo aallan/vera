@@ -47,6 +47,8 @@ The special reference `@T.result` (where `T` is the return type) refers to the f
 
 ### 6.2.3 Invariants (`invariant`)
 
+> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#560](https://github.com/aallan/vera/issues/560).  Until the implementation lands, refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
+
 An invariant is a predicate declared on a data type that MUST hold for all values of that type:
 
 ```
@@ -138,17 +140,17 @@ Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 - `array_length()` on arrays, `string_length()` on strings
 - Logical implication (`==>`)
 - `true`, `false`
+- The `@T.result` reference (in `ensures` only)
+- Conditional expressions (`if ... then ... else ...`)
+- Calls to `pure` functions that have their own contracts — the verifier inlines the callee's contract at the call site
 
 ### 6.3.2 Additionally Allowed in Contracts (Tier 2)
 
 > **Status: Not yet implemented.** Tier 2 (Z3-guided) is specified here but not implemented in the reference compiler. Tracked in [#427](https://github.com/aallan/vera/issues/427). Contracts using these constructs currently fall to Tier 3 (runtime check).
 
 Beyond the decidable fragment, contracts may also use:
-- Calls to `pure` functions that have their own contracts
-- Quantified expressions (limited, see below)
+- Quantified expressions (limited, see below) — `forall` / `exists` fall to Tier 3 today
 - Array element access (`@Array<Int>.0[@Nat.0]`)
-- The `@T.result` reference (in `ensures` only)
-- Conditional expressions (`if ... then ... else ...`)
 
 ### 6.3.3 Quantified Expressions
 
@@ -173,7 +175,7 @@ Where:
 - `@BoundExpr` is the exclusive upper bound (inclusive lower bound is always 0)
 - `@PredicateFn` is an anonymous function returning `Bool`
 
-Bounded quantification is decidable for finite bounds and is handled by Z3 via finite unrolling for small bounds or inductive reasoning for symbolic bounds.
+Bounded quantification with concrete literal bounds is decidable via finite unrolling, and symbolic bounds are decidable via inductive reasoning — but **both reach the decidable fragment only via Tier 2 (Z3-guided)**, which is [not yet implemented](https://github.com/aallan/vera/issues/427). At present every `forall` / `exists` in a contract falls to Tier 3 (runtime check) regardless of whether its bound is a literal, a length expression, or symbolic.
 
 The `exists` quantifier uses the same syntax and asserts that at least one value in the range satisfies the predicate:
 
@@ -191,7 +193,7 @@ The syntax is:
 exists(@IndexType, @BoundExpr, @PredicateFn)
 ```
 
-Where the parameters have the same meaning as for `forall`. Bounded existential quantification is handled by Z3 via finite unrolling for small bounds or Skolemization for symbolic bounds.
+Where the parameters have the same meaning as for `forall`. Like `forall`, bounded existential quantification reaches the decidable fragment only via Tier 2 (Z3 with finite unrolling for small bounds, or Skolemization for symbolic bounds), which is [not yet implemented](https://github.com/aallan/vera/issues/427). At present every `exists` in a contract falls to Tier 3 (runtime check).
 
 ## 6.4 Verification Architecture
 
@@ -351,3 +353,4 @@ Verification summary:
 | Limitation | Issue |
 |-----------|-------|
 | Tier 2 verification (Z3-guided with `assert`/lemma hints) is specified in §6.3.2 and §6.6 but not implemented; contracts requiring hints fall to Tier 3 | [#427](https://github.com/aallan/vera/issues/427) |
+| The `invariant(...)` clause on `data` declarations is specified in §6.2.3 but not implemented; every documented form fails with `[E130] no <DataName> bindings in scope`.  Use refinement types (Chapter 2, §2.6) for the same effect on constraint-bearing data values. | [#560](https://github.com/aallan/vera/issues/560) |

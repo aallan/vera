@@ -54,7 +54,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     # =================================================================
 
     # Chapter 2 — type constraint syntax (post-v0.1)
-    ("02-types.md", 250): "FUTURE",          # forall<T where Ord<T>> fn sort
+    ("02-types.md", 263): "FUTURE",          # forall<T where Ord<T>> fn sort
 
     # Chapter 9 — numeric conversion/predicate signatures (no body)
     # 803, 833 — bare ``` fences (no language tag), heuristic skips them
@@ -142,7 +142,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("05-functions.md", 324): "FRAGMENT",   # fn(A -> B) in param position
 
     # Chapter 6 — inline function type in type alias
-    ("06-contracts.md", 316): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
+    ("06-contracts.md", 318): "FRAGMENT",   # type SafeDiv = fn(...) + fn apply_div
 
     # Chapter 7 — anonymous function at top level
     ("07-effects.md", 116): "FRAGMENT",     # effect Logger + anonymous fn body
@@ -235,10 +235,10 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
     # =================================================================
 
     # Chapter 2 — ADT invariant referencing undefined predicate
-    ("02-types.md", 129): "INCOMPLETE",      # is_sorted in SortedList invariant
+    ("02-types.md", 142): "INCOMPLETE",      # is_sorted in SortedList invariant
 
     # Chapter 2 — Tuple constructor (not a built-in ADT)
-    ("02-types.md", 230): "INCOMPLETE",      # forall<A,B> fn swap uses Tuple
+    ("02-types.md", 243): "INCOMPLETE",      # forall<A,B> fn swap uses Tuple
 
     # Chapter 3 — undefined stdlib function array_map
     ("03-slot-references.md", 346): "INCOMPLETE",  # array_map in apply_to_array
@@ -250,7 +250,7 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
     ("05-functions.md", 308): "INCOMPLETE",  # forall<A,B> fn pair uses Tuple
 
     # Chapter 6 — undefined predicate in data invariant
-    ("06-contracts.md", 52): "INCOMPLETE",   # is_sorted_impl in SortedArray
+    ("06-contracts.md", 54): "INCOMPLETE",   # is_sorted_impl in SortedArray
 
     # Chapter 7 — effect composition referencing undefined functions
     ("07-effects.md", 390): "INCOMPLETE",    # fn foo calls undefined bar/baz

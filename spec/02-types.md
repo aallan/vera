@@ -25,7 +25,18 @@ Every expression in a Vera program has a statically determined type. There is no
 | `Unit` | Unit type | 0 bytes | `()` |
 | `Never` | Bottom type (no values) | — | Uninhabited |
 
-`Nat` is a refinement of `Int`: it is equivalent to `{ @Int | @Int.0 >= 0 }`. The compiler recognises `Nat` as a built-in alias and optimises accordingly, but semantically `Nat <: Int` via refinement subtyping.
+`Nat` is a refinement of `Int`: it is equivalent to `{ @Int | @Int.0 >= 0 }`. The compiler recognises `Nat` as a built-in alias and optimises accordingly.
+
+### 2.2.1 `Int` and `Nat` compatibility
+
+`Int` and `Nat` interoperate in both directions, but the two directions sit at different layers of the type system:
+
+- **`Nat <: Int` is a formal subtyping rule.** It follows from refinement subtyping (§2.6.2, §2.8 rule 3): `Nat` is `{ @Int | @Int.0 >= 0 }`, and a refined type is always a subtype of its base.  Widening is unconditionally safe — no proof obligation, no runtime check.  Use a `@Nat` anywhere `@Int` is expected.
+- **`Int -> Nat` is not a formal subtyping rule** (it is explicitly excluded by §2.8 rule 5: "no other subtyping").  Instead, the type checker permits the flow as a **verifier-mediated relaxation**: the narrowing requires `@Int.0 >= 0`, and the type checker emits a verification obligation that the contract verifier (Tier 1) discharges via Z3 from the surrounding context (`requires`, `if` conditions, prior `assert`s).  If the obligation cannot be discharged statically, it falls to a runtime check (Tier 3).  The implementation note in §2.8 documents this relaxation alongside the formal rules.
+
+The distinction matters because of §0.2.2 ("no implicit behaviour"): `Nat <: Int` is a true formal subtyping rule consistent with the principle (it's a logical consequence of refinement subtyping, not an implicit conversion); `Int -> Nat` is a verifier-mediated convenience that's syntactically silent but semantically verified — the verifier is the explicit check, not the syntax.
+
+The practical implication for user code: do **not** insert `nat_to_int` defensively when calling a built-in that returns `@Int` (e.g. `array_length`) into a `@Nat` position.  The conversion is verifier-mediated and either statically discharged or guarded at runtime — `nat_to_int` is needed only when the value is genuinely allowed to be negative.
 
 `Never` is the type of expressions that never produce a value (e.g., functions that always diverge or branches that are statically unreachable). `Never` is a subtype of every type.
 
@@ -124,6 +135,8 @@ Rules:
 
 ### 2.4.1 ADT Invariants
 
+> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#560](https://github.com/aallan/vera/issues/560).  Until the implementation lands, refinement types (Section 2.6) are the working alternative for expressing constraints on data values.
+
 An ADT may declare an invariant that all values must satisfy:
 
 ```
@@ -135,7 +148,7 @@ private data SortedList<T>
 }
 ```
 
-The invariant is checked by the contract verifier at every construction site.
+When implemented, the invariant will be checked by the contract verifier at every construction site.  At present (per the status callout above) the form is unparseable in the reference compiler, so no checking occurs and refinement types (§2.6) are the working alternative.
 
 ## 2.5 Function Types
 
@@ -263,7 +276,7 @@ Vera has minimal subtyping. The complete subtyping relation is:
 4. **Never subtyping**: `Never <: T` for all types `T`.
 5. **No other subtyping**: there is no structural subtyping, no implicit numeric conversions, no covariance/contravariance on compound types.
 
-> **Implementation note:** The type checker additionally permits `Int <: Nat` (the reverse of the `Nat <: Int` relationship in Section 2.1) to allow functions that compute a natural number from integer inputs without explicit conversion. Non-negativity is not enforced by the type checker alone — the contract verifier enforces the `>= 0` constraint via Z3. Code that passes `vera check` but fails `vera verify` on a `Nat` return type indicates that the verifier could not prove the result is non-negative.
+> **Implementation note:** The type checker additionally permits `Int <: Nat` (the reverse of the `Nat <: Int` relationship in Section 2.2.1) to allow functions that compute a natural number from integer inputs without explicit conversion. Non-negativity is not enforced by the type checker alone — the contract verifier enforces the `>= 0` constraint via Z3. Code that passes `vera check` but fails `vera verify` on a `Nat` return type indicates that the verifier could not prove the result is non-negative.
 
 This means `Array<PosInt>` is NOT a subtype of `Array<Int>`. Converting between them requires an explicit mapping.
 
