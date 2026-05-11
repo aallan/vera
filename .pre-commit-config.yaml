@@ -98,6 +98,20 @@ repos:
         pass_filenames: false
         files: '(docs/index\.html$|vera/.*\.py$|vera/grammar\.lark$)'
 
+      # Layer 1 of #626 — fails when any compile of an example or
+      # conformance program emits [E602] (body unsupported) or
+      # [E604] (param unsupported) outside the explicit allowlist
+      # in scripts/check_e602_clean.py.  The warning channel was
+      # the project's only signal for silent translator-skip
+      # failures; this hook turns it into a gating check so new
+      # silent skips can't merge undetected.
+      - id: e602-clean
+        name: no unexpected E602/E604 skips
+        entry: .venv/bin/python scripts/check_e602_clean.py
+        language: system
+        pass_filenames: false
+        files: '(examples/.*\.vera$|tests/conformance/.*\.vera$|vera/.*\.py$|vera/grammar\.lark$|vera/prelude\.py$|scripts/check_e602_clean\.py$)'
+
       - id: doc-counts
         name: doc counts
         entry: .venv/bin/python scripts/check_doc_counts.py
