@@ -1513,20 +1513,36 @@ class InferenceMixin:
             return self._type_expr_to_slot_name(te.base_type)
         return None  # pragma: no cover
 
-    def _resolve_base_type_name(self, name: str) -> str:
+    def _resolve_base_type_name(
+        self, name: str, _seen: frozenset[str] = frozenset(),
+    ) -> str:
         """Resolve a type alias to its base type name.
 
         Follows alias chains through refinement types to the underlying
         primitive or ADT name.  E.g. "PosInt" -> "Int".
+
+        ``_seen`` is an internal cycle-detection accumulator — when the
+        same name is encountered twice along an alias chain (cyclic
+        aliases such as ``type A = B; type B = A``), the recursion is
+        cut and the originally-requested name is returned.  Cyclic
+        aliases are user errors that should be caught by the type
+        checker (see issue #648); this guard is defence-in-depth so a
+        bug in the upstream check cannot turn into a ``RecursionError``
+        inside codegen.  Closes #633 — the sibling walker
+        ``_canonical_named_type`` (PR #631) already has this guard;
+        this restores consistency.
         """
-        if name not in self._type_aliases:
+        if name in _seen or name not in self._type_aliases:
             return name
+        _seen = _seen | {name}
         alias = self._type_aliases[name]
         if isinstance(alias, ast.RefinementType):
             if isinstance(alias.base_type, ast.NamedType):
-                return self._resolve_base_type_name(alias.base_type.name)
+                return self._resolve_base_type_name(
+                    alias.base_type.name, _seen,
+                )
         if isinstance(alias, ast.NamedType):
-            return self._resolve_base_type_name(alias.name)
+            return self._resolve_base_type_name(alias.name, _seen)
         return name
 
     def _slot_name_to_wasm_type(self, name: str) -> str | None:

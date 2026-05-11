@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **[#633](https://github.com/aallan/vera/issues/633)** — `_resolve_base_type_name` (in `vera/wasm/inference.py`) now carries an explicit `_seen` cycle-detection accumulator, restoring consistency with the post-#630 `_canonical_named_type` walker that already had one.  Defence-in-depth: cyclic type aliases are user errors that should be rejected upfront by the type checker (tracked separately as [#648](https://github.com/aallan/vera/issues/648)), but a bug in the upstream rejection must not turn into a `RecursionError` inside codegen.
+
+- **[#634](https://github.com/aallan/vera/issues/634)** — `SlotRef` and other AST nodes constructed inside `InterpolatedString.parts` now carry source spans in **original-source coordinates** instead of synthetic-wrapper coordinates.  `_parse_interp_expr` previously wrapped each interpolation expression in a dummy `private fn interpExpr(...) { <SEGMENT> }` function for parsing, with the segment placed at wrapper line 3, column 3 — and Lark-emitted spans inside the parsed body were never translated back to the original source.  The result: `[E615]` (and other) diagnostics on interpolated expressions landed on line 3 of the user's file, regardless of where the offending string literal actually was.  `_split_interpolation` now records each segment's offset within the raw string, `string_lit` computes the segment's original line/column from the outer string-literal span, and `_parse_interp_expr` walks the parsed AST and remaps every `Span` field via a new `_remap_spans_inplace` helper.  The previously-softened assertion in `TestE615LoudInterpolationFallthrough630::test_e615_fires_on_adt_in_interpolation` is tightened to pin both line **and** column of the diagnostic at the SlotRef's position, and `test_multiple_e615_in_one_interpolation` now pins per-segment column fidelity (two SlotRefs in the same string get two distinct, correct columns).
+
+### Documentation
+
+- **KNOWN_ISSUES.md** — removed entries for #633 and #634 (closed in this release); added entry for the newly-filed [#648](https://github.com/aallan/vera/issues/648) (cyclic-alias `RecursionError` — the upstream bug discovered while implementing #633).
+
 ## [0.0.143] - 2026-05-10
 
 ### Fixed

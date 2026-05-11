@@ -8705,19 +8705,35 @@ public fn main(-> @Unit)
             f"warnings stream; got E615 at index {e615_idx}, "
             f"main's E602 at {main_e602_idx}"
         )
-        # The E615 has a source location attached.  Ideally it would
-        # point precisely at the offending interpolation segment
-        # (the `\(@Option<Int>.0)` SlotRef), but at the time of
-        # PR #631 the SlotRef-inside-InterpolatedString AST nodes
-        # have unreliable spans — the diagnostic carries a location
-        # but it can land on adjacent syntax (e.g. the closing brace
-        # of an earlier construct).  See follow-up issue tracking
-        # source-span propagation for interpolation segments.
-        # For now, pin the contract that *some* location is recorded
-        # so a future span fix is observable.
-        assert e615[0].location.line > 0, (
-            f"E615 should carry a source location; got line "
+        # The E615 has a source location attached pointing at the
+        # offending interpolation segment.  Source layout:
+        #
+        #     line 1: effect IO {
+        #     line 2:   op print(String -> Unit);
+        #     line 3: }
+        #     line 4: public fn main(-> @Unit)
+        #     line 5:   requires(true) ensures(true) effects(<IO>)
+        #     line 6: {
+        #     line 7:   let @Option<Int> = Some(42);
+        #     line 8:   IO.print("\(@Option<Int>.0)\n")
+        #     line 9: }
+        #
+        # The SlotRef ``@Option<Int>.0`` starts at line 8, column 15
+        # (cols 1-2 indent, 3-4 ``IO``, 5 ``.``, 6-10 ``print``,
+        # 11 ``(``, 12 ``"``, 13-14 ``\(``, 15 ``@``).  Pre-#634 the
+        # span landed on line 3 (the synthetic parse-wrapper's
+        # content line) because spans inside interpolated expressions
+        # were never remapped from wrapper coordinates back to
+        # original-source coordinates.  Closes #634.
+        assert e615[0].location.line == 8, (
+            f"E615 should point at the string literal on line 8 "
+            f"(post-#634 span remap); got line "
             f"{e615[0].location.line}"
+        )
+        assert e615[0].location.column == 15, (
+            f"E615 should point at column 15 (start of the SlotRef "
+            f"inside the interpolation segment); got column "
+            f"{e615[0].location.column}"
         )
         # `main` is not in exports because the body was dropped.
         assert "main" not in result.exports, (
@@ -8949,6 +8965,28 @@ public fn main(-> @Unit)
         assert len(e615) == 2, (
             f"Expected exactly 2 [E615] diagnostics for two failing "
             f"interpolation segments; got {len(e615)}: {e615}"
+        )
+        # Per-segment span fidelity (#634).  Source layout:
+        #
+        #     line 9:   IO.print("\(@Option<Int>.0) and \(@Result<Int, String>.0)\n")
+        #     cols ^^   ^^      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        #     12 ".  13-14 \(.  15 @Option starts.
+        #     35-36 \(.  37 @Result starts.
+        #
+        # Both diagnostics must land on line 9; their columns must
+        # differ and match the column of their respective SlotRef.
+        # Pre-#634 both would have landed on line 3 (the synthetic
+        # parse-wrapper's content line) with column 3 — the bug this
+        # test pins as fixed.
+        assert all(d.location.line == 9 for d in e615), (
+            f"Both E615s should point at line 9; got lines "
+            f"{[d.location.line for d in e615]}"
+        )
+        cols = sorted(d.location.column for d in e615)
+        assert cols == [15, 37], (
+            f"Per-segment column fidelity broken — expected first "
+            f"SlotRef at col 15 (`@Option<Int>.0`) and second at col "
+            f"37 (`@Result<Int, String>.0`); got {cols}"
         )
 
     def test_canonical_named_type_terminal_args_propagation(

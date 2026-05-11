@@ -2976,6 +2976,55 @@ public fn use_alias(@MyInt -> @Int)
 """
         assert _run(source, "use_alias", [5]) == 6
 
+    def test_cyclic_alias_does_not_recurse_forever(self) -> None:
+        """Cyclic ``type A = B; type B = A`` aliases must not cause
+        ``RecursionError`` inside ``_resolve_base_type_name``.
+
+        Cyclic aliases are user errors that the type checker should
+        reject (tracked as #648), but the alias-walking helpers in
+        ``vera/wasm/inference.py`` carry a defensive cycle guard for
+        defence-in-depth — a bug in the upstream rejection must not
+        turn into a stack-blow inside codegen.
+
+        This test directly constructs a ``WasmContext`` with a cyclic
+        ``_type_aliases`` map and exercises the guard, because
+        cyclic-alias source programs currently crash earlier in
+        codegen (``vera/codegen/core.py:_type_expr_to_wasm_type``,
+        the user-visible bug tracked separately as #648) before
+        reaching this code path.  Closes #633.
+        """
+        from vera import ast
+        from vera.wasm.context import WasmContext
+        from vera.wasm.helpers import StringPool
+
+        ctx = WasmContext(string_pool=StringPool())
+        ctx._type_aliases = {
+            "A": ast.NamedType(name="B", type_args=[]),
+            "B": ast.NamedType(name="A", type_args=[]),
+        }
+        # Pre-guard, this would recurse A → B → A → … forever.
+        # Post-guard, it stops on second visit and returns the
+        # originally-requested name (treated as opaque, no resolution
+        # available).
+        assert ctx._resolve_base_type_name("A") == "A"
+        assert ctx._resolve_base_type_name("B") == "B"
+
+        # Three-cycle: A → B → C → A
+        ctx._type_aliases = {
+            "A": ast.NamedType(name="B", type_args=[]),
+            "B": ast.NamedType(name="C", type_args=[]),
+            "C": ast.NamedType(name="A", type_args=[]),
+        }
+        assert ctx._resolve_base_type_name("A") == "A"
+        assert ctx._resolve_base_type_name("B") == "B"
+        assert ctx._resolve_base_type_name("C") == "C"
+
+        # Self-loop: type X = X
+        ctx._type_aliases = {
+            "X": ast.NamedType(name="X", type_args=[]),
+        }
+        assert ctx._resolve_base_type_name("X") == "X"
+
 
 # =====================================================================
 # TestOperatorsADTEquality — ADT structural equality (operators.py 182-236)
