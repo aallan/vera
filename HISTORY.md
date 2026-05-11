@@ -242,37 +242,37 @@ Stage 11 shifts focus from evaluation infrastructure to the standard library and
 
 | Version | Date | What shipped |
 |---------|------|-------------|
-| v0.0.112 | 16 Apr | **Fix GC shadow stack overflow** ([#464](https://github.com/aallan/vera/issues/464)) — 4K shadow stack was overflowing into the GC worklist on deep recursive array accumulation. Bumped to 16K with an overflow guard trap. |
-| v0.0.113 | 16 Apr | **Decompose `calls.py` into 8 subsystem mixins** ([#418](https://github.com/aallan/vera/issues/418)) — split the 8,390-line monolith into a 572-line dispatcher plus domain mixins. Pure code motion. Review surfaced 10 pre-existing bugs tracked in [#475](https://github.com/aallan/vera/issues/475). |
-| — | 16 Apr | **CHANGELOG enforcement at pre-push and CI** ([#478](https://github.com/aallan/vera/issues/478)) — `check_changelog_updated.py` fails a PR if `vera/` / `spec/` / `SKILL.md` change without a matching CHANGELOG entry. Escape hatches via commit trailer or PR label. |
-| — | 17 Apr | **Widen GC object header size field from 16-bit to 31-bit** ([#484](https://github.com/aallan/vera/issues/484)) — sweeper was masking size readback with `0xFFFF`, silently truncating allocations ≥65536 bytes. Max single allocation is now bounded by WASM's 4 GB ceiling. |
-| — | 17 Apr | **Iterative WASM higher-order array ops** ([#480](https://github.com/aallan/vera/issues/480)) — `array_map`/`filter`/`fold` migrated from recursive prelude functions to iterative WAT loops with O(1) shadow-stack depth. Shipped across three PRs. |
-| v0.0.114 | 17 Apr | **`IO.sleep`, `IO.time`, `IO.stderr`** ([#463](https://github.com/aallan/vera/issues/463)) — three new `IO` effect operations: pause for N ms, Unix time in ms, stderr separate from stdout. |
-| v0.0.115 | 18 Apr | **`Random` effect** ([#465](https://github.com/aallan/vera/issues/465)) — `random_int`, `random_float`, `random_bool`. Functions declaring `effects(<Random>)` surface non-determinism in their signatures. No `handle[Random]` yet. |
-| v0.0.116 | 20 Apr | **Math built-ins** ([#467](https://github.com/aallan/vera/issues/467)) — fifteen pure functions: logarithmic (`log`, `log2`, `log10`), trigonometric (`sin`..`atan2`), constants (`pi()`, `e()`), utilities (`sign`, `clamp`, `float_clamp`). Gated per-op. |
-| — | 22 Apr | **Dependabot uv ecosystem + auto-uv-lock** ([#500](https://github.com/aallan/vera/pull/500), [#501](https://github.com/aallan/vera/pull/501)) — switched `dependabot.yml` to the `uv` ecosystem plus a workflow regenerating `uv.lock` on dependabot PRs. Resolves a recurring CI lint failure. |
-| v0.0.117 | 22 Apr | **Array utility built-ins (phase 1)** ([#466](https://github.com/aallan/vera/issues/466)) — seven combinators: `array_mapi`, `array_reverse`, `array_find`, `array_any`/`all`, `array_flatten`, `array_sort_by`. All iterative WASM with O(1) shadow-stack depth. Phase 2 (Eq/Ord-dispatched) tracked separately as [#507](https://github.com/aallan/vera/issues/507). |
-| v0.0.118 | 23 Apr | **String utilities + character classification** ([#470](https://github.com/aallan/vera/issues/470), [#471](https://github.com/aallan/vera/issues/471)) — sixteen new built-ins, all inline WAT. Eight string utilities (chars, lines, words, reverse, trim_start/end, pad_start/end); six character classifiers (`is_digit`/`alpha`/`alphanumeric`/`whitespace`/`upper`/`lower`); two first-byte case conversions (`char_to_upper`/`lower`). ASCII-only; Unicode variants tracked as [#509](https://github.com/aallan/vera/issues/509). |
-| v0.0.119 | 23 Apr | **JSON typed accessors** ([#366](https://github.com/aallan/vera/issues/366)) — eleven prelude accessors on `Json` collapsing the two-level `match` every JSON consumer writes. |
-| v0.0.120 | 26 Apr | **Crash-debugging UX: trap categorisation + stdout preserved on trap** ([#522](https://github.com/aallan/vera/issues/522), [#516](https://github.com/aallan/vera/issues/516) Stage 1). |
-| v0.0.121 | 27 Apr | **Nested closures + ADT capture work end-to-end** ([#514](https://github.com/aallan/vera/issues/514)) — pair-type residual split into [#535](https://github.com/aallan/vera/issues/535). |
-| v0.0.122 | 27 Apr | **Conservative GC bounds-checked against `$heap_ptr`** ([#515](https://github.com/aallan/vera/issues/515)) — Conway-style bit-packed payloads no longer trip the worklist seeder. |
-| v0.0.123 | 27 Apr | **`IO.print` writes flush live to `sys.stdout`** ([#543](https://github.com/aallan/vera/issues/543)) — animations, progress bars, ANSI cursor escapes render in real time. |
-| v0.0.124 | 27 Apr | **Runtime traps now include a source backtrace** ([#516](https://github.com/aallan/vera/issues/516) Stage 2). |
+| v0.0.112 | 16 Apr | **Fix GC shadow stack overflow** ([#464](https://github.com/aallan/vera/issues/464)). |
+| v0.0.113 | 16 Apr | **Decompose `calls.py` into 8 subsystem mixins** ([#418](https://github.com/aallan/vera/issues/418)). |
+| — | 16 Apr | **CHANGELOG enforcement at pre-push and CI** ([#478](https://github.com/aallan/vera/issues/478)). |
+| — | 17 Apr | **Widen GC object header size field from 16-bit to 31-bit** ([#484](https://github.com/aallan/vera/issues/484)). |
+| — | 17 Apr | **Iterative WASM higher-order array ops** ([#480](https://github.com/aallan/vera/issues/480)). |
+| v0.0.114 | 17 Apr | **`IO.sleep`, `IO.time`, `IO.stderr`** ([#463](https://github.com/aallan/vera/issues/463)). |
+| v0.0.115 | 18 Apr | **`Random` effect** ([#465](https://github.com/aallan/vera/issues/465)). |
+| v0.0.116 | 20 Apr | **Math built-ins** ([#467](https://github.com/aallan/vera/issues/467)). |
+| — | 22 Apr | **Dependabot uv ecosystem + auto-uv-lock** ([#500](https://github.com/aallan/vera/pull/500)). |
+| v0.0.117 | 22 Apr | **Array utility built-ins (phase 1)** ([#466](https://github.com/aallan/vera/issues/466)). |
+| v0.0.118 | 23 Apr | **String utilities + character classification** ([#470](https://github.com/aallan/vera/issues/470)). |
+| v0.0.119 | 23 Apr | **JSON typed accessors** ([#366](https://github.com/aallan/vera/issues/366)). |
+| v0.0.120 | 26 Apr | **Crash-debugging UX: trap categorisation + stdout preserved on trap** ([#522](https://github.com/aallan/vera/issues/522)). |
+| v0.0.121 | 27 Apr | **Nested closures + ADT capture work end-to-end** ([#514](https://github.com/aallan/vera/issues/514)). |
+| v0.0.122 | 27 Apr | **Conservative GC bounds-checked against `$heap_ptr`** ([#515](https://github.com/aallan/vera/issues/515)). |
+| v0.0.123 | 27 Apr | **`IO.print` writes flush live to `sys.stdout`** ([#543](https://github.com/aallan/vera/issues/543)). |
+| v0.0.124 | 27 Apr | **Runtime traps now include a source backtrace** ([#516](https://github.com/aallan/vera/issues/516)). |
 | v0.0.125 | 28 Apr | **Runtime traps now include actionable fix suggestions** ([#547](https://github.com/aallan/vera/issues/547)). |
 | v0.0.126 | 28 Apr | **Tail-recursive iteration runs in constant stack space** ([#517](https://github.com/aallan/vera/issues/517)). |
 | v0.0.127 | 29 Apr | **`@Nat` subtraction soundness hole closed** ([#520](https://github.com/aallan/vera/issues/520)). |
 | v0.0.128 | 5 May | **WASM call translator critical safety fixes** ([#475](https://github.com/aallan/vera/issues/475)). |
-| v0.0.129 | 5 May | **WASM call translator major correctness fixes — closes [#475](https://github.com/aallan/vera/issues/475)**. |
-| v0.0.130 | 5 May | **Pair-type closure captures preserve their len field — closes [#535](https://github.com/aallan/vera/issues/535)** (residual of #514). |
-| v0.0.131 | 5 May | **GC infrastructure batch — closes [#487](https://github.com/aallan/vera/issues/487) and [#348](https://github.com/aallan/vera/issues/348)** (`$alloc` multi-page grow, worklist size + overflow trap). |
-| v0.0.132 | 5 May | **Opaque-handle GC-rooting hygiene — closes [#347](https://github.com/aallan/vera/issues/347) and [#490](https://github.com/aallan/vera/issues/490)**. |
-| v0.0.133 | 5 May | **Iterative array builders no longer leak closure return-value root — closes [#570](https://github.com/aallan/vera/issues/570)** (`array_map` / `_mapi` / `_fold` / `_sort_by`). |
-| v0.0.134 | 6 May | **Active reclamation of host-store handles via heap-wrap-as-ADT — closes [#573](https://github.com/aallan/vera/issues/573), [#575](https://github.com/aallan/vera/issues/575), [#576](https://github.com/aallan/vera/issues/576), [#579](https://github.com/aallan/vera/issues/579)** (Map / Set / Decimal). |
-| v0.0.135 | 6 May | Three codegen bug fixes — closes [#584](https://github.com/aallan/vera/issues/584) (user `@Unit` fn in non-tail position), [#583](https://github.com/aallan/vera/issues/583) (`Array<T>` type aliases in param/let/index/element positions), [#568](https://github.com/aallan/vera/issues/568) (`url_parse(":foo")` → `Err` per RFC 3986 §3.1). |
-| v0.0.136 | 6 May | Two host-runtime hygiene fixes — closes [#586](https://github.com/aallan/vera/issues/586) (phantom `i64` param in `apply_fn` for `Unit -> X` closures) and [#589](https://github.com/aallan/vera/issues/589) (host-string decoders use `errors="replace"` so corrupt pointers surface as U+FFFD instead of Python tracebacks). |
-| v0.0.137 | 7 May | Captured-`Array<T>` indexing inside closure body — closes [#588](https://github.com/aallan/vera/issues/588) (`_walk_free_vars` was missing eight AST node-type branches, dropping capture references in those expressions). |
-| v0.0.138 | 7 May | Closure-return shadow-push asymmetry — closes [#593](https://github.com/aallan/vera/issues/593) (the residual Conway's Life string corruption); diagnosed via the new `VERA_EAGER_GC=1` debug knob. |
+| v0.0.129 | 5 May | **WASM call translator major correctness fixes** ([#475](https://github.com/aallan/vera/issues/475)). |
+| v0.0.130 | 5 May | **Pair-type closure captures preserve their len field** ([#535](https://github.com/aallan/vera/issues/535)). |
+| v0.0.131 | 5 May | **GC infrastructure batch** ([#487](https://github.com/aallan/vera/issues/487)). |
+| v0.0.132 | 5 May | **Opaque-handle GC-rooting hygiene** ([#347](https://github.com/aallan/vera/issues/347)). |
+| v0.0.133 | 5 May | **Iterative array builders no longer leak closure return-value root** ([#570](https://github.com/aallan/vera/issues/570)). |
+| v0.0.134 | 6 May | **Active reclamation of host-store handles via heap-wrap-as-ADT** ([#573](https://github.com/aallan/vera/issues/573)). |
+| v0.0.135 | 6 May | **Three codegen bug fixes** ([#584](https://github.com/aallan/vera/issues/584)). |
+| v0.0.136 | 6 May | **Two host-runtime hygiene fixes** ([#586](https://github.com/aallan/vera/issues/586)). |
+| v0.0.137 | 7 May | **Captured-`Array<T>` indexing inside closure body** ([#588](https://github.com/aallan/vera/issues/588)). |
+| v0.0.138 | 7 May | **Closure-return shadow-push asymmetry** ([#593](https://github.com/aallan/vera/issues/593)). |
 
 ## Stage 12: After the Game of Life (7 May onwards)
 

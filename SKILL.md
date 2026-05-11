@@ -85,6 +85,20 @@ This generates three files: `module.wasm` (the compiled binary), `vera-runtime.m
 
 The JavaScript runtime provides browser-appropriate implementations: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, `IO.stderr` captures into a separate buffer, `IO.time` uses `Date.now()`, `IO.sleep` busy-waits (main-thread blocking — best kept short in the browser), and file IO returns `Result.Err`. All other operations (State, contracts, Markdown) work identically to the Python runtime.
 
+#### IO model: terminal vs browser
+
+Vera's "write once, run anywhere" claim has a real seam at the IO boundary, and writing for one target without thinking about the other will produce a program that compiles cleanly to both but only *runs* meaningfully on one:
+
+- **Terminal target** assumes a synchronous IO loop: `IO.sleep(120)` blocks the program for 120 ms (fine), ANSI escape codes (`"\u{1B}[2J\u{1B}[H"` to clear screen + home cursor) drive cursor and colour, and the program drives its own pacing.
+- **Browser target** assumes "Vera = pure simulation core, JS = timing and rendering driver".  `IO.sleep` still works numerically but busy-waits on the main thread (freezing the tab); ANSI escape codes render as literal control bytes in the DOM rather than mutating a virtual screen; `IO.print` writes to the page (good) but the program has no way to *yield* between writes.
+
+The recommended pattern for browser-targeted Vera programs is to **expose pure update functions** (`@State<T>, @Input -> @State<T>`) that JavaScript drives via `requestAnimationFrame`, with Vera computing the next state and JS handling timing + DOM updates.  Pulling on this thread, two runtime gaps make the recommended pattern less ergonomic than it should be — both are tracked and neither is closed today:
+
+- [#609](https://github.com/aallan/vera/issues/609) — implement `IO.sleep` against the WebAssembly JavaScript Promise Integration (JSPI) proposal so the WASM call suspends on `setTimeout` instead of busy-waiting.
+- [#610](https://github.com/aallan/vera/issues/610) — interpret a minimal ANSI escape subset in the browser runtime so terminal-style programs (clear-screen, cursor-home, colour) render unchanged.
+
+Until those land, terminal Vera programs (animation via `IO.sleep` + cursor control via ANSI) need either a terminal target or a deliberate browser-shaped variant.  The design point ("pure core, effects at the boundary") is unchanged; the boundary just differs between targets.
+
 To run the WASM directly in Node.js:
 
 ```bash
@@ -378,6 +392,8 @@ array, useful when processing diagnostics programmatically.
 - `String` — text
 - `Unit` — singleton type, value is `()`
 - `Never` — bottom type (used for non-terminating expressions like `throw`)
+
+**`Int` and `Nat` are interchangeable in both directions**, not just widening.  `@Nat <: @Int` always (safe widening, no obligation); `@Int <: @Nat` is permitted by the type checker with a verifier-discharged obligation (`@Int.0 >= 0`).  This means `array_length` (declared `@Int`) flows freely into `@Nat` positions without explicit conversion — the verifier proves non-negativity from context or falls back to a runtime check.  **Do not** insert `nat_to_int` defensively; it's only needed when the value is genuinely allowed to be negative.  See spec §2.2.1 for the formal rule.
 
 ### Composite types
 

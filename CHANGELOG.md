@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+Small docs sweep — closes six aging documentation issues in one PR.  No code changes; touches `spec/02-types.md`, `spec/03-slot-references.md`, `spec/06-contracts.md`, `SKILL.md`, `README.md`, and `HISTORY.md`.
+
+- **[#557](https://github.com/aallan/vera/issues/557)** — `spec/03-slot-references.md` Example 9 said the match-arm pattern binding "shadows the function parameter" without defining "shadow".  Two readings were equally consistent with the prose (replace vs push-on-top); the compiler implements push-on-top.  Replaced the one-liner with an explicit paragraph spelling out push-on-binding semantics, the resulting De Bruijn ordering for multi-field constructors (leftmost = deepest = highest index, rightmost = shallowest), and the non-commutative-operations caveat that exposes the rule.
+
+- **[#561](https://github.com/aallan/vera/issues/561)** — two tier-accuracy bugs in `spec/06-contracts.md`.  (1) §6.3.1 (Tier 1) was missing pure-fn calls in `ensures` / `@T.result` / `if/then/else`, which actually verify at Tier 1 today; §6.3.2 (Tier 2 NYI) incorrectly listed them.  Moved all three from §6.3.2 to §6.3.1.  (2) §6.3.3 said "Bounded quantification is decidable for finite bounds and is handled by Z3 via finite unrolling" — that reads as Tier 1, but Tier 2 (the tier that would handle quantifier unrolling) is [#427](https://github.com/aallan/vera/issues/427) NYI.  Clarified that every `forall`/`exists` in a contract falls to Tier 3 today, both for `forall` and the symmetric `exists` text.
+
+- **[#560](https://github.com/aallan/vera/issues/560)** — the `invariant(...)` clause on `data` declarations is documented in `spec/02-types.md` §2.4.1, `spec/06-contracts.md` §6.2.3, and `SKILL.md`, but every documented form fails with `[E130] no <DataName> bindings in scope` at v0.0.144.  Added inline NYI markers at all three sites pointing at #560, with the working alternative (refinement types).  Added the limitation to `spec/06-contracts.md`'s §6.9 Limitations table.
+
+- **[#607](https://github.com/aallan/vera/issues/607)** — added a new `spec/02-types.md` §2.2.1 "`Int` and `Nat` compatibility" subsection covering the bidirectional subtyping (`Nat <: Int` always; `Int <: Nat` permitted with verifier-discharged obligation).  Practical-implication note tells agents not to insert `nat_to_int` defensively when calling `array_length` etc. into `@Nat` positions.  Cross-reference added to `SKILL.md`'s "Primitive types" listing.
+
+- **[#608](https://github.com/aallan/vera/issues/608)** — added `SKILL.md` "IO model: terminal vs browser" subsection (under §Browser compilation) explaining that programs using `IO.sleep` + ANSI escapes for terminal pacing/rendering compile cleanly to `--target browser` but render escapes as literal text and busy-wait the main thread.  The recommended browser pattern is "Vera pure simulation core + JS driver via `requestAnimationFrame`".  Two runtime gaps that would make the recommended pattern more ergonomic are tracked separately ([#609](https://github.com/aallan/vera/issues/609) JSPI sleep, [#610](https://github.com/aallan/vera/issues/610) ANSI subset interpreter).  `README.md`'s "write once, run anywhere" line qualified to acknowledge the IO seam.
+
+- **[#512](https://github.com/aallan/vera/issues/512)** — trimmed all 31 Stage 11 rows in `HISTORY.md` (v0.0.112 → v0.0.138) to match the early-stage one-sentence format established in Stage 1–8.  Per the canonical template now in long-term memory: `**X** ([#N]).` per row, no em-dash separator, no secondary clauses, no implementation detail.  Detailed mechanism descriptions for each version stay in CHANGELOG under their respective `## [0.0.X]` section.
+
 ### Changed
 
 - **mypy 1.20.2 → 2.0.0** (`pyproject.toml`, `uv.lock`).  Mypy 2.0 enables three flags by default that were opt-in under 1.x: `--local-partial-types` (changes inference of types based on assignments in other scopes), `--strict-bytes` (per [PEP 688](https://peps.python.org/pep-0688): `bytearray` and `memoryview` no longer assignable to `bytes`), and `--allow-redefinition` behaves like 1.x's `--allow-redefinition-new` (more flexible variable redefinition across blocks).  Running mypy 2.0 against `vera/` produced **zero errors** with the existing source — no compiler-source changes needed to clear the upgrade.  Manual upgrade in favour of dependabot PR #647 (closed in favour of this change).
