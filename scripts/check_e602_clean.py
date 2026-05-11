@@ -207,19 +207,37 @@ def _extract_skips(
     return skips
 
 
-def _scan_paths(paths: list[str]) -> tuple[int, list[str]]:
-    """Compile every path; return (clean_count, failures).
+def _scan_paths(
+    paths: list[str],
+) -> tuple[int, list[str], list[str]]:
+    """Compile every path; return (clean_count, skip_failures,
+    hard_failures).
 
-    Failures are formatted as one-line strings ready for stderr.
+    Two failure categories with distinct semantics:
+
+    - **skip_failures** — unexpected `[E602]` / `[E604]` warnings on
+      function names that aren't in the allowlist (or are
+      allowlisted under a different error code).  These are the
+      core "silent skip" detections the gate exists for.
+    - **hard_failures** — file-level failures: compile error
+      (`COMPILE_ERROR`), unparseable JSON envelope (`PARSE_ERROR`),
+      or compile timeout (`TIMEOUT`).  These mean the file couldn't
+      be evaluated at all — distinct in kind from per-function
+      skips and reported separately so the user can correlate
+      cause and effect.
+
+    Both are formatted as one-line strings ready for stderr.
     """
-    failures: list[str] = []
+    skip_failures: list[str] = []
+    hard_failures: list[str] = []
     clean = 0
     for path in paths:
         skips = _extract_skips(path)
-        unexpected: list[tuple[str, str, str]] = []
+        unexpected_skips: list[tuple[str, str, str]] = []
+        path_hard_failures: list[tuple[str, str, str]] = []
         for code, fn_name, desc in skips:
             if code in ("PARSE_ERROR", "TIMEOUT", "COMPILE_ERROR"):
-                unexpected.append((code, fn_name, desc))
+                path_hard_failures.append((code, fn_name, desc))
                 continue
             if fn_name in ALLOWED_SKIPS:
                 # Allowlisted — verify the code matches the
@@ -227,22 +245,27 @@ def _scan_paths(paths: list[str]) -> tuple[int, list[str]]:
                 # same function name).
                 expected_code = ALLOWED_SKIPS[fn_name][0]
                 if code != expected_code:
-                    unexpected.append((
+                    unexpected_skips.append((
                         code, fn_name,
                         f"unexpected code {code} (allowlist "
                         f"entry expects {expected_code}): {desc}",
                     ))
                 continue
-            unexpected.append((code, fn_name, desc))
-        if unexpected:
-            for code, fn_name, desc in unexpected:
-                failures.append(
-                    f"{path}: [{code}] fn={fn_name!r}: "
-                    f"{desc[:120]}"
-                )
-        else:
+            unexpected_skips.append((code, fn_name, desc))
+        if not unexpected_skips and not path_hard_failures:
             clean += 1
-    return clean, failures
+            continue
+        for code, fn_name, desc in unexpected_skips:
+            skip_failures.append(
+                f"{path}: [{code}] fn={fn_name!r}: {desc[:120]}"
+            )
+        for code, fn_name, desc in path_hard_failures:
+            # fn_name is the file path for hard-failure tuples (see
+            # `_extract_skips`); avoid the redundant fn= repeat.
+            hard_failures.append(
+                f"{path}: [{code}] {desc[:160]}"
+            )
+    return clean, skip_failures, hard_failures
 
 
 def main() -> int:
@@ -316,7 +339,7 @@ def main() -> int:
         return 1
 
     all_paths = examples + conformance
-    clean, failures = _scan_paths(all_paths)
+    clean, skip_failures, hard_failures = _scan_paths(all_paths)
 
     print(
         f"Scanned {len(all_paths)} files "
@@ -327,13 +350,34 @@ def main() -> int:
     print(f"  Allowlisted skips suppressed: "
           f"{len(ALLOWED_SKIPS)} known functions")
 
-    if failures:
+    # Hard failures (PARSE_ERROR / TIMEOUT / COMPILE_ERROR) are
+    # distinct from per-function skips — print first so the user
+    # sees file-level problems before any per-function detail.
+    if hard_failures:
         print(
-            f"\nFAILURES ({len(failures)} unexpected "
-            f"[E602]/[E604] skips):",
+            f"\nHARD FAILURES ({len(hard_failures)} file(s) the "
+            f"gate could not evaluate — compile error, unparseable "
+            f"JSON envelope, or timeout):",
             file=sys.stderr,
         )
-        for f in failures:
+        for f in hard_failures:
+            print(f"  {f}", file=sys.stderr)
+        print(
+            "\nA hard failure means the file couldn't be compiled "
+            "to produce the warning envelope this gate inspects.  "
+            "Fix the underlying compile/parse error or address the "
+            "timeout before the gate can evaluate per-function "
+            "skips on this file.",
+            file=sys.stderr,
+        )
+
+    if skip_failures:
+        print(
+            f"\nUNEXPECTED SKIPS ({len(skip_failures)} new "
+            f"[E602]/[E604] warning(s) outside the allowlist):",
+            file=sys.stderr,
+        )
+        for f in skip_failures:
             print(f"  {f}", file=sys.stderr)
         print(
             "\nA new unexpected skip means either (a) a recent "
@@ -345,6 +389,8 @@ def main() -> int:
             "expand the allowlist without a tracking issue.",
             file=sys.stderr,
         )
+
+    if hard_failures or skip_failures:
         return 1
 
     print("\nNo unexpected [E602]/[E604] skips. (Layer 1 of #626.)")
