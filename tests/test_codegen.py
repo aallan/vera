@@ -15928,14 +15928,19 @@ public fn main(@Unit -> @Unit)
             f"Expected an [E602] for `main`; got: {result.diagnostics}"
         )
         # `public fn main(@Unit -> @Unit)` is line 2 in _MAP_OF_ARRAY_SRC;
-        # the offending `map_insert(...)` is line 5.  The diagnostic
-        # must point at the call, not the declaration.
+        # the offending `map_insert(...)` is line 5, column 31.  The
+        # diagnostic must point exactly at the call, not the declaration
+        # (line 2) or any later statement.  Pin the line precisely so
+        # any future refactor that drops back to enclosing-function
+        # span (line 2) OR drifts to the `IO.print` on line 6 fails
+        # the test.
         loc_line = e602[0].location.line
-        assert loc_line > 2, (
-            f"Expected [E602] location to point past the fn header "
-            f"(line 2); got line {loc_line}.  Pre-#658 this would have "
-            f"been line 2 (the legacy enclosing-fn span).  Post-#658 "
-            f"it should be line 5 (the `map_insert(...)` call)."
+        assert loc_line == 5, (
+            f"Expected [E602] location at line 5 (the "
+            f"`map_insert(...)` call); got line {loc_line}.  "
+            f"Pre-#658 this would have been line 2 (legacy "
+            f"enclosing-fn span).  Any other line means the catch "
+            f"handler drifted off the offending FnCall node."
         )
 
 
