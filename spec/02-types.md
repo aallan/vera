@@ -29,12 +29,14 @@ Every expression in a Vera program has a statically determined type. There is no
 
 ### 2.2.1 `Int` and `Nat` compatibility
 
-`Int` and `Nat` are subtypes of each other in different directions.  Vera's type checker accepts both flows without an explicit cast — but the narrowing direction (`Int <: Nat`) is not unchecked: the type checker emits a verification obligation that the contract verifier discharges via Z3, so the flow is syntactically silent but semantically verified.  This matches Vera's "verification is a first-class citizen" design point: subtyping that *can be proved* doesn't need to be spelled out at every call site.
+`Int` and `Nat` interoperate in both directions, but the two directions sit at different layers of the type system:
 
-- **`Nat <: Int` always.** Widening from non-negative to signed integer is unconditionally safe — no proof obligation, no runtime check.  Use a `@Nat` anywhere `@Int` is expected.
-- **`Int <: Nat` permitted, verifier-discharged.** Narrowing from signed to non-negative requires `@Int.0 >= 0`.  The type checker accepts the flow at compile time and emits a verification obligation; the contract verifier (Tier 1) discharges it via Z3 from the surrounding context (`requires`, `if` conditions, prior `assert`s).  If the obligation cannot be discharged statically, it falls to a runtime check (Tier 3).
+- **`Nat <: Int` is a formal subtyping rule.** It follows from refinement subtyping (§2.6.2, §2.8 rule 3): `Nat` is `{ @Int | @Int.0 >= 0 }`, and a refined type is always a subtype of its base.  Widening is unconditionally safe — no proof obligation, no runtime check.  Use a `@Nat` anywhere `@Int` is expected.
+- **`Int -> Nat` is not a formal subtyping rule** (it is explicitly excluded by §2.8 rule 5: "no other subtyping").  Instead, the type checker permits the flow as a **verifier-mediated relaxation**: the narrowing requires `@Int.0 >= 0`, and the type checker emits a verification obligation that the contract verifier (Tier 1) discharges via Z3 from the surrounding context (`requires`, `if` conditions, prior `assert`s).  If the obligation cannot be discharged statically, it falls to a runtime check (Tier 3).  The implementation note in §2.8 documents this relaxation alongside the formal rules.
 
-The practical implication for user code: do **not** insert `nat_to_int` defensively when calling a built-in that returns `@Int` (e.g. `array_length`) into a `@Nat` position.  The conversion is syntactically silent and either statically verified or guarded at runtime — `nat_to_int` is needed only when the value is genuinely allowed to be negative.
+The distinction matters because of §0.2.2 ("no implicit behaviour"): `Nat <: Int` is a true formal subtyping rule consistent with the principle (it's a logical consequence of refinement subtyping, not an implicit conversion); `Int -> Nat` is a verifier-mediated convenience that's syntactically silent but semantically verified — the verifier is the explicit check, not the syntax.
+
+The practical implication for user code: do **not** insert `nat_to_int` defensively when calling a built-in that returns `@Int` (e.g. `array_length`) into a `@Nat` position.  The conversion is verifier-mediated and either statically discharged or guarded at runtime — `nat_to_int` is needed only when the value is genuinely allowed to be negative.
 
 `Never` is the type of expressions that never produce a value (e.g., functions that always diverge or branches that are statically unreachable). `Never` is a subtype of every type.
 
@@ -146,7 +148,7 @@ private data SortedList<T>
 }
 ```
 
-The invariant is checked by the contract verifier at every construction site.
+When implemented, the invariant will be checked by the contract verifier at every construction site.  At present (per the status callout above) the form is unparseable in the reference compiler, so no checking occurs and refinement types (§2.6) are the working alternative.
 
 ## 2.5 Function Types
 
