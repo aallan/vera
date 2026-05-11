@@ -454,12 +454,18 @@ private data Option<T> {
 
 > **Note:** `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are provided by the standard prelude and available in every program without explicit `data` declarations. You only need to define them locally if you want to shadow the prelude definition.
 
-With an invariant:
+With an invariant *(NYI — see [#560](https://github.com/aallan/vera/issues/560); use a refinement type instead, shown below)*:
 
 ```vera
 private data Positive invariant(@Int.0 > 0) {
   MkPositive(Int)
 }
+```
+
+The `invariant(...)` clause on `data` declarations is specified but not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`.  Until that's fixed, express the same constraint with a refinement type:
+
+```vera
+type Positive = { @Int | @Int.0 > 0 };
 ```
 
 ## Pattern Matching

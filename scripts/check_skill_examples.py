@@ -37,13 +37,13 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     430: ("FRAGMENT", "Type alias examples"),
 
     # Control flow — bare expressions
-    502: ("FRAGMENT", "If/else expression example"),
-    516: ("FRAGMENT", "Block expression example"),
-    570: ("FRAGMENT", "Typed hole fill-in example, bare if/else expression"),
+    508: ("FRAGMENT", "If/else expression example"),
+    522: ("FRAGMENT", "Block expression example"),
+    576: ("FRAGMENT", "Typed hole fill-in example, bare if/else expression"),
 
     # Closures and combinators
-    615: ("FRAGMENT", "Closure example, bare let bindings with array_map (#513)"),
-    665: ("FRAGMENT", "Pair-type capture example (post-#535), bare let-in-closure"),
+    621: ("FRAGMENT", "Closure example, bare let bindings with array_map (#513)"),
+    671: ("FRAGMENT", "Pair-type capture example (post-#535), bare let-in-closure"),
     # Note: the prior "BROKEN/WORKING fill_row workaround" entry at line 721
     # was removed in v0.0.121 along with the SKILL "Known limitation: nested
     # closures" subsection — nested closures now work end-to-end (#514).
@@ -52,75 +52,75 @@ ALLOWLIST: dict[int, tuple[str, str]] = {
     # let-in-closure shape stays a FRAGMENT either way.
 
     # Option/Result combinator examples — bare function calls
-    737: ("FRAGMENT", "Option/Result combinator usage examples, bare calls"),
+    743: ("FRAGMENT", "Option/Result combinator usage examples, bare calls"),
 
     # Built-in usage examples — bare function calls grouped by domain
-    765: ("FRAGMENT", "Array built-in examples, bare calls"),
-    795: ("FRAGMENT", "Map built-in examples, bare calls"),
-    812: ("FRAGMENT", "Set built-in examples, bare calls"),
-    826: ("FRAGMENT", "Decimal built-in examples, bare calls"),
-    849: ("FRAGMENT", "JSON parse/stringify/get examples, bare calls"),
-    862: ("FRAGMENT", "JSON match expression example, bare expression"),
-    879: ("FRAGMENT", "JSON typed accessor examples (#366), bare calls"),
-    898: ("FRAGMENT", "JSON Layer-2 compound accessor example, bare match"),
-    910: ("FRAGMENT", "String built-in examples, bare calls"),
-    954: ("FRAGMENT", "String interpolation examples, bare expressions"),
-    966: ("FRAGMENT", "String search built-in examples, bare calls"),
-    977: ("FRAGMENT", "String transformation built-in examples, bare calls"),
-    989: ("FRAGMENT", "String utility / classifier signatures (#470, #471), bare calls"),
+    771: ("FRAGMENT", "Array built-in examples, bare calls"),
+    801: ("FRAGMENT", "Map built-in examples, bare calls"),
+    818: ("FRAGMENT", "Set built-in examples, bare calls"),
+    832: ("FRAGMENT", "Decimal built-in examples, bare calls"),
+    855: ("FRAGMENT", "JSON parse/stringify/get examples, bare calls"),
+    868: ("FRAGMENT", "JSON match expression example, bare expression"),
+    885: ("FRAGMENT", "JSON typed accessor examples (#366), bare calls"),
+    904: ("FRAGMENT", "JSON Layer-2 compound accessor example, bare match"),
+    916: ("FRAGMENT", "String built-in examples, bare calls"),
+    960: ("FRAGMENT", "String interpolation examples, bare expressions"),
+    972: ("FRAGMENT", "String search built-in examples, bare calls"),
+    983: ("FRAGMENT", "String transformation built-in examples, bare calls"),
+    995: ("FRAGMENT", "String utility / classifier signatures (#470, #471), bare calls"),
 
     # Markdown / HTML / Regex built-in usage examples
-    1025: ("FRAGMENT", "md_parse / md_render signatures, bare calls"),
-    1061: ("FRAGMENT", "HTML built-in examples (html_parse/html_query/etc.), bare calls"),
-    1077: ("FRAGMENT", "HTML constructor match expression, bare expression"),
-    1092: ("FRAGMENT", "Regex built-in examples, bare calls"),
-    1103: ("FRAGMENT", "Regex Result matching example, bare expression"),
+    1031: ("FRAGMENT", "md_parse / md_render signatures, bare calls"),
+    1067: ("FRAGMENT", "HTML built-in examples (html_parse/html_query/etc.), bare calls"),
+    1083: ("FRAGMENT", "HTML constructor match expression, bare expression"),
+    1098: ("FRAGMENT", "Regex built-in examples, bare calls"),
+    1109: ("FRAGMENT", "Regex Result matching example, bare expression"),
 
     # Numeric + math built-ins
-    1115: ("FRAGMENT", "Numeric built-in examples, bare calls"),
-    1130: ("FRAGMENT", "Math built-in examples (log/trig/constants/clamp), bare calls"),
-    1152: ("FRAGMENT", "Type conversions, bare calls"),
-    1167: ("FRAGMENT", "Float64 predicate and constant examples, bare calls"),
+    1121: ("FRAGMENT", "Numeric built-in examples, bare calls"),
+    1136: ("FRAGMENT", "Math built-in examples (log/trig/constants/clamp), bare calls"),
+    1158: ("FRAGMENT", "Type conversions, bare calls"),
+    1173: ("FRAGMENT", "Float64 predicate and constant examples, bare calls"),
 
     # Contracts
-    1196: ("FRAGMENT", "Requires clause example, not full function"),
-    1205: ("FRAGMENT", "Ensures clause example, not full function"),
-    1235: ("FRAGMENT", "Contracts scaffolding template"),
-    1255: ("FRAGMENT", "Quantified expression examples, bare calls"),
+    1202: ("FRAGMENT", "Requires clause example, not full function"),
+    1211: ("FRAGMENT", "Ensures clause example, not full function"),
+    1241: ("FRAGMENT", "Contracts scaffolding template"),
+    1261: ("FRAGMENT", "Quantified expression examples, bare calls"),
 
     # Effect declarations and handlers
-    1273: ("FRAGMENT", "Effect declarations list"),
-    1404: ("FRAGMENT", "Async effect row declarations, bare clauses"),
-    1434: ("FRAGMENT", "Http effect declarations list"),
-    1465: ("FRAGMENT", "Inference effect declarations list"),
-    1557: ("FRAGMENT", "Handler with-clause pseudocode, bare expression"),
-    1569: ("FRAGMENT", "Handler with-clause, bare put arm expression"),
-    1579: ("FRAGMENT", "Qualified effect calls (State.put, Logger.put)"),
+    1279: ("FRAGMENT", "Effect declarations list"),
+    1410: ("FRAGMENT", "Async effect row declarations, bare clauses"),
+    1440: ("FRAGMENT", "Http effect declarations list"),
+    1471: ("FRAGMENT", "Inference effect declarations list"),
+    1563: ("FRAGMENT", "Handler with-clause pseudocode, bare expression"),
+    1575: ("FRAGMENT", "Handler with-clause, bare put arm expression"),
+    1585: ("FRAGMENT", "Qualified effect calls (State.put, Logger.put)"),
 
     # Escape sequences and string construction
-    1783: ("FRAGMENT", "ANSI cursor-home via string_from_char_code (#513)"),
-    1796: ("FRAGMENT", "Comment syntax example"),
+    1789: ("FRAGMENT", "ANSI cursor-home via string_from_char_code (#513)"),
+    1802: ("FRAGMENT", "Comment syntax example"),
 
     # Common mistakes section — intentionally wrong code
-    1875: ("FRAGMENT", "Wrong: missing contracts"),
-    1895: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
+    1881: ("FRAGMENT", "Wrong: missing contracts"),
+    1901: ("FRAGMENT", "Wrong: missing effects clause (with contracts)"),
     # Note: line 1905 is the CORRECT add-with-effects full function (parses OK,
     # not allowlisted).  The "Wrong: bare @Int + @Int without indices" entry
     # used to be parked here by mistake; the bare-add code is actually at 1942.
-    1942: ("FRAGMENT", "Wrong: bare @Int + @Int without indices"),
-    1947: ("FRAGMENT", "Correct: bare @Int + @Int (common mistakes)"),
-    2037: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
-    2044: ("FRAGMENT", "Correct: match with Option arms (bare)"),
-    2054: ("FRAGMENT", "Wrong: missing braces on if/else branches"),
-    2059: ("FRAGMENT", "Correct: if/else with braces (common mistakes)"),
+    1948: ("FRAGMENT", "Wrong: bare @Int + @Int without indices"),
+    1953: ("FRAGMENT", "Correct: bare @Int + @Int (common mistakes)"),
+    2043: ("FRAGMENT", "Wrong: non-exhaustive match (missing arm)"),
+    2050: ("FRAGMENT", "Correct: match with Option arms (bare)"),
+    2060: ("FRAGMENT", "Wrong: missing braces on if/else branches"),
+    2065: ("FRAGMENT", "Correct: if/else with braces (common mistakes)"),
 
     # Import syntax — intentionally unsupported
-    2070: ("FRAGMENT", "Wrong: import aliasing not supported"),
-    2075: ("FRAGMENT", "Correct: import syntax example"),
-    2085: ("FRAGMENT", "Wrong: import hiding not supported"),
-    2104: ("FRAGMENT", "Correct escape sequence examples, bare strings"),
-    2112: ("FRAGMENT", "Wrong: standalone map_new/set_new without type context"),
-    2118: ("FRAGMENT", "Correct: map_new/set_new with type context"),
+    2076: ("FRAGMENT", "Wrong: import aliasing not supported"),
+    2081: ("FRAGMENT", "Correct: import syntax example"),
+    2091: ("FRAGMENT", "Wrong: import hiding not supported"),
+    2110: ("FRAGMENT", "Correct escape sequence examples, bare strings"),
+    2118: ("FRAGMENT", "Wrong: standalone map_new/set_new without type context"),
+    2124: ("FRAGMENT", "Correct: map_new/set_new with type context"),
 
     # =================================================================
     # MISMATCH — uses syntax the parser doesn't handle in isolation.

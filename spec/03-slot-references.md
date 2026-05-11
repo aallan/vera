@@ -289,7 +289,7 @@ private fn list_head<T>(@List<T> -> @Option<T>)
 
 In the `Cons` arm:
 - `@T.0` = the head element
-- `@List<T>.0` = the tail (innermost `List<T>`, from the pattern) — note this shadows the function parameter
+- `@List<T>.0` = the tail (innermost `List<T>`, from the pattern) — the pattern binding **pushes** onto the slot stack rather than replacing the scrutinee; the function-parameter `List<T>` is still accessible at `@List<T>.1` (one deeper in De Bruijn ordering).  This is the same push-on-binding rule that `let` uses (Section 3.4).  If the same pattern binding shape repeats — e.g. `match @Term.0 { App(@Term, @Term) -> ... }` — the leftmost field binding is `@Term.2` (deepest), the rightmost is `@Term.1` (shallowest), and `@Term.0` remains the scrutinee.  Non-commutative operations inside arms (subtraction, comparison, recursive calls) must respect this ordering; commutative ones happen to read the same either way and so don't expose the rule.
 
 ### Example 10: Multiple Return-Type References in Contracts
 

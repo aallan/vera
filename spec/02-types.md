@@ -124,6 +124,8 @@ Rules:
 
 ### 2.4.1 ADT Invariants
 
+> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#560](https://github.com/aallan/vera/issues/560).  Until the implementation lands, refinement types (Section 2.6) are the working alternative for expressing constraints on data values.
+
 An ADT may declare an invariant that all values must satisfy:
 
 ```
