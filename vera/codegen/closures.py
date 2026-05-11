@@ -10,6 +10,7 @@ from collections import deque
 
 from vera import ast
 from vera.codegen.api import ConstructorLayout, _align_up
+from vera.codegen.skip import CodegenInvariantError, CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 from vera.wasm.helpers import _is_host_handle_type, gc_shadow_push
 
@@ -365,8 +366,45 @@ class ClosureLiftingMixin:
         else:
             result_part = ""  # pragma: no cover — Unit closure return
 
-        # Compile the body
-        body_instrs = ctx.translate_block(anon_fn.body, env)
+        # Compile the body.  Three failure modes are handled:
+        #   1. CodegenSkip — translator hit unsupported shape (#626 L3)
+        #   2. CodegenInvariantError — codegen bug (#626 L3)
+        #   3. body_instrs is None — legacy silent-skip return
+        # See the parallel block in vera/codegen/functions.py::_compile_fn
+        # for the matching catch in the non-closure path.
+        try:
+            body_instrs = ctx.translate_block(anon_fn.body, env)
+        except CodegenSkip as skip:
+            # Closure-body skips emit their own structured [E602]
+            # pointing at the unsupported node, then return None so
+            # the parent function's _lift_pending_closures path
+            # (vera/codegen/closures.py::_lift_pending_closures, the
+            # Layer 2 commit-on-success site from #636) drops the
+            # enclosing fn with its own dropped-parent [E602].
+            self._harvest_interp_inference_failures(ctx)
+            self._warning(
+                skip.node if getattr(skip.node, "span", None) else anon_fn,
+                f"Closure body contains unsupported "
+                f"{type(skip.node).__name__}: {skip.reason} — "
+                f"closure skipped.",
+                rationale="The WASM backend does not yet support all "
+                "Vera expression types. The enclosing function will "
+                "also be dropped to avoid a missing function-table "
+                "entry.",
+                error_code="E602",
+            )
+            return None
+        except CodegenInvariantError as inv:
+            # Closure-body invariant violation — codegen bug.
+            self._warning(
+                inv.node if inv.node is not None else anon_fn,
+                f"Internal compiler error in closure body: {inv.msg}",
+                rationale="This is a codegen invariant violation. "
+                "Please file a bug report with the offending program.",
+                error_code="E699",
+            )
+            return None
+
         if body_instrs is None:
             # #630 Tier 2 — closure-body parallel of the harvest in
             # `_compile_fn` (functions.py).  Without this, an
