@@ -28,6 +28,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -1998,6 +1999,156 @@ class TestHostPrintInvalidUtf8589:
         assert "�" in decoded[0], (
             "Expected U+FFFD replacement char where 0xc1 was; got "
             f"{decoded[0]!r}"
+        )
+
+
+# =====================================================================
+# #591 — HTTP / Inference network-response UTF-8 decode hygiene
+# =====================================================================
+
+
+class TestNetworkResponseUtf8Hygiene591:
+    """#591 — network-response decode sites in ``vera/codegen/api.py``
+    must not leak Python ``UnicodeDecodeError`` text into Vera-level
+    ``Result::Err`` strings.
+
+    The three sites are siblings of the WASM-memory-decode sites in
+    #589 (covered by ``TestHostPrintInvalidUtf8589`` above) but with
+    different ergonomics: the bytes here come from a *remote* server,
+    not a corrupt-program codegen bug.  A failure here surfaces as a
+    Vera-level ``Result::Err`` (via the ``try/except Exception``
+    wrappers) rather than a wasmtime-trampoline-wrapped Python
+    crash — so the practical impact is "bad error message" rather
+    than "Python traceback escapes".  Two strategies in use:
+
+    - ``Http.get`` / ``Http.post`` — ``errors="replace"`` so the user
+      gets the response body with U+FFFD substitutions for bad bytes.
+      Their intent is "fetch this URL"; preserving data beats
+      preserving the (rare) signal that bytes were non-UTF-8.
+
+    - ``Inference.complete`` — explicit ``UnicodeDecodeError`` catch
+      that raises a Vera-shaped ``RuntimeError`` ("provider returned
+      a response body that is not valid UTF-8 (invalid byte at
+      position N)").  Non-UTF-8 from an LLM API is genuinely broken;
+      we want loud failure with a Vera-native message, not the
+      ``codec can't decode byte 0x...`` Python form.
+
+    Structural assertions on the source: the same shape as #589's
+    coverage above, anchored on each function's definition.
+    """
+
+    def _api_body_after(self, marker: str, *, span: int = 1500) -> str:
+        from pathlib import Path
+        repo_root = Path(__file__).parent.parent
+        src = (repo_root / "vera/codegen/api.py").read_text(
+            encoding="utf-8",
+        )
+        idx = src.index(marker)
+        return src[idx:idx + span]
+
+    def test_http_get_uses_errors_replace(self) -> None:
+        """``host_http_get`` decodes the response body with
+        ``errors="replace"`` so a remote server's invalid UTF-8
+        produces U+FFFD substitutions in the OK-branch string rather
+        than a ``UnicodeDecodeError`` message leaking into the
+        Err-branch string.
+        """
+        body = self._api_body_after("def host_http_get(")
+        assert 'resp.read().decode("utf-8", errors="replace")' in body, (
+            "host_http_get must decode the response body with "
+            "errors='replace' so non-UTF-8 bytes from a misconfigured "
+            "remote server don't surface as Python error noise in "
+            "the Result::Err string (#591)."
+        )
+
+    def test_http_post_uses_errors_replace(self) -> None:
+        """``host_http_post`` decodes the response body with
+        ``errors="replace"`` for the same reason as ``host_http_get``.
+
+        Asserts on the **contiguous decode expression** rather than
+        the bare substring ``errors="replace"`` (which also appears
+        in the explanatory comment above the call site).  Removing
+        ``errors="replace"`` from the actual decode call while
+        leaving the comment intact must fail this assertion.
+        CodeRabbit-flagged pre-fix vulnerability on PR #649.
+        """
+        body = self._api_body_after("def host_http_post(")
+        # Use regex with DOTALL-like matching so the multi-line
+        # form (decode call wrapped across two source lines) still
+        # matches.  The pattern requires `errors="replace"` to be
+        # part of the same `resp.read().decode(...)` expression —
+        # whitespace and the `"utf-8"` argument between
+        # ``decode(`` and ``errors=`` are allowed, but no closing
+        # paren can appear before ``errors="replace"``.
+        m = re.search(
+            r'resp\.read\(\)\.decode\([^)]*errors="replace"',
+            body,
+        )
+        assert m, (
+            "host_http_post must decode the response body with "
+            "errors='replace' as part of the same resp.read().decode(...) "
+            "expression — a bare `errors=\"replace\"` substring in a "
+            "comment does not satisfy this (#591)."
+        )
+
+    def test_inference_complete_catches_unicode_decode_error(self) -> None:
+        """``Inference.complete``'s network-response decode site
+        catches ``UnicodeDecodeError`` explicitly and raises a
+        ``RuntimeError`` with a Vera-shaped message, so the Err
+        string the user sees doesn't contain Python-internals text
+        like ``'utf-8' codec can't decode byte 0x...`` (#591).
+
+        Anchored on ``_call_inference_provider`` (the private helper
+        that performs the urlopen + decode), not the public
+        ``host_inference_complete`` which only handles the
+        provider-config validation around the call.
+
+        Asserts on the **contiguous except-then-raise expression**
+        rather than the bare substrings ``"except UnicodeDecodeError"``
+        and ``"not valid UTF-8"`` (which could in principle appear
+        independently in comments or unrelated code paths).  The
+        regex requires the catch + raise + message to form one
+        coherent handler block.  CodeRabbit-flagged hardening on
+        PR #649.
+        """
+        body = self._api_body_after(
+            "def _call_inference_provider(", span=3000,
+        )
+        m = re.search(
+            r"except\s+UnicodeDecodeError[^\n]*?:\s*\n"
+            r"(?:[^\n]*\n){0,10}?"  # up to 10 lines until raise
+            r"\s*raise\s+RuntimeError\(",
+            body,
+        )
+        assert m, (
+            "_call_inference_provider must catch UnicodeDecodeError "
+            "and re-raise as a RuntimeError in the same handler "
+            "block (#591).  Both substrings must appear in a "
+            "contiguous except/raise structure — a stray "
+            "`except UnicodeDecodeError` comment does not satisfy."
+        )
+        # The Vera-shaped error message must include "not valid UTF-8"
+        # within the raise call's argument string(s).  Python permits
+        # implicit adjacent-literal concatenation, so the production
+        # code splits the message across multiple ``f"..."`` lines for
+        # readability; the phrase can appear in any one of them.
+        # Match `raise RuntimeError(` followed by `"..."` (possibly
+        # `f"..."`, possibly preceded by other `f"..."` adjacent
+        # literals, possibly spanning multiple lines), as long as the
+        # phrase lands inside a string-literal token before the
+        # matching `)`.  DOTALL handles the multi-line case; the
+        # bounded `.{0,400}?` keeps the regex non-greedy enough to
+        # stop at the close of the raise.
+        m_msg = re.search(
+            r'raise\s+RuntimeError\(.{0,400}?"[^"]*not valid UTF-8',
+            body,
+            flags=re.DOTALL,
+        )
+        assert m_msg, (
+            "The Vera-shaped error message for the UnicodeDecodeError "
+            "case must include 'not valid UTF-8' as part of the "
+            "raise's string argument (#591) — a bare substring in a "
+            "comment does not satisfy."
         )
 
 

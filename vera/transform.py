@@ -210,44 +210,73 @@ def _has_interpolation(raw: str) -> bool:
     return False
 
 
-def _split_interpolation(raw: str, meta: Any = None) -> list[str]:
+def _split_interpolation(
+    raw: str, meta: Any = None,
+) -> list[str | tuple[str, int]]:
     r"""Split a raw string on ``\(`` and matching ``)`` markers.
 
     Returns an alternating list ``[literal, expr, literal, expr, ..., literal]``
-    where even-indexed elements are literal text and odd-indexed elements are
-    expression source strings.
+    where even-indexed elements are literal text (``str``) and odd-indexed
+    elements are expression segments as ``(expr_text, offset_in_raw)``
+    tuples.  The offset is the index of the ``\`` of the ``\(`` opener
+    within ``raw`` — used by ``string_lit`` to compute original-source
+    coordinates for span remapping (issue #634).
     """
-    parts: list[str] = []
+    parts: list[str | tuple[str, int]] = []
     buf: list[str] = []
     i = 0
     while i < len(raw):
-        if raw[i] == "\\" and i + 1 < len(raw) and raw[i + 1] == "(":
-            # Flush literal buffer
-            parts.append("".join(buf))
-            buf = []
-            # Find matching ')' tracking paren depth
-            depth = 1
-            j = i + 2
-            while j < len(raw) and depth > 0:
-                if raw[j] == "(":
-                    depth += 1
-                elif raw[j] == ")":
-                    depth -= 1
-                j += 1
-            if depth != 0:
-                raise _transform_error(
-                    "Unmatched '\\(' in string interpolation — "
-                    "missing closing ')'.",
-                    meta, error_code="E009",
-                )
-            expr_text = raw[i + 2:j - 1]
-            if not expr_text.strip():
-                raise _transform_error(
-                    "Empty expression in string interpolation '\\()'.",
-                    meta, error_code="E009",
-                )
-            parts.append(expr_text)
-            i = j
+        if raw[i] == "\\" and i + 1 < len(raw):
+            # An escape sequence — either ``\(`` which opens an
+            # interpolation, or one of the literal escapes (``\\``,
+            # ``\n``, ``\t``, ``\"``, ``\u{...}``) that the
+            # downstream ``_decode_string_escapes`` will resolve on
+            # the literal fragments.  Mirror the escape-skipping
+            # logic from ``_has_interpolation`` so a literal
+            # ``\\(`` (backslash + literal paren, NOT an
+            # interpolation opener) is treated as two literal
+            # characters rather than mis-segmented as the second
+            # ``\(`` opening a new interpolation.  Pre-fix, the two
+            # helpers disagreed: ``_has_interpolation`` saw a string
+            # like ``"\\("`` as having no interpolation, but
+            # ``_split_interpolation`` mis-parsed it.  CodeRabbit
+            # caught the divergence on PR #649.
+            if raw[i + 1] == "(":
+                # Flush literal buffer
+                parts.append("".join(buf))
+                buf = []
+                # Find matching ')' tracking paren depth
+                depth = 1
+                j = i + 2
+                while j < len(raw) and depth > 0:
+                    if raw[j] == "(":
+                        depth += 1
+                    elif raw[j] == ")":
+                        depth -= 1
+                    j += 1
+                if depth != 0:
+                    raise _transform_error(
+                        "Unmatched '\\(' in string interpolation — "
+                        "missing closing ')'.",
+                        meta, error_code="E009",
+                    )
+                expr_text = raw[i + 2:j - 1]
+                if not expr_text.strip():
+                    raise _transform_error(
+                        "Empty expression in string interpolation '\\()'.",
+                        meta, error_code="E009",
+                    )
+                parts.append((expr_text, i))
+                i = j
+            else:
+                # Any other escape: pass both chars through as
+                # literal text and advance by 2 so we don't re-scan
+                # the escaped character (the downstream
+                # ``_decode_string_escapes`` on the literal fragment
+                # is what actually performs the decode).
+                buf.append(raw[i])
+                buf.append(raw[i + 1])
+                i += 2
         else:
             buf.append(raw[i])
             i += 1
@@ -255,8 +284,73 @@ def _split_interpolation(raw: str, meta: Any = None) -> list[str]:
     return parts
 
 
-def _parse_interp_expr(source: str, meta: Any = None) -> Expr:
-    """Parse an interpolated expression by wrapping in a dummy function."""
+# Wrapper layout used by `_parse_interp_expr` to make the segment
+# parseable as a function body.  The segment is placed at line 3,
+# column 3 (after `{ `) of the synthetic wrapper.  These constants
+# are the offsets we subtract from parsed-span coordinates when
+# remapping back to original-source positions for issue #634.
+_INTERP_WRAPPER_LINE = 3
+_INTERP_WRAPPER_COL = 3
+
+
+def _remap_spans_inplace(
+    node: Any, mapper: Any, _seen: set[int] | None = None,
+) -> None:
+    """Walk ``node`` and all descendants, replacing every ``Span`` field
+    in-place via ``mapper(span) -> Span``.
+
+    Uses ``object.__setattr__`` to bypass the frozen-dataclass guard;
+    ``ast.Node.span`` is declared with ``compare=False`` precisely so
+    late updates like this can correct synthetic-wrapper coordinates
+    without breaking equality semantics.  Walks ``list`` / ``tuple``
+    children and recurses into nested dataclass nodes.
+
+    Used by ``_parse_interp_expr`` to remap spans from interpolation
+    synthetic-wrapper coordinates back to original-source positions.
+    Closes #634.
+    """
+    from dataclasses import fields as _dc_fields
+
+    if _seen is None:
+        _seen = set()
+    if node is None:
+        return
+    if isinstance(node, (list, tuple)):
+        for item in node:
+            _remap_spans_inplace(item, mapper, _seen)
+        return
+    if not hasattr(node, "__dataclass_fields__"):
+        return
+    nid = id(node)
+    if nid in _seen:
+        return
+    _seen.add(nid)
+    for f in _dc_fields(node):
+        val = getattr(node, f.name)
+        if f.name == "span" and isinstance(val, Span):
+            object.__setattr__(node, "span", mapper(val))
+        elif isinstance(val, (list, tuple)):
+            for item in val:
+                _remap_spans_inplace(item, mapper, _seen)
+        elif hasattr(val, "__dataclass_fields__"):
+            _remap_spans_inplace(val, mapper, _seen)
+
+
+def _parse_interp_expr(
+    source: str,
+    meta: Any = None,
+    base_line: int | None = None,
+    base_col: int | None = None,
+) -> Expr:
+    """Parse an interpolated expression by wrapping in a dummy function.
+
+    When ``base_line`` and ``base_col`` are provided, the parsed
+    expression's spans are remapped from synthetic-wrapper coordinates
+    back to original-source positions, so diagnostics on AST nodes
+    constructed here (notably ``SlotRef`` nodes inside
+    ``InterpolatedString.parts``) point at the right source line and
+    column instead of landing on wrapper line 3.  Closes #634.
+    """
     from vera.parser import parse as _parse
 
     wrapper = (
@@ -282,7 +376,35 @@ def _parse_interp_expr(source: str, meta: Any = None) -> Expr:
             "Only expressions may appear inside '\\(...)'.",
             meta, error_code="E009",
         )
-    return body.expr
+    expr = body.expr
+    if base_line is not None and base_col is not None:
+        # Wrapper places the segment at line 3, col 3 (after `{ `).
+        # A span at (line=3, col=N) inside the wrapper maps to
+        # (base_line, base_col + (N - 3)) in the original source.
+        # Multi-line segments (rare — interpolation expressions are
+        # almost always single-line) get a per-line offset fallback.
+        def _remap(s: Span) -> Span:
+            line_off = s.line - _INTERP_WRAPPER_LINE
+            end_line_off = s.end_line - _INTERP_WRAPPER_LINE
+            new_line = base_line + line_off
+            new_end_line = base_line + end_line_off
+            new_col = (
+                base_col + (s.column - _INTERP_WRAPPER_COL)
+                if s.line == _INTERP_WRAPPER_LINE
+                else s.column
+            )
+            new_end_col = (
+                base_col + (s.end_column - _INTERP_WRAPPER_COL)
+                if s.end_line == _INTERP_WRAPPER_LINE
+                else s.end_column
+            )
+            return Span(
+                line=new_line, column=new_col,
+                end_line=new_end_line, end_column=new_end_col,
+            )
+
+        _remap_spans_inplace(expr, _remap)
+    return expr
 
 
 class VeraTransformer(Transformer):
@@ -315,7 +437,9 @@ class VeraTransformer(Transformer):
     def FLOAT_LIT(self, token: Token) -> float:
         return float(token)
 
-    def STRING_LIT(self, token: Token) -> str | list[str]:
+    def STRING_LIT(
+        self, token: Token,
+    ) -> str | list[str | tuple[str, int]]:
         raw = str(token)[1:-1]  # Strip surrounding quotes
         if _has_interpolation(raw):
             return _split_interpolation(raw, token)
@@ -834,18 +958,49 @@ class VeraTransformer(Transformer):
     def string_lit(self, meta, children):
         child = children[0]
         if isinstance(child, list):
-            # Interpolated string — child is alternating [lit, expr, lit, ...]
+            # Interpolated string — child is alternating
+            # [lit_str, (expr_text, offset), lit_str, ...].
             span = _span_from_meta(meta)
             resolved: list[str | Expr] = []
-            for i, segment in enumerate(child):
-                if i % 2 == 0:
+            # Compute original-source coordinates for span remapping
+            # (#634).  The opening `"` of the string literal is at
+            # `meta.column`; raw content starts at `meta.column + 1`.
+            # An expression segment whose `\(` opener is at offset
+            # `off` within raw has its expression text starting at
+            # original column `meta.column + 1 + off + 2`
+            # (= `meta.column + off + 3`).  We assume the string
+            # literal is on a single line — multi-line interpolation
+            # expressions are an edge case that still gets correct
+            # line numbers via the per-line offset fallback in
+            # `_remap_spans_inplace`'s mapper.
+            meta_line = getattr(meta, "line", None)
+            meta_col = getattr(meta, "column", None)
+            # The alternating layout — even indices = str (literal
+            # fragment), odd indices = (expr_text, raw_offset) tuple —
+            # is guaranteed by `_split_interpolation`'s contract.
+            # Dispatching on isinstance gives both runtime safety and
+            # mypy narrowing without `assert` (which `ruff S101`
+            # forbids in production code, since `python -O` strips
+            # asserts).
+            for segment in child:
+                if isinstance(segment, str):
                     # Literal fragment — decode escapes
                     resolved.append(
                         _decode_string_escapes(segment, meta)
                     )
                 else:
-                    # Expression — recursively parse
-                    resolved.append(_parse_interp_expr(segment, meta))
+                    # Expression — recursively parse, with span remap.
+                    expr_text, off = segment
+                    if meta_line is not None and meta_col is not None:
+                        base_line = meta_line
+                        base_col = meta_col + off + 3
+                    else:
+                        base_line = None
+                        base_col = None
+                    resolved.append(_parse_interp_expr(
+                        expr_text, meta,
+                        base_line=base_line, base_col=base_col,
+                    ))
             return InterpolatedString(
                 parts=tuple(resolved), span=span,
             )

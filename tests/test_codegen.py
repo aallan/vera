@@ -1710,6 +1710,86 @@ public fn f(-> @Int)
         assert "(memory" in result.wat
 
 
+class TestUserUnitFnInStatementPosition556:
+    """#556 — calling a user-defined ``@Unit``-returning function in
+    statement position (followed by ``;`` and a separate final
+    expression) used to fail WASM validation with ``type mismatch:
+    expected a type but nothing on stack``.
+
+    The user-visible bug class was actually closed by #584's fix in
+    v0.0.135 (``_is_void_expr`` in ``vera/wasm/context.py`` now
+    recognises user-defined ``@Unit`` fns via the ``_fn_ret_types``
+    registry).  But the specific repro shape from #556 — a *pure*
+    helper (no IO effect) followed by a unit-literal final expression,
+    rather than another effectful statement — wasn't pinned by the
+    existing conformance test ``ch07_unit_fn_nontail.vera`` (which
+    covers IO-effect variants).  This class adds the missing
+    coverage so the exact #556 repro can't silently regress.
+    """
+
+    def test_pure_unit_helper_then_unit_literal(self) -> None:
+        """The exact repro from issue #556: a pure ``@Unit``-returning
+        helper called in statement position, followed by a trailing
+        ``()`` as the block's final expression.  Both ``check`` and
+        ``compile`` must succeed; the resulting WAT must call the
+        helper and not emit a stray ``drop``.
+        """
+        source = """\
+private fn pure_helper(@Nat -> @Unit)
+  requires(true) ensures(true) effects(pure)
+{
+  ()
+}
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  pure_helper(1);
+  ()
+}
+"""
+        result = _compile_ok(source)
+        # The helper must be called.
+        assert "call $pure_helper" in result.wat, (
+            f"Expected `call $pure_helper` in WAT; got:\n{result.wat}"
+        )
+        # No stray drop on the Unit-returning call — that's what
+        # tripped the validator pre-#584.
+        main_func = result.wat.split('(func $main')[1].split('(func ')[0]
+        assert "drop" not in main_func, (
+            f"Expected no `drop` in `$main` (Unit-returning user fn "
+            f"in statement position must not leave a stack value "
+            f"that needs dropping).  $main body:\n{main_func}"
+        )
+
+    def test_pure_unit_helper_in_where_block(self) -> None:
+        """The where-block variant reported in the #556 follow-up
+        comment: helper lives in a ``where { ... }`` block, called in
+        statement position, followed by a unit-literal.  Same shape,
+        same fix.
+        """
+        source = _IO_PRELUDE + """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  helper(1);
+  ()
+}
+where {
+  fn helper(@Nat -> @Unit)
+    requires(true) ensures(true) effects(<IO>)
+  {
+    IO.print(nat_to_string(@Nat.0))
+  }
+}
+"""
+        # Runs end-to-end — exercises the full pipeline including
+        # where-block hoisting, so a regression in either layer
+        # (Unit-fn detection or where-block name resolution) is
+        # caught.
+        assert _run_io(source, fn="main") == "1"
+
+
 class TestTailCallOptimization517:
     """#517 — WASM `return_call` emission for tail-position calls.
 
@@ -8622,6 +8702,47 @@ public fn main(-> @Unit)
             "regressed for `i32_pair` returns."
         )
 
+    def test_escaped_backslash_before_paren_is_literal(self) -> None:
+        r"""``"\\("`` (a literal backslash followed by a literal
+        ``(``) must be treated as two literal characters, NOT as an
+        interpolation opener.
+
+        Pre-#649-review-pass-2 the two helpers in
+        ``vera/transform.py`` disagreed: ``_has_interpolation``
+        correctly skipped escaped pairs (so a string with only
+        ``\\(`` was treated as having no interpolation at all), but
+        ``_split_interpolation`` rescanned the second character as a
+        fresh start and mis-parsed the ``\\(`` as the opener of an
+        interpolation segment.  The result for a string like
+        ``"a\\(b"`` was a parse-time crash (no matching ``)``) where
+        the user expected a literal ``a\(b``.  CodeRabbit flagged
+        the divergence on PR #649.
+
+        This test verifies the escape-skipping logic is now
+        consistent across both helpers by compiling a program that
+        prints a literal backslash-paren sequence and asserting the
+        output preserves the literal characters.
+        """
+        source = _IO_PRELUDE + """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("a\\\\(b)c")
+}
+"""
+        # In the Python source above, "a\\\\(b)c" is a 9-char Python
+        # string literal that produces the 7-char Vera source-text
+        # `a\\(b)c` — which is the 5-char Vera string value
+        # `a\(b)c` after escape decoding.  The compiler must accept
+        # this without trying to interpret `\(` as an interpolation
+        # opener (because the preceding `\\` already consumed the
+        # backslash).
+        assert _run_io(source, fn="main") == "a\\(b)c", (
+            "Expected literal `a\\(b)c`; the `\\\\(` escape pair "
+            "should be two literal characters, not an interpolation "
+            "opener."
+        )
+
 
 class TestE615LoudInterpolationFallthrough630:
     """[#630](https://github.com/aallan/vera/issues/630) Tier 2 — the
@@ -8705,19 +8826,35 @@ public fn main(-> @Unit)
             f"warnings stream; got E615 at index {e615_idx}, "
             f"main's E602 at {main_e602_idx}"
         )
-        # The E615 has a source location attached.  Ideally it would
-        # point precisely at the offending interpolation segment
-        # (the `\(@Option<Int>.0)` SlotRef), but at the time of
-        # PR #631 the SlotRef-inside-InterpolatedString AST nodes
-        # have unreliable spans — the diagnostic carries a location
-        # but it can land on adjacent syntax (e.g. the closing brace
-        # of an earlier construct).  See follow-up issue tracking
-        # source-span propagation for interpolation segments.
-        # For now, pin the contract that *some* location is recorded
-        # so a future span fix is observable.
-        assert e615[0].location.line > 0, (
-            f"E615 should carry a source location; got line "
+        # The E615 has a source location attached pointing at the
+        # offending interpolation segment.  Source layout:
+        #
+        #     line 1: effect IO {
+        #     line 2:   op print(String -> Unit);
+        #     line 3: }
+        #     line 4: public fn main(-> @Unit)
+        #     line 5:   requires(true) ensures(true) effects(<IO>)
+        #     line 6: {
+        #     line 7:   let @Option<Int> = Some(42);
+        #     line 8:   IO.print("\(@Option<Int>.0)\n")
+        #     line 9: }
+        #
+        # The SlotRef ``@Option<Int>.0`` starts at line 8, column 15
+        # (cols 1-2 indent, 3-4 ``IO``, 5 ``.``, 6-10 ``print``,
+        # 11 ``(``, 12 ``"``, 13-14 ``\(``, 15 ``@``).  Pre-#634 the
+        # span landed on line 3 (the synthetic parse-wrapper's
+        # content line) because spans inside interpolated expressions
+        # were never remapped from wrapper coordinates back to
+        # original-source coordinates.  Closes #634.
+        assert e615[0].location.line == 8, (
+            f"E615 should point at the string literal on line 8 "
+            f"(post-#634 span remap); got line "
             f"{e615[0].location.line}"
+        )
+        assert e615[0].location.column == 15, (
+            f"E615 should point at column 15 (start of the SlotRef "
+            f"inside the interpolation segment); got column "
+            f"{e615[0].location.column}"
         )
         # `main` is not in exports because the body was dropped.
         assert "main" not in result.exports, (
@@ -8949,6 +9086,28 @@ public fn main(-> @Unit)
         assert len(e615) == 2, (
             f"Expected exactly 2 [E615] diagnostics for two failing "
             f"interpolation segments; got {len(e615)}: {e615}"
+        )
+        # Per-segment span fidelity (#634).  Source layout:
+        #
+        #     line 9:   IO.print("\(@Option<Int>.0) and \(@Result<Int, String>.0)\n")
+        #     cols ^^   ^^      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        #     12 ".  13-14 \(.  15 @Option starts.
+        #     35-36 \(.  37 @Result starts.
+        #
+        # Both diagnostics must land on line 9; their columns must
+        # differ and match the column of their respective SlotRef.
+        # Pre-#634 both would have landed on line 3 (the synthetic
+        # parse-wrapper's content line) with column 3 — the bug this
+        # test pins as fixed.
+        assert all(d.location.line == 9 for d in e615), (
+            f"Both E615s should point at line 9; got lines "
+            f"{[d.location.line for d in e615]}"
+        )
+        cols = sorted(d.location.column for d in e615)
+        assert cols == [15, 37], (
+            f"Per-segment column fidelity broken — expected first "
+            f"SlotRef at col 15 (`@Option<Int>.0`) and second at col "
+            f"37 (`@Result<Int, String>.0`); got {cols}"
         )
 
     def test_canonical_named_type_terminal_args_propagation(
