@@ -209,6 +209,7 @@ def _extract_skips(
 
 def _scan_paths(
     paths: list[str],
+    used_allowlist: set[str] | None = None,
 ) -> tuple[int, list[str], list[str]]:
     """Compile every path; return (clean_count, skip_failures,
     hard_failures).
@@ -250,6 +251,14 @@ def _scan_paths(
                         f"unexpected code {code} (allowlist "
                         f"entry expects {expected_code}): {desc}",
                     ))
+                elif used_allowlist is not None:
+                    # Record this allowlist key as actually
+                    # used — `main` will report stale entries
+                    # (keys never matched against any warning)
+                    # so they don't silently suppress future
+                    # regressions when the underlying bug is
+                    # fixed.
+                    used_allowlist.add(fn_name)
                 continue
             unexpected_skips.append((code, fn_name, desc))
         if not unexpected_skips and not path_hard_failures:
@@ -294,20 +303,69 @@ def main() -> int:
         )
         return 1
 
-    with manifest_path.open(encoding="utf-8") as f:
-        manifest = json.load(f)
+    # Load + parse the manifest defensively.  A corrupt or
+    # locale-mis-encoded manifest would otherwise crash the gate
+    # with a stack trace rather than the structured stderr
+    # diagnostic this script promises.
+    try:
+        with manifest_path.open(encoding="utf-8") as f:
+            manifest = json.load(f)
+    except UnicodeDecodeError as exc:
+        print(
+            f"ERROR: conformance manifest at {manifest_path} is not "
+            f"valid UTF-8: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    except json.JSONDecodeError as exc:
+        print(
+            f"ERROR: conformance manifest at {manifest_path} is not "
+            f"valid JSON: {exc.msg} at line {exc.lineno}, "
+            f"column {exc.colno}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not isinstance(manifest, list):
+        print(
+            f"ERROR: conformance manifest at {manifest_path} must "
+            f"be a JSON array of entry objects; got "
+            f"{type(manifest).__name__}",
+            file=sys.stderr,
+        )
+        return 1
 
     # Validate every entry's file exists before populating the
     # scan list.  Surfacing missing-file errors *after* the scan
     # would let the gate run on an incomplete set silently.
+    # Malformed entries (missing required keys, wrong shape) are
+    # treated as hard errors with the entry id surfaced for
+    # debugging.
     missing_files: list[tuple[str, str]] = []
     candidate_paths: list[str] = []
-    for entry in manifest:
+    for i, entry in enumerate(manifest):
+        if not isinstance(entry, dict):
+            print(
+                f"ERROR: conformance manifest entry at index {i} "
+                f"must be an object; got {type(entry).__name__}",
+                file=sys.stderr,
+            )
+            return 1
         if entry.get("level") not in ("verify", "run"):
             continue
-        path = repo_root / "tests/conformance" / entry["file"]
+        entry_file = entry.get("file")
+        if not isinstance(entry_file, str) or not entry_file:
+            entry_id = entry.get("id", f"<entry {i}>")
+            print(
+                f"ERROR: conformance manifest entry id={entry_id!r} "
+                f"at index {i} is missing required field 'file' "
+                f"(or it isn't a non-empty string)",
+                file=sys.stderr,
+            )
+            return 1
+        path = repo_root / "tests/conformance" / entry_file
         if not path.is_file():
-            missing_files.append((entry.get("id", "?"), entry["file"]))
+            missing_files.append((entry.get("id", "?"), entry_file))
             continue
         candidate_paths.append(str(path))
 
@@ -339,7 +397,10 @@ def main() -> int:
         return 1
 
     all_paths = examples + conformance
-    clean, skip_failures, hard_failures = _scan_paths(all_paths)
+    used_allowlist: set[str] = set()
+    clean, skip_failures, hard_failures = _scan_paths(
+        all_paths, used_allowlist=used_allowlist,
+    )
 
     print(
         f"Scanned {len(all_paths)} files "
@@ -348,7 +409,9 @@ def main() -> int:
     )
     print(f"  Clean: {clean}")
     print(f"  Allowlisted skips suppressed: "
-          f"{len(ALLOWED_SKIPS)} known functions")
+          f"{len(ALLOWED_SKIPS)} known functions "
+          f"({len(used_allowlist)} matched, "
+          f"{len(ALLOWED_SKIPS) - len(used_allowlist)} stale)")
 
     # Hard failures (PARSE_ERROR / TIMEOUT / COMPILE_ERROR) are
     # distinct from per-function skips — print first so the user
@@ -390,7 +453,40 @@ def main() -> int:
             file=sys.stderr,
         )
 
-    if hard_failures or skip_failures:
+    # Report stale allowlist entries (keys never matched against
+    # any warning during the scan).  A stale entry is one whose
+    # underlying bug is fixed but whose suppression record still
+    # sits in `ALLOWED_SKIPS` — keeping it would silently mask a
+    # future regression that re-introduces the same skip.  The
+    # gate fails on stale entries so the allowlist shrinks
+    # naturally as bugs close.
+    stale_allowlist = sorted(set(ALLOWED_SKIPS) - used_allowlist)
+    if stale_allowlist:
+        print(
+            f"\nSTALE ALLOWLIST ENTRIES ({len(stale_allowlist)} "
+            f"function(s) never matched any warning during the "
+            f"scan):",
+            file=sys.stderr,
+        )
+        for fn_name in stale_allowlist:
+            code, issue, reason = ALLOWED_SKIPS[fn_name]
+            print(
+                f"  {fn_name!r} [{code}] (tracked by #{issue}): "
+                f"{reason[:100]}",
+                file=sys.stderr,
+            )
+        print(
+            "\nRemove stale entries from ALLOWED_SKIPS in "
+            "scripts/check_e602_clean.py — keeping them silently "
+            "masks a future regression that re-introduces the "
+            "same skip.  If the underlying bug is still open, "
+            "verify the affected example/conformance program "
+            "actually exercises the function (otherwise the "
+            "allowlist entry is suppressing nothing).",
+            file=sys.stderr,
+        )
+
+    if hard_failures or skip_failures or stale_allowlist:
         return 1
 
     print("\nNo unexpected [E602]/[E604] skips. (Layer 1 of #626.)")
