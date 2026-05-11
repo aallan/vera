@@ -725,6 +725,19 @@ class CallsMixin:
         if isinstance(ret, ast.NamedType) and ret.name in alias_params:
             if isinstance(arg_return, ast.NamedType):
                 alias_mapping[ret.name] = arg_return.name
+            elif isinstance(arg_return, ast.FnType):
+                # Return type is itself a FnType — map to "Fn" to mirror
+                # the monomorphiser-side binding in
+                # `MonomorphizationMixin._infer_fn_alias_type_args`.
+                # CR-8 on PR #659: without this, a higher-order alias
+                # (e.g. `type Lifter<F> = fn(Int -> F) effects(pure)`
+                # called with a fn-returning AnonFn / alias) leaves
+                # the return-type var unbound, falls back to the
+                # `"Bool"` phantom-var default at result-building,
+                # and `_resolve_generic_call` rewrites the call to a
+                # mangled name that doesn't match the mono clone
+                # Pass 1.5 registered.
+                alias_mapping[ret.name] = "Fn"
         # Handle ADT return types like Option<B>
         if isinstance(ret, ast.NamedType) and ret.type_args:
             for ret_ta in ret.type_args:

@@ -15996,6 +15996,51 @@ public fn main(@Unit -> @Int)
                 f"{[d.description for d in offending]}"
             )
 
+    def test_template_warning_NOT_suppressed_when_generic_never_called(
+        self,
+    ) -> None:
+        """Negative control for the suppression pass.
+
+        A user-defined generic ``forall<T>`` decl with a bare ``@T``
+        parameter that is **never called** still emits its template
+        warning.  Pre-fix this would have emitted `[E604]` ("function
+        has unsupported parameter type") for every prelude generic on
+        every compile; post-fix the suppression pass only fires when
+        at least one mono clone of the generic actually compiled
+        (`compiled_mono_bases` in
+        `vera/codegen/core.py::compile_program`).  An over-broad
+        suppressor that dropped *all* template warnings would pass
+        the sibling test above but fail this one.
+
+        CR-7 on PR #659.
+        """
+        src = """
+private forall<T> fn unused_generic(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  @T.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  42
+}
+"""
+        result = _compile_ok(src)
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        offending = [
+            d for d in warnings
+            if d.error_code in {"E602", "E604", "E605"}
+            and d.description.startswith("Function 'unused_generic' ")
+        ]
+        assert offending, (
+            f"Expected `unused_generic` template warning to fire (no "
+            f"mono clone exists since the generic is never called); "
+            f"got warnings: "
+            f"{[d.description for d in warnings]}"
+        )
+
 
 class TestE602NodeLevelReasons626Layer3:
     """`#626` Layer 3 (PR #658) — `[E602]` diagnostics now carry a
