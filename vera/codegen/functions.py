@@ -230,6 +230,15 @@ class FunctionCompilationMixin:
             # as [E699] so it can't be confused with a legitimate
             # "not yet supported" skip.  These should never fire in
             # production; if you see one, file a bug.
+            #
+            # Harvest interpolation failures before the [E699] for the
+            # same reason the CodegenSkip handler does: if the invariant
+            # fires after some interp segments have already populated
+            # `ctx._interp_inference_failures`, those would otherwise be
+            # silently dropped.  Empirically invariants fire early
+            # (before interp translation runs) so this is mostly
+            # symmetry insurance — CodeRabbit nitpick on #658.
+            self._harvest_interp_inference_failures(ctx)
             self._warning(
                 inv.node if inv.node is not None else decl,
                 f"Internal compiler error while compiling "
