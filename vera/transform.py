@@ -951,16 +951,21 @@ class VeraTransformer(Transformer):
             # `_remap_spans_inplace`'s mapper.
             meta_line = getattr(meta, "line", None)
             meta_col = getattr(meta, "column", None)
-            for i, segment in enumerate(child):
-                if i % 2 == 0:
+            # The alternating layout — even indices = str (literal
+            # fragment), odd indices = (expr_text, raw_offset) tuple —
+            # is guaranteed by `_split_interpolation`'s contract.
+            # Dispatching on isinstance gives both runtime safety and
+            # mypy narrowing without `assert` (which `ruff S101`
+            # forbids in production code, since `python -O` strips
+            # asserts).
+            for segment in child:
+                if isinstance(segment, str):
                     # Literal fragment — decode escapes
-                    assert isinstance(segment, str)
                     resolved.append(
                         _decode_string_escapes(segment, meta)
                     )
                 else:
                     # Expression — recursively parse, with span remap.
-                    assert isinstance(segment, tuple)
                     expr_text, off = segment
                     if meta_line is not None and meta_col is not None:
                         base_line = meta_line
