@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Layer 1 of [#626](https://github.com/aallan/vera/issues/626)** — new `scripts/check_e602_clean.py` pre-commit + CI gate that fails when any compile of an example or conformance program emits `[E602]` (body unsupported) or `[E604]` (param unsupported) outside an explicit allowlist.  The `[E602]` warning channel was the project's only signal for silent translator-skip failures, and several long-standing instances of it were buried in every WASM compile — making it impossible to spot a new genuine skip without manually sifting through expected noise.  The gate makes a new silent skip a hard build failure unless explicitly allowlisted with a tracking-issue reference.
+- **Allowlist of 11 currently-expected silent skips**, each tagged with a tracking issue: 5 prelude combinators (`option_unwrap_or` / `result_unwrap_or` / `option_map` / `option_and_then` / `result_map` — [#604](https://github.com/aallan/vera/issues/604)), 6 user-code cases surfaced by the new gate's first run (5 generic-decl spurious warnings + 1 real codegen gap — [#655](https://github.com/aallan/vera/issues/655)).
+
 ### Documentation
 
 Small docs sweep — closes six aging documentation issues in one PR.  No code changes; touches `spec/02-types.md`, `spec/03-slot-references.md`, `spec/06-contracts.md`, `SKILL.md`, `README.md`, and `HISTORY.md`.
