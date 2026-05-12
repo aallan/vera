@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.147] - 2026-05-12
+
+### Fixed
+
+- **[#628](https://github.com/aallan/vera/issues/628)** — cross-module imports now propagate `_fn_ret_type_exprs` alongside `_fn_sigs`.  Pre-fix `vera/codegen/modules.py`'s cross-module harvest only populated `_fn_sigs` (carrying WASM type info — sufficient for call-validation), but the `_fn_ret_type_exprs` registry (added in #614, re-used by #602) was never harvested across modules.  A `String`- or `Array<T>`-returning fn defined in module A and called from module B then hit `_fn_ret_type_exprs.get(name) → None` and fell through to the silent-skip path that #602 / #614 had already closed in-module.  Two failure shapes: (1) `make_arr(())[0]` where `make_arr` is cross-module — IndexExpr element-type inference returned None, enclosing function dropped via `[E602]`; (2) `IO.print("\(make_str(()))\n")` where `make_str` is cross-module — interpolation segment fell through to the `to_string(...)` silent wrapper, tripping `expected i64, found i32` at WASM validation.  Post-fix the cross-module harvest in `vera/codegen/modules.py` populates `_fn_ret_type_exprs` with the same `setdefault` shape as `_fn_sigs`.  Closes `#628`.
+
 ## [0.0.146] - 2026-05-12
 
 ### Fixed
@@ -2155,7 +2161,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.146...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.147...HEAD
+[0.0.147]: https://github.com/aallan/vera/compare/v0.0.146...v0.0.147
 [0.0.146]: https://github.com/aallan/vera/compare/v0.0.145...v0.0.146
 [0.0.145]: https://github.com/aallan/vera/compare/v0.0.144...v0.0.145
 [0.0.144]: https://github.com/aallan/vera/compare/v0.0.143...v0.0.144
