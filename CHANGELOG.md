@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.149] - 2026-05-12
+
+### Fixed
+
+- **[#648](https://github.com/aallan/vera/issues/648)** — cyclic type aliases now produce a clean `[E132]` diagnostic at `vera check` time instead of crashing `vera compile` with `RecursionError`.  Pre-fix `vera/checker/registration.py::_register_alias` resolved aliases one at a time; when `type A = B` was processed before `B` was registered, the forward-reference fallback in `_resolve_type` returned a placeholder rather than chasing the chain, so the resolved-type representation reached the post-registration state with no observable cycle.  Codegen later stored the raw AST `type_expr` and `vera/codegen/core.py::_type_expr_to_wasm_type` chased the chain through the AST, blowing the stack with `RecursionError: maximum recursion depth exceeded`.  Post-fix `_register_all` calls a new `_check_alias_cycles` pass that walks every alias's AST `type_expr` chain (following `NamedType`-of-alias references through `RefinementType` wrappers, mirroring codegen's recursion shape) and emits `[E132]` ("Cyclic type alias") with the originating decl location, the full cycle path (`A -> B -> C -> A`), and a `Fix:` paragraph pointing at `data`-declared ADTs as the alternative for self-referential types.  Defensive cycle guards on the alias-walking helpers in `vera/wasm/inference.py` (closed in #633) remain as belt-and-braces.  Closes `#648`.
+
 ## [0.0.148] - 2026-05-12
 
 ### Fixed
@@ -2171,7 +2177,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.148...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.149...HEAD
+[0.0.149]: https://github.com/aallan/vera/compare/v0.0.148...v0.0.149
 [0.0.148]: https://github.com/aallan/vera/compare/v0.0.147...v0.0.148
 [0.0.147]: https://github.com/aallan/vera/compare/v0.0.146...v0.0.147
 [0.0.146]: https://github.com/aallan/vera/compare/v0.0.145...v0.0.146

@@ -2980,18 +2980,18 @@ public fn use_alias(@MyInt -> @Int)
         """Cyclic ``type A = B; type B = A`` aliases must not cause
         ``RecursionError`` inside ``_resolve_base_type_name``.
 
-        Cyclic aliases are user errors that the type checker should
-        reject (tracked as #648), but the alias-walking helpers in
-        ``vera/wasm/inference.py`` carry a defensive cycle guard for
-        defence-in-depth — a bug in the upstream rejection must not
-        turn into a stack-blow inside codegen.
+        Cyclic aliases are user errors that the type checker
+        rejects with ``[E132]`` (closed in #648), but the
+        alias-walking helpers in ``vera/wasm/inference.py`` carry
+        a defensive cycle guard for defence-in-depth — a future
+        regression in the upstream rejection must not turn into a
+        stack-blow inside codegen.
 
         This test directly constructs a ``WasmContext`` with a cyclic
         ``_type_aliases`` map and exercises the guard, because
-        cyclic-alias source programs currently crash earlier in
-        codegen (``vera/codegen/core.py:_type_expr_to_wasm_type``,
-        the user-visible bug tracked separately as #648) before
-        reaching this code path.  Closes #633.
+        source-level cyclic aliases are now intercepted at check
+        time (``vera/checker/registration.py::_check_alias_cycles``)
+        before they could reach this code path.  Closes #633.
         """
         from vera import ast
         from vera.wasm.context import WasmContext

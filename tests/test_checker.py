@@ -5501,6 +5501,123 @@ public fn current(@Unit -> @Year)
 { 2026 }
 """)
 
+    # =================================================================
+    # #648 — cyclic type aliases must produce [E132] at check time
+    # =================================================================
+
+    def test_cyclic_alias_two_way_e132(self) -> None:
+        """`type A = B; type B = A` produces [E132] at check time
+        instead of crashing codegen with RecursionError (#648).
+
+        Also pins the diagnostic *payload* (cycle path + fix
+        message) on this representative test — the other cyclic-
+        alias tests below check error_code only, since the
+        payload-shape contract is uniform across them.
+        """
+        errs = _check_err("""
+type A = B;
+type B = A;
+
+public fn id(@A -> @A)
+  requires(true) ensures(true) effects(pure)
+{
+  @A.0
+}
+""", "Cyclic type alias")
+        e132 = [e for e in errs if e.error_code == "E132"]
+        assert e132, (
+            f"Expected at least one diagnostic with error_code=E132; "
+            f"got: {[(e.error_code, e.description) for e in errs]}"
+        )
+        # Pin the cycle-path rendering in the description and the
+        # `data`-as-alternative suggestion in the fix hint.  A
+        # future refactor that changes the rendering would still
+        # emit E132 but the payload contract these messages embody
+        # — "you can tell *which* aliases form the cycle" and
+        # "here's the alternative that supports self-reference" —
+        # would silently regress without these assertions.
+        assert "A -> B -> A" in e132[0].description, (
+            f"Expected cycle path 'A -> B -> A' in description; "
+            f"got: {e132[0].description!r}"
+        )
+        assert "data" in e132[0].fix, (
+            f"Expected fix hint to suggest `data` as the alternative "
+            f"for self-referential types; got: {e132[0].fix!r}"
+        )
+
+    def test_cyclic_alias_self_e132(self) -> None:
+        """`type A = A` is the degenerate self-cycle case (#648)."""
+        errs = _check_err("""
+type A = A;
+
+public fn id(@A -> @A)
+  requires(true) ensures(true) effects(pure)
+{
+  @A.0
+}
+""", "Cyclic type alias")
+        e132 = [e for e in errs if e.error_code == "E132"]
+        assert e132, (
+            f"Expected at least one diagnostic with error_code=E132; "
+            f"got: {[(e.error_code, e.description) for e in errs]}"
+        )
+
+    def test_cyclic_alias_three_way_e132(self) -> None:
+        """`A -> B -> C -> A` three-way cycle also flagged (#648)."""
+        errs = _check_err("""
+type A = B;
+type B = C;
+type C = A;
+
+public fn id(@A -> @A)
+  requires(true) ensures(true) effects(pure)
+{
+  @A.0
+}
+""", "Cyclic type alias")
+        e132 = [e for e in errs if e.error_code == "E132"]
+        assert e132, (
+            f"Expected at least one diagnostic with error_code=E132; "
+            f"got: {[(e.error_code, e.description) for e in errs]}"
+        )
+
+    def test_cyclic_alias_refinement_e132(self) -> None:
+        """Cycles through a `RefinementType` wrapper (`type A = { @B
+        | true }; type B = A`) also flagged.  Pins the
+        `_alias_chain_target` helper's `RefinementType.base_type`
+        peeling — codegen's `_type_expr_to_wasm_type` recurses
+        through refinements unconditionally, so a cycle hidden
+        behind one is still a codegen-crash cycle (#648)."""
+        errs = _check_err("""
+type A = { @B | true };
+type B = A;
+
+public fn id(@A -> @A)
+  requires(true) ensures(true) effects(pure)
+{
+  @A.0
+}
+""", "Cyclic type alias")
+        e132 = [e for e in errs if e.error_code == "E132"]
+        assert e132, (
+            f"Expected at least one diagnostic with error_code=E132; "
+            f"got: {[(e.error_code, e.description) for e in errs]}"
+        )
+
+    def test_acyclic_alias_chain_ok(self) -> None:
+        """`type IntAlias = Int; type Pair = IntAlias` is an
+        acyclic chain — must pass without false-positive E132 (#648)."""
+        _check_ok("""
+type IntAlias = Int;
+type Pair = IntAlias;
+
+public fn id(@Pair -> @Pair)
+  requires(true) ensures(true) effects(pure)
+{
+  @Pair.0
+}
+""")
+
     # Line 84: Array/Tuple without type_args
     def test_array_without_type_args(self) -> None:
         """Bare Array (no type args) is accepted as AdtType(Array, ())."""

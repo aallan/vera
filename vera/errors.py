@@ -430,6 +430,7 @@ ERROR_CODES: dict[str, str] = {
     "E125": "Call-site effect mismatch",
     "E130": "Unresolved slot reference",
     "E131": "Result ref outside ensures",
+    "E132": "Cyclic type alias",
     "E133": "Type alias arity mismatch",
     "E140": "Arithmetic requires numeric operands",
     "E141": "Arithmetic requires matching numeric types",

@@ -38,6 +38,95 @@ class RegistrationMixin:
                 )
             self._register_decl(tld.decl, visibility=tld.visibility)
 
+        # Post-registration cycle detection on type aliases (#648).
+        # `_register_alias` resolves each alias's target one at a time;
+        # when `type A = B` is processed before `B` is registered, the
+        # forward-ref fallback in `_resolve_type` returns a placeholder
+        # rather than chasing the chain, so `A = B; B = A` reaches the
+        # post-loop state with no observable cycle in the resolved
+        # types.  Codegen later stores the raw AST `type_expr` and
+        # `_type_expr_to_wasm_type` chases the chain through the AST,
+        # producing a `RecursionError` instead of a clean diagnostic.
+        # Fix: walk the alias chain in the AST after all aliases have
+        # registered, emit `[E132]` for any cycle we find.
+        self._check_alias_cycles(program)
+
+    def _check_alias_cycles(self, program: ast.Program) -> None:
+        """Detect cyclic type aliases and emit `[E132]`.
+
+        Walks the alias-target chain following the same recursion
+        the codegen helper `_type_expr_to_wasm_type` follows: into
+        `RefinementType.base_type` (no shape change) and across
+        `NamedType` references that name another alias.  Other
+        constructors (`Array<T>`, `FnType`, `(A, B)`) terminate the
+        walk because `_type_expr_to_wasm_type` returns a concrete
+        WASM type at those nodes without recursing into their
+        children — so cycles that pass *through* them are not the
+        ones that trip codegen.
+        """
+        alias_decls: dict[str, ast.TypeAliasDecl] = {}
+        for tld in program.declarations:
+            if isinstance(tld.decl, ast.TypeAliasDecl):
+                alias_decls.setdefault(tld.decl.name, tld.decl)
+
+        walked: set[str] = set()
+        for name, decl in alias_decls.items():
+            if name in walked:
+                continue
+            seen = {name}
+            chain = [name]
+            te = decl.type_expr
+            while True:
+                target = self._alias_chain_target(te, alias_decls)
+                if target is None:
+                    break
+                if target in seen:
+                    cycle = " -> ".join(chain + [target])
+                    self._error(
+                        decl,
+                        f"Cyclic type alias `{name}`: {cycle}.",
+                        rationale=(
+                            "Type aliases must eventually resolve to a "
+                            "concrete type.  A cycle leaves the alias "
+                            "with no underlying representation and "
+                            "would crash codegen with unbounded "
+                            "recursion."
+                        ),
+                        fix=(
+                            "Replace one alias in the cycle with a "
+                            "concrete type, or with an `ADT` declared "
+                            "via `data` (which can be self-referential "
+                            "because the indirection is a heap "
+                            "pointer)."
+                        ),
+                        spec_ref='Chapter 4, Section 4.3 "Type Aliases"',
+                        error_code="E132",
+                    )
+                    break
+                seen.add(target)
+                chain.append(target)
+                te = alias_decls[target].type_expr
+            walked.update(seen)
+
+    @staticmethod
+    def _alias_chain_target(
+        te: ast.TypeExpr, aliases: dict[str, ast.TypeAliasDecl],
+    ) -> str | None:
+        """If `te` would cause codegen's alias walker to recurse into
+        another alias, return that alias's name.  Else None.
+
+        Mirrors the recursion shape of
+        `vera/codegen/core.py::_type_expr_to_wasm_type`: peels
+        `RefinementType` layers (which the codegen helper recurses
+        through unconditionally) and stops at the first non-alias
+        constructor or non-aliased `NamedType`.
+        """
+        while isinstance(te, ast.RefinementType):
+            te = te.base_type
+        if isinstance(te, ast.NamedType) and te.name in aliases:
+            return te.name
+        return None
+
     def _register_decl(
         self, decl: ast.Decl, visibility: str | None = None,
     ) -> None:
