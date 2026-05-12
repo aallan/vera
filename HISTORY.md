@@ -291,6 +291,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.144 | 11 May | Tier A bug burn-down — closes [#633](https://github.com/aallan/vera/issues/633), [#634](https://github.com/aallan/vera/issues/634), [#556](https://github.com/aallan/vera/issues/556), [#591](https://github.com/aallan/vera/issues/591). |
 | v0.0.145 | 11 May | Mono-suffix bug + template-warning suppression — closes [#604](https://github.com/aallan/vera/issues/604) and [#655](https://github.com/aallan/vera/issues/655) Shape A. |
 | v0.0.146 | 12 May | Refinement-of-Array element inference — closes [#655](https://github.com/aallan/vera/issues/655) Shape B. |
+| v0.0.147 | 12 May | Cross-module `_fn_ret_type_exprs` propagation — closes [#628](https://github.com/aallan/vera/issues/628). |
 
 ---
 
@@ -331,4 +332,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 146 tagged releases, 58 active development days.**
+Total: **810+ commits, 147 tagged releases, 58 active development days.**

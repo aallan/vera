@@ -90,6 +90,24 @@ class CrossModuleMixin:
                 # registered so the guard rail sees them as known
                 self._fn_sigs.setdefault(fn_name, sig)
 
+            # Harvest return-type expressions alongside _fn_sigs.
+            # #628 — _fn_ret_type_exprs (added in #614 / re-used by
+            # #602) stores each FnDecl's full Vera return-type AST so
+            # inference walkers can extract element types from
+            # `Array<T>`-returning calls and element types from
+            # `String`-returning calls used inside interpolation
+            # segments.  Pre-fix the registry was populated only for
+            # functions defined in the current module; cross-module
+            # calls hit `_fn_ret_type_exprs.get(name) → None` and
+            # fell through to the silent-skip path that #602 / #614
+            # had already closed in-module.  Same harvest shape as
+            # `_fn_sigs` above — `setdefault` so first-seen wins (no
+            # collision detection needed; if `fn_sigs` collision
+            # detection above caught a name clash, the offending
+            # decl was rejected before we reach this loop).
+            for fn_name, ret_te in temp._fn_ret_type_exprs.items():
+                self._fn_ret_type_exprs.setdefault(fn_name, ret_te)
+
             # Harvest ADT layouts
             for adt_name, layouts in temp._adt_layouts.items():
                 # Builtin ADTs (Option, Result, Ordering, etc.) appear in

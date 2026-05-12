@@ -348,6 +348,80 @@ public fn main(-> @Int)
 """, [mod], fn="main")
         assert val == 42
 
+    # -- #628 cross-module return-type-expression harvest -----------------
+
+    def test_cross_module_index_of_fncall(self) -> None:
+        """`make_arr(())[0]` where `make_arr` is defined in another
+        module compiles and returns the first element.
+
+        `#628` regression: pre-fix `_fn_ret_type_exprs` was populated
+        only for in-module functions, so the IndexExpr translator's
+        element-type inference returned None for `make_arr(())[0]`,
+        the enclosing `main` got dropped via `[E602]`, and `vera run`
+        reported "No exported functions to call".  Post-fix the
+        cross-module harvest in `vera/codegen/modules.py` populates
+        `_fn_ret_type_exprs` alongside `_fn_sigs`.
+        """
+        arr_mod_source = """\
+public fn make_arr(@Unit -> @Array<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  [1, 2, 3]
+}
+"""
+        mod = self._resolved(("arr",), arr_mod_source)
+        val = self._run_mod("""\
+import arr(make_arr);
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  make_arr(())[0]
+}
+""", [mod], fn="main")
+        assert val == 1, (
+            f"Expected make_arr(())[0] == 1 cross-module; got {val!r}.  "
+            "Pre-#628-fix this would have failed with main dropped via "
+            "[E602] and no exported function to call."
+        )
+
+    def test_cross_module_string_interpolation_of_fncall(self) -> None:
+        """Interpolating a `String`-returning cross-module call inside
+        a string literal compiles and prints correctly.
+
+        Pre-fix: `_fn_ret_type_exprs` lookup returned None for
+        cross-module `make_str`, the interpolation segment fell through
+        to the `to_string(...)` silent wrapper, the i32_pair value
+        tripped `expected i64, found i32` at WASM validation, and
+        the enclosing function was dropped.
+        """
+        str_mod_source = """\
+public fn make_str(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{
+  "hello"
+}
+"""
+        mod = self._resolved(("strs",), str_mod_source)
+        result = self._compile_mod("""\
+import strs(make_str);
+
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("\\(make_str(()))!\\n")
+}
+""", [mod])
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert not errors, (
+            f"Expected no errors after #628 fix; got: "
+            f"{[d.description for d in errors]}"
+        )
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.stdout == "hello!\n", (
+            f"Expected 'hello!\\n'; got {exec_result.stdout!r}"
+        )
+
 
 # =====================================================================
 # Name collision detection (#110)
