@@ -4,7 +4,7 @@
 
 From the Latin *veritas* — truth. In Vera, verification is a first-class citizen.
 
-**Current version:** [0.0.147](https://github.com/aallan/vera/releases/tag/v0.0.147)  ·  [GitHub](https://github.com/aallan/vera)  ·  [SKILL.md](https://veralang.dev/SKILL.md) (agent language reference)
+**Current version:** [0.0.148](https://github.com/aallan/vera/releases/tag/v0.0.148)  ·  [GitHub](https://github.com/aallan/vera)  ·  [SKILL.md](https://veralang.dev/SKILL.md) (agent language reference)
 
 ## Why?
 

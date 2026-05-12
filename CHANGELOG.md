@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.148] - 2026-05-12
+
+### Fixed
+
+- **[#660](https://github.com/aallan/vera/issues/660)** — `vera check` now rejects parameterised type-alias references with wrong arity.  Pre-fix `vera/checker/resolution.py::_resolve_type` silently truncated `zip(alias.type_params, te.type_args)` on length mismatch, leaving alias-local type-vars unsubstituted; downstream codegen leaked literal alias-local names into mono suffixes (`option_map$Int_B` instead of `option_map$Int_Int`) and the call site referenced a non-existent function-table entry → `unknown table 0: table index out of bounds` at runtime.  Surfaced by the #659 multi-agent review when the #604 fix happened to surface the same bug class via a different entry point (a `SlotRef` typed as a parameterised alias with too few type-args).  Post-fix the checker emits `[E133]` ("Type alias arity mismatch") with a precise diagnostic naming the alias, expected/supplied counts, and a `Fix:` paragraph suggesting the missing or extra type arguments.  Two defensive comments in `vera/codegen/monomorphize.py::_resolve_arg_fn_shape` and `vera/wasm/calls.py::_resolve_arg_fn_shape_wasm` (left in PR #659 to document the latent gap) are now trimmed to one-line "arity enforced upstream by checker" cross-references.
+
+### Internal
+
+- **[#661](https://github.com/aallan/vera/issues/661)** — investigated and confirmed the `compiled_mono_bases` cross-module name-collision concern is not reachable today.  Pass 2.5 in `vera/codegen/core.py::compile_program` (lines 519-530) explicitly skips imported FnDecls whose names are already in `fn_visibility` (= local declarations), so an imported forall decl with the same name as a local one is dropped before its template warning could be emitted.  And `forall_decl_names` is built from `program.declarations` only, never from imports — only local forall decls are eligible for suppression.  Net effect: at most one template warning per base name lands in `self.diagnostics`, so a bare-name match in the suppression filter cannot cross-suppress between modules.  Added an explanatory block comment at the suppression site documenting why bare-name keying is safe AND naming the trigger conditions that would invalidate the invariant (loosened Pass 2.5 dedup, or mono pipeline starting to carry module attribution).  Added `tests/test_codegen_modules.py::TestCrossModuleNameCollision661` with two tests pinning the invariant — compiles a name-shadowing fixture and asserts no over-broad suppression.
+
 ## [0.0.147] - 2026-05-12
 
 ### Fixed
@@ -2161,7 +2171,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.147...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.148...HEAD
+[0.0.148]: https://github.com/aallan/vera/compare/v0.0.147...v0.0.148
 [0.0.147]: https://github.com/aallan/vera/compare/v0.0.146...v0.0.147
 [0.0.146]: https://github.com/aallan/vera/compare/v0.0.145...v0.0.146
 [0.0.145]: https://github.com/aallan/vera/compare/v0.0.144...v0.0.145

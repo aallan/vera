@@ -560,6 +560,31 @@ class CodeGenerator(
         # `option_map$Int_Bool`-shape mono-suffix bugs existed;
         # post-fix (the mono-suffix bug in monomorphize.py is closed),
         # they're pure noise for the catalogued cases.
+        # Why bare-name (vs `(module, name)`) keying is safe here —
+        # `#661`:
+        #   * `forall_decl_names` is built from the current
+        #     `program.declarations` only, NOT from cross-module
+        #     imports.  Imported FnDecls flow through Pass 2.5 above
+        #     (lines 519-530), which explicitly skips names already
+        #     in `fn_visibility` — so an imported forall decl with
+        #     the same name as a local one is dropped before its
+        #     template warning could be emitted.
+        #   * `compiled_mono_bases` is keyed on the mangler's
+        #     `<base>$<types>` split — colliding bases across
+        #     modules would resolve to the same mono clone (the
+        #     mono pipeline doesn't carry module attribution today,
+        #     a separate latent gap also tracked in `#661`).
+        # Net effect: at most one template warning per base name
+        # ever lands in `self.diagnostics`, so a bare-name match in
+        # the suppression filter cannot cross-suppress between
+        # modules.  If Pass 2.5's dedup is ever loosened, or the
+        # mono pipeline starts carrying module attribution, this
+        # comment is the trigger to re-key the set on
+        # `(module, name)`.
+        # `tests/test_codegen_modules.py::TestCrossModuleNameCollision661`
+        # pins this invariant — the test compiles a cross-module
+        # name-shadowing fixture and asserts there's no over-broad
+        # suppression.
         forall_decl_names: set[str] = set()
         for tld in program.declarations:
             decl = tld.decl
