@@ -46,11 +46,14 @@ private fn head(@NonEmptyArray -> @Int)
   @NonEmptyArray.0[0]
 }
 
--- Entry point: exercise safe_divide and to_percentage
+-- Entry point: exercise safe_divide, to_percentage, and head
+-- (head exercises refinement-of-Array — `@NonEmptyArray.0[0]` —
+-- which v0.0.146 fixed by unwrapping `RefinementType` layers in
+-- the array-element-type alias resolver).
 public fn test_refine(@Unit -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
 {
-  safe_divide(10, 3) + to_percentage(150)
+  safe_divide(10, 3) + to_percentage(150) + head([42, 1, 2])
 }

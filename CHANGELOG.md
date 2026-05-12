@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.146] - 2026-05-12
+
+### Fixed
+
+- **[#655](https://github.com/aallan/vera/issues/655) Shape B** — array indexing through a refinement-of-Array alias (e.g. `type NonEmptyArray = { @Array<Int> | array_length(@Array<Int>.0) > 0 }` plus `fn head(@NonEmptyArray -> @Int) { @NonEmptyArray.0[0] }`) now compiles cleanly and runs correctly.  Pre-fix `vera/wasm/inference.py::_alias_array_element` only followed `isinstance(target, ast.NamedType)` chains when resolving an alias to its underlying `Array<T>`; if the alias target was a `RefinementType` (which the user's refinement syntax produces), the helper returned `None`.  Downstream `_infer_index_element_type` then returned `None` for `@NonEmptyArray.0[0]`, the `head` function got dropped via `[E602]` with "body contains unsupported expressions — skipped", and any call site referenced a non-existent `$head` → `unknown func: $head` at WASM validation.  Post-fix the alias-target lookup peels any `RefinementType` layers before checking for a `NamedType` base, so refinement-of-Array aliases resolve their element type the same as a bare `Array<T>`.  Closes `#655` (Shape A was closed in v0.0.145; Shape B is this fix).  Allowlist in `scripts/check_e602_clean.py` shrinks from 6 to 5 entries.
+
 ## [0.0.145] - 2026-05-11
 
 ### Fixed
@@ -2149,7 +2155,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.145...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.146...HEAD
+[0.0.146]: https://github.com/aallan/vera/compare/v0.0.145...v0.0.146
 [0.0.145]: https://github.com/aallan/vera/compare/v0.0.144...v0.0.145
 [0.0.144]: https://github.com/aallan/vera/compare/v0.0.143...v0.0.144
 [0.0.143]: https://github.com/aallan/vera/compare/v0.0.142...v0.0.143

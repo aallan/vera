@@ -92,15 +92,10 @@ ALLOWED_SKIPS: dict[str, tuple[str, int, str]] = {
     # generics now produces a working mono clone with no template
     # noise.  See PR #659 for the fix.
 
-    # ----- Real codegen gap tracked by #655 (Shape B — non-generic
-    # refinement-of-Array param) -----
-    "head": (
-        "E602", 655,
-        "Non-generic, takes @NonEmptyArray (refinement-of-Array "
-        "alias) param.  IndexExpr translator returns None for "
-        "@NonEmptyArray.0[0] — calling head() actually fails "
-        "with 'unknown func: $head'.  Real bug.",
-    ),
+    # NOTE: `head` entry (#655 Shape B) was removed in v0.0.146 when
+    # `_alias_array_element` in `vera/wasm/inference.py` was extended
+    # to unwrap `RefinementType` layers from alias targets.  See
+    # PR #<TBD> for the fix.
 }
 
 
