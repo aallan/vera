@@ -15834,6 +15834,252 @@ public fn main(@Unit -> @Unit)
         )
 
 
+class TestGenericMonoSuffixFromSlotRef604:
+    """`#604` / `#655` — generic prelude combinator mono clones now
+    produce the correct type-arg suffix when the closure argument is
+    a ``SlotRef`` typed as an FnType alias (e.g. ``@Doubler.0``).
+
+    Pre-fix `_unify_param_arg` in `vera/codegen/monomorphize.py` had
+    an AnonFn-specific alias-resolution path; `SlotRef` args typed as
+    FnType aliases skipped that path and left the closure's return
+    type variable unbound.  The unbound type var fell to the
+    ``"Bool"`` phantom-var fallback at result-building time, producing
+    mono suffixes like ``option_map$Int_Bool`` instead of
+    ``option_map$Int_Int`` and trapping at runtime with ``indirect
+    call type mismatch``.
+
+    Post-fix (this commit): both AnonFn literals AND SlotRef-typed-as-
+    FnType-alias args flow through the shared ``_resolve_arg_fn_shape``
+    helper, binding the closure's return type uniformly.
+
+    Two tests below pin the contract:
+
+    1. ``option_map(opt, fn_alias_slot)`` produces ``option_map$Int_Int``
+       and runs correctly (not a runtime trap).
+    2. The template-only ``[E602]``/``[E604]`` warnings on the prelude
+       generics are suppressed in programs that successfully call them
+       — audit recommendation 2 from #604.
+    """
+
+    _SLOT_FN_SRC = """
+type Doubler = fn(Int -> Int) effects(pure);
+
+private fn use_map(@Option<Int>, @Doubler -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  option_map(@Option<Int>.0, @Doubler.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(use_map(Some(10), fn(@Int -> @Int) effects(pure) { @Int.0 * 2 }), 0)
+}
+"""
+
+    def test_mono_suffix_correct_for_slotref_fn_alias_arg(self) -> None:
+        """`option_map(opt, @Doubler.0)` where ``Doubler = fn(Int -> Int)``
+        produces a mono clone with suffix ``$Int_Int`` (not ``$Int_Bool``)
+        and runs without trapping.
+
+        Pre-fix this produced ``option_map$Int_Bool`` and trapped at
+        runtime with ``wasm trap: indirect call type mismatch`` because
+        the closure's i64 return mismatched the i32 (Bool) the wrongly-
+        suffixed mono clone expected.
+
+        CR-2 on PR #659 — the WAT-only assertions pinned suffix
+        correctness but didn't catch the actual user-visible failure
+        mode (the runtime trap).  Add a runtime execution assertion
+        so a regression in indirect-call signature wiring fails the
+        test rather than silently slipping through with the right
+        suffix in WAT but wrong execution.
+        """
+        result = _compile_ok(self._SLOT_FN_SRC)
+        # The compiled module should contain the correctly-suffixed
+        # mono clone, not the wrongly-suffixed one.  Use
+        # boundary-safe regex (CR-10 on PR #659) so longer variants
+        # like `$option_map$Int_Int_X` don't slip past as substrings
+        # of the expected token.
+        wat = result.wat or ""
+        assert re.search(r"\$option_map\$Int_Int(?![A-Za-z0-9_])", wat), (
+            f"Expected correctly-suffixed mono clone "
+            f"`$option_map$Int_Int` in WAT; got WAT containing "
+            f"option_map suffixes: "
+            f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
+        )
+        assert not re.search(r"\$option_map\$Int_Bool(?![A-Za-z0-9_])", wat), (
+            f"Wrong-suffix mono clone `$option_map$Int_Bool` "
+            f"should not appear post-#604 fix; found in WAT"
+        )
+        # F8 on PR #659 review — independently pin the WASM-side
+        # call-site rewriter (`vera/wasm/calls.py::_resolve_arg_fn_shape_wasm`
+        # + `_infer_fn_alias_type_args_wasm`).  The function
+        # definition `(func $option_map$Int_Int ...)` is emitted by
+        # the monomorphizer at Pass 1.5; the `call` instruction is
+        # emitted later by the WASM call-site rewriter, which has
+        # an independent SlotRef-FnType-alias resolution path.  A
+        # regression where Pass 1.5 produces the right clone but
+        # the rewriter mangles the call to a different name would
+        # pass the function-definition assertion above but fail at
+        # WASM validation with `unknown function $option_map$<wrong>`.
+        # Assert both names match by counting `call $option_map$Int_Int`
+        # (or `return_call $option_map$Int_Int`) occurrences.
+        call_pattern = (
+            r"(?:^|\s)(?:return_)?call\s+\$option_map\$Int_Int"
+            r"(?![A-Za-z0-9_])"
+        )
+        assert re.search(call_pattern, wat, re.MULTILINE), (
+            f"Expected a `call $option_map$Int_Int` (or "
+            f"`return_call`) instruction in WAT — without it the "
+            f"call-site rewriter's mangled name doesn't match the "
+            f"mono clone's definition.  Got option_map references: "
+            f"{[line.strip() for line in wat.splitlines() if 'option_map' in line]}"
+        )
+        # Runtime pin: execute and confirm no trap.  `Some(10) * 2 = 20`.
+        # Pre-fix this would have trapped with
+        # `wasm trap: indirect call type mismatch`.
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.value == 20, (
+            f"Expected main() to return 20 (Some(10) * 2 unwrapped); "
+            f"got {exec_result.value!r}.  A non-20 result OR a trap "
+            f"signals indirect-call signature regression."
+        )
+
+    def test_parameterised_alias_substitutes_type_args(self) -> None:
+        """`option_map(opt, @Mapper<Int>.0)` where
+        ``type Mapper<T> = fn(T -> T)`` substitutes ``T → Int`` in
+        the alias body before unifying against the generic call's
+        ``OptionMapFn<A, B>`` param.
+
+        CR-4 / CR-5 on PR #659: without substitution, the
+        ``_resolve_arg_fn_shape`` helper returned the raw alias body
+        ``fn(T -> T)`` and the downstream
+        ``_infer_fn_alias_type_args`` matcher bound alias-local names
+        (``A → T``, ``B → T``) instead of concrete ones.  The mono
+        suffix would have been ``option_map$T_T`` rather than
+        ``option_map$Int_Int`` — wrong shape, wouldn't match the
+        clone Pass 1.5 registered, runtime trap.
+        """
+        src = """
+type Mapper<T> = fn(T -> T) effects(pure);
+
+private fn use_map(@Option<Int>, @Mapper<Int> -> @Option<Int>)
+  requires(true) ensures(true) effects(pure)
+{
+  option_map(@Option<Int>.0, @Mapper<Int>.0)
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  option_unwrap_or(use_map(Some(7), fn(@Int -> @Int) effects(pure) { @Int.0 * 3 }), 0)
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat or ""
+        # Boundary-safe regex (CR-10 on PR #659) — see sibling test.
+        assert re.search(r"\$option_map\$Int_Int(?![A-Za-z0-9_])", wat), (
+            f"Expected `$option_map$Int_Int` from parameterised "
+            f"alias `Mapper<Int>`; got option_map suffixes: "
+            f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
+        )
+        # Negative pin (CR-9 on PR #659): the unsubstituted alias-
+        # local-name clone must not be emitted alongside the correct
+        # one.  A bug that produced both (e.g. partial substitution
+        # leaking the raw alias body into a second registration) would
+        # otherwise slip past the positive assertion.
+        assert not re.search(r"\$option_map\$T_T(?![A-Za-z0-9_])", wat), (
+            f"Unsubstituted parameterised-alias clone "
+            f"`$option_map$T_T` should not appear after the "
+            f"`T → Int` substitution fix; found in WAT"
+        )
+        # Runtime pin — `Some(7) * 3 = 21`.
+        exec_result = execute(result, fn_name="main")
+        assert exec_result.value == 21
+
+    def test_template_warning_suppressed_when_mono_clone_compiles(
+        self,
+    ) -> None:
+        """Audit recommendation 2 from #604: template-only `[E602]` /
+        `[E604]` warnings on a generic decl are suppressed when at
+        least one mono clone of that decl successfully compiles.
+
+        Pre-fix every program that imported the prelude saw 5 spurious
+        warnings about ``option_unwrap_or`` / ``option_map`` / etc.
+        even when those functions worked end-to-end via mono.  The
+        warnings were misleading (they suggested a problem when there
+        was none) and drowned out genuine `[E602]` skips in the
+        Layer 1 e602 gate (#656).
+
+        Post-fix the post-compile suppression pass in
+        ``vera/codegen/core.py::compile_program`` drops the spurious
+        warnings.  Programs that never call a given generic still see
+        the warning (preserving the "this generic can't compile and
+        you're never using a mono clone" signal).
+        """
+        result = _compile_ok(self._SLOT_FN_SRC)
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        # The two generics actually called in `main` — `option_map`
+        # and `option_unwrap_or` — must not appear in template-only
+        # warning diagnostics.
+        for fn_name in ("option_map", "option_unwrap_or"):
+            offending = [
+                d for d in warnings
+                if d.error_code in {"E602", "E604", "E605"}
+                and d.description.startswith(f"Function '{fn_name}' ")
+            ]
+            assert not offending, (
+                f"Template-only warning for '{fn_name}' should be "
+                f"suppressed (mono clones compiled); got: "
+                f"{[d.description for d in offending]}"
+            )
+
+    def test_template_warning_NOT_suppressed_when_generic_never_called(
+        self,
+    ) -> None:
+        """Negative control for the suppression pass.
+
+        A user-defined generic ``forall<T>`` decl with a bare ``@T``
+        parameter that is **never called** still emits its template
+        warning.  Pre-fix this would have emitted `[E604]` ("function
+        has unsupported parameter type") for every prelude generic on
+        every compile; post-fix the suppression pass only fires when
+        at least one mono clone of the generic actually compiled
+        (`compiled_mono_bases` in
+        `vera/codegen/core.py::compile_program`).  An over-broad
+        suppressor that dropped *all* template warnings would pass
+        the sibling test above but fail this one.
+
+        CR-7 on PR #659.
+        """
+        src = """
+private forall<T> fn unused_generic(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  @T.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  42
+}
+"""
+        result = _compile_ok(src)
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        offending = [
+            d for d in warnings
+            if d.error_code in {"E602", "E604", "E605"}
+            and d.description.startswith("Function 'unused_generic' ")
+        ]
+        assert offending, (
+            f"Expected `unused_generic` template warning to fire (no "
+            f"mono clone exists since the generic is never called); "
+            f"got warnings: "
+            f"{[d.description for d in warnings]}"
+        )
+
+
 class TestE602NodeLevelReasons626Layer3:
     """`#626` Layer 3 (PR #658) — `[E602]` diagnostics now carry a
     node-level span and a specific reason string, rather than the

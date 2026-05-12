@@ -495,13 +495,24 @@ class CodeGenerator(
                             if wfn_wat is not None:
                                 functions_wat.append(wfn_wat)
 
-        # Compile monomorphized functions
+        # Compile monomorphized functions.
+        #
+        # Track base names whose mono bodies compiled successfully —
+        # not merely registered in `_fn_sigs` (which happens earlier in
+        # Pass 1.5 for every clone the monomorphizer generates,
+        # including ones whose body later fails to compile).  This set
+        # feeds the template-warning suppression below: we suppress
+        # only when at least one mono clone actually emitted WAT,
+        # preserving the diagnostic surface for genuinely-broken
+        # generics whose clones all fail.
+        compiled_mono_bases: set[str] = set()
         for mdecl in mono_decls:
             orig_name = mdecl.name.split("$")[0]
             is_public = fn_visibility.get(orig_name) == "public"
             fn_wat = self._compile_fn(mdecl, export=is_public)
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
+                compiled_mono_bases.add(orig_name)
                 if is_public:
                     exports.append(mdecl.name)
 
@@ -517,6 +528,65 @@ class CodeGenerator(
             fn_wat = self._compile_fn(idecl, export=False)
             if fn_wat is not None:
                 functions_wat.append(fn_wat)
+
+        # #604 / #655 — suppress spurious template-only warnings.
+        #
+        # Generic ``forall<T>`` function templates can NEVER be compiled
+        # directly (their type vars have no monomorphic WASM
+        # representation).  Each call site produces a monomorphized
+        # clone that compiles fine in the normal flow.  Emitting
+        # `[E604]` / `[E602]` / `[E605]` on the *template* is pure noise
+        # in that case — the function works end-to-end via mono, but
+        # the user sees a confusing warning about a function that's
+        # actually fine.
+        #
+        # Targeted suppression: drop every E602/E604/E605 diagnostic
+        # whose source is a forall-decl IF at least one mono clone of
+        # that decl successfully *compiled* (`_compile_fn` returned
+        # non-None, recorded in `compiled_mono_bases` above).  CR-3
+        # on PR #659: pre-fix this checked `_fn_sigs`, which is
+        # populated in Pass 1.5 *before* mono bodies are compiled —
+        # so a broken-but-registered clone would have wrongly
+        # suppressed its template's diagnostic, hiding the only
+        # pre-runtime signal of a broken generic.  Now we track
+        # actually-compiled clones explicitly.
+        #
+        # If no mono clone compiled, the warning stays — that signals
+        # either a genuinely-broken generic or an unused declaration
+        # the user wanted to compile but couldn't.
+        #
+        # This is audit recommendation 2 from the #604 investigation
+        # comment.  Pre-fix, the warnings were the only signal that
+        # `option_map$Int_Bool`-shape mono-suffix bugs existed;
+        # post-fix (the mono-suffix bug in monomorphize.py is closed),
+        # they're pure noise for the catalogued cases.
+        forall_decl_names: set[str] = set()
+        for tld in program.declarations:
+            decl = tld.decl
+            if isinstance(decl, ast.FnDecl) and decl.forall_vars:
+                forall_decl_names.add(decl.name)
+        if forall_decl_names:
+            mono_compiled = compiled_mono_bases & forall_decl_names
+            if mono_compiled:
+                # Filter out template warnings for fns whose mono
+                # clones compiled.  Keep all other diagnostics intact.
+                # Match on description prefix `Function 'NAME' ` —
+                # the format used by both `_is_compilable` in
+                # `vera/codegen/compilability.py` ([E604]/[E605]) and
+                # the [E602] emit sites in `vera/codegen/functions.py`
+                # (reached via `_compile_fn`).
+                suppressible_codes = {"E602", "E604", "E605"}
+                kept: list[Diagnostic] = []
+                for d in self.diagnostics:
+                    if d.error_code in suppressible_codes:
+                        suppressed = any(
+                            d.description.startswith(f"Function '{name}' ")
+                            for name in mono_compiled
+                        )
+                        if suppressed:
+                            continue
+                    kept.append(d)
+                self.diagnostics = kept
 
         # If any exported function takes String/Array (i32_pair) params, ensure
         # the heap allocator is compiled in so CLI callers can allocate args.

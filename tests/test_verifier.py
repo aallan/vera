@@ -1758,7 +1758,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 254 T1 / 26 T3 / 280 total (current).
+        """All examples together: 252 T1 / 26 T3 / 278 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -1775,6 +1775,10 @@ private fn sum(@List<Int> -> @Int)
         * 254/26/280 after `life.vera` (Stage 12 launch) contributed
           32 T1 + 32 contracts including the formal Conway B3/S23
           rule on `next_cell`.
+        * 252/26/278 after v0.0.145 — `examples/closures.vera` shed
+          the private `option_map` workaround (#604 fix); the removed
+          shadow had a `requires(true) ensures(true)` pair
+          contributing 2 T1 + 2 contracts that no longer appear.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -1785,9 +1789,9 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 254, f"Expected 254 T1, got {t1}"
+        assert t1 == 252, f"Expected 252 T1, got {t1}"
         assert t3 == 26, f"Expected 26 T3, got {t3}"
-        assert total == 280, f"Expected 280 total, got {total}"
+        assert total == 278, f"Expected 278 total, got {total}"
 
 
 # =====================================================================

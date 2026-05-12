@@ -11,6 +11,7 @@ from dataclasses import fields, replace
 from typing import Any
 
 from vera import ast
+from vera.wasm.inference import substitute_type_vars
 
 # Types that satisfy the built-in abilities.
 _EQ_TYPES: frozenset[str] = frozenset({
@@ -331,20 +332,26 @@ class MonomorphizationMixin:
 
         # Parameterized type like Option<T> — match type args
         if param_te.type_args:
-            # Handle type alias for FnType matched against AnonFn arg
-            if isinstance(arg, ast.AnonFn):
-                alias_concrete = self._infer_fn_alias_type_args(
-                    param_te, arg,
-                )
-                if alias_concrete is not None:
-                    for param_ta, concrete_name in zip(
-                        param_te.type_args, alias_concrete,
-                    ):
-                        if (isinstance(param_ta, ast.NamedType)
-                                and param_ta.name in forall_vars
-                                and param_ta.name not in mapping):
-                            mapping[param_ta.name] = concrete_name
-                    return
+            # Handle type alias for FnType matched against a callable
+            # arg — either an AnonFn literal or a SlotRef whose static
+            # type is itself an FnType alias.  #604: pre-fix, only the
+            # AnonFn branch fired; SlotRef-typed-as-FnType-alias args
+            # like ``@Doubler.0`` skipped this branch and left the
+            # ``B`` type var unbound, hitting the ``"Bool"`` phantom-
+            # var default at result-building time and producing wrong
+            # mono suffixes.  The helper now resolves either shape.
+            alias_concrete = self._infer_fn_alias_type_args(
+                param_te, arg,
+            )
+            if alias_concrete is not None:
+                for param_ta, concrete_name in zip(
+                    param_te.type_args, alias_concrete,
+                ):
+                    if (isinstance(param_ta, ast.NamedType)
+                            and param_ta.name in forall_vars
+                            and param_ta.name not in mapping):
+                        mapping[param_ta.name] = concrete_name
+                return
 
             arg_info = self._get_arg_type_info(arg, ctor_to_adt)
             if arg_info and arg_info[0] == param_te.name:
@@ -589,21 +596,109 @@ class MonomorphizationMixin:
                     return self._get_arg_type_info(expr.args[0], ctor_to_adt)
         return None
 
+    def _resolve_arg_fn_shape(
+        self,
+        arg: ast.Expr,
+    ) -> tuple[tuple[ast.TypeExpr, ...], ast.TypeExpr] | None:
+        """Return ``(param_types, return_type)`` for an arg that's callable.
+
+        Two arg shapes resolve:
+
+        * ``AnonFn`` literal — its declared params + return type.
+        * ``SlotRef`` whose static type is an FnType alias (e.g.
+          ``@Doubler.0`` where ``type Doubler = fn(Int -> Int)``) —
+          the alias's resolved params + return type.  For a
+          *parameterised* alias like
+          ``type Mapper<T> = fn(T -> T) effects(pure)``, the
+          ``SlotRef``'s type-args are substituted into the alias body
+          first so ``@Mapper<Int>.0`` returns
+          ``(NamedType("Int"),), NamedType("Int")`` rather than the
+          unsubstituted ``T``.  Without substitution, the downstream
+          ``_infer_fn_alias_type_args`` matcher would bind alias-local
+          names instead of concrete ones, producing mono suffixes
+          like ``option_map$T_T`` rather than ``option_map$Int_Int``
+          (CR-4 on PR #659).
+
+        Returns ``None`` for any other arg shape.  Used by
+        :meth:`_infer_fn_alias_type_args` to bind generic type variables
+        from a closure-shaped argument uniformly across both forms.
+
+        Fixes #604: pre-fix, only the AnonFn form was resolved.  When a
+        prelude generic like ``option_map<A, B>(@Option<A>, @OptionMapFn<A, B>)``
+        was called with a ``SlotRef`` typed as an FnType alias instead
+        of an inline ``AnonFn``, ``B`` failed to bind and defaulted to
+        ``Bool`` (the phantom-var fallback in :meth:`_infer_type_args_from_call`),
+        producing the wrong mono suffix (``option_map$Int_Bool``) and
+        an ``indirect call type mismatch`` trap at runtime.
+        """
+        if isinstance(arg, ast.AnonFn):
+            return (tuple(arg.params), arg.return_type)
+        if isinstance(arg, ast.SlotRef):
+            type_aliases: dict[str, ast.TypeExpr] = getattr(
+                self, "_type_aliases", {},
+            )
+            type_alias_params: dict[str, tuple[str, ...]] = getattr(
+                self, "_type_alias_params", {},
+            )
+            alias_te = type_aliases.get(arg.type_name)
+            if isinstance(alias_te, ast.FnType):
+                # Parameterised alias — substitute the SlotRef's
+                # type_args into the alias body before returning.
+                # Length-mismatch or missing type_args here is a
+                # latent same-class bug as #604 (#659 review
+                # finding F3): without enough type-args we can't
+                # instantiate the alias body, fall through to the
+                # legacy path that fails to bind the generic's
+                # type-vars, and the mono mangler emits a literal
+                # alias-local name (e.g. `option_map$Int_B`)
+                # producing a `call_indirect` trap at runtime.
+                # The type checker accepts `@Pair<Int>.0` against
+                # a `Pair<A, B>` alias today — that upstream gap
+                # is tracked as a separate follow-up.  Until then
+                # we fall through silently here (preserving
+                # pre-#659 behaviour for the malformed-input path),
+                # rather than emit a misleading E699 (this is a
+                # type-checker bug, not a compiler invariant
+                # violation).
+                alias_params = type_alias_params.get(arg.type_name)
+                if (alias_params
+                        and arg.type_args
+                        and len(alias_params) == len(arg.type_args)):
+                    subst: dict[str, ast.TypeExpr] = dict(
+                        zip(alias_params, arg.type_args),
+                    )
+                    substituted_params = tuple(
+                        substitute_type_vars(p, subst)
+                        for p in alias_te.params
+                    )
+                    substituted_return = substitute_type_vars(
+                        alias_te.return_type, subst,
+                    )
+                    return (substituted_params, substituted_return)
+                return (tuple(alias_te.params), alias_te.return_type)
+        return None
+
     def _infer_fn_alias_type_args(
         self,
         param_te: ast.NamedType,
-        anon_fn: ast.AnonFn,
+        arg: ast.Expr,
     ) -> tuple[str, ...] | None:
-        """Infer concrete types for a type alias's params from an AnonFn.
+        """Infer concrete types for a type alias's params from a callable arg.
 
         When ``param_te`` is e.g. ``NamedType("OptionMapFn", [A, B])``
-        which aliases ``fn(A -> B)``, and the argument is an AnonFn
+        which aliases ``fn(A -> B)``, and the argument is callable (an
+        ``AnonFn`` literal or a ``SlotRef`` typed as an FnType alias)
         with concrete param/return types, infer one concrete type name
         per alias type parameter.
 
         Returns a tuple of concrete type names aligned to the alias's
-        type parameters, or None if inference fails.
+        type parameters, or ``None`` if inference fails.
         """
+        arg_shape = self._resolve_arg_fn_shape(arg)
+        if arg_shape is None:
+            return None
+        arg_params, arg_return = arg_shape
+
         type_aliases: dict[str, ast.TypeExpr] = getattr(
             self, "_type_aliases", {},
         )
@@ -623,27 +718,27 @@ class MonomorphizationMixin:
         ):
             return None
 
-        # Match the FnType body against the AnonFn to build an
+        # Match the FnType body against the arg's shape to build an
         # alias-local mapping:  alias_param_name -> concrete_type_name
         alias_mapping: dict[str, str] = {}
 
         # Match parameter types positionally
-        for fn_param_te, anon_param_te in zip(
-            alias_te.params, anon_fn.params,
+        for fn_param_te, arg_param_te in zip(
+            alias_te.params, arg_params,
         ):
             if (
                 isinstance(fn_param_te, ast.NamedType)
                 and fn_param_te.name in alias_params
-                and isinstance(anon_param_te, ast.NamedType)
+                and isinstance(arg_param_te, ast.NamedType)
             ):
-                alias_mapping[fn_param_te.name] = anon_param_te.name
+                alias_mapping[fn_param_te.name] = arg_param_te.name
 
         # Match return type
         ret = alias_te.return_type
         if isinstance(ret, ast.NamedType) and ret.name in alias_params:
-            if isinstance(anon_fn.return_type, ast.NamedType):
-                alias_mapping[ret.name] = anon_fn.return_type.name
-            elif isinstance(anon_fn.return_type, ast.FnType):
+            if isinstance(arg_return, ast.NamedType):
+                alias_mapping[ret.name] = arg_return.name
+            elif isinstance(arg_return, ast.FnType):
                 # Return type is itself a FnType — map to "Fn"
                 alias_mapping[ret.name] = "Fn"
         # Handle ADT return types like Option<B> where B is an alias param
@@ -652,11 +747,11 @@ class MonomorphizationMixin:
                 if (
                     isinstance(ret_ta, ast.NamedType)
                     and ret_ta.name in alias_params
-                    and isinstance(anon_fn.return_type, ast.NamedType)
+                    and isinstance(arg_return, ast.NamedType)
                 ):
                     # For Option<B> matched against Option<Int>, extract
-                    # B from the AnonFn's return type args
-                    if anon_fn.return_type.type_args:
+                    # B from the arg's return type args
+                    if arg_return.type_args:
                         idx = [
                             i for i, rta in enumerate(ret.type_args)
                             if (isinstance(rta, ast.NamedType)
@@ -664,8 +759,8 @@ class MonomorphizationMixin:
                         ]
                         if idx:
                             pos = idx[0]
-                            if pos < len(anon_fn.return_type.type_args):
-                                art = anon_fn.return_type.type_args[pos]
+                            if pos < len(arg_return.type_args):
+                                art = arg_return.type_args[pos]
                                 if isinstance(art, ast.NamedType):
                                     alias_mapping[ret_ta.name] = art.name
 

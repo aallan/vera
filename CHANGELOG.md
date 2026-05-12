@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.145] - 2026-05-11
+
+### Fixed
+
+- **[#604](https://github.com/aallan/vera/issues/604) / [#655](https://github.com/aallan/vera/issues/655) Shape A** — generic prelude combinator mono clones now produce the correct type-arg suffix when the closure argument is a `SlotRef` typed as an FnType alias (e.g. `@Doubler.0` where `type Doubler = fn(Int -> Int)`).  Pre-fix `_unify_param_arg` in `vera/codegen/monomorphize.py` had an `AnonFn`-specific alias-resolution path; `SlotRef` args typed as FnType aliases skipped that path and left the closure's return type variable unbound.  The unbound type var fell to the `"Bool"` phantom-var fallback at result-building time, producing mono suffixes like `option_map$Int_Bool` instead of `option_map$Int_Int` and trapping at runtime with `wasm trap: indirect call type mismatch`.  Post-fix: both `AnonFn` literals and `SlotRef`-typed-as-FnType-alias args flow through a shared `_resolve_arg_fn_shape` helper, binding the closure's return type uniformly.  Same fix applied at the WASM call-site rewriting layer (`vera/wasm/calls.py::_infer_fn_alias_type_args_wasm`).  Three of the five `[E602]`/`[E604]` prelude-skip cases (`option_map`, `option_and_then`, `result_map`) close at runtime; the other two (`option_unwrap_or`, `result_unwrap_or`) were already working via mono and only emitted misleading template warnings.
+
+- **[#604](https://github.com/aallan/vera/issues/604) / [#655](https://github.com/aallan/vera/issues/655) Shape A — template-warning suppression** — audit recommendation 2 from the #604 investigation comment: post-compile suppression pass in `vera/codegen/core.py::compile_program` drops `[E602]` / `[E604]` / `[E605]` template-only warnings on generic `forall<T>` decls whose mono clones successfully compile.  Pre-fix every program importing the prelude saw 5 spurious warnings about `option_unwrap_or` / `option_map` / `option_and_then` / `result_unwrap_or` / `result_map` even when those functions worked end-to-end via mono.  Post-fix the warnings only fire for forall decls whose generic body cannot be compiled AND has no working mono clone — preserving the "this generic can never compile and you're never using a mono clone of it" signal for genuinely-broken or unused user generics, while removing the prelude-noise.  Allowlist shrinks from 11 to 6 entries (5 user-code generics from #655 Shape A removed; the 6 remaining are the prelude generics still firing in test files that don't call them, plus the `head` real codegen gap).
+
+- **Documentation fix in `CLAUDE.md` release-workflow section** — "Stage 9 table" reference (stale since the project moved through Stages 10, 11, 12) replaced with a stage-agnostic instruction: "the **most recent Stage table** in `HISTORY.md`" with a `grep "^## Stage" HISTORY.md | tail -1` hint for confirming the current stage before writing.  Caught during the 2026-05-11 review cycle.
+
 ### Added
 
 - **Layer 3 of [#626](https://github.com/aallan/vera/issues/626)** — new `vera/skip.py` with two control-flow exception classes: `CodegenSkip(node, reason)` (raised when a translator hits an unsupported AST shape; caught at the `_compile_fn` / `_compile_lifted_closure` boundary and converted to a structured `[E602]` diagnostic with the unsupported-node's source span) and `CodegenInvariantError(msg, node=None)` (raised on states that type-check should have rejected; surfaced as a new `[E699]` "Internal compiler error" at severity=`error` so `vera compile` exits non-zero — compiler bugs shouldn't be maskable as soft warnings in CI logs).  An audit of all 372 `return None` sites in `vera/codegen/**` and `vera/wasm/**` classified each into SILENT_SKIP / PROPAGATE / OPTIONAL_RETURN / INVARIANT_DEFENSIVE buckets; **104 SILENT_SKIP sites converted to `raise CodegenSkip`** in this PR (55 in `calls_arrays.py` via a shared `_array_elem_triad_or_skip` helper, 24 in `data.py`, 11 in `calls_containers.py`, 9 in `calls_handlers.py`, 4 in `context.py`, 1 in `calls.py`).  Pre-conversion these all silently dropped to a generic enclosing-function-level `[E602]`; post-conversion they each emit a source-located diagnostic pointing at the specific unsupported expression.  The remaining 39 INVARIANT_DEFENSIVE sites and the 154 PROPAGATE sites that may now be unreachable are tracked in [#657](https://github.com/aallan/vera/issues/657).
@@ -2139,7 +2149,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.144...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.145...HEAD
+[0.0.145]: https://github.com/aallan/vera/compare/v0.0.144...v0.0.145
 [0.0.144]: https://github.com/aallan/vera/compare/v0.0.143...v0.0.144
 [0.0.143]: https://github.com/aallan/vera/compare/v0.0.142...v0.0.143
 [0.0.142]: https://github.com/aallan/vera/compare/v0.0.141...v0.0.142

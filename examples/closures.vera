@@ -20,20 +20,6 @@ private fn apply(@IntToInt, @Int -> @Int)
   apply_fn(@IntToInt.0, @Int.0)
 }
 
--- Map a function over an optional value
-type IntMapper = fn(Int -> Int) effects(pure);
-
-private fn option_map(@Option<Int>, @IntMapper -> @Option<Int>)
-  requires(true)
-  ensures(true)
-  effects(pure)
-{
-  match @Option<Int>.0 {
-    None -> None,
-    Some(@Int) -> Some(apply_fn(@IntMapper.0, @Int.0))
-  }
-}
-
 -- End-to-end test: create a closure, apply it, return the result
 public fn test_closure(@Unit -> @Int)
   requires(true)
@@ -44,7 +30,13 @@ public fn test_closure(@Unit -> @Int)
   apply(@IntToInt.0, 5)
 }
 
--- Test: map a closure over an Option
+-- Test: map a captured closure over an Option using the prelude
+-- `option_map` directly.  The closure arg is a SlotRef typed with
+-- an FnType alias (`@IntToInt.0`); the prelude generic
+-- `option_map<A, B>(@Option<A>, @OptionMapFn<A, B>)` resolves the
+-- alias to its underlying FnType and binds `A := Int`, `B := Int`
+-- against the unified `fn(Int -> Int)` shape (fixed in v0.0.145
+-- — #604).
 public fn test_option_map(@Unit -> @Int)
   requires(true)
   ensures(true)
