@@ -63,6 +63,54 @@ class ResolutionMixin:
         # Type alias?
         alias = self.env.type_aliases.get(name)
         if alias:
+            # #660 — validate type-argument arity against the alias's
+            # declared type parameters.  Pre-fix the `zip` below
+            # silently truncated on length mismatch, producing a
+            # substitution where some alias-local names stayed
+            # unsubstituted; downstream codegen then leaked literal
+            # alias-local names into mono suffixes (`option_map$Int_B`)
+            # and the call site referenced a non-existent
+            # function-table entry → `unknown table 0: table index
+            # out of bounds` at runtime.  The arity mismatch is a
+            # user error that the type checker is the right place
+            # to surface.
+            n_supplied = len(te.type_args) if te.type_args else 0
+            n_expected = (
+                len(alias.type_params) if alias.type_params else 0
+            )
+            if n_supplied != n_expected:
+                params_phrase = (
+                    f"`<{', '.join(alias.type_params)}>`"
+                    if alias.type_params
+                    else "no type parameters"
+                )
+                self._error(
+                    te,
+                    f"Type alias `{name}` expects {n_expected} type "
+                    f"argument(s) but {n_supplied} supplied.",
+                    rationale=(
+                        f"`{name}` is declared with {params_phrase}.  "
+                        f"Each use of the alias must supply exactly "
+                        f"{n_expected} type argument(s) so the alias "
+                        f"body can be fully instantiated.  Without "
+                        f"complete arguments, downstream code "
+                        f"generation cannot bind the alias-local "
+                        f"type variables and may leak them into "
+                        f"mangled symbol names — see #660."
+                    ),
+                    fix=(
+                        f"Supply the missing type argument(s) at "
+                        f"every use site of `{name}`, e.g. "
+                        f"`{name}<Int" + (", Int" * max(0, n_expected - 1)) + ">`."
+                        if n_supplied < n_expected
+                        else f"Remove the extra type argument(s) "
+                             f"so that `{name}` is given exactly "
+                             f"{n_expected}."
+                    ),
+                    spec_ref='Chapter 2, Section 2.4 "Type Aliases"',
+                    error_code="E133",
+                )
+                return UnknownType()
             if te.type_args and alias.type_params:
                 args = tuple(self._resolve_type(a) for a in te.type_args)
                 mapping = dict(zip(alias.type_params, args))

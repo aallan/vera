@@ -424,6 +424,203 @@ public fn main(@Unit -> @Unit)
 
 
 # =====================================================================
+# #661 — cross-module name collision in template-warning suppression
+# =====================================================================
+
+
+class TestCrossModuleNameCollision661:
+    """`#661` — pin the invariant that bare-name keying in
+    `compile_program`'s template-warning suppression set
+    (`compiled_mono_bases` / `forall_decl_names`) cannot
+    cross-suppress between modules.
+
+    The original concern: if two modules both declare
+    `forall<T> fn shared_name(...)`, the suppression set keys on
+    the bare base name `"shared_name"` and could mask a real
+    diagnostic on the imported version when only the local one
+    compiles.  Investigation in #661 showed the scenario is not
+    reachable today because:
+
+    1. Pass 2.5 in `compile_program` skips imported FnDecls whose
+       names are already in `fn_visibility` (= local
+       declarations).  An imported forall with the same name as a
+       local one is dropped before its template warning could be
+       emitted.
+    2. `forall_decl_names` is built from `program.declarations`
+       only, never from imports.  Only local forall decls are
+       eligible for suppression.
+
+    So at most one template warning per base name lands in
+    `self.diagnostics`, and bare-name matching in the suppression
+    filter cannot cross-suppress.  This test compiles a
+    name-shadowing fixture to pin both invariants.  If Pass 2.5's
+    dedup ever loosens, or the mono pipeline starts carrying
+    module attribution, this test will flag the change.
+    """
+
+    @staticmethod
+    def _resolved(
+        path: tuple[str, ...], source: str,
+    ) -> "ResolvedModule":
+        import tempfile
+        from pathlib import Path
+        from vera.resolver import ResolvedModule as RM
+        # Explicit utf-8 encoding (Windows-portability) + try/finally
+        # cleanup so the temp file is removed after parse + transform.
+        # Safe because `compile()` works off the in-memory `source`
+        # string + the AST `prog`, not by re-reading the file path
+        # (CR-2 on PR #664).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False,
+            encoding="utf-8",
+        ) as f:
+            f.write(source)
+            f.flush()
+            fpath = f.name
+        try:
+            tree = parse_file(fpath)
+            prog = transform(tree)
+            return RM(
+                path=path, file_path=Path(fpath), program=prog,
+                source=source,
+            )
+        finally:
+            Path(fpath).unlink(missing_ok=True)
+
+    def test_cross_module_forall_name_shadow_compiles_and_runs(
+        self,
+    ) -> None:
+        """Two modules with the same `forall<T> fn shared_name`
+        compile and run correctly — the local one shadows the
+        import (no [E608] collision, no missing-function trap)."""
+        a_source = """\
+public forall<T> fn shared_name(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  @T.0
+}
+"""
+        main_source = """\
+import a;
+
+private forall<T> fn shared_name(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  @T.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  shared_name(42)
+}
+"""
+        mod = self._resolved(("a",), a_source)
+        import tempfile
+        from pathlib import Path
+        # Explicit utf-8 + try/finally cleanup (CR-2 on PR #664).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False,
+            encoding="utf-8",
+        ) as f:
+            f.write(main_source)
+            f.flush()
+            path = f.name
+        try:
+            tree = parse_file(path)
+            ast_program = transform(tree)
+            result = compile(
+                ast_program, source=main_source, file=path,
+                resolved_modules=[mod],
+            )
+            errors = [d for d in result.diagnostics if d.severity == "error"]
+            assert not errors, (
+                f"Cross-module forall shadow should not produce errors; "
+                f"got: {[e.description for e in errors]}"
+            )
+            exec_result = execute(result, fn_name="main")
+            assert exec_result.value == 42
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_suppression_does_not_cross_modules(self) -> None:
+        """Compile the shadow fixture and verify the suppression
+        filter doesn't accidentally drop a diagnostic that would
+        belong to an unrelated imported function."""
+        # Same fixture as the test above, but check the warnings
+        # surface: the only template warnings should be on the
+        # prelude generics that aren't called here (which is the
+        # pre-existing behaviour); there should be no warning
+        # about `shared_name` since the local mono clone compiles
+        # and suppresses correctly.
+        a_source = """\
+public forall<T> fn shared_name(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  @T.0
+}
+"""
+        main_source = """\
+import a;
+
+private forall<T> fn shared_name(@T -> @T)
+  requires(true) ensures(true) effects(pure)
+{
+  @T.0
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  shared_name(42)
+}
+"""
+        mod = self._resolved(("a",), a_source)
+        import tempfile
+        from pathlib import Path
+        # Explicit utf-8 + try/finally cleanup (CR-2 on PR #664).
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".vera", delete=False,
+            encoding="utf-8",
+        ) as f:
+            f.write(main_source)
+            f.flush()
+            path = f.name
+        try:
+            tree = parse_file(path)
+            ast_program = transform(tree)
+            result = compile(
+                ast_program, source=main_source, file=path,
+                resolved_modules=[mod],
+            )
+            # Guard against silent pass-on-failure: if compile errored,
+            # the warning filter below would be empty and the assertion
+            # would incorrectly succeed.  Pin compilation success first.
+            errors = [d for d in result.diagnostics if d.severity == "error"]
+            assert result.ok, (
+                f"Compilation failed; suppression-filter assertion below "
+                f"would silently pass on empty warning list.  Errors: "
+                f"{[e.description for e in errors]}"
+            )
+            warnings = [d for d in result.diagnostics if d.severity == "warning"]
+            # No template warning on `shared_name` — its mono clone
+            # compiled, so the suppression correctly filtered it.
+            shared_warnings = [
+                d for d in warnings
+                if d.error_code in {"E602", "E604", "E605"}
+                and d.description.startswith("Function 'shared_name' ")
+            ]
+            assert not shared_warnings, (
+                f"Expected no [E602]/[E604]/[E605] warnings about "
+                f"`shared_name` (mono clone compiled, suppression "
+                f"should fire); got: "
+                f"{[d.description for d in shared_warnings]}"
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+
+# =====================================================================
 # Name collision detection (#110)
 # =====================================================================
 

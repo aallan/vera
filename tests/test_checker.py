@@ -5446,6 +5446,61 @@ private fn wrap(@Int -> @Wrapper<Int>)
 { Some(@Int.0) }
 """)
 
+    def test_alias_arity_mismatch_too_few_e133(self) -> None:
+        """`#660` — `vera check` rejects `@Pair<Int>` when
+        `Pair<A, B>` is declared with two type parameters.
+
+        Pre-fix the checker silently accepted this and the `zip`
+        in `_resolve_type` truncated, leaving the alias body's
+        `B` unsubstituted.  Downstream codegen leaked literal
+        `B` into mono suffixes (`option_map$Int_B`) → runtime
+        `call_indirect` trap.  Post-fix the checker rejects with
+        `[E133]` ("Type alias arity mismatch") at compile time.
+
+        Pin both the message AND the error code so a future
+        refactor that re-routes through a sibling diagnostic with
+        the same text but a different code is caught.
+        """
+        errs = _check_err("""
+type Pair<A, B> = fn(A -> B) effects(pure);
+
+public fn main(@Pair<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+""", "expects 2 type argument(s) but 1 supplied")
+        e133 = [e for e in errs if e.error_code == "E133"]
+        assert e133, (
+            f"Expected at least one diagnostic with error_code=E133; "
+            f"got: {[(e.error_code, e.description) for e in errs]}"
+        )
+
+    def test_alias_arity_mismatch_too_many_e133(self) -> None:
+        """Symmetric case: too many type-args also rejected with E133."""
+        errs = _check_err("""
+type Single<T> = Option<T>;
+
+public fn main(@Single<Int, Bool> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ 42 }
+""", "expects 1 type argument(s) but 2 supplied")
+        e133 = [e for e in errs if e.error_code == "E133"]
+        assert e133, (
+            f"Expected at least one diagnostic with error_code=E133; "
+            f"got: {[(e.error_code, e.description) for e in errs]}"
+        )
+
+    def test_alias_zero_args_when_zero_expected_ok(self) -> None:
+        """A non-parameterised alias accepts no type-args.  Pin
+        the arity check doesn't false-positive on the
+        zero-expected / zero-supplied case."""
+        _check_ok("""
+type Year = Int;
+
+public fn current(@Unit -> @Year)
+  requires(true) ensures(true) effects(pure)
+{ 2026 }
+""")
+
     # Line 84: Array/Tuple without type_args
     def test_array_without_type_args(self) -> None:
         """Bare Array (no type args) is accepted as AdtType(Array, ())."""
