@@ -15955,6 +15955,16 @@ public fn main(@Unit -> @Int)
             f"alias `Mapper<Int>`; got option_map suffixes: "
             f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
         )
+        # Negative pin (CR-9 on PR #659): the unsubstituted alias-
+        # local-name clone must not be emitted alongside the correct
+        # one.  A bug that produced both (e.g. partial substitution
+        # leaking the raw alias body into a second registration) would
+        # otherwise slip past the positive assertion.
+        assert "$option_map$T_T" not in wat, (
+            f"Unsubstituted parameterised-alias clone "
+            f"`$option_map$T_T` should not appear after the "
+            f"`T → Int` substitution fix; found in WAT"
+        )
         # Runtime pin — `Some(7) * 3 = 21`.
         exec_result = execute(result, fn_name="main")
         assert exec_result.value == 21
