@@ -5560,6 +5560,29 @@ public fn id(@A -> @A)
             f"got: {[(e.error_code, e.description) for e in errs]}"
         )
 
+    def test_cyclic_alias_refinement_e132(self) -> None:
+        """Cycles through a `RefinementType` wrapper (`type A = { @B
+        | true }; type B = A`) also flagged.  Pins the
+        `_alias_chain_target` helper's `RefinementType.base_type`
+        peeling — codegen's `_type_expr_to_wasm_type` recurses
+        through refinements unconditionally, so a cycle hidden
+        behind one is still a codegen-crash cycle (#648)."""
+        errs = _check_err("""
+type A = { @B | true };
+type B = A;
+
+public fn id(@A -> @A)
+  requires(true) ensures(true) effects(pure)
+{
+  @A.0
+}
+""", "Cyclic type alias")
+        e132 = [e for e in errs if e.error_code == "E132"]
+        assert e132, (
+            f"Expected at least one diagnostic with error_code=E132; "
+            f"got: {[(e.error_code, e.description) for e in errs]}"
+        )
+
     def test_acyclic_alias_chain_ok(self) -> None:
         """`type IntAlias = Int; type Pair = IntAlias` is an
         acyclic chain — must pass without false-positive E132 (#648)."""
