@@ -593,6 +593,15 @@ public fn main(@Unit -> @Int)
                 ast_program, source=main_source, file=path,
                 resolved_modules=[mod],
             )
+            # Guard against silent pass-on-failure: if compile errored,
+            # the warning filter below would be empty and the assertion
+            # would incorrectly succeed.  Pin compilation success first.
+            errors = [d for d in result.diagnostics if d.severity == "error"]
+            assert result.ok, (
+                f"Compilation failed; suppression-filter assertion below "
+                f"would silently pass on empty warning list.  Errors: "
+                f"{[e.description for e in errors]}"
+            )
             warnings = [d for d in result.diagnostics if d.severity == "warning"]
             # No template warning on `shared_name` — its mono clone
             # compiled, so the suppression correctly filtered it.
