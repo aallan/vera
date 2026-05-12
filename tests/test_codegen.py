@@ -15911,6 +15911,30 @@ public fn main(@Unit -> @Int)
             f"Wrong-suffix mono clone `$option_map$Int_Bool` "
             f"should not appear post-#604 fix; found in WAT"
         )
+        # F8 on PR #659 review — independently pin the WASM-side
+        # call-site rewriter (`vera/wasm/calls.py::_resolve_arg_fn_shape_wasm`
+        # + `_infer_fn_alias_type_args_wasm`).  The function
+        # definition `(func $option_map$Int_Int ...)` is emitted by
+        # the monomorphizer at Pass 1.5; the `call` instruction is
+        # emitted later by the WASM call-site rewriter, which has
+        # an independent SlotRef-FnType-alias resolution path.  A
+        # regression where Pass 1.5 produces the right clone but
+        # the rewriter mangles the call to a different name would
+        # pass the function-definition assertion above but fail at
+        # WASM validation with `unknown function $option_map$<wrong>`.
+        # Assert both names match by counting `call $option_map$Int_Int`
+        # (or `return_call $option_map$Int_Int`) occurrences.
+        call_pattern = (
+            r"(?:^|\s)(?:return_)?call\s+\$option_map\$Int_Int"
+            r"(?![A-Za-z0-9_])"
+        )
+        assert re.search(call_pattern, wat, re.MULTILINE), (
+            f"Expected a `call $option_map$Int_Int` (or "
+            f"`return_call`) instruction in WAT — without it the "
+            f"call-site rewriter's mangled name doesn't match the "
+            f"mono clone's definition.  Got option_map references: "
+            f"{[line.strip() for line in wat.splitlines() if 'option_map' in line]}"
+        )
         # Runtime pin: execute and confirm no trap.  `Some(10) * 2 = 20`.
         # Pre-fix this would have trapped with
         # `wasm trap: indirect call type mismatch`.

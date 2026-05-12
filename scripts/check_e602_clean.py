@@ -90,7 +90,7 @@ ALLOWED_SKIPS: dict[str, tuple[str, int, str]] = {
     # vera/codegen/core.py::compile_program post-compile suppression
     # pass).  Each conformance/example program that exercises those
     # generics now produces a working mono clone with no template
-    # noise.  See PR #<TBD> for the fix.
+    # noise.  See PR #659 for the fix.
 
     # ----- Real codegen gap tracked by #655 (Shape B — non-generic
     # refinement-of-Array param) -----

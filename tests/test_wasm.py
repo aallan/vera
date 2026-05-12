@@ -253,3 +253,94 @@ public fn invert(@Bool -> @Bool)
 """
         assert _run(source, "invert", [1]) == 0
         assert _run(source, "invert", [0]) == 1
+
+
+class TestSubstituteTypeVarsFnType:
+    """`#659` review finding F5 — `substitute_type_vars` over `FnType`
+    recurses through params + return_type but deliberately leaves the
+    `effect` field untouched.
+
+    All current parameterised FnType aliases use monomorphic effects
+    (`effects(pure)`).  The contract here is "effect not substituted"
+    — type-design-analyzer noted that an effect carrying a type-var
+    (e.g. `fn(A -> A) effects(<State<T>>)`) would not have its `T`
+    rewritten.  That's a deliberate gap, not a bug; pinning it via
+    tests means a future refactor that "fixes" the gap by silently
+    walking effects can't slip past unnoticed.
+
+    See `vera/wasm/inference.py::substitute_type_vars` for the
+    implementation comment + rationale.
+    """
+
+    def test_fntype_params_and_return_are_substituted(self) -> None:
+        """Substitution rewrites `T` → `Int` in both param and return
+        positions of an `FnType`."""
+        from vera import ast
+        from vera.wasm.inference import substitute_type_vars
+
+        # fn(T -> T) effects(pure)
+        fn_type = ast.FnType(
+            params=(ast.NamedType(name="T", type_args=None),),
+            return_type=ast.NamedType(name="T", type_args=None),
+            effect=ast.PureEffect(),
+        )
+        subst: dict[str, ast.TypeExpr] = {
+            "T": ast.NamedType(name="Int", type_args=None),
+        }
+        result = substitute_type_vars(fn_type, subst)
+        assert isinstance(result, ast.FnType)
+        assert len(result.params) == 1
+        param = result.params[0]
+        assert isinstance(param, ast.NamedType)
+        assert param.name == "Int"
+        assert isinstance(result.return_type, ast.NamedType)
+        assert result.return_type.name == "Int"
+
+    def test_fntype_effect_is_passed_through_unchanged(self) -> None:
+        """`effect` is preserved verbatim — type-vars inside an effect
+        are NOT substituted.  This pins the deliberate gap noted in
+        the #659 review.
+
+        Future refactor that walks effects must update this test (and
+        the corresponding comment in `substitute_type_vars`) rather
+        than silently flip the contract.
+        """
+        from vera import ast
+        from vera.wasm.inference import substitute_type_vars
+
+        # Construct an EffectSet referencing T (a type-var the alias
+        # would bind).  In current Vera grammar this is unusual but
+        # constructible via the AST.  The substitution should NOT
+        # rewrite the `T` inside the effect's type_args.
+        effect_with_typevar = ast.EffectSet(
+            effects=(
+                ast.EffectRef(
+                    name="State",
+                    type_args=(ast.NamedType(name="T", type_args=None),),
+                ),
+            ),
+        )
+        fn_type = ast.FnType(
+            params=(ast.NamedType(name="T", type_args=None),),
+            return_type=ast.NamedType(name="T", type_args=None),
+            effect=effect_with_typevar,
+        )
+        subst: dict[str, ast.TypeExpr] = {
+            "T": ast.NamedType(name="Int", type_args=None),
+        }
+        result = substitute_type_vars(fn_type, subst)
+        assert isinstance(result, ast.FnType)
+        # params + return were substituted
+        assert isinstance(result.params[0], ast.NamedType)
+        assert result.params[0].name == "Int"
+        # but effect is identical (T NOT rewritten) — the contract
+        result_effect = result.effect
+        assert isinstance(result_effect, ast.EffectSet)
+        eff_ref = result_effect.effects[0]
+        assert isinstance(eff_ref, ast.EffectRef)
+        assert eff_ref.type_args is not None
+        eff_arg = eff_ref.type_args[0]
+        assert isinstance(eff_arg, ast.NamedType)
+        assert eff_arg.name == "T", (
+            "Effect type-var should NOT be substituted; #659 review F5"
+        )

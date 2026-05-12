@@ -571,8 +571,10 @@ class CodeGenerator(
                 # Filter out template warnings for fns whose mono
                 # clones compiled.  Keep all other diagnostics intact.
                 # Match on description prefix `Function 'NAME' ` —
-                # the format used by both `_is_compilable` ([E604]/
-                # [E605]) and `_compile_fn` ([E602]).
+                # the format used by both `_is_compilable` in
+                # `vera/codegen/compilability.py` ([E604]/[E605]) and
+                # the [E602] emit sites in `vera/codegen/functions.py`
+                # (reached via `_compile_fn`).
                 suppressible_codes = {"E602", "E604", "E605"}
                 kept: list[Diagnostic] = []
                 for d in self.diagnostics:

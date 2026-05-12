@@ -644,6 +644,22 @@ class MonomorphizationMixin:
             if isinstance(alias_te, ast.FnType):
                 # Parameterised alias — substitute the SlotRef's
                 # type_args into the alias body before returning.
+                # Length-mismatch or missing type_args here is a
+                # latent same-class bug as #604 (#659 review
+                # finding F3): without enough type-args we can't
+                # instantiate the alias body, fall through to the
+                # legacy path that fails to bind the generic's
+                # type-vars, and the mono mangler emits a literal
+                # alias-local name (e.g. `option_map$Int_B`)
+                # producing a `call_indirect` trap at runtime.
+                # The type checker accepts `@Pair<Int>.0` against
+                # a `Pair<A, B>` alias today — that upstream gap
+                # is tracked as a separate follow-up.  Until then
+                # we fall through silently here (preserving
+                # pre-#659 behaviour for the malformed-input path),
+                # rather than emit a misleading E699 (this is a
+                # type-checker bug, not a compiler invariant
+                # violation).
                 alias_params = type_alias_params.get(arg.type_name)
                 if (alias_params
                         and arg.type_args

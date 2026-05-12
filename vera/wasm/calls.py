@@ -661,6 +661,9 @@ class CallsMixin:
             if isinstance(alias_te, ast.FnType):
                 # Parameterised alias — substitute the SlotRef's
                 # type_args into the alias body before returning.
+                # See `MonomorphizationMixin._resolve_arg_fn_shape`
+                # for the length-mismatch / missing-type-args
+                # fall-through rationale (#659 review finding F3).
                 alias_params = self._type_alias_params.get(arg.type_name)
                 if (alias_params
                         and arg.type_args

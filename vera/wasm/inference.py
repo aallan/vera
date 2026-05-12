@@ -55,6 +55,17 @@ def substitute_type_vars(
             substitute_type_vars(p, subst) for p in te.params
         )
         new_return = substitute_type_vars(te.return_type, subst)
+        # `effect` is passed through unchanged.  All current
+        # parameterised FnType aliases use `effects(pure)` or
+        # similarly-monomorphic effects.  If a future type
+        # introduces `effects(<State<T>>)` or similar where `T`
+        # is an alias parameter, the substitution would NOT
+        # propagate into the effect row — this is a deliberate
+        # gap noted in the #659 review (type-design analyzer
+        # finding 3).  The corresponding regression test in
+        # `tests/test_wasm.py::TestSubstituteTypeVarsFnType`
+        # pins this contract so a future refactor doesn't
+        # silently change behaviour.
         return ast.FnType(
             params=new_params,
             return_type=new_return,
