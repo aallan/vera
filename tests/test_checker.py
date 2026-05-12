@@ -5456,24 +5456,38 @@ private fn wrap(@Int -> @Wrapper<Int>)
         `B` into mono suffixes (`option_map$Int_B`) → runtime
         `call_indirect` trap.  Post-fix the checker rejects with
         `[E133]` ("Type alias arity mismatch") at compile time.
+
+        Pin both the message AND the error code so a future
+        refactor that re-routes through a sibling diagnostic with
+        the same text but a different code is caught.
         """
-        _check_err("""
+        errs = _check_err("""
 type Pair<A, B> = fn(A -> B) effects(pure);
 
 public fn main(@Pair<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """, "expects 2 type argument(s) but 1 supplied")
+        e133 = [e for e in errs if e.error_code == "E133"]
+        assert e133, (
+            f"Expected at least one diagnostic with error_code=E133; "
+            f"got: {[(e.error_code, e.description) for e in errs]}"
+        )
 
     def test_alias_arity_mismatch_too_many_e133(self) -> None:
-        """Symmetric case: too many type-args also rejected."""
-        _check_err("""
+        """Symmetric case: too many type-args also rejected with E133."""
+        errs = _check_err("""
 type Single<T> = Option<T>;
 
 public fn main(@Single<Int, Bool> -> @Int)
   requires(true) ensures(true) effects(pure)
 { 42 }
 """, "expects 1 type argument(s) but 2 supplied")
+        e133 = [e for e in errs if e.error_code == "E133"]
+        assert e133, (
+            f"Expected at least one diagnostic with error_code=E133; "
+            f"got: {[(e.error_code, e.description) for e in errs]}"
+        )
 
     def test_alias_zero_args_when_zero_expected_ok(self) -> None:
         """A non-parameterised alias accepts no type-args.  Pin

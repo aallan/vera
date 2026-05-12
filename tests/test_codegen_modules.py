@@ -465,18 +465,27 @@ class TestCrossModuleNameCollision661:
         import tempfile
         from pathlib import Path
         from vera.resolver import ResolvedModule as RM
+        # Explicit utf-8 encoding (Windows-portability) + try/finally
+        # cleanup so the temp file is removed after parse + transform.
+        # Safe because `compile()` works off the in-memory `source`
+        # string + the AST `prog`, not by re-reading the file path
+        # (CR-2 on PR #664).
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".vera", delete=False,
+            encoding="utf-8",
         ) as f:
             f.write(source)
             f.flush()
             fpath = f.name
-        tree = parse_file(fpath)
-        prog = transform(tree)
-        return RM(
-            path=path, file_path=Path(fpath), program=prog,
-            source=source,
-        )
+        try:
+            tree = parse_file(fpath)
+            prog = transform(tree)
+            return RM(
+                path=path, file_path=Path(fpath), program=prog,
+                source=source,
+            )
+        finally:
+            Path(fpath).unlink(missing_ok=True)
 
     def test_cross_module_forall_name_shadow_compiles_and_runs(
         self,
@@ -509,25 +518,30 @@ public fn main(@Unit -> @Int)
         mod = self._resolved(("a",), a_source)
         import tempfile
         from pathlib import Path
+        # Explicit utf-8 + try/finally cleanup (CR-2 on PR #664).
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".vera", delete=False,
+            encoding="utf-8",
         ) as f:
             f.write(main_source)
             f.flush()
             path = f.name
-        tree = parse_file(path)
-        ast_program = transform(tree)
-        result = compile(
-            ast_program, source=main_source, file=path,
-            resolved_modules=[mod],
-        )
-        errors = [d for d in result.diagnostics if d.severity == "error"]
-        assert not errors, (
-            f"Cross-module forall shadow should not produce errors; "
-            f"got: {[e.description for e in errors]}"
-        )
-        exec_result = execute(result, fn_name="main")
-        assert exec_result.value == 42
+        try:
+            tree = parse_file(path)
+            ast_program = transform(tree)
+            result = compile(
+                ast_program, source=main_source, file=path,
+                resolved_modules=[mod],
+            )
+            errors = [d for d in result.diagnostics if d.severity == "error"]
+            assert not errors, (
+                f"Cross-module forall shadow should not produce errors; "
+                f"got: {[e.description for e in errors]}"
+            )
+            exec_result = execute(result, fn_name="main")
+            assert exec_result.value == 42
+        finally:
+            Path(path).unlink(missing_ok=True)
 
     def test_suppression_does_not_cross_modules(self) -> None:
         """Compile the shadow fixture and verify the suppression
@@ -563,32 +577,38 @@ public fn main(@Unit -> @Int)
 """
         mod = self._resolved(("a",), a_source)
         import tempfile
+        from pathlib import Path
+        # Explicit utf-8 + try/finally cleanup (CR-2 on PR #664).
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".vera", delete=False,
+            encoding="utf-8",
         ) as f:
             f.write(main_source)
             f.flush()
             path = f.name
-        tree = parse_file(path)
-        ast_program = transform(tree)
-        result = compile(
-            ast_program, source=main_source, file=path,
-            resolved_modules=[mod],
-        )
-        warnings = [d for d in result.diagnostics if d.severity == "warning"]
-        # No template warning on `shared_name` — its mono clone
-        # compiled, so the suppression correctly filtered it.
-        shared_warnings = [
-            d for d in warnings
-            if d.error_code in {"E602", "E604", "E605"}
-            and d.description.startswith("Function 'shared_name' ")
-        ]
-        assert not shared_warnings, (
-            f"Expected no [E602]/[E604]/[E605] warnings about "
-            f"`shared_name` (mono clone compiled, suppression "
-            f"should fire); got: "
-            f"{[d.description for d in shared_warnings]}"
-        )
+        try:
+            tree = parse_file(path)
+            ast_program = transform(tree)
+            result = compile(
+                ast_program, source=main_source, file=path,
+                resolved_modules=[mod],
+            )
+            warnings = [d for d in result.diagnostics if d.severity == "warning"]
+            # No template warning on `shared_name` — its mono clone
+            # compiled, so the suppression correctly filtered it.
+            shared_warnings = [
+                d for d in warnings
+                if d.error_code in {"E602", "E604", "E605"}
+                and d.description.startswith("Function 'shared_name' ")
+            ]
+            assert not shared_warnings, (
+                f"Expected no [E602]/[E604]/[E605] warnings about "
+                f"`shared_name` (mono clone compiled, suppression "
+                f"should fire); got: "
+                f"{[d.description for d in shared_warnings]}"
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
 
 
 # =====================================================================
