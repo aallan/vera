@@ -289,7 +289,8 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.142 | 8 May | Closed the #602 bug class structurally across four sites — [#630](https://github.com/aallan/vera/issues/630), [#632](https://github.com/aallan/vera/issues/632), [#635](https://github.com/aallan/vera/issues/635), [#636](https://github.com/aallan/vera/issues/636). |
 | v0.0.143 | 10 May | Windows added to CI matrix as fully-strict — closes [#640](https://github.com/aallan/vera/issues/640), [#641](https://github.com/aallan/vera/issues/641), [#642](https://github.com/aallan/vera/issues/642). |
 | v0.0.144 | 11 May | Tier A bug burn-down — closes [#633](https://github.com/aallan/vera/issues/633), [#634](https://github.com/aallan/vera/issues/634), [#556](https://github.com/aallan/vera/issues/556), [#591](https://github.com/aallan/vera/issues/591). |
-| v0.0.145 | 11 May | Mono-suffix bug + template-warning suppression — closes [#604](https://github.com/aallan/vera/issues/604), [#655](https://github.com/aallan/vera/issues/655). |
+| v0.0.145 | 11 May | Mono-suffix bug + template-warning suppression — closes [#604](https://github.com/aallan/vera/issues/604) and [#655](https://github.com/aallan/vera/issues/655) Shape A. |
+| v0.0.146 | 12 May | Refinement-of-Array element inference — closes [#655](https://github.com/aallan/vera/issues/655) Shape B. |
 
 ---
 
@@ -330,4 +331,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 144 tagged releases, 58 active development days.**
+Total: **810+ commits, 146 tagged releases, 58 active development days.**

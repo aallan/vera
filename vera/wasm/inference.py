@@ -1309,8 +1309,9 @@ class InferenceMixin:
         type_name: str,
         type_args: tuple[ast.TypeExpr, ...] | None,
     ) -> ast.NamedType | None:
-        """If (type_name, type_args) names an Array<T> (possibly via alias),
-        return T as a NamedType.  Returns None otherwise.
+        """If (type_name, type_args) names an Array<T> (possibly via alias
+        or refinement-of-alias), return T as a NamedType.  Returns None
+        otherwise.
         """
         # Direct Array<T>
         if type_name == "Array" and type_args:
@@ -1322,8 +1323,20 @@ class InferenceMixin:
         # of a non-generic alias pointing at a concrete Array<T>; generic
         # aliases (`type Box<T> = Array<T>`) would need substitution,
         # which we don't attempt here.
+        #
+        # Refinement-of-alias unwrap (#655 Shape B): if the alias target
+        # is a `RefinementType` (e.g.
+        # `type NonEmptyArray = { @Array<Int> | array_length(@Array<Int>.0) > 0 }`),
+        # peel any `RefinementType` layers before checking whether the
+        # base is a `NamedType` pointing at an array.  Without this, the
+        # IndexExpr translator returns None for `@NonEmptyArray.0[0]`,
+        # the enclosing function (`head`) gets dropped via [E602], and
+        # the call site references a non-existent `$head` — the symptom
+        # documented in #655 Shape B.
         if type_name in self._type_aliases:
             target = self._type_aliases[type_name]
+            while isinstance(target, ast.RefinementType):
+                target = target.base_type
             if isinstance(target, ast.NamedType):
                 return self._alias_array_element(target.name, target.type_args)
         return None
