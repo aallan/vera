@@ -5507,7 +5507,13 @@ public fn current(@Unit -> @Year)
 
     def test_cyclic_alias_two_way_e132(self) -> None:
         """`type A = B; type B = A` produces [E132] at check time
-        instead of crashing codegen with RecursionError (#648)."""
+        instead of crashing codegen with RecursionError (#648).
+
+        Also pins the diagnostic *payload* (cycle path + fix
+        message) on this representative test — the other cyclic-
+        alias tests below check error_code only, since the
+        payload-shape contract is uniform across them.
+        """
         errs = _check_err("""
 type A = B;
 type B = A;
@@ -5522,6 +5528,21 @@ public fn id(@A -> @A)
         assert e132, (
             f"Expected at least one diagnostic with error_code=E132; "
             f"got: {[(e.error_code, e.description) for e in errs]}"
+        )
+        # Pin the cycle-path rendering in the description and the
+        # `data`-as-alternative suggestion in the fix hint.  A
+        # future refactor that changes the rendering would still
+        # emit E132 but the payload contract these messages embody
+        # — "you can tell *which* aliases form the cycle" and
+        # "here's the alternative that supports self-reference" —
+        # would silently regress without these assertions.
+        assert "A -> B -> A" in e132[0].description, (
+            f"Expected cycle path 'A -> B -> A' in description; "
+            f"got: {e132[0].description!r}"
+        )
+        assert "data" in e132[0].fix, (
+            f"Expected fix hint to suggest `data` as the alternative "
+            f"for self-referential types; got: {e132[0].fix!r}"
         )
 
     def test_cyclic_alias_self_e132(self) -> None:
