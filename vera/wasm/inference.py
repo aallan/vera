@@ -1571,9 +1571,10 @@ class InferenceMixin:
         like ``{A: B, B: C, C: B}`` (A leads into a B↔C cycle that
         doesn't include A): the caller asked about ``A``, so the
         return must be ``A``, not the revisited-cycle node ``B``.
-        Cyclic aliases are user errors that should be caught by the
-        type checker (see issue #648); this guard is defence-in-depth
-        so a bug in the upstream check cannot turn into a
+        Cyclic aliases are user errors caught by the type checker's
+        ``_check_alias_cycles`` pass which emits ``[E132]`` (closed
+        in #648); this guard is defence-in-depth so a future
+        regression in the upstream check cannot turn into a
         ``RecursionError`` inside codegen.  Closes #633 — the sibling
         walker ``_canonical_named_type`` (PR #631) already has this
         guard; this restores consistency.
