@@ -15896,15 +15896,18 @@ public fn main(@Unit -> @Int)
         """
         result = _compile_ok(self._SLOT_FN_SRC)
         # The compiled module should contain the correctly-suffixed
-        # mono clone, not the wrongly-suffixed one.
+        # mono clone, not the wrongly-suffixed one.  Use
+        # boundary-safe regex (CR-10 on PR #659) so longer variants
+        # like `$option_map$Int_Int_X` don't slip past as substrings
+        # of the expected token.
         wat = result.wat or ""
-        assert "$option_map$Int_Int" in wat, (
+        assert re.search(r"\$option_map\$Int_Int(?![A-Za-z0-9_])", wat), (
             f"Expected correctly-suffixed mono clone "
             f"`$option_map$Int_Int` in WAT; got WAT containing "
             f"option_map suffixes: "
             f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
         )
-        assert "$option_map$Int_Bool" not in wat, (
+        assert not re.search(r"\$option_map\$Int_Bool(?![A-Za-z0-9_])", wat), (
             f"Wrong-suffix mono clone `$option_map$Int_Bool` "
             f"should not appear post-#604 fix; found in WAT"
         )
@@ -15950,7 +15953,8 @@ public fn main(@Unit -> @Int)
 """
         result = _compile_ok(src)
         wat = result.wat or ""
-        assert "$option_map$Int_Int" in wat, (
+        # Boundary-safe regex (CR-10 on PR #659) — see sibling test.
+        assert re.search(r"\$option_map\$Int_Int(?![A-Za-z0-9_])", wat), (
             f"Expected `$option_map$Int_Int` from parameterised "
             f"alias `Mapper<Int>`; got option_map suffixes: "
             f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
@@ -15960,7 +15964,7 @@ public fn main(@Unit -> @Int)
         # one.  A bug that produced both (e.g. partial substitution
         # leaking the raw alias body into a second registration) would
         # otherwise slip past the positive assertion.
-        assert "$option_map$T_T" not in wat, (
+        assert not re.search(r"\$option_map\$T_T(?![A-Za-z0-9_])", wat), (
             f"Unsubstituted parameterised-alias clone "
             f"`$option_map$T_T` should not appear after the "
             f"`T → Int` substitution fix; found in WAT"
