@@ -244,12 +244,15 @@ def test_tco_with_allocation_1m_iterations(
     The high-volume companion to
     `test_deep_tail_recursion_with_allocating_arg`.  A single
     million-iteration run gives the GC-aware TCO patch a sharp
-    pin: any shadow-stack leak per iteration would either trap on
-    the overflow guard (16K shadow stack / ~12 bytes per leaked
-    frame ≈ 1300 iterations) or — under eager-GC — accumulate
+    pin: any shadow-stack leak per iteration would trap on the
+    overflow guard (16K shadow stack / 4 bytes per leaked pointer
+    root ≈ 4,096 iterations) or — under eager-GC — accumulate
     enough roots to slow mark/sweep to a crawl.  Completing 1M
     iterations in seconds in both modes proves the shadow stack
-    is bounded across the entire run.
+    is bounded across the entire run.  (The per-iteration push
+    is a single i32 pointer for the `Array<Int>` literal; the
+    two `@Int` params are not pointer-typed and don't push to
+    the shadow stack.)
 
     The pre-#549 fallback (revert `return_call` → plain `call`
     for allocating fns) cannot reach this depth — 1M plain calls
@@ -260,8 +263,7 @@ def test_tco_with_allocation_1m_iterations(
     Iteration count is 1M in both default-GC and eager-GC modes
     because the per-iteration cost is dominated by WASM execution,
     not GC traversal (the array literal is small and short-lived,
-    so each eager-GC collection is O(1) live roots).  Wall-clock
-    on a 2026 MacBook Pro: ~200ms in both modes.
+    so each eager-GC collection is O(1) live roots).
     """
     src = """
 private fn loop(@Int, @Int -> @Int)

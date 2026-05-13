@@ -347,36 +347,38 @@ class FunctionCompilationMixin:
         # current frame and jumps straight to the callee, so any
         # instructions emitted AFTER ``body_instrs`` in the WAT
         # assembly (postcondition checks, GC epilogue) are silently
-        # skipped.  Two sources of post-body work + how each is
-        # handled:
+        # skipped.  Three outcomes (precedence: 1 > 2 > 3):
         #
-        # 1. ``post_instrs`` — postcondition checks (``ensures(...)``
-        #    clauses) emitted by ``_compile_postconditions``.  A
-        #    non-empty ``post_instrs`` means the function has a
-        #    non-trivial postcondition that must be checked at
-        #    runtime; ``return_call`` would skip the check and
-        #    silently violate the contract.  REVERTED to plain
-        #    ``call`` — no way to TCO and still run the check.
+        # 1. ``post_instrs`` non-empty — postcondition checks
+        #    (``ensures(...)`` clauses) emitted by
+        #    ``_compile_postconditions``.  A non-empty
+        #    ``post_instrs`` means the function has a non-trivial
+        #    postcondition that must be checked at runtime;
+        #    ``return_call`` would skip the check and silently
+        #    violate the contract.  REVERTED to plain ``call`` —
+        #    no way to TCO and still run the check.
         #
-        # 2. ``ctx.needs_alloc`` — the GC epilogue (restore
-        #    ``$gc_sp``, unwind shadow-stack pointer slots) runs
-        #    only for allocating functions.  ``return_call`` would
-        #    leak shadow-stack slots once per iteration and
-        #    eventually trap on the next ``$alloc``.  Pre-#549 this
-        #    fell to the same revert-to-call path as
+        # 2. ``ctx.needs_alloc`` and no ``post_instrs`` — the GC
+        #    epilogue (restore ``$gc_sp``, unwind shadow-stack
+        #    pointer slots) runs only for allocating functions.
+        #    ``return_call`` would leak shadow-stack slots once per
+        #    iteration and eventually trap on the next ``$alloc``.
+        #    Pre-#549 this fell to the same revert-to-call path as
         #    postcondition-bearing functions; post-#549 we instead
-        #    PATCH every ``return_call`` site to restore
-        #    ``$gc_sp`` to its entry value immediately before the
-        #    jump.  The callee's prologue then saves a clean
-        #    baseline and the chain continues without unbounded
-        #    shadow-stack growth.
+        #    PATCH every ``return_call`` site to restore ``$gc_sp``
+        #    to its entry value immediately before the jump.  The
+        #    callee's prologue then saves a clean baseline and the
+        #    chain continues without unbounded shadow-stack growth.
         #
-        # The pre-allocation of ``gc_sp_save`` here (before the
-        # revert/patch logic) is so it's available to BOTH the
-        # per-return_call restore (in the patch branch) AND the
-        # function's GC prologue/epilogue below.  alloc_local just
-        # appends to a list keyed by index; calling it earlier just
-        # gives this local a smaller index.
+        # 3. Neither condition holds — leave ``return_call``
+        #    untouched.  This is the common non-allocating tail-
+        #    recursion case (the ``Iteration is tail recursion``
+        #    idiom from ``SKILL.md``).
+        #
+        # ``gc_sp_save`` is pre-allocated before the dispatch so
+        # both the per-return_call restore (in branch 2) AND the
+        # function's GC prologue/epilogue below share the same
+        # local index.
         gc_sp_save: int | None = (
             ctx.alloc_local("i32") if ctx.needs_alloc else None
         )
@@ -412,11 +414,12 @@ class FunctionCompilationMixin:
                     # nests at the same depth.  Without this, an
                     # `if/else`-nested ``return_call`` (which carries
                     # an inline 2-space indent from
-                    # ``operators.py``'s emission) ends up with
-                    # `local.get N` / `global.set $gc_sp` lines
-                    # rendered 2 spaces shallower in the WAT.
+                    # ``vera/wasm/operators.py``'s if/else emission)
+                    # ends up with `local.get N` / `global.set $gc_sp`
+                    # lines rendered 2 spaces shallower in the WAT.
                     # Functionally inert (WAT is whitespace-
-                    # insensitive) but visually misleading.
+                    # insensitive) but visually misleading.  Tracked
+                    # for principled fixup in #672.
                     prefix = instr[: len(instr) - len(instr.lstrip())]
                     patched.append(f"{prefix}local.get {gc_sp_save}")
                     patched.append(f"{prefix}global.set $gc_sp")

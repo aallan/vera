@@ -2043,8 +2043,10 @@ public fn f(-> @Int)
         boundary.
 
         Pre-#549: the post-process reverted every `return_call` →
-        `call` when `ctx.needs_alloc` was True, sacrificing TCO
-        for shadow-stack correctness.
+        `call` when `ctx.needs_alloc` was True, sacrificing WASM
+        call-stack depth (tail recursion eventually trapped with
+        `call stack exhausted`) so the GC epilogue could run and
+        bound shadow-stack usage.
 
         Post-#549: the post-process instead PREPENDS a `$gc_sp`
         restore (`local.get $gc_sp_save; global.set $gc_sp`)
@@ -2159,6 +2161,110 @@ public fn f(-> @Int)
                 f"(matching the GC prologue's saved local) two lines "
                 f"before return_call at line {idx}, got: {prev2!r}. "
                 f"Body:\n{build_body}"
+            )
+
+    def test_allocating_function_gc_aware_tco_patches_both_branches(
+        self,
+    ) -> None:
+        """#549: every tail-position `return_call` gets the preamble.
+
+        The single-branch test above pins that the patch fires at
+        a single tail-recursive call site.  This test pins that
+        the patch loop fires at MULTIPLE sites in the same
+        function — a buggy implementation that bails after the
+        first match (e.g. `break` inside the patch loop) or that
+        only handles top-level emissions but not if/else-nested
+        ones would still pass the single-branch test.
+
+        The function below uses a `match` with two ADT arms, each
+        ending in a tail-recursive `build` call.  The analyzer
+        marks both arms as tail position (see
+        `test_analyzer_marks_match_arm_bodies`), so the codegen
+        emits two `return_call $build` sites with DIFFERENT
+        leading-whitespace prefixes (one for each match arm).
+        Both must have the `local.get N; global.set $gc_sp`
+        preamble; the local index N must be the same one captured
+        by the GC prologue.
+        """
+        source = """\
+private data Choice { Left, Right }
+
+private fn build(@Int, @Choice -> @Array<Int>)
+  requires(@Int.0 >= 0) ensures(true) decreases(@Int.0) effects(pure)
+{
+  if @Int.0 == 0 then { [0] }
+  else {
+    match @Choice.0 {
+      Left -> build(@Int.0 - 1, Left),
+      Right -> build(@Int.0 - 1, Right)
+    }
+  }
+}
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_length(build(3, Left))
+}
+"""
+        result = _compile_ok(source)
+        build_match = re.search(r"\(func \$build\b", result.wat)
+        assert build_match is not None, (
+            f"Could not locate `(func $build` in WAT"
+        )
+        build_start = build_match.start()
+        next_fn = re.search(r"\(func \$", result.wat[build_start + 1:])
+        build_end = (
+            build_start + 1 + next_fn.start()
+            if next_fn is not None
+            else len(result.wat)
+        )
+        build_body = result.wat[build_start:build_end]
+        # Capture the exact $gc_sp_save local from the prologue.
+        lines = build_body.splitlines()
+        prologue_get_idx = next(
+            (i for i, ln in enumerate(lines)
+             if ln.strip() == "global.get $gc_sp"),
+            None,
+        )
+        assert prologue_get_idx is not None, (
+            f"no `global.get $gc_sp` prologue.  Body:\n{build_body}"
+        )
+        prologue_set = lines[prologue_get_idx + 1].strip()
+        assert prologue_set.startswith("local.set ")
+        gc_sp_save_local = prologue_set[len("local.set "):]
+        expected_preamble_get = f"local.get {gc_sp_save_local}"
+        # Find every return_call site and require the same
+        # preamble at each.  This catches a regression where the
+        # patch only fires on the first site (e.g. accidental
+        # `break`) or where only a subset of nested positions get
+        # the restore.
+        return_call_indices = [
+            i for i, line in enumerate(lines)
+            if re.search(r"return_call \$build\b", line)
+        ]
+        assert len(return_call_indices) >= 2, (
+            f"Expected at least 2 return_call sites (one per "
+            f"match arm), got {len(return_call_indices)}.  "
+            f"Body:\n{build_body}"
+        )
+        for idx in return_call_indices:
+            assert idx >= 2, (
+                f"return_call at line {idx} has no room for "
+                f"preamble.  Body:\n{build_body}"
+            )
+            prev1 = lines[idx - 1].strip()
+            prev2 = lines[idx - 2].strip()
+            assert prev1 == "global.set $gc_sp", (
+                f"site {idx} missing `global.set $gc_sp`; got "
+                f"{prev1!r}.  Body:\n{build_body}"
+            )
+            assert prev2 == expected_preamble_get, (
+                f"site {idx} preamble mismatch: expected "
+                f"{expected_preamble_get!r}, got {prev2!r}.  "
+                f"Both return_call sites must reload the SAME "
+                f"local that the prologue saved.  Body:\n"
+                f"{build_body}"
             )
 
     def test_allocating_function_with_postcondition_still_reverts(
@@ -15208,6 +15314,14 @@ public fn main(@Unit -> @Int)
            trap class (e.g. heap exhaustion at a different scale).
         2. Behavioural — `_run_trap` confirms the program actually
            traps at the chosen 2000-iteration depth.
+
+        Iteration count calibration: the 16K shadow stack holds
+        ~4096 pointer slots (4 bytes each).  Each `overflow` frame
+        pushes 2 `@Array<Bool>` params (8 bytes) + 1 array_append
+        tmp root (4 bytes) = 12 bytes/frame, so the guard trips at
+        ~1,365 frames.  2000 chosen with ~1.5× safety margin so
+        the trap fires reliably even if per-frame size shrinks by
+        a slot in a future optimisation.
         """
         src = """
 private fn overflow(@Array<Bool>, @Array<Bool>, @Int -> @Array<Bool>)
