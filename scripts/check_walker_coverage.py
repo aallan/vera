@@ -155,8 +155,38 @@ CHECKLIST_LINE_RE = re.compile(
 
 def extract_checklist_classes(body_src: str) -> set[str]:
     """Return every ``X`` named in a ``# X → ...`` checklist line
-    inside the walker's body source."""
-    return set(CHECKLIST_LINE_RE.findall(body_src))
+    inside the walker's ``# WALKER_COVERAGE:`` block only.
+
+    Anchors extraction to the block bounded by the
+    ``WALKER_COVERAGE:`` marker and the closing ``\"\"\"`` of the
+    enclosing docstring.  Without this anchor, ``# Foo → bar``-
+    shaped comments anywhere else in the function body could
+    silently count as coverage, defeating the purpose of the
+    coverage check (the exact silent-skip class this script is
+    meant to close).
+
+    Falls back to the full body source on edge cases (no marker
+    found — caller already filters to walkers containing the
+    marker; no closing ``\"\"\"`` after the marker — unusual
+    enough to make end-of-body the safe default).
+    """
+    marker_idx = body_src.find(WALKER_MARKER)
+    if marker_idx == -1:
+        return set()
+    block = body_src[marker_idx:]
+    # Walker convention puts the WALKER_COVERAGE block at the
+    # trailing end of the function's docstring, so the next
+    # ``\"\"\"`` after the marker is the docstring close — that's
+    # the natural block terminator.  Single-quoted triple delimiters
+    # ``'''`` are not used by any walker today; if a contributor
+    # changes that convention, the fallback (full sliced source)
+    # still includes the full WALKER_COVERAGE block, so coverage
+    # detection is preserved at the cost of accepting matches in
+    # any post-block code.
+    close_idx = block.find('"""')
+    if close_idx != -1:
+        block = block[:close_idx]
+    return set(CHECKLIST_LINE_RE.findall(block))
 
 
 # ---------------------------------------------------------------
