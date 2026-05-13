@@ -662,13 +662,16 @@ class TestSmtContextDirect:
         assert result.status in ("verified", "violated", "unknown")
 
     def test_translate_expr_returns_none_for_unsupported(self) -> None:
-        """translate_expr returns None for unsupported expressions (e.g. FloatLit)."""
+        """translate_expr returns None for unsupported expressions (e.g. UnitLit)."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import FloatLit
+        from vera.ast import UnitLit
         ctx = SmtContext()
         env = SlotEnv()
-        # FloatLit has no SMT handler — translate_expr falls through to return None
-        result = ctx.translate_expr(FloatLit(value=3.14, span=None), env)
+        # UnitLit has no SMT handler — predicates are Bool, not Unit;
+        # translate_expr falls through to return None.  (Pre-#667 this
+        # test used FloatLit, but FloatLit is now Handled via
+        # `z3.RealVal`; UnitLit remains intentionally-unsupported.)
+        result = ctx.translate_expr(UnitLit(span=None), env)
         assert result is None
 
     def test_vera_type_to_z3_sort_bool(self) -> None:
@@ -1091,6 +1094,327 @@ private fn non_empty(@Array<Int> -> @Bool)
 
 
 # =====================================================================
+# #667 — SMT translator coverage for FloatLit / IndexExpr / ArrayLit
+# =====================================================================
+
+class TestSmtCoverage667:
+    """Pre-#667 these three Expr subclasses returned None from
+    ``smt.translate_expr``, dropping every affected contract to
+    Tier 3 (runtime check).  Post-#667 each translates to a Z3
+    expression and the contracts verify at Tier 1.  Each test
+    asserts BOTH that verification succeeds with no error AND
+    that the relevant predicate counted as a Tier 1 check —
+    "succeeds with no error" alone is too weak (Tier 3 also
+    produces no error)."""
+
+    def test_floatlit_in_precondition_verifies_tier1(self) -> None:
+        """`requires(@Float64.0 > 1.5)` now translates and the
+        precondition counts as Tier 1.  Pre-#667 the FloatLit
+        ``1.5`` returned None, dropping the predicate to Tier 3."""
+        result = _verify("""
+public fn f(@Float64 -> @Float64)
+  requires(@Float64.0 > 1.5)
+  ensures(true)
+  effects(pure)
+{ @Float64.0 + 1.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        # The precondition + postcondition pair should count as
+        # 2 T1.  Pre-#667 the precondition counted as T3.
+        assert result.summary.tier1_verified >= 2, (
+            f"Expected at least 2 Tier 1 checks for FloatLit "
+            f"precondition + ensures(true); got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_floatlit_in_postcondition_verifies_tier1(self) -> None:
+        """`ensures(@Float64.result > 0.0)` translates and counts
+        as Tier 1 for a function that returns a positive float."""
+        result = _verify("""
+public fn one_point_five(@Unit -> @Float64)
+  requires(true)
+  ensures(@Float64.result > 0.0)
+  effects(pure)
+{ 1.5 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert result.summary.tier1_verified >= 2, (
+            f"Expected >=2 Tier 1 checks; got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_indexexpr_in_contract_verifies_tier1(self) -> None:
+        """`requires(@Array<Int>.0[0] > 0)` now translates via
+        ``index_<sort>(arr, 0)``.  Pre-#667 the IndexExpr
+        returned None and the predicate fell to Tier 3."""
+        result = _verify("""
+public fn head_positive(@Array<Int> -> @Int)
+  requires(array_length(@Array<Int>.0) > 0)
+  requires(@Array<Int>.0[0] > 0)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ @Array<Int>.0[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        # Two requires + one ensures = 3 T1.
+        assert result.summary.tier1_verified >= 3, (
+            f"Expected >=3 Tier 1 checks for IndexExpr precondition "
+            f"+ length + postcondition; got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_arraylit_in_contract_verifies_tier1(self) -> None:
+        """`requires(array_length([1, 2, 3]) == 3)` now translates
+        — the ArrayLit produces a fresh array constant with a
+        ``length(lit) == 3`` axiom asserted to the solver, so
+        the predicate verifies at Tier 1 rather than falling to
+        Tier 3."""
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(array_length([1, 2, 3]) == 3)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert result.summary.tier1_verified >= 2, (
+            f"Expected >=2 Tier 1 checks; got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_arraylit_element_access_in_contract_verifies_tier1(
+        self,
+    ) -> None:
+        """The ArrayLit's per-element axioms `index(lit, 0) == 1`
+        etc. let the verifier conclude `[1, 2, 3][0] == 1`."""
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires([1, 2, 3][0] == 1)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert result.summary.tier1_verified >= 2, (
+            f"Expected >=2 Tier 1 checks; got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_adt_element_array_indexing_verifies_tier1(self) -> None:
+        """#667 follow-up — `Array<MyAdt>` indexing in contracts
+        recovers the element sort from `_array_element_sorts`
+        (the direct map populated at sort-creation time).  Pre-
+        follow-up `_get_element_sort_for_array` parsed the Z3
+        sort name (e.g. `Array_MyAdt`) and looked up in
+        `_z3_sorts` under the unqualified key — that worked for
+        nullary ADTs by coincidence (no `<...>` to strip), but
+        was fragile for generic ADTs like `List<Int>` whose
+        canonical key is `List<Int>` but the Z3 sort name is
+        `List_Int`.  The direct map sidesteps the round-trip.
+        """
+        result = _verify("""
+private data MyAdt { Wrap(Int) }
+
+public fn head_wrap(@Array<MyAdt> -> @MyAdt)
+  requires(array_length(@Array<MyAdt>.0) > 0)
+  ensures(true)
+  effects(pure)
+{ @Array<MyAdt>.0[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert result.summary.tier1_verified >= 2, (
+            f"Expected >=2 Tier 1 checks; got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_string_return_type_typed_at_call_site(self) -> None:
+        """#667 follow-up — `_translate_call_with_info` now
+        declares String-returning calls with a String Z3 var
+        rather than falling back to Int.  Pin: the caller's
+        postcondition `string_length(result) > 0` translates and
+        the predicate counts as Tier 1.  Pre-fix the call's
+        return var was Int, so `string_length(int_var)` got an
+        Int-domain length function rather than the String-domain
+        one, breaking the predicate's typing.
+
+        Uses an @Int arg (not @Unit) so the call's argument
+        translates cleanly — UnitLit returns None from
+        `translate_expr`, which would short-circuit the whole
+        call and mask the typing test.  Pr-review-toolkit
+        follow-up on #670 caught the UnitLit-arg masking.
+        """
+        result = _verify("""
+private fn echo_str(@Int -> @String)
+  requires(true)
+  ensures(string_length(@String.result) > 0)
+  effects(pure)
+{ "hello" }
+
+public fn use_str(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ string_length(echo_str(@Int.0)) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        # Also assert no warnings — pre-#667 a wrong-typed call
+        # result would have fallen through to E523 (Cannot verify
+        # call-site precondition) or E522 (Cannot statically
+        # verify postcondition), both of which are warnings.
+        # Checking only errors would silently accept Tier 3
+        # fallback.  Pr-review-toolkit follow-up on #670.
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        assert warnings == [], (
+            f"Expected no warnings (would indicate Tier 3 fallback "
+            f"because the call result wasn't typed correctly); got: "
+            f"{[(w.error_code, w.description[:60]) for w in warnings]}"
+        )
+
+    def test_float64_return_type_typed_at_call_site(self) -> None:
+        """#667 follow-up — Float64-returning calls now declare
+        the result var with `declare_float64` rather than
+        `declare_int`, so float comparisons in the caller's
+        postcondition translate properly.  Uses @Int arg for
+        the same reason as `test_string_return_type_typed_at_call_site`
+        — UnitLit args don't translate.
+        """
+        result = _verify("""
+private fn make_float(@Int -> @Float64)
+  requires(true)
+  ensures(@Float64.result > 1.0)
+  effects(pure)
+{ 1.5 }
+
+public fn use_float(@Int -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{ make_float(@Int.0) > 0.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        assert warnings == [], (
+            f"Expected no warnings (would indicate Tier 3 fallback); "
+            f"got: {[(w.error_code, w.description[:60]) for w in warnings]}"
+        )
+
+    def test_floatlit_deliberately_false_contract_reports_e500(self) -> None:
+        """**Negative test** for the FloatLit translation: a
+        contract that should fail must now actually fail with
+        E500 (verification error), not vacuously pass.  Pre-#667
+        the FloatLit returned None and the contract dropped to
+        Tier 3 with warning; a regression that reverts FloatLit
+        to None would silently pass this assertion.  Pin: the
+        precondition `1.0 > 2.0` is unsatisfiable, so the body
+        is unreachable; but the ensures `@Float64.result == 0.0`
+        contradicts the body which returns `1.5`.
+        """
+        result = _verify("""
+public fn always_15(@Unit -> @Float64)
+  requires(true)
+  ensures(@Float64.result == 0.0)
+  effects(pure)
+{ 1.5 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors, (
+            "Expected E500 on a deliberately-false FloatLit "
+            "postcondition; got no errors"
+        )
+        assert any(e.error_code == "E500" for e in errors), (
+            f"Expected E500; got: "
+            f"{[(e.error_code, e.description[:50]) for e in errors]}"
+        )
+
+    def test_arraylit_element_axiom_deliberately_false_reports_e500(
+        self,
+    ) -> None:
+        """**Negative test** for the ArrayLit per-element axiom:
+        `[1, 2, 3][0] == 999` is provably false from the axiom
+        `index(lit, 0) == 1`.  A contract that requires it must
+        fail with E500.  Pin: the axiom is actually being
+        asserted, not just stored.
+        """
+        result = _verify("""
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures([1, 2, 3][0] == 999)
+  effects(pure)
+{ 0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors, (
+            "Expected E500 on a deliberately-false ArrayLit "
+            "element-access predicate; got no errors"
+        )
+        assert any(e.error_code == "E500" for e in errors), (
+            f"Expected E500; got: "
+            f"{[(e.error_code, e.description[:50]) for e in errors]}"
+        )
+
+    def test_indexexpr_congruence_in_contract_verifies_tier1(self) -> None:
+        """**Congruence test** for the IndexExpr translation:
+        two references to `@Array.0[i]` with the same `i`
+        produce the same value (Z3 function congruence).  Pin:
+        a regression that keyed `index_<sort>` per call-site
+        would break this trivially-symmetric predicate.
+        """
+        result = _verify("""
+public fn f(@Array<Int>, @Int -> @Int)
+  requires(array_length(@Array<Int>.0) > 0)
+  requires(@Int.0 == 0)
+  ensures(@Array<Int>.0[@Int.0] == @Array<Int>.0[@Int.0])
+  effects(pure)
+{ @Array<Int>.0[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], (
+            f"Expected congruence to verify trivially; got: {errors}"
+        )
+
+    def test_array_return_type_typed_at_call_site(self) -> None:
+        """#667 follow-up — Array<T>-returning calls declare the
+        result var with `declare_array_var` so the caller can
+        reason about `result[i]` predicates.  Pre-fix the
+        Array<T> return fell through to `declare_adt → None →
+        declare_int`, so `result[i]` translation failed at the
+        sort check (Int isn't `Array_<...>`).  Uses @Int arg
+        so the call translates cleanly.
+        """
+        result = _verify("""
+private fn make_arr(@Int -> @Array<Int>)
+  requires(true)
+  ensures(array_length(@Array<Int>.result) > 0)
+  ensures(@Array<Int>.result[0] > 0)
+  effects(pure)
+{ [42] }
+
+public fn use_arr(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ make_arr(@Int.0)[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        assert warnings == [], (
+            f"Expected no warnings (would indicate Tier 3 fallback "
+            f"because Array<T> wasn't typed correctly at the call "
+            f"site); got: "
+            f"{[(w.error_code, w.description[:60]) for w in warnings]}"
+        )
+
+
+# =====================================================================
 # _type_expr_to_slot_name for RefinementType
 # =====================================================================
 
@@ -1145,14 +1469,16 @@ class TestSmtTranslateEdgeCases:
     def test_binary_with_none_operand(self) -> None:
         """Binary expr where one operand can't be translated returns None."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import BinaryExpr, BinOp, FloatLit, IntLit
+        from vera.ast import BinaryExpr, BinOp, UnitLit, IntLit
         ctx = SmtContext()
         env = SlotEnv()
-        # FloatLit has no SMT handler → translate_expr returns None for it
+        # UnitLit has no SMT handler — predicates are Bool, not Unit;
+        # translate_expr returns None for it.  (Pre-#667 this test
+        # used FloatLit, but FloatLit is now Handled.)
         expr = BinaryExpr(
             left=IntLit(value=1, span=None),
             op=BinOp.ADD,
-            right=FloatLit(value=1.5, span=None),
+            right=UnitLit(span=None),
             span=None,
         )
         result = ctx.translate_expr(expr, env)
@@ -1161,13 +1487,15 @@ class TestSmtTranslateEdgeCases:
     def test_unary_with_none_operand(self) -> None:
         """Unary expr where operand can't be translated returns None."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import UnaryExpr, UnaryOp, FloatLit
+        from vera.ast import UnaryExpr, UnaryOp, UnitLit
         ctx = SmtContext()
         env = SlotEnv()
-        # FloatLit has no SMT handler → translate_expr returns None for it
+        # UnitLit has no SMT handler — predicates are Bool, not Unit;
+        # translate_expr returns None for it.  (Pre-#667 this test
+        # used FloatLit, but FloatLit is now Handled.)
         expr = UnaryExpr(
             op=UnaryOp.NOT,
-            operand=FloatLit(value=1.5, span=None),
+            operand=UnitLit(span=None),
             span=None,
         )
         result = ctx.translate_expr(expr, env)
@@ -1176,12 +1504,14 @@ class TestSmtTranslateEdgeCases:
     def test_if_with_untranslatable_condition(self) -> None:
         """If expr with untranslatable condition returns None."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import IfExpr, FloatLit, IntLit
+        from vera.ast import IfExpr, UnitLit, IntLit
         ctx = SmtContext()
         env = SlotEnv()
-        # FloatLit has no SMT handler → translate_expr returns None for it
+        # UnitLit has no SMT handler — predicates are Bool, not Unit;
+        # translate_expr returns None for it.  (Pre-#667 this test
+        # used FloatLit, but FloatLit is now Handled.)
         expr = IfExpr(
-            condition=FloatLit(value=1.5, span=None),
+            condition=UnitLit(span=None),
             then_branch=IntLit(value=1, span=None),
             else_branch=IntLit(value=2, span=None),
             span=None,

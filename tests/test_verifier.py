@@ -1758,7 +1758,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 252 T1 / 26 T3 / 278 total (current).
+        """All examples together: 253 T1 / 25 T3 / 278 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -1779,6 +1779,21 @@ private fn sum(@List<Int> -> @Int)
           the private `option_map` workaround (#604 fix); the removed
           shadow had a `requires(true) ensures(true)` pair
           contributing 2 T1 + 2 contracts that no longer appear.
+        * 253/25/278 after v0.0.153 — #667 (SMT translator coverage
+          for FloatLit / IndexExpr / ArrayLit).  The shift comes
+          entirely from `examples/json.vera::main`'s contract
+          relaxation: pre-#667 the body translation failed (FloatLit
+          returned None), so the postcondition `ensures(@Int.result
+          == 0)` dropped to Tier 3 with an E522 warning ("Cannot
+          statically verify postcondition…") — counted in the 26
+          T3.  Post-#667 the body translates fully and the verifier
+          reaches the contradiction (helpers have `ensures(true)`,
+          so `@Int.result == 0` isn't provable); the contract was
+          honestly relaxed to `ensures(true)`, which trivially
+          verifies T1.  Net: -1 T3 (was a T3-with-warning) + 1 T1
+          (the relaxed `ensures(true)`) = +1 T1, -1 T3, total
+          unchanged at 278.  No other example contract changed
+          tier under #667.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -1789,8 +1804,8 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 252, f"Expected 252 T1, got {t1}"
-        assert t3 == 26, f"Expected 26 T3, got {t3}"
+        assert t1 == 253, f"Expected 253 T1, got {t1}"
+        assert t3 == 25, f"Expected 25 T3, got {t3}"
         assert total == 278, f"Expected 278 total, got {total}"
 
 

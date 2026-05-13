@@ -297,6 +297,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.150 | 12 May | **Nested type aliases through `Array<...>` compile and run** ([#559](https://github.com/aallan/vera/issues/559)). |
 | v0.0.151 | 12 May | **Walker-completeness audit with pre-commit enforcement** ([#597](https://github.com/aallan/vera/issues/597)). |
 | v0.0.152 | 13 May | **Stress-test harness for scale-dependent regression coverage** ([#596](https://github.com/aallan/vera/issues/596)). |
+| v0.0.153 | 13 May | **SMT translator covers `FloatLit` / `IndexExpr` / `ArrayLit` in contracts** ([#667](https://github.com/aallan/vera/issues/667)). |
 
 ---
 
@@ -337,4 +338,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 152 tagged releases, 58 active development days.**
+Total: **810+ commits, 153 tagged releases, 58 active development days.**

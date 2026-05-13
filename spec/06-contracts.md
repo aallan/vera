@@ -134,10 +134,14 @@ Contract predicates use the same expression syntax as Vera programs, with the fo
 
 Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 - Integer literals and slot references
+- Float64 literals (`1.5`, `-0.5`) — Z3 Real sort, sound for relational properties (added [#667](https://github.com/aallan/vera/issues/667))
+- String literals
 - Linear arithmetic (`+`, `-`, `*` with literal multiplier)
 - Comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - Boolean connectives (`&&`, `||`, `!`)
 - `array_length()` on arrays, `string_length()` on strings
+- Array index expressions (`@Array<T>.0[i]`) — uninterpreted `index_<T>(arr, i)` function; sound for relational facts but doesn't reason about element structure beyond what explicit predicates assert (added [#667](https://github.com/aallan/vera/issues/667))
+- Array literals (`[a, b, c]`) — fresh `Array_<T>` constant with `length(lit) == N` and per-element `index(lit, i) == elt_i` axioms asserted (added [#667](https://github.com/aallan/vera/issues/667))
 - Logical implication (`==>`)
 - `true`, `false`
 - The `@T.result` reference (in `ensures` only)
@@ -150,7 +154,8 @@ Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 
 Beyond the decidable fragment, contracts may also use:
 - Quantified expressions (limited, see below) — `forall` / `exists` fall to Tier 3 today
-- Array element access (`@Array<Int>.0[@Nat.0]`)
+
+Note that array element access (`@Array<T>.0[i]`) and array literals (`[a, b, c]`) are NOT Tier 2 — both are Tier 1 with the uninterpreted-function encoding described in §6.3.1 (added [#667](https://github.com/aallan/vera/issues/667)).  Tier 2 is reserved for predicates that the decidable fragment can't decide on its own and need user-provided lemmas (#427).
 
 ### 6.3.3 Quantified Expressions
 
@@ -333,8 +338,8 @@ The refinement type on the function parameter's second argument serves as the co
 
 | Tier | Scope | Solver | Timeout | Failure mode |
 |------|-------|--------|---------|--------------|
-| 1 | Decidable fragment (QF_LIA + length + bool) | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
-| 2 | Extended (function calls, quantifiers, arrays) — [not yet implemented](https://github.com/aallan/vera/issues/427) | Z3 with hints | 10 seconds | Falls to Tier 3 |
+| 1 | Z3 quantifier-free decidable fragment: linear integer + real arithmetic, bool, strings (Z3 `String` sort), uninterpreted sorts/functions (length, **array literals and indexing via `index_<T>` functions** — #667).  No single SMT-LIB logic name covers all of these — QF_UFLIRA is the closest standard logic (integer + real + uninterpreted functions, without strings); strings are a Z3-specific extension. | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
+| 2 | Extended: quantifiers, lemma/assert hints — [not yet implemented](https://github.com/aallan/vera/issues/427) | Z3 with hints | 10 seconds | Falls to Tier 3 |
 | 3 | Runtime | None (checks emitted as code) | N/A | Runtime trap |
 
 A fully Tier 1-verified program has the strongest guarantee: if it compiles, the contracts hold for all inputs. A program with Tier 3 contracts may fail at runtime if the contracts are violated.

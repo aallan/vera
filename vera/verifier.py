@@ -12,6 +12,8 @@ See spec/06-contracts.md for the full verification specification.
 
 from __future__ import annotations
 
+import z3
+
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -461,6 +463,15 @@ class ContractVerifier:
                 var = smt.declare_string(z3_name)
             elif self._is_float64_type(param_ty):
                 var = smt.declare_float64(z3_name)
+            elif self._is_array_type(param_ty):
+                # #667 — Array<T> gets a proper uninterpreted sort
+                # so `arr[i]` and `[a, b, c]` translate to typed
+                # `index_<T>` / array constants rather than falling
+                # back to `declare_int` (which made IndexExpr and
+                # ArrayLit in contracts return None and drop the
+                # predicate to Tier 3).
+                array_var = self._declare_array_var(smt, z3_name, param_ty)
+                var = array_var if array_var is not None else smt.declare_int(z3_name)
             elif self._is_adt_type(param_ty):
                 adt_var = smt.declare_adt(z3_name, param_ty)
                 var = adt_var if adt_var is not None else smt.declare_int(z3_name)
@@ -480,6 +491,10 @@ class ContractVerifier:
             result_var = smt.declare_string("@result")
         elif self._is_float64_type(ret_type):
             result_var = smt.declare_float64("@result")
+        elif self._is_array_type(ret_type):
+            array_var = self._declare_array_var(smt, "@result", ret_type)
+            result_var = (array_var if array_var is not None
+                          else smt.declare_int("@result"))
         elif self._is_adt_type(ret_type):
             adt_var = smt.declare_adt("@result", ret_type)
             result_var = adt_var if adt_var is not None else smt.declare_int("@result")
@@ -1380,6 +1395,45 @@ class ContractVerifier:
         """Check if a type is an algebraic data type."""
         from vera.types import AdtType
         return isinstance(ty, AdtType)
+
+    @staticmethod
+    def _is_array_type(ty: Type) -> bool:
+        """Check if a type is an Array<T> (incl. refinements).
+
+        Internally `Array<T>` is represented as `AdtType("Array",
+        (T,))`, but it's a built-in carrier — not user-registered
+        in the SMT layer's `_adt_registry`.  Detecting it here
+        lets the verifier route Array<T> slots through the
+        dedicated Array-sort code path (#667).
+        """
+        from vera.types import AdtType
+        if isinstance(ty, RefinedType):
+            ty = ty.base
+        return isinstance(ty, AdtType) and ty.name == "Array"
+
+    def _declare_array_var(
+        self,
+        smt: "SmtContext",
+        name: str,
+        ty: Type,
+    ) -> z3.ExprRef | None:
+        """Declare an Array-typed Z3 constant for parameter `name`.
+
+        Resolves the element type to a Z3 sort and delegates to
+        `smt.declare_array_var`.  Returns None if the element type
+        can't be mapped (e.g. `Array<FnType<...>>`).
+        """
+        from vera.types import AdtType
+        if isinstance(ty, RefinedType):
+            ty = ty.base
+        if not isinstance(ty, AdtType) or ty.name != "Array":
+            return None
+        if not ty.type_args:
+            return None
+        element_sort = smt._vera_type_to_z3_sort(ty.type_args[0])
+        if element_sort is None:
+            return None
+        return smt.declare_array_var(name, element_sort)
 
     @staticmethod
     def _is_string_type(ty: Type) -> bool:
