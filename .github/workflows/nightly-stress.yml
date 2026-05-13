@@ -1,0 +1,57 @@
+name: Stress tests
+
+# Stress tests (#596) are scale-dependent regression tests that
+# exercise the runtime at sizes where #570 / #515 / #593-class
+# bugs historically manifested.  They're skipped from the
+# default per-PR pytest run (via `addopts = "-m 'not stress'"`
+# in pyproject.toml) because the full suite at 5 minutes wall-
+# clock would dominate ordinary CI time.
+#
+# This workflow runs them in three triggers:
+#
+# 1. Nightly cron — primary safety net.  Catches drift in a
+#    daily window so the cost of bisecting a regression stays
+#    small.
+# 2. Path-filtered PRs touching `vera/codegen/`, `vera/wasm/`,
+#    or `tests/test_stress.py` — fail-fast for PRs that change
+#    the code most likely to break stress invariants.
+# 3. Manual workflow_dispatch — anyone can trigger from the
+#    Actions tab for local-suspicious commits.
+
+on:
+  schedule:
+    # 06:00 UTC daily — quiet time for most contributor TZs;
+    # results land before US East Coast morning standups.
+    - cron: '0 6 * * *'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'vera/codegen/**'
+      - 'vera/wasm/**'
+      - 'tests/test_stress.py'
+      - '.github/workflows/nightly-stress.yml'
+  workflow_dispatch:
+
+jobs:
+  stress:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    env:
+      PYTHONUTF8: 1
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run stress tests
+        run: pytest -v -m stress tests/test_stress.py

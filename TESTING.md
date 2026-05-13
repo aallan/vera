@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,863 across 31 files (~51,882 lines of test code; 3,849 passed, 14 skipped) |
+| **Tests** | 3,871 across 32 files (~52,257 lines of test code; 3,849 passed + 8 stress, 14 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 86 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 34, all validated through `vera check` + `vera verify` |
@@ -66,6 +66,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
 | `test_walker_defensive_branches_597.py` | 21 | 296 | Synthetic-AST tests for the 11 defensive `isinstance` branches added by #597 (`_scan_io_ops` / `_scan_expr_for_handlers` / `_infer_expr_wasm_type` / `_infer_vera_type`) plus the 5 pr-review fixes (#2/#3/#8 — ModuleCall/AnonFn/QualifiedCall return None; dead `is not None` guards on Block/HandleExpr removed) |
 | `test_check_walker_coverage_597.py` | 15 | 311 | Unit tests for `scripts/check_walker_coverage.py` parsing logic — Expr subclass extraction, isinstance flattening (incl. tuple form), checklist-block anchoring (incl. CR-3 regression test: `# Foo → bar` outside WALKER_COVERAGE block not counted), section-header tolerance, auto-discovery invariants, end-to-end main exit code |
+| `test_stress.py` | 8 | 375 | Scale-dependent regression tests (#596) — `@pytest.mark.stress`, skipped by default.  10K `array_map`, 5K nested-array `array_map`, 1K-deep tail recursion with allocating arg, 20×20 nested array-fold-of-array-fold, 100K `array_fold`, 10K String allocations, 1K `State<Int>` get/put cycles, 10K `IO.print` calls.  Pins #570 / #515 / #593 / #595 / #549 / #487 / #348 / #573 regression coverage |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 122 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
 | `test_cli.py` | 217 | 3,021 | CLI commands (check, verify, compile, run, test, fmt, version, quiet), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes, --explain-slots |
@@ -333,6 +334,35 @@ _run_trap(source, fn, args)    # compile + execute, assert WASM trap
 Every one of the 34 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
 
 The formatter has **idempotency tests**: `format(format(x)) == format(x)` for all tested programs.
+
+## Stress Tests
+
+Scale-dependent regression tests live in `tests/test_stress.py` (#596).  These exercise Vera programs at sizes where historical bugs (#570 iterative-builder shadow-stack overflow at ~4000 elements, #515 GC self-fault under sustained allocation, #593 Conway's Life corruption at 12×30+) first manifested, plus 2-3x safety margin.
+
+The 8 initial test programs:
+
+| Test | Scale axis | Target bug class |
+|------|------------|------------------|
+| `test_array_map_over_10k_int_array` | 10K-element `Array<Int>` iteration | shadow-stack overflow (#570) |
+| `test_array_map_over_5k_nested_bool_array` | 5K nested-array allocation | per-iteration root accumulation (#570/#515) |
+| `test_deep_tail_recursion_with_allocating_arg` | 1K-deep tail recursion with String alloc | TCO/GC interaction (#549) |
+| `test_conways_life_20x20_100_generations` | 400-cell grid + nested array_fold | #593/#595 regression |
+| `test_array_fold_100k_iterations` | 100K fold accumulator across GC cycles | allocation pressure (#487/#348) |
+| `test_10k_string_allocations` | 10K String allocations in interpolation loop | wrap-table compaction (#573) |
+| `test_state_handler_1k_ops` | 1K `State<Int>` get/put cycles in single handler | handler/resume plumbing under load |
+| `test_10k_io_print_calls` | 10K `IO.print` calls with stdout capture | host-import call-rate, capture buffer growth |
+
+**Default behaviour**: stress tests are skipped from the per-PR pytest run via `addopts = "-m 'not stress'"` in `pyproject.toml`.  Local invocation: `pytest -m stress` or `pytest tests/test_stress.py -m stress -v`.
+
+**CI integration**: `.github/workflows/nightly-stress.yml` runs them in three triggers:
+
+1. **Nightly cron** (`0 6 * * *` UTC) — primary safety net, catches drift in a daily window so bisection cost stays small.
+2. **Path-filtered PRs** touching `vera/codegen/**`, `vera/wasm/**`, `tests/test_stress.py`, or the workflow file itself — fail-fast for PRs that change code most likely to break stress invariants.
+3. **`workflow_dispatch`** — manual trigger from the Actions tab for local-suspicious commits.
+
+**Budget**: the full suite completes in well under the 5-minute target (0.25s in-process on a developer laptop today; CI cold-start adds workflow setup time).  Iteration counts are tuned to the smallest scale where each bug class has historically manifested with ~2-3x safety margin, NOT maximised — the goal is reliable detection of the bug class, not benchmarking.
+
+**Assertion shape**: each test asserts on a SPECIFIC observable (e.g. `array_fold` returning the closed-form sum `4999950000`, `IO.print` producing exactly 10000 `x` characters), not just "completed without crashing".  This catches a future regression where the loop silently short-circuits or skips iterations.
 
 ## Test Fixture Conventions
 

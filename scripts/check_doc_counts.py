@@ -72,12 +72,18 @@ def main() -> int:
             elif re.match(r"^[a-z]", line):
                 break
 
-    # Pytest collection: total tests + per-file counts
+    # Pytest collection: total tests + per-file counts.
+    # `-o addopts=""` overrides the default `-m 'not stress'`
+    # from pyproject.toml (#596 stress-marker registration) so
+    # the collection sees every test file including
+    # `test_stress.py`.  Without this override the per-file
+    # counter wouldn't see stress tests and would report them
+    # as a missing row in TESTING.md.
     pytest_bin = root / ".venv/bin/pytest"
     if not pytest_bin.exists():
         pytest_bin = Path("pytest")  # fall back to PATH
     result = subprocess.run(
-        [str(pytest_bin), "--co", "-q"],
+        [str(pytest_bin), "--co", "-q", "-o", "addopts="],
         capture_output=True,
         text=True,
         cwd=str(root),
