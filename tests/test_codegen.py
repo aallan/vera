@@ -15456,13 +15456,18 @@ class TestWrapperHandleTagging578:
     """
 
     def test_wrap_emits_tag_or(self) -> None:
-        """Wrap site emits `i32.const 0x80000000; i32.or` adjacent.
+        """Wrap site emits `i32.const 0x80000000; i32.or; i32.store offset=4`.
 
-        Adjacent-sequence regex rather than loose substring: both
-        `i32.const 0x80000000` (used by the heap-ceiling guard
-        too) and `i32.or` (used by header-mark manipulation) can
-        appear elsewhere in the WAT.  Only the wrap-site emits
-        them adjacent.
+        Pin the FULL 3-instruction wrap-site sequence — not just
+        the `const`/`or` pair.  The header-mark path also has an
+        `i32.or` and the heap-ceiling guard also has the constant;
+        only the wrap site emits all three with `i32.store
+        offset=4` (the wrapper-body handle field).  Including the
+        store in the regex pins the SEMANTIC intent (tagging
+        immediately precedes the field store) rather than the
+        accidental fact that the const-or pair happens to be
+        unique today.  Symmetric with `test_unwrap_emits_mask_and`
+        which already pins the full 3-instruction unwrap sequence.
         """
         source = """\
 public fn main(@Unit -> @Int)
@@ -15476,12 +15481,14 @@ public fn main(@Unit -> @Int)
         # `\s+` matches newlines + indentation between adjacent
         # WAT instructions.
         assert re.search(
-            r"i32\.const 0x80000000\s+i32\.or", result.wat,
+            r"i32\.const 0x80000000\s+i32\.or\s+i32\.store offset=4",
+            result.wat,
         ), (
-            f"Expected adjacent `i32.const 0x80000000; i32.or` "
-            f"pair (the wrap-site tag emission).  Without #578, "
-            f"the wrap site stores the raw handle and this pair "
-            f"never appears."
+            f"Expected adjacent `i32.const 0x80000000; i32.or; "
+            f"i32.store offset=4` sequence (the wrap-site tag "
+            f"emission immediately followed by the wrapper-field "
+            f"store).  Without #578, the wrap site stores the raw "
+            f"handle and this sequence never appears."
         )
 
     def test_unwrap_emits_mask_and(self) -> None:
@@ -15610,23 +15617,28 @@ public fn main(@Unit -> @Int)
         rather than going through the WAT `_emit_unwrap_handle`
         helper.  Post-#578 that read sees the TAGGED value and
         must AND with 0x7FFFFFFF before looking up the host-side
-        `map_store`.  This test pins that the host-side mask is
-        in place — without it, the lookup would miss and
+        `map_store`.  Without the mask the lookup would miss and
         `html_to_string` would emit an element with empty
         attributes.
+
+        Pin the EXACT serialized output (not just length) so a
+        hypothetical bug that produced wrong content with the
+        right length (e.g. `<p title="WRONG"></p>` — also 21
+        chars) would still fail.  `IO.print` + `_run_io` captures
+        the rendered output for direct string comparison.
         """
-        source = """
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
+        source = _IO_PRELUDE + """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
 {
   let @Map<String, String> = map_insert(map_new(), "title", "hello");
-  string_length(html_to_string(HtmlElement("p", @Map<String, String>.0, [])))
+  IO.print(html_to_string(HtmlElement("p", @Map<String, String>.0, [])))
 }
 """
-        # <p title="hello"></p> = 21 characters.  Without the
-        # host-side mask the attribute dict would be empty and
-        # the output would be just <p></p> = 7 characters.
-        assert _run(source) == 21
+        # Exact rendered output.  Without the host-side mask the
+        # attribute dict would be empty and the output would be
+        # `<p></p>` instead.
+        assert _run_io(source, fn="main") == '<p title="hello"></p>'
 
     def test_json_round_trip_uses_host_side_mask(self) -> None:
         """Host-side JSON reader applies the 0x7FFFFFFF mask.
@@ -15641,20 +15653,26 @@ public fn main(-> @Int)
         `read_json` would fall through to the "unknown JObject
         handle" warning + empty-dict path, and `json_stringify`
         would emit `{}` instead of the object.
+
+        Pin the EXACT serialized output (not just length) so a
+        hypothetical bug that produced wrong content with the
+        right length (e.g. `{"name": "BB"}` — also 14 chars)
+        would still fail.
         """
-        source = """\
-public fn main(-> @Int)
-  requires(true) ensures(true) effects(pure)
+        source = _IO_PRELUDE + """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
 {
   let @Json = JObject(map_insert(map_new(), "name", JString("hi")));
-  string_length(json_stringify(@Json.0))
+  IO.print(json_stringify(@Json.0))
 }
 """
-        # `{"name": "hi"}` = 14 characters (Python json.dumps
-        # default separators include a space after the colon).
-        # Without the host-side mask the attribute dict would be
-        # empty and json_stringify would emit `{}` = 2 characters.
-        assert _run(source) == 14
+        # Exact rendered output.  Python's json.dumps default
+        # separators include a space after the colon, so the
+        # form is `{"name": "hi"}` (NOT the compact `{"name":"hi"}`).
+        # Without the host-side mask json_stringify would emit
+        # `{}` instead.
+        assert _run_io(source, fn="main") == '{"name": "hi"}'
 
     # --- Unit tests for the _validate_wrap_handle helper ---
     #
