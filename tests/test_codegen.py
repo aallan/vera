@@ -2083,13 +2083,25 @@ public fn f(-> @Int)
         # recursive call.  Post-process must have KEPT the
         # `return_call $build` (TCO preserved) but prepended the
         # $gc_sp restore (shadow-stack invariant preserved).
-        build_start = result.wat.find("(func $build")
-        assert build_start >= 0
-        build_end = result.wat.find("(func ", build_start + 1)
-        if build_end < 0:
-            build_end = len(result.wat)
+        #
+        # Use boundary-safe regex (\b after `$build`) so a future
+        # symbol like `$build_helper` couldn't false-match these
+        # checks.  WAT symbol chars are `[A-Za-z0-9_]` plus `$`;
+        # `\b` correctly excludes `$build_x` while still matching
+        # `$build ` or `$build(`.
+        build_match = re.search(r"\(func \$build\b", result.wat)
+        assert build_match is not None, (
+            f"Could not locate `(func $build` in WAT"
+        )
+        build_start = build_match.start()
+        next_fn = re.search(r"\(func \$", result.wat[build_start + 1:])
+        build_end = (
+            build_start + 1 + next_fn.start()
+            if next_fn is not None
+            else len(result.wat)
+        )
         build_body = result.wat[build_start:build_end]
-        assert "return_call $build" in build_body, (
+        assert re.search(r"return_call \$build\b", build_body), (
             f"Allocating function `build` did not emit return_call. "
             f"#549's GC-aware TCO should preserve return_call for "
             f"allocating fns. Body:\n{build_body}"
@@ -2127,7 +2139,7 @@ public fn f(-> @Int)
         #     global.set $gc_sp
         return_call_indices = [
             i for i, line in enumerate(lines)
-            if "return_call $build" in line
+            if re.search(r"return_call \$build\b", line)
         ]
         assert return_call_indices, "no return_call $build site found"
         for idx in return_call_indices:
@@ -2188,16 +2200,31 @@ public fn f(-> @Int)
 }
 """
         result = _compile_ok(source)
-        build_start = result.wat.find("(func $build")
-        assert build_start >= 0
-        build_end = result.wat.find("(func ", build_start + 1)
-        if build_end < 0:
-            build_end = len(result.wat)
+        # Boundary-safe extraction (\b after `$build`) — see the
+        # rationale in test_allocating_function_uses_gc_aware_tco_549
+        # above.
+        build_match = re.search(r"\(func \$build\b", result.wat)
+        assert build_match is not None, (
+            f"Could not locate `(func $build` in WAT"
+        )
+        build_start = build_match.start()
+        next_fn = re.search(r"\(func \$", result.wat[build_start + 1:])
+        build_end = (
+            build_start + 1 + next_fn.start()
+            if next_fn is not None
+            else len(result.wat)
+        )
         build_body = result.wat[build_start:build_end]
         # post_instrs are present, so return_call must revert to
         # plain call (so the postcondition check actually runs).
-        assert "call $build" in build_body
-        assert "return_call $build" not in build_body, (
+        # `\bcall \$build\b` rules out both `return_call` (leading
+        # `\b` requires non-word char before `c`) AND `$build_x`
+        # (trailing `\b` requires non-word char after `d`).
+        assert re.search(r"\bcall \$build\b", build_body), (
+            f"Expected plain `call $build` in post-revert body. "
+            f"Body:\n{build_body}"
+        )
+        assert not re.search(r"return_call \$build\b", build_body), (
             f"build has a runtime postcondition; return_call would "
             f"skip it. Post-process should have reverted to plain "
             f"call. Body:\n{build_body}"
@@ -2219,9 +2246,11 @@ public fn f(-> @Int)
         # forbid the sequence outright; we can only forbid it
         # immediately preceding a `call $build` site.
         lines = build_body.splitlines()
+        # Boundary-safe regex distinguishes plain `call $build`
+        # from `return_call $build` AND excludes `$build_anything`.
         call_indices = [
             i for i, line in enumerate(lines)
-            if "call $build" in line and "return_call" not in line
+            if re.search(r"\bcall \$build\b", line)
         ]
         assert call_indices, "no plain call $build site found"
         for idx in call_indices:
@@ -15213,14 +15242,24 @@ public fn main(@Unit -> @Int)
         # the shadow-stack overflow guard.  The distinctive token
         # is `global.get $gc_stack_limit`, which is only used by
         # this guard in the entire emission surface.
+        #
+        # Boundary-safe extraction (\b after `$overflow`) so a
+        # future symbol like `$overflow_helper` couldn't false-
+        # match the function-start search.
         compiled = _compile_ok(src)
-        overflow_start = compiled.wat.find("(func $overflow")
-        assert overflow_start >= 0, (
+        overflow_match = re.search(r"\(func \$overflow\b", compiled.wat)
+        assert overflow_match is not None, (
             f"`$overflow` function not found in emitted WAT"
         )
-        overflow_end = compiled.wat.find("(func ", overflow_start + 1)
-        if overflow_end < 0:
-            overflow_end = len(compiled.wat)
+        overflow_start = overflow_match.start()
+        next_fn = re.search(
+            r"\(func \$", compiled.wat[overflow_start + 1:]
+        )
+        overflow_end = (
+            overflow_start + 1 + next_fn.start()
+            if next_fn is not None
+            else len(compiled.wat)
+        )
         overflow_body = compiled.wat[overflow_start:overflow_end]
         # The guard sequence emitted by `gc_shadow_push` in
         # `vera/wasm/helpers.py` is:
