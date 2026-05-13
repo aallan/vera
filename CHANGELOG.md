@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.150] - 2026-05-12
+
+### Fixed
+
+- **[#559](https://github.com/aallan/vera/issues/559)** — nested type aliases (alias-of-alias via `Array<…>`, e.g. `type Row = Array<Int>; type Grid = Array<Row>;`) now compile and run correctly when indexed through both layers.  Pre-fix `vera/wasm/inference.py::_alias_array_element` extracted the array element type but did not canonicalise it — for `@Grid.0`, it walked `Grid → Array<Row>` and returned `NamedType("Row")` rather than the canonical `NamedType("Array", (Int,))`.  Downstream consumers saw the opaque alias name and either fell through (chained-indexing branch in `_infer_index_element_type_expr` checks `inner_te.name == "Array"`, fails on `"Row"`) or emitted a load-as-i32 + `i64.extend_i32_u` against what is actually a heap pointer to an (`Array<Int>`) pair — producing `type mismatch: expected a type but nothing on stack` at WASM validation (or, when the bug surfaced on a private helper, the misleading `unknown func: $caller` symptom described in the issue body).  Post-fix the helper runs the extracted element through the existing `_canonical_named_type` walker (the #630 canonicalisation seam), so a `Row` element resolves to `Array<Int>` and downstream lookups see the real shape.  Falls back to the original unresolved NamedType when the canonical walk terminates at a non-NamedType (e.g. `FnType` element), preserving the pre-fix contract for the direct `Array<T>` path.  Two new regression tests in `tests/test_codegen.py::TestCompoundArrays` pin the `array_length(@Grid.0[0])` and `@Grid.0[1][0]` shapes.  Closes `#559`.
+
 ## [0.0.149] - 2026-05-12
 
 ### Fixed
@@ -2177,7 +2183,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.149...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.150...HEAD
+[0.0.150]: https://github.com/aallan/vera/compare/v0.0.149...v0.0.150
 [0.0.149]: https://github.com/aallan/vera/compare/v0.0.148...v0.0.149
 [0.0.148]: https://github.com/aallan/vera/compare/v0.0.147...v0.0.148
 [0.0.147]: https://github.com/aallan/vera/compare/v0.0.146...v0.0.147

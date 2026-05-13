@@ -7768,6 +7768,54 @@ public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
 """
         assert _run(src) == 3
 
+    def test_nested_alias_array_length_559(self) -> None:
+        """#559 — `type Row = Array<Int>; type Grid = Array<Row>;`
+        with `array_length(@Grid.0[0])` compiles and runs.
+
+        Pre-fix `_alias_array_element` returned `NamedType("Row")`
+        as the element type of `@Grid.0`.  Downstream WASM-type
+        lookups treated `Row` as a scalar (it's an alias name, not
+        the canonical `Array<Int>` shape) and emitted a load-as-i32
+        + ``i64.extend_i32_u`` against what is actually a heap
+        pointer to a (ptr, len) pair — WASM validation rejected the
+        module with ``type mismatch: expected a type but nothing on
+        stack``.  Post-fix the helper canonicalises the returned
+        element type, so the chained-indexing branch in
+        ``_infer_index_element_type_expr`` and the downstream size
+        lookups both see ``NamedType("Array", (Int,))`` and emit
+        the correct i32_pair load.
+        """
+        src = """
+type Row = Array<Int>;
+type Grid = Array<Row>;
+
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Grid = [[10]];
+  array_length(@Grid.0[0])
+}
+"""
+        assert _run(src) == 1
+
+    def test_nested_alias_2d_index_559(self) -> None:
+        """#559 — 2D index through nested aliases.
+
+        Verifies the chained-indexing branch in
+        ``_infer_index_element_type_expr`` succeeds for
+        ``@Grid.0[0][1]``: the inner IndexExpr's element type must
+        be canonicalised to ``Array<Int>`` so the outer's check
+        ``inner_te.name == "Array"`` matches.
+        """
+        src = """
+type Row = Array<Int>;
+type Grid = Array<Row>;
+
+public fn f(-> @Int) requires(true) ensures(true) effects(pure) {
+  let @Grid = [[10, 20], [30, 40]];
+  @Grid.0[1][0]
+}
+"""
+        assert _run(src) == 30
+
     def test_result_array(self) -> None:
         """Array<Result<Int, String>> — construct and match on indexed element."""
         src = """

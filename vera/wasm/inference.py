@@ -1310,14 +1310,41 @@ class InferenceMixin:
         type_args: tuple[ast.TypeExpr, ...] | None,
     ) -> ast.NamedType | None:
         """If (type_name, type_args) names an Array<T> (possibly via alias
-        or refinement-of-alias), return T as a NamedType.  Returns None
-        otherwise.
+        or refinement-of-alias), return T as a *canonical* NamedType —
+        i.e. with any alias chain on the element type itself fully
+        resolved.  Returns None otherwise.
+
+        Canonicalisation on the returned element type matters for
+        nested aliases (#559).  Example: ``type Row = Array<Int>;
+        type Grid = Array<Row>`` — without canonicalisation, indexing
+        ``@Grid.0[0]`` returns ``NamedType("Row")``.  The chained-
+        indexing branch in ``_infer_index_element_type_expr`` then
+        checks ``inner_te.name == "Array"`` and fails (it's
+        ``"Row"``), so ``@Grid.0[0][1]`` falls back to ``None``.
+        Worse, downstream element-WASM-type lookups treat the
+        opaque alias name as a scalar and emit a load-as-i32 +
+        ``i64.extend_i32_u`` against what is actually a heap
+        pointer to an array pair, producing a stack-shape mismatch
+        at WASM validation.  Returning the *canonical* element
+        ensures the chained-indexing branch matches and downstream
+        size lookups see the real shape.
         """
         # Direct Array<T>
         if type_name == "Array" and type_args:
             ta = type_args[0]
             if isinstance(ta, ast.NamedType):
-                return ta
+                # #559: canonicalise the element type so nested
+                # aliases (`type Row = Array<Int>` used as the
+                # element of an outer `Array<Row>`) resolve through
+                # the chain instead of stopping at the alias name.
+                # ``_canonical_named_type`` returns ``None`` for
+                # non-NamedType terminals (e.g. element is a
+                # ``FnType`` — not a useful array shape today); fall
+                # back to the original NamedType in that case so we
+                # don't regress the pre-#559 behaviour of returning
+                # *something* for a direct ``Array<T>``.
+                canonical = self._canonical_named_type(ta)
+                return canonical if canonical is not None else ta
             return None
         # Type alias — follow to its target.  Only handles the common case
         # of a non-generic alias pointing at a concrete Array<T>; generic
