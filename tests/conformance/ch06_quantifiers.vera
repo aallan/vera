@@ -23,11 +23,13 @@ public fn main(@Unit -> @Bool)
 {
   -- ensures(true): `all_positive`'s postcondition is `ensures(true)`,
   -- so the static verifier can't conclude `@Bool.result == true`
-  -- from the specific input [1, 2, 3].  Pre-#667 this contract
-  -- vacuously verified because the ArrayLit returned None from
-  -- `smt.translate_expr`, masking the body's semantics; the
-  -- soundness gap is now closed and the contract has been
-  -- honestly relaxed.
+  -- from the specific input [1, 2, 3].  Pre-#667 the ArrayLit
+  -- returned None from `smt.translate_expr`, so the body
+  -- translation failed and the verifier dropped this
+  -- postcondition to Tier 3 with an E522 warning ("Cannot
+  -- statically verify postcondition…").  Post-#667 the body
+  -- translates fully, the verifier reaches the contradiction,
+  -- and reports E500 — the contract has been honestly relaxed.
   all_positive([1, 2, 3])
 }
 

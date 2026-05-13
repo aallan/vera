@@ -704,12 +704,15 @@ class SmtContext:
            code path today populates it, but the fallback shields
            against future regressions).
 
-        3. **`_z3_sorts` direct key lookup**: tries the
-           canonical-key form (`<elt>`), the angle-bracketed
-           generic form (`Array<<elt>>` is wrong; we mean the ADT
-           form like `List<Int>`), and the raw key as last-ditch
-           ADT-sort recovery.  Mostly redundant given (1) but kept
-           as defence-in-depth.
+        3. **`_z3_sorts` direct key lookup**: tries the raw
+           stripped key (e.g. `MyAdt`) and the angle-bracketed
+           generic form (e.g. `List_Int` → `List<Int>`) as
+           defensive last-ditch ADT-sort recovery.  Mostly
+           redundant given (1) — every `Array_<T>` sort is
+           created via `_get_array_sort` which populates
+           `_array_element_sorts` at creation time — but kept as
+           defence-in-depth against a future code path that
+           bypasses `_get_array_sort`.
         """
         sort_name = str(array_sort)
         # 1. Direct map (populated at sort-creation time).
@@ -765,6 +768,15 @@ class SmtContext:
         # Narrowed: every element translated successfully.
         element_z3s: list[z3.ExprRef] = [e for e in raw_elements if e is not None]
         element_sort = element_z3s[0].sort()
+        # Defensive sort-consistency check: the type checker should
+        # have rejected heterogeneous-element array literals upstream,
+        # but if we receive one (e.g. due to a future relaxation in
+        # the checker), bail to None rather than letting Z3 raise an
+        # uncaught `Z3Exception: sort mismatch` on the per-element
+        # axiom below.  See pr-review-toolkit silent-failure-hunter
+        # review on PR #670.
+        if any(e.sort() != element_sort for e in element_z3s[1:]):
+            return None
         array_sort = self._get_array_sort(element_sort)
         lit_name = self._fresh_name("array_lit")
         lit_const = z3.Const(lit_name, array_sort)

@@ -1780,15 +1780,20 @@ private fn sum(@List<Int> -> @Int)
           shadow had a `requires(true) ensures(true)` pair
           contributing 2 T1 + 2 contracts that no longer appear.
         * 253/25/278 after v0.0.153 — #667 (SMT translator coverage
-          for FloatLit / IndexExpr / ArrayLit) widened static
-          verification: one previously-T3 example contract using a
-          float-comparison predicate now verifies T1.  The json.vera
-          example's `main` postcondition was also relaxed from the
-          overstrong `ensures(@Int.result == 0)` to `ensures(true)`
-          — the previous classification as T1 was a pre-#667 latent
-          soundness gap (FloatLit returning None masked the body's
-          semantics).  Net effect on the totals: +1 T1, -1 T3, total
-          unchanged at 278.
+          for FloatLit / IndexExpr / ArrayLit).  The shift comes
+          entirely from `examples/json.vera::main`'s contract
+          relaxation: pre-#667 the body translation failed (FloatLit
+          returned None), so the postcondition `ensures(@Int.result
+          == 0)` dropped to Tier 3 with an E522 warning ("Cannot
+          statically verify postcondition…") — counted in the 26
+          T3.  Post-#667 the body translates fully and the verifier
+          reaches the contradiction (helpers have `ensures(true)`,
+          so `@Int.result == 0` isn't provable); the contract was
+          honestly relaxed to `ensures(true)`, which trivially
+          verifies T1.  Net: -1 T3 (was a T3-with-warning) + 1 T1
+          (the relaxed `ensures(true)`) = +1 T1, -1 T3, total
+          unchanged at 278.  No other example contract changed
+          tier under #667.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):

@@ -1281,6 +1281,80 @@ public fn use_float(@Unit -> @Bool)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], f"Expected no errors, got: {errors}"
 
+    def test_floatlit_deliberately_false_contract_reports_e500(self) -> None:
+        """**Negative test** for the FloatLit translation: a
+        contract that should fail must now actually fail with
+        E500 (verification error), not vacuously pass.  Pre-#667
+        the FloatLit returned None and the contract dropped to
+        Tier 3 with warning; a regression that reverts FloatLit
+        to None would silently pass this assertion.  Pin: the
+        precondition `1.0 > 2.0` is unsatisfiable, so the body
+        is unreachable; but the ensures `@Float64.result == 0.0`
+        contradicts the body which returns `1.5`.
+        """
+        result = _verify("""
+public fn always_15(@Unit -> @Float64)
+  requires(true)
+  ensures(@Float64.result == 0.0)
+  effects(pure)
+{ 1.5 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors, (
+            "Expected E500 on a deliberately-false FloatLit "
+            "postcondition; got no errors"
+        )
+        assert any(e.error_code == "E500" for e in errors), (
+            f"Expected E500; got: "
+            f"{[(e.error_code, e.description[:50]) for e in errors]}"
+        )
+
+    def test_arraylit_element_axiom_deliberately_false_reports_e500(
+        self,
+    ) -> None:
+        """**Negative test** for the ArrayLit per-element axiom:
+        `[1, 2, 3][0] == 999` is provably false from the axiom
+        `index(lit, 0) == 1`.  A contract that requires it must
+        fail with E500.  Pin: the axiom is actually being
+        asserted, not just stored.
+        """
+        result = _verify("""
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures([1, 2, 3][0] == 999)
+  effects(pure)
+{ 0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors, (
+            "Expected E500 on a deliberately-false ArrayLit "
+            "element-access predicate; got no errors"
+        )
+        assert any(e.error_code == "E500" for e in errors), (
+            f"Expected E500; got: "
+            f"{[(e.error_code, e.description[:50]) for e in errors]}"
+        )
+
+    def test_indexexpr_congruence_in_contract_verifies_tier1(self) -> None:
+        """**Congruence test** for the IndexExpr translation:
+        two references to `@Array.0[i]` with the same `i`
+        produce the same value (Z3 function congruence).  Pin:
+        a regression that keyed `index_<sort>` per call-site
+        would break this trivially-symmetric predicate.
+        """
+        result = _verify("""
+public fn f(@Array<Int>, @Int -> @Int)
+  requires(array_length(@Array<Int>.0) > 0)
+  requires(@Int.0 == 0)
+  ensures(@Array<Int>.0[@Int.0] == @Array<Int>.0[@Int.0])
+  effects(pure)
+{ @Array<Int>.0[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], (
+            f"Expected congruence to verify trivially; got: {errors}"
+        )
+
     def test_array_return_type_typed_at_call_site(self) -> None:
         """#667 follow-up — Array<T>-returning calls declare the
         result var with `declare_array_var` so the caller can

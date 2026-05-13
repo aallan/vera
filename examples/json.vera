@@ -119,11 +119,16 @@ public fn main(@Unit -> @Int)
   -- `parse_average_temp`, `round1`) carries a postcondition
   -- strong enough to let the verifier prove `@Int.result == 0`
   -- statically — `ensures(true)` reflects that the runtime
-  -- behaviour is the source of truth here.  Pre-#667 a latent
-  -- soundness gap in the SMT translator (FloatLit returning None
-  -- masked the body's semantics) made the verifier classify the
-  -- stronger postcondition as Tier 1 vacuously; the gap is now
-  -- closed and the contract has been honestly relaxed.
+  -- behaviour is the source of truth here.  Pre-#667 the SMT
+  -- translator returned None for FloatLit literals (e.g. `18.0`
+  -- in `round1`'s comparison), so the verifier couldn't
+  -- translate the body and dropped this postcondition to
+  -- Tier 3 with an E522 warning ("Cannot statically verify
+  -- postcondition…").  Post-#667 the body translates fully,
+  -- the verifier reaches the contradiction (with `ensures(true)`
+  -- on every helper, `@Int.result == 0` isn't provable), and
+  -- reports E500 (verification error) — the contract has been
+  -- honestly relaxed.
   ensures(true)
   effects(pure)
 {
