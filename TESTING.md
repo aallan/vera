@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,827 across 29 files (~51,275 lines of test code; 3,813 passed, 14 skipped) |
+| **Tests** | 3,860 across 31 files (~51,826 lines of test code; 3,846 passed, 14 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 86 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 34, all validated through `vera check` + `vera verify` |
@@ -64,6 +64,8 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_codegen_closures.py` | 50 | 1,624 | Closure lifting, captured variables, higher-order functions, iterative-builder shadow-stack regressions (#570), closure return-value shadow-push balance for both i32-pair and i32-ADT branches across array_map and array_mapi, plus VERA_EAGER_GC injection self-test (#593), IndexExpr-of-FnCall element-type inference (#614), non-contiguous capture and walker-order miscompiles (#615) |
 | `test_codegen_modules.py` | 23 | 836 | Cross-module guard rail, cross-module codegen, name collision detection (E608/E609/E610) |
 | `test_codegen_coverage.py` | 5 | 250 | Defensive error paths: E600, E601, E605, E606, unknown module calls  |
+| `test_walker_defensive_branches_597.py` | 21 | 296 | Synthetic-AST tests for the 11 defensive `isinstance` branches added by #597 (`_scan_io_ops` / `_scan_expr_for_handlers` / `_infer_expr_wasm_type` / `_infer_vera_type`) plus the 5 pr-review fixes (#2/#3/#8 — ModuleCall/AnonFn/QualifiedCall return None; dead `is not None` guards on Block/HandleExpr removed) |
+| `test_check_walker_coverage_597.py` | 12 | 255 | Unit tests for `scripts/check_walker_coverage.py` parsing logic — Expr subclass extraction, isinstance flattening (incl. tuple form), checklist-block anchoring (incl. CR-3 regression test: `# Foo → bar` outside WALKER_COVERAGE block not counted), section-header tolerance, auto-discovery invariants, end-to-end main exit code |
 | `test_errors.py` | 52 | 525 | Error code registry, diagnostic formatting, serialisation, SourceLocation, error display sync (README/HTML/spec) |
 | `test_formatter.py` | 122 | 1,075 | Comment extraction, interior comment positioning, expression/declaration formatting, match arm block bodies, idempotency, parenthesization, spec rules, ability declarations |
 | `test_cli.py` | 217 | 3,021 | CLI commands (check, verify, compile, run, test, fmt, version, quiet), subprocess integration, JSON error paths, runtime traps, arg validation, multi-file resolution, IO exit codes, --explain-slots |

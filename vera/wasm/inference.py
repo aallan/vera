@@ -176,12 +176,16 @@ class InferenceMixin:
         #   AssertExpr        → None (Unit)
         #   AssumeExpr        → None (Unit)
         #   AnonFn            → "i32" (closure ptr — defensive add #597)
-        #   ModuleCall        → from `_infer_fncall_wasm_type` shape
-        #                       (defensive add #597; today the type
-        #                       checker resolves ModuleCalls to
-        #                       FnCalls before this helper runs, but
-        #                       a regression there would un-mask the
-        #                       gap)
+        #   ModuleCall        → None (defensive add #597; the
+        #                       `path` field can't be threaded
+        #                       through the bare-name FnCall
+        #                       dispatcher.  Today the type checker
+        #                       resolves ModuleCalls to FnCalls
+        #                       before this helper runs; if a
+        #                       regression flows a ModuleCall here,
+        #                       returning None surfaces the failure
+        #                       cleanly rather than masking with a
+        #                       wrong-name lookup.)
         #
         # Cannot occur (rejected before reaching this codegen-time
         # helper):
@@ -281,15 +285,18 @@ class InferenceMixin:
         # represents a closure handle on the WASM stack (i32 ptr).
         if isinstance(expr, ast.AnonFn):
             return "i32"
-        # Defensive add (#597): ModuleCall resolves to a FnCall on
-        # the imported target.  If a regression lands a ModuleCall
-        # at this helper, look up the imported fn's return type via
-        # the FnCall machinery (which already handles module-qualified
-        # names).  Wrapping in a fake FnCall preserves the dispatch.
+        # Defensive add (#597): ModuleCall resolves cross-module and
+        # carries an `expr.path` field that the bare-name `FnCall`
+        # dispatcher cannot consume.  Synthesising a fake
+        # `FnCall(name=expr.name, args=expr.args)` would drop the
+        # path and could match a same-name local fn from a different
+        # module — silent wrong-answer rather than safe failure.
+        # Return None instead so a regression that flows a ModuleCall
+        # to this helper surfaces as a None-typed expression at the
+        # caller (which then either skips via [E602] or reports an
+        # explicit error) rather than masking with a wrong lookup.
         if isinstance(expr, ast.ModuleCall):
-            return self._infer_fncall_wasm_type(
-                ast.FnCall(name=expr.name, args=expr.args)
-            )
+            return None
         return None
 
     _IO_WASM_TYPES: dict[str, str | None] = {
@@ -882,14 +889,21 @@ class InferenceMixin:
         #   HandleExpr        → from body (defensive add #597)
         #   AssertExpr        → "Unit" (defensive add #597)
         #   AssumeExpr        → "Unit" (defensive add #597)
-        #   AnonFn            → "Fn" (defensive add #597 — closure
-        #                       handle's Vera type isn't typically
-        #                       needed for call rewriting, but a
-        #                       placeholder beats `None`)
-        #   QualifiedCall     → from `_infer_fncall_vera_type`
-        #                       (defensive add #597)
-        #   ModuleCall        → from `_infer_fncall_vera_type`
-        #                       (defensive add #597)
+        #   AnonFn            → None (defensive add #597 — closure
+        #                       handle has no simple Vera-type
+        #                       name suitable for call rewriting;
+        #                       None lets callers handle the
+        #                       unknown-type case explicitly)
+        #   QualifiedCall     → None (defensive add #597 — the
+        #                       `qualifier` field can't be threaded
+        #                       through the bare-name FnCall
+        #                       dispatcher; None instead of a
+        #                       wrong same-name lookup)
+        #   ModuleCall        → None (defensive add #597 — the
+        #                       `path` field can't be threaded
+        #                       through the bare-name FnCall
+        #                       dispatcher; same rationale as
+        #                       QualifiedCall)
         #
         # Cannot occur (contract-only or check-time rejected):
         #   ResultRef         → only valid in `ensures`; not at call site
@@ -951,28 +965,31 @@ class InferenceMixin:
         # most callers preprocess first.  Returning the right Vera
         # type instead of None hardens against a future caller
         # extending the surface.
+        # Block.expr is non-Optional (vera/ast.py:470).
         if isinstance(expr, ast.Block):
-            return (self._infer_vera_type(expr.expr)
-                    if expr.expr is not None else None)
+            return self._infer_vera_type(expr.expr)
         if isinstance(expr, ast.MatchExpr):
             if expr.arms:
                 return self._infer_vera_type(expr.arms[0].body)
             return None
+        # HandleExpr.body is non-Optional Block; its .expr is also
+        # non-Optional (vera/ast.py:481, 470).
         if isinstance(expr, ast.HandleExpr):
-            if expr.body.expr is not None:
-                return self._infer_vera_type(expr.body.expr)
-            return None
+            return self._infer_vera_type(expr.body.expr)
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
             return "Unit"
-        if isinstance(expr, ast.AnonFn):
-            return "Fn"  # closure handle — placeholder for any
-            # downstream code that just needs to know it's a fn-typed
-            # arg; the precise FnType shape isn't needed here.
-        if isinstance(expr, (ast.QualifiedCall, ast.ModuleCall)):
-            # Treat as a FnCall lookup; reuses the existing dispatch.
-            return self._infer_fncall_vera_type(
-                ast.FnCall(name=expr.name, args=expr.args)
-            )
+        # AnonFn / QualifiedCall / ModuleCall: return None rather
+        # than a placeholder string.  AnonFn's Vera type would be a
+        # full `FnType` shape that isn't typically needed for call
+        # rewriting; QualifiedCall carries a `qualifier` and
+        # ModuleCall carries a `path` that the bare-name `FnCall`
+        # dispatcher cannot consume — synthesising a fake `FnCall`
+        # would drop those fields and could match a same-name local
+        # fn instead.  None lets callers handle the unknown-type
+        # case explicitly rather than propagating a wrong type
+        # silently.
+        if isinstance(expr, (ast.AnonFn, ast.QualifiedCall, ast.ModuleCall)):
+            return None
         return None  # pragma: no cover
 
     def _infer_fncall_vera_type(self, call: ast.FnCall) -> str | None:

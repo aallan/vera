@@ -234,9 +234,14 @@ class CompilabilityMixin:
         #                       (defensive add #597 — same masking as
         #                       ArrayLit)
         #   AnonFn            → recurses into body (defensive add
-        #                       #597 — masked today by the closure
-        #                       compile pipeline running its own scan,
-        #                       but redundant defence is cheap)
+        #                       #597 — IS the primary defence: pr-
+        #                       review of #668 surfaced that
+        #                       `_compile_lifted_closure` in
+        #                       `vera/codegen/closures.py` does NOT
+        #                       call this scanner on lifted bodies,
+        #                       so without this branch IO ops
+        #                       inside a closure body would silently
+        #                       miss their host-import registration)
         #
         # Intentionally ignored (leaves — no sub-exprs to recurse into):
         #   IntLit            → leaf
@@ -321,10 +326,15 @@ class CompilabilityMixin:
                 self._scan_io_ops(arm.body)
         elif isinstance(node, ast.HandleExpr):
             self._scan_io_ops(node.body)
-        # Defensive sub-expr recursion (#597) — masked today by
-        # type-checker rules / [E602] codegen-skip / closure-pipeline
-        # sibling scans, but plugs the gap if any of those upstream
-        # mechanisms relaxes.
+        # Defensive sub-expr recursion (#597) — three of the four
+        # branches below (IndexExpr, ArrayLit, InterpolatedString)
+        # are masked today by type-checker rules and the [E602]
+        # codegen-skip path; the AnonFn branch is the PRIMARY
+        # defence — the closure compile pipeline does not call
+        # this scanner on lifted bodies (verified by pr-review
+        # audit on #668), so IO ops inside a closure body would
+        # silently miss their host-import registration without
+        # this branch.
         elif isinstance(node, ast.IndexExpr):
             self._scan_io_ops(node.collection)
             self._scan_io_ops(node.index)
@@ -391,8 +401,13 @@ class CompilabilityMixin:
         #   InterpolatedString → recurses into each Expr part
         #                       (defensive add #597)
         #   AnonFn            → recurses into body (defensive add #597 —
-        #                       masked today by closure pipeline's own
-        #                       handler scan)
+        #                       IS the primary defence: the closure
+        #                       compile pipeline does not run its own
+        #                       handler scan on lifted bodies, so
+        #                       without this branch HandleExprs inside
+        #                       a closure body would silently miss
+        #                       their State/Exn host-import
+        #                       registration)
         #
         # Intentionally ignored (leaves — no sub-exprs to walk):
         #   IntLit            → leaf
@@ -446,9 +461,14 @@ class CompilabilityMixin:
             for arm in node.arms:
                 self._scan_expr_for_handlers(arm.body)
         # Defensive sub-expr recursion (#597) — symmetrical with
-        # `_scan_io_ops`.  Today these positions are masked from
-        # carrying HandleExprs by the type checker / [E602] codegen-
-        # skip, but plugs the gap if any upstream relaxation lands.
+        # `_scan_io_ops`.  The QualifiedCall / IndexExpr / ArrayLit
+        # / InterpolatedString branches are masked today by type-
+        # checker rules and the [E602] codegen-skip path.  The
+        # AnonFn branch is the PRIMARY defence — the closure
+        # compile pipeline does not call this scanner on lifted
+        # bodies, so HandleExprs inside a closure body would
+        # silently miss their State/Exn host-import registration
+        # without this branch.
         elif isinstance(node, ast.QualifiedCall):
             for arg in node.args:
                 self._scan_expr_for_handlers(arg)
