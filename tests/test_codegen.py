@@ -15436,7 +15436,8 @@ class TestWrapperHandleTagging578:
 
     Pre-#578 the raw host handle (a small positive integer) was
     stored at offset 4.  For typical programs the handle stays
-    below `gc_heap_start` (~147 KiB) so the heap-range check
+    below `gc_heap_start` (~144 KiB above the data section, so
+    roughly 144 KiB plus the string-pool size) so the heap-range check
     rejects it.  But for very-long-running programs allocating
     >100K host handles per `execute()`, the handle counter could
     exceed `gc_heap_start` and (with the right alignment) be
@@ -15446,7 +15447,7 @@ class TestWrapperHandleTagging578:
     retention for long sessions.
 
     Post-#578 the handle is stored as `handle | 0x80000000` so
-    the in-heap field is always >= 2 GB, structurally outside
+    the in-heap field is always >= 2 GiB, structurally outside
     any heap-range check (the `$alloc` heap-ceiling guard
     enforces `heap_ptr < 0x80000000`).  The unwrap site ANDs
     with 0x7FFFFFFF to recover the raw handle.  Two host-side
@@ -15515,8 +15516,8 @@ public fn main(@Unit -> @Int)
 
         The structural counterpart to the wrap-site tag: the
         guard ensures `heap_ptr < 0x80000000` always, so tagged
-        handles (>= 2 GB) and heap pointers (< 2 GB) are
-        guaranteed disjoint.  Without this guard a 3+ GB heap
+        handles (>= 2 GiB) and heap pointers (< 2 GiB) are
+        guaranteed disjoint.  Without this guard a 3+ GiB heap
         could produce real pointers in the tagged-handle range,
         reintroducing the spurious-retention bug.
 
@@ -15568,7 +15569,7 @@ public fn main(@Unit -> @Int)
         )
         assert guard_match is not None, (
             f"Heap-ceiling guard sequence not found (ordered) in "
-            f"$alloc body.  Without it, a >2 GB heap would let "
+            f"$alloc body.  Without it, a >2 GiB heap would let "
             f"real heap pointers collide with the tagged-handle "
             f"pattern, reintroducing #578.  $alloc body:\n"
             f"{alloc_body[:2000]}"
@@ -15637,9 +15638,9 @@ public fn main(-> @Int)
         helper.  Post-#578 that read sees the TAGGED value and
         must AND with 0x7FFFFFFF before looking up the host-side
         `map_store`.  Without the mask the lookup would miss,
-        `read_json` would fall through to the warning + empty-
-        dict path (`json_serde.py` line 213), and
-        `json_stringify` would emit `{}` instead of the object.
+        `read_json` would fall through to the "unknown JObject
+        handle" warning + empty-dict path, and `json_stringify`
+        would emit `{}` instead of the object.
         """
         source = """\
 public fn main(-> @Int)
@@ -15654,6 +15655,62 @@ public fn main(-> @Int)
         # Without the host-side mask the attribute dict would be
         # empty and json_stringify would emit `{}` = 2 characters.
         assert _run(source) == 14
+
+    # --- Unit tests for the _validate_wrap_handle helper ---
+    #
+    # The validator is module-scope in `vera/codegen/api.py` so it
+    # can be tested directly without standing up a wasmtime
+    # instance.  `_wrap_handle` (nested inside `execute()`) calls
+    # this helper.  These tests pin all 5 failure modes the
+    # validator rejects.
+
+    def test_validate_wrap_handle_accepts_valid_range(self) -> None:
+        """[0, 0x80000000) is the accepted range — no raise."""
+        from vera.codegen.api import _validate_wrap_handle
+        # Boundary lo, mid, boundary hi (last valid).
+        for raw in (0, 1, 12345, 0x7FFFFFFE, 0x7FFFFFFF):
+            _validate_wrap_handle(raw, kind=1, body_ptr=0x1000)
+
+    def test_validate_wrap_handle_rejects_negative(self) -> None:
+        """Negative ints have bit 31 set in two's complement."""
+        from vera.codegen.api import _validate_wrap_handle
+        with pytest.raises(RuntimeError, match="#578.*outside the valid"):
+            _validate_wrap_handle(-1, kind=1, body_ptr=0x1000)
+        with pytest.raises(RuntimeError, match="#578"):
+            _validate_wrap_handle(-12345, kind=2, body_ptr=0x2000)
+
+    def test_validate_wrap_handle_rejects_at_2gb_boundary(self) -> None:
+        """0x80000000 is the FIRST invalid value (range is half-open)."""
+        from vera.codegen.api import _validate_wrap_handle
+        with pytest.raises(RuntimeError, match="0x80000000"):
+            _validate_wrap_handle(0x80000000, kind=1, body_ptr=0x1000)
+
+    def test_validate_wrap_handle_rejects_above_32bit(self) -> None:
+        """Values >= 2^32 truncate on _write_i32 — must be caught here.
+
+        The pre-tightening (round 1) bit-31-only check let these
+        through: `0x100000001 & 0x80000000 == 0`, so the check
+        passed, but `_write_i32` would truncate to `0x00000001`
+        and the unwrap mask would return that — a silent wrong
+        handle.
+        """
+        from vera.codegen.api import _validate_wrap_handle
+        with pytest.raises(RuntimeError, match="#578"):
+            _validate_wrap_handle(0x100000000, kind=1, body_ptr=0x1000)
+        with pytest.raises(RuntimeError, match="#578"):
+            _validate_wrap_handle(0x100000001, kind=1, body_ptr=0x1000)
+
+    def test_validate_wrap_handle_rejects_non_int(self) -> None:
+        """Non-int sentinels surface here, not deeper in the stack.
+
+        Without the isinstance check, `None` / `"5"` / etc. would
+        raise `TypeError` from the bitwise `&` operation in the
+        old check, producing a less actionable error.
+        """
+        from vera.codegen.api import _validate_wrap_handle
+        for bad in (None, "5", 1.5, [1], {}):
+            with pytest.raises(RuntimeError, match="#578"):
+                _validate_wrap_handle(bad, kind=1, body_ptr=0x1000)
 
 
 # =====================================================================

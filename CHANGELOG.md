@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Tests
 
-- `tests/test_codegen.py::TestWrapperHandleTagging578` — 5 new tests pinning the contract: (1) wrap site emits `i32.const 0x80000000; i32.or`, (2) unwrap site emits `i32.load offset=4; i32.const 0x7FFFFFFF; i32.and`, (3) `$alloc` body contains the heap-ceiling guard, (4) end-to-end wrap/unwrap round trip preserves the original handle (a Map insert + lookup), (5) `html_to_string` produces the correct length output — pinning that the host-side `read_html` mask is in place (without it the attribute dict lookup would miss and the rendered HTML would be missing the `title="..."` attribute).
+- `tests/test_codegen.py::TestWrapperHandleTagging578` — 6 new tests pinning the contract: (1) wrap site emits `i32.const 0x80000000; i32.or`, (2) unwrap site emits `i32.load offset=4; i32.const 0x7FFFFFFF; i32.and`, (3) `$alloc` body contains the heap-ceiling guard (ordered 8-instruction sequence pinned by adjacent-sequence regex), (4) end-to-end wrap/unwrap round trip preserves the original handle (a Map insert + lookup), (5) `html_to_string` produces the correct length output — pinning that the host-side `read_html` mask is in place (without it the attribute dict lookup would miss and the rendered HTML would be missing the `title="..."` attribute), (6) `json_stringify(JObject(...))` produces the correct length — sibling test for the host-side `read_json` mask (which lives in `vera/wasm/json_serde.py` and bypasses the WAT unwrap helper just like `read_html` does).
 
 ### Documentation
 

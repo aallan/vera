@@ -690,15 +690,27 @@ class AssemblyMixin:
             "    end\n"
             "\n"
             "    ;; #578: heap-ceiling guard.  heap_ptr + total must\n"
-            "    ;; stay below 0x80000000 (2 GB) so wrapper handles\n"
+            "    ;; stay below 0x80000000 (2 GiB) so wrapper handles\n"
             "    ;; tagged with bit 31 in their in-heap field remain\n"
             "    ;; outside the conservative-scan heap-range check.\n"
-            "    ;; Without this guard, a >2 GB heap would let real\n"
+            "    ;; Without this guard, a >2 GiB heap would let real\n"
             "    ;; heap pointers reach 0x80000000+ and start colliding\n"
             "    ;; with the tagged-handle pattern, reintroducing the\n"
-            "    ;; spurious-retention bug.  Practical Vera programs\n"
-            "    ;; use <100 MB; this trap fires only when something\n"
-            "    ;; has gone very wrong.\n"
+            "    ;; spurious-retention bug.  Programs we have measured\n"
+            "    ;; stay well below the 2 GiB ceiling; this trap fires\n"
+            "    ;; only when something has gone very wrong.\n"
+            # TODO (#578 follow-up): the heap-ceiling trap below
+            # surfaces via the trap classifier as the generic
+            # ``unreachable`` kind with a Fix message about match
+            # arms — misleading for this case.  Practical programs
+            # never hit this trap (heap << 2 GiB) so the polish is
+            # deferred; a follow-up would either populate
+            # ``last_violation`` via a host import or add a
+            # dedicated classifier kind.  Kept as a Python comment
+            # rather than a WAT comment so the emitted WAT stays
+            # compact and the adjacent-sequence regex in
+            # tests/test_codegen.py::TestWrapperHandleTagging578::
+            # test_alloc_emits_heap_ceiling_guard stays simple.
             "    global.get $heap_ptr\n"
             "    local.get $total\n"
             "    i32.add\n"
@@ -1023,7 +1035,25 @@ class AssemblyMixin:
             "      local.get $scan_ptr\n"
             "      i32.load\n"
             "      local.set $val\n"
-            "      ;; Check if val is a valid heap pointer\n"
+            "      ;; Check if val is a valid heap pointer.\n"
+            "      ;;\n"
+            "      ;; #578 invariant (do not weaken without revisiting\n"
+            "      ;; the spurious-retention proof): wrapper-handle\n"
+            "      ;; fields are stored at body+4 with bit 31 set\n"
+            "      ;; (`handle | 0x80000000`).  The $alloc heap-ceiling\n"
+            "      ;; guard enforces heap_ptr < 0x80000000, so any\n"
+            "      ;; tagged value (>= 2 GiB) fails `val < heap_ptr`\n"
+            "      ;; below — they are structurally disjoint from\n"
+            "      ;; real heap pointers.  If a future change moves\n"
+            "      ;; the wrap tag to a different bit (e.g. `handle\n"
+            "      ;; | 0x40000000`) OR raises the heap ceiling above\n"
+            "      ;; 2 GiB, this scan can re-classify wrapper handles\n"
+            "      ;; as heap pointers and #578 reappears.  Two\n"
+            "      ;; structural tests pin the invariant against that\n"
+            "      ;; class of regression:\n"
+            "      ;; tests/test_codegen.py::TestWrapperHandleTagging578::\n"
+            "      ;;   test_wrap_emits_tag_or (pins the bit)\n"
+            "      ;;   test_alloc_emits_heap_ceiling_guard (pins ceiling)\n"
             "      local.get $val\n"
             "      global.get $gc_heap_start\n"
             "      i32.const 4\n"
