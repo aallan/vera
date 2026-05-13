@@ -486,11 +486,13 @@ class CallsMixin:
         # ``return_call`` semantics are valid (the callee must
         # return the same type the caller returns).  Falls back to
         # plain ``call`` if either condition fails — never an error,
-        # just a missed optimization.  See the GC-aware tail-call
-        # post-process at the end of ``_compile_fn`` in
-        # ``vera/codegen/functions.py`` which reverts ``return_call``
-        # → ``call`` for allocating functions, where shadow-stack
-        # cleanup would otherwise be skipped.
+        # just a missed optimization.  See the post-process at the
+        # end of ``_compile_fn`` in ``vera/codegen/functions.py``:
+        # for allocating functions (#549) it PREPENDS a ``$gc_sp``
+        # restore before each ``return_call`` so the shadow stack
+        # stays bounded; for functions with a runtime postcondition
+        # it REVERTS ``return_call`` → ``call`` so the post-check
+        # runs.
         is_tail = id(call) in self._tail_call_sites
         callee_ret_wt: str | None = None
         if is_tail:

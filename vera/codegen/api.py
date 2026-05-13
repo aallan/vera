@@ -525,18 +525,20 @@ _TRAP_FIX_PARAGRAPHS: dict[str, str] = {
     ),
     "stack_exhausted": (
         "Vera compiles tail-position calls to WASM `return_call` (#517, "
-        "shipped in v0.0.126), so iteration-shaped recursion runs in "
+        "shipped in v0.0.126; allocating tail calls covered by GC-aware "
+        "TCO in #549, v0.0.154), so iteration-shaped recursion runs in "
         "constant stack space — if you're still hitting this trap the "
         "recursion isn't actually in tail position.  Restructure with "
         "an accumulator parameter so the recursive call is the LAST "
         "thing the function does (no work after it, no `let`-binding "
-        "of its result, no enclosing arithmetic).  Allocating "
-        "functions are an exception: TCO is disabled there until "
-        "GC-aware tail-call support lands, so a tail-recursive "
-        "function that constructs ADTs each iteration still grows the "
-        "stack — restructure to allocate outside the recursion or "
-        "iterate via `array_fold` / `array_map` (which compile to "
-        "WASM loops rather than recursion)."
+        "of its result, no enclosing arithmetic).  One remaining "
+        "exception: functions with a non-trivial runtime "
+        "postcondition (`ensures` that emits a Tier-3 check) revert "
+        "to plain `call` so the post-check runs after each call — "
+        "either simplify the postcondition to one the verifier can "
+        "discharge statically (Tier 1), or iterate via `array_fold` / "
+        "`array_map` (which compile to WASM loops rather than "
+        "recursion)."
     ),
     "unreachable": (
         "Usually a non-exhaustive `match` whose missing arm would have "

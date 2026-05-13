@@ -1806,9 +1806,22 @@ class TestTailCallOptimization517:
     ``call $foo`` when the call's id is in the marked set AND the
     callee's WASM return type matches the caller's (required for
     WASM `return_call` semantics — the signature must match).
-    Allocating functions revert ``return_call`` → ``call`` in a
-    post-process step because `return_call` discards the current
-    frame and skips the GC epilogue, leaking shadow-stack slots.
+
+    Initially, allocating functions reverted ``return_call`` →
+    ``call`` in a post-process step because `return_call` discards
+    the current frame and skips the GC epilogue, leaking shadow-
+    stack slots.  #549 replaces that fallback with a GC-aware
+    variant: the post-process now PREPENDS
+    ``local.get $gc_sp_save; global.set $gc_sp`` before each
+    ``return_call``, restoring the shadow-stack pointer to the
+    caller's entry baseline so the callee's prologue saves a clean
+    new baseline.  Args are already on the WASM operand stack at
+    the return_call site; the restore only touches the
+    ``$gc_sp`` global, so args transfer atomically to the callee.
+
+    Functions with a non-trivial runtime postcondition STILL revert
+    ``return_call`` → ``call`` (the postcondition check runs after
+    the call returns; ``return_call`` would skip it).
     """
 
     def test_tail_recursive_iteration_succeeds_at_50k(self) -> None:
@@ -2019,27 +2032,37 @@ public fn f(-> @Int)
             f"call.  Body:\n{count_down_body}"
         )
 
-    def test_allocating_function_falls_back_to_plain_call(self) -> None:
-        """Allocating functions revert return_call → call.
+    def test_allocating_function_uses_gc_aware_tco_549(self) -> None:
+        """#549: allocating fns emit `return_call` + $gc_sp restore.
 
         WASM `return_call` discards the current frame, which means
         the GC epilogue (restore `$gc_sp`, unwind shadow stack)
         never runs.  For an allocating function with tail calls,
-        that leaks shadow-stack slots once per iteration and would
-        eventually trap on the next `$alloc` once gc_sp passes the
-        worklist boundary.  The post-process in
-        `_compile_fn` reverts every `return_call` → `call` when
-        `ctx.needs_alloc` is True.
+        that would leak shadow-stack slots once per iteration and
+        trap on the next `$alloc` once gc_sp passes the worklist
+        boundary.
 
-        This test pins that contract: a function that both
-        allocates AND has a tail call must emit plain `call`,
-        not `return_call`.  Until full GC-aware tail-call support
-        lands, this is the correctness guard.
+        Pre-#549: the post-process reverted every `return_call` →
+        `call` when `ctx.needs_alloc` was True, sacrificing TCO
+        for shadow-stack correctness.
+
+        Post-#549: the post-process instead PREPENDS a `$gc_sp`
+        restore (`local.get $gc_sp_save; global.set $gc_sp`)
+        immediately before each `return_call`, so the callee's
+        prologue saves a clean new baseline and the shadow stack
+        stays bounded across iterations.  Args are already on the
+        WASM operand stack at the return_call site; the restore
+        only touches the `$gc_sp` global, so args transfer
+        atomically to the callee.
+
+        This test pins the new contract: an allocating function
+        with a tail call must emit `return_call $foo` PRECEDED by
+        the `$gc_sp` restore sequence.
         """
         # Function that allocates (constructor call) AND has a
         # tail-recursive call shape.  The analyzer marks the
         # recursive call as tail-position; the post-process
-        # reverts the emission because needs_alloc is True.
+        # patches the emission because needs_alloc is True.
         source = """\
 private data Box { MkBox(Int) }
 
@@ -2057,20 +2080,99 @@ public fn f(-> @Int)
 """
         result = _compile_ok(source)
         # build allocates (the MkBox constructor) AND has a tail-
-        # recursive call.  Post-process must have reverted the
-        # `return_call $build` to plain `call $build`.
+        # recursive call.  Post-process must have KEPT the
+        # `return_call $build` (TCO preserved) but prepended the
+        # $gc_sp restore (shadow-stack invariant preserved).
         build_start = result.wat.find("(func $build")
         assert build_start >= 0
         build_end = result.wat.find("(func ", build_start + 1)
         if build_end < 0:
             build_end = len(result.wat)
         build_body = result.wat[build_start:build_end]
+        assert "return_call $build" in build_body, (
+            f"Allocating function `build` did not emit return_call. "
+            f"#549's GC-aware TCO should preserve return_call for "
+            f"allocating fns. Body:\n{build_body}"
+        )
+        # Find every `return_call $build` site and verify the two
+        # instructions immediately before it are `local.get <N>`
+        # and `global.set $gc_sp` (the GC-restore sequence).
+        lines = build_body.splitlines()
+        return_call_indices = [
+            i for i, line in enumerate(lines)
+            if "return_call $build" in line
+        ]
+        assert return_call_indices, "no return_call $build site found"
+        for idx in return_call_indices:
+            assert idx >= 2, (
+                f"return_call at line {idx} has no room for the "
+                f"$gc_sp restore preamble. Body:\n{build_body}"
+            )
+            prev1 = lines[idx - 1].strip()
+            prev2 = lines[idx - 2].strip()
+            assert prev1 == "global.set $gc_sp", (
+                f"Expected 'global.set $gc_sp' immediately before "
+                f"return_call at line {idx}, got: {prev1!r}. "
+                f"Body:\n{build_body}"
+            )
+            assert prev2.startswith("local.get "), (
+                f"Expected 'local.get <N>' two lines before "
+                f"return_call at line {idx} (loading $gc_sp_save), "
+                f"got: {prev2!r}. Body:\n{build_body}"
+            )
+
+    def test_allocating_function_with_postcondition_still_reverts(
+        self,
+    ) -> None:
+        """Postcondition-bearing allocating fns still revert to call.
+
+        The GC-aware TCO patch from #549 covers the
+        ``needs_alloc and not post_instrs`` case.  When the
+        function carries a non-trivial runtime postcondition
+        check, the post-process still reverts ``return_call`` →
+        ``call`` because the postcondition check needs to run
+        after the call returns — ``return_call`` would skip it.
+
+        This pins the precedence: post_instrs revert takes priority
+        over the GC-aware patch.  The function below both allocates
+        (the array literal in the base case sets needs_alloc) AND
+        carries a runtime postcondition (`@Int.result >= 0`).  The
+        post-process must therefore revert to plain ``call``, even
+        though #549's path would otherwise patch in a GC restore.
+        """
+        source = """\
+private fn build(@Nat -> @Int)
+  requires(true)
+  ensures(@Int.result >= 0)
+  decreases(@Nat.0)
+  effects(pure)
+{
+  -- Base case allocates an array literal (sets needs_alloc on
+  -- the codegen context); recursive case is in tail position.
+  if @Nat.0 == 0 then { array_length([0, 0, 0]) }
+  else { build(@Nat.0 - 1) }
+}
+
+public fn f(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  build(3)
+}
+"""
+        result = _compile_ok(source)
+        build_start = result.wat.find("(func $build")
+        assert build_start >= 0
+        build_end = result.wat.find("(func ", build_start + 1)
+        if build_end < 0:
+            build_end = len(result.wat)
+        build_body = result.wat[build_start:build_end]
+        # post_instrs are present, so return_call must revert to
+        # plain call (so the postcondition check actually runs).
         assert "call $build" in build_body
         assert "return_call $build" not in build_body, (
-            f"Allocating function `build` emitted return_call, "
-            f"which would leak shadow-stack slots.  Post-process "
-            f"should have reverted to plain call.  Body:\n"
-            f"{build_body}"
+            f"build has a runtime postcondition; return_call would "
+            f"skip it. Post-process should have reverted to plain "
+            f"call. Body:\n{build_body}"
         )
 
     def test_analyzer_marks_block_trailing_expression(self) -> None:
@@ -14984,7 +15086,24 @@ public fn main(@Unit -> @Int)
         assert _run(src) == 0  # first element must be false
 
     def test_shadow_stack_overflow_traps(self) -> None:
-        """Overflow guard traps instead of silently corrupting memory."""
+        """Overflow guard traps instead of silently corrupting memory.
+
+        Uses a NON-tail-recursive shape so each iteration stacks a
+        WASM frame and a fresh window of shadow-stack roots.
+
+        #549 made tail-recursive allocating functions safe (per-
+        iteration `$gc_sp` restore before each `return_call` keeps
+        shadow-stack usage flat regardless of iteration count).
+        Pre-#549 this test used a tail-recursive form that would
+        leak shadow-stack slots; post-#549 such a form runs cleanly
+        forever and no longer exercises the overflow guard.
+
+        To still exercise the guard, this test wraps the recursive
+        call in `array_append`, which moves it OUT of tail position.
+        The non-tail call stacks WASM frames, each frame's shadow-
+        stack roots survive across iterations, and at sufficient
+        depth the overflow guard trips.
+        """
         src = """
 private fn overflow(@Array<Bool>, @Array<Bool>, @Int -> @Array<Bool>)
   requires(@Int.0 >= 0)
@@ -14994,10 +15113,16 @@ private fn overflow(@Array<Bool>, @Array<Bool>, @Int -> @Array<Bool>)
 {
   if @Int.0 <= 0 then { @Array<Bool>.0 }
   else {
-    overflow(
-      @Array<Bool>.1,
-      array_append(@Array<Bool>.0, false),
-      @Int.0 - 1
+    -- Wrapping the recursive call in array_append puts it out of
+    -- tail position, so the call site emits plain `call` (not
+    -- `return_call`) and each iteration genuinely stacks a frame.
+    array_append(
+      overflow(
+        @Array<Bool>.1,
+        array_append(@Array<Bool>.0, false),
+        @Int.0 - 1
+      ),
+      true
     )
   }
 }
