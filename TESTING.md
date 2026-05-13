@@ -382,9 +382,11 @@ pytest "tests/test_stress.py::test_array_map_over_10k_int_array[eager_gc]" -m st
 
 **CI integration**: `.github/workflows/nightly-stress.yml` runs them in three triggers:
 
-1. **Nightly cron** (`0 6 * * *` UTC) — primary safety net, catches drift in a daily window so bisection cost stays small.
-2. **Path-filtered PRs** touching `vera/codegen/**`, `vera/wasm/**`, `tests/test_stress.py`, or the workflow file itself — fail-fast for PRs that change code most likely to break stress invariants.
-3. **`workflow_dispatch`** — manual trigger from the Actions tab for local-suspicious commits.
+1. **Nightly cron** (`0 6 * * *` UTC) — primary safety net, catches drift in a daily window so bisection cost stays small.  **Failures auto-file (or comment on) a tracking issue** with the `stress-regression` label so the regression is visible to anyone watching the issue feed.  See the failure-reporting subsection below.
+2. **Path-filtered PRs** touching `vera/codegen/**`, `vera/wasm/**`, `tests/test_stress.py`, or the workflow file itself — fail-fast for PRs that change code most likely to break stress invariants.  PR failures show on the PR's checks tab; no tracking issue is filed (the PR author already sees the failure).
+3. **`workflow_dispatch`** — manual trigger from the Actions tab for local-suspicious commits.  Failures are visible to whoever triggered the run; no tracking issue is filed.
+
+**Failure reporting (cron only)**: when the nightly cron fails, the workflow opens an issue titled "Nightly stress regression on main (tracking)" with the `stress-regression` label, including the commit SHA and the run URL.  If an open issue with that label already exists, the new failure posts a comment on it instead of filing a duplicate — so the issue persists across days of failures until a maintainer manually closes it.  The `stress-regression` label is auto-created on first failure.  This converts cron failures from "visible only to whoever opens the Actions tab" to "visible in the issue feed where Vera work is already triaged."  Implementation uses `actions/github-script@v7` with `issues: write` job-scoped permission.
 
 **Budget**: the full suite completes in well under the 5-minute target (0.25s in-process on a developer laptop today; CI cold-start adds workflow setup time).  Iteration counts are tuned to the smallest scale where each bug class has historically manifested with ~2-3x safety margin, NOT maximised — the goal is reliable detection of the bug class, not benchmarking.
 

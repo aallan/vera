@@ -11,12 +11,18 @@ name: Stress tests
 #
 # 1. Nightly cron — primary safety net.  Catches drift in a
 #    daily window so the cost of bisecting a regression stays
-#    small.
+#    small.  Failures auto-file (or comment on) a tracking
+#    issue with the `stress-regression` label.
 # 2. Path-filtered PRs touching `vera/codegen/`, `vera/wasm/`,
 #    or `tests/test_stress.py` — fail-fast for PRs that change
-#    the code most likely to break stress invariants.
+#    the code most likely to break stress invariants.  Failures
+#    fail the PR check directly; no tracking issue is filed
+#    (the PR author already sees the failure in the PR's checks
+#    tab).
 # 3. Manual workflow_dispatch — anyone can trigger from the
-#    Actions tab for local-suspicious commits.
+#    Actions tab for local-suspicious commits.  Failures are
+#    visible to whoever triggered the run; no tracking issue
+#    is filed.
 
 on:
   schedule:
@@ -36,6 +42,12 @@ jobs:
   stress:
     permissions:
       contents: read
+      # `issues: write` is needed by the failure-reporting step
+      # below so the workflow can open or comment on a tracking
+      # issue when the nightly cron fails.  Scoped to the job,
+      # not workflow-wide, so the test-runner step keeps the
+      # tighter `contents: read` default.
+      issues: write
     runs-on: ubuntu-latest
     env:
       PYTHONUTF8: 1
@@ -54,4 +66,92 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Run stress tests
+        # `-m stress` overrides the default `-m 'not stress'`
+        # addopts; runs ONLY the stress-marked tests.
         run: pytest -v -m stress tests/test_stress.py
+
+      # Auto-file a tracking issue on cron failure (option A from
+      # #669 review).  Skipped on `pull_request` (PR's own check
+      # tab is the reporting surface) and on `workflow_dispatch`
+      # (whoever triggered the run is already paying attention).
+      #
+      # Deduplication: searches for an open issue carrying the
+      # `stress-regression` label.  If one exists, appends a
+      # comment with the new commit SHA + run URL.  If none, files
+      # a fresh issue with the label.  The label is auto-created
+      # if it doesn't yet exist on the repo.
+      #
+      # Open tracking issues stay open across days until manually
+      # closed; this is by design — auto-closing on success would
+      # be wrong while a maintainer is mid-debug.
+      - name: Open or update tracking issue on cron failure
+        if: failure() && github.event_name == 'schedule'
+        uses: actions/github-script@v7
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT_SHA: ${{ github.sha }}
+        with:
+          script: |
+            const LABEL = "stress-regression";
+            const TITLE = "Nightly stress regression on main (tracking)";
+            const sha = process.env.COMMIT_SHA;
+            const sha7 = sha.slice(0, 7);
+            const runUrl = process.env.RUN_URL;
+            const commentBody = [
+              `Stress nightly failed against \`${sha7}\` (commit ${sha}).`,
+              ``,
+              `**Run logs**: ${runUrl}`,
+              ``,
+              `This is a regression on \`main\`; bisect against the green commits before this run.  See \`tests/test_stress.py\` for the failing test's docstring (each test names the bug class it guards against, which narrows the regression family).`,
+            ].join("\n");
+
+            // Ensure the label exists (idempotent — create on first failure).
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: LABEL,
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: LABEL,
+                  color: "d73a4a",
+                  description: "Nightly stress test failure on main (#596)",
+                });
+                core.info(`Created label '${LABEL}'`);
+              } else {
+                throw e;
+              }
+            }
+
+            // Find an existing open tracking issue with this label.
+            const { data: existing } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: LABEL,
+              state: "open",
+              per_page: 5,
+            });
+
+            if (existing.length > 0) {
+              const issueNumber = existing[0].number;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                body: commentBody,
+              });
+              core.info(`Posted failure comment on existing tracking issue #${issueNumber}`);
+            } else {
+              const { data: created } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: TITLE,
+                body: commentBody,
+                labels: [LABEL],
+              });
+              core.info(`Filed fresh tracking issue #${created.number}`);
+            }
