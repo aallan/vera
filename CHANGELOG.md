@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.151] - 2026-05-12
+
+### Added
+
+- **[#597](https://github.com/aallan/vera/issues/597)** — walker-completeness audit.  Nine `Expr`-dispatching walker functions in the compiler now carry `# WALKER_COVERAGE:` checklist comments classifying every one of the 29 `Expr` subclasses with one of four dispositions: **Handled** (explicit `isinstance` branch), **Intentionally ignored** (default fall-through is correct — e.g. literals in a sub-expression walker), **Cannot occur** (structurally impossible — e.g. `OldExpr` in body-only contexts, `HoleExpr` post-typecheck), or **MISSING** (open bug, branch should exist).  A new `scripts/check_walker_coverage.py` enforces coverage mechanically — it parses each walker's `isinstance(expr, ast.X)` calls AND its checklist text, then verifies the union covers every `Expr` subclass declared in `vera/ast.py`.  Wired into pre-commit as the `walker-coverage` hook, so a new `Expr` subclass added to `vera/ast.py` forces every walker to either handle it or document its disposition.  Closes the bug class responsible for `#588` (closure-lift), `#604` (prelude combinators), `#559` (nested aliases), and `#648` (cyclic aliases) — all five PRs from this stabilisation cycle had the same shape: a walker handled N of N+1 subclasses, missing case silently fell through.  The convention is documented in `vera/README.md` under "Walker-completeness convention".  Closes `#597`.
+
+### Fixed
+
+- **[#597](https://github.com/aallan/vera/issues/597) defensive adds** — 11 `isinstance` branches added across `vera/codegen/compilability.py::_scan_io_ops` (4: `IndexExpr`, `ArrayLit`, `InterpolatedString`, `AnonFn`), `vera/codegen/compilability.py::_scan_expr_for_handlers` (5: `QualifiedCall`, `IndexExpr`, `ArrayLit`, `InterpolatedString`, `AnonFn`), and `vera/wasm/inference.py::_infer_expr_wasm_type` (2: `AnonFn`, `ModuleCall`).  Plus 8 defensive branches in `_infer_vera_type` (`Block`, `MatchExpr`, `HandleExpr`, `AssertExpr`, `AssumeExpr`, `AnonFn`, `QualifiedCall`, `ModuleCall`).  No user-visible behaviour change today — every defensive add was masked by an upstream guard (type checker rejection, `[E602]` codegen-skip, closure-pipeline sibling scan, translator-side registration in `calls_math.py`/`calls_containers.py`/etc.).  Plugs the gap if any upstream mechanism is relaxed in the future, preventing the silent-skip class from reappearing.
+
+- **[#597](https://github.com/aallan/vera/issues/597) pr-review-toolkit follow-ups** (CodeRabbit + multi-agent audit) — five additional fixes landed in the same PR after the initial commit:
+  - `scripts/check_walker_coverage.py` — replaced hardcoded `WALKER_FILES` list with `_discover_walker_files()` globbing `vera/**/*.py` for the `WALKER_COVERAGE:` marker.  The hardcoded list silently skipped any new walker file added without manually updating it — replicating the exact silent-skip class this script was written to close.
+  - `scripts/check_walker_coverage.py` — anchored `extract_checklist_classes` to the WALKER_COVERAGE block (marker to next `"""`).  Pre-fix the regex ran over the whole function body so a `# Foo → bar`-shaped comment outside the block could silently count as coverage.
+  - `vera/wasm/inference.py::_infer_vera_type` — `AnonFn` / `QualifiedCall` / `ModuleCall` defensive branches now return `None` instead of synthesising a fake `FnCall(name, args)` (which dropped the `qualifier` / `path` field and could match a same-name local fn from a different module).  `_infer_expr_wasm_type::ModuleCall` also returns `None` for the same reason.
+  - `vera/wasm/inference.py::_infer_vera_type` — removed dead `if expr.expr is not None` guards on `Block`/`HandleExpr` defensive branches.  Both fields are non-Optional in the AST schema (`vera/ast.py:470, 481`); the guards were unreachable defensive code that hid the schema invariant.
+  - `vera/codegen/compilability.py` — corrected misleading "masked by closure pipeline" comments on the `AnonFn` defensive branches of `_scan_io_ops` and `_scan_expr_for_handlers`.  `_compile_lifted_closure` does NOT call these scanners on lifted bodies, so the `AnonFn` branch is the PRIMARY defence (not redundant); the comment now states this directly.
+
+### Tests
+
+- **[#597](https://github.com/aallan/vera/issues/597) regression coverage** — two new test files pinning the audit machinery:
+  - `tests/test_walker_defensive_branches_597.py` — 21 synthetic-AST tests covering all 11 defensive `isinstance` branches plus the 5 fixed-then-pinned `_infer_vera_type` cases.  Without these, a future refactor breaking a defensive branch would land silently (no production path exercises them today).
+  - `tests/test_check_walker_coverage_597.py` — 12 unit tests for the enforcement script's parsing logic (Expr subclass extraction, isinstance flattening, checklist-block anchoring including the CR-3 regression case, auto-discovery invariants, end-to-end main).
+
+### Internal
+
+- **ROADMAP cleanup** — removed the stale `#604` row (Stabilisation tier Order 1) that PR `#659` had closed via code fix but not deleted from the roadmap.  Stabilisation tier renumbered 1-6; Agent-integration tier renumbered 7-9.  Added `#667` ("SMT translator coverage expansion: FloatLit/ArrayLit/IndexExpr") as new Stabilisation tier Order 6 — surfaced during the walker audit as a latent gap in `smt.translate_expr`, deferred from this PR per Option A scope decision because closing it requires extending the contract grammar (parser + checker work) beyond the audit-scope brief.
+
 ## [0.0.150] - 2026-05-12
 
 ### Fixed
@@ -2183,7 +2210,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.150...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.151...HEAD
+[0.0.151]: https://github.com/aallan/vera/compare/v0.0.150...v0.0.151
 [0.0.150]: https://github.com/aallan/vera/compare/v0.0.149...v0.0.150
 [0.0.149]: https://github.com/aallan/vera/compare/v0.0.148...v0.0.149
 [0.0.148]: https://github.com/aallan/vera/compare/v0.0.147...v0.0.148

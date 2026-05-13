@@ -332,6 +332,42 @@ class WasmContext(
 
         Returns a list of WAT instruction strings, or None if the
         expression contains unsupported constructs (function skipped).
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
+        # disposition; check_walker_coverage.py enforces completeness.)
+        #
+        # Handled (explicit isinstance branch — codegen produces WAT):
+        #   IntLit            → i64.const
+        #   FloatLit          → f64.const
+        #   BoolLit           → i32.const 0/1
+        #   UnitLit           → empty (no stack value)
+        #   StringLit         → string-pool index pair
+        #   InterpolatedString → string-builder sequence
+        #   SlotRef           → local.get
+        #   ResultRef         → local.get (postcondition checks)
+        #   BinaryExpr        → operand translations + binop
+        #   UnaryExpr         → operand + unop
+        #   IndexExpr         → bounds check + load
+        #   ArrayLit          → alloc + element stores
+        #   FnCall            → call
+        #   QualifiedCall     → effect-op dispatch
+        #   ModuleCall        → desugared to FnCall
+        #   ConstructorCall   → ADT layout alloc + field stores
+        #   NullaryConstructor → tag-only ADT alloc
+        #   AnonFn            → closure-lift dispatch (closures.py)
+        #   IfExpr            → block + br_if
+        #   MatchExpr         → pattern dispatch + arm bodies
+        #   Block             → statement sequence + trailing expr
+        #   HandleExpr        → handler installation + body
+        #   AssertExpr        → predicate + trap on false
+        #   AssumeExpr        → predicate + trap on false
+        #   ForallExpr        → quantifier dispatch (verifier-only at runtime)
+        #   ExistsExpr        → quantifier dispatch
+        #   OldExpr           → snapshot lookup (postcondition contexts)
+        #   NewExpr           → snapshot lookup (postcondition contexts)
+        #
+        # Cannot occur (rejected before reaching codegen):
+        #   HoleExpr          → parser placeholder; check time rejects
         """
         if isinstance(expr, ast.IntLit):
             return [f"i64.const {expr.value}"]
@@ -514,6 +550,45 @@ class WasmContext(
         Effect op calls like put() are also void.
         Compound expressions (match, if, block) are void when all
         branches/the final expression are void.
+
+        # WALKER_COVERAGE: (#597 — positive-filter walker; default
+        # `return False` is correct for every Expr that produces a
+        # value.  Every Expr below has a disposition.)
+        #
+        # Handled (may be void; checked explicitly):
+        #   QualifiedCall     → True for void IO ops (print/exit/sleep/stderr)
+        #   UnitLit           → always True
+        #   FnCall            → True if user fn declared @Unit return
+        #   AssertExpr        → always True (returns Unit)
+        #   AssumeExpr        → always True (returns Unit)
+        #   MatchExpr         → True if all arm bodies are void
+        #   IfExpr            → True if both branches are void
+        #   Block             → True if trailing expr is void
+        #   HandleExpr        → True if body is void
+        #
+        # Intentionally ignored (default `return False` = produces value):
+        #   IntLit            → always Int (i64) on stack
+        #   FloatLit          → always Float64 (f64) on stack
+        #   BoolLit           → always Bool (i32) on stack
+        #   StringLit         → always String (i32 pair) on stack
+        #   InterpolatedString → always String (i32 pair) on stack
+        #   SlotRef           → always type-matched value on stack
+        #   ResultRef         → always type-matched value on stack
+        #   BinaryExpr        → arith/cmp/logic — always produces value
+        #   UnaryExpr         → neg/not — always produces value
+        #   IndexExpr         → element value on stack
+        #   ArrayLit          → Array (i32 pair) on stack
+        #   ConstructorCall   → ADT (i32) on stack
+        #   NullaryConstructor → ADT (i32) on stack
+        #   AnonFn            → closure handle (i32) on stack
+        #   ModuleCall        → return value on stack
+        #   ForallExpr        → Bool (i32) on stack
+        #   ExistsExpr        → Bool (i32) on stack
+        #
+        # Cannot occur (rejected before reaching codegen):
+        #   HoleExpr          → parser placeholder; check time rejects
+        #   OldExpr           → contract-only
+        #   NewExpr           → contract-only
         """
         if isinstance(expr, ast.QualifiedCall):
             # IO.print/sleep/stderr return Unit (void);

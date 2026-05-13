@@ -146,6 +146,52 @@ class InferenceMixin:
 
         Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool,
         None for unknown/Unit.  Used to select the correct operators.
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
+        # disposition; check_walker_coverage.py enforces completeness.)
+        #
+        # Handled (explicit isinstance branch):
+        #   IntLit            → "i64"
+        #   FloatLit          → "f64"
+        #   BoolLit           → "i32"
+        #   UnitLit           → None
+        #   StringLit         → "i32_pair"
+        #   InterpolatedString → "i32_pair"
+        #   SlotRef           → from resolved type name
+        #   ResultRef         → from declared @Type
+        #   BinaryExpr        → from op + operands (arith/cmp/logic)
+        #   UnaryExpr         → from op + operand (neg/not)
+        #   FnCall            → from `_infer_fncall_wasm_type`
+        #   QualifiedCall     → from `_infer_qualified_call_wasm_type`
+        #   ConstructorCall   → "i32" (heap ptr) if known
+        #   NullaryConstructor → "i32" (heap ptr) if known
+        #   MatchExpr         → from first arm body
+        #   IfExpr            → from then-branch
+        #   Block             → from trailing expr
+        #   HandleExpr        → from body
+        #   IndexExpr         → from element type
+        #   ArrayLit          → "i32_pair"
+        #   ForallExpr        → "i32" (Bool)
+        #   ExistsExpr        → "i32" (Bool)
+        #   AssertExpr        → None (Unit)
+        #   AssumeExpr        → None (Unit)
+        #   AnonFn            → "i32" (closure ptr — defensive add #597)
+        #   ModuleCall        → None (defensive add #597; the
+        #                       `path` field can't be threaded
+        #                       through the bare-name FnCall
+        #                       dispatcher.  Today the type checker
+        #                       resolves ModuleCalls to FnCalls
+        #                       before this helper runs; if a
+        #                       regression flows a ModuleCall here,
+        #                       returning None surfaces the failure
+        #                       cleanly rather than masking with a
+        #                       wrong-name lookup.)
+        #
+        # Cannot occur (rejected before reaching this codegen-time
+        # helper):
+        #   HoleExpr          → parser placeholder; check time rejects
+        #   OldExpr           → contract-only; not in body codegen
+        #   NewExpr           → contract-only; not in body codegen
         """
         if isinstance(expr, ast.IntLit):
             return "i64"
@@ -234,6 +280,23 @@ class InferenceMixin:
             return "i32"  # quantifiers return Bool
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
             return None  # assert/assume return Unit
+        # Defensive add (#597): AnonFn literals are typically lifted
+        # before reaching this helper, but if one does flow here it
+        # represents a closure handle on the WASM stack (i32 ptr).
+        if isinstance(expr, ast.AnonFn):
+            return "i32"
+        # Defensive add (#597): ModuleCall resolves cross-module and
+        # carries an `expr.path` field that the bare-name `FnCall`
+        # dispatcher cannot consume.  Synthesising a fake
+        # `FnCall(name=expr.name, args=expr.args)` would drop the
+        # path and could match a same-name local fn from a different
+        # module — silent wrong-answer rather than safe failure.
+        # Return None instead so a regression that flows a ModuleCall
+        # to this helper surfaces as a None-typed expression at the
+        # caller (which then either skips via [E602] or reports an
+        # explicit error) rather than masking with a wrong lookup.
+        if isinstance(expr, ast.ModuleCall):
+            return None
         return None
 
     _IO_WASM_TYPES: dict[str, str | None] = {
@@ -800,7 +863,56 @@ class InferenceMixin:
         return self._format_named_type(canonical)
 
     def _infer_vera_type(self, expr: ast.Expr) -> str | None:
-        """Infer the Vera type name of an expression for call rewriting."""
+        """Infer the Vera type name of an expression for call rewriting.
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
+        # disposition; check_walker_coverage.py enforces completeness.)
+        #
+        # Handled (explicit isinstance branch):
+        #   IntLit            → "Int"
+        #   BoolLit           → "Bool"
+        #   FloatLit          → "Float64"
+        #   UnitLit           → "Unit"
+        #   StringLit         → "String"
+        #   InterpolatedString → "String"
+        #   SlotRef           → slot type name (with type-args)
+        #   ConstructorCall   → parent ADT name
+        #   NullaryConstructor → parent ADT name
+        #   BinaryExpr        → "Bool" for cmp/logic, else left's type
+        #   UnaryExpr         → "Bool" for `not`, else operand's type
+        #   FnCall            → from `_infer_fncall_vera_type`
+        #   ArrayLit          → "Array"
+        #   IndexExpr         → element type
+        #   IfExpr            → from then-branch
+        #   Block             → from trailing expr (defensive add #597)
+        #   MatchExpr         → from first arm body (defensive add #597)
+        #   HandleExpr        → from body (defensive add #597)
+        #   AssertExpr        → "Unit" (defensive add #597)
+        #   AssumeExpr        → "Unit" (defensive add #597)
+        #   AnonFn            → None (defensive add #597 — closure
+        #                       handle has no simple Vera-type
+        #                       name suitable for call rewriting;
+        #                       None lets callers handle the
+        #                       unknown-type case explicitly)
+        #   QualifiedCall     → None (defensive add #597 — the
+        #                       `qualifier` field can't be threaded
+        #                       through the bare-name FnCall
+        #                       dispatcher; None instead of a
+        #                       wrong same-name lookup)
+        #   ModuleCall        → None (defensive add #597 — the
+        #                       `path` field can't be threaded
+        #                       through the bare-name FnCall
+        #                       dispatcher; same rationale as
+        #                       QualifiedCall)
+        #
+        # Cannot occur (contract-only or check-time rejected):
+        #   ResultRef         → only valid in `ensures`; not at call site
+        #   OldExpr           → contract-only
+        #   NewExpr           → contract-only
+        #   ForallExpr        → contract-only quantifier
+        #   ExistsExpr        → contract-only quantifier
+        #   HoleExpr          → parser placeholder, check time rejects
+        """
         if isinstance(expr, ast.IntLit):
             return "Int"
         if isinstance(expr, ast.BoolLit):
@@ -848,6 +960,36 @@ class InferenceMixin:
             if expr.then_branch.expr is not None:
                 return self._infer_vera_type(expr.then_branch.expr)
             return None  # pragma: no cover
+        # Defensive adds (#597) — these compound expressions could
+        # flow in here from generic-arg inference paths, but today
+        # most callers preprocess first.  Returning the right Vera
+        # type instead of None hardens against a future caller
+        # extending the surface.
+        # Block.expr is non-Optional (vera/ast.py:470).
+        if isinstance(expr, ast.Block):
+            return self._infer_vera_type(expr.expr)
+        if isinstance(expr, ast.MatchExpr):
+            if expr.arms:
+                return self._infer_vera_type(expr.arms[0].body)
+            return None
+        # HandleExpr.body is non-Optional Block; its .expr is also
+        # non-Optional (vera/ast.py:481, 470).
+        if isinstance(expr, ast.HandleExpr):
+            return self._infer_vera_type(expr.body.expr)
+        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
+            return "Unit"
+        # AnonFn / QualifiedCall / ModuleCall: return None rather
+        # than a placeholder string.  AnonFn's Vera type would be a
+        # full `FnType` shape that isn't typically needed for call
+        # rewriting; QualifiedCall carries a `qualifier` and
+        # ModuleCall carries a `path` that the bare-name `FnCall`
+        # dispatcher cannot consume — synthesising a fake `FnCall`
+        # would drop those fields and could match a same-name local
+        # fn instead.  None lets callers handle the unknown-type
+        # case explicitly rather than propagating a wrong type
+        # silently.
+        if isinstance(expr, (ast.AnonFn, ast.QualifiedCall, ast.ModuleCall)):
+            return None
         return None  # pragma: no cover
 
     def _infer_fncall_vera_type(self, call: ast.FnCall) -> str | None:

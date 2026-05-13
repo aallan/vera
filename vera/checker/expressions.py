@@ -47,6 +47,46 @@ class ExpressionsMixin:
         When *expected* is provided, it is threaded to constructors,
         if/match, and blocks so that nullary constructors of parameterised
         ADTs can resolve their TypeVars from context (bidirectional checking).
+
+        # WALKER_COVERAGE: (#597 — canonical "must handle every Expr"
+        # dispatcher.  Every subclass below has an explicit
+        # isinstance branch; check_walker_coverage.py enforces it.)
+        #
+        # Handled (every Expr subclass):
+        #   IntLit            → Int (or Byte via bidirectional check)
+        #   FloatLit          → Float64
+        #   BoolLit           → Bool
+        #   UnitLit           → Unit
+        #   StringLit         → String
+        #   InterpolatedString → String (sub-exprs type-checked)
+        #   HoleExpr          → emits E170, returns None
+        #   SlotRef           → resolved from current slot env
+        #   ResultRef         → emits E131 outside ensures
+        #   BinaryExpr        → arith/cmp/logic dispatch
+        #   UnaryExpr         → neg/not dispatch
+        #   IndexExpr         → element type of indexed collection
+        #   FnCall            → function-table lookup + arg check
+        #   QualifiedCall     → effect-op dispatch
+        #   ModuleCall        → imported-module lookup
+        #   ConstructorCall   → ADT constructor type
+        #   NullaryConstructor → ADT nullary constructor type
+        #   AnonFn            → fn-type from param + body
+        #   IfExpr            → unified branch type
+        #   MatchExpr         → unified arm type
+        #   Block             → trailing expr type (or Unit)
+        #   HandleExpr        → body type minus handled effect
+        #   AssertExpr        → Unit
+        #   AssumeExpr        → Unit
+        #   ForallExpr        → Bool (predicate type-checked under binders)
+        #   ExistsExpr        → Bool
+        #   OldExpr           → snapshot of inner expr (ensures-only)
+        #   NewExpr           → snapshot of inner expr (ensures-only)
+        #   ArrayLit          → Array<element-type>
+        #
+        # No "Cannot occur" entries: every Expr subclass is reachable
+        # by the type checker since it's the first compiler pass that
+        # sees user code.  This walker is the canonical complete set
+        # against which the other walkers are audited.
         """
         if isinstance(expr, ast.IntLit):
             # Byte coercion: integer literals 0–255 accepted as Byte when

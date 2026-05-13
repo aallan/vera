@@ -699,6 +699,22 @@ Practical recipes for common extensions.
 2. Add a grammar rule to `grammar.lark`
 3. Add a transformer method to `transform.py` with the same name as the grammar rule
 4. The transformer method receives already-transformed children and returns the new node
+5. **If you added a new `Expr` subclass**: every walker function carrying a `# WALKER_COVERAGE:` checklist comment must be updated to either add an `isinstance` branch or document a disposition (Handled / Intentionally ignored / Cannot occur) for the new subclass.  The pre-commit hook `walker-coverage` (which runs `scripts/check_walker_coverage.py`) enforces this and will reject the commit if any walker is incomplete.  See the section "Walker-completeness convention" below.
+
+### Walker-completeness convention
+
+Several functions in the compiler dispatch on `Expr` subclasses via `isinstance(expr, ast.X)` chains.  Historical bugs in this codebase (`#588`, `#604`, `#559`, `#648`) all had the same shape: a walker handled N of the N+1 subclasses, the missing case fell through to the default (`None` / `False` / no-op), and the enclosing function silently produced wrong output.  The walker-coverage convention (introduced by `#597`) prevents the bug class by making "did you handle every subclass?" a mechanically checkable contract.
+
+Every walker function carries a `# WALKER_COVERAGE:` checklist comment listing every `Expr` subclass with one of four dispositions:
+
+- **Handled** — explicit `isinstance` branch in the walker body.
+- **Intentionally ignored** — default fall-through is correct (e.g. literals in a sub-expression-recursing walker: literals have no sub-exprs).
+- **Cannot occur** — structurally impossible (e.g. `OldExpr` in a body-only walker; `HoleExpr` post-typecheck).
+- **MISSING** — open bug, branch should exist but does not yet.  Filed as a separate issue.
+
+`scripts/check_walker_coverage.py` parses each walker's `isinstance(expr, ast.X)` calls AND its `# WALKER_COVERAGE:` checklist text, then verifies the union covers every `Expr` subclass declared in `vera/ast.py`.  Wired into pre-commit, so a new `Expr` subclass added to `ast.py` forces every walker to either handle it or explicitly document its disposition.
+
+The script is intentionally permissive about disposition text — it only enforces *coverage*, not correctness of the chosen disposition.  Disposition correctness is human-reviewer territory.
 
 ### New semantic type
 

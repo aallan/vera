@@ -205,6 +205,64 @@ class CompilabilityMixin:
         into ``_io_ops_used`` for per-operation import emission.  Also
         registers Markdown host-import builtins into ``_md_ops_used``
         and regex host-import builtins into ``_regex_ops_used``.
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
+        # disposition; check_walker_coverage.py enforces completeness.)
+        #
+        # Handled (recurses into sub-exprs that may contain registrable calls):
+        #   QualifiedCall     → registers IO/Http/Inference/Random op
+        #                       then recurses into args
+        #   FnCall            → registers Markdown/Regex/Map/Set/Decimal/
+        #                       Json/Html/Math builtin then recurses args
+        #   Block             → recurses into each stmt + trailing expr
+        #   ConstructorCall   → recurses into each arg
+        #   BinaryExpr        → recurses into left + right
+        #   UnaryExpr         → recurses into operand
+        #   IfExpr            → recurses into cond + then + else
+        #   MatchExpr         → recurses into scrutinee + arm bodies
+        #   HandleExpr        → recurses into body
+        #   IndexExpr         → recurses into collection + index
+        #                       (defensive add #597 — masked today by
+        #                       type checker rejecting IO in index
+        #                       positions, but plugs the gap if a
+        #                       host-imported Int-returning builtin
+        #                       lands in the future)
+        #   ArrayLit          → recurses into each element (defensive
+        #                       add #597 — masked today by the [E602]
+        #                       path dropping IO-in-ArrayLit functions)
+        #   InterpolatedString → recurses into each Expr part
+        #                       (defensive add #597 — same masking as
+        #                       ArrayLit)
+        #   AnonFn            → recurses into body (defensive add
+        #                       #597 — IS the primary defence: pr-
+        #                       review of #668 surfaced that
+        #                       `_compile_lifted_closure` in
+        #                       `vera/codegen/closures.py` does NOT
+        #                       call this scanner on lifted bodies,
+        #                       so without this branch IO ops
+        #                       inside a closure body would silently
+        #                       miss their host-import registration)
+        #
+        # Intentionally ignored (leaves — no sub-exprs to recurse into):
+        #   IntLit            → leaf
+        #   FloatLit          → leaf
+        #   BoolLit           → leaf
+        #   StringLit         → leaf
+        #   UnitLit           → leaf
+        #   SlotRef           → leaf
+        #   ResultRef         → leaf
+        #   NullaryConstructor → zero-arg, no sub-exprs
+        #   ModuleCall        → cross-module IO tracked separately
+        #                       via the imported module's own scan
+        #
+        # Cannot occur (contract-only or pure-by-construction):
+        #   AssertExpr        → predicate is pure, no IO
+        #   AssumeExpr        → predicate is pure, no IO
+        #   ForallExpr        → quantifier body is pure
+        #   ExistsExpr        → quantifier body is pure
+        #   OldExpr           → contract-only
+        #   NewExpr           → contract-only
+        #   HoleExpr          → parser placeholder, check-time rejects
         """
         if isinstance(node, ast.QualifiedCall):
             if node.qualifier == "IO":
@@ -268,6 +326,28 @@ class CompilabilityMixin:
                 self._scan_io_ops(arm.body)
         elif isinstance(node, ast.HandleExpr):
             self._scan_io_ops(node.body)
+        # Defensive sub-expr recursion (#597) — three of the four
+        # branches below (IndexExpr, ArrayLit, InterpolatedString)
+        # are masked today by type-checker rules and the [E602]
+        # codegen-skip path; the AnonFn branch is the PRIMARY
+        # defence — the closure compile pipeline does not call
+        # this scanner on lifted bodies (verified by pr-review
+        # audit on #668), so IO ops inside a closure body would
+        # silently miss their host-import registration without
+        # this branch.
+        elif isinstance(node, ast.IndexExpr):
+            self._scan_io_ops(node.collection)
+            self._scan_io_ops(node.index)
+        elif isinstance(node, ast.ArrayLit):
+            for elem in node.elements:
+                self._scan_io_ops(elem)
+        elif isinstance(node, ast.InterpolatedString):
+            for part in node.parts:
+                # Parts are str (literal) or Expr (interpolated).
+                if not isinstance(part, str):
+                    self._scan_io_ops(part)
+        elif isinstance(node, ast.AnonFn):
+            self._scan_io_ops(node.body)
 
     def _scan_body_for_state_handlers(self, node: ast.Node) -> None:
         """Walk a function body looking for handle expressions.
@@ -299,7 +379,57 @@ class CompilabilityMixin:
         self._scan_expr_for_handlers(node)
 
     def _scan_expr_for_handlers(self, node: ast.Node) -> None:
-        """Recurse into expressions looking for HandleExpr nodes."""
+        """Recurse into expressions looking for HandleExpr nodes.
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
+        # disposition; check_walker_coverage.py enforces completeness.)
+        #
+        # Handled (recurses into sub-exprs that may contain HandleExpr):
+        #   HandleExpr        → registers State<T>/Exn<E> types + recurses
+        #   Block             → recurses into stmts + trailing expr
+        #   FnCall            → recurses into each arg
+        #   ConstructorCall   → recurses into each arg
+        #   BinaryExpr        → recurses into left + right
+        #   UnaryExpr         → recurses into operand
+        #   IfExpr            → recurses into cond + then + else
+        #   MatchExpr         → recurses into scrutinee + arm bodies
+        #   QualifiedCall     → recurses into args (defensive add #597)
+        #   IndexExpr         → recurses into collection + index
+        #                       (defensive add #597)
+        #   ArrayLit          → recurses into each element
+        #                       (defensive add #597)
+        #   InterpolatedString → recurses into each Expr part
+        #                       (defensive add #597)
+        #   AnonFn            → recurses into body (defensive add #597 —
+        #                       IS the primary defence: the closure
+        #                       compile pipeline does not run its own
+        #                       handler scan on lifted bodies, so
+        #                       without this branch HandleExprs inside
+        #                       a closure body would silently miss
+        #                       their State/Exn host-import
+        #                       registration)
+        #
+        # Intentionally ignored (leaves — no sub-exprs to walk):
+        #   IntLit            → leaf
+        #   FloatLit          → leaf
+        #   BoolLit           → leaf
+        #   StringLit         → leaf
+        #   UnitLit           → leaf
+        #   SlotRef           → leaf
+        #   ResultRef         → leaf
+        #   NullaryConstructor → zero-arg, no sub-exprs
+        #   ModuleCall        → handlers in imported module tracked
+        #                       by that module's own scan
+        #
+        # Cannot occur (contract-only or pure):
+        #   AssertExpr        → predicate is pure; no handle in pred
+        #   AssumeExpr        → predicate is pure
+        #   ForallExpr        → quantifier body is pure
+        #   ExistsExpr        → quantifier body is pure
+        #   OldExpr           → contract-only
+        #   NewExpr           → contract-only
+        #   HoleExpr          → parser placeholder, check-time rejects
+        """
         if isinstance(node, ast.HandleExpr):
             self._scan_body_for_state_handlers(node)
             return
@@ -330,3 +460,27 @@ class CompilabilityMixin:
             self._scan_expr_for_handlers(node.scrutinee)
             for arm in node.arms:
                 self._scan_expr_for_handlers(arm.body)
+        # Defensive sub-expr recursion (#597) — symmetrical with
+        # `_scan_io_ops`.  The QualifiedCall / IndexExpr / ArrayLit
+        # / InterpolatedString branches are masked today by type-
+        # checker rules and the [E602] codegen-skip path.  The
+        # AnonFn branch is the PRIMARY defence — the closure
+        # compile pipeline does not call this scanner on lifted
+        # bodies, so HandleExprs inside a closure body would
+        # silently miss their State/Exn host-import registration
+        # without this branch.
+        elif isinstance(node, ast.QualifiedCall):
+            for arg in node.args:
+                self._scan_expr_for_handlers(arg)
+        elif isinstance(node, ast.IndexExpr):
+            self._scan_expr_for_handlers(node.collection)
+            self._scan_expr_for_handlers(node.index)
+        elif isinstance(node, ast.ArrayLit):
+            for elem in node.elements:
+                self._scan_expr_for_handlers(elem)
+        elif isinstance(node, ast.InterpolatedString):
+            for part in node.parts:
+                if not isinstance(part, str):
+                    self._scan_expr_for_handlers(part)
+        elif isinstance(node, ast.AnonFn):
+            self._scan_expr_for_handlers(node.body)

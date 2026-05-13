@@ -376,6 +376,55 @@ class SmtContext:
 
         Returns None if the expression contains unsupported constructs
         (triggers Tier 3 fallback).
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
+        # disposition; check_walker_coverage.py enforces completeness.
+        # SMT translation is intentionally narrow — contracts permit
+        # a subset of expression shapes — so most Expr subclasses are
+        # either "Cannot occur in contract context" or "deliberately
+        # unsupported pending issue-tracked expansion".)
+        #
+        # Handled (explicit isinstance branch):
+        #   IntLit            → z3.IntVal
+        #   BoolLit           → z3.BoolVal
+        #   StringLit         → z3.StringVal
+        #   SlotRef           → bound Z3 variable
+        #   ResultRef         → @Result substitution variable
+        #   BinaryExpr        → translated by op family
+        #   UnaryExpr         → translated by op family
+        #   IfExpr            → If(cond, then, else)
+        #   FnCall            → user-fn uninterpreted function or
+        #                       built-in axiomatised translation
+        #   ModuleCall        → cross-module fn lookup
+        #   Block             → trailing-expr translation
+        #   MatchExpr         → arm dispatch
+        #   ConstructorCall   → ADT constructor application
+        #   NullaryConstructor → ADT nullary tag
+        #
+        # Intentionally ignored (returns None → Tier 3 fallback;
+        # listed in the inline comment after the dispatch chain):
+        #   AnonFn            → lambdas not in contract grammar
+        #   HandleExpr        → handle-effect not in contract grammar
+        #   ForallExpr        → quantifier translation deferred
+        #   ExistsExpr        → quantifier translation deferred
+        #   OldExpr           → contract operator; Tier 3 fallback
+        #   NewExpr           → contract operator; Tier 3 fallback
+        #   AssertExpr        → statement-like; not a predicate
+        #   AssumeExpr        → statement-like; not a predicate
+        #   UnitLit           → predicates are Bool, not Unit
+        #
+        # Cannot occur (rejected at check time or not in contracts):
+        #   InterpolatedString → not in contract predicates
+        #   QualifiedCall     → effects in contracts violate purity
+        #   HoleExpr          → check time rejects
+        #
+        # Latent gap (filed as #667 — defensive add deferred):
+        #   FloatLit          → Z3 supports floats; contracts would
+        #                       need parser support first
+        #   ArrayLit          → SMT array theory exists; contract
+        #                       grammar would need extension
+        #   IndexExpr         → `@Array.0[0]` in contracts; same
+        #                       grammar gap as ArrayLit
         """
         if isinstance(expr, ast.IntLit):
             return z3.IntVal(expr.value)
