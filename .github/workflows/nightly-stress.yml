@@ -14,8 +14,12 @@ name: Stress tests
 #    small.  Failures auto-file (or comment on) a tracking
 #    issue with the `stress-regression` label.
 # 2. Path-filtered PRs touching `vera/codegen/`, `vera/wasm/`,
-#    or `tests/test_stress.py` — fail-fast for PRs that change
-#    the code most likely to break stress invariants.  Failures
+#    `vera/checker/`, or `tests/test_stress.py` — fail-fast for
+#    PRs that change the code most likely to break stress
+#    invariants.  `vera/checker/` is included because the AST
+#    shape it produces flows into codegen — a checker change
+#    that subtly alters the AST can break runtime invariants
+#    without touching `vera/codegen/` or `vera/wasm/`.  Failures
 #    fail the PR check directly; no tracking issue is filed
 #    (the PR author already sees the failure in the PR's checks
 #    tab).
@@ -34,6 +38,7 @@ on:
     paths:
       - 'vera/codegen/**'
       - 'vera/wasm/**'
+      - 'vera/checker/**'
       - 'tests/test_stress.py'
       - '.github/workflows/nightly-stress.yml'
   workflow_dispatch:

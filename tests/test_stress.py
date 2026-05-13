@@ -225,23 +225,33 @@ public fn main(@Unit -> @Int)
 
 
 # =====================================================================
-# 4. Conway's Life 20×20 × 100 generations
+# 4. Conway's Life grid construction + count_alive 20×20
 # =====================================================================
 
 
 @EAGER_GC_PARAMS
-def test_conways_life_20x20_100_generations(
+def test_conways_life_grid_alloc_and_count_alive_20x20(
     eager_gc: bool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Synthetic 20×20 Conway's Life regression covering #593
-    territory (Life corruption from gen 1+ at 12×30) and #595
-    (malloc abort during wasmtime cleanup).  Both bugs are
-    closed but this test pins the fixes against future
-    regressions.
+    """Synthetic regression covering #593 territory (Life
+    corruption from gen 1+ at 12×30) and #595 (malloc abort
+    during wasmtime cleanup).  Both bugs are closed; this test
+    pins the fixes against future regressions.
 
-    Uses a fixed initial pattern that stabilises within 100
-    generations to a known live-cell count.  Asserts on the
-    final population.
+    What this test actually does: builds a 20×20 all-false
+    `Array<Array<Bool>>` via nested `array_map`-of-`array_range`,
+    then runs a single `count_alive` pass — an array-fold over
+    array-fold that walks every cell.  Asserts the count == 0.
+
+    What this test does NOT do: run 100 actual generations of
+    Conway's Life.  The original test name implied that; the
+    rename in #669 round-3 corrects it.  The structural shape
+    (400-cell nested allocation, nested fold, captured outer-
+    binding references inside the inner closure) is what
+    matters for the bug class — these are the same code paths
+    #593 / #595 hit.  A full Life-step implementation would be
+    a meaningfully larger Vera program and isn't needed to pin
+    those code paths.
 
     Runs under both default and eager-GC modes (#596).  #593
     was originally diagnosed with the help of eager-GC mode —
