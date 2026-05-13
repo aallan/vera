@@ -347,42 +347,90 @@ class FunctionCompilationMixin:
         # current frame and jumps straight to the callee, so any
         # instructions emitted AFTER ``body_instrs`` in the WAT
         # assembly (postcondition checks, GC epilogue) are silently
-        # skipped.  The two known sources of post-body work:
+        # skipped.  Three outcomes (precedence: 1 > 2 > 3):
         #
-        # 1. ``post_instrs`` — postcondition checks (``ensures(...)``
-        #    clauses) emitted by ``_compile_postconditions``.  A
-        #    non-empty ``post_instrs`` means the function has a
-        #    non-trivial postcondition that must be checked at
-        #    runtime; ``return_call`` would skip the check and
-        #    silently violate the contract.
+        # 1. ``post_instrs`` non-empty — postcondition checks
+        #    (``ensures(...)`` clauses) emitted by
+        #    ``_compile_postconditions``.  A non-empty
+        #    ``post_instrs`` means the function has a non-trivial
+        #    postcondition that must be checked at runtime;
+        #    ``return_call`` would skip the check and silently
+        #    violate the contract.  REVERTED to plain ``call`` —
+        #    no way to TCO and still run the check.
         #
-        # 2. ``ctx.needs_alloc`` — the GC epilogue (restore
-        #    ``$gc_sp``, unwind shadow-stack pointer slots) runs
-        #    only for allocating functions.  ``return_call`` would
-        #    leak shadow-stack slots once per iteration and
-        #    eventually trap on the next ``$alloc`` (#549 tracks
-        #    GC-aware TCO as a follow-up).
+        # 2. ``ctx.needs_alloc`` and no ``post_instrs`` — the GC
+        #    epilogue (restore ``$gc_sp``, unwind shadow-stack
+        #    pointer slots) runs only for allocating functions.
+        #    ``return_call`` would leak shadow-stack slots once per
+        #    iteration and eventually trap on the next ``$alloc``.
+        #    Pre-#549 this fell to the same revert-to-call path as
+        #    postcondition-bearing functions; post-#549 we instead
+        #    PATCH every ``return_call`` site to restore ``$gc_sp``
+        #    to its entry value immediately before the jump.  The
+        #    callee's prologue then saves a clean baseline and the
+        #    chain continues without unbounded shadow-stack growth.
         #
-        # When either condition holds, revert every ``return_call``
-        # in ``body_instrs`` to plain ``call``.  Allocating /
-        # postcondition-bearing functions pay the WASM frame cost in
-        # exchange for correctness; non-allocating, postcondition-
-        # free functions keep the optimization (the common
-        # iteration-style tail recursion case from ``SKILL.md``'s
-        # "Iteration" section).
-        if ctx.needs_alloc or post_instrs:
+        # 3. Neither condition holds — leave ``return_call``
+        #    untouched.  This is the common non-allocating tail-
+        #    recursion case (the ``Iteration is tail recursion``
+        #    idiom from ``SKILL.md``).
+        #
+        # ``gc_sp_save`` is pre-allocated before the dispatch so
+        # both the per-return_call restore (in branch 2) AND the
+        # function's GC prologue/epilogue below share the same
+        # local index.
+        gc_sp_save: int | None = (
+            ctx.alloc_local("i32") if ctx.needs_alloc else None
+        )
+
+        if post_instrs:
+            # Postcondition checks must run; return_call would skip
+            # them.  Revert every return_call to plain call.
             body_instrs = [
                 instr.replace("return_call ", "call ", 1)
                 if instr.lstrip().startswith("return_call ")
                 else instr
                 for instr in body_instrs
             ]
+        elif ctx.needs_alloc:
+            # #549: GC-aware TCO.  Prepend a ``$gc_sp`` restore
+            # immediately before each ``return_call`` so the
+            # callee's prologue saves a clean baseline rather than
+            # inheriting the leaked shadow-stack slots from this
+            # frame's arg-evaluation leg.  Args are already on the
+            # WASM operand stack at the return_call site; the
+            # restore touches only the ``$gc_sp`` global, not the
+            # operand stack, so args transfer atomically to the
+            # callee.  Pre-#549 this revert-to-plain-call path also
+            # fired for allocating fns; closing #549 lets allocating
+            # tail-recursive fns iterate indefinitely without
+            # unbounded shadow-stack growth.
+            assert gc_sp_save is not None  # noqa: S101 - narrows int | None for mypy
+            patched: list[str] = []
+            for instr in body_instrs:
+                if instr.lstrip().startswith("return_call "):
+                    # Preserve the return_call line's leading
+                    # whitespace so the inserted restore visually
+                    # nests at the same depth.  Without this, an
+                    # `if/else`-nested ``return_call`` (which carries
+                    # an inline 2-space indent from
+                    # ``vera/wasm/operators.py``'s if/else emission)
+                    # ends up with `local.get N` / `global.set $gc_sp`
+                    # lines rendered 2 spaces shallower in the WAT.
+                    # Functionally inert (WAT is whitespace-
+                    # insensitive) but visually misleading.  Tracked
+                    # for principled fixup in #672.
+                    prefix = instr[: len(instr) - len(instr.lstrip())]
+                    patched.append(f"{prefix}local.get {gc_sp_save}")
+                    patched.append(f"{prefix}global.set $gc_sp")
+                patched.append(instr)
+            body_instrs = patched
 
         # Build GC prologue/epilogue (only when function allocates)
         gc_prologue: list[str] = []
         gc_epilogue: list[str] = []
         if ctx.needs_alloc:
-            gc_sp_save = ctx.alloc_local("i32")
+            assert gc_sp_save is not None  # noqa: S101 - narrows int | None for mypy
             gc_prologue.append("global.get $gc_sp")
             gc_prologue.append(f"local.set {gc_sp_save}")
             for pidx in gc_pointer_params:

@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.154] - 2026-05-13
+
+### Fixed
+
+- **[#549](https://github.com/aallan/vera/issues/549)** — GC-aware tail-call optimization for allocating functions.  Pre-fix, the post-process in `vera/codegen/functions.py::_compile_fn` reverted every `return_call` → plain `call` whenever `ctx.needs_alloc` was True, because WASM `return_call` discards the current frame and would skip the GC epilogue (`global.set $gc_sp` to restore the shadow-stack pointer), leaking shadow-stack slots once per iteration and eventually trapping on the next `$alloc` once gc_sp passed the worklist boundary.  This forced agents to restructure tail-recursive code that allocates per iteration into `array_fold` / `array_map` shapes or to hoist allocations outside the recursion.
+  - **The fix** preserves TCO and the shadow-stack invariant simultaneously: instead of reverting, the post-process now PREPENDS a two-instruction `$gc_sp` restore (`local.get $gc_sp_save; global.set $gc_sp`) immediately before each `return_call` in an allocating function.  The args for the recursive call are already on the WASM operand stack at the return_call site; the restore only touches the `$gc_sp` global, so args transfer atomically to the callee.  The callee's prologue then saves a clean new `$gc_sp` baseline, so per-iteration shadow-stack usage stays bounded at `caller's entry + n_arg_roots` regardless of iteration count.
+  - **Postcondition-bearing functions still revert** to plain `call` — `return_call` would skip the runtime postcondition check (`local.set $ret; <check>; trap on failure; local.get $ret`).  The dispatch is: if `post_instrs` revert; elif `needs_alloc` patch with GC-restore; else keep `return_call` as-is.  Precedence: postcondition-revert > GC-aware-TCO-patch > untouched.
+  - **Local pre-allocation** — the `$gc_sp_save` local is allocated BEFORE the dispatch so both the per-`return_call` restore site AND the function's GC prologue (`global.get $gc_sp; local.set $gc_sp_save`) share the same local index.
+
+### Tests
+
+- `tests/test_codegen.py::TestTailCallOptimization517` — renamed `test_allocating_function_falls_back_to_plain_call` to `test_allocating_function_uses_gc_aware_tco_549` and inverted its assertions: it now verifies that an allocating tail-recursive function emits `return_call $foo` (TCO preserved) AND that every such site is preceded by `local.get <N>; global.set $gc_sp` (shadow-stack invariant preserved).  Added a new sibling test `test_allocating_function_with_postcondition_still_reverts` to pin the postcondition-revert precedence.
+- `tests/test_codegen.py::TestGCShadowStackOverflow::test_shadow_stack_overflow_traps` — rewritten to use a non-tail-recursive shape (recursive call wrapped in `array_append`).  Pre-#549 the tail-recursive form would leak shadow-stack slots and trap on the overflow guard at ~1300 iterations; post-#549 the same form runs cleanly to completion.  To still exercise the overflow guard, the non-tail form stacks WASM frames whose shadow-stack roots survive across iterations.
+- `tests/test_stress.py::test_deep_tail_recursion_with_allocating_arg` — body switched from string-pool literals (which don't set `needs_alloc`) to a per-iteration `let @Array<Int> = [_, _]` heap allocation, so the test now actually exercises `#549`'s GC-aware TCO path.  The pre-fix body was passing trivially.
+- `tests/test_stress.py::test_tco_with_allocation_1m_iterations` — new 1M-iteration companion, parametrised over default-GC and eager-GC modes (~190ms wall-clock in both).  Pre-fix this would have been impossible: 1M plain `call`s blow the WASM call stack at ~30K frames.  Post-fix the `return_call` + `$gc_sp` restore keeps shadow-stack usage flat, so 1M iterations complete in constant memory.
+
+### Documentation
+
+- **`KNOWN_ISSUES.md`** — removed the #549 bug row.
+
 ## [0.0.153] - 2026-05-13
 
 ### Added
@@ -2246,7 +2266,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.153...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.154...HEAD
+[0.0.154]: https://github.com/aallan/vera/compare/v0.0.153...v0.0.154
 [0.0.153]: https://github.com/aallan/vera/compare/v0.0.152...v0.0.153
 [0.0.152]: https://github.com/aallan/vera/compare/v0.0.151...v0.0.152
 [0.0.151]: https://github.com/aallan/vera/compare/v0.0.150...v0.0.151

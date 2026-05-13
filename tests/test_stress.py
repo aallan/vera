@@ -186,17 +186,29 @@ public fn main(@Unit -> @Int)
 def test_deep_tail_recursion_with_allocating_arg(
     eager_gc: bool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """1000-deep tail recursion with an allocating String arg.
-    Tests the TCO / GC interaction (#549) — tail-call
-    optimisation must NOT discard the shadow-stack roots that
-    keep the allocating arg live.  Pre-#549 work, allocating
-    functions fell back to plain `call` so this would succeed
-    by accident; the test pins the safety net.
+    """1000-deep tail recursion with an allocating array per iter.
 
-    Runs under both default and eager-GC modes (#596).  Eager
-    GC fires a collection on every per-iteration String alloc,
-    so a mis-rooted TCO frame would corrupt the accumulator
-    immediately rather than after hundreds of iterations.
+    Tests the TCO / GC interaction (#549).  WASM `return_call`
+    discards the current frame, so the GC epilogue (restore
+    `$gc_sp`) never runs.  Pre-#549, allocating functions reverted
+    `return_call` → plain `call` to avoid leaking shadow-stack
+    slots per iteration; post-#549, the post-process instead
+    prepends a `$gc_sp` restore before each `return_call`, keeping
+    TCO AND keeping the shadow stack bounded.
+
+    The per-iteration `let @Array<Int> = [@Int.0, @Int.1]` is a
+    genuine heap allocation (NOT a string-pool literal), so the
+    fn's `needs_alloc` flag is set and #549's GC-aware TCO path
+    is exercised.  Pre-#549 this would have reverted to plain
+    `call`, accumulating 1000 WASM frames; post-#549 it emits
+    `return_call` with the `$gc_sp` restore preamble and runs
+    in constant stack depth.
+
+    Runs under both default and eager-GC modes (#596).  Eager GC
+    fires a collection on every per-iteration array alloc, so a
+    mis-rooted TCO frame would either trap immediately on the next
+    `$alloc` or corrupt the accumulator within hundreds of
+    iterations rather than completing cleanly.
     """
     src = """
 private fn loop(@Int, @Int -> @Int)
@@ -208,9 +220,8 @@ private fn loop(@Int, @Int -> @Int)
   if @Int.1 == 0 then {
     @Int.0
   } else {
-    let @String = "stress";
-    let @Nat = string_length(@String.0);
-    loop(@Int.1 - 1, @Int.0 + nat_to_int(@Nat.0))
+    let @Array<Int> = [@Int.0, @Int.1];
+    loop(@Int.1 - 1, @Int.0 + array_length(@Array<Int>.0))
   }
 }
 
@@ -220,8 +231,63 @@ public fn main(@Unit -> @Int)
   loop(1000, 0)
 }
 """
-    # 1000 iterations of (acc += 6) since "stress".length == 6
-    assert _run(src, eager_gc=eager_gc, monkeypatch=monkeypatch) == 6000
+    # 1000 iterations of (acc += 2) since array_length([_, _]) == 2
+    assert _run(src, eager_gc=eager_gc, monkeypatch=monkeypatch) == 2000
+
+
+@EAGER_GC_PARAMS
+def test_tco_with_allocation_1m_iterations(
+    eager_gc: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """1M-deep tail recursion with an allocating array per iter (#549).
+
+    The high-volume companion to
+    `test_deep_tail_recursion_with_allocating_arg`.  A single
+    million-iteration run gives the GC-aware TCO patch a sharp
+    pin: any shadow-stack leak per iteration would trap on the
+    overflow guard (16K shadow stack / 4 bytes per leaked pointer
+    root ≈ 4,096 iterations) or — under eager-GC — accumulate
+    enough roots to slow mark/sweep to a crawl.  Completing 1M
+    iterations in seconds in both modes proves the shadow stack
+    is bounded across the entire run.  (The per-iteration push
+    is a single i32 pointer for the `Array<Int>` literal; the
+    two `@Int` params are not pointer-typed and don't push to
+    the shadow stack.)
+
+    The pre-#549 fallback (revert `return_call` → plain `call`
+    for allocating fns) cannot reach this depth — 1M plain calls
+    would blow the WASM call stack at ~30K frames.  So this test
+    relies on #549's `return_call` + `$gc_sp` restore being in
+    effect.
+
+    Iteration count is 1M in both default-GC and eager-GC modes
+    because the per-iteration cost is dominated by WASM execution,
+    not GC traversal (the array literal is small and short-lived,
+    so each eager-GC collection is O(1) live roots).
+    """
+    src = """
+private fn loop(@Int, @Int -> @Int)
+  requires(@Int.1 >= 0)
+  ensures(true)
+  decreases(@Int.1)
+  effects(pure)
+{
+  if @Int.1 == 0 then {
+    @Int.0
+  } else {
+    let @Array<Int> = [@Int.0, @Int.1];
+    loop(@Int.1 - 1, @Int.0 + array_length(@Array<Int>.0))
+  }
+}
+
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  loop(1000000, 0)
+}
+"""
+    # 1M iterations of (acc += 2) = 2,000,000
+    assert _run(src, eager_gc=eager_gc, monkeypatch=monkeypatch) == 2000000
 
 
 # =====================================================================
