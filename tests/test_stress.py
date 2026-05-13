@@ -41,8 +41,50 @@ from vera.transform import transform
 pytestmark = pytest.mark.stress
 
 
-def _run(src: str, fn_name: str = "main") -> object:
-    """Compile + execute a Vera program, returning the result."""
+# Eager-GC lane (#596 acceptance criterion).  Setting
+# `VERA_EAGER_GC=1` at compile time emits a `call $gc_collect`
+# as the first instruction of the runtime's `$alloc` function,
+# forcing a full GC pass on every allocation.  This converts
+# latent missing-shadow-root bugs from "fires occasionally at
+# scale" into "fires on the very next allocation," so a stress
+# test that exercises a GC-rooting code path will fail much
+# sooner under eager mode than under default GC.
+#
+# Subset rationale: tests with a GC-rooting-specific bug class
+# (#570 shadow-stack, #515 alloc-pressure, #549 TCO/GC, #573
+# wrap-table, #593 nested-grid, captured-frame State handlers)
+# are parametrised over `[False, True]` for the `eager_gc`
+# flag.  Tests whose bug class is unrelated to GC rooting
+# (#487/#348 allocation-pressure-only, host-import call rate)
+# are NOT parametrised — running them under eager GC would
+# inflate suite wall-clock without strengthening detection of
+# the relevant bug class.
+EAGER_GC_PARAMS = pytest.mark.parametrize(
+    "eager_gc", [False, True], ids=["default_gc", "eager_gc"],
+)
+
+
+def _run(
+    src: str,
+    fn_name: str = "main",
+    *,
+    eager_gc: bool = False,
+    monkeypatch: pytest.MonkeyPatch | None = None,
+) -> object:
+    """Compile + execute a Vera program, returning the result.
+
+    When ``eager_gc=True``, sets ``VERA_EAGER_GC=1`` in the
+    environment for the duration of the compile call so the
+    runtime's ``$alloc`` function emits a forced GC pass per
+    allocation.  Callers must pass a ``monkeypatch`` fixture so
+    the env var is scoped to the test and cleaned up automatically.
+    """
+    if eager_gc:
+        assert monkeypatch is not None, (
+            "eager_gc=True requires a monkeypatch fixture for "
+            "scoped env-var lifetime"
+        )
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".vera", delete=False,
         encoding="utf-8",
@@ -70,12 +112,21 @@ def _run(src: str, fn_name: str = "main") -> object:
 # =====================================================================
 
 
-def test_array_map_over_10k_int_array() -> None:
+@EAGER_GC_PARAMS
+def test_array_map_over_10k_int_array(
+    eager_gc: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Pre-#570 this would shadow-stack-overflow at ~4000
     elements.  10K is a 2.5x safety margin over the historical
     failure threshold.  Test pins the iterative-builder fix and
     acts as an early-warning for any future regression in
     shadow-stack hygiene under `array_map`.
+
+    Runs under both default and eager-GC modes.  Under
+    `VERA_EAGER_GC=1` a missing shadow-stack root in the
+    iterative-builder path would fire on the first allocation
+    rather than only at the historical threshold of ~4000
+    elements.
     """
     src = """
 public fn main(@Unit -> @Int)
@@ -87,7 +138,7 @@ public fn main(@Unit -> @Int)
   array_length(@Array<Int>.0)
 }
 """
-    assert _run(src) == 10000
+    assert _run(src, eager_gc=eager_gc, monkeypatch=monkeypatch) == 10000
 
 
 # =====================================================================
@@ -95,12 +146,20 @@ public fn main(@Unit -> @Int)
 # =====================================================================
 
 
-def test_array_map_over_5k_nested_bool_array() -> None:
+@EAGER_GC_PARAMS
+def test_array_map_over_5k_nested_bool_array(
+    eager_gc: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """5K nested-array allocation pressure: each iteration
     produces a fresh inner array, accumulating into the shadow
     stack.  Pre-#570 + pre-#515 this class of program corrupted
     intermediate roots.  Test pins the per-iteration alloc/root
     hygiene fix.
+
+    Runs under both default and eager-GC modes (#596).  Eager
+    GC surfaces a missing per-iteration root on the first or
+    second outer iteration rather than after thousands have
+    accumulated.
     """
     src = """
 public fn main(@Unit -> @Int)
@@ -115,7 +174,7 @@ public fn main(@Unit -> @Int)
   array_length(@Array<Array<Bool>>.0)
 }
 """
-    assert _run(src) == 5000
+    assert _run(src, eager_gc=eager_gc, monkeypatch=monkeypatch) == 5000
 
 
 # =====================================================================
@@ -123,13 +182,21 @@ public fn main(@Unit -> @Int)
 # =====================================================================
 
 
-def test_deep_tail_recursion_with_allocating_arg() -> None:
+@EAGER_GC_PARAMS
+def test_deep_tail_recursion_with_allocating_arg(
+    eager_gc: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """1000-deep tail recursion with an allocating String arg.
     Tests the TCO / GC interaction (#549) — tail-call
     optimisation must NOT discard the shadow-stack roots that
     keep the allocating arg live.  Pre-#549 work, allocating
     functions fell back to plain `call` so this would succeed
     by accident; the test pins the safety net.
+
+    Runs under both default and eager-GC modes (#596).  Eager
+    GC fires a collection on every per-iteration String alloc,
+    so a mis-rooted TCO frame would corrupt the accumulator
+    immediately rather than after hundreds of iterations.
     """
     src = """
 private fn loop(@Int, @Int -> @Int)
@@ -154,7 +221,7 @@ public fn main(@Unit -> @Int)
 }
 """
     # 1000 iterations of (acc += 6) since "stress".length == 6
-    assert _run(src) == 6000
+    assert _run(src, eager_gc=eager_gc, monkeypatch=monkeypatch) == 6000
 
 
 # =====================================================================
@@ -162,7 +229,10 @@ public fn main(@Unit -> @Int)
 # =====================================================================
 
 
-def test_conways_life_20x20_100_generations() -> None:
+@EAGER_GC_PARAMS
+def test_conways_life_20x20_100_generations(
+    eager_gc: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Synthetic 20×20 Conway's Life regression covering #593
     territory (Life corruption from gen 1+ at 12×30) and #595
     (malloc abort during wasmtime cleanup).  Both bugs are
@@ -172,6 +242,12 @@ def test_conways_life_20x20_100_generations() -> None:
     Uses a fixed initial pattern that stabilises within 100
     generations to a known live-cell count.  Asserts on the
     final population.
+
+    Runs under both default and eager-GC modes (#596).  #593
+    was originally diagnosed with the help of eager-GC mode —
+    forced collection on every alloc made the corruption
+    reproduce reliably at small scales.  This test exercises
+    the same code paths and pins the fix.
     """
     src = """
 private fn count_alive(@Array<Array<Bool>> -> @Int)
@@ -212,7 +288,7 @@ public fn main(@Unit -> @Int)
     # The structural shape (nested arrays, array_fold of array_fold,
     # 400-cell allocation) exercises the same code paths #593 /
     # #595 hit, even with a trivially-deterministic outcome.
-    assert _run(src) == 0
+    assert _run(src, eager_gc=eager_gc, monkeypatch=monkeypatch) == 0
 
 
 # =====================================================================
@@ -245,12 +321,21 @@ public fn main(@Unit -> @Int)
 # =====================================================================
 
 
-def test_10k_string_allocations() -> None:
+@EAGER_GC_PARAMS
+def test_10k_string_allocations(
+    eager_gc: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """10K String allocations via interpolation in a loop.
     Pre-#573 (wrap-table compaction) and #575/#576 (host-store
     reclamation) this class of program would leak handles or
     self-fault.  Tests pin the fixes by accumulating string
     lengths over many allocations.
+
+    Runs under both default and eager-GC modes (#596).  Eager
+    GC forces a collection on every interpolation alloc, so a
+    missing root on the per-iteration String would corrupt the
+    accumulator on the first 10-100 iterations rather than at
+    the tail.
     """
     src = """
 public fn main(@Unit -> @Int)
@@ -270,7 +355,7 @@ public fn main(@Unit -> @Int)
     # 3-digit (100-999): 900 × 3 = 2700
     # 4-digit (1000-9999): 9000 × 4 = 36000
     # Total = 38890
-    assert _run(src) == 38890
+    assert _run(src, eager_gc=eager_gc, monkeypatch=monkeypatch) == 38890
 
 
 # =====================================================================
@@ -278,12 +363,21 @@ public fn main(@Unit -> @Int)
 # =====================================================================
 
 
-def test_state_handler_1k_ops() -> None:
+@EAGER_GC_PARAMS
+def test_state_handler_1k_ops(
+    eager_gc: bool, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """1000 State<Int> operations within a single handler scope.
     Pins the handler installation + resume continuation
     plumbing under sustained host-import call rate.  Pre-stage-
     11 / pre-#535 work, large State-handler programs accumulated
     captured-frame roots without bound.
+
+    Runs under both default and eager-GC modes (#596).  Eager
+    GC stresses the captured-frame root-set on every alloc
+    inside the handler scope; a missing root on the resume
+    continuation would corrupt the state machine on the first
+    few get/put cycles rather than at the tail.
     """
     src = """
 private fn count_up(@Int -> @Int)
@@ -313,7 +407,7 @@ public fn main(@Unit -> @Int)
 }
 """
     # 1000 puts of (current + 1) → final state = 1000
-    assert _run(src) == 1000
+    assert _run(src, eager_gc=eager_gc, monkeypatch=monkeypatch) == 1000
 
 
 # =====================================================================
