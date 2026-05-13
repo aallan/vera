@@ -92,7 +92,9 @@ def extract_expr_subclasses() -> set[str]:
 WALKER_MARKER = "WALKER_COVERAGE:"
 
 
-def find_walker_functions(py_path: Path) -> list[tuple[ast.FunctionDef, str]]:
+def find_walker_functions(
+    py_path: Path,
+) -> list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]]:
     """Find every function in ``py_path`` whose body or docstring
     contains a ``# WALKER_COVERAGE:`` marker comment.  Returns a
     list of (function-node, raw-source) pairs."""
@@ -101,7 +103,7 @@ def find_walker_functions(py_path: Path) -> list[tuple[ast.FunctionDef, str]]:
         return []
     tree = ast.parse(src)
     src_lines = src.splitlines()
-    walkers: list[tuple[ast.FunctionDef, str]] = []
+    walkers: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             # Inspect the body's source range for the marker
@@ -117,7 +119,9 @@ def find_walker_functions(py_path: Path) -> list[tuple[ast.FunctionDef, str]]:
 # 3. Extract isinstance-referenced + checklist-named subclasses
 # ---------------------------------------------------------------
 
-def extract_isinstance_classes(fn_node: ast.FunctionDef) -> set[str]:
+def extract_isinstance_classes(
+    fn_node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[str]:
     """Return every ``X`` that appears as ``isinstance(_, ast.X)``
     in the function body.  Tuples like ``(ast.X, ast.Y)`` are
     flattened."""
@@ -228,7 +232,7 @@ def main() -> int:
               "schema check broken")
         return 1
 
-    walkers: list[tuple[Path, ast.FunctionDef, str]] = []
+    walkers: list[tuple[Path, ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
     for f in WALKER_FILES:
         if not f.exists():
             continue
