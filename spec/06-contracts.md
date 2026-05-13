@@ -338,7 +338,7 @@ The refinement type on the function parameter's second argument serves as the co
 
 | Tier | Scope | Solver | Timeout | Failure mode |
 |------|-------|--------|---------|--------------|
-| 1 | Decidable fragment: QF_LIA, real/float (Z3 `Real` sort), strings (Z3 `String` sort), bool, length, **array literals and indexing via uninterpreted `index_<T>` functions** (#667) | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
+| 1 | Z3 decidable fragment: linear integer + real arithmetic (QF_LIRA), bool, strings (Z3 `String` sort), uninterpreted sorts/functions (length, **array literals and indexing via `index_<T>` functions** — #667) | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
 | 2 | Extended: quantifiers, lemma/assert hints — [not yet implemented](https://github.com/aallan/vera/issues/427) | Z3 with hints | 10 seconds | Falls to Tier 3 |
 | 3 | Runtime | None (checks emitted as code) | N/A | Runtime trap |
 
