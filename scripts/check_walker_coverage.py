@@ -163,15 +163,32 @@ def extract_checklist_classes(body_src: str) -> set[str]:
 # 4. Main: collect walkers, compare against canonical, report gaps
 # ---------------------------------------------------------------
 
-# Files known to contain walkers — extend if a new file adds one.
-WALKER_FILES = [
-    ROOT / "vera" / "wasm" / "closures.py",
-    ROOT / "vera" / "wasm" / "context.py",
-    ROOT / "vera" / "wasm" / "inference.py",
-    ROOT / "vera" / "checker" / "expressions.py",
-    ROOT / "vera" / "smt.py",
-    ROOT / "vera" / "codegen" / "compilability.py",
-]
+# Files known to contain walkers — auto-discovered by globbing
+# `vera/**/*.py` and selecting any file containing the
+# ``WALKER_MARKER`` string.  A hardcoded list (the original
+# shape) silently skipped any new walker file added without
+# updating the list — replicating the exact silent-skip class
+# this script was written to close.  Auto-discovery means a new
+# walker file with a ``# WALKER_COVERAGE:`` marker is picked up
+# automatically and audited from the first commit it lands in.
+def _discover_walker_files() -> list[Path]:
+    """Find every `.py` file under `vera/` containing the
+    ``WALKER_COVERAGE:`` marker text.  Returns a sorted list of
+    `Path` objects (same type as the hardcoded list this replaces)
+    so downstream code referencing ``WALKER_FILES`` is unchanged.
+    """
+    found: list[Path] = []
+    for py_path in sorted((ROOT / "vera").rglob("*.py")):
+        try:
+            text = py_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if WALKER_MARKER in text:
+            found.append(py_path)
+    return found
+
+
+WALKER_FILES: list[Path] = _discover_walker_files()
 
 
 def main() -> int:
