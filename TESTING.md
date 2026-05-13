@@ -339,20 +339,35 @@ The formatter has **idempotency tests**: `format(format(x)) == format(x)` for al
 
 Scale-dependent regression tests live in `tests/test_stress.py` (#596).  These exercise Vera programs at sizes where historical bugs (#570 iterative-builder shadow-stack overflow at ~4000 elements, #515 GC self-fault under sustained allocation, #593 Conway's Life corruption at 12×30+) first manifested, plus 2-3x safety margin.
 
-The 8 initial test programs:
+### The 8 initial test programs
 
-| Test | Scale axis | Target bug class |
-|------|------------|------------------|
-| `test_array_map_over_10k_int_array` | 10K-element `Array<Int>` iteration | shadow-stack overflow (#570) |
-| `test_array_map_over_5k_nested_bool_array` | 5K nested-array allocation | per-iteration root accumulation (#570/#515) |
-| `test_deep_tail_recursion_with_allocating_arg` | 1K-deep tail recursion with String alloc | TCO/GC interaction (#549) |
-| `test_conways_life_20x20_100_generations` | 400-cell grid + nested array_fold | #593/#595 regression |
-| `test_array_fold_100k_iterations` | 100K fold accumulator across GC cycles | allocation pressure (#487/#348) |
-| `test_10k_string_allocations` | 10K String allocations in interpolation loop | wrap-table compaction (#573) |
-| `test_state_handler_1k_ops` | 1K `State<Int>` get/put cycles in single handler | handler/resume plumbing under load |
-| `test_10k_io_print_calls` | 10K `IO.print` calls with stdout capture | host-import call-rate, capture buffer growth |
+Each test compiles a self-contained Vera program, executes it via the in-process API, and asserts on a SPECIFIC observable.  Iteration counts are tuned to the smallest scale where each bug class historically manifested.
 
-**Default behaviour**: stress tests are skipped from the per-PR pytest run via `addopts = "-m 'not stress'"` in `pyproject.toml`.  Local invocation: `pytest -m stress` or `pytest tests/test_stress.py -m stress -v`.
+**1. `test_array_map_over_10k_int_array`** — `array_map` over a 10,000-element `Array<Int>`, each element incremented by 1.  Asserts `array_length` of the result == 10000.  Pre-#570 this class of program shadow-stack-overflowed at ~4,000 elements; 10K is a 2.5x safety margin.  Pins the iterative-builder fix and acts as an early-warning for any future regression in shadow-stack hygiene under `array_map`.
+
+**2. `test_array_map_over_5k_nested_bool_array`** — `array_map` over a 5,000-element `Array<Int>` producing a fresh `Array<Bool>` (`[true, false, true]`) per iteration.  Asserts the outer length == 5000.  Tests per-iteration allocation pressure where each closure call allocates and the result must remain rooted across the loop.  Pre-#570 + pre-#515 this class corrupted intermediate roots; the test pins the per-iteration alloc/root hygiene fix.
+
+**3. `test_deep_tail_recursion_with_allocating_arg`** — 1,000-deep tail recursion over `loop(@Int, @Int -> @Int)` where each iteration allocates `let @String = "stress"; let @Nat = string_length(...)` before recursing.  Asserts the final accumulator == 6,000 (1,000 × `string_length("stress")` = 1,000 × 6).  Tests the TCO / GC interaction (#549) — tail-call optimisation must not discard the shadow-stack roots that keep the allocating arg live.  The accumulator-via-string-length pattern forces each iteration through the alloc path; a regression that mis-treats the TCO frame would silently corrupt the accumulator.
+
+**4. `test_conways_life_20x20_100_generations`** — synthetic 20×20 Conway's Life regression covering #593 (Life corruption from gen 1+ at 12×30) and #595 (malloc abort during wasmtime cleanup).  Both bugs are closed; this test pins the fixes.  The program builds a 20×20 all-false `Array<Array<Bool>>` via nested `array_map`-of-`array_range`, then folds-of-folds via `count_alive` to count true cells.  Asserts the count == 0.  The structural shape — 400-cell allocation, nested `array_fold` of `array_fold`, captured outer-binding references inside the inner closure — is what matters; the trivially-deterministic outcome (all-false → 0) makes the test fast and unambiguous.
+
+**5. `test_array_fold_100k_iterations`** — `array_fold` over an `array_range(0, 100000)` summing all values.  Asserts the result == 4,999,950,000 (the closed-form sum of 0..99999).  Tests the fold accumulator across many GC cycles.  Pre-#487 / #348 (worklist + multi-page grow) this class of program ran the heap into multi-page territory and tripped allocation-pressure bugs; the test pins the fixes.  The closed-form assertion catches any regression that silently short-circuits or skips iterations.
+
+**6. `test_10k_string_allocations`** — `array_fold` over `array_range(0, 10000)` where each iteration produces a fresh String via `let @String = "\(@Int.0)"` and accumulates `string_length`.  Asserts the total == 38,890 (10 × 1-digit + 90 × 2-digit + 900 × 3-digit + 9000 × 4-digit).  Pre-#573 (wrap-table compaction) and #575 / #576 (host-store reclamation) this class of program would leak handles or self-fault under sustained String allocation; the test pins the fixes.  The digit-count assertion is uniquely sensitive to any short-circuit because it varies non-linearly with iteration count.
+
+**7. `test_state_handler_1k_ops`** — 1,000 `State<Int>` get/put cycles within a single `handle[State<Int>](@Int = 0) { ... } in { ... }` scope, driven by a `count_up(@Int -> @Int)` helper that does `get(()); put(state + 1); count_up(n - 1)`.  Asserts the final state == 1000.  Pins the handler installation + resume continuation plumbing under sustained host-import call rate.  Pre-stage-11 / pre-#535 work, large State-handler programs accumulated captured-frame roots without bound.
+
+**8. `test_10k_io_print_calls`** — 10,000 `IO.print("x\n")` calls in sequence via a `loop(@Int -> @Unit)` helper, with `tee_stdout=True` so the captured output buffer grows in lock-step.  Asserts the captured stdout contains exactly 10,000 `x` characters.  Exercises the `host_print` bridge at sustained rate; tests the in-process stdout-capture buffer's growth and the host-import call path under load.  The character-count assertion (rather than line-count) is robust to subtle buffering variations.
+
+### Configuration and behaviour
+
+**Default behaviour**: stress tests are skipped from the per-PR pytest run via `addopts = "-m 'not stress'"` in `pyproject.toml`.  Local invocation:
+
+```bash
+pytest -m stress                    # all stress tests across the project
+pytest tests/test_stress.py -m stress -v   # full stress suite, verbose
+pytest tests/test_stress.py::test_array_fold_100k_iterations -m stress -v   # single test
+```
 
 **CI integration**: `.github/workflows/nightly-stress.yml` runs them in three triggers:
 
@@ -363,6 +378,16 @@ The 8 initial test programs:
 **Budget**: the full suite completes in well under the 5-minute target (0.25s in-process on a developer laptop today; CI cold-start adds workflow setup time).  Iteration counts are tuned to the smallest scale where each bug class has historically manifested with ~2-3x safety margin, NOT maximised — the goal is reliable detection of the bug class, not benchmarking.
 
 **Assertion shape**: each test asserts on a SPECIFIC observable (e.g. `array_fold` returning the closed-form sum `4999950000`, `IO.print` producing exactly 10000 `x` characters), not just "completed without crashing".  This catches a future regression where the loop silently short-circuits or skips iterations.
+
+### Adding a stress test
+
+A new stress test should:
+
+1. **Target a specific scale axis** (iteration count, allocation pressure, recursion depth, handler-op rate, etc.) and **name the bug class it guards against** in its docstring.  Reference the issue number(s).
+2. **Pick the smallest scale that reliably manifested the bug class historically**, plus ~2-3x safety margin.  Don't maximise — bigger isn't better and inflates the suite.
+3. **Assert on a SPECIFIC observable** with a closed-form or otherwise unambiguous expected value.  Avoid "no exception raised" — that passes silently when the loop short-circuits.
+4. **Use the `_run` helper** (or a parallel helper for non-pure tests) — it handles tempfile lifecycle, parsing, compilation, error checking, and execution.
+5. **Carry `pytestmark = pytest.mark.stress` at module level** (the file already does) so the test is collected only under `pytest -m stress`.
 
 ## Test Fixture Conventions
 
