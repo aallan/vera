@@ -956,23 +956,36 @@ def execute(
             raise ValueError(f"#573: unknown wrap kind {kind}")
         body_ptr = _call_alloc(caller, _WRAPPER_BODY_SIZE)
         _write_i32(caller, body_ptr, tag)
-        # #578 invariant: raw_handle must fit in 31 bits so that
-        # ``raw_handle | 0x80000000`` round-trips cleanly through
-        # the unwrap mask ``& 0x7FFFFFFF``.  Practical alloc
-        # counters are bounded well below 2^31 — a 2B-handle
-        # session is wall-clock infeasible — but a silent
-        # round-trip failure (handle 0x80000005 stored as
-        # 0x80000005, unwrapped as 0x00000005, looking up the
-        # WRONG host-store entry) is exactly the kind of latent
-        # corruption #578 itself sought to eliminate.  Fail fast.
-        if raw_handle & 0x80000000:
+        # #578 invariant: raw_handle must be an unsigned 31-bit
+        # integer so ``raw_handle | 0x80000000`` round-trips
+        # cleanly through the unwrap mask ``& 0x7FFFFFFF`` and
+        # through ``_write_i32``'s 32-bit truncation.  Both
+        # directions break silently outside [0, 0x80000000):
+        # - Negative ints have bit 31 set in two's complement,
+        #   so `_write_i32` truncates and the unwrap returns a
+        #   wrong handle.
+        # - Values >= 0x80000000 alias into the top half and
+        #   collide with the tag-bit pattern.
+        # - Values >= 0x100000000 wrap on ``_write_i32`` and
+        #   silently truncate to a wrong handle.
+        # Practical alloc counters are bounded well below 2^31
+        # — a 2B-handle session is wall-clock infeasible — but
+        # a silent round-trip failure is exactly the kind of
+        # latent corruption #578 itself sought to eliminate.
+        # Fail fast.
+        if not (
+            isinstance(raw_handle, int)
+            and 0 <= raw_handle < 0x80000000
+        ):
             raise RuntimeError(
                 f"#578: raw_handle={raw_handle!r} (kind={kind!r}, "
-                f"body_ptr={body_ptr!r}) has bit 31 set; cannot tag "
-                f"for the conservative-scan disjointness invariant.  "
-                f"Host-store handle counters must stay below "
-                f"0x80000000 (2^31).  Either a counter overflowed or "
-                f"a non-counter value flowed into _wrap_handle."
+                f"body_ptr={body_ptr!r}) is outside the valid "
+                f"range [0, 0x80000000); cannot tag for the "
+                f"conservative-scan disjointness invariant.  "
+                f"Host-store handle counters must be unsigned "
+                f"31-bit integers.  Either a counter overflowed, "
+                f"a negative sentinel flowed in, or a non-integer "
+                f"value flowed into _wrap_handle."
             )
         # #578: store the handle ORed with 0x80000000 so the
         # in-heap field can't be mistaken for a heap pointer by

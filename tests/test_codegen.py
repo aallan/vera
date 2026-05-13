@@ -15627,6 +15627,34 @@ public fn main(-> @Int)
         # the output would be just <p></p> = 7 characters.
         assert _run(source) == 21
 
+    def test_json_round_trip_uses_host_side_mask(self) -> None:
+        """Host-side JSON reader applies the 0x7FFFFFFF mask.
+
+        Sibling of `test_html_round_trip_uses_host_side_mask`.
+        `vera/wasm/json_serde.py::read_json` reads
+        `wrapper_ptr + 4` directly (via wasmtime memory access)
+        rather than going through the WAT `_emit_unwrap_handle`
+        helper.  Post-#578 that read sees the TAGGED value and
+        must AND with 0x7FFFFFFF before looking up the host-side
+        `map_store`.  Without the mask the lookup would miss,
+        `read_json` would fall through to the warning + empty-
+        dict path (`json_serde.py` line 213), and
+        `json_stringify` would emit `{}` instead of the object.
+        """
+        source = """\
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Json = JObject(map_insert(map_new(), "name", JString("hi")));
+  string_length(json_stringify(@Json.0))
+}
+"""
+        # `{"name": "hi"}` = 14 characters (Python json.dumps
+        # default separators include a space after the colon).
+        # Without the host-side mask the attribute dict would be
+        # empty and json_stringify would emit `{}` = 2 characters.
+        assert _run(source) == 14
+
 
 # =====================================================================
 # @Nat subtraction underflow runtime guard (#520)
