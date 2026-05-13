@@ -2094,10 +2094,37 @@ public fn f(-> @Int)
             f"#549's GC-aware TCO should preserve return_call for "
             f"allocating fns. Body:\n{build_body}"
         )
-        # Find every `return_call $build` site and verify the two
-        # instructions immediately before it are `local.get <N>`
-        # and `global.set $gc_sp` (the GC-restore sequence).
+        # Parse the GC prologue to capture the exact local index
+        # that holds $gc_sp_save.  The prologue is the two
+        # instructions that open every allocating function:
+        #     global.get $gc_sp
+        #     local.set <N>
+        # The preamble at each return_call site must reload from
+        # this SAME local — anything else (a typo, a wrong index
+        # picked up from an unrelated local-alloc) would leave the
+        # callee's prologue saving an inconsistent baseline.
         lines = build_body.splitlines()
+        prologue_get_idx = next(
+            (i for i, ln in enumerate(lines)
+             if ln.strip() == "global.get $gc_sp"),
+            None,
+        )
+        assert prologue_get_idx is not None, (
+            f"no `global.get $gc_sp` prologue found in build body. "
+            f"Body:\n{build_body}"
+        )
+        prologue_set = lines[prologue_get_idx + 1].strip()
+        assert prologue_set.startswith("local.set "), (
+            f"expected `local.set <N>` immediately after the "
+            f"prologue's `global.get $gc_sp`, got: {prologue_set!r}. "
+            f"Body:\n{build_body}"
+        )
+        gc_sp_save_local = prologue_set[len("local.set "):]
+        expected_preamble_get = f"local.get {gc_sp_save_local}"
+        # Find every `return_call $build` site and verify the two
+        # instructions immediately before it are the exact preamble:
+        #     local.get <gc_sp_save_local>
+        #     global.set $gc_sp
         return_call_indices = [
             i for i, line in enumerate(lines)
             if "return_call $build" in line
@@ -2115,10 +2142,11 @@ public fn f(-> @Int)
                 f"return_call at line {idx}, got: {prev1!r}. "
                 f"Body:\n{build_body}"
             )
-            assert prev2.startswith("local.get "), (
-                f"Expected 'local.get <N>' two lines before "
-                f"return_call at line {idx} (loading $gc_sp_save), "
-                f"got: {prev2!r}. Body:\n{build_body}"
+            assert prev2 == expected_preamble_get, (
+                f"Expected exact preamble '{expected_preamble_get}' "
+                f"(matching the GC prologue's saved local) two lines "
+                f"before return_call at line {idx}, got: {prev2!r}. "
+                f"Body:\n{build_body}"
             )
 
     def test_allocating_function_with_postcondition_still_reverts(
@@ -2174,6 +2202,44 @@ public fn f(-> @Int)
             f"skip it. Post-process should have reverted to plain "
             f"call. Body:\n{build_body}"
         )
+        # Tighten: the GC-restore preamble (`local.get <N>;
+        # global.set $gc_sp`) must NOT precede the reverted
+        # `call $build`.  The preamble belongs to #549's GC-aware
+        # TCO path; once we've taken the postcondition-revert path
+        # the preamble has no purpose (we're keeping the frame, not
+        # discarding it via return_call), and injecting it anyway
+        # would corrupt the shadow-stack invariant for the
+        # remainder of the function.  This pins the dispatch
+        # precedence: post_instrs revert > GC-aware patch (the
+        # branches are mutually exclusive, not additive).
+        #
+        # Note: `local.get ...; global.set $gc_sp` legitimately
+        # appears in the GC EPILOGUE at the end of every allocating
+        # function (it restores $gc_sp before returning).  We can't
+        # forbid the sequence outright; we can only forbid it
+        # immediately preceding a `call $build` site.
+        lines = build_body.splitlines()
+        call_indices = [
+            i for i, line in enumerate(lines)
+            if "call $build" in line and "return_call" not in line
+        ]
+        assert call_indices, "no plain call $build site found"
+        for idx in call_indices:
+            if idx < 2:
+                continue
+            prev1 = lines[idx - 1].strip()
+            prev2 = lines[idx - 2].strip()
+            assert not (
+                prev1 == "global.set $gc_sp"
+                and prev2.startswith("local.get ")
+            ), (
+                f"Postcondition-revert path mistakenly injected the "
+                f"#549 GC-restore preamble before `call $build` at "
+                f"line {idx}.  Preamble lines: {prev2!r}, {prev1!r}. "
+                f"Dispatch precedence violated: post_instrs revert "
+                f"and GC-aware patch should be mutually exclusive. "
+                f"Body:\n{build_body}"
+            )
 
     def test_analyzer_marks_block_trailing_expression(self) -> None:
         """Unit test: analyzer marks Block.expr as tail position."""
@@ -15103,6 +15169,16 @@ public fn main(@Unit -> @Int)
         The non-tail call stacks WASM frames, each frame's shadow-
         stack roots survive across iterations, and at sufficient
         depth the overflow guard trips.
+
+        Two-step assertion:
+        1. Structural — the WAT for `overflow` contains the shadow-
+           stack-overflow guard sequence (`global.get $gc_sp;
+           global.get $gc_stack_limit; i32.ge_u; if; unreachable;
+           end`).  Without this, a regression that silently drops
+           the guard could still pass `_run_trap` via an unrelated
+           trap class (e.g. heap exhaustion at a different scale).
+        2. Behavioural — `_run_trap` confirms the program actually
+           traps at the chosen 2000-iteration depth.
         """
         src = """
 private fn overflow(@Array<Bool>, @Array<Bool>, @Int -> @Array<Bool>)
@@ -15133,6 +15209,37 @@ public fn main(@Unit -> @Int)
   array_length(overflow([false], [false], 2000))
 }
 """
+        # Structural check: the WAT for `overflow` must contain
+        # the shadow-stack overflow guard.  The distinctive token
+        # is `global.get $gc_stack_limit`, which is only used by
+        # this guard in the entire emission surface.
+        compiled = _compile_ok(src)
+        overflow_start = compiled.wat.find("(func $overflow")
+        assert overflow_start >= 0, (
+            f"`$overflow` function not found in emitted WAT"
+        )
+        overflow_end = compiled.wat.find("(func ", overflow_start + 1)
+        if overflow_end < 0:
+            overflow_end = len(compiled.wat)
+        overflow_body = compiled.wat[overflow_start:overflow_end]
+        # The guard sequence emitted by `gc_shadow_push` in
+        # `vera/wasm/helpers.py` is:
+        #     global.get $gc_sp
+        #     global.get $gc_stack_limit
+        #     i32.ge_u
+        #     if
+        #       unreachable
+        #     end
+        # Check the distinctive parts as a substring; whitespace
+        # between lines may vary depending on emission context.
+        assert "global.get $gc_stack_limit" in overflow_body, (
+            f"Shadow-stack overflow guard missing from `$overflow` "
+            f"body — codegen must emit `global.get $gc_stack_limit` "
+            f"as part of every shadow-stack push.  Without the "
+            f"guard, _run_trap below could still pass via an "
+            f"unrelated trap class.  Body:\n{overflow_body[:2000]}"
+        )
+        # Behavioural check: the program actually traps.
         _run_trap(src)
 
     def test_deep_array_accumulation_preserves_length(self) -> None:

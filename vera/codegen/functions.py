@@ -403,7 +403,7 @@ class FunctionCompilationMixin:
             # fired for allocating fns; closing #549 lets allocating
             # tail-recursive fns iterate indefinitely without
             # unbounded shadow-stack growth.
-            assert gc_sp_save is not None
+            assert gc_sp_save is not None  # noqa: S101 - narrows int | None for mypy
             patched: list[str] = []
             for instr in body_instrs:
                 if instr.lstrip().startswith("return_call "):
@@ -427,7 +427,7 @@ class FunctionCompilationMixin:
         gc_prologue: list[str] = []
         gc_epilogue: list[str] = []
         if ctx.needs_alloc:
-            assert gc_sp_save is not None
+            assert gc_sp_save is not None  # noqa: S101 - narrows int | None for mypy
             gc_prologue.append("global.get $gc_sp")
             gc_prologue.append(f"local.set {gc_sp_save}")
             for pidx in gc_pointer_params:
