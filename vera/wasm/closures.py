@@ -281,7 +281,49 @@ class ClosuresMixin:
         free: list[tuple[str, int, str]],
         seen: set[tuple[str, int]],
     ) -> None:
-        """Recursively walk an expression to find free variable references."""
+        """Recursively walk an expression to find free variable references.
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
+        # disposition; check_walker_coverage.py enforces completeness.)
+        #
+        # Handled (recurses into sub-exprs that may contain SlotRefs):
+        #   SlotRef           → leaf case, captures recorded if outer scope
+        #   BinaryExpr        → walks left + right
+        #   UnaryExpr         → walks operand
+        #   IndexExpr         → walks collection + index   (added #588)
+        #   ArrayLit          → walks each element         (added #588)
+        #   InterpolatedString → walks Expr parts          (added #588)
+        #   FnCall            → walks each arg
+        #   QualifiedCall     → walks each arg
+        #   ModuleCall        → walks each arg
+        #   ConstructorCall   → walks each arg
+        #   AnonFn            → walks body
+        #   IfExpr            → walks condition + then + else
+        #   MatchExpr         → walks scrutinee + each arm body
+        #   Block             → walks each stmt + trailing expr
+        #   HandleExpr        → walks body + each handler body  (added #588)
+        #   AssertExpr        → walks predicate                 (added #588)
+        #   AssumeExpr        → walks predicate                 (added #588)
+        #   ForallExpr        → walks body (defensive — walker's body
+        #                       can't reference outer captures, but the
+        #                       sub-Exprs are walked for symmetry)
+        #   ExistsExpr        → walks body (same rationale)
+        #
+        # Intentionally ignored (leaves — no sub-expressions to walk):
+        #   IntLit            → leaf
+        #   FloatLit          → leaf
+        #   BoolLit           → leaf
+        #   StringLit         → leaf
+        #   UnitLit           → leaf
+        #   NullaryConstructor → leaf (zero-arg by construction)
+        #
+        # Cannot occur (post-checker; would have been rejected upstream
+        # before reaching closure-lift):
+        #   HoleExpr          → parser placeholder; rejected at check time
+        #   OldExpr           → contract-only; not in body expressions
+        #   NewExpr           → contract-only; not in body expressions
+        #   ResultRef         → only valid in `ensures`; not in body
+        """
         if isinstance(expr, ast.SlotRef):
             type_name = expr.type_name
             if expr.type_args:

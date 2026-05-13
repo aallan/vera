@@ -146,6 +146,48 @@ class InferenceMixin:
 
         Returns "i64" for Int/Nat, "f64" for Float64, "i32" for Bool,
         None for unknown/Unit.  Used to select the correct operators.
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
+        # disposition; check_walker_coverage.py enforces completeness.)
+        #
+        # Handled (explicit isinstance branch):
+        #   IntLit            → "i64"
+        #   FloatLit          → "f64"
+        #   BoolLit           → "i32"
+        #   UnitLit           → None
+        #   StringLit         → "i32_pair"
+        #   InterpolatedString → "i32_pair"
+        #   SlotRef           → from resolved type name
+        #   ResultRef         → from declared @Type
+        #   BinaryExpr        → from op + operands (arith/cmp/logic)
+        #   UnaryExpr         → from op + operand (neg/not)
+        #   FnCall            → from `_infer_fncall_wasm_type`
+        #   QualifiedCall     → from `_infer_qualified_call_wasm_type`
+        #   ConstructorCall   → "i32" (heap ptr) if known
+        #   NullaryConstructor → "i32" (heap ptr) if known
+        #   MatchExpr         → from first arm body
+        #   IfExpr            → from then-branch
+        #   Block             → from trailing expr
+        #   HandleExpr        → from body
+        #   IndexExpr         → from element type
+        #   ArrayLit          → "i32_pair"
+        #   ForallExpr        → "i32" (Bool)
+        #   ExistsExpr        → "i32" (Bool)
+        #   AssertExpr        → None (Unit)
+        #   AssumeExpr        → None (Unit)
+        #   AnonFn            → "i32" (closure ptr — defensive add #597)
+        #   ModuleCall        → from `_infer_fncall_wasm_type` shape
+        #                       (defensive add #597; today the type
+        #                       checker resolves ModuleCalls to
+        #                       FnCalls before this helper runs, but
+        #                       a regression there would un-mask the
+        #                       gap)
+        #
+        # Cannot occur (rejected before reaching this codegen-time
+        # helper):
+        #   HoleExpr          → parser placeholder; check time rejects
+        #   OldExpr           → contract-only; not in body codegen
+        #   NewExpr           → contract-only; not in body codegen
         """
         if isinstance(expr, ast.IntLit):
             return "i64"
@@ -234,6 +276,20 @@ class InferenceMixin:
             return "i32"  # quantifiers return Bool
         if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
             return None  # assert/assume return Unit
+        # Defensive add (#597): AnonFn literals are typically lifted
+        # before reaching this helper, but if one does flow here it
+        # represents a closure handle on the WASM stack (i32 ptr).
+        if isinstance(expr, ast.AnonFn):
+            return "i32"
+        # Defensive add (#597): ModuleCall resolves to a FnCall on
+        # the imported target.  If a regression lands a ModuleCall
+        # at this helper, look up the imported fn's return type via
+        # the FnCall machinery (which already handles module-qualified
+        # names).  Wrapping in a fake FnCall preserves the dispatch.
+        if isinstance(expr, ast.ModuleCall):
+            return self._infer_fncall_wasm_type(
+                ast.FnCall(name=expr.name, args=expr.args)
+            )
         return None
 
     _IO_WASM_TYPES: dict[str, str | None] = {
@@ -800,7 +856,49 @@ class InferenceMixin:
         return self._format_named_type(canonical)
 
     def _infer_vera_type(self, expr: ast.Expr) -> str | None:
-        """Infer the Vera type name of an expression for call rewriting."""
+        """Infer the Vera type name of an expression for call rewriting.
+
+        # WALKER_COVERAGE: (#597 — every Expr subclass below has a
+        # disposition; check_walker_coverage.py enforces completeness.)
+        #
+        # Handled (explicit isinstance branch):
+        #   IntLit            → "Int"
+        #   BoolLit           → "Bool"
+        #   FloatLit          → "Float64"
+        #   UnitLit           → "Unit"
+        #   StringLit         → "String"
+        #   InterpolatedString → "String"
+        #   SlotRef           → slot type name (with type-args)
+        #   ConstructorCall   → parent ADT name
+        #   NullaryConstructor → parent ADT name
+        #   BinaryExpr        → "Bool" for cmp/logic, else left's type
+        #   UnaryExpr         → "Bool" for `not`, else operand's type
+        #   FnCall            → from `_infer_fncall_vera_type`
+        #   ArrayLit          → "Array"
+        #   IndexExpr         → element type
+        #   IfExpr            → from then-branch
+        #   Block             → from trailing expr (defensive add #597)
+        #   MatchExpr         → from first arm body (defensive add #597)
+        #   HandleExpr        → from body (defensive add #597)
+        #   AssertExpr        → "Unit" (defensive add #597)
+        #   AssumeExpr        → "Unit" (defensive add #597)
+        #   AnonFn            → "Fn" (defensive add #597 — closure
+        #                       handle's Vera type isn't typically
+        #                       needed for call rewriting, but a
+        #                       placeholder beats `None`)
+        #   QualifiedCall     → from `_infer_fncall_vera_type`
+        #                       (defensive add #597)
+        #   ModuleCall        → from `_infer_fncall_vera_type`
+        #                       (defensive add #597)
+        #
+        # Cannot occur (contract-only or check-time rejected):
+        #   ResultRef         → only valid in `ensures`; not at call site
+        #   OldExpr           → contract-only
+        #   NewExpr           → contract-only
+        #   ForallExpr        → contract-only quantifier
+        #   ExistsExpr        → contract-only quantifier
+        #   HoleExpr          → parser placeholder, check time rejects
+        """
         if isinstance(expr, ast.IntLit):
             return "Int"
         if isinstance(expr, ast.BoolLit):
@@ -848,6 +946,33 @@ class InferenceMixin:
             if expr.then_branch.expr is not None:
                 return self._infer_vera_type(expr.then_branch.expr)
             return None  # pragma: no cover
+        # Defensive adds (#597) — these compound expressions could
+        # flow in here from generic-arg inference paths, but today
+        # most callers preprocess first.  Returning the right Vera
+        # type instead of None hardens against a future caller
+        # extending the surface.
+        if isinstance(expr, ast.Block):
+            return (self._infer_vera_type(expr.expr)
+                    if expr.expr is not None else None)
+        if isinstance(expr, ast.MatchExpr):
+            if expr.arms:
+                return self._infer_vera_type(expr.arms[0].body)
+            return None
+        if isinstance(expr, ast.HandleExpr):
+            if expr.body.expr is not None:
+                return self._infer_vera_type(expr.body.expr)
+            return None
+        if isinstance(expr, (ast.AssertExpr, ast.AssumeExpr)):
+            return "Unit"
+        if isinstance(expr, ast.AnonFn):
+            return "Fn"  # closure handle — placeholder for any
+            # downstream code that just needs to know it's a fn-typed
+            # arg; the precise FnType shape isn't needed here.
+        if isinstance(expr, (ast.QualifiedCall, ast.ModuleCall)):
+            # Treat as a FnCall lookup; reuses the existing dispatch.
+            return self._infer_fncall_vera_type(
+                ast.FnCall(name=expr.name, args=expr.args)
+            )
         return None  # pragma: no cover
 
     def _infer_fncall_vera_type(self, call: ast.FnCall) -> str | None:

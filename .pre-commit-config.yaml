@@ -119,6 +119,13 @@ repos:
         pass_filenames: false
         files: '(README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|docs/index\.html$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
 
+      - id: walker-coverage
+        name: walker coverage
+        entry: .venv/bin/python scripts/check_walker_coverage.py
+        language: system
+        pass_filenames: false
+        files: '(vera/ast\.py$|vera/wasm/.*\.py$|vera/checker/.*\.py$|vera/codegen/.*\.py$|vera/smt\.py$|scripts/check_walker_coverage\.py$)'
+
       - id: limitations-sync
         name: limitations sync
         entry: .venv/bin/python scripts/check_limitations_sync.py
