@@ -122,6 +122,62 @@ def walker(expr):
         node = _make_fn_node(src, script_module)
         assert script_module.extract_isinstance_classes(node) == {"IntLit"}
 
+    def test_nested_function_isinstance_not_counted(
+        self, script_module: object,
+    ) -> None:
+        """**CR-5 regression test**: an `isinstance(x, ast.SomeExpr)`
+        inside a nested `def` / `async def` / `class` belongs to
+        that inner scope's coverage, not the outer walker's.  The
+        scope-aware visitor must skip nested scopes.
+
+        Pre-fix `ast.walk(fn_node)` descended into nested function
+        bodies and would have counted `BinaryExpr` below as outer-
+        walker coverage."""
+        src = """
+def walker(expr):
+    def _helper(x):
+        if isinstance(x, ast.BinaryExpr):
+            return 0
+    if isinstance(expr, ast.IntLit):
+        return 1
+"""
+        node = _make_fn_node(src, script_module)
+        # IntLit yes (outer); BinaryExpr no (nested scope).
+        assert script_module.extract_isinstance_classes(node) == {"IntLit"}
+
+    def test_nested_async_function_isinstance_not_counted(
+        self, script_module: object,
+    ) -> None:
+        """Same as test_nested_function but for `async def` —
+        the visitor overrides `visit_AsyncFunctionDef` too."""
+        src = """
+def walker(expr):
+    async def _async_helper(x):
+        if isinstance(x, ast.BinaryExpr):
+            return 0
+    if isinstance(expr, ast.IntLit):
+        return 1
+"""
+        node = _make_fn_node(src, script_module)
+        assert script_module.extract_isinstance_classes(node) == {"IntLit"}
+
+    def test_nested_class_isinstance_not_counted(
+        self, script_module: object,
+    ) -> None:
+        """Same as test_nested_function but for `class` — the
+        visitor overrides `visit_ClassDef` too."""
+        src = """
+def walker(expr):
+    class _NestedHelper:
+        def method(self, x):
+            if isinstance(x, ast.BinaryExpr):
+                return 0
+    if isinstance(expr, ast.IntLit):
+        return 1
+"""
+        node = _make_fn_node(src, script_module)
+        assert script_module.extract_isinstance_classes(node) == {"IntLit"}
+
 
 # =====================================================================
 # 3. extract_checklist_classes — anchored to WALKER_COVERAGE block

@@ -119,32 +119,72 @@ def find_walker_functions(
 # 3. Extract isinstance-referenced + checklist-named subclasses
 # ---------------------------------------------------------------
 
+class _IsinstanceCollector(ast.NodeVisitor):
+    """Scope-aware visitor collecting ``ast.X`` subclasses
+    referenced by ``isinstance(_, ast.X)`` calls in the *current*
+    function only, NOT in nested scopes.
+
+    Pre-NodeVisitor `ast.walk(fn_node)` descended into nested
+    `FunctionDef` / `AsyncFunctionDef` / `ClassDef` bodies, so a
+    nested helper inside a walker (e.g. an inner ``def`` with its
+    own `isinstance(x, ast.SomeExpr)` check) would have its
+    classes incorrectly counted as if they belonged to the outer
+    walker.  No walker has such nested helpers today, but the
+    fix is mechanical and prevents the bug class from being
+    re-introduced silently by a future refactor.
+    """
+
+    def __init__(self) -> None:
+        self.classes: set[str] = set()
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if (isinstance(node.func, ast.Name)
+                and node.func.id == "isinstance"
+                and len(node.args) >= 2):
+            cls_arg = node.args[1]
+            targets: list[ast.expr] = (
+                list(cls_arg.elts) if isinstance(cls_arg, ast.Tuple)
+                else [cls_arg]
+            )
+            for t in targets:
+                if (isinstance(t, ast.Attribute)
+                        and isinstance(t.value, ast.Name)
+                        and t.value.id == "ast"):
+                    self.classes.add(t.attr)
+        # Continue walking into the call's sub-expressions
+        # (e.g. nested isinstance in args) — only function/class
+        # scopes are pruned.
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        # Skip nested function bodies — their isinstance calls
+        # belong to that inner scope's coverage, not ours.
+        return
+
+    def visit_AsyncFunctionDef(
+        self, node: ast.AsyncFunctionDef,
+    ) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        # Skip nested class bodies for the same reason.
+        return
+
+
 def extract_isinstance_classes(
     fn_node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> set[str]:
     """Return every ``X`` that appears as ``isinstance(_, ast.X)``
-    in the function body.  Tuples like ``(ast.X, ast.Y)`` are
-    flattened."""
-    classes: set[str] = set()
-    for sub in ast.walk(fn_node):
-        if not isinstance(sub, ast.Call):
-            continue
-        if not isinstance(sub.func, ast.Name) or sub.func.id != "isinstance":
-            continue
-        if len(sub.args) < 2:
-            continue
-        cls_arg = sub.args[1]
-        targets: list[ast.expr] = []
-        if isinstance(cls_arg, ast.Tuple):
-            targets.extend(cls_arg.elts)
-        else:
-            targets.append(cls_arg)
-        for t in targets:
-            if (isinstance(t, ast.Attribute)
-                    and isinstance(t.value, ast.Name)
-                    and t.value.id == "ast"):
-                classes.add(t.attr)
-    return classes
+    in the function body, EXCLUDING nested function/class scopes.
+    Tuples like ``(ast.X, ast.Y)`` are flattened."""
+    collector = _IsinstanceCollector()
+    # Visit the function body directly rather than calling
+    # ``collector.visit(fn_node)`` — otherwise the fn_node itself
+    # triggers our visit_FunctionDef override and skips
+    # everything.
+    for stmt in fn_node.body:
+        collector.visit(stmt)
+    return collector.classes
 
 
 # Marker-comment subclass extraction.  The comment shape this
