@@ -234,9 +234,17 @@ def test_conways_life_grid_alloc_and_count_alive_20x20(
     eager_gc: bool, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Synthetic regression covering #593 territory (Life
-    corruption from gen 1+ at 12×30) and #595 (malloc abort
-    during wasmtime cleanup).  Both bugs are closed; this test
-    pins the fixes against future regressions.
+    corruption from gen 1+ at 12×30).  Bug is closed; this
+    test pins the fix against future regressions.
+
+    Note on #595: an earlier version of this docstring also
+    cited #595 (macOS malloc abort during wasmtime/ctypes
+    cleanup after Ctrl-C in `IO.sleep`).  That citation was
+    misattributed — the Conway's Life stress test doesn't
+    exercise the Ctrl-C or wasmtime-cleanup paths (`effects(pure)`,
+    no signal handling).  #595's regression coverage lives
+    correctly in `TestHostSleepKeyboardInterrupt` in
+    `tests/test_runtime_traps.py`; this test pins #593 only.
 
     What this test actually does: builds a 20×20 all-false
     `Array<Array<Bool>>` via nested `array_map`-of-`array_range`,
@@ -249,7 +257,7 @@ def test_conways_life_grid_alloc_and_count_alive_20x20(
     (400-cell nested allocation, nested fold, captured outer-
     binding references inside the inner closure) is what
     matters for the bug class — these are the same code paths
-    #593 / #595 hit.  A full Life-step implementation would be
+    #593 hit.  A full Life-step implementation would be
     a meaningfully larger Vera program and isn't needed to pin
     those code paths.
 
@@ -296,8 +304,8 @@ public fn main(@Unit -> @Int)
 """
     # All-empty grid → 0 live cells, regardless of generations.
     # The structural shape (nested arrays, array_fold of array_fold,
-    # 400-cell allocation) exercises the same code paths #593 /
-    # #595 hit, even with a trivially-deterministic outcome.
+    # 400-cell allocation) exercises the same code paths #593 hit,
+    # even with a trivially-deterministic outcome.
     assert _run(src, eager_gc=eager_gc, monkeypatch=monkeypatch) == 0
 
 

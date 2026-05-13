@@ -133,13 +133,22 @@ jobs:
             }
 
             // Find an existing open tracking issue with this label.
-            const { data: existing } = await github.rest.issues.listForRepo({
+            // `listForRepo` returns BOTH issues and PRs that carry the
+            // label; filter to issues only (items with no
+            // `pull_request` field) so we never accidentally post a
+            // failure comment onto a PR that happened to be labelled.
+            // The `stress-regression` label is only ever applied by
+            // this workflow today, but defensive filtering costs ~3
+            // lines and prevents a future misapplication from
+            // mis-routing notifications.
+            const { data: candidates } = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
               labels: LABEL,
               state: "open",
-              per_page: 5,
+              per_page: 10,
             });
+            const existing = candidates.filter(item => !item.pull_request);
 
             if (existing.length > 0) {
               const issueNumber = existing[0].number;
