@@ -427,6 +427,7 @@ Thirteen scripts in `scripts/` validate cross-cutting concerns beyond unit tests
 | `check_site_assets.py` | Generated site assets under `docs/` are up-to-date |
 | `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
 | `check_doc_counts.py` | Counts cited in TESTING.md, CONTRIBUTING.md, and CLAUDE.md match live codebase |
+| `check_walker_coverage.py` | Every walker function in `vera/` covers every `Expr` subclass via `isinstance` dispatch or `# WALKER_COVERAGE:` checklist comment (#597) |
 | `check_licenses.py` | All installed packages have MIT-compatible licenses |
 | `fix_allowlists.py` | Auto-fix stale allowlist line numbers after Markdown edits |
 
