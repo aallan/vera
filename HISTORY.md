@@ -299,6 +299,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.152 | 13 May | **Stress-test harness for scale-dependent regression coverage** ([#596](https://github.com/aallan/vera/issues/596)). |
 | v0.0.153 | 13 May | **SMT translator covers `FloatLit` / `IndexExpr` / `ArrayLit` in contracts** ([#667](https://github.com/aallan/vera/issues/667)). |
 | v0.0.154 | 13 May | **GC-aware tail-call optimization for allocating functions** ([#549](https://github.com/aallan/vera/issues/549)). |
+| v0.0.155 | 13 May | **Wrapper-handle bit-31 tagging closes the last conservative-GC retention bug; bug-tracker section empty** ([#578](https://github.com/aallan/vera/issues/578)). |
 
 ---
 
@@ -339,4 +340,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 154 tagged releases, 58 active development days.**
+Total: **810+ commits, 155 tagged releases, 58 active development days.**

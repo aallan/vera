@@ -956,7 +956,14 @@ def execute(
             raise ValueError(f"#573: unknown wrap kind {kind}")
         body_ptr = _call_alloc(caller, _WRAPPER_BODY_SIZE)
         _write_i32(caller, body_ptr, tag)
-        _write_i32(caller, body_ptr + 4, raw_handle)
+        # #578: store the handle ORed with 0x80000000 so the
+        # in-heap field can't be mistaken for a heap pointer by
+        # the conservative GC scan.  Mirrors the WAT-side
+        # ``_emit_wrap_handle`` in
+        # ``vera/wasm/calls_containers.py``.  ``$register_wrapper``
+        # still gets the RAW handle — the wrap table uses it for
+        # ``host_decref_handle`` calls.
+        _write_i32(caller, body_ptr + 4, raw_handle | 0x80000000)
         _call_register_wrapper(caller, body_ptr, kind, raw_handle)
         return body_ptr
 

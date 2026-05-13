@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.155] - 2026-05-13
+
+### Fixed
+
+- **[#578](https://github.com/aallan/vera/issues/578)** — wrapper-handle bit-31 tagging closes the last latent conservative-GC retention bug.  Pre-fix, `Map<K, V>` / `Set<T>` / `Decimal` wrapper ADTs stored their raw host-store handle as an i32 at body offset 4.  Phase 2b of `$gc_collect` does a conservative word-by-word scan of every reachable object's payload, checking each i32 against the heap-range predicate (`val >= gc_heap_start + 4 && val < heap_ptr && (val - gc_heap_start) & 7 == 4`).  For typical programs the handle counter stays well below `gc_heap_start` (~147 KiB) so the heap-range check rejects it, but a long-running program allocating >100K host-store entries in a single `execute()` call could see a handle exceed that threshold and (with the right alignment) be falsely classified as a heap pointer — silently retaining an unrelated heap object.  Retention bug, not correctness (no use-after-free, no corruption), but unbounded retention for long sessions.
+  - **Fix**: store the handle ORed with `0x80000000` at body offset 4 (Option 1 from the issue body, "self-describing wrappers").  The in-heap field is now always `>= 2 GB`, structurally outside any plausible heap-range check.  Unwrap recovers the raw handle by ANDing with `0x7FFFFFFF`.  Two-instruction overhead on each wrap and unwrap; no GC-code changes.
+  - **Heap-ceiling guard** in `$alloc`: traps if `heap_ptr + total >= 0x80000000`, so the disjointness invariant (`heap_ptr < 2 GB` ⇒ tagged handles `>= 2 GB` never collide with heap pointers) holds by construction.  Practical Vera programs use <100 MB; this trap fires only on egregious heap pressure.
+  - **Host-side mirrors**: `vera/wasm/json_serde.py::read_json` and `vera/wasm/html_serde.py::read_html` read the wrapper's handle field directly via wasmtime memory access (bypassing the WAT `_emit_unwrap_handle` helper) when parsing `JObject` / `HtmlElement` attributes.  Both now AND with `0x7FFFFFFF` to recover the raw handle for `map_store` lookup.  `_wrap_handle` in `vera/codegen/api.py` (host-side allocator for Option<Decimal>.Some payloads etc.) writes the tagged value to match.
+
+### Tests
+
+- `tests/test_codegen.py::TestWrapperHandleTagging578` — 5 new tests pinning the contract: (1) wrap site emits `i32.const 0x80000000; i32.or`, (2) unwrap site emits `i32.load offset=4; i32.const 0x7FFFFFFF; i32.and`, (3) `$alloc` body contains the heap-ceiling guard, (4) end-to-end wrap/unwrap round trip preserves the original handle (a Map insert + lookup), (5) `html_to_string` produces the correct length output — pinning that the host-side `read_html` mask is in place (without it the attribute dict lookup would miss and the rendered HTML would be missing the `title="..."` attribute).
+
+### Documentation
+
+- **`KNOWN_ISSUES.md`** — removed the #578 bug row.  The bug-tracker section is now empty for the first time since ~v0.0.80.
+
 ## [0.0.154] - 2026-05-13
 
 ### Fixed
@@ -2266,7 +2283,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.154...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.155...HEAD
+[0.0.155]: https://github.com/aallan/vera/compare/v0.0.154...v0.0.155
 [0.0.154]: https://github.com/aallan/vera/compare/v0.0.153...v0.0.154
 [0.0.153]: https://github.com/aallan/vera/compare/v0.0.152...v0.0.153
 [0.0.152]: https://github.com/aallan/vera/compare/v0.0.151...v0.0.152

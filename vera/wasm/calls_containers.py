@@ -102,9 +102,21 @@ class CallsContainersMixin:
             # Store tag at body[0].
             f"i32.const {tag_value}",
             "i32.store offset=0",
-            # Store handle at body[4].
+            # Store TAGGED handle at body[4].  #578: OR with
+            # 0x80000000 so the in-heap field cannot be mistaken
+            # for a heap pointer by the conservative GC scan.
+            # The heap-ceiling guard in $alloc enforces
+            # heap_ptr < 0x80000000, so a value with bit 31 set
+            # is guaranteed outside the heap-range check.  The
+            # raw handle is recovered by ANDing with 0x7FFFFFFF
+            # at the unwrap site.  Note: ``$register_wrapper``
+            # below still receives the RAW handle — the wrap
+            # table needs it for ``host_decref_handle`` calls
+            # during Phase 2c.
             f"local.get {wrapper_temp}",
             f"local.get {handle_temp}",
+            "i32.const 0x80000000",
+            "i32.or",
             "i32.store offset=4",
             # Register with wrap table: $register_wrapper(ptr, kind, handle).
             f"local.get {wrapper_temp}",
@@ -137,8 +149,17 @@ class CallsContainersMixin:
         Consumes one i32 from the operand stack (the wrapper
         pointer) and produces one i32 (the raw handle stored at
         body offset 4).
+
+        #578: the in-heap field stores the handle ORed with
+        0x80000000 so the conservative GC scan can never mistake
+        it for a heap pointer.  AND with 0x7FFFFFFF here to
+        recover the raw handle.
         """
-        return ["i32.load offset=4"]
+        return [
+            "i32.load offset=4",
+            "i32.const 0x7FFFFFFF",
+            "i32.and",
+        ]
 
     # -----------------------------------------------------------------
     # Decimal built-in operations (§9.7.2)

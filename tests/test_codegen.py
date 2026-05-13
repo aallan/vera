@@ -15420,6 +15420,193 @@ public fn main(@Unit -> @Int)
 
 
 # =====================================================================
+# Wrapper-handle bit-31 tagging (#578)
+# =====================================================================
+
+class TestWrapperHandleTagging578:
+    """Regression tests for #578: wrapper-handle field bit-31 tagging.
+
+    Surfaced by CodeRabbit on PR #577 (#573 phase 1-3).  After
+    #573, every `Map<K, V>` / `Set<T>` / `Decimal` value is a
+    pointer to an 8-byte wrapper ADT on the GC heap: tag (i32) at
+    offset 0, handle (i32) at offset 4.  Phase 2b of `$gc_collect`
+    does a conservative word-by-word scan of every reachable
+    object's payload, checking whether each i32 word looks like a
+    heap pointer (in heap range, 8-byte aligned).
+
+    Pre-#578 the raw host handle (a small positive integer) was
+    stored at offset 4.  For typical programs the handle stays
+    below `gc_heap_start` (~147 KiB) so the heap-range check
+    rejects it.  But for very-long-running programs allocating
+    >100K host handles per `execute()`, the handle counter could
+    exceed `gc_heap_start` and (with the right alignment) be
+    falsely classified as a heap pointer — silently retaining an
+    unrelated heap object.  A *retention* issue, not a correctness
+    one (no use-after-free, no corruption), but unbounded
+    retention for long sessions.
+
+    Post-#578 the handle is stored as `handle | 0x80000000` so
+    the in-heap field is always >= 2 GB, structurally outside
+    any heap-range check (the `$alloc` heap-ceiling guard
+    enforces `heap_ptr < 0x80000000`).  The unwrap site ANDs
+    with 0x7FFFFFFF to recover the raw handle.  Two host-side
+    readers (`vera/wasm/json_serde.py`, `vera/wasm/html_serde.py`)
+    apply the same mask when reading the field directly.
+    """
+
+    def test_wrap_emits_tag_or(self) -> None:
+        """Wrap site emits `i32.const 0x80000000; i32.or` before store."""
+        source = """\
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_insert(map_new(), 1, 100);
+  option_unwrap_or(map_get(@Map<Int, Int>.0, 1), 0)
+}
+"""
+        result = _compile_ok(source)
+        # The wrap site must emit `i32.const 0x80000000; i32.or`
+        # before each `i32.store offset=4` that's a wrapper-handle
+        # store.  We can't perfectly distinguish wrapper stores
+        # from other offset=4 stores by structural pattern alone,
+        # but we can require the tag-or sequence appears at least
+        # once in the WAT (it appears nowhere else in the
+        # emitter).  Without #578 the WAT contains no such
+        # sequence.
+        assert "i32.const 0x80000000" in result.wat, (
+            f"Expected wrap-site tag `i32.const 0x80000000` "
+            f"in WAT.  Without #578, wrapper handles are stored "
+            f"raw, leaking into the conservative scan."
+        )
+        assert "i32.or" in result.wat, (
+            f"Expected `i32.or` after the tag constant"
+        )
+
+    def test_unwrap_emits_mask_and(self) -> None:
+        """Unwrap site emits `i32.load offset=4; i32.const 0x7FFFFFFF; i32.and`."""
+        source = """\
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_insert(map_new(), 1, 100);
+  option_unwrap_or(map_get(@Map<Int, Int>.0, 1), 0)
+}
+"""
+        result = _compile_ok(source)
+        # The unwrap helper emits these three instructions
+        # consecutively.  Look for the distinctive mask constant.
+        assert "i32.const 0x7FFFFFFF" in result.wat, (
+            f"Expected unwrap-site mask `i32.const 0x7FFFFFFF` "
+            f"in WAT.  Without #578, wrapper handles are read "
+            f"raw, so the read would see the tagged value and "
+            f"map_store lookups would fail."
+        )
+
+    def test_alloc_emits_heap_ceiling_guard(self) -> None:
+        """$alloc traps if heap_ptr + total would exceed 0x80000000.
+
+        The structural counterpart to the wrap-site tag: the
+        guard ensures `heap_ptr < 0x80000000` always, so tagged
+        handles (>= 2 GB) and heap pointers (< 2 GB) are
+        guaranteed disjoint.  Without this guard a 3+ GB heap
+        could produce real pointers in the tagged-handle range,
+        reintroducing the spurious-retention bug.
+        """
+        source = """\
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_insert(map_new(), 1, 100);
+  option_unwrap_or(map_get(@Map<Int, Int>.0, 1), 0)
+}
+"""
+        result = _compile_ok(source)
+        # Look for the guard sequence:
+        #   global.get $heap_ptr
+        #   local.get $total
+        #   i32.add
+        #   i32.const 0x80000000
+        #   i32.ge_u
+        #   if
+        #     unreachable
+        #   end
+        # We don't string-search the multi-line sequence (whitespace
+        # may vary); we check for the unique constant in $alloc's
+        # body.
+        alloc_start = result.wat.find("(func $alloc")
+        assert alloc_start >= 0, "$alloc function not found in WAT"
+        alloc_end = result.wat.find("(func ", alloc_start + 1)
+        if alloc_end < 0:
+            alloc_end = len(result.wat)
+        alloc_body = result.wat[alloc_start:alloc_end]
+        assert "0x80000000" in alloc_body, (
+            f"Heap-ceiling guard not found in $alloc body.  "
+            f"Without it, a >2 GB heap would let real heap "
+            f"pointers collide with the tagged-handle pattern, "
+            f"reintroducing #578."
+        )
+        # The guard uses i32.ge_u; ensure the comparison is there
+        # too (defends against the constant appearing in an
+        # unrelated context).
+        assert "i32.ge_u" in alloc_body, (
+            f"Expected `i32.ge_u` comparison in $alloc body"
+        )
+
+    def test_wrap_unwrap_round_trip_preserves_handle(self) -> None:
+        """Behavioural: wrap-then-unwrap recovers the original handle.
+
+        End-to-end smoke test that the tag+mask combination
+        round-trips correctly for a real Map operation.  A bug
+        in either direction (wrong mask, wrong constant, wrong
+        order of operations) would produce a corrupted handle
+        and the `map_get` lookup would either trap or return
+        a wrong value.
+        """
+        source = """\
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_insert(map_new(), 42, 12345);
+  let @Map<Int, Int> = map_insert(@Map<Int, Int>.0, 100, 67890);
+  let @Int = option_unwrap_or(map_get(@Map<Int, Int>.0, 42), -1);
+  let @Int = option_unwrap_or(map_get(@Map<Int, Int>.0, 100), -1);
+  @Int.0 + @Int.1
+}
+"""
+        # Expected: 42 -> 12345, 100 -> 67890. Sum = 80235.
+        # If the wrap/unwrap round-trip is broken, this either
+        # traps on host-side `map_store[bad_handle]` lookup or
+        # returns -1 + -1 = -2.
+        assert _run(source) == 80235
+
+    def test_html_round_trip_uses_host_side_mask(self) -> None:
+        """Host-side reader applies the 0x7FFFFFFF mask.
+
+        `vera/wasm/html_serde.py::read_html` reads
+        `wrapper_ptr + 4` directly (via wasmtime memory access)
+        rather than going through the WAT `_emit_unwrap_handle`
+        helper.  Post-#578 that read sees the TAGGED value and
+        must AND with 0x7FFFFFFF before looking up the host-side
+        `map_store`.  This test pins that the host-side mask is
+        in place — without it, the lookup would miss and
+        `html_to_string` would emit an element with empty
+        attributes.
+        """
+        source = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, String> = map_insert(map_new(), "title", "hello");
+  string_length(html_to_string(HtmlElement("p", @Map<String, String>.0, [])))
+}
+"""
+        # <p title="hello"></p> = 21 characters.  Without the
+        # host-side mask the attribute dict would be empty and
+        # the output would be just <p></p> = 7 characters.
+        assert _run(source) == 21
+
+
+# =====================================================================
 # @Nat subtraction underflow runtime guard (#520)
 # =====================================================================
 
