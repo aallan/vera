@@ -124,7 +124,16 @@ repos:
         entry: .venv/bin/python scripts/check_walker_coverage.py
         language: system
         pass_filenames: false
-        files: '(vera/ast\.py$|vera/wasm/.*\.py$|vera/checker/.*\.py$|vera/codegen/.*\.py$|vera/smt\.py$|scripts/check_walker_coverage\.py$)'
+        # Match all Python under `vera/` plus the script itself.
+        # The script's auto-discovery globs `vera/**/*.py` for
+        # walkers carrying the `WALKER_COVERAGE:` marker, so the
+        # hook's trigger must be at least as broad — otherwise a
+        # new walker file landing outside the previously-listed
+        # subpaths (e.g. `vera/transform.py`, `vera/parser/foo.py`)
+        # would be auto-discovered by the script but edits to it
+        # wouldn't trigger the hook, replicating the registry-
+        # drift silent-skip class this PR is meant to close.
+        files: '(vera/.*\.py$|scripts/check_walker_coverage\.py$)'
 
       - id: limitations-sync
         name: limitations sync
