@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.152] - 2026-05-13
+
+### Added
+
+- **[#596](https://github.com/aallan/vera/issues/596)** — stress-test harness landing as `tests/test_stress.py` with 8 logical scale-dependent regression tests covering the bug classes the standard test suite couldn't catch.  Pre-#596 the project relied on user-reported real-world programs to surface scale-dependent codegen/runtime bugs (#570 iterative-builder shadow-stack overflow at ~4000 elements, #515 GC self-fault under sustained allocation, #593 Conway's Life corruption at 12×30+).  The harness exercises each scale axis at the smallest size where the bug class historically manifested with ~2-3x safety margin: 10K `array_map`, 5K nested-array `array_map`, 1K-deep tail recursion with allocating arg, 20×20 nested array-fold-of-array-fold (#593 territory), 100K `array_fold`, 10K String allocations through interpolation, 1K `State<Int>` get/put cycles in a single handler scope, 10K `IO.print` calls with stdout-capture buffer growth.  Each test asserts on a SPECIFIC observable (closed-form sum, exact line count, etc.), not just "completed without crashing", so a future regression that silently short-circuits or skips iterations would still fail.
+- **[#596](https://github.com/aallan/vera/issues/596) eager-GC lane** — six of the eight stress tests (the GC-rooting-targeted subset: #570 / #515 / #549 / #573 / #593 / captured-frame State handlers) are parametrised over `[False, True]` for the `eager_gc` flag.  The `True` mode sets `VERA_EAGER_GC=1` via `pytest.MonkeyPatch.setenv` before the compile call, so the runtime's `$alloc` function emits a `call $gc_collect` as its first instruction — forcing a full GC pass on every allocation.  This converts latent missing-shadow-root bugs from "fires occasionally at scale" to "fires on the very next allocation," so a regression that would normally need thousands of iterations to surface fails on the first or second iteration.  The pattern was used to diagnose #593 originally; the eager lane embeds that diagnostic capability as ongoing regression coverage.  Total test count: 8 logical × eager lane parametrisation on 6 of them = 14 test instances.  Wall-clock: 0.66s in-process for the full suite.
+- **`stress` pytest marker** registered in `pyproject.toml` with default `addopts = "-m 'not stress'"` — stress tests are skipped from the per-PR pytest run.  Local invocation: `pytest -m stress`.
+- **`.github/workflows/nightly-stress.yml`** with three triggers: (1) nightly cron at 06:00 UTC as primary safety net, (2) path-filtered PRs touching `vera/codegen/**`/`vera/wasm/**`/`tests/test_stress.py` for fail-fast on PRs likely to break stress invariants, (3) manual `workflow_dispatch` from the Actions tab.
+- **Failure reporting on cron failures** — when the nightly cron fails, the workflow uses `actions/github-script@v7` to open (or comment on, if one is already open) a tracking issue labelled `stress-regression`, with the commit SHA and run URL.  Deduplicates across days: the first failure opens a fresh issue, subsequent failures comment on it.  Skipped on `pull_request` triggers (PR's own checks tab is the reporting surface) and `workflow_dispatch` (whoever triggered is already paying attention).  Converts cron failures from "visible only to whoever opens the Actions tab" to "visible in the issue feed where Vera work is already triaged."
+
+### Documentation
+
+- New "Stress tests" subsection in `TESTING.md` documenting the harness, the 8 initial test programs with their scale axes and target bug classes, the default-skip behaviour, the three CI triggers, and the assertion-shape convention.
+
 ## [0.0.151] - 2026-05-12
 
 ### Added
@@ -2210,7 +2224,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.151...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.152...HEAD
+[0.0.152]: https://github.com/aallan/vera/compare/v0.0.151...v0.0.152
 [0.0.151]: https://github.com/aallan/vera/compare/v0.0.150...v0.0.151
 [0.0.150]: https://github.com/aallan/vera/compare/v0.0.149...v0.0.150
 [0.0.149]: https://github.com/aallan/vera/compare/v0.0.148...v0.0.149

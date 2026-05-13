@@ -296,6 +296,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.149 | 12 May | **Cyclic type aliases now produce [E132]** ([#648](https://github.com/aallan/vera/issues/648)). |
 | v0.0.150 | 12 May | **Nested type aliases through `Array<...>` compile and run** ([#559](https://github.com/aallan/vera/issues/559)). |
 | v0.0.151 | 12 May | **Walker-completeness audit with pre-commit enforcement** ([#597](https://github.com/aallan/vera/issues/597)). |
+| v0.0.152 | 13 May | **Stress-test harness for scale-dependent regression coverage** ([#596](https://github.com/aallan/vera/issues/596)). |
 
 ---
 
@@ -336,4 +337,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 151 tagged releases, 58 active development days.**
+Total: **810+ commits, 152 tagged releases, 58 active development days.**
