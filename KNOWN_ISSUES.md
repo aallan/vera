@@ -4,7 +4,7 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 ## Bugs
 
-None currently tracked.  The bug-tracker section has been empty before — see [HISTORY.md](HISTORY.md) for the bug-killing campaigns that closed each one out.
+No known bugs.
 
 ## Limitations
 
