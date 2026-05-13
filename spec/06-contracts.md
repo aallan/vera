@@ -338,7 +338,7 @@ The refinement type on the function parameter's second argument serves as the co
 
 | Tier | Scope | Solver | Timeout | Failure mode |
 |------|-------|--------|---------|--------------|
-| 1 | Z3 decidable fragment: linear integer + real arithmetic (QF_LIRA), bool, strings (Z3 `String` sort), uninterpreted sorts/functions (length, **array literals and indexing via `index_<T>` functions** — #667) | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
+| 1 | Z3 quantifier-free decidable fragment: linear integer + real arithmetic, bool, strings (Z3 `String` sort), uninterpreted sorts/functions (length, **array literals and indexing via `index_<T>` functions** — #667).  No single SMT-LIB logic name covers all of these — QF_UFLIRA is the closest standard logic (integer + real + uninterpreted functions, without strings); strings are a Z3-specific extension. | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
 | 2 | Extended: quantifiers, lemma/assert hints — [not yet implemented](https://github.com/aallan/vera/issues/427) | Z3 with hints | 10 seconds | Falls to Tier 3 |
 | 3 | Runtime | None (checks emitted as code) | N/A | Runtime trap |
 
