@@ -15455,7 +15455,14 @@ class TestWrapperHandleTagging578:
     """
 
     def test_wrap_emits_tag_or(self) -> None:
-        """Wrap site emits `i32.const 0x80000000; i32.or` before store."""
+        """Wrap site emits `i32.const 0x80000000; i32.or` adjacent.
+
+        Adjacent-sequence regex rather than loose substring: both
+        `i32.const 0x80000000` (used by the heap-ceiling guard
+        too) and `i32.or` (used by header-mark manipulation) can
+        appear elsewhere in the WAT.  Only the wrap-site emits
+        them adjacent.
+        """
         source = """\
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -15465,25 +15472,19 @@ public fn main(@Unit -> @Int)
 }
 """
         result = _compile_ok(source)
-        # The wrap site must emit `i32.const 0x80000000; i32.or`
-        # before each `i32.store offset=4` that's a wrapper-handle
-        # store.  We can't perfectly distinguish wrapper stores
-        # from other offset=4 stores by structural pattern alone,
-        # but we can require the tag-or sequence appears at least
-        # once in the WAT (it appears nowhere else in the
-        # emitter).  Without #578 the WAT contains no such
-        # sequence.
-        assert "i32.const 0x80000000" in result.wat, (
-            f"Expected wrap-site tag `i32.const 0x80000000` "
-            f"in WAT.  Without #578, wrapper handles are stored "
-            f"raw, leaking into the conservative scan."
-        )
-        assert "i32.or" in result.wat, (
-            f"Expected `i32.or` after the tag constant"
+        # `\s+` matches newlines + indentation between adjacent
+        # WAT instructions.
+        assert re.search(
+            r"i32\.const 0x80000000\s+i32\.or", result.wat,
+        ), (
+            f"Expected adjacent `i32.const 0x80000000; i32.or` "
+            f"pair (the wrap-site tag emission).  Without #578, "
+            f"the wrap site stores the raw handle and this pair "
+            f"never appears."
         )
 
     def test_unwrap_emits_mask_and(self) -> None:
-        """Unwrap site emits `i32.load offset=4; i32.const 0x7FFFFFFF; i32.and`."""
+        """Unwrap site emits adjacent load-const-and sequence."""
         source = """\
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
@@ -15493,13 +15494,20 @@ public fn main(@Unit -> @Int)
 }
 """
         result = _compile_ok(source)
-        # The unwrap helper emits these three instructions
-        # consecutively.  Look for the distinctive mask constant.
-        assert "i32.const 0x7FFFFFFF" in result.wat, (
-            f"Expected unwrap-site mask `i32.const 0x7FFFFFFF` "
-            f"in WAT.  Without #578, wrapper handles are read "
-            f"raw, so the read would see the tagged value and "
-            f"map_store lookups would fail."
+        # Pin the exact 3-instruction sequence the unwrap helper
+        # emits: load offset=4, const 0x7FFFFFFF, and.  Loose
+        # substring `0x7FFFFFFF in wat` would survive a future
+        # unrelated use of the mask constant; this won't.
+        assert re.search(
+            r"i32\.load\s+offset=4"
+            r"\s+i32\.const 0x7FFFFFFF"
+            r"\s+i32\.and",
+            result.wat,
+        ), (
+            f"Expected adjacent unwrap sequence "
+            f"`i32.load offset=4; i32.const 0x7FFFFFFF; i32.and`. "
+            f"Without #578, the unwrap reads the tagged value "
+            f"raw and `map_store` lookups would fail."
         )
 
     def test_alloc_emits_heap_ceiling_guard(self) -> None:
@@ -15511,6 +15519,13 @@ public fn main(@Unit -> @Int)
         guaranteed disjoint.  Without this guard a 3+ GB heap
         could produce real pointers in the tagged-handle range,
         reintroducing the spurious-retention bug.
+
+        Pin the EXACT 8-instruction ordered sequence — not just
+        constant presence.  `0x80000000` alone appears in the
+        wrap-site tag too; only the full
+        `global.get $heap_ptr; local.get $total; i32.add;
+         i32.const 0x80000000; i32.ge_u; if; unreachable; end`
+        sequence is unique to the guard.
         """
         source = """\
 public fn main(@Unit -> @Int)
@@ -15521,35 +15536,42 @@ public fn main(@Unit -> @Int)
 }
 """
         result = _compile_ok(source)
-        # Look for the guard sequence:
-        #   global.get $heap_ptr
-        #   local.get $total
-        #   i32.add
-        #   i32.const 0x80000000
-        #   i32.ge_u
-        #   if
-        #     unreachable
-        #   end
-        # We don't string-search the multi-line sequence (whitespace
-        # may vary); we check for the unique constant in $alloc's
-        # body.
-        alloc_start = result.wat.find("(func $alloc")
-        assert alloc_start >= 0, "$alloc function not found in WAT"
-        alloc_end = result.wat.find("(func ", alloc_start + 1)
-        if alloc_end < 0:
-            alloc_end = len(result.wat)
-        alloc_body = result.wat[alloc_start:alloc_end]
-        assert "0x80000000" in alloc_body, (
-            f"Heap-ceiling guard not found in $alloc body.  "
-            f"Without it, a >2 GB heap would let real heap "
-            f"pointers collide with the tagged-handle pattern, "
-            f"reintroducing #578."
+        # Locate $alloc via boundary-safe regex (not `find()`,
+        # which could false-match an `$alloc_xxx` symbol).
+        alloc_match = re.search(r"\(func \$alloc\b", result.wat)
+        assert alloc_match is not None, (
+            f"`$alloc` function not found in WAT"
         )
-        # The guard uses i32.ge_u; ensure the comparison is there
-        # too (defends against the constant appearing in an
-        # unrelated context).
-        assert "i32.ge_u" in alloc_body, (
-            f"Expected `i32.ge_u` comparison in $alloc body"
+        alloc_start = alloc_match.start()
+        next_fn = re.search(
+            r"\(func \$", result.wat[alloc_start + 1:],
+        )
+        alloc_end = (
+            alloc_start + 1 + next_fn.start()
+            if next_fn is not None
+            else len(result.wat)
+        )
+        alloc_body = result.wat[alloc_start:alloc_end]
+        # `re.DOTALL` so `\s+` spans newlines; `\$` escapes the
+        # WAT symbol prefix.
+        guard_match = re.search(
+            r"global\.get \$heap_ptr"
+            r"\s+local\.get \$total"
+            r"\s+i32\.add"
+            r"\s+i32\.const 0x80000000"
+            r"\s+i32\.ge_u"
+            r"\s+if"
+            r"\s+unreachable"
+            r"\s+end",
+            alloc_body,
+            re.DOTALL,
+        )
+        assert guard_match is not None, (
+            f"Heap-ceiling guard sequence not found (ordered) in "
+            f"$alloc body.  Without it, a >2 GB heap would let "
+            f"real heap pointers collide with the tagged-handle "
+            f"pattern, reintroducing #578.  $alloc body:\n"
+            f"{alloc_body[:2000]}"
         )
 
     def test_wrap_unwrap_round_trip_preserves_handle(self) -> None:
