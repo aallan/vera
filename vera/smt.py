@@ -1095,10 +1095,17 @@ class SmtContext:
             element_sort: z3.SortRef | None = None
             if base_ret.type_args:
                 element_sort = self._vera_type_to_z3_sort(base_ret.type_args[0])
-            if element_sort is not None:
-                ret_var = self.declare_array_var(fresh, element_sort)
-            else:
-                ret_var = self.declare_int(fresh)
+            if element_sort is None:
+                # Element type not representable in Z3 (e.g.
+                # `Array<FnType<...>>`).  Signal Tier 3 cleanly
+                # rather than silently type-erasing to Int — that
+                # would let the caller's postcondition translate
+                # against a wrong-typed result variable.  Pr-
+                # review-toolkit follow-up on #670 flagged this
+                # as the same silent-failure pattern #667 was
+                # written to close.
+                return None
+            ret_var = self.declare_array_var(fresh, element_sort)
         elif isinstance(base_ret, AdtType):
             adt_var = self.declare_adt(fresh, base_ret)
             ret_var = adt_var if adt_var is not None else self.declare_int(fresh)

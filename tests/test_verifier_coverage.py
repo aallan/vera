@@ -1242,44 +1242,69 @@ public fn head_wrap(@Array<MyAdt> -> @MyAdt)
         return var was Int, so `string_length(int_var)` got an
         Int-domain length function rather than the String-domain
         one, breaking the predicate's typing.
+
+        Uses an @Int arg (not @Unit) so the call's argument
+        translates cleanly — UnitLit returns None from
+        `translate_expr`, which would short-circuit the whole
+        call and mask the typing test.  Pr-review-toolkit
+        follow-up on #670 caught the UnitLit-arg masking.
         """
         result = _verify("""
-private fn make_str(@Unit -> @String)
+private fn echo_str(@Int -> @String)
   requires(true)
   ensures(string_length(@String.result) > 0)
   effects(pure)
 { "hello" }
 
-public fn use_str(@Unit -> @Int)
+public fn use_str(@Int -> @Int)
   requires(true)
   ensures(@Int.result > 0)
   effects(pure)
-{ string_length(make_str(())) }
+{ string_length(echo_str(@Int.0)) }
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], f"Expected no errors, got: {errors}"
+        # Also assert no warnings — pre-#667 a wrong-typed call
+        # result would have fallen through to E523 (Cannot verify
+        # call-site precondition) or E522 (Cannot statically
+        # verify postcondition), both of which are warnings.
+        # Checking only errors would silently accept Tier 3
+        # fallback.  Pr-review-toolkit follow-up on #670.
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        assert warnings == [], (
+            f"Expected no warnings (would indicate Tier 3 fallback "
+            f"because the call result wasn't typed correctly); got: "
+            f"{[(w.error_code, w.description[:60]) for w in warnings]}"
+        )
 
     def test_float64_return_type_typed_at_call_site(self) -> None:
         """#667 follow-up — Float64-returning calls now declare
         the result var with `declare_float64` rather than
         `declare_int`, so float comparisons in the caller's
-        postcondition translate properly.
+        postcondition translate properly.  Uses @Int arg for
+        the same reason as `test_string_return_type_typed_at_call_site`
+        — UnitLit args don't translate.
         """
         result = _verify("""
-private fn make_float(@Unit -> @Float64)
+private fn make_float(@Int -> @Float64)
   requires(true)
   ensures(@Float64.result > 1.0)
   effects(pure)
 { 1.5 }
 
-public fn use_float(@Unit -> @Bool)
+public fn use_float(@Int -> @Bool)
   requires(true)
   ensures(@Bool.result == true)
   effects(pure)
-{ make_float(()) > 0.0 }
+{ make_float(@Int.0) > 0.0 }
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], f"Expected no errors, got: {errors}"
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        assert warnings == [], (
+            f"Expected no warnings (would indicate Tier 3 fallback); "
+            f"got: {[(w.error_code, w.description[:60]) for w in warnings]}"
+        )
 
     def test_floatlit_deliberately_false_contract_reports_e500(self) -> None:
         """**Negative test** for the FloatLit translation: a
@@ -1361,24 +1386,32 @@ public fn f(@Array<Int>, @Int -> @Int)
         reason about `result[i]` predicates.  Pre-fix the
         Array<T> return fell through to `declare_adt → None →
         declare_int`, so `result[i]` translation failed at the
-        sort check (Int isn't `Array_<...>`).
+        sort check (Int isn't `Array_<...>`).  Uses @Int arg
+        so the call translates cleanly.
         """
         result = _verify("""
-private fn make_arr(@Unit -> @Array<Int>)
+private fn make_arr(@Int -> @Array<Int>)
   requires(true)
   ensures(array_length(@Array<Int>.result) > 0)
   ensures(@Array<Int>.result[0] > 0)
   effects(pure)
 { [42] }
 
-public fn use_arr(@Unit -> @Int)
+public fn use_arr(@Int -> @Int)
   requires(true)
   ensures(true)
   effects(pure)
-{ make_arr(())[0] }
+{ make_arr(@Int.0)[0] }
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert errors == [], f"Expected no errors, got: {errors}"
+        warnings = [d for d in result.diagnostics if d.severity == "warning"]
+        assert warnings == [], (
+            f"Expected no warnings (would indicate Tier 3 fallback "
+            f"because Array<T> wasn't typed correctly at the call "
+            f"site); got: "
+            f"{[(w.error_code, w.description[:60]) for w in warnings]}"
+        )
 
 
 # =====================================================================

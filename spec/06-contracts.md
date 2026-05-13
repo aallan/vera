@@ -338,8 +338,8 @@ The refinement type on the function parameter's second argument serves as the co
 
 | Tier | Scope | Solver | Timeout | Failure mode |
 |------|-------|--------|---------|--------------|
-| 1 | Decidable fragment (QF_LIA + length + bool) | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
-| 2 | Extended (function calls, quantifiers, arrays) — [not yet implemented](https://github.com/aallan/vera/issues/427) | Z3 with hints | 10 seconds | Falls to Tier 3 |
+| 1 | Decidable fragment: QF_LIA, real/float (Z3 `Real` sort), strings (Z3 `String` sort), bool, length, **array literals and indexing via uninterpreted `index_<T>` functions** (#667) | Z3 | 10 seconds | Compile error with counterexample; falls to Tier 3 on unknown or timeout |
+| 2 | Extended: quantifiers, lemma/assert hints — [not yet implemented](https://github.com/aallan/vera/issues/427) | Z3 with hints | 10 seconds | Falls to Tier 3 |
 | 3 | Runtime | None (checks emitted as code) | N/A | Runtime trap |
 
 A fully Tier 1-verified program has the strongest guarantee: if it compiles, the contracts hold for all inputs. A program with Tier 3 contracts may fail at runtime if the contracts are violated.
