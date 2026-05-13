@@ -40,6 +40,61 @@ class ConstructorLayout:
     total_size: int  # total bytes, 8-byte aligned
 
 
+def _validate_wrap_handle(
+    raw_handle: object, kind: int, body_ptr: int,
+) -> None:
+    """#578 invariant: raw_handle must fit in 31 unsigned bits.
+
+    Wrapper ADTs store ``raw_handle | 0x80000000`` at body offset 4 so
+    the in-heap field is structurally outside the conservative-scan
+    heap-range check (`heap_ptr` is hard-capped at 0x80000000 by the
+    `$alloc` heap-ceiling guard).  The unwrap site recovers the raw
+    handle with ``& 0x7FFFFFFF``.  Both directions break silently
+    outside ``[0, 0x80000000)``:
+
+    - Negative ints have bit 31 set in two's complement.
+      ``raw_handle | 0x80000000`` is a no-op and the unwrap mask
+      returns the WRONG handle.
+    - Values ``>= 0x80000000`` alias into the top half and collide
+      with the tag-bit pattern.
+    - Values ``>= 0x100000000`` truncate on ``_write_i32`` and
+      silently lose information.
+    - Non-int values would ``TypeError`` deeper in the stack;
+      catching them here makes the diagnostic actionable.
+    - ``bool`` values: Python's ``bool`` subclasses ``int``, so
+      ``isinstance(True, int)`` is ``True`` and the value would
+      pass an ``isinstance``-only check, silently aliasing to
+      handles 1 and 0.  The strict ``type(raw_handle) is int``
+      check rejects bools without accepting any int subclass.
+
+    Practical alloc counters are bounded well below 2^31 — a 2B-handle
+    session is wall-clock infeasible — but a silent round-trip
+    failure is exactly the corruption class #578 sought to eliminate.
+    Fail fast.
+
+    Module-level helper so it can be unit-tested directly without
+    standing up a wasmtime instance (``_wrap_handle`` is nested
+    inside ``execute()`` and not importable on its own).
+    """
+    # ``type(x) is int`` rather than ``isinstance(x, int)`` so we
+    # reject ``bool`` (which would otherwise pass — bool subclasses
+    # int in Python and silently aliases to handles 0 / 1).
+    if not (
+        type(raw_handle) is int
+        and 0 <= raw_handle < 0x80000000
+    ):
+        raise RuntimeError(
+            f"#578: raw_handle={raw_handle!r} (kind={kind!r}, "
+            f"body_ptr={body_ptr!r}) is outside the valid "
+            f"range [0, 0x80000000); cannot tag for the "
+            f"conservative-scan disjointness invariant.  "
+            f"Host-store handle counters must be unsigned "
+            f"31-bit integers.  Either a counter overflowed, "
+            f"a negative sentinel flowed in, or a non-integer "
+            f"value flowed into _wrap_handle."
+        )
+
+
 def _wasm_type_size(wt: str) -> int:
     """Byte size of a WASM value type."""
     if wt == "i32":
@@ -956,7 +1011,19 @@ def execute(
             raise ValueError(f"#573: unknown wrap kind {kind}")
         body_ptr = _call_alloc(caller, _WRAPPER_BODY_SIZE)
         _write_i32(caller, body_ptr, tag)
-        _write_i32(caller, body_ptr + 4, raw_handle)
+        # #578: validate raw_handle is in the unsigned-31-bit range
+        # before tagging.  See ``_validate_wrap_handle`` at module
+        # scope (extracted so unit tests can exercise the 5 failure
+        # modes without standing up a wasmtime instance).
+        _validate_wrap_handle(raw_handle, kind, body_ptr)
+        # #578: store the handle ORed with 0x80000000 so the
+        # in-heap field can't be mistaken for a heap pointer by
+        # the conservative GC scan.  Mirrors the WAT-side
+        # ``_emit_wrap_handle`` in
+        # ``vera/wasm/calls_containers.py``.  ``$register_wrapper``
+        # still gets the RAW handle — the wrap table uses it for
+        # ``host_decref_handle`` calls.
+        _write_i32(caller, body_ptr + 4, raw_handle | 0x80000000)
         _call_register_wrapper(caller, body_ptr, kind, raw_handle)
         return body_ptr
 
@@ -2743,7 +2810,16 @@ def execute(
                         _alloc_string, _alloc_map_wrapper, root,
                     )
                     return _alloc_result_ok_i32(caller, html_ptr)
-                except Exception as exc:
+                except (ValueError, TypeError, AttributeError) as exc:
+                    # Narrow catch matches `host_json_parse` above —
+                    # parser failures surface as Result.Err.  We
+                    # deliberately do NOT catch invariant violations
+                    # (e.g. the `_wrap_handle` RuntimeError from #578
+                    # for an out-of-range handle, or any AssertionError
+                    # from internal compiler bugs); those propagate
+                    # to wasmtime as traps so the diagnostic text
+                    # reaches the user instead of being repackaged
+                    # as a user-domain parse error.
                     return _alloc_result_err_string(caller, str(exc))
 
             linker.define_func(

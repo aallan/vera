@@ -154,8 +154,14 @@ def read_html(
         # wrapper-ADT pointer (see write_html).  Unwrap to the
         # raw Map handle before looking up the dict in
         # ``map_store``.
+        #
+        # #578: the in-heap handle field is tagged with bit 31
+        # (so the conservative GC scan can't mistake it for a
+        # heap pointer).  Mask with 0x7FFFFFFF to recover the
+        # raw handle.  Mirrors the WAT-side ``_emit_unwrap_handle``
+        # in ``vera/wasm/calls_containers.py``.
         wrapper_ptr = read_i32(caller, ptr + 12)
-        handle = read_i32(caller, wrapper_ptr + 4)
+        handle = read_i32(caller, wrapper_ptr + 4) & 0x7FFFFFFF
         arr_ptr = read_i32(caller, ptr + 16)
         arr_len = read_i32(caller, ptr + 20)
 

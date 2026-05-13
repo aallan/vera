@@ -199,8 +199,14 @@ def read_json(
         # ADT pointer, not a raw handle.  Wrapper layout: tag at
         # body[0], handle at body[4].  Unwrap before looking up
         # the dict in ``map_store``.
+        #
+        # #578: the in-heap handle field is tagged with bit 31
+        # (so the conservative GC scan can't mistake it for a
+        # heap pointer).  Mask with 0x7FFFFFFF to recover the
+        # raw handle.  Mirrors the WAT-side ``_emit_unwrap_handle``
+        # in ``vera/wasm/calls_containers.py``.
         wrapper_ptr = read_i32(caller, ptr + 4)
-        handle = read_i32(caller, wrapper_ptr + 4)
+        handle = read_i32(caller, wrapper_ptr + 4) & 0x7FFFFFFF
         if handle not in map_store:
             import warnings
             warnings.warn(
