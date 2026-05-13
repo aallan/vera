@@ -61,6 +61,11 @@ def _validate_wrap_handle(
       silently lose information.
     - Non-int values would ``TypeError`` deeper in the stack;
       catching them here makes the diagnostic actionable.
+    - ``bool`` values: Python's ``bool`` subclasses ``int``, so
+      ``isinstance(True, int)`` is ``True`` and the value would
+      pass an ``isinstance``-only check, silently aliasing to
+      handles 1 and 0.  The strict ``type(raw_handle) is int``
+      check rejects bools without accepting any int subclass.
 
     Practical alloc counters are bounded well below 2^31 — a 2B-handle
     session is wall-clock infeasible — but a silent round-trip
@@ -71,8 +76,11 @@ def _validate_wrap_handle(
     standing up a wasmtime instance (``_wrap_handle`` is nested
     inside ``execute()`` and not importable on its own).
     """
+    # ``type(x) is int`` rather than ``isinstance(x, int)`` so we
+    # reject ``bool`` (which would otherwise pass — bool subclasses
+    # int in Python and silently aliases to handles 0 / 1).
     if not (
-        isinstance(raw_handle, int)
+        type(raw_handle) is int
         and 0 <= raw_handle < 0x80000000
     ):
         raise RuntimeError(

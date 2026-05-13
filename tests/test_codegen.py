@@ -15528,12 +15528,16 @@ public fn main(@Unit -> @Int)
         could produce real pointers in the tagged-handle range,
         reintroducing the spurious-retention bug.
 
-        Pin the EXACT 8-instruction ordered sequence — not just
-        constant presence.  `0x80000000` alone appears in the
-        wrap-site tag too; only the full
-        `global.get $heap_ptr; local.get $total; i32.add;
-         i32.const 0x80000000; i32.ge_u; if; unreachable; end`
-        sequence is unique to the guard.
+        The guard is overflow-safe: it rejects allocations with
+        `total >= 2 GiB` first, then checks
+        `heap_ptr >= 0x80000000 - total` via SUBTRACTION.  An
+        `i32.add` form could wrap on overflow (`heap_ptr =
+        0xFFFFFFFF, total = 10` wraps to `0x09`, below the
+        ceiling, silent bypass).  Upstream `memory.grow` makes
+        the wraparound unreachable in practice but the algebraic
+        gap is real.
+
+        Pin both ordered sequences — not just constant presence.
         """
         source = """\
 public fn main(@Unit -> @Int)
@@ -15560,12 +15564,11 @@ public fn main(@Unit -> @Int)
             else len(result.wat)
         )
         alloc_body = result.wat[alloc_start:alloc_end]
-        # `re.DOTALL` so `\s+` spans newlines; `\$` escapes the
-        # WAT symbol prefix.
-        guard_match = re.search(
-            r"global\.get \$heap_ptr"
-            r"\s+local\.get \$total"
-            r"\s+i32\.add"
+        # Step 1: total < 2 GiB precheck (rejects pathologically
+        # large single allocations and prevents underflow in
+        # step 2's subtraction).
+        step1 = re.search(
+            r"local\.get \$total"
             r"\s+i32\.const 0x80000000"
             r"\s+i32\.ge_u"
             r"\s+if"
@@ -15574,11 +15577,34 @@ public fn main(@Unit -> @Int)
             alloc_body,
             re.DOTALL,
         )
-        assert guard_match is not None, (
-            f"Heap-ceiling guard sequence not found (ordered) in "
-            f"$alloc body.  Without it, a >2 GiB heap would let "
-            f"real heap pointers collide with the tagged-handle "
-            f"pattern, reintroducing #578.  $alloc body:\n"
+        assert step1 is not None, (
+            f"Heap-ceiling step 1 (total < 2 GiB precheck) not "
+            f"found in $alloc body.  Without it, step 2's "
+            f"`i32.sub` could underflow on a pathological total. "
+            f"$alloc body:\n{alloc_body[:2000]}"
+        )
+        # Step 2: heap_ptr >= 0x80000000 - total → trap.  Pinned
+        # AFTER step 1 by anchoring the search from step 1's end.
+        rest = alloc_body[step1.end():]
+        step2 = re.search(
+            r"global\.get \$heap_ptr"
+            r"\s+i32\.const 0x80000000"
+            r"\s+local\.get \$total"
+            r"\s+i32\.sub"
+            r"\s+i32\.ge_u"
+            r"\s+if"
+            r"\s+unreachable"
+            r"\s+end",
+            rest,
+            re.DOTALL,
+        )
+        assert step2 is not None, (
+            f"Heap-ceiling step 2 (overflow-safe subtraction "
+            f"check) not found after step 1 in $alloc body.  An "
+            f"`i32.add` form would be vulnerable to wraparound "
+            f"(heap_ptr=0xFFFFFFFF, total=10 wraps to 0x09, below "
+            f"the ceiling, silent bypass).  Step 2 must use "
+            f"`i32.sub` for overflow safety.  $alloc body:\n"
             f"{alloc_body[:2000]}"
         )
 
@@ -15721,7 +15747,7 @@ public fn main(@Unit -> @Unit)
     def test_validate_wrap_handle_rejects_non_int(self) -> None:
         """Non-int sentinels surface here, not deeper in the stack.
 
-        Without the isinstance check, `None` / `"5"` / etc. would
+        Without the type check, `None` / `"5"` / etc. would
         raise `TypeError` from the bitwise `&` operation in the
         old check, producing a less actionable error.
         """
@@ -15729,6 +15755,23 @@ public fn main(@Unit -> @Unit)
         for bad in (None, "5", 1.5, [1], {}):
             with pytest.raises(RuntimeError, match="#578"):
                 _validate_wrap_handle(bad, kind=1, body_ptr=0x1000)
+
+    def test_validate_wrap_handle_rejects_bool(self) -> None:
+        """bool is rejected despite Python's bool-subclasses-int rule.
+
+        `isinstance(True, int)` is `True` because `bool` is a
+        subclass of `int` in Python.  An `isinstance`-only check
+        would let `True` / `False` slip through and silently alias
+        to handles 1 and 0 respectively — exactly the silent-
+        corruption class #578 sought to eliminate.  The validator
+        uses `type(raw_handle) is int` rather than `isinstance`,
+        which rejects bool while still accepting plain int.
+        """
+        from vera.codegen.api import _validate_wrap_handle
+        with pytest.raises(RuntimeError, match="#578"):
+            _validate_wrap_handle(True, kind=1, body_ptr=0x1000)
+        with pytest.raises(RuntimeError, match="#578"):
+            _validate_wrap_handle(False, kind=1, body_ptr=0x1000)
 
 
 # =====================================================================

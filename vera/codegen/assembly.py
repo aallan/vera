@@ -699,22 +699,45 @@ class AssemblyMixin:
             "    ;; spurious-retention bug.  Programs we have measured\n"
             "    ;; stay well below the 2 GiB ceiling; this trap fires\n"
             "    ;; only when something has gone very wrong.\n"
-            # TODO (#578 follow-up): the heap-ceiling trap below
-            # surfaces via the trap classifier as the generic
+            # TODO (#578 follow-up): the heap-ceiling traps below
+            # surface via the trap classifier as the generic
             # ``unreachable`` kind with a Fix message about match
             # arms — misleading for this case.  Practical programs
-            # never hit this trap (heap << 2 GiB) so the polish is
-            # deferred; a follow-up would either populate
+            # never hit these traps (heap << 2 GiB) so the polish
+            # is deferred; a follow-up would either populate
             # ``last_violation`` via a host import or add a
             # dedicated classifier kind.  Kept as a Python comment
             # rather than a WAT comment so the emitted WAT stays
             # compact and the adjacent-sequence regex in
             # tests/test_codegen.py::TestWrapperHandleTagging578::
             # test_alloc_emits_heap_ceiling_guard stays simple.
-            "    global.get $heap_ptr\n"
+            #
+            # Two-step overflow-safe form:
+            # 1. Reject ``total >= 0x80000000`` outright (the
+            #    single allocation is larger than the ceiling).
+            # 2. Verify ``heap_ptr >= 0x80000000 - total`` via
+            #    SUBTRACTION (not addition).  The ``i32.add`` form
+            #    we used initially could wrap on overflow — e.g.
+            #    ``heap_ptr=0xFFFFFFFF, total=10`` wraps to
+            #    ``0x09``, which is ``< 0x80000000``, so the guard
+            #    would silently pass and the heap would overflow
+            #    past 2 GiB.  Upstream ``memory.grow`` makes the
+            #    wraparound unreachable in practice but the
+            #    algebraic gap is real and worth closing.  Step 1
+            #    guarantees ``0x80000000 - total`` doesn't underflow
+            #    so step 2 is well-defined.
+            "    ;; Step 1: total < 2 GiB\n"
             "    local.get $total\n"
-            "    i32.add\n"
             "    i32.const 0x80000000\n"
+            "    i32.ge_u\n"
+            "    if\n"
+            "      unreachable\n"
+            "    end\n"
+            "    ;; Step 2: heap_ptr < 0x80000000 - total\n"
+            "    global.get $heap_ptr\n"
+            "    i32.const 0x80000000\n"
+            "    local.get $total\n"
+            "    i32.sub\n"
             "    i32.ge_u\n"
             "    if\n"
             "      unreachable\n"
