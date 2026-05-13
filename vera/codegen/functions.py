@@ -407,8 +407,19 @@ class FunctionCompilationMixin:
             patched: list[str] = []
             for instr in body_instrs:
                 if instr.lstrip().startswith("return_call "):
-                    patched.append(f"local.get {gc_sp_save}")
-                    patched.append("global.set $gc_sp")
+                    # Preserve the return_call line's leading
+                    # whitespace so the inserted restore visually
+                    # nests at the same depth.  Without this, an
+                    # `if/else`-nested ``return_call`` (which carries
+                    # an inline 2-space indent from
+                    # ``operators.py``'s emission) ends up with
+                    # `local.get N` / `global.set $gc_sp` lines
+                    # rendered 2 spaces shallower in the WAT.
+                    # Functionally inert (WAT is whitespace-
+                    # insensitive) but visually misleading.
+                    prefix = instr[: len(instr) - len(instr.lstrip())]
+                    patched.append(f"{prefix}local.get {gc_sp_save}")
+                    patched.append(f"{prefix}global.set $gc_sp")
                 patched.append(instr)
             body_instrs = patched
 
