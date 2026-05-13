@@ -1779,6 +1779,16 @@ private fn sum(@List<Int> -> @Int)
           the private `option_map` workaround (#604 fix); the removed
           shadow had a `requires(true) ensures(true)` pair
           contributing 2 T1 + 2 contracts that no longer appear.
+        * 253/25/278 after v0.0.153 — #667 (SMT translator coverage
+          for FloatLit / IndexExpr / ArrayLit) widened static
+          verification: one previously-T3 example contract using a
+          float-comparison predicate now verifies T1.  The json.vera
+          example's `main` postcondition was also relaxed from the
+          overstrong `ensures(@Int.result == 0)` to `ensures(true)`
+          — the previous classification as T1 was a pre-#667 latent
+          soundness gap (FloatLit returning None masked the body's
+          semantics).  Net effect on the totals: +1 T1, -1 T3, total
+          unchanged at 278.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -1789,8 +1799,8 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 252, f"Expected 252 T1, got {t1}"
-        assert t3 == 26, f"Expected 26 T3, got {t3}"
+        assert t1 == 253, f"Expected 253 T1, got {t1}"
+        assert t3 == 25, f"Expected 25 T3, got {t3}"
         assert total == 278, f"Expected 278 total, got {total}"
 
 

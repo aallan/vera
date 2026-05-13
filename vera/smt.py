@@ -155,6 +155,10 @@ class SmtContext:
         self._length_fns: dict[str, z3.FuncDeclRef] = {
             "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
         }
+        # Uninterpreted index functions for `arr[i]` translation
+        # (#667).  Keyed by array sort name so each (Array<T>)
+        # gets its own typed signature `Array_<T> × Int → <T>`.
+        self._index_fns: dict[str, z3.FuncDeclRef] = {}
         # Callee contract verification
         self._fn_lookup = fn_lookup
         self._module_fn_lookup = module_fn_lookup
@@ -200,6 +204,57 @@ class SmtContext:
     def declare_float64(self, name: str) -> z3.ArithRef:
         """Declare a Z3 real variable (mathematical reals, approximates Float64)."""
         v = z3.Real(name)
+        self._vars[name] = v
+        return v
+
+    # -----------------------------------------------------------------
+    # Array support (#667 — IndexExpr / ArrayLit / Float64 contract
+    # predicates).  Pre-#667 `Array<T>` parameters fell through to
+    # `declare_int` and the Array-element/Index/Lit constructs in
+    # contracts returned None from `translate_expr`, dropping every
+    # affected predicate to Tier 3 (runtime check).  The model here
+    # is the same uninterpreted-function shape the existing `length`
+    # function uses: an `Array<T>` slot is a constant of a fresh
+    # `Array_<elt>` uninterpreted sort; `arr[i]` is `index_<elt>(arr,
+    # i)`.  Sound but partial — the verifier can prove relational
+    # facts ("if `i < length(arr)` and `arr[i] > 0` then ...") but
+    # not anything that requires knowing element structure (e.g.
+    # "for all valid i, arr[i] > 0").  Quantified contracts are
+    # tracked separately as part of #427 (Tier 2 verification).
+    # -----------------------------------------------------------------
+
+    def _get_array_sort(self, element_sort: z3.SortRef) -> z3.SortRef:
+        """Get-or-create an uninterpreted ``Array_<elt>`` sort
+        keyed by the element sort's string name."""
+        key = f"Array_{element_sort}"
+        if key in self._z3_sorts:
+            return self._z3_sorts[key]
+        sort = z3.DeclareSort(key)
+        self._z3_sorts[key] = sort
+        return sort
+
+    def _get_index_fn(
+        self, array_sort: z3.SortRef, element_sort: z3.SortRef,
+    ) -> z3.FuncDeclRef:
+        """Get-or-create the uninterpreted ``index_<sort>(arr, idx)
+        → elt`` function for the given (array, element) pair."""
+        key = f"index_{array_sort}"
+        if key not in self._index_fns:
+            self._index_fns[key] = z3.Function(
+                key, array_sort, z3.IntSort(), element_sort,
+            )
+        return self._index_fns[key]
+
+    def declare_array_var(
+        self, name: str, element_sort: z3.SortRef,
+    ) -> z3.ExprRef:
+        """Declare an Array-typed Z3 constant.  The constant lives
+        in the ``Array_<elt>`` uninterpreted sort created by
+        ``_get_array_sort``; this matches the rest of the SMT
+        layer's pattern of opaque carrier sorts + uninterpreted
+        observer functions (length, index)."""
+        array_sort = self._get_array_sort(element_sort)
+        v = z3.Const(name, array_sort)
         self._vars[name] = v
         return v
 
@@ -388,6 +443,7 @@ class SmtContext:
         #   IntLit            → z3.IntVal
         #   BoolLit           → z3.BoolVal
         #   StringLit         → z3.StringVal
+        #   FloatLit          → z3.RealVal (Float64 → Real sort, #667)
         #   SlotRef           → bound Z3 variable
         #   ResultRef         → @Result substitution variable
         #   BinaryExpr        → translated by op family
@@ -400,13 +456,17 @@ class SmtContext:
         #   MatchExpr         → arm dispatch
         #   ConstructorCall   → ADT constructor application
         #   NullaryConstructor → ADT nullary tag
+        #   IndexExpr         → uninterpreted `index_<sort>(arr, i)`
+        #                       function call (#667)
+        #   ArrayLit          → fresh Array constant with asserted
+        #                       length and per-element values (#667)
         #
         # Intentionally ignored (returns None → Tier 3 fallback;
         # listed in the inline comment after the dispatch chain):
         #   AnonFn            → lambdas not in contract grammar
         #   HandleExpr        → handle-effect not in contract grammar
-        #   ForallExpr        → quantifier translation deferred
-        #   ExistsExpr        → quantifier translation deferred
+        #   ForallExpr        → quantifier translation deferred (#427)
+        #   ExistsExpr        → quantifier translation deferred (#427)
         #   OldExpr           → contract operator; Tier 3 fallback
         #   NewExpr           → contract operator; Tier 3 fallback
         #   AssertExpr        → statement-like; not a predicate
@@ -417,14 +477,6 @@ class SmtContext:
         #   InterpolatedString → not in contract predicates
         #   QualifiedCall     → effects in contracts violate purity
         #   HoleExpr          → check time rejects
-        #
-        # Latent gap (filed as #667 — defensive add deferred):
-        #   FloatLit          → Z3 supports floats; contracts would
-        #                       need parser support first
-        #   ArrayLit          → SMT array theory exists; contract
-        #                       grammar would need extension
-        #   IndexExpr         → `@Array.0[0]` in contracts; same
-        #                       grammar gap as ArrayLit
         """
         if isinstance(expr, ast.IntLit):
             return z3.IntVal(expr.value)
@@ -434,6 +486,32 @@ class SmtContext:
 
         if isinstance(expr, ast.StringLit):
             return z3.StringVal(expr.value)
+
+        if isinstance(expr, ast.FloatLit):
+            # #667: Float64 maps to Z3 Real sort; literal value
+            # translates directly.  Sound for proving relational
+            # properties; not a full IEEE-754 model (intentional
+            # — real arithmetic is decidable in Z3, FP isn't).
+            return z3.RealVal(expr.value)
+
+        if isinstance(expr, ast.IndexExpr):
+            # #667: `arr[i]` translates to `index_<sort>(arr, i)`
+            # where `index_<sort>` is an uninterpreted function
+            # specific to the array's sort.  Sound — the verifier
+            # can reason that two references to `arr[i]` with the
+            # same `i` produce the same value (function congruence)
+            # — but doesn't know element structure beyond what
+            # explicit predicates assert.
+            return self._translate_index_expr(expr, env)
+
+        if isinstance(expr, ast.ArrayLit):
+            # #667: `[a, b, c]` translates to a fresh constant of
+            # the appropriate Array sort, with `length(lit) == N`
+            # and `index(lit, i) == translate(elem_i)` asserted to
+            # the solver for each known position.  Element types
+            # that can't be sorted (e.g. function-typed elements)
+            # fail the translation cleanly via None.
+            return self._translate_array_lit(expr, env)
 
         if isinstance(expr, ast.SlotRef):
             return self._translate_slot_ref(expr, env)
@@ -553,6 +631,107 @@ class SmtContext:
             return z3.Implies(left, right)
 
         return None  # pragma: no cover
+
+    def _translate_index_expr(
+        self, expr: ast.IndexExpr, env: SlotEnv,
+    ) -> z3.ExprRef | None:
+        """Translate `coll[idx]` to `index_<sort>(coll, idx)`
+        where `index_<sort>` is an uninterpreted function
+        specific to the collection's Z3 sort (#667).
+
+        Returns None when either side fails to translate, when
+        the collection's sort isn't a recognised Array sort, or
+        when the element-sort can't be inferred from the
+        collection's sort name.
+        """
+        coll = self.translate_expr(expr.collection, env)
+        idx = self.translate_expr(expr.index, env)
+        if coll is None or idx is None:
+            return None
+        coll_sort = coll.sort()
+        # Only Array_<elt> uninterpreted sorts created by
+        # `_get_array_sort` are recognised here.  Other sorts
+        # (e.g. an Int-fallback Array from a path that hasn't
+        # been migrated to `_is_array_type`) fail cleanly.
+        sort_name = str(coll_sort)
+        if not sort_name.startswith("Array_"):
+            return None
+        element_sort = self._get_element_sort_for_array(coll_sort)
+        if element_sort is None:
+            return None
+        index_fn = self._get_index_fn(coll_sort, element_sort)
+        return index_fn(coll, idx)
+
+    def _get_element_sort_for_array(
+        self, array_sort: z3.SortRef,
+    ) -> z3.SortRef | None:
+        """Reverse-lookup the element sort for an `Array_<elt>`
+        uninterpreted sort by checking the `_index_fns` registry.
+
+        Returns None if the sort hasn't been used in an `arr[i]`
+        position yet AND we can't infer the element sort from the
+        sort name string parsing.  In practice the verifier seeds
+        the index function on the first IndexExpr translation by
+        looking at the array's bound element type — but during
+        re-translation passes we may need to recover the element
+        sort from the array sort alone.  Common element sorts
+        (Int, Real, Bool, String) are pattern-matched here; ADT
+        elements would need the element type threaded through.
+        """
+        sort_name = str(array_sort)
+        # `Array_Int`, `Array_Real`, `Array_Bool`, `Array_String`
+        # → straightforward pattern match.
+        if sort_name == "Array_Int":
+            return z3.IntSort()
+        if sort_name == "Array_Real":
+            return z3.RealSort()
+        if sort_name == "Array_Bool":
+            return z3.BoolSort()
+        if sort_name == "Array_String":
+            return z3.StringSort()
+        # ADT-element arrays — the element sort lives in
+        # `_z3_sorts` under the unqualified element name.  Strip
+        # the `Array_` prefix and look up.
+        elt_key = sort_name[len("Array_"):]
+        return self._z3_sorts.get(elt_key)
+
+    def _translate_array_lit(
+        self, expr: ast.ArrayLit, env: SlotEnv,
+    ) -> z3.ExprRef | None:
+        """Translate `[a, b, c]` to a fresh Array constant with
+        `length(lit) == N` and `index(lit, i) == translate(elem_i)`
+        asserted to the solver for each position (#667).
+
+        The literal's element type is inferred from the first
+        successfully-translated element's sort; if the elements
+        translate to inconsistent sorts (shouldn't happen post-
+        typecheck, but defensive against future relaxations), the
+        first sort wins and subsequent elements that don't match
+        fail the translation.
+
+        Returns None on empty arrays (no element sort available)
+        or on element translation failure.
+        """
+        if not expr.elements:
+            return None
+        raw_elements = [self.translate_expr(e, env) for e in expr.elements]
+        if any(e is None for e in raw_elements):
+            return None
+        # Narrowed: every element translated successfully.
+        element_z3s: list[z3.ExprRef] = [e for e in raw_elements if e is not None]
+        element_sort = element_z3s[0].sort()
+        array_sort = self._get_array_sort(element_sort)
+        lit_name = self._fresh_name("array_lit")
+        lit_const = z3.Const(lit_name, array_sort)
+        self._vars[lit_name] = lit_const
+        # Length axiom: `length(lit) == N`.
+        length_fn = self._get_length_fn(array_sort)
+        self.solver.add(length_fn(lit_const) == len(expr.elements))
+        # Per-element axioms: `index(lit, i) == element_i`.
+        index_fn = self._get_index_fn(array_sort, element_sort)
+        for i, elt in enumerate(element_z3s):
+            self.solver.add(index_fn(lit_const, z3.IntVal(i)) == elt)
+        return lit_const
 
     def _translate_unary(
         self, expr: ast.UnaryExpr, env: SlotEnv

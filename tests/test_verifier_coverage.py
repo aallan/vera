@@ -662,13 +662,16 @@ class TestSmtContextDirect:
         assert result.status in ("verified", "violated", "unknown")
 
     def test_translate_expr_returns_none_for_unsupported(self) -> None:
-        """translate_expr returns None for unsupported expressions (e.g. FloatLit)."""
+        """translate_expr returns None for unsupported expressions (e.g. UnitLit)."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import FloatLit
+        from vera.ast import UnitLit
         ctx = SmtContext()
         env = SlotEnv()
-        # FloatLit has no SMT handler — translate_expr falls through to return None
-        result = ctx.translate_expr(FloatLit(value=3.14, span=None), env)
+        # UnitLit has no SMT handler — predicates are Bool, not Unit;
+        # translate_expr falls through to return None.  (Pre-#667 this
+        # test used FloatLit, but FloatLit is now Handled via
+        # `z3.RealVal`; UnitLit remains intentionally-unsupported.)
+        result = ctx.translate_expr(UnitLit(span=None), env)
         assert result is None
 
     def test_vera_type_to_z3_sort_bool(self) -> None:
@@ -1091,6 +1094,119 @@ private fn non_empty(@Array<Int> -> @Bool)
 
 
 # =====================================================================
+# #667 — SMT translator coverage for FloatLit / IndexExpr / ArrayLit
+# =====================================================================
+
+class TestSmtCoverage667:
+    """Pre-#667 these three Expr subclasses returned None from
+    ``smt.translate_expr``, dropping every affected contract to
+    Tier 3 (runtime check).  Post-#667 each translates to a Z3
+    expression and the contracts verify at Tier 1.  Each test
+    asserts BOTH that verification succeeds with no error AND
+    that the relevant predicate counted as a Tier 1 check —
+    "succeeds with no error" alone is too weak (Tier 3 also
+    produces no error)."""
+
+    def test_floatlit_in_precondition_verifies_tier1(self) -> None:
+        """`requires(@Float64.0 > 1.5)` now translates and the
+        precondition counts as Tier 1.  Pre-#667 the FloatLit
+        ``1.5`` returned None, dropping the predicate to Tier 3."""
+        result = _verify("""
+public fn f(@Float64 -> @Float64)
+  requires(@Float64.0 > 1.5)
+  ensures(true)
+  effects(pure)
+{ @Float64.0 + 1.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        # The precondition + postcondition pair should count as
+        # 2 T1.  Pre-#667 the precondition counted as T3.
+        assert result.summary.tier1_verified >= 2, (
+            f"Expected at least 2 Tier 1 checks for FloatLit "
+            f"precondition + ensures(true); got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_floatlit_in_postcondition_verifies_tier1(self) -> None:
+        """`ensures(@Float64.result > 0.0)` translates and counts
+        as Tier 1 for a function that returns a positive float."""
+        result = _verify("""
+public fn one_point_five(@Unit -> @Float64)
+  requires(true)
+  ensures(@Float64.result > 0.0)
+  effects(pure)
+{ 1.5 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert result.summary.tier1_verified >= 2, (
+            f"Expected >=2 Tier 1 checks; got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_indexexpr_in_contract_verifies_tier1(self) -> None:
+        """`requires(@Array<Int>.0[0] > 0)` now translates via
+        ``index_<sort>(arr, 0)``.  Pre-#667 the IndexExpr
+        returned None and the predicate fell to Tier 3."""
+        result = _verify("""
+public fn head_positive(@Array<Int> -> @Int)
+  requires(array_length(@Array<Int>.0) > 0)
+  requires(@Array<Int>.0[0] > 0)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ @Array<Int>.0[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        # Two requires + one ensures = 3 T1.
+        assert result.summary.tier1_verified >= 3, (
+            f"Expected >=3 Tier 1 checks for IndexExpr precondition "
+            f"+ length + postcondition; got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_arraylit_in_contract_verifies_tier1(self) -> None:
+        """`requires(array_length([1, 2, 3]) == 3)` now translates
+        — the ArrayLit produces a fresh array constant with a
+        ``length(lit) == 3`` axiom asserted to the solver, so
+        the predicate verifies at Tier 1 rather than falling to
+        Tier 3."""
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires(array_length([1, 2, 3]) == 3)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert result.summary.tier1_verified >= 2, (
+            f"Expected >=2 Tier 1 checks; got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_arraylit_element_access_in_contract_verifies_tier1(
+        self,
+    ) -> None:
+        """The ArrayLit's per-element axioms `index(lit, 0) == 1`
+        etc. let the verifier conclude `[1, 2, 3][0] == 1`."""
+        result = _verify("""
+public fn f(@Int -> @Int)
+  requires([1, 2, 3][0] == 1)
+  ensures(true)
+  effects(pure)
+{ @Int.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert result.summary.tier1_verified >= 2, (
+            f"Expected >=2 Tier 1 checks; got "
+            f"{result.summary.tier1_verified}"
+        )
+
+
+# =====================================================================
 # _type_expr_to_slot_name for RefinementType
 # =====================================================================
 
@@ -1145,14 +1261,16 @@ class TestSmtTranslateEdgeCases:
     def test_binary_with_none_operand(self) -> None:
         """Binary expr where one operand can't be translated returns None."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import BinaryExpr, BinOp, FloatLit, IntLit
+        from vera.ast import BinaryExpr, BinOp, UnitLit, IntLit
         ctx = SmtContext()
         env = SlotEnv()
-        # FloatLit has no SMT handler → translate_expr returns None for it
+        # UnitLit has no SMT handler — predicates are Bool, not Unit;
+        # translate_expr returns None for it.  (Pre-#667 this test
+        # used FloatLit, but FloatLit is now Handled.)
         expr = BinaryExpr(
             left=IntLit(value=1, span=None),
             op=BinOp.ADD,
-            right=FloatLit(value=1.5, span=None),
+            right=UnitLit(span=None),
             span=None,
         )
         result = ctx.translate_expr(expr, env)
@@ -1161,13 +1279,15 @@ class TestSmtTranslateEdgeCases:
     def test_unary_with_none_operand(self) -> None:
         """Unary expr where operand can't be translated returns None."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import UnaryExpr, UnaryOp, FloatLit
+        from vera.ast import UnaryExpr, UnaryOp, UnitLit
         ctx = SmtContext()
         env = SlotEnv()
-        # FloatLit has no SMT handler → translate_expr returns None for it
+        # UnitLit has no SMT handler — predicates are Bool, not Unit;
+        # translate_expr returns None for it.  (Pre-#667 this test
+        # used FloatLit, but FloatLit is now Handled.)
         expr = UnaryExpr(
             op=UnaryOp.NOT,
-            operand=FloatLit(value=1.5, span=None),
+            operand=UnitLit(span=None),
             span=None,
         )
         result = ctx.translate_expr(expr, env)
@@ -1176,12 +1296,14 @@ class TestSmtTranslateEdgeCases:
     def test_if_with_untranslatable_condition(self) -> None:
         """If expr with untranslatable condition returns None."""
         from vera.smt import SmtContext, SlotEnv
-        from vera.ast import IfExpr, FloatLit, IntLit
+        from vera.ast import IfExpr, UnitLit, IntLit
         ctx = SmtContext()
         env = SlotEnv()
-        # FloatLit has no SMT handler → translate_expr returns None for it
+        # UnitLit has no SMT handler — predicates are Bool, not Unit;
+        # translate_expr returns None for it.  (Pre-#667 this test
+        # used FloatLit, but FloatLit is now Handled.)
         expr = IfExpr(
-            condition=FloatLit(value=1.5, span=None),
+            condition=UnitLit(span=None),
             then_branch=IntLit(value=1, span=None),
             else_branch=IntLit(value=2, span=None),
             span=None,

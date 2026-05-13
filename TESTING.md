@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 3,877 across 32 files (~52,351 lines of test code; 3,849 passed + 14 stress, 14 skipped) |
+| **Tests** | 3,882 across 32 files (~52,483 lines of test code; 3,854 passed + 14 stress, 14 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 86 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 34, all validated through `vera check` + `vera verify` |
@@ -57,7 +57,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_parser.py` | 128 | 968 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 127 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
 | `test_checker.py` | 521 | 5,939 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, removed legacy name regression |
-| `test_verifier.py` | 145 | 2,079 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion, refined Bool/String/Float64 param sorts, **@Nat subtraction underflow obligation** (#520 — Path-A obligation discharge via requires/path-conditions/path-aware Z3 refutation, pure-literal exclusion, Int-Int and Nat-Int → Int exemptions) |
+| `test_verifier.py` | 145 | 2,089 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion, refined Bool/String/Float64 param sorts, **@Nat subtraction underflow obligation** (#520 — Path-A obligation discharge via requires/path-conditions/path-aware Z3 refutation, pure-literal exclusion, Int-Int and Nat-Int → Int exemptions) |
 | `test_codegen.py` | 1,103 | 18,239 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env, sleep, time, stderr), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, Random effect, example round-trips, GC shadow stack overflow, **WASM tail-call optimization** (#517 — `return_call` emission for tail-position calls, 50K- and 1M-iteration stress, structural assertions on `return_call`/plain `call` boundary, allocating-function fallback, postcondition-fallback regression, analyzer unit tests covering Block-trailing / IfExpr-both-branches / MatchExpr-arm-bodies / let-value-NOT-marked / call-args-NOT-marked / ExprStmt-statement-NOT-marked / IfExpr-condition-NOT-marked / MatchExpr-scrutinee-NOT-marked) |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 71 | 1,326 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
@@ -73,7 +73,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_resolver.py` | 15 | 412 | Module resolution, path lookup, parse caching, circular import detection |
 | `test_types.py` | 73 | 390 | Type operations: subtyping, effect subtyping, equality, substitution, pretty-printing, canonical names |
 | `test_wasm.py` | 24 | 346 | WASM internals: StringPool, WasmSlotEnv, translation edge cases via full pipeline |
-| `test_verifier_coverage.py` | 79 | 1,260 | Verifier/SMT coverage gaps: SMT encoding paths, verifier edge cases, defensive branches |
+| `test_verifier_coverage.py` | 84 | 1,382 | Verifier/SMT coverage gaps: SMT encoding paths, verifier edge cases, defensive branches, **#667 SMT translator coverage for `FloatLit` / `IndexExpr` / `ArrayLit`** (Tier 1 verification of float/array literal/index contract predicates) |
 | `test_wasm_coverage.py` | 226 | 3,978 | WASM coverage gaps: helpers unit tests, inference branches, closure free-var walking, operator/data/context edge cases |
 | `test_tester.py` | 14 | 369 | Contract-driven testing: tier classification, input generation, test execution, skip message content |
 | `test_tester_coverage.py` | 34 | 901 | Tester coverage gaps: String/Float64/ADT parameter input generation, Bool/Byte parameters, unsatisfiable preconditions, type expression edge cases |

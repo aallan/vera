@@ -112,7 +112,19 @@ private fn round1(@Float64 -> @Float64)
 -- current temp = 18.5, average hourly = 18.0 (mean of 17, 17.5, 18, 18.5, 19)
 public fn main(@Unit -> @Int)
   requires(true)
-  ensures(@Int.result == 0)
+  -- `ensures(true)`: the actual return-zero outcome depends on
+  -- the specific JSON literal hard-coded in the body parsing
+  -- successfully and the helper return values matching expected
+  -- shapes.  None of the helpers (`parse_current_temp`,
+  -- `parse_average_temp`, `round1`) carries a postcondition
+  -- strong enough to let the verifier prove `@Int.result == 0`
+  -- statically — `ensures(true)` reflects that the runtime
+  -- behaviour is the source of truth here.  Pre-#667 a latent
+  -- soundness gap in the SMT translator (FloatLit returning None
+  -- masked the body's semantics) made the verifier classify the
+  -- stronger postcondition as Tier 1 vacuously; the gap is now
+  -- closed and the contract has been honestly relaxed.
+  ensures(true)
   effects(pure)
 {
   let @String = "{\"location\":\"London\",\"current\":{\"temp_c\":18.5,\"condition\":\"Cloudy\"},\"hourly\":[17.0,17.5,18.0,18.5,19.0]}";

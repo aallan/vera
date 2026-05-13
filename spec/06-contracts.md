@@ -134,10 +134,14 @@ Contract predicates use the same expression syntax as Vera programs, with the fo
 
 Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 - Integer literals and slot references
+- Float64 literals (`1.5`, `-0.5`) — Z3 Real sort, sound for relational properties (added [#667](https://github.com/aallan/vera/issues/667))
+- String literals
 - Linear arithmetic (`+`, `-`, `*` with literal multiplier)
 - Comparisons (`==`, `!=`, `<`, `>`, `<=`, `>=`)
 - Boolean connectives (`&&`, `||`, `!`)
 - `array_length()` on arrays, `string_length()` on strings
+- Array index expressions (`@Array<T>.0[i]`) — uninterpreted `index_<T>(arr, i)` function; sound for relational facts but doesn't reason about element structure beyond what explicit predicates assert (added [#667](https://github.com/aallan/vera/issues/667))
+- Array literals (`[a, b, c]`) — fresh `Array_<T>` constant with `length(lit) == N` and per-element `index(lit, i) == elt_i` axioms asserted (added [#667](https://github.com/aallan/vera/issues/667))
 - Logical implication (`==>`)
 - `true`, `false`
 - The `@T.result` reference (in `ensures` only)
