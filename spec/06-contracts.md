@@ -154,7 +154,8 @@ Everything allowed in the decidable fragment (Chapter 2, Section 2.6.1):
 
 Beyond the decidable fragment, contracts may also use:
 - Quantified expressions (limited, see below) — `forall` / `exists` fall to Tier 3 today
-- Array element access (`@Array<Int>.0[@Nat.0]`)
+
+Note that array element access (`@Array<T>.0[i]`) and array literals (`[a, b, c]`) are NOT Tier 2 — both are Tier 1 with the uninterpreted-function encoding described in §6.3.1 (added [#667](https://github.com/aallan/vera/issues/667)).  Tier 2 is reserved for predicates that the decidable fragment can't decide on its own and need user-provided lemmas (#427).
 
 ### 6.3.3 Quantified Expressions
 

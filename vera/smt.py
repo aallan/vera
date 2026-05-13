@@ -22,8 +22,10 @@ from vera.types import (
     Type,
     TypeVar,
     BOOL,
+    FLOAT64,
     INT,
     NAT,
+    STRING,
 )
 
 if TYPE_CHECKING:
@@ -159,6 +161,15 @@ class SmtContext:
         # (#667).  Keyed by array sort name so each (Array<T>)
         # gets its own typed signature `Array_<T> × Int → <T>`.
         self._index_fns: dict[str, z3.FuncDeclRef] = {}
+        # Reverse map from array-sort-name → element sort, populated
+        # whenever an Array_<T> sort is created.  Avoids fragile
+        # string-parsing recovery (#667 follow-up): for ADT element
+        # types, the Z3 sort name has `<`/`>` stripped (via the
+        # transformation in `_get_or_create_adt_sort`) so a naive
+        # `str(elt_sort)` round-trip doesn't recover the canonical
+        # `_adt_sort_key` form used by `_z3_sorts`.  Storing the
+        # element sort at creation time is the durable fix.
+        self._array_element_sorts: dict[str, z3.SortRef] = {}
         # Callee contract verification
         self._fn_lookup = fn_lookup
         self._module_fn_lookup = module_fn_lookup
@@ -225,12 +236,21 @@ class SmtContext:
 
     def _get_array_sort(self, element_sort: z3.SortRef) -> z3.SortRef:
         """Get-or-create an uninterpreted ``Array_<elt>`` sort
-        keyed by the element sort's string name."""
+        keyed by the element sort's string name.
+
+        Also populates ``_array_element_sorts`` with the
+        element-sort association, so the reverse lookup in
+        ``_get_element_sort_for_array`` can recover the element
+        sort by direct map lookup rather than by parsing the
+        Z3 sort name string."""
         key = f"Array_{element_sort}"
         if key in self._z3_sorts:
             return self._z3_sorts[key]
         sort = z3.DeclareSort(key)
         self._z3_sorts[key] = sort
+        # Record the (array-sort-name → element-sort) association
+        # for `_get_element_sort_for_array`'s reverse lookup.
+        self._array_element_sorts[str(sort)] = element_sort
         return sort
 
     def _get_index_fn(
@@ -666,21 +686,37 @@ class SmtContext:
         self, array_sort: z3.SortRef,
     ) -> z3.SortRef | None:
         """Reverse-lookup the element sort for an `Array_<elt>`
-        uninterpreted sort by checking the `_index_fns` registry.
+        uninterpreted sort.
 
-        Returns None if the sort hasn't been used in an `arr[i]`
-        position yet AND we can't infer the element sort from the
-        sort name string parsing.  In practice the verifier seeds
-        the index function on the first IndexExpr translation by
-        looking at the array's bound element type — but during
-        re-translation passes we may need to recover the element
-        sort from the array sort alone.  Common element sorts
-        (Int, Real, Bool, String) are pattern-matched here; ADT
-        elements would need the element type threaded through.
+        Three-tier lookup, in order of robustness:
+
+        1. **`_array_element_sorts` direct map**: populated whenever
+           `_get_array_sort` creates a new Array_<T> sort.  Works
+           for every element type — primitive, ADT (incl. nested
+           generic), and any future shape — because the
+           association is recorded at creation time rather than
+           reverse-engineered from the sort name string.
+
+        2. **Primitive pattern match**: covers `Array_Int`,
+           `Array_Real`, `Array_Bool`, `Array_String` for callers
+           that obtain an array sort via a path that hasn't
+           populated `_array_element_sorts` (defensive — every
+           code path today populates it, but the fallback shields
+           against future regressions).
+
+        3. **`_z3_sorts` direct key lookup**: tries the
+           canonical-key form (`<elt>`), the angle-bracketed
+           generic form (`Array<<elt>>` is wrong; we mean the ADT
+           form like `List<Int>`), and the raw key as last-ditch
+           ADT-sort recovery.  Mostly redundant given (1) but kept
+           as defence-in-depth.
         """
         sort_name = str(array_sort)
-        # `Array_Int`, `Array_Real`, `Array_Bool`, `Array_String`
-        # → straightforward pattern match.
+        # 1. Direct map (populated at sort-creation time).
+        mapped = self._array_element_sorts.get(sort_name)
+        if mapped is not None:
+            return mapped
+        # 2. Primitive pattern match.
         if sort_name == "Array_Int":
             return z3.IntSort()
         if sort_name == "Array_Real":
@@ -689,11 +725,20 @@ class SmtContext:
             return z3.BoolSort()
         if sort_name == "Array_String":
             return z3.StringSort()
-        # ADT-element arrays — the element sort lives in
-        # `_z3_sorts` under the unqualified element name.  Strip
-        # the `Array_` prefix and look up.
+        # 3. ADT-element fallback — try the stripped name, then a
+        # few canonical key shapes.  `_z3_sorts` uses
+        # `_adt_sort_key(name, type_args)` which produces
+        # `"List<Int>"`-style keys with angle brackets; the Z3
+        # sort name has those stripped via the transformation in
+        # `_get_or_create_adt_sort`, so direct round-trip isn't
+        # always possible — these candidates catch the common
+        # generic-ADT shapes.
         elt_key = sort_name[len("Array_"):]
-        return self._z3_sorts.get(elt_key)
+        for candidate in (elt_key, elt_key.replace("_", "<", 1) + ">"):
+            sort = self._z3_sorts.get(candidate)
+            if sort is not None:
+                return sort
+        return None
 
     def _translate_array_lit(
         self, expr: ast.ArrayLit, env: SlotEnv,
@@ -1016,10 +1061,32 @@ class SmtContext:
         ret_type = callee_info.return_type
         base_ret = ret_type.base if isinstance(ret_type, RefinedType) else ret_type
         fresh = self._fresh_name(callee_name)
+        # Mirror the parameter-declaration dispatch in
+        # `vera/verifier.py::_verify_decl`: each Vera type gets a
+        # typed Z3 variable.  Pre-#667 follow-up this branch only
+        # handled NAT / BOOL / AdtType, falling back to
+        # `declare_int` for String / Float64 / Array — so callers
+        # couldn't reason about helper return values of those
+        # types in postconditions.
         if base_ret == NAT:
             ret_var = self.declare_nat(fresh)
         elif base_ret == BOOL:
             ret_var = self.declare_bool(fresh)
+        elif base_ret == STRING:
+            ret_var = self.declare_string(fresh)
+        elif base_ret == FLOAT64:
+            ret_var = self.declare_float64(fresh)
+        elif isinstance(base_ret, AdtType) and base_ret.name == "Array":
+            # Array<T> return type — declare with a proper Array
+            # sort so `result[i]` predicates on the call site can
+            # reason about the result via `index_<T>`.
+            element_sort: z3.SortRef | None = None
+            if base_ret.type_args:
+                element_sort = self._vera_type_to_z3_sort(base_ret.type_args[0])
+            if element_sort is not None:
+                ret_var = self.declare_array_var(fresh, element_sort)
+            else:
+                ret_var = self.declare_int(fresh)
         elif isinstance(base_ret, AdtType):
             adt_var = self.declare_adt(fresh, base_ret)
             ret_var = adt_var if adt_var is not None else self.declare_int(fresh)

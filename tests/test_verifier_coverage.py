@@ -1205,6 +1205,107 @@ public fn f(@Int -> @Int)
             f"{result.summary.tier1_verified}"
         )
 
+    def test_adt_element_array_indexing_verifies_tier1(self) -> None:
+        """#667 follow-up — `Array<MyAdt>` indexing in contracts
+        recovers the element sort from `_array_element_sorts`
+        (the direct map populated at sort-creation time).  Pre-
+        follow-up `_get_element_sort_for_array` parsed the Z3
+        sort name (e.g. `Array_MyAdt`) and looked up in
+        `_z3_sorts` under the unqualified key — that worked for
+        nullary ADTs by coincidence (no `<...>` to strip), but
+        was fragile for generic ADTs like `List<Int>` whose
+        canonical key is `List<Int>` but the Z3 sort name is
+        `List_Int`.  The direct map sidesteps the round-trip.
+        """
+        result = _verify("""
+private data MyAdt { Wrap(Int) }
+
+public fn head_wrap(@Array<MyAdt> -> @MyAdt)
+  requires(array_length(@Array<MyAdt>.0) > 0)
+  ensures(true)
+  effects(pure)
+{ @Array<MyAdt>.0[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+        assert result.summary.tier1_verified >= 2, (
+            f"Expected >=2 Tier 1 checks; got "
+            f"{result.summary.tier1_verified}"
+        )
+
+    def test_string_return_type_typed_at_call_site(self) -> None:
+        """#667 follow-up — `_translate_call_with_info` now
+        declares String-returning calls with a String Z3 var
+        rather than falling back to Int.  Pin: the caller's
+        postcondition `string_length(result) > 0` translates and
+        the predicate counts as Tier 1.  Pre-fix the call's
+        return var was Int, so `string_length(int_var)` got an
+        Int-domain length function rather than the String-domain
+        one, breaking the predicate's typing.
+        """
+        result = _verify("""
+private fn make_str(@Unit -> @String)
+  requires(true)
+  ensures(string_length(@String.result) > 0)
+  effects(pure)
+{ "hello" }
+
+public fn use_str(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result > 0)
+  effects(pure)
+{ string_length(make_str(())) }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+
+    def test_float64_return_type_typed_at_call_site(self) -> None:
+        """#667 follow-up — Float64-returning calls now declare
+        the result var with `declare_float64` rather than
+        `declare_int`, so float comparisons in the caller's
+        postcondition translate properly.
+        """
+        result = _verify("""
+private fn make_float(@Unit -> @Float64)
+  requires(true)
+  ensures(@Float64.result > 1.0)
+  effects(pure)
+{ 1.5 }
+
+public fn use_float(@Unit -> @Bool)
+  requires(true)
+  ensures(@Bool.result == true)
+  effects(pure)
+{ make_float(()) > 0.0 }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+
+    def test_array_return_type_typed_at_call_site(self) -> None:
+        """#667 follow-up — Array<T>-returning calls declare the
+        result var with `declare_array_var` so the caller can
+        reason about `result[i]` predicates.  Pre-fix the
+        Array<T> return fell through to `declare_adt → None →
+        declare_int`, so `result[i]` translation failed at the
+        sort check (Int isn't `Array_<...>`).
+        """
+        result = _verify("""
+private fn make_arr(@Unit -> @Array<Int>)
+  requires(true)
+  ensures(array_length(@Array<Int>.result) > 0)
+  ensures(@Array<Int>.result[0] > 0)
+  effects(pure)
+{ [42] }
+
+public fn use_arr(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ make_arr(())[0] }
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == [], f"Expected no errors, got: {errors}"
+
 
 # =====================================================================
 # _type_expr_to_slot_name for RefinementType
