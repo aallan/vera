@@ -44,7 +44,7 @@ class FunctionTestResult:
     """Test result for a single function."""
 
     fn_name: str
-    category: str  # "verified" | "tested" | "skipped"
+    category: str  # "verified" | "tested" | "failed" | "skipped"
     reason: str
     trials_run: int
     trials_passed: int
@@ -59,7 +59,7 @@ class TestSummary:
     verified: int = 0  # Tier 1 (proved)
     tested: int = 0  # Tier 3 exercised
     passed: int = 0  # tested + all trials OK
-    failed: int = 0  # tested + at least one trial failed
+    failed: int = 0  # verifier-refuted or tested + at least one trial failed
     skipped: int = 0  # can't generate inputs
     total_trials: int = 0
     total_passes: int = 0
@@ -189,6 +189,9 @@ class _TestEngine:
 
         # 2. Filter to target functions
         targets = self._get_targets(classification)
+        verifier_errors = [
+            d for d in verify_result.diagnostics if d.severity == "error"
+        ]
 
         # 3. Compile (needed for execution)
         compile_result = codegen_compile(
@@ -204,7 +207,7 @@ class _TestEngine:
 
         summary = TestSummary()
         results: list[FunctionTestResult] = []
-        diagnostics: list[Diagnostic] = []
+        diagnostics: list[Diagnostic] = verifier_errors
 
         for fn_name, category, reason, decl in targets:
             if category == "verified":
@@ -212,6 +215,19 @@ class _TestEngine:
                 results.append(FunctionTestResult(
                     fn_name=fn_name,
                     category="verified",
+                    reason=reason,
+                    trials_run=0,
+                    trials_passed=0,
+                    trials_failed=0,
+                    failures=[],
+                ))
+                continue
+
+            if category == "failed":
+                summary.failed += 1
+                results.append(FunctionTestResult(
+                    fn_name=fn_name,
+                    category="failed",
                     reason=reason,
                     trials_run=0,
                     trials_passed=0,
@@ -398,15 +414,21 @@ def _classify_functions(
 
     Returns {name: (category, reason, decl)}.
     """
-    # Collect function names mentioned in Tier 3 warnings
+    # Collect function names mentioned in verifier diagnostics.
     tier3_fns: set[str] = set()
     tier3_codes = {"E520", "E521", "E522", "E523", "E524", "E525"}
+    failed_fns: dict[str, str] = {}
+    verification_error_codes = {"E500", "E501", "E502"}
     for diag in verify_diagnostics:
         if diag.severity == "warning" and diag.error_code in tier3_codes:
             # Extract fn name from description: '...'
             m = re.search(r"'(\w+)'", diag.description)
             if m:
                 tier3_fns.add(m.group(1))
+        elif diag.severity == "error" and diag.error_code in verification_error_codes:
+            name = _failed_function_name(diag)
+            if name:
+                failed_fns[name] = diag.error_code or "verification error"
 
     result: dict[str, tuple[str, str, ast.FnDecl]] = {}
 
@@ -429,6 +451,13 @@ def _classify_functions(
         has_unsupported = any(
             base_type(pt) not in _Z3_SUPPORTED for pt in param_types
         )
+
+        # Verifier-refuted contracts fail before any verified/tier3/skipped result.
+        if decl.name in failed_fns:
+            result[decl.name] = (
+                "failed", f"verification error ({failed_fns[decl.name]})", decl,
+            )
+            continue
 
         # Unit-only params (no real params to test)
         if all(base_type(pt) == UNIT for pt in param_types):
@@ -474,6 +503,28 @@ def _classify_functions(
         result[decl.name] = ("verified", "Tier 1 (proved)", decl)
 
     return result
+
+
+def _failed_function_name(diag: Diagnostic) -> str | None:
+    """Extract the function responsible for a verifier error diagnostic."""
+    if diag.error_code == "E501":
+        # E501 text mentions both callee and caller:
+        # "Call to 'callee' in function 'caller' may violate...".
+        m = re.search(r"in function '(\w+)'", diag.description)
+        if m:
+            return m.group(1)
+
+    # E500: "Postcondition does not hold in function 'fn'."
+    m = re.search(r"in function '(\w+)'", diag.description)
+    if m:
+        return m.group(1)
+
+    # E502: "@Nat subtraction in 'fn' may underflow."
+    m = re.search(r"in '(\w+)'", diag.description)
+    if m:
+        return m.group(1)
+
+    return None
 
 
 def _has_nontrivial_contracts(decl: ast.FnDecl) -> bool:

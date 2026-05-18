@@ -1376,6 +1376,200 @@ class TestCmdTest:
         assert "functions" in data
         assert "summary" in data
 
+    def test_json_verifier_error_is_failed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--json must not report verifier-refuted contracts as verified."""
+        path = Path(_bad_vera(tmp_path, """\
+public fn double(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.0)
+  effects(pure)
+{
+  @Int.0 + @Int.0 + 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  double(21)
+}
+"""))
+        rc = cmd_test(str(path), as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert data["summary"]["failed"] == 1
+        double = next(f for f in data["functions"] if f["name"] == "double")
+        assert double["category"] == "failed"
+        assert double["reason"] == "verification error (E500)"
+        assert any(d["error_code"] == "E500" for d in data["diagnostics"])
+
+    def test_human_verifier_error_is_failed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Human output must also fail when verifier diagnostics contain errors."""
+        path = Path(_bad_vera(tmp_path, """\
+public fn double(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.0)
+  effects(pure)
+{
+  @Int.0 + @Int.0 + 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  double(21)
+}
+"""))
+        rc = cmd_test(str(path))
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "FAILED" in out
+        assert "verification error (E500)" in out
+        assert "Results: 1 failed" in out
+
+    def test_private_verifier_error_is_reported(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Private verifier failures must not disappear from vera test."""
+        path = Path(_bad_vera(tmp_path, """\
+private fn bad(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.0)
+  effects(pure)
+{
+  @Int.0 + @Int.0 + 1
+}
+
+public fn expose(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  bad(@Int.0)
+}
+"""))
+        rc = cmd_test(str(path), as_json=True)
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert any(d["error_code"] == "E500" for d in data["diagnostics"])
+
+        rc = cmd_test(str(path))
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Diagnostics:" in out
+        assert "E500" in out
+        assert "1 verifier error" in out
+
+    def test_fn_filter_surfaces_unselected_verifier_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """--fn still fails closed when the whole-file verifier reports errors."""
+        path = Path(_bad_vera(tmp_path, """\
+public fn broken(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.0)
+  effects(pure)
+{
+  @Int.0 + @Int.0 + 1
+}
+
+public fn identity(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+"""))
+        rc = cmd_test(str(path), as_json=True, fn_name="identity")
+        assert rc == 1
+        data = json.loads(capsys.readouterr().out)
+        assert data["ok"] is False
+        assert data["summary"]["failed"] == 0
+        assert any(d["error_code"] == "E500" for d in data["diagnostics"])
+        assert [f["name"] for f in data["functions"]] == ["identity"]
+        assert data["functions"][0]["category"] == "verified"
+
+    def test_mixed_static_failure_and_tier3_summary(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Static failures are summarized separately from Tier 3 runtime trials."""
+        path = Path(_bad_vera(tmp_path, """\
+public fn broken(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.0)
+  effects(pure)
+{
+  @Int.0 + @Int.0 + 1
+}
+
+public fn tier3_ok(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  decreases(0)
+  effects(pure)
+{
+  @Nat.0
+}
+"""))
+        rc = cmd_test(str(path), trials=5)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Results: 1 tested (1 passed), 1 failed" in out
+        assert "Trials:" in out
+        assert "0 failed" in out
+
+    def test_tier3_runtime_failures_are_not_verifier_errors(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """E700 runtime contract failures are not summarized as verifier errors."""
+        path = Path(_bad_vera(tmp_path, """\
+public fn tricky(@Int -> @Int)
+  requires(true)
+  ensures(exists(@Int, 1, fn(@Int -> @Bool) effects(pure) { false }))
+  effects(pure)
+{
+  @Int.0
+}
+"""))
+        rc = cmd_test(str(path), trials=3)
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Results: 1 tested (0 passed, 1 failed)" in out
+        assert "verifier error" not in out
+        assert "E700" in out
+
+    def test_displayed_failed_function_does_not_double_count_verifier_errors(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Multiple verifier diagnostics on a displayed failed function are not extra errors."""
+        path = Path(_bad_vera(tmp_path, """\
+public fn multi(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(false)
+  ensures(@Nat.result == @Nat.0)
+  effects(pure)
+{
+  @Nat.1 - @Nat.0
+}
+"""))
+        rc = cmd_test(str(path))
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Results: 1 failed" in out
+        assert "verifier error" not in out
+        assert "E502" in out
+        assert "E500" in out
+
     def test_trials_flag(self, capsys: pytest.CaptureFixture[str]) -> None:
         """--trials should limit trial count."""
         rc = cmd_test(SAFE_DIVIDE, trials=5)
@@ -1427,6 +1621,34 @@ class TestCmdTestMain:
         assert result.returncode == 0
         data = json.loads(result.stdout)
         assert data["ok"] is True
+
+    def test_dispatch_test_json_verifier_error_nonzero(self, tmp_path: Path) -> None:
+        prog = tmp_path / "wrong_double.vera"
+        prog.write_text("""\
+public fn double(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.0)
+  effects(pure)
+{
+  @Int.0 + @Int.0 + 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  double(21)
+}
+""", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "test", "--json", str(prog)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 1
+        data = json.loads(result.stdout)
+        assert data["ok"] is False
+        assert data["summary"]["failed"] == 1
 
     def test_dispatch_test_trials(self) -> None:
         result = subprocess.run(
