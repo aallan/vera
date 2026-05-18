@@ -1303,9 +1303,21 @@ class ContractVerifier:
                 "does not satisfy its ensures() contract for all valid inputs."
             ),
             fix=(
-                "Either strengthen the precondition (add a requires() clause "
-                "that excludes the counterexample inputs) or weaken the "
-                "postcondition to match the actual function behaviour."
+                # #675: name all three repair classes without
+                # implying any one is the "correct" answer.  The
+                # verifier knows the implementation and the
+                # contract disagree; it does not know which one
+                # the programmer intended.  In practice fixing
+                # the implementation is the most common repair
+                # (especially when E500 catches a typo in the
+                # body) so it comes first.
+                "Resolve the mismatch between the function body "
+                "and its contract: fix the implementation so it "
+                "satisfies this ensures() clause, strengthen "
+                "requires(...) if the counterexample is outside "
+                "the intended input domain, or weaken/change "
+                "ensures(...) if the postcondition overstates "
+                "the intended guarantee."
             ),
             spec_ref='Chapter 6, Section 6.4.1 "Verification Conditions"',
             error_code="E500",

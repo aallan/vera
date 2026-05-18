@@ -232,7 +232,22 @@ At each call site, the compiler generates two VCs:
 
 This means the verifier is modular: each function is verified independently, assuming its callees satisfy their contracts.
 
-### 6.4.3 SMT Solver Integration
+### 6.4.3 Primitive Operation Safety
+
+The verifier checks the contracts the programmer wrote.  Latent obligations on primitive operations whose well-definedness depends on operand values — `a / b` (Int / Nat), `a % b` (Int / Nat), `arr[i]`, `string_at(s, i)`, etc. — are **not auto-synthesised** by the reference compiler.  A function that performs `@Int.1 / @Int.0` with `requires(true)` will verify cleanly and trap at runtime if called with a zero divisor.
+
+To get a static guarantee on a primitive operation, the programmer must either:
+
+- encode the constraint in the function's precondition (`requires(@Int.0 != 0)`), or
+- type the operand with a refinement type (`{ @Int | @Int.0 != 0 }`)
+
+When either form is present, the verifier discharges the obligation at every call site as a normal precondition check (§6.4.2).
+
+Exception: `@Nat` subtraction is the one primitive operation with an auto-synthesised obligation today.  The verifier emits an E502 obligation `lhs >= rhs` at every `@Nat - @Nat` site (see [#520](https://github.com/aallan/vera/issues/520)).  The codegen mirrors that with a runtime guard.  Generalising this pattern to other primitives is the long-term plan — tracked in [#680](https://github.com/aallan/vera/issues/680), and depends on the Tier 2 verification work in [#427](https://github.com/aallan/vera/issues/427) because some primitives (e.g. array indexing where the index involves a function call) require reasoning beyond the current Tier 1 decidable fragment.
+
+Runtime traps for unguarded primitives are Vera-native: each trap carries a kind label (`divide_by_zero`, `out_of_bounds`, etc.), a per-kind Fix paragraph naming the precondition that would have prevented it, and a source backtrace — so a missing static guarantee is still a recoverable signal.
+
+### 6.4.4 SMT Solver Integration
 
 VCs are translated to SMT-LIB format and solved by Z3:
 
@@ -240,7 +255,7 @@ VCs are translated to SMT-LIB format and solved by Z3:
 2. **Tier 2 VCs** (with hints, not yet implemented — [#427](https://github.com/aallan/vera/issues/427)): the compiler provides additional axioms from `assert` statements and lemma functions. Z3 has a timeout of 10 seconds. Currently, contracts requiring hints fall to Tier 3.
 3. **Tier 3 fallback**: if Z3 returns `unknown` or times out, the VC is compiled as a runtime check.
 
-### 6.4.4 Counterexample Reporting
+### 6.4.5 Counterexample Reporting
 
 When Z3 finds a counterexample (a VC is invalid), the compiler reports the specific input values that violate the contract:
 

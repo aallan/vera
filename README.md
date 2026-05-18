@@ -35,7 +35,7 @@ Three examples that show what makes Vera different. For the full tour — contra
 
 ### Contracts the compiler proves
 
-Division by zero is not a runtime error — it is a type error. The compiler checks every call site to prove the divisor is non-zero.
+A precondition like `requires(@Int.1 != 0)` becomes a static obligation: the SMT solver proves it holds at every call site, or refuses to compile.  A program that calls `safe_divide` with a divisor the verifier can't prove non-zero is a compile error, not a runtime error.
 
 ```vera
 public fn safe_divide(@Int, @Int -> @Int)
@@ -46,6 +46,8 @@ public fn safe_divide(@Int, @Int -> @Int)
   @Int.0 / @Int.1
 }
 ```
+
+The verifier checks the contracts the programmer wrote.  A function that performs `@Int.1 / @Int.0` without a guarding precondition will type-check, verify, and trap at runtime if called with a zero divisor — with a Vera-native diagnostic explaining how to add the missing precondition.  Automatically synthesising obligations for primitive operations is the principled long-term move and tracked in [#680](https://github.com/aallan/vera/issues/680).
 
 ### Effects are explicit
 
