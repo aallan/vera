@@ -4,7 +4,9 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 ## Bugs
 
-No known bugs.
+| Bug | Issue |
+|-----|-------|
+| `vera test` reports functions as `VERIFIED (Tier 1)` when the verifier has refuted them with an `E500` counterexample.  The classifier only harvests `severity == "warning"` Tier 3 codes (`E520`–`E525`); `severity == "error"` codes (`E500`, `E501`, `E502`) flow past untouched and the function falls through to the default `"verified"` branch.  Reproducer: a function with `requires(@Nat.0 < 1000) ensures(@Nat.result == @Nat.0 * 2)` and body `@Nat.0 + @Nat.0 + 1` is flagged by `vera verify` (E500 with counterexample `@Nat.0 = 0`) but reported as `VERIFIED (Tier 1)` with exit code 0 by `vera test`.  Workaround: run `vera verify` before trusting `vera test` results.  Severity: correctness, unsafe direction. | [#681](https://github.com/aallan/vera/issues/681) |
 
 ## Limitations
 

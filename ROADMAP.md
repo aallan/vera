@@ -164,6 +164,8 @@ Addressed alongside feature work, not milestone-gated.  Prioritised by impact.
 | Replace line-numbered allowlists with inline HTML-comment fence annotations | [#538](https://github.com/aallan/vera/issues/538) | 4–6 hours | Removes `fix_allowlists.py` entirely — the recurring source of silent-duplicate-key bugs and the line-shift tax on every doc PR. One-shot migration script + check-script rewrite |
 | Add `lychee` + `markdownlint-cli2` MD051 for cross-doc anchor validation | [#540](https://github.com/aallan/vera/issues/540) | 30–60 min | Catches broken `file.md#anchor` references across the 30+ markdown files; today these break silently when headings are renamed |
 | Canonicalize WAT output formatting via single-pass formatter | [#672](https://github.com/aallan/vera/issues/672) | 4–8 hours | Replaces ~14 inline indent-stamping sites in `vera/wasm/` + `vera/codegen/` with one structural pass that walks s-expression and control-flow depth.  Removes the implicit-by-convention class of bugs where any new emission site that doesn't know about the leading-whitespace stamping produces visually-misaligned WAT (surfaced by #549's GC-aware TCO post-process).  Compiler analogue of `vera fmt` for Vera source — WAT is the compiler's primary debuggable output and deserves the same canonical-form discipline |
+| Enforce diagnostic-tagging discipline via pre-commit hook + backfill | [#682](https://github.com/aallan/vera/issues/682) | 3–4 days, splittable | §0.5.1 says every diagnostic MUST include description, rationale, fix, and spec_ref.  Live count at v0.0.155: 22/98 `_error`/`_warning` sites fully tagged (22%); 75 missing `fix=`.  E140 (operator type mismatch) is the canonical leak — produces three of four fields but no `Fix:`.  Two passes: pre-commit hook enforces going forward, mechanical backfill PR populates the 76 partial sites.  Same template as #597 walker-completeness enforcement. |
+| Spec EBNF / Lark grammar nominal rule-name alignment | [#683](https://github.com/aallan/vera/issues/683) | Half a day | `assert_stmt` / `assert_expr` and `module_call` / `qualified_call` use inconsistent names across `spec/10-grammar.md` and `vera/grammar.lark`.  Scope is limited to the genuine nominal drift; expression-precedence ladders (spec) vs inline alternation (Lark) are a deliberate notational difference and out of scope.  Add `scripts/check_grammar_alignment.py` to enforce going forward. |
 
 
 ### Verification depth
@@ -171,6 +173,7 @@ Addressed alongside feature work, not milestone-gated.  Prioritised by impact.
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
 | Tier 2 verification — Z3 with hints from `assert` and lemma functions | [#427](https://github.com/aallan/vera/issues/427) | 2–4 days | Promotes function-call and quantifier contracts from runtime to statically proved; completes the three-tier pipeline specified in §6.3.2 |
+| Auto-inject obligations for primitive operations (division, modulo, array index) | [#680](https://github.com/aallan/vera/issues/680) | Open-ended (1–2 days per primitive; 1–2 weeks for the full sweep) | Generalises the #520 Nat-subtraction obligation-discharge pattern to division by zero, modulo by zero, array indexing, string indexing.  Aligns the implementation with the README's "compiler proves primitive safety" claim (currently softened by the 2026-05-18 docs PR pending this work).  Depends on the Tier 2 work in #427 because some primitives (e.g. array index involving a function call) require reasoning beyond the current Tier 1 fragment. |
 | Lift effect handler bodies out of Tier 3 | [#439](https://github.com/aallan/vera/issues/439) | 1–2 days | Handler bodies currently always fall to runtime even when their contracts are statically decidable; removes a false negative in Tier 1 coverage |
 | Generalize `@Nat` invariant check to all binding sites (let / arg / match-bind) | [#552](https://github.com/aallan/vera/issues/552) | 1–2 days | The `@Nat >= 0` invariant is currently checked only at function return positions.  Narrowing from `@Int` into a `@Nat`-typed let binding or argument silently propagates negative values through subsequent expressions.  Generalises the obligation-discharge infrastructure to every binding site. |
 
@@ -184,6 +187,7 @@ Addressed alongside feature work, not milestone-gated.  Prioritised by impact.
 
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
+| Chapter 8 (modules) conformance programs | [#679](https://github.com/aallan/vera/issues/679) | 1 day | Conformance suite has 86 programs across chapters 1, 2, 3, 4, 5, 6, 7, 9, 10.  No `ch08_*.vera` — only gap.  Codegen layer is well-covered (23 tests in `test_codegen_modules.py`); what's missing is the program-per-feature mapping with `spec_ref`.  8 small programs, one per spec section. |
 
 ---
 

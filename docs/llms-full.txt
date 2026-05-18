@@ -2575,6 +2575,17 @@ This layer does cover actual correctness properties, not just interface compatib
 So: provably correct relative to stated requirements, yes. Provably correct relative to unstated intent, no — but the auditable surface is deliberately as small as possible. The human reviews contracts, not implementations.
 
 
+## Does the compiler prove division-by-zero, out-of-bounds indexing, etc. can't happen?
+
+It proves whatever the programmer wrote.  A function that declares `requires(@Int.1 != 0)` and then performs `@Int.0 / @Int.1` is statically proven non-trapping at every call site — the SMT solver discharges the precondition wherever the function is called.  A function that declares `requires(true)` and performs `@Int.1 / @Int.0` will compile, verify cleanly, and trap at runtime if called with a zero divisor.  The verifier does not currently synthesise the latent obligation `@Int.0 != 0` on the user's behalf.
+
+The same pattern applies to `%` (modulo) by zero, array indexing past the end, and any other primitive operation whose well-definedness depends on operand values.  The way to get a static guarantee today is to encode the constraint in the function's precondition (`requires(...)`) or in a refinement type (`{ @Int | @Int.0 != 0 }`).  When you do, the verifier propagates the obligation to every call site.
+
+Runtime traps when a missing precondition fires are Vera-native: each trap carries a kind label (`divide_by_zero`, `out_of_bounds`, etc.), a per-kind `Fix:` paragraph naming the precondition that would have prevented it, and a source backtrace pointing at the offending line.  So a missing static guarantee is still a recoverable signal — the diagnostic tells you exactly what `requires(...)` to add.
+
+Auto-injecting these obligations is the principled long-term move and is tracked in [#680](https://github.com/aallan/vera/issues/680).  It belongs alongside the Tier 2 verification work ([#427](https://github.com/aallan/vera/issues/427)) because the discharge often requires reasoning beyond the current Tier 1 decidable fragment (e.g. array indexing where the index involves a function call).
+
+
 ## How can we verify if the written code is safe and follows compliance?
 
 Every function in Vera must declare what it requires, what it guarantees, and what side effects it performs. The compiler proves the implementation satisfies those contracts via Z3 — it either verifies statically or gives you a counterexample. So a compliance reviewer can audit the contracts (which are small and declarative) without reading the implementation, and the compiler proves the code matches them.
