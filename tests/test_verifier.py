@@ -356,7 +356,22 @@ private fn bad(@Int -> @Int)
         assert "@Int.0" in desc or "Counterexample" in desc
 
     def test_violation_has_fix_suggestion(self) -> None:
-        """Error diagnostic includes a fix suggestion."""
+        """E500 fix names ALL THREE repair classes (#675).
+
+        Pre-#675 the fix text named only two repair classes
+        (strengthen `requires(...)`, weaken `ensures(...)`),
+        implicitly biasing the user away from the most common
+        repair: fixing the implementation to satisfy the
+        existing contract.  When E500 catches a typo in the
+        function body, "fix the implementation" is what the
+        user actually wants to do.
+
+        Post-#675 the fix text lists all three repair classes
+        neutrally: fix the implementation, strengthen the
+        precondition, or weaken the postcondition.  This test
+        pins all three so a regression that drops one would
+        fail.
+        """
         result = _verify("""
 private fn bad(@Int -> @Int)
   requires(true)
@@ -366,8 +381,23 @@ private fn bad(@Int -> @Int)
 """)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert len(errors) >= 1
-        assert errors[0].fix != ""
-        assert "precondition" in errors[0].fix.lower() or "postcondition" in errors[0].fix.lower()
+        fix = errors[0].fix
+        assert fix != ""
+        fix_lower = fix.lower()
+        # #675: all three repair classes must be named.
+        assert "implementation" in fix_lower, (
+            f"E500 fix should mention fixing the implementation "
+            f"(the most common repair when E500 catches a typo "
+            f"in the function body). Got: {fix!r}"
+        )
+        assert "requires" in fix_lower, (
+            f"E500 fix should mention strengthening "
+            f"requires(...). Got: {fix!r}"
+        )
+        assert "ensures" in fix_lower or "postcondition" in fix_lower, (
+            f"E500 fix should mention weakening/changing "
+            f"ensures(...). Got: {fix!r}"
+        )
 
     def test_violation_has_spec_ref(self) -> None:
         """Error diagnostic includes a spec reference."""

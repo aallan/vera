@@ -4,7 +4,9 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 ## Bugs
 
-No known bugs.
+| Bug | Issue |
+|-----|-------|
+| `vera test` reports functions as `VERIFIED (Tier 1)` when the verifier has refuted them with an `E500` counterexample.  The classifier only harvests `severity == "warning"` Tier 3 codes (`E520`–`E525`); `severity == "error"` codes (`E500`, `E501`, `E502`) flow past untouched and the function falls through to the default `"verified"` branch.  Reproducer: a function with `requires(true) ensures(@Int.result == @Int.0 + @Int.0)` and body `@Int.0 + @Int.0 + 1` is flagged by `vera verify` (E500 with counterexample `@Int.0 = 0`) but reported as `VERIFIED (Tier 1)` with exit code 0 by `vera test --json`.  This is a problem for CI: downstream tooling consuming `test --json` would silently accept a contract-incorrect program even though `verify --json` correctly rejects it.  Workaround: run `vera verify` before trusting `vera test` results.  Severity: correctness, unsafe direction. | [#674](https://github.com/aallan/vera/issues/674) |
 
 ## Limitations
 

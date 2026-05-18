@@ -91,7 +91,7 @@ jobs:
       # be wrong while a maintainer is mid-debug.
       - name: Open or update tracking issue on cron failure
         if: failure() && github.event_name == 'schedule'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           COMMIT_SHA: ${{ github.sha }}
