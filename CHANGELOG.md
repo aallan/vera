@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **[#675](https://github.com/aallan/vera/issues/675)** — E500 (`Postcondition does not hold`) `fix=` text now names all three repair classes neutrally, with implementation-repair first.  Pre-fix the text named only two classes (strengthen `requires(...)`, weaken `ensures(...)`) — implicitly biasing the user away from the most common repair when E500 catches a typo in the function body.  External report from @rzyns.  Tightened `tests/test_verifier.py::TestCounterexamples::test_violation_has_fix_suggestion` to pin all three classes (pre-existing assertion would have survived the rewrite without catching a regression dropping "implementation").
+
+### Documentation
+
+- **Docs sweep addressing 2026-05-18 compiler-review findings** ([PR #684](https://github.com/aallan/vera/pull/684)) —
+  - `README.md` "Contracts the compiler proves" section reworded — the previous unqualified claim ("Division by zero is not a runtime error — it is a type error.  The compiler checks every call site to prove the divisor is non-zero.") overclaimed; the verifier checks contracts the programmer wrote, not auto-synthesised obligations on primitives.  New wording correctly describes static-vs-runtime split with forward reference to [#680](https://github.com/aallan/vera/issues/680) (auto-injection follow-up).
+  - `FAQ.md` — new Q&A "Does the compiler prove division-by-zero, out-of-bounds indexing, etc. can't happen?" walking through the static/runtime split.
+  - `spec/06-contracts.md` — new §6.4.3 "Primitive Operation Safety" between Call Site Verification and SMT Solver Integration.  Subsequent sections renumbered.  States explicitly that obligations on `a / b`, `a % b`, `arr[i]`, `string_at(s, i)` are not auto-synthesised; `@Nat` subtraction ([#520](https://github.com/aallan/vera/issues/520)) is the one exception today.
+  - `KNOWN_ISSUES.md` — Bugs section restored with [#674](https://github.com/aallan/vera/issues/674) (`vera test --json` reports refuted functions as `verified` — external report from @rzyns; I filed a duplicate as #681 which is closed in favour of #674).
+  - `ROADMAP.md` — four new tracking items: [#679](https://github.com/aallan/vera/issues/679) (Ch 8 conformance gap), [#680](https://github.com/aallan/vera/issues/680) (auto-inject primitive obligations, cross-referenced from #427), [#682](https://github.com/aallan/vera/issues/682) (diagnostic-tagging discipline), [#683](https://github.com/aallan/vera/issues/683) (spec/Lark grammar nominal drift).
+
 ## [0.0.155] - 2026-05-13
 
 ### Fixed
