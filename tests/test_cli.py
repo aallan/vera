@@ -1502,9 +1502,59 @@ public fn identity(@Int -> @Int)
         data = json.loads(capsys.readouterr().out)
         assert data["ok"] is False
         assert data["summary"]["failed"] == 0
+        # `broken` is filtered out of the displayed list but its
+        # verifier error still surfaces here.  Pinning the
+        # structured field (rather than re-running attribution
+        # in the test) keeps the test aligned with how downstream
+        # CI consumers should read the JSON.
+        assert data["summary"]["unlisted_errors"] == 1
         assert any(d["error_code"] == "E500" for d in data["diagnostics"])
         assert [f["name"] for f in data["functions"]] == ["identity"]
         assert data["functions"][0]["category"] == "verified"
+
+    def test_fn_filter_surfaces_unselected_verifier_error_text(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Text-output sibling of test_fn_filter_surfaces_unselected_verifier_error.
+
+        Pins the same fail-closed invariant against the human output
+        path: the displayed function list stays filtered to
+        ``identity`` (per ``--fn``), but the whole-file verifier
+        error on ``broken`` must still appear in the Diagnostics
+        section, drive the exit code to 1, and surface as an
+        unlisted verifier error in the summary (since ``broken``
+        isn't in the displayed list).
+        """
+        path = Path(_bad_vera(tmp_path, """\
+public fn broken(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.0)
+  effects(pure)
+{
+  @Int.0 + @Int.0 + 1
+}
+
+public fn identity(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0)
+  effects(pure)
+{
+  @Int.0
+}
+"""))
+        rc = cmd_test(str(path), fn_name="identity")
+        assert rc == 1
+        out = capsys.readouterr().out
+        # Only the selected function appears in the displayed list.
+        assert "identity" in out
+        assert "VERIFIED (Tier 1)" in out
+        assert "broken" not in out.split("Diagnostics:")[0]
+        # Diagnostics section surfaces the unselected E500.
+        assert "Diagnostics:" in out
+        assert "E500" in out
+        # Summary names the unlisted verifier error so the user
+        # sees that the exit-code-1 isn't from the displayed function.
+        assert "verifier error" in out
 
     def test_mixed_static_failure_and_tier3_summary(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str],

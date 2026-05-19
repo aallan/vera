@@ -64,6 +64,14 @@ class TestSummary:
     total_trials: int = 0
     total_passes: int = 0
     total_failures: int = 0
+    # Verifier errors whose target function isn't in ``functions``
+    # (e.g. when ``--fn`` filters to a subset, or for private
+    # functions excluded from the displayed list).  Without this
+    # field a CLI consumer would have to re-run the regex
+    # attribution itself to spot fail-closed cases; exposing it as
+    # structured data on the summary keeps ``vera.tester``'s public
+    # API surface small and ``vera/cli.py`` purely presentational.
+    unlisted_errors: int = 0
 
 
 @dataclass
@@ -89,9 +97,11 @@ _NEEDS_RAW = {STRING, FLOAT64}
 
 # Verifier-error codes that cause a function to be classified as
 # ``"failed"`` rather than ``"verified"`` / ``"tier3"`` / ``"skipped"``.
-# Exported (no underscore) because ``vera/cli.py`` also uses this set
-# in its summary-line de-duplication logic.
-VERIFICATION_ERROR_CODES = frozenset({"E500", "E501", "E502"})
+# Private — ``vera/cli.py`` no longer needs this set directly; the
+# engine attributes errors to functions internally and exposes the
+# count of unattributable / filtered-out errors as
+# ``TestSummary.unlisted_errors``.
+_VERIFICATION_ERROR_CODES = frozenset({"E500", "E501", "E502"})
 
 
 def _unsupported_type_names(param_types: list[Type]) -> list[str]:
@@ -371,6 +381,22 @@ class _TestEngine:
                 failures=failures,
             ))
 
+        # Count verifier errors whose target function isn't in the
+        # displayed ``results`` list — happens when ``--fn`` filters
+        # to a subset, or when a private helper fails verification
+        # (private functions aren't displayed).  Exposing this as
+        # structured data on the summary saves CLI consumers from
+        # re-running the regex attribution.
+        displayed_failed = {
+            f.fn_name for f in results if f.category == "failed"
+        }
+        summary.unlisted_errors = sum(
+            1 for d in diagnostics
+            if d.severity == "error"
+            and d.error_code in _VERIFICATION_ERROR_CODES
+            and _failed_function_name(d) not in displayed_failed
+        )
+
         return TestResult(
             functions=results,
             summary=summary,
@@ -432,9 +458,9 @@ def _classify_functions(
                 tier3_fns.add(m.group(1))
         elif (
             diag.severity == "error"
-            and diag.error_code in VERIFICATION_ERROR_CODES
+            and diag.error_code in _VERIFICATION_ERROR_CODES
         ):
-            name = failed_function_name(diag)
+            name = _failed_function_name(diag)
             # First-hit wins: if a single function attracts multiple
             # verifier errors (e.g. ``ensures(false)`` produces E500
             # AND `@Nat - @Nat` produces E502 on the same body), the
@@ -519,14 +545,16 @@ def _classify_functions(
     return result
 
 
-def failed_function_name(diag: Diagnostic) -> str | None:
+def _failed_function_name(diag: Diagnostic) -> str | None:
     """Extract the function responsible for a verifier error diagnostic.
 
-    Public (no underscore) because ``vera/cli.py`` calls it from its
-    summary-line de-duplication logic.  Returns ``None`` when the
-    diagnostic's description doesn't include an attributable function
-    name (defensive — the verifier always emits these in the expected
-    shape, but the regex match is checked).
+    Private — used internally by ``_classify_functions`` and by the
+    engine's ``unlisted_errors`` computation.  ``vera/cli.py`` reads
+    the resulting structured count via ``TestSummary.unlisted_errors``
+    rather than calling this helper directly.  Returns ``None`` when
+    the diagnostic's description doesn't include an attributable
+    function name (defensive — the verifier always emits these in
+    the expected shape, but the regex match is checked).
     """
     if diag.error_code == "E501":
         # E501 text mentions both callee and caller:
