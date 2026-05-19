@@ -44,7 +44,7 @@ class FunctionTestResult:
     """Test result for a single function."""
 
     fn_name: str
-    category: str  # "verified" | "tested" | "skipped"
+    category: str  # "verified" | "tested" | "failed" | "skipped"
     reason: str
     trials_run: int
     trials_passed: int
@@ -59,11 +59,19 @@ class TestSummary:
     verified: int = 0  # Tier 1 (proved)
     tested: int = 0  # Tier 3 exercised
     passed: int = 0  # tested + all trials OK
-    failed: int = 0  # tested + at least one trial failed
+    failed: int = 0  # verifier-refuted or tested + at least one trial failed
     skipped: int = 0  # can't generate inputs
     total_trials: int = 0
     total_passes: int = 0
     total_failures: int = 0
+    # Verifier errors whose target function isn't in ``functions``
+    # (e.g. when ``--fn`` filters to a subset, or for private
+    # functions excluded from the displayed list).  Without this
+    # field a CLI consumer would have to re-run the regex
+    # attribution itself to spot fail-closed cases; exposing it as
+    # structured data on the summary keeps ``vera.tester``'s public
+    # API surface small and ``vera/cli.py`` purely presentational.
+    unlisted_errors: int = 0
 
 
 @dataclass
@@ -86,6 +94,14 @@ _Z3_SUPPORTED = {INT, NAT, BOOL, BYTE, STRING, FLOAT64}
 
 # Types that require the raw_args calling convention (String uses i32_pair ABI)
 _NEEDS_RAW = {STRING, FLOAT64}
+
+# Verifier-error codes that cause a function to be classified as
+# ``"failed"`` rather than ``"verified"`` / ``"tier3"`` / ``"skipped"``.
+# Private — ``vera/cli.py`` no longer needs this set directly; the
+# engine attributes errors to functions internally and exposes the
+# count of unattributable / filtered-out errors as
+# ``TestSummary.unlisted_errors``.
+_VERIFICATION_ERROR_CODES = frozenset({"E500", "E501", "E502"})
 
 
 def _unsupported_type_names(param_types: list[Type]) -> list[str]:
@@ -189,6 +205,9 @@ class _TestEngine:
 
         # 2. Filter to target functions
         targets = self._get_targets(classification)
+        verifier_errors = [
+            d for d in verify_result.diagnostics if d.severity == "error"
+        ]
 
         # 3. Compile (needed for execution)
         compile_result = codegen_compile(
@@ -204,7 +223,7 @@ class _TestEngine:
 
         summary = TestSummary()
         results: list[FunctionTestResult] = []
-        diagnostics: list[Diagnostic] = []
+        diagnostics: list[Diagnostic] = verifier_errors
 
         for fn_name, category, reason, decl in targets:
             if category == "verified":
@@ -212,6 +231,19 @@ class _TestEngine:
                 results.append(FunctionTestResult(
                     fn_name=fn_name,
                     category="verified",
+                    reason=reason,
+                    trials_run=0,
+                    trials_passed=0,
+                    trials_failed=0,
+                    failures=[],
+                ))
+                continue
+
+            if category == "failed":
+                summary.failed += 1
+                results.append(FunctionTestResult(
+                    fn_name=fn_name,
+                    category="failed",
                     reason=reason,
                     trials_run=0,
                     trials_passed=0,
@@ -349,6 +381,22 @@ class _TestEngine:
                 failures=failures,
             ))
 
+        # Count verifier errors whose target function isn't in the
+        # displayed ``results`` list — happens when ``--fn`` filters
+        # to a subset, or when a private helper fails verification
+        # (private functions aren't displayed).  Exposing this as
+        # structured data on the summary saves CLI consumers from
+        # re-running the regex attribution.
+        displayed_failed = {
+            f.fn_name for f in results if f.category == "failed"
+        }
+        summary.unlisted_errors = sum(
+            1 for d in diagnostics
+            if d.severity == "error"
+            and d.error_code in _VERIFICATION_ERROR_CODES
+            and _failed_function_name(d) not in displayed_failed
+        )
+
         return TestResult(
             functions=results,
             summary=summary,
@@ -398,15 +446,29 @@ def _classify_functions(
 
     Returns {name: (category, reason, decl)}.
     """
-    # Collect function names mentioned in Tier 3 warnings
+    # Collect function names mentioned in verifier diagnostics.
     tier3_fns: set[str] = set()
     tier3_codes = {"E520", "E521", "E522", "E523", "E524", "E525"}
+    failed_fns: dict[str, str] = {}
     for diag in verify_diagnostics:
         if diag.severity == "warning" and diag.error_code in tier3_codes:
             # Extract fn name from description: '...'
             m = re.search(r"'(\w+)'", diag.description)
             if m:
                 tier3_fns.add(m.group(1))
+        elif (
+            diag.severity == "error"
+            and diag.error_code in _VERIFICATION_ERROR_CODES
+        ):
+            name = _failed_function_name(diag)
+            # First-hit wins: if a single function attracts multiple
+            # verifier errors (e.g. ``ensures(false)`` produces E500
+            # AND `@Nat - @Nat` produces E502 on the same body), the
+            # displayed ``reason`` would otherwise depend on
+            # diagnostic iteration order.  ``setdefault`` pins it to
+            # whichever diagnostic the verifier emitted first.
+            if name and name not in failed_fns:
+                failed_fns[name] = diag.error_code or "verification error"
 
     result: dict[str, tuple[str, str, ast.FnDecl]] = {}
 
@@ -429,6 +491,13 @@ def _classify_functions(
         has_unsupported = any(
             base_type(pt) not in _Z3_SUPPORTED for pt in param_types
         )
+
+        # Verifier-refuted contracts fail before any verified/tier3/skipped result.
+        if decl.name in failed_fns:
+            result[decl.name] = (
+                "failed", f"verification error ({failed_fns[decl.name]})", decl,
+            )
+            continue
 
         # Unit-only params (no real params to test)
         if all(base_type(pt) == UNIT for pt in param_types):
@@ -474,6 +543,37 @@ def _classify_functions(
         result[decl.name] = ("verified", "Tier 1 (proved)", decl)
 
     return result
+
+
+def _failed_function_name(diag: Diagnostic) -> str | None:
+    """Extract the function responsible for a verifier error diagnostic.
+
+    Private — used internally by ``_classify_functions`` and by the
+    engine's ``unlisted_errors`` computation.  ``vera/cli.py`` reads
+    the resulting structured count via ``TestSummary.unlisted_errors``
+    rather than calling this helper directly.  Returns ``None`` when
+    the diagnostic's description doesn't include an attributable
+    function name (defensive — the verifier always emits these in
+    the expected shape, but the regex match is checked).
+    """
+    if diag.error_code == "E501":
+        # E501 text mentions both callee and caller:
+        # "Call to 'callee' in function 'caller' may violate...".
+        m = re.search(r"in function '(\w+)'", diag.description)
+        if m:
+            return m.group(1)
+
+    # E500: "Postcondition does not hold in function 'fn'."
+    m = re.search(r"in function '(\w+)'", diag.description)
+    if m:
+        return m.group(1)
+
+    # E502: "@Nat subtraction in 'fn' may underflow."
+    m = re.search(r"in '(\w+)'", diag.description)
+    if m:
+        return m.group(1)
+
+    return None
 
 
 def _has_nontrivial_contracts(decl: ast.FnDecl) -> bool:

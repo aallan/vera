@@ -926,12 +926,12 @@ def cmd_test(
             resolved_modules=resolved,
         )
 
+        has_errors = any(d.severity == "error" for d in result.diagnostics)
+
         if as_json:
             s = result.summary
             result_dict = {
-                "ok": s.failed == 0 and not any(
-                    d.severity == "error" for d in result.diagnostics
-                ),
+                "ok": s.failed == 0 and not has_errors,
                 "file": path,
                 "functions": [
                     {
@@ -961,11 +961,12 @@ def cmd_test(
                     "total_trials": s.total_trials,
                     "total_passes": s.total_passes,
                     "total_failures": s.total_failures,
+                    "unlisted_errors": s.unlisted_errors,
                 },
                 "diagnostics": [d.to_dict() for d in result.diagnostics],
             }
             print(json.dumps(result_dict, indent=2))
-            return 1 if s.failed > 0 else 0
+            return 1 if s.failed > 0 or has_errors else 0
 
         # Human-readable output
         print(f"\nTesting: {path}\n")
@@ -988,6 +989,11 @@ def cmd_test(
                     f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
                     f"VERIFIED (Tier 1)"
                 )
+            elif f.category == "failed":
+                line = (
+                    f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
+                    f"FAILED  ({f.reason})"
+                )
             else:
                 line = (
                     f"  {f.fn_name} {'.' * max(1, 40 - len(f.fn_name))} "
@@ -1003,13 +1009,33 @@ def cmd_test(
                     )
                     print(f"    {args_str} -> {trial.message}")
 
+        if result.diagnostics:
+            print("\nDiagnostics:")
+            for d in result.diagnostics:
+                code = f"{d.error_code}: " if d.error_code else ""
+                first_line = d.description.splitlines()[0]
+                print(f"  {code}{first_line}")
+
         # Summary
         s = result.summary
+        static_failed = sum(1 for f in result.functions if f.category == "failed")
+        tested_failed = sum(
+            1 for f in result.functions
+            if f.category == "tested" and f.trials_failed > 0
+        )
+        unlisted_errors = s.unlisted_errors
         parts = []
         if s.tested > 0:
             parts.append(
                 f"{s.tested} tested ({s.passed} passed"
-                + (f", {s.failed} failed)" if s.failed else ")")
+                + (f", {tested_failed} failed)" if tested_failed else ")")
+            )
+        if static_failed > 0:
+            parts.append(f"{static_failed} failed")
+        if unlisted_errors > 0:
+            parts.append(
+                f"{unlisted_errors} verifier "
+                f"error{'s' if unlisted_errors != 1 else ''}"
             )
         if s.verified > 0:
             parts.append(f"{s.verified} verified")
@@ -1025,7 +1051,7 @@ def cmd_test(
                 f"{s.total_failures} failed"
             )
 
-        return 1 if s.failed > 0 else 0
+        return 1 if s.failed > 0 or has_errors else 0
 
     except FileNotFoundError:
         if as_json:

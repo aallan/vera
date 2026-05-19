@@ -315,10 +315,12 @@ public fn double_pos(@PosInt -> @Int)
 """
         path = _write_vera(tmp_path, source)
         rc = cmd_test(path, trials=10)
-        assert rc == 0
+        assert rc == 1
         out = capsys.readouterr().out
-        # Should be tested or verified (refinement narrows input)
+        # Verifier errors are now classified as failed, not silently verified.
         assert "Testing:" in out
+        assert "FAILED" in out
+        assert "verification error (E500)" in out
 
 
 # =====================================================================

@@ -41,6 +41,82 @@ def _fn_result(result: TestResult, name: str) -> FunctionTestResult:
 class TestTier1:
     """Functions whose contracts are fully proved should be reported as verified."""
 
+    def test_verifier_error_is_failed_not_verified(self) -> None:
+        """A verifier-refuted postcondition must not be classified as Tier 1."""
+        source = """\
+public fn double(@Int -> @Int)
+  requires(true)
+  ensures(@Int.result == @Int.0 + @Int.0)
+  effects(pure)
+{
+  @Int.0 + @Int.0 + 1
+}
+
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 42)
+  effects(pure)
+{
+  double(21)
+}
+"""
+        result = _test(source)
+        f = _fn_result(result, "double")
+        assert f.category == "failed"
+        assert f.reason == "verification error (E500)"
+        assert result.summary.failed == 1
+        assert any(d.error_code == "E500" for d in result.diagnostics)
+
+    def test_call_precondition_error_fails_caller_not_callee(self) -> None:
+        """E501 is a failed caller obligation, not a callee failure."""
+        source = """\
+public fn needs_pos(@Int -> @Int)
+  requires(@Int.0 > 0)
+  ensures(true)
+  effects(pure)
+{
+  @Int.0
+}
+
+public fn caller(@Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  needs_pos(@Int.0)
+}
+"""
+        result = _test(source)
+        needs_pos = _fn_result(result, "needs_pos")
+        caller = _fn_result(result, "caller")
+        # Positive assertion (vs the weaker `!= "failed"`) so we pin
+        # that the callee is correctly proven, not just that it
+        # avoided the failed bucket — `"skipped"` or any other
+        # category would also be a regression here.
+        assert needs_pos.category == "verified"
+        assert caller.category == "failed"
+        assert caller.reason == "verification error (E501)"
+        assert result.summary.failed == 1
+        assert any(d.error_code == "E501" for d in result.diagnostics)
+
+    def test_nat_underflow_error_is_failed(self) -> None:
+        """E502 Nat underflow obligations are classified as failed."""
+        source = """\
+public fn subtract(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.1 - @Nat.0
+}
+"""
+        result = _test(source)
+        f = _fn_result(result, "subtract")
+        assert f.category == "failed"
+        assert f.reason == "verification error (E502)"
+        assert result.summary.failed == 1
+        assert any(d.error_code == "E502" for d in result.diagnostics)
+
     def test_simple_verified(self) -> None:
         """An absolute_value-like function with provable contracts."""
         source = """\
@@ -107,10 +183,8 @@ public fn identity(@Nat -> @Nat)
         assert result.summary.tested == 1
         assert result.summary.passed == 1
 
-    def test_tier3_failing(self) -> None:
-        """A function whose contract is violated for some inputs."""
-        # This function claims result >= 0, but for negative inputs
-        # it returns the input itself (which is negative).
+    def test_verifier_error_takes_precedence_over_tier3_testing(self) -> None:
+        """A verifier error is reported as failed before runtime testing."""
         source = """\
 public fn buggy(@Int -> @Int)
   requires(true)
@@ -123,9 +197,11 @@ public fn buggy(@Int -> @Int)
 """
         result = _test(source, trials=20)
         f = _fn_result(result, "buggy")
-        assert f.category == "tested"
-        assert f.trials_failed > 0
+        assert f.category == "failed"
+        assert f.reason == "verification error (E500)"
+        assert f.trials_run == 0
         assert result.summary.failed == 1
+        assert any(d.error_code == "E500" for d in result.diagnostics)
 
 
 # =====================================================================
