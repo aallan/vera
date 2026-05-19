@@ -1784,7 +1784,8 @@ public fn main(@Unit -> @Unit)
             input="X",
         )
         assert result.returncode == 0
-        assert "got: X" in result.stdout
+        assert result.stdout.rstrip() == "got: X"
+        assert result.stderr == ""
 
     def test_run_io_read_char_eof(self, tmp_path: Path) -> None:
         """Empty stdin produces Err("EOF") rather than blocking.
@@ -1810,7 +1811,8 @@ public fn main(@Unit -> @Unit)
             input="",
         )
         assert result.returncode == 0
-        assert "EOF" in result.stdout
+        assert result.stdout.rstrip() == "EOF"
+        assert result.stderr == ""
 
     def test_run_io_read_char_utf8(self, tmp_path: Path) -> None:
         """Multi-byte UTF-8 sequences read as a single char, not a byte.
@@ -1837,7 +1839,8 @@ public fn main(@Unit -> @Unit)
             input="é",  # 2-byte UTF-8 sequence
         )
         assert result.returncode == 0
-        assert "é" in result.stdout
+        assert result.stdout.rstrip() == "é"
+        assert result.stderr == ""
 
 
 # =====================================================================

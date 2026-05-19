@@ -5,7 +5,8 @@
 -- entry, EOF / interrupt handling).  Contract verification (Tier 1)
 -- proves the signature and effect row are wired up correctly; the
 -- run-level behaviour is exercised by unit tests in
--- tests/test_codegen.py and by example programs.
+-- tests/test_cli.py (TestIOOperations.test_run_io_read_char_*) and
+-- by tests/test_codegen.py (TestIOOperations.test_io_read_char_*).
 public fn main(@Unit -> @Unit)
   requires(true)
   ensures(true)

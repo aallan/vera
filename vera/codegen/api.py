@@ -1363,18 +1363,22 @@ def execute(
     # Failure modes returned as Err:
     #   - EOF (Ctrl-D on Unix, Ctrl-Z on Windows, end of piped input,
     #     empty stdin_buf): Err("EOF")
-    #   - termios call fails (no TTY where expected, system error):
-    #     Err("<exception text>")
+    #   - termios / msvcrt call fails (no TTY where expected, system
+    #     error, restore failed): Err("<exception text>")
     #
-    # KeyboardInterrupt during read_char is NOT caught here — it
-    # propagates as a BaseException so the user's Ctrl-C does what
-    # they expect (terminate the program).  host_sleep takes the
-    # same stance for the same reason; the alternative (catch and
-    # return Err) would prevent the user from ever exiting an
-    # interactive prompt.
+    # KeyboardInterrupt handling: each blocking call (read(1),
+    # getwch()) catches KeyboardInterrupt and converts it to
+    # `_VeraExit(130)`, which propagates through wasmtime's
+    # trampoline via the existing IO.exit mechanism — same fix
+    # `host_sleep` applies for the same reason (#589-class
+    # WasmTrapError contract violation when KeyboardInterrupt
+    # escapes a host import as a raw Python traceback).  The user
+    # still sees Ctrl-C terminate the program cleanly (exit code
+    # 130, the conventional 128 + SIGINT-2 value).
     def host_read_char(caller: wasmtime.Caller) -> int:
         # Test fixture wins first — execute(stdin="x") feeds chars
-        # in order without touching real stdin / raw mode.
+        # in order without touching real stdin / raw mode.  Uses
+        # StringIO so KeyboardInterrupt is not possible here.
         if stdin_buf is not None:
             ch = stdin_buf.read(1)
             if not ch:
@@ -1387,11 +1391,10 @@ def execute(
         # errors (closed stdin, monkey-patched stream without a
         # fileno, termios.error on weird devices) become Result.Err
         # rather than propagating as wasmtime traps.  `Exception`
-        # excludes `KeyboardInterrupt` and `SystemExit` — those are
-        # direct `BaseException` subclasses — so Ctrl-C still
-        # terminates interactive prompts (same stance as
-        # host_sleep).
-        import os
+        # excludes `KeyboardInterrupt` and `SystemExit` (direct
+        # `BaseException` subclasses), so the dedicated
+        # `except KeyboardInterrupt` clauses at each blocking call
+        # below remain reachable.
         try:
             fd = sys.stdin.fileno()
         except Exception as exc:
@@ -1410,6 +1413,8 @@ def execute(
         if not os.isatty(fd):
             try:
                 ch = sys.stdin.read(1)
+            except KeyboardInterrupt:
+                raise _VeraExit(130) from None
             except Exception as exc:
                 return _alloc_result_err_string(
                     caller, f"stdin.read failed: {exc}",
@@ -1430,18 +1435,18 @@ def execute(
                 )
             try:
                 ch = msvcrt.getwch()  # type: ignore[attr-defined]
+            except KeyboardInterrupt:  # pragma: no cover — Windows-only
+                raise _VeraExit(130) from None
             except Exception as exc:  # pragma: no cover — Windows-only
                 return _alloc_result_err_string(
                     caller, f"getwch failed: {exc}",
                 )
-            if not ch:  # pragma: no cover — getwch never returns ""
+            if not ch:  # pragma: no cover — defensive; getwch is not
+                # documented to return empty.
                 return _alloc_result_err_string(caller, "EOF")
             return _alloc_result_ok_string(caller, ch)
 
-        # Unix TTY: enter raw mode, read one char, restore.  The
-        # inner try/finally guarantees terminal state is restored
-        # even if the read raises; the outer try/except converts
-        # any such failure to Result.Err.
+        # Unix TTY: enter raw mode, read one char, restore.
         try:
             import termios
             import tty
@@ -1449,13 +1454,37 @@ def execute(
             return _alloc_result_err_string(
                 caller, f"termios/tty unavailable: {exc}",
             )
+
+        # Acquire current termios state outside the raw-mode block
+        # so its failure has its own distinct error message — a
+        # tcgetattr failure means raw mode never started, so
+        # "raw-mode read failed" would mislead a debugger.
         try:
             old = termios.tcgetattr(fd)
+        except Exception as exc:
+            return _alloc_result_err_string(
+                caller, f"tcgetattr failed: {exc}",
+            )
+
+        # Enter raw mode, read one char, restore.  The inner
+        # try/finally guarantees the restore is attempted even
+        # when the read raises.  A nested try/except around the
+        # restore call keeps a restore failure from masking the
+        # original read error — if both fail, the read error
+        # surfaces (more useful for debugging); the terminal may
+        # be left in raw mode in that pathological case, but
+        # there is nothing more the host can do here.
+        try:
             try:
                 tty.setraw(fd)
                 ch = sys.stdin.read(1)
             finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                try:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                except Exception:
+                    pass
+        except KeyboardInterrupt:
+            raise _VeraExit(130) from None
         except Exception as exc:
             return _alloc_result_err_string(
                 caller, f"raw-mode read failed: {exc}",

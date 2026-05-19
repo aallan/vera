@@ -8173,6 +8173,122 @@ public fn main(-> @Unit)
         )
         assert exec_result.stdout == "hello world"
 
+    # IO.read_char — pins the stdin_buf fixture short-circuit in
+    # host_read_char.  Subprocess-based tests in test_cli.py cover
+    # the real-pipe (non-TTY) path; these in-process tests pin
+    # the StringIO fixture path that production code can hit via
+    # `execute(stdin=...)`.  The TTY-raw-mode and Windows-msvcrt
+    # paths are out of reach for automated testing without a
+    # headless PTY harness — documented in the host_read_char
+    # comment block.
+
+    def test_io_read_char_stdin_buf_single(self) -> None:
+        """stdin_buf path returns the first character on read_char."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_char(()) {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  }
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main", stdin="A")
+        assert exec_result.stdout == "A"
+        assert exec_result.stderr == ""
+
+    def test_io_read_char_stdin_buf_empty(self) -> None:
+        """Empty stdin_buf returns Err("EOF"), not a crash or hang."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_char(()) {
+    Ok(@String) -> IO.print(string_concat("got: ", @String.0)),
+    Err(@String) -> IO.print(@String.0)
+  }
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main", stdin="")
+        assert exec_result.stdout == "EOF"
+        assert exec_result.stderr == ""
+
+    def test_io_read_char_stdin_buf_sequential(self) -> None:
+        """Two reads from the same stdin_buf advance the cursor.
+
+        Pins that `stdin_buf.read(1)` consumes characters in order.
+        Catches regressions that would replace `.read(1)` with
+        `.getvalue()[0]` or similar non-advancing reads.
+        """
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = match IO.read_char(()) {
+    Ok(@String) -> @String.0,
+    Err(@String) -> "X"
+  };
+  let @String = match IO.read_char(()) {
+    Ok(@String) -> @String.0,
+    Err(@String) -> "X"
+  };
+  IO.print(string_concat(@String.1, @String.0))
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main", stdin="AB")
+        assert exec_result.stdout == "AB"
+        assert exec_result.stderr == ""
+
+    def test_io_read_char_stdin_buf_then_eof(self) -> None:
+        """Read-succeeds-then-EOF: first call Ok, second call Err."""
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = match IO.read_char(()) {
+    Ok(@String) -> @String.0,
+    Err(@String) -> "E1"
+  };
+  let @String = match IO.read_char(()) {
+    Ok(@String) -> string_concat("got: ", @String.0),
+    Err(@String) -> @String.0
+  };
+  IO.print(string_concat(@String.1, "|"));
+  IO.print(@String.0)
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main", stdin="A")
+        assert exec_result.stdout == "A|EOF"
+        assert exec_result.stderr == ""
+
+    def test_io_read_char_stdin_buf_utf8(self) -> None:
+        """Multi-byte UTF-8 is read as one Unicode character.
+
+        StringIO's `read(1)` returns one character (not one byte),
+        so `é` (2-byte UTF-8) round-trips intact through the
+        stdin_buf path.  Platform-independent (no reliance on the
+        host's stdin encoding, unlike the subprocess tests).
+        """
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_char(()) {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.print(@String.0)
+  }
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main", stdin="é")
+        assert exec_result.stdout == "é"
+        assert exec_result.stderr == ""
+
     def test_io_read_file_success(self) -> None:
         """IO.read_file reads a file and returns Ok(contents)."""
         import tempfile, os
