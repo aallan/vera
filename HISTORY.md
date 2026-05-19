@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through Stage 12, across 58 active development days.
+How the Vera compiler was built, from initial commit through Stage 12, across 59 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -300,6 +300,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.153 | 13 May | **SMT translator covers `FloatLit` / `IndexExpr` / `ArrayLit` in contracts** ([#667](https://github.com/aallan/vera/issues/667)). |
 | v0.0.154 | 13 May | **GC-aware tail-call optimization for allocating functions** ([#549](https://github.com/aallan/vera/issues/549)). |
 | v0.0.155 | 13 May | **Wrapper-handle bit-31 tagging closes the last conservative-GC retention bug; bug-tracker section empty** ([#578](https://github.com/aallan/vera/issues/578)). |
+| v0.0.156 | 19 May | **`vera test` fails closed on verifier-refuted contracts; primitive-safety docs reframed** ([#674](https://github.com/aallan/vera/issues/674) + [#675](https://github.com/aallan/vera/issues/675) + 2026-05-18 compiler-review docs sweep).  First external code contribution from @rzyns. |
 
 ---
 
@@ -340,4 +341,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 155 tagged releases, 58 active development days.**
+Total: **810+ commits, 156 tagged releases, 59 active development days.**

@@ -8512,13 +8512,6 @@ class TestStringInterpolation:
     def test_basic_string(self) -> None:
         """Interpolating a String value into a literal."""
         source = _IO_PRELUDE + """\
-public fn main(@Unit -> @Unit)
-  requires(true) ensures(true) effects(<IO>)
-{ IO.print("hello \\(@String.0)") }
-"""
-        # Pass a string via string_concat workaround — use a known string
-        # Instead, use a function that builds the interpolated string
-        source2 = _IO_PRELUDE + """\
 public fn main(-> @Unit)
   requires(true) ensures(true) effects(<IO>)
 {
@@ -8526,7 +8519,7 @@ public fn main(-> @Unit)
   IO.print("hello \\(@String.0)")
 }
 """
-        assert _run_io(source2, fn="main") == "hello world"
+        assert _run_io(source, fn="main") == "hello world"
 
     def test_int_convert(self) -> None:
         """Int expressions are auto-converted to String."""

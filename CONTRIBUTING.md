@@ -39,6 +39,8 @@ For contributions to the reference compiler:
 6. Commit your changes with a clear commit message.
 7. Push to your fork and open a pull request.
 
+**Note for first-time contributors**: GitHub gates CI on first-time PRs behind a manual maintainer approval (you'll see `action_required` next to the CI check rather than `pending`).  A maintainer will approve the workflow once the PR is reviewed; subsequent pushes to the same PR run CI automatically.  This is a GitHub security feature, not a project-specific gate.
+
 ### Built-in functions and types
 
 When adding or modifying built-in functions (registered in `vera/environment.py`):
@@ -137,6 +139,14 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 ```
 
 PRs touching `vera/browser/runtime.mjs` have JavaScript coverage tracked by Codecov (via V8's built-in coverage). See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.  See [ENVIRONMENT.md](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, and debug flags like `VERA_EAGER_GC` for hunting GC-rooting bugs).
+
+**Doc-count gate**: any PR that adds tests will trip `scripts/check_doc_counts.py` if it doesn't also update the test counts in `TESTING.md` (per-file rows + overall total), `ROADMAP.md` ("3,917 tests" line), and `README.md` (project-status line).  Run the script locally to see exactly which numbers need updating:
+
+```bash
+python scripts/check_doc_counts.py    # reports stale counts with file:field references
+```
+
+The script is part of the pre-commit hooks, so a `git push` will catch this before CI does.  The gate exists to keep `TESTING.md` honest about what the suite covers — a regression where a counted test was silently deleted would fail this check.
 
 ### Type Checking
 

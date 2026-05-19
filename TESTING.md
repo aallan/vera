@@ -58,7 +58,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_ast.py` | 127 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
 | `test_checker.py` | 521 | 5,939 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, removed legacy name regression |
 | `test_verifier.py` | 145 | 2,124 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion, refined Bool/String/Float64 param sorts, **@Nat subtraction underflow obligation** (#520 — Path-A obligation discharge via requires/path-conditions/path-aware Z3 refutation, pure-literal exclusion, Int-Int and Nat-Int → Int exemptions) |
-| `test_codegen.py` | 1,117 | 18,979 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env, sleep, time, stderr), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, Random effect, example round-trips, GC shadow stack overflow, **WASM tail-call optimization** (#517 — `return_call` emission for tail-position calls, 50K- and 1M-iteration stress, structural assertions on `return_call`/plain `call` boundary, **GC-aware TCO for allocating fns (#549 — `$gc_sp` restore before each `return_call`)**, postcondition-fallback regression (still reverts to plain `call`), analyzer unit tests covering Block-trailing / IfExpr-both-branches / MatchExpr-arm-bodies / let-value-NOT-marked / call-args-NOT-marked / ExprStmt-statement-NOT-marked / IfExpr-condition-NOT-marked / MatchExpr-scrutinee-NOT-marked) |
+| `test_codegen.py` | 1,117 | 18,972 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env, sleep, time, stderr), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, Random effect, example round-trips, GC shadow stack overflow, **WASM tail-call optimization** (#517 — `return_call` emission for tail-position calls, 50K- and 1M-iteration stress, structural assertions on `return_call`/plain `call` boundary, **GC-aware TCO for allocating fns (#549 — `$gc_sp` restore before each `return_call`)**, postcondition-fallback regression (still reverts to plain `call`), analyzer unit tests covering Block-trailing / IfExpr-both-branches / MatchExpr-arm-bodies / let-value-NOT-marked / call-args-NOT-marked / ExprStmt-statement-NOT-marked / IfExpr-condition-NOT-marked / MatchExpr-scrutinee-NOT-marked) |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
 | `test_codegen_monomorphize.py` | 71 | 1,326 | Generic instantiation, type inference, monomorphization edge cases, ability constraint satisfaction (Eq/Ord/Hash/Show), operation rewriting (eq/compare), show/hash dispatch, ADT auto-derivation, array operations (slice/map/filter/fold) |
 | `test_codegen_closures.py` | 50 | 1,624 | Closure lifting, captured variables, higher-order functions, iterative-builder shadow-stack regressions (#570), closure return-value shadow-push balance for both i32-pair and i32-ADT branches across array_map and array_mapi, plus VERA_EAGER_GC injection self-test (#593), IndexExpr-of-FnCall element-type inference (#614), non-contiguous capture and walker-order miscompiles (#615) |
@@ -515,6 +515,55 @@ These run in both pre-commit hooks and CI, so issues are caught locally before t
 | **Verify** | 66 | 1 | ILLUSTRATIVE (1) |
 
 Allowlisted entries have stale-detection: when a feature lands or a spec edit shifts line numbers, CI flags the entry for removal or the `fix_allowlists.py` script auto-fixes the line numbers. The INCOMPLETE check entries reference functions, types, or imports not defined in the block (e.g. `abs`, `Tuple`, `array_map`, `parse_int`). The 1 FUTURE check entry uses `async/await`. The 1 ILLUSTRATIVE verify entry is a spec example demonstrating multiple postconditions syntax where the contract is intentionally imprecise.
+
+## JSON Output Stability
+
+`vera check --json`, `vera verify --json`, and `vera test --json` emit structured JSON for downstream tooling (CI pipelines, IDE plugins, agent feedback loops).  The field set is a public API — see [`spec/00-introduction.md` §0.5.8](../spec/00-introduction.md#058-machine-readable-output---json) for the stability rules.  Tests in `tests/test_cli.py` assert on the documented field set, so a regression that drops a documented field will fail at least one test.
+
+### `vera check --json` / `vera verify --json`
+
+Top-level:
+
+| Field | Type | Description |
+|---|---|---|
+| `ok` | bool | `true` iff the file passed all checks at the requested stage; the canonical exit-code signal |
+| `file` | string | The source file checked (echoes the path argument) |
+| `diagnostics` | array | List of error-severity `Diagnostic` objects (see below) |
+| `warnings` | array | List of warning-severity `Diagnostic` objects |
+| `verification` | object | Only on `vera verify --json` — counts of `tier1_verified`, `tier3_runtime`, `total` |
+| `slot_environments` | array | Only when `--explain-slots` is passed — per-function slot tables |
+
+`Diagnostic` shape: `severity`, `description`, `location`, `source_line`, `rationale`, `fix`, `spec_ref`, `error_code` (the `error_code` set is documented in `vera/errors.py::ERROR_CODES`).
+
+### `vera test --json`
+
+Top-level:
+
+| Field | Type | Description |
+|---|---|---|
+| `ok` | bool | `true` iff `summary.failed == 0` and no verifier errors; the canonical exit-code signal |
+| `file` | string | The source file tested |
+| `functions` | array | Per-function `FunctionTestResult`: `name`, `category` (one of `"verified"`, `"tested"`, `"failed"`, `"skipped"`), `reason`, `trials_run`, `trials_passed`, `trials_failed`, `failures` |
+| `summary` | object | Aggregate counts (see below) |
+| `diagnostics` | array | Verifier-error diagnostics that fed into `"failed"` classifications |
+
+`summary` field set:
+
+| Field | Description |
+|---|---|
+| `verified` | Functions classified Tier 1 (proved by Z3) |
+| `tested` | Functions exercised with Z3-generated inputs |
+| `passed` | Subset of `tested` where all trials passed |
+| `failed` | Verifier-refuted OR Tier-3-tested-with-trial-failures |
+| `skipped` | Functions whose inputs can't be Z3-generated (e.g. ADT params) |
+| `total_trials` | Sum of trials run across all tested functions |
+| `total_passes` | Sum of passing trials |
+| `total_failures` | Sum of failing trials |
+| `unlisted_errors` | Verifier-error diagnostics whose attributable function isn't in the displayed `functions` list (`--fn` filtering, private helpers).  Added in v0.0.156. |
+
+### Stability contract
+
+Per `spec/00-introduction.md` §0.5.8: fields MAY be added (consumers MUST tolerate unknowns), fields MUST NOT be removed or renamed without a major version bump, and field semantics MUST NOT change.  `ok` is the canonical gate; downstream CI SHOULD read it rather than parse field-by-field.
 
 ## Pre-commit Hooks
 

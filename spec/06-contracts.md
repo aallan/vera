@@ -47,7 +47,7 @@ The special reference `@T.result` (where `T` is the return type) refers to the f
 
 ### 6.2.3 Invariants (`invariant`)
 
-> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#560](https://github.com/aallan/vera/issues/560).  Until the implementation lands, refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
+> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686) (successor to the now-closed #560 — that earlier issue was about removing the broken spec examples; the feature implementation is the remaining work).  Until the implementation lands, refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
 
 An invariant is a predicate declared on a data type that MUST hold for all values of that type:
 
@@ -232,6 +232,8 @@ At each call site, the compiler generates two VCs:
 
 This means the verifier is modular: each function is verified independently, assuming its callees satisfy their contracts.
 
+A practical implication: if a function `bad` has an implementation that doesn't satisfy its own `ensures(...)` clause, the verifier reports E500 on `bad`'s body — but a caller `main` that uses `bad`'s declared contract is still verified.  The bug is contained to `bad`'s body-vs-contract mismatch; `main`'s reasoning is sound under the assumption that `bad` honours its declared postcondition.  This is intentional — it keeps verification compositional and bounded by per-function complexity, rather than requiring whole-program reasoning at every call site.  The cost is that an E500 on `bad` is a real failure that downstream consumers (`vera test`, `vera verify`) MUST surface; silently classifying `bad` as verified while `main` reads its contract would break the soundness chain.
+
 ### 6.4.3 Primitive Operation Safety
 
 The verifier checks the contracts the programmer wrote.  Latent obligations on primitive operations whose well-definedness depends on operand values — `a / b` (Int / Nat), `a % b` (Int / Nat), `arr[i]`, `string_at(s, i)`, etc. — are **not auto-synthesised** by the reference compiler.  A function that performs `@Int.1 / @Int.0` with `requires(true)` will verify cleanly and trap at runtime if called with a zero divisor.
@@ -373,4 +375,4 @@ Verification summary:
 | Limitation | Issue |
 |-----------|-------|
 | Tier 2 verification (Z3-guided with `assert`/lemma hints) is specified in §6.3.2 and §6.6 but not implemented; contracts requiring hints fall to Tier 3 | [#427](https://github.com/aallan/vera/issues/427) |
-| The `invariant(...)` clause on `data` declarations is specified in §6.2.3 but not implemented; every documented form fails with `[E130] no <DataName> bindings in scope`.  Use refinement types (Chapter 2, §2.6) for the same effect on constraint-bearing data values. | [#560](https://github.com/aallan/vera/issues/560) |
+| The `invariant(...)` clause on `data` declarations is specified in §6.2.3 but not implemented; every documented form fails with `[E130] no <DataName> bindings in scope`.  Use refinement types (Chapter 2, §2.6) for the same effect on constraint-bearing data values. | [#686](https://github.com/aallan/vera/issues/686) |
