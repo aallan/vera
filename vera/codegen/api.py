@@ -1381,28 +1381,15 @@ def execute(
                 return _alloc_result_err_string(caller, "EOF")
             return _alloc_result_ok_string(caller, ch)
 
-        # Windows: msvcrt for raw single-key reads.
-        if sys.platform == "win32":
-            try:
-                import msvcrt  # type: ignore[import-not-found]
-            except ImportError as exc:  # pragma: no cover — Windows-only
-                return _alloc_result_err_string(
-                    caller, f"msvcrt unavailable: {exc}",
-                )
-            ch = msvcrt.getwch()  # type: ignore[attr-defined]
-            if not ch:  # pragma: no cover — getwch never returns ""
-                return _alloc_result_err_string(caller, "EOF")
-            return _alloc_result_ok_string(caller, ch)
-
-        # Unix path.  Distinguish TTY (need raw mode) from piped
-        # input (already unbuffered enough — just read one char).
-        # Each branch wraps the host call in `except Exception` so
-        # system errors (closed stdin, monkey-patched stream
-        # without a fileno, termios.error on weird devices) become
-        # Result.Err rather than propagating as wasmtime traps.
-        # `Exception` excludes `KeyboardInterrupt` and `SystemExit`
-        # — those are direct `BaseException` subclasses — so Ctrl-C
-        # still terminates interactive prompts (same stance as
+        # Resolve the stdin fd up front so the TTY-vs-pipe check
+        # below shares one fileno() call across platforms.  Each
+        # host-side call wraps in `except Exception` so system
+        # errors (closed stdin, monkey-patched stream without a
+        # fileno, termios.error on weird devices) become Result.Err
+        # rather than propagating as wasmtime traps.  `Exception`
+        # excludes `KeyboardInterrupt` and `SystemExit` — those are
+        # direct `BaseException` subclasses — so Ctrl-C still
+        # terminates interactive prompts (same stance as
         # host_sleep).
         import os
         try:
@@ -1412,6 +1399,14 @@ def execute(
                 caller, f"stdin.fileno() failed: {exc}",
             )
 
+        # Non-TTY (redirected / piped) is shared across platforms:
+        # a pipe is a pipe.  Important on Windows — calling
+        # `msvcrt.getwch()` on redirected stdin technically works
+        # via Win32's `_getch` fallback but decodes differently
+        # from `sys.stdin.read(1)` (raw bytes vs Python's stdin
+        # encoding).  Routing redirected stdin through
+        # `sys.stdin.read(1)` on both platforms keeps the
+        # encoding contract identical to the Unix path.
         if not os.isatty(fd):
             try:
                 ch = sys.stdin.read(1)
@@ -1423,10 +1418,30 @@ def execute(
                 return _alloc_result_err_string(caller, "EOF")
             return _alloc_result_ok_string(caller, ch)
 
-        # TTY: enter raw mode, read one char, restore.  The inner
-        # try/finally guarantees terminal state is restored even
-        # if the read raises; the outer try/except converts any
-        # such failure to Result.Err.
+        # TTY path forks by platform.
+
+        # Windows TTY: msvcrt.getwch() for raw single-key reads.
+        if sys.platform == "win32":
+            try:
+                import msvcrt  # type: ignore[import-not-found]
+            except ImportError as exc:  # pragma: no cover — Windows-only
+                return _alloc_result_err_string(
+                    caller, f"msvcrt unavailable: {exc}",
+                )
+            try:
+                ch = msvcrt.getwch()  # type: ignore[attr-defined]
+            except Exception as exc:  # pragma: no cover — Windows-only
+                return _alloc_result_err_string(
+                    caller, f"getwch failed: {exc}",
+                )
+            if not ch:  # pragma: no cover — getwch never returns ""
+                return _alloc_result_err_string(caller, "EOF")
+            return _alloc_result_ok_string(caller, ch)
+
+        # Unix TTY: enter raw mode, read one char, restore.  The
+        # inner try/finally guarantees terminal state is restored
+        # even if the read raises; the outer try/except converts
+        # any such failure to Result.Err.
         try:
             import termios
             import tty
