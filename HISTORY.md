@@ -301,6 +301,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.154 | 13 May | **GC-aware tail-call optimization for allocating functions** ([#549](https://github.com/aallan/vera/issues/549)). |
 | v0.0.155 | 13 May | **Wrapper-handle bit-31 tagging closes the last conservative-GC retention bug; bug-tracker section empty** ([#578](https://github.com/aallan/vera/issues/578)). |
 | v0.0.156 | 19 May | **`vera test` fails closed on verifier-refuted contracts; primitive-safety docs reframed** ([#674](https://github.com/aallan/vera/issues/674) + [#675](https://github.com/aallan/vera/issues/675) + 2026-05-18 compiler-review docs sweep).  First external code contribution from @rzyns. |
+| v0.0.157 | 19 May | **`IO.read_char` effect operation — single-character input for real-time CLI programs (paced REPLs, terminal games)** ([#618](https://github.com/aallan/vera/issues/618)).  Terminal half shipped (Unix TTY cbreak via `tty.setcbreak()` preserving ISIG, Windows TTY `msvcrt.getwch()`, shared non-TTY pipe path with explicit UTF-8 encoding); browser half awaits JSPI suspend/resume from #609.  Four CodeRabbit review rounds + an internal multi-agent review converged on the final structure: KeyboardInterrupt mirroring with `host_sleep`, restore failure captured rather than swallowed, Ctrl-D mapped to EOF in cbreak mode. |
 
 ---
 
@@ -341,4 +342,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 156 tagged releases, 59 active development days.**
+Total: **810+ commits, 157 tagged releases, 59 active development days.**

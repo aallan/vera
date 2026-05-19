@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.157] - 2026-05-19
+
 ### Added
 
 - **[#618](https://github.com/aallan/vera/issues/618)** — new `IO.read_char` effect operation for single-character input.  Signature: `op read_char(Unit -> @Result<String, String>)`.  Returns one Unicode character from stdin, or `Err("EOF")` when the stream closes (Ctrl-D on a Unix TTY also maps to EOF).  Terminal target uses termios cbreak mode via `tty.setcbreak()` (Unix TTY — cbreak preserves ISIG so Ctrl-C still raises SIGINT, unlike raw mode which would suppress it), `msvcrt.getwch()` (Windows TTY), or buffered `sys.stdin.read(1)` (piped/redirected stdin on either platform).  Browser target returns `Result.Err` pending JSPI suspend/resume (depends on [#609](https://github.com/aallan/vera/issues/609); same primitive `IO.sleep` will use).  Unblocks real-time CLI programs (paced REPLs, terminal games) that couldn't be written before because `IO.read_line` is line-buffered.  Added per the same `IO`-effect-extension pattern as `IO.sleep` / `IO.time` / `IO.stderr` ([#463](https://github.com/aallan/vera/issues/463)): a single new op on the existing effect, not a new `<Terminal>` effect.
@@ -2345,7 +2347,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.156...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.157...HEAD
+[0.0.157]: https://github.com/aallan/vera/compare/v0.0.156...v0.0.157
 [0.0.156]: https://github.com/aallan/vera/compare/v0.0.155...v0.0.156
 [0.0.155]: https://github.com/aallan/vera/compare/v0.0.154...v0.0.155
 [0.0.154]: https://github.com/aallan/vera/compare/v0.0.153...v0.0.154
