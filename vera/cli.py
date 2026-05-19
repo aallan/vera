@@ -886,8 +886,11 @@ def cmd_test(
     """Parse, type-check, and test a .vera file via contract-driven testing."""
     from vera.checker import typecheck
     from vera.resolver import ModuleResolver
-    from vera.tester import _failed_function_name
-    from vera.tester import test as run_test
+    from vera.tester import (
+        VERIFICATION_ERROR_CODES,
+        failed_function_name,
+        test as run_test,
+    )
 
     try:
         p, source, tree = _load_and_parse(path)
@@ -1023,15 +1026,14 @@ def cmd_test(
             1 for f in result.functions
             if f.category == "tested" and f.trials_failed > 0
         )
-        verifier_error_codes = {"E500", "E501", "E502"}
         displayed_failed = {
             f.fn_name for f in result.functions if f.category == "failed"
         }
         unlisted_errors = sum(
             1 for d in result.diagnostics
             if d.severity == "error"
-            and d.error_code in verifier_error_codes
-            and _failed_function_name(d) not in displayed_failed
+            and d.error_code in VERIFICATION_ERROR_CODES
+            and failed_function_name(d) not in displayed_failed
         )
         parts = []
         if s.tested > 0:

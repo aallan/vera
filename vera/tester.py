@@ -87,6 +87,12 @@ _Z3_SUPPORTED = {INT, NAT, BOOL, BYTE, STRING, FLOAT64}
 # Types that require the raw_args calling convention (String uses i32_pair ABI)
 _NEEDS_RAW = {STRING, FLOAT64}
 
+# Verifier-error codes that cause a function to be classified as
+# ``"failed"`` rather than ``"verified"`` / ``"tier3"`` / ``"skipped"``.
+# Exported (no underscore) because ``vera/cli.py`` also uses this set
+# in its summary-line de-duplication logic.
+VERIFICATION_ERROR_CODES = frozenset({"E500", "E501", "E502"})
+
 
 def _unsupported_type_names(param_types: list[Type]) -> list[str]:
     """Return a sorted list of type names that cannot be Z3-encoded."""
@@ -418,16 +424,24 @@ def _classify_functions(
     tier3_fns: set[str] = set()
     tier3_codes = {"E520", "E521", "E522", "E523", "E524", "E525"}
     failed_fns: dict[str, str] = {}
-    verification_error_codes = {"E500", "E501", "E502"}
     for diag in verify_diagnostics:
         if diag.severity == "warning" and diag.error_code in tier3_codes:
             # Extract fn name from description: '...'
             m = re.search(r"'(\w+)'", diag.description)
             if m:
                 tier3_fns.add(m.group(1))
-        elif diag.severity == "error" and diag.error_code in verification_error_codes:
-            name = _failed_function_name(diag)
-            if name:
+        elif (
+            diag.severity == "error"
+            and diag.error_code in VERIFICATION_ERROR_CODES
+        ):
+            name = failed_function_name(diag)
+            # First-hit wins: if a single function attracts multiple
+            # verifier errors (e.g. ``ensures(false)`` produces E500
+            # AND `@Nat - @Nat` produces E502 on the same body), the
+            # displayed ``reason`` would otherwise depend on
+            # diagnostic iteration order.  ``setdefault`` pins it to
+            # whichever diagnostic the verifier emitted first.
+            if name and name not in failed_fns:
                 failed_fns[name] = diag.error_code or "verification error"
 
     result: dict[str, tuple[str, str, ast.FnDecl]] = {}
@@ -505,8 +519,15 @@ def _classify_functions(
     return result
 
 
-def _failed_function_name(diag: Diagnostic) -> str | None:
-    """Extract the function responsible for a verifier error diagnostic."""
+def failed_function_name(diag: Diagnostic) -> str | None:
+    """Extract the function responsible for a verifier error diagnostic.
+
+    Public (no underscore) because ``vera/cli.py`` calls it from its
+    summary-line de-duplication logic.  Returns ``None`` when the
+    diagnostic's description doesn't include an attributable function
+    name (defensive — the verifier always emits these in the expected
+    shape, but the regex match is checked).
+    """
     if diag.error_code == "E501":
         # E501 text mentions both callee and caller:
         # "Call to 'callee' in function 'caller' may violate...".

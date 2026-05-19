@@ -89,7 +89,11 @@ public fn caller(@Int -> @Int)
         result = _test(source)
         needs_pos = _fn_result(result, "needs_pos")
         caller = _fn_result(result, "caller")
-        assert needs_pos.category != "failed"
+        # Positive assertion (vs the weaker `!= "failed"`) so we pin
+        # that the callee is correctly proven, not just that it
+        # avoided the failed bucket — `"skipped"` or any other
+        # category would also be a regression here.
+        assert needs_pos.category == "verified"
         assert caller.category == "failed"
         assert caller.reason == "verification error (E501)"
         assert result.summary.failed == 1

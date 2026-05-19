@@ -27,9 +27,16 @@ ABS_VALUE = str(EXAMPLES_DIR / "absolute_value.vera")
 
 
 def _bad_vera(tmp_path: Path, content: str) -> str:
-    """Write a bad .vera file and return its path."""
+    """Write a bad .vera file and return its path.
+
+    Uses ``encoding="utf-8"`` explicitly so Windows runs don't fall
+    back to cp1252.  CLAUDE.md (Cross-platform pitfalls) flags this
+    as a required convention for test fixtures: Vera sources can
+    contain UTF-8 sequences (string literals, conformance fixtures)
+    and the default text-mode encoding on Windows would corrupt them.
+    """
     p = tmp_path / "bad.vera"
-    p.write_text(content)
+    p.write_text(content, encoding="utf-8")
     return str(p)
 
 

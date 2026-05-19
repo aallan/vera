@@ -4,8 +4,7 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 ## Bugs
 
-| Bug | Issue |
-|-----|-------|
+No known bugs.
 
 ## Limitations
 
