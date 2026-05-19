@@ -1343,6 +1343,94 @@ def execute(
         "vera", "stderr", stderr_type, host_stderr, access_caller=True,
     )
 
+    # Host function: vera.read_char() -> i32  [Result<String, String>]
+    # #618 — single-character input for real-time CLI programs.
+    #
+    # Cross-platform shape:
+    #   - Unix TTY: termios raw-mode context, sys.stdin.read(1),
+    #     restore on exit.  Reads at most one Unicode character
+    #     (sys.stdin is text mode; UTF-8 multi-byte sequences are
+    #     decoded by the stream).
+    #   - Unix non-TTY (stdin piped/redirected): no raw mode needed,
+    #     just sys.stdin.read(1).  The caller's pipeline already
+    #     delivers data byte-by-byte (or character-by-character for
+    #     text streams).
+    #   - Windows: msvcrt.getwch() (Unicode-aware; no raw-mode setup).
+    #   - Test harness: stdin_buf (StringIO from execute(stdin=...))
+    #     wins over real stdin, no raw mode needed.  Mirrors the
+    #     host_read_line precedent for deterministic test fixtures.
+    #
+    # Failure modes returned as Err:
+    #   - EOF (Ctrl-D on Unix, Ctrl-Z on Windows, end of piped input,
+    #     empty stdin_buf): Err("EOF")
+    #   - termios call fails (no TTY where expected, system error):
+    #     Err("<exception text>")
+    #
+    # KeyboardInterrupt during read_char is NOT caught here — it
+    # propagates as a BaseException so the user's Ctrl-C does what
+    # they expect (terminate the program).  host_sleep takes the
+    # same stance for the same reason; the alternative (catch and
+    # return Err) would prevent the user from ever exiting an
+    # interactive prompt.
+    def host_read_char(caller: wasmtime.Caller) -> int:
+        # Test fixture wins first — execute(stdin="x") feeds chars
+        # in order without touching real stdin / raw mode.
+        if stdin_buf is not None:
+            ch = stdin_buf.read(1)
+            if not ch:
+                return _alloc_result_err_string(caller, "EOF")
+            return _alloc_result_ok_string(caller, ch)
+
+        # Windows: msvcrt for raw single-key reads.
+        if sys.platform == "win32":
+            try:
+                import msvcrt  # type: ignore[import-not-found]
+            except ImportError as exc:  # pragma: no cover — Windows-only
+                return _alloc_result_err_string(
+                    caller, f"msvcrt unavailable: {exc}",
+                )
+            ch = msvcrt.getwch()  # type: ignore[attr-defined]
+            if not ch:  # pragma: no cover — getwch never returns ""
+                return _alloc_result_err_string(caller, "EOF")
+            return _alloc_result_ok_string(caller, ch)
+
+        # Unix path.  Distinguish TTY (need raw mode) from piped
+        # input (already unbuffered enough — just read one char).
+        import os
+        fd = sys.stdin.fileno()
+        if not os.isatty(fd):
+            ch = sys.stdin.read(1)
+            if not ch:
+                return _alloc_result_err_string(caller, "EOF")
+            return _alloc_result_ok_string(caller, ch)
+
+        # TTY: enter raw mode, read one char, restore.
+        try:
+            import termios
+            import tty
+        except ImportError as exc:  # pragma: no cover — unlikely on Unix
+            return _alloc_result_err_string(
+                caller, f"termios/tty unavailable: {exc}",
+            )
+        old = termios.tcgetattr(fd)
+        try:
+            tty.setraw(fd)
+            ch = sys.stdin.read(1)
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        if not ch:
+            return _alloc_result_err_string(caller, "EOF")
+        return _alloc_result_ok_string(caller, ch)
+
+    read_char_type = wasmtime.FuncType(
+        [],
+        [wasmtime.ValType.i32()],
+    )
+    linker.define_func(
+        "vera", "read_char", read_char_type,
+        host_read_char, access_caller=True,
+    )
+
     # Host function: vera.get_env(ptr, len) -> i32  [Option<String>]
     def host_get_env(
         caller: wasmtime.Caller, ptr: int, length: int,

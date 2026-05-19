@@ -1751,7 +1751,7 @@ public fn main(-> @Unit)
   let @String = IO.read_line(());
   IO.print(@String.0)
 }
-""")
+""", encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run", str(prog)],
             capture_output=True, text=True,
@@ -1759,6 +1759,85 @@ public fn main(-> @Unit)
         )
         assert result.returncode == 0
         assert "hello from stdin" in result.stdout
+
+    def test_run_io_read_char_piped_input(self, tmp_path: Path) -> None:
+        """vera run with piped stdin returns one character on IO.read_char.
+
+        Pipes the string ``X`` into the program; the program reads one
+        char and prints ``got: X``.  Pins that the piped-input path
+        (no termios needed) returns the first character cleanly.
+        """
+        prog = tmp_path / "read_char_test.vera"
+        prog.write_text("""\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_char(()) {
+    Ok(@String) -> IO.print(string_concat("got: ", @String.0)),
+    Err(@String) -> IO.stderr(string_concat("err: ", @String.0))
+  }
+}
+""", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", str(prog)],
+            capture_output=True, text=True,
+            input="X",
+        )
+        assert result.returncode == 0
+        assert "got: X" in result.stdout
+
+    def test_run_io_read_char_eof(self, tmp_path: Path) -> None:
+        """Empty stdin produces Err("EOF") rather than blocking.
+
+        Pre-#618 there was no IO.read_char.  This test pins that with
+        the feature in, an empty-stdin program reads cleanly and
+        reports EOF as a Result.Err, not as a crash or hang.
+        """
+        prog = tmp_path / "read_char_eof_test.vera"
+        prog.write_text("""\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_char(()) {
+    Ok(@String) -> IO.print("got input"),
+    Err(@String) -> IO.print(@String.0)
+  }
+}
+""", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", str(prog)],
+            capture_output=True, text=True,
+            input="",
+        )
+        assert result.returncode == 0
+        assert "EOF" in result.stdout
+
+    def test_run_io_read_char_utf8(self, tmp_path: Path) -> None:
+        """Multi-byte UTF-8 sequences read as a single char, not a byte.
+
+        `sys.stdin.read(1)` returns one *Unicode* character (text-mode
+        decoding handles the multi-byte sequence).  This test pins
+        that a piped emoji or accented character returns intact as
+        a one-char Vera String.
+        """
+        prog = tmp_path / "read_char_utf8_test.vera"
+        prog.write_text("""\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_char(()) {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.stderr(@String.0)
+  }
+}
+""", encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, "-m", "vera.cli", "run", str(prog)],
+            capture_output=True, text=True,
+            input="é",  # 2-byte UTF-8 sequence
+        )
+        assert result.returncode == 0
+        assert "é" in result.stdout
 
 
 # =====================================================================

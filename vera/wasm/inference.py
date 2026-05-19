@@ -307,6 +307,7 @@ class InferenceMixin:
         "args": "i32_pair",
         "exit": None,
         "get_env": "i32",
+        "read_char": "i32",  # Result<String,String> pointer (#618)
     }
 
     def _infer_qualified_call_wasm_type(

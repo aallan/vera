@@ -36,9 +36,14 @@ class AssemblyMixin:
             "sleep": "(func $vera.sleep (param i64))",
             "time": "(func $vera.time (result i64))",
             "stderr": "(func $vera.stderr (param i32 i32))",
+            # #618 — single-character input.
+            # read_char: no params (Unit arg erased) → i32 pointer to
+            # Result<String, String> ADT allocated host-side.
+            "read_char": "(func $vera.read_char (result i32))",
         }
         _IO_OPS_NEEDING_ALLOC = {
             "read_line", "read_file", "write_file", "args", "get_env",
+            "read_char",
         }
         for op_name in sorted(self._io_ops_used):
             sig = _IO_IMPORTS.get(op_name)

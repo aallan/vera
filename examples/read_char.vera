@@ -1,0 +1,29 @@
+-- Single-character input via IO.read_char (#618).
+--
+-- Reads one character from stdin and echoes it back.  On TTY input
+-- the runtime enters termios raw mode for the duration of the read,
+-- so the user doesn't have to press Enter — a single key produces
+-- one character.  On piped input (e.g. `echo "X" | vera run ...`)
+-- raw mode is skipped and the first character of the piped stream
+-- is returned.
+--
+-- This unblocks real-time CLI programs (paced REPLs, terminal
+-- games like Tetris) that can't be written with line-buffered
+-- IO.read_line.
+--
+-- The Result<String, String> return type covers the failure modes
+-- (EOF when stdin closes, termios system error on unusual TTYs)
+-- without trapping at runtime.
+
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match IO.read_char(()) {
+    Ok(@String) ->
+      IO.print(string_concat("You pressed: ", @String.0)),
+    Err(@String) ->
+      IO.stderr(string_concat("read_char failed: ", @String.0))
+  }
+}

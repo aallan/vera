@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **[#618](https://github.com/aallan/vera/issues/618)** — new `IO.read_char` effect operation for single-character input.  Signature: `op read_char(Unit -> @Result<String, String>)`.  Returns one Unicode character from stdin, or `Err("EOF")` when the stream closes.  Terminal target uses termios raw-mode (Unix TTY), `msvcrt.getwch()` (Windows), or buffered `sys.stdin.read(1)` (piped input).  Browser target returns `Result.Err` pending JSPI suspend/resume (depends on [#609](https://github.com/aallan/vera/issues/609); same primitive `IO.sleep` will use).  Unblocks real-time CLI programs (paced REPLs, terminal games) that couldn't be written before because `IO.read_line` is line-buffered.  Added per the same `IO`-effect-extension pattern as `IO.sleep` / `IO.time` / `IO.stderr` ([#463](https://github.com/aallan/vera/issues/463)): a single new op on the existing effect, not a new `<Terminal>` effect.
+
+### Tests
+
+- New `tests/conformance/ch07_io_read_char.vera` (verify-level — pins the type signature and effect-row wiring).  New `tests/test_cli.py::TestIOOperations::test_run_io_read_char_piped_input` / `test_run_io_read_char_eof` / `test_run_io_read_char_utf8` covering the piped-input path (no termios needed), EOF handling, and multi-byte UTF-8 round-trip (`sys.stdin.read(1)` returns one Unicode character, not one byte).
+
+### Documentation
+
+- `spec/07-effects.md` — added `read_char` row to the IO operation table.
+- `spec/12-runtime.md` — added `vera.read_char` import row and the browser-runtime IO behaviour table entry.
+- `SKILL.md` — added `IO.read_char` row to the IO operations table; updated the browser-runtime summary sentence to mention the pending JSPI dependency.
+- `examples/read_char.vera` — new example demonstrating the read-one-char pattern with full failure-mode handling.
+
 ## [0.0.156] - 2026-05-19
 
 ### Added

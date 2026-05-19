@@ -83,7 +83,7 @@ vera compile --target browser file.vera -o dist/   # Output to dist/
 
 This generates three files: `module.wasm` (the compiled binary), `vera-runtime.mjs` (self-contained JavaScript runtime with all host bindings), and `index.html` (loads and runs the program). Serve the output directory with any HTTP server (`python -m http.server`) and open `index.html` — ES module imports require HTTP, not `file://`.
 
-The JavaScript runtime provides browser-appropriate implementations: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, `IO.stderr` captures into a separate buffer, `IO.time` uses `Date.now()`, `IO.sleep` busy-waits (main-thread blocking — best kept short in the browser), and file IO returns `Result.Err`. All other operations (State, contracts, Markdown) work identically to the Python runtime.
+The JavaScript runtime provides browser-appropriate implementations: `IO.print` writes to the page, `IO.read_line` uses `prompt()`, `IO.stderr` captures into a separate buffer, `IO.time` uses `Date.now()`, `IO.sleep` busy-waits (main-thread blocking — best kept short in the browser), file IO returns `Result.Err`, and `IO.read_char` returns `Result.Err` pending JSPI suspend/resume support ([#609](https://github.com/aallan/vera/issues/609) / [#618](https://github.com/aallan/vera/issues/618)). All other operations (State, contracts, Markdown) work identically to the Python runtime.
 
 #### IO model: terminal vs browser
 
@@ -1317,6 +1317,7 @@ The IO effect is built-in — no declaration is needed. It provides ten operatio
 |-----------|-----------|-------------|
 | `IO.print` | `String -> Unit` | Print a string to stdout (no implicit newline; flushes per call) |
 | `IO.read_line` | `Unit -> String` | Read a line from stdin |
+| `IO.read_char` | `Unit -> Result<String, String>` | Read one character from stdin (raw mode on TTY).  Returns `Err("EOF")` when stdin closes.  Browser target not yet supported — depends on JSPI ([#609](https://github.com/aallan/vera/issues/609)) for suspend/resume. |
 | `IO.read_file` | `String -> Result<String, String>` | Read file contents |
 | `IO.write_file` | `String, String -> Result<Unit, String>` | Write string to file |
 | `IO.args` | `Unit -> Array<String>` | Get command-line arguments |
@@ -2268,7 +2269,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 86 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 87 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
