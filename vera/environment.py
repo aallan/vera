@@ -382,6 +382,14 @@ class TypeEnv:
                 "sleep": OpInfo("sleep", (NAT,), UNIT, "IO"),
                 "time": OpInfo("time", (UNIT,), NAT, "IO"),
                 "stderr": OpInfo("stderr", (STRING,), UNIT, "IO"),
+                # Single-character input — for real-time CLI
+                # programs (paced REPLs, terminal games, navigation
+                # tools).  Result-typed because raw-mode entry can
+                # fail (no TTY, EOF, system error).  See #618.
+                "read_char": OpInfo(
+                    "read_char", (UNIT,),
+                    AdtType("Result", (STRING, STRING)), "IO",
+                ),
             },
         )
 

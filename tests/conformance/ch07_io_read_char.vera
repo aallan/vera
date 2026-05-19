@@ -1,0 +1,19 @@
+-- Conformance: IO.read_char operation (Chapter 7, #618)
+-- Tests: built-in IO effect's read_char (Unit -> Result<String, String>)
+-- Verified at the "verify" level — no run assertion, because a
+-- successful run depends on host stdin behaviour (terminal raw-mode
+-- entry, EOF / interrupt handling).  Contract verification (Tier 1)
+-- proves the signature and effect row are wired up correctly; the
+-- run-level behaviour is exercised by unit tests in
+-- tests/test_cli.py (TestIOOperations.test_run_io_read_char_*) and
+-- by tests/test_codegen.py (TestIOOperations.test_io_read_char_*).
+public fn main(@Unit -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  match IO.read_char(()) {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.stderr(@String.0)
+  }
+}

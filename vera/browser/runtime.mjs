@@ -199,6 +199,23 @@ function hostPrint(ptr, len) {
   stdoutBuf += readString(ptr, len);
 }
 
+/**
+ * vera.read_char() → Result<String, String> heap ptr.  #618
+ *
+ * Browser stub returning Err — actual implementation requires JSPI
+ * for the suspend/resume primitive (a keypress listener pushes
+ * characters into a queue, then read_char suspends the WASM call
+ * and resumes on the next keypress).  Same primitive #609 needs
+ * for IO.sleep; until that lands, terminal-style real-time programs
+ * compile cleanly for --target browser but error at runtime.
+ */
+function hostReadChar() {
+  return allocResultErrString(
+    'IO.read_char not yet supported in browser target ' +
+    '(depends on JSPI suspend/resume; tracking: #609, #618)',
+  );
+}
+
 /** vera.read_line() → [ptr, len] string pair. */
 function hostReadLine() {
   let line;
@@ -1063,6 +1080,7 @@ function hostRegexReplace(inPtr, inLen, patPtr, patLen, repPtr, repLen) {
 const IO_BINDINGS = {
   print: hostPrint,
   read_line: hostReadLine,
+  read_char: hostReadChar,
   read_file: hostReadFile,
   write_file: hostWriteFile,
   args: hostArgs,

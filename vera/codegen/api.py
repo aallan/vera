@@ -1343,6 +1343,205 @@ def execute(
         "vera", "stderr", stderr_type, host_stderr, access_caller=True,
     )
 
+    # Host function: vera.read_char() -> i32  [Result<String, String>]
+    # #618 — single-character input for real-time CLI programs.
+    #
+    # Cross-platform shape:
+    #   - Unix TTY: termios cbreak-mode context, sys.stdin.read(1),
+    #     restore on exit.  Reads at most one Unicode character
+    #     (sys.stdin is text mode; UTF-8 multi-byte sequences are
+    #     decoded by the stream).  cbreak (not raw) keeps ISIG
+    #     enabled so Ctrl-C still raises SIGINT → KeyboardInterrupt
+    #     and the program can exit cleanly.
+    #   - Unix non-TTY (stdin piped/redirected): no raw mode needed,
+    #     just sys.stdin.read(1).  The caller's pipeline already
+    #     delivers data byte-by-byte (or character-by-character for
+    #     text streams).
+    #   - Windows: msvcrt.getwch() (Unicode-aware; no raw-mode setup).
+    #   - Test harness: stdin_buf (StringIO from execute(stdin=...))
+    #     wins over real stdin, no raw mode needed.  Mirrors the
+    #     host_read_line precedent for deterministic test fixtures.
+    #
+    # Failure modes returned as Err:
+    #   - EOF (Ctrl-D on Unix, Ctrl-Z on Windows, end of piped input,
+    #     empty stdin_buf): Err("EOF")
+    #   - termios / msvcrt call fails (no TTY where expected, system
+    #     error, restore failed): Err("<exception text>")
+    #
+    # KeyboardInterrupt handling: each blocking call (read(1),
+    # getwch()) catches KeyboardInterrupt and converts it to
+    # `_VeraExit(130)`, which propagates through wasmtime's
+    # trampoline via the existing IO.exit mechanism — same fix
+    # `host_sleep` applies for the same reason (#589-class
+    # WasmTrapError contract violation when KeyboardInterrupt
+    # escapes a host import as a raw Python traceback).  The user
+    # still sees Ctrl-C terminate the program cleanly (exit code
+    # 130, the conventional 128 + SIGINT-2 value).
+    def host_read_char(caller: wasmtime.Caller) -> int:
+        # Test fixture wins first — execute(stdin="x") feeds chars
+        # in order without touching real stdin / raw mode.  Uses
+        # StringIO so KeyboardInterrupt is not possible here.
+        if stdin_buf is not None:
+            ch = stdin_buf.read(1)
+            if not ch:
+                return _alloc_result_err_string(caller, "EOF")
+            return _alloc_result_ok_string(caller, ch)
+
+        # Resolve the stdin fd up front so the TTY-vs-pipe check
+        # below shares one fileno() call across platforms.  Each
+        # host-side call wraps in `except Exception` so system
+        # errors (closed stdin, monkey-patched stream without a
+        # fileno, termios.error on weird devices) become Result.Err
+        # rather than propagating as wasmtime traps.  `Exception`
+        # excludes `KeyboardInterrupt` and `SystemExit` (direct
+        # `BaseException` subclasses), so the dedicated
+        # `except KeyboardInterrupt` clauses at each blocking call
+        # below remain reachable.
+        try:
+            fd = sys.stdin.fileno()
+        except Exception as exc:
+            return _alloc_result_err_string(
+                caller, f"stdin.fileno() failed: {exc}",
+            )
+
+        # Non-TTY (redirected / piped) is shared across platforms:
+        # a pipe is a pipe.  Important on Windows — calling
+        # `msvcrt.getwch()` on redirected stdin technically works
+        # via Win32's `_getch` fallback but decodes differently
+        # from `sys.stdin.read(1)` (raw bytes vs Python's stdin
+        # encoding).  Routing redirected stdin through
+        # `sys.stdin.read(1)` on both platforms keeps the
+        # encoding contract identical to the Unix path.
+        if not os.isatty(fd):
+            try:
+                ch = sys.stdin.read(1)
+            except KeyboardInterrupt:
+                raise _VeraExit(130) from None
+            except Exception as exc:
+                return _alloc_result_err_string(
+                    caller, f"stdin.read failed: {exc}",
+                )
+            if not ch:
+                return _alloc_result_err_string(caller, "EOF")
+            return _alloc_result_ok_string(caller, ch)
+
+        # TTY path forks by platform.
+
+        # Windows TTY: msvcrt.getwch() for raw single-key reads.
+        if sys.platform == "win32":
+            try:
+                import msvcrt  # type: ignore[import-not-found]
+            except ImportError as exc:  # pragma: no cover — Windows-only
+                return _alloc_result_err_string(
+                    caller, f"msvcrt unavailable: {exc}",
+                )
+            try:
+                ch = msvcrt.getwch()  # type: ignore[attr-defined]
+            except KeyboardInterrupt:  # pragma: no cover — Windows-only
+                raise _VeraExit(130) from None
+            except Exception as exc:  # pragma: no cover — Windows-only
+                return _alloc_result_err_string(
+                    caller, f"getwch failed: {exc}",
+                )
+            if not ch:  # pragma: no cover — defensive; getwch is not
+                # documented to return empty.
+                return _alloc_result_err_string(caller, "EOF")
+            return _alloc_result_ok_string(caller, ch)
+
+        # Unix TTY: enter raw mode, read one char, restore.
+        try:
+            import termios
+            import tty
+        except ImportError as exc:  # pragma: no cover — unlikely on Unix
+            return _alloc_result_err_string(
+                caller, f"termios/tty unavailable: {exc}",
+            )
+
+        # Acquire current termios state outside the raw-mode block
+        # so its failure has its own distinct error message — a
+        # tcgetattr failure means raw mode never started, so
+        # "raw-mode read failed" would mislead a debugger.
+        try:
+            old = termios.tcgetattr(fd)
+        except Exception as exc:
+            return _alloc_result_err_string(
+                caller, f"tcgetattr failed: {exc}",
+            )
+
+        # Enter cbreak mode (NOT raw): cbreak disables ICANON and
+        # ECHO (so we get one character without waiting for Enter
+        # and without echoing) but PRESERVES ISIG.  With ISIG on,
+        # Ctrl-C still generates SIGINT and Python turns that into
+        # `KeyboardInterrupt`, which the outer handler converts to
+        # `_VeraExit(130)`.  `tty.setraw()` would clear ISIG, in
+        # which case Ctrl-C arrives in the read buffer as the
+        # literal byte `\x03` and the program never exits — exactly
+        # what a Tetris-style game user would expect to NOT happen.
+        #
+        # The restore_exc dance below preserves both error sources
+        # rather than letting one mask the other.  The inner finally
+        # guarantees the restore is attempted; capturing the
+        # exception (instead of swallowing) lets the post-restore
+        # logic surface it iff the read itself succeeded.  If both
+        # the read and the restore fail, the read error wins
+        # (more actionable for debugging); the terminal may be left
+        # in cbreak mode in that pathological case, but there is
+        # nothing more the host can do here.
+        restore_exc: Exception | None = None
+        try:
+            try:
+                tty.setcbreak(fd)
+                ch = sys.stdin.read(1)
+            finally:
+                try:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                except Exception as exc:
+                    restore_exc = exc
+        except KeyboardInterrupt:
+            raise _VeraExit(130) from None
+        except Exception as exc:
+            # Read (or setcbreak) failed.  Prefer the read error
+            # over any restore_exc — restore failure is less
+            # actionable than the original problem.
+            return _alloc_result_err_string(
+                caller, f"raw-mode read failed: {exc}",
+            )
+
+        # Read succeeded.  If restore failed, surface it now so
+        # the failure is not silently swallowed.
+        if restore_exc is not None:
+            return _alloc_result_err_string(
+                caller, f"raw-mode restore failed: {restore_exc}",
+            )
+
+        # Ctrl-D (ASCII EOT, `\x04`) in cbreak mode arrives as a
+        # literal byte rather than triggering an empty-read EOF —
+        # cbreak disables ICANON, which is the line discipline
+        # layer that normally turns Ctrl-D-at-start-of-line into
+        # an empty read.  The user pressing Ctrl-D in a real-time
+        # CLI program still means "I'm done", though, so map it
+        # to EOF here.  This is the conventional Unix-TTY
+        # interpretation and is restricted to this branch only:
+        # piped `\x04` on the non-TTY shared path is left
+        # untouched (a pipe is a byte stream, the producer chose
+        # to include `\x04`), and the Windows TTY branch uses
+        # `msvcrt.getwch()` which has its own end-of-input
+        # semantics (Ctrl-Z `\x1A` is the Windows analog —
+        # similar mapping could be added there if a regression
+        # surfaces; left untouched for now).
+        if not ch or ch == "\x04":
+            return _alloc_result_err_string(caller, "EOF")
+        return _alloc_result_ok_string(caller, ch)
+
+    read_char_type = wasmtime.FuncType(
+        [],
+        [wasmtime.ValType.i32()],
+    )
+    linker.define_func(
+        "vera", "read_char", read_char_type,
+        host_read_char, access_caller=True,
+    )
+
     # Host function: vera.get_env(ptr, len) -> i32  [Option<String>]
     def host_get_env(
         caller: wasmtime.Caller, ptr: int, length: int,

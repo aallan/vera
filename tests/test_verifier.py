@@ -1788,7 +1788,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 253 T1 / 25 T3 / 278 total (current).
+        """All examples together: 255 T1 / 25 T3 / 280 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -1824,6 +1824,10 @@ private fn sum(@List<Int> -> @Int)
           (the relaxed `ensures(true)`) = +1 T1, -1 T3, total
           unchanged at 278.  No other example contract changed
           tier under #667.
+        * 255/25/280 after `examples/read_char.vera` (#618 terminal
+          implementation) added 2 T1 + 2 contracts — the trivial
+          `requires(true) ensures(true)` on `main`.  Net: +2 T1,
+          +2 total.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -1834,9 +1838,9 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 253, f"Expected 253 T1, got {t1}"
+        assert t1 == 255, f"Expected 255 T1, got {t1}"
         assert t3 == 25, f"Expected 25 T3, got {t3}"
-        assert total == 278, f"Expected 278 total, got {total}"
+        assert total == 280, f"Expected 280 total, got {total}"
 
 
 # =====================================================================

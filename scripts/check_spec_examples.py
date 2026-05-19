@@ -155,7 +155,7 @@ ALLOWLIST: dict[tuple[str, int], str] = {
     ("07-effects.md", 268): "FRAGMENT",     # fn(Unit -> A) in param position
 
     # Chapter 7 — empty effect bodies (parser requires op_decl+)
-    ("07-effects.md", 318): "FRAGMENT",     # effect Diverge {} — no operations
+    ("07-effects.md", 319): "FRAGMENT",     # effect Diverge {} — no operations
 
     # Chapter 9 — Async builtin signatures (no body)
     ("09-standard-library.md", 495): "FRAGMENT",  # async/await signatures (no body)
@@ -253,7 +253,7 @@ CHECK_ALLOWLIST: dict[tuple[str, int], str] = {
     ("06-contracts.md", 54): "INCOMPLETE",   # is_sorted_impl in SortedArray
 
     # Chapter 7 — effect composition referencing undefined functions
-    ("07-effects.md", 390): "INCOMPLETE",    # fn foo calls undefined bar/baz
+    ("07-effects.md", 391): "INCOMPLETE",    # fn foo calls undefined bar/baz
 
     # Chapter 8 — cross-module imports (imported modules don't exist)
     ("08-modules.md", 151): "INCOMPLETE",    # import vera.math(abs, max)

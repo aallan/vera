@@ -655,6 +655,18 @@
     ]
   },
   {
+    "id": "ch07_io_read_char",
+    "file": "ch07_io_read_char.vera",
+    "chapter": 7,
+    "title": "IO.read_char operation (#618)",
+    "level": "verify",
+    "spec_ref": "Section 7.2",
+    "features": [
+      "io_effect",
+      "io_read_char"
+    ]
+  },
+  {
     "id": "ch07_random_effect",
     "file": "ch07_random_effect.vera",
     "chapter": 7,
