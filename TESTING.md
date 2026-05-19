@@ -40,7 +40,7 @@ mypy vera/                                           # strict mode
 
 # Validation scripts
 python scripts/check_conformance.py                  # conformance suite (87 programs, see manifest.json)
-python scripts/check_examples.py                     # 34 example programs
+python scripts/check_examples.py                     # 35 example programs
 python scripts/check_spec_examples.py                # spec code blocks
 python scripts/check_readme_examples.py              # README code blocks
 python scripts/check_skill_examples.py               # SKILL.md code blocks
@@ -243,7 +243,7 @@ The lowest-coverage module is `markdown.py` at 87%, reflecting Markdown AST trav
 
 Vera's verifier classifies each contract into one of three tiers. **Tier 1** contracts are proved correct statically by Z3 — no runtime overhead. **Tier 3** contracts cannot be fully decided by the SMT solver and fall back to runtime assertion checks. The verifier never rejects a valid program; it simply warns when a contract drops to Tier 3.
 
-Across all 34 example programs:
+Across all 35 example programs:
 
 | Metric | Value |
 |--------|-------|
@@ -278,7 +278,7 @@ How Vera language features (by spec chapter) map to test files and example progr
 | Ch 2: Types | ADTs (algebraic data types), Option, Result | test_codegen, test_checker | ch02_adt_basic, ch02_adt_recursive, ch02_option_result | pattern_matching, list_ops |
 | Ch 2: Types | Refinement types | test_codegen, test_verifier | ch02_refinement_types | refinement_types, safe_divide |
 | Ch 2: Types | Generics (`forall<T>`) | test_codegen_monomorphize, test_checker | ch02_generics | generics |
-| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 34 examples |
+| Ch 3: Slots | `@T.n` references, De Bruijn indexing | test_checker, test_codegen | ch03_slot_basic, ch03_slot_indexing, ch03_slot_result | all 35 examples |
 | Ch 4: Expressions | Arithmetic, comparison, boolean, unary ops | test_codegen, test_checker | ch04_arithmetic, ch04_comparison, ch04_boolean_ops | factorial, absolute_value |
 | Ch 4: Expressions | If/else, let, match, pipe operator | test_codegen, test_checker | ch04_if_else, ch04_let_binding, ch04_match_basic, ch04_match_nested, ch04_pipe_operator | pattern_matching |
 | Ch 4: Expressions | String and array builtins | test_codegen | ch04_string_builtins, ch04_array_ops | string_ops |
@@ -331,7 +331,7 @@ _run_trap(source, fn, args)    # compile + execute, assert WASM trap
 
 ## Round-Trip Testing
 
-Every one of the 34 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
+Every one of the 35 example programs in `examples/` is tested through **every pipeline stage** via parametrised tests: parsing, AST transformation, type checking, contract verification, WASM compilation, and execution. If you add a new `.vera` example, it is automatically included in the round-trip suite.
 
 The formatter has **idempotency tests**: `format(format(x)) == format(x)` for all tested programs.
 
@@ -489,7 +489,7 @@ Thirteen scripts in `scripts/` validate cross-cutting concerns beyond unit tests
 | Script | What it validates |
 |--------|-------------------|
 | `check_conformance.py` | All 87 conformance programs pass their declared level (parse/check/verify/run) |
-| `check_examples.py` | All 34 `.vera` examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 35 `.vera` examples pass `vera check` + `vera verify` |
 | `check_spec_examples.py` | 164 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_skill_examples.py` | All Vera code blocks in SKILL.md parse correctly |
@@ -581,7 +581,7 @@ Every push is checked by 27 configured hooks across two stages: 25 are configure
 | `pytest tests/ -q` | Run full test suite |
 | `fix_allowlists.py --fix` | Auto-fix stale allowlist line numbers |
 | `check_conformance.py` | All 87 conformance programs pass their declared level |
-| `check_examples.py` | All 34 examples pass `vera check` + `vera verify` |
+| `check_examples.py` | All 35 examples pass `vera check` + `vera verify` |
 | `check_examples_readme.py` | `vera run` commands in `examples/README.md` reference existing files and exported functions |
 | `check_readme_examples.py` | README code blocks parse correctly |
 | `check_examples_doc.py` | EXAMPLES.md code blocks parse correctly |

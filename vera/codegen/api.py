@@ -1396,15 +1396,37 @@ def execute(
 
         # Unix path.  Distinguish TTY (need raw mode) from piped
         # input (already unbuffered enough — just read one char).
+        # Each branch wraps the host call in `except Exception` so
+        # system errors (closed stdin, monkey-patched stream
+        # without a fileno, termios.error on weird devices) become
+        # Result.Err rather than propagating as wasmtime traps.
+        # `Exception` excludes `KeyboardInterrupt` and `SystemExit`
+        # — those are direct `BaseException` subclasses — so Ctrl-C
+        # still terminates interactive prompts (same stance as
+        # host_sleep).
         import os
-        fd = sys.stdin.fileno()
+        try:
+            fd = sys.stdin.fileno()
+        except Exception as exc:
+            return _alloc_result_err_string(
+                caller, f"stdin.fileno() failed: {exc}",
+            )
+
         if not os.isatty(fd):
-            ch = sys.stdin.read(1)
+            try:
+                ch = sys.stdin.read(1)
+            except Exception as exc:
+                return _alloc_result_err_string(
+                    caller, f"stdin.read failed: {exc}",
+                )
             if not ch:
                 return _alloc_result_err_string(caller, "EOF")
             return _alloc_result_ok_string(caller, ch)
 
-        # TTY: enter raw mode, read one char, restore.
+        # TTY: enter raw mode, read one char, restore.  The inner
+        # try/finally guarantees terminal state is restored even
+        # if the read raises; the outer try/except converts any
+        # such failure to Result.Err.
         try:
             import termios
             import tty
@@ -1412,12 +1434,17 @@ def execute(
             return _alloc_result_err_string(
                 caller, f"termios/tty unavailable: {exc}",
             )
-        old = termios.tcgetattr(fd)
         try:
-            tty.setraw(fd)
-            ch = sys.stdin.read(1)
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                ch = sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except Exception as exc:
+            return _alloc_result_err_string(
+                caller, f"raw-mode read failed: {exc}",
+            )
         if not ch:
             return _alloc_result_err_string(caller, "EOF")
         return _alloc_result_ok_string(caller, ch)

@@ -16,10 +16,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Documentation
 
-- `spec/07-effects.md` — added `read_char` row to the IO operation table.
+- `spec/07-effects.md` — added `read_char` row to the IO operation table; bumped IO operation count "ten → eleven" in the section intro.
 - `spec/12-runtime.md` — added `vera.read_char` import row and the browser-runtime IO behaviour table entry.
-- `SKILL.md` — added `IO.read_char` row to the IO operations table; updated the browser-runtime summary sentence to mention the pending JSPI dependency.
+- `SKILL.md` — added `IO.read_char` row to the IO operations table; updated the browser-runtime summary sentence to mention the pending JSPI dependency; bumped IO operation count "ten → eleven" in two places.
 - `examples/read_char.vera` — new example demonstrating the read-one-char pattern with full failure-mode handling.
+- `TESTING.md` — finished the 34→35 example-count sweep across six remaining call sites (validation-script comment, verification-coverage section, slot-feature row, round-trip section, validation-scripts table, pre-commit-hooks table) — caught by CodeRabbit on PR #689 after the initial header-row update.
+
+### Fixed (post-review)
+
+- **PR #689 CodeRabbit findings**: wrapped `sys.stdin.fileno()` / `sys.stdin.read(1)` / `termios.tcgetattr` / `tty.setraw` / `termios.tcsetattr` in `except Exception` blocks in `host_read_char` so system errors (closed stdin, monkey-patched stream without `fileno()`, `termios.error` on weird devices) become `Result.Err` rather than propagating as wasmtime traps.  `Exception` excludes `KeyboardInterrupt` and `SystemExit` (direct `BaseException` subclasses), so Ctrl-C still terminates interactive prompts — same stance as `host_sleep`.  Added explicit `encoding="utf-8"` to the three new `subprocess.run` calls in `test_cli.py` (matches CLAUDE.md cross-platform pitfalls section: CI sets `PYTHONUTF8=1` as a backstop, but the explicit form is portable to local Windows shells without that variable).
 
 ## [0.0.156] - 2026-05-19
 

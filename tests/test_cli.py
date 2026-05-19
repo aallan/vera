@@ -1780,7 +1780,7 @@ public fn main(@Unit -> @Unit)
 """, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run", str(prog)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
             input="X",
         )
         assert result.returncode == 0
@@ -1806,7 +1806,7 @@ public fn main(@Unit -> @Unit)
 """, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run", str(prog)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
             input="",
         )
         assert result.returncode == 0
@@ -1833,7 +1833,7 @@ public fn main(@Unit -> @Unit)
 """, encoding="utf-8")
         result = subprocess.run(
             [sys.executable, "-m", "vera.cli", "run", str(prog)],
-            capture_output=True, text=True,
+            capture_output=True, text=True, encoding="utf-8",
             input="é",  # 2-byte UTF-8 sequence
         )
         assert result.returncode == 0

@@ -286,7 +286,7 @@ This function always performs `IO` (for the logging), plus whatever effects `E` 
 
 ### 7.7.1 `IO`
 
-The `IO` effect is built-in and provides ten operations for interacting with the outside world:
+The `IO` effect is built-in and provides eleven operations for interacting with the outside world:
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
