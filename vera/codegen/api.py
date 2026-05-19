@@ -1347,10 +1347,12 @@ def execute(
     # #618 — single-character input for real-time CLI programs.
     #
     # Cross-platform shape:
-    #   - Unix TTY: termios raw-mode context, sys.stdin.read(1),
+    #   - Unix TTY: termios cbreak-mode context, sys.stdin.read(1),
     #     restore on exit.  Reads at most one Unicode character
     #     (sys.stdin is text mode; UTF-8 multi-byte sequences are
-    #     decoded by the stream).
+    #     decoded by the stream).  cbreak (not raw) keeps ISIG
+    #     enabled so Ctrl-C still raises SIGINT → KeyboardInterrupt
+    #     and the program can exit cleanly.
     #   - Unix non-TTY (stdin piped/redirected): no raw mode needed,
     #     just sys.stdin.read(1).  The caller's pipeline already
     #     delivers data byte-by-byte (or character-by-character for
@@ -1466,29 +1468,52 @@ def execute(
                 caller, f"tcgetattr failed: {exc}",
             )
 
-        # Enter raw mode, read one char, restore.  The inner
-        # try/finally guarantees the restore is attempted even
-        # when the read raises.  A nested try/except around the
-        # restore call keeps a restore failure from masking the
-        # original read error — if both fail, the read error
-        # surfaces (more useful for debugging); the terminal may
-        # be left in raw mode in that pathological case, but
-        # there is nothing more the host can do here.
+        # Enter cbreak mode (NOT raw): cbreak disables ICANON and
+        # ECHO (so we get one character without waiting for Enter
+        # and without echoing) but PRESERVES ISIG.  With ISIG on,
+        # Ctrl-C still generates SIGINT and Python turns that into
+        # `KeyboardInterrupt`, which the outer handler converts to
+        # `_VeraExit(130)`.  `tty.setraw()` would clear ISIG, in
+        # which case Ctrl-C arrives in the read buffer as the
+        # literal byte `\x03` and the program never exits — exactly
+        # what a Tetris-style game user would expect to NOT happen.
+        #
+        # The restore_exc dance below preserves both error sources
+        # rather than letting one mask the other.  The inner finally
+        # guarantees the restore is attempted; capturing the
+        # exception (instead of swallowing) lets the post-restore
+        # logic surface it iff the read itself succeeded.  If both
+        # the read and the restore fail, the read error wins
+        # (more actionable for debugging); the terminal may be left
+        # in cbreak mode in that pathological case, but there is
+        # nothing more the host can do here.
+        restore_exc: Exception | None = None
         try:
             try:
-                tty.setraw(fd)
+                tty.setcbreak(fd)
                 ch = sys.stdin.read(1)
             finally:
                 try:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    restore_exc = exc
         except KeyboardInterrupt:
             raise _VeraExit(130) from None
         except Exception as exc:
+            # Read (or setcbreak) failed.  Prefer the read error
+            # over any restore_exc — restore failure is less
+            # actionable than the original problem.
             return _alloc_result_err_string(
                 caller, f"raw-mode read failed: {exc}",
             )
+
+        # Read succeeded.  If restore failed, surface it now so
+        # the failure is not silently swallowed.
+        if restore_exc is not None:
+            return _alloc_result_err_string(
+                caller, f"raw-mode restore failed: {restore_exc}",
+            )
+
         if not ch:
             return _alloc_result_err_string(caller, "EOF")
         return _alloc_result_ok_string(caller, ch)
