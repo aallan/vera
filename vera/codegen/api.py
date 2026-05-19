@@ -1514,7 +1514,22 @@ def execute(
                 caller, f"raw-mode restore failed: {restore_exc}",
             )
 
-        if not ch:
+        # Ctrl-D (ASCII EOT, `\x04`) in cbreak mode arrives as a
+        # literal byte rather than triggering an empty-read EOF —
+        # cbreak disables ICANON, which is the line discipline
+        # layer that normally turns Ctrl-D-at-start-of-line into
+        # an empty read.  The user pressing Ctrl-D in a real-time
+        # CLI program still means "I'm done", though, so map it
+        # to EOF here.  This is the conventional Unix-TTY
+        # interpretation and is restricted to this branch only:
+        # piped `\x04` on the non-TTY shared path is left
+        # untouched (a pipe is a byte stream, the producer chose
+        # to include `\x04`), and the Windows TTY branch uses
+        # `msvcrt.getwch()` which has its own end-of-input
+        # semantics (Ctrl-Z `\x1A` is the Windows analog —
+        # similar mapping could be added there if a regression
+        # surfaces; left untouched for now).
+        if not ch or ch == "\x04":
             return _alloc_result_err_string(caller, "EOF")
         return _alloc_result_ok_string(caller, ch)
 

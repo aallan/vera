@@ -8289,6 +8289,32 @@ public fn main(-> @Unit)
         assert exec_result.stdout == "é"
         assert exec_result.stderr == ""
 
+    def test_io_read_char_stdin_buf_passes_eot_literally(self) -> None:
+        """Piped `\\x04` (Ctrl-D / EOT) stays a literal byte.
+
+        The Unix TTY cbreak branch maps `\\x04` to EOF (so a user
+        pressing Ctrl-D in a real-time CLI gets EOF semantics
+        despite ICANON being disabled).  The non-TTY paths must
+        NOT do that mapping — a pipe is a byte stream and the
+        producer chose to include `\\x04`.  This pins the
+        intentional asymmetry: stdin_buf returns `Ok("\\x04")`,
+        not `Err("EOF")`.
+        """
+        source = """\
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  match IO.read_char(()) {
+    Ok(@String) -> IO.print(string_concat("byte: ", @String.0)),
+    Err(@String) -> IO.print(string_concat("err: ", @String.0))
+  }
+}
+"""
+        result = _compile_ok(source)
+        exec_result = execute(result, fn_name="main", stdin="\x04")
+        assert exec_result.stdout == "byte: \x04"
+        assert exec_result.stderr == ""
+
     def test_io_read_file_success(self) -> None:
         """IO.read_file reads a file and returns Ok(contents)."""
         import tempfile, os
