@@ -232,6 +232,8 @@ At each call site, the compiler generates two VCs:
 
 This means the verifier is modular: each function is verified independently, assuming its callees satisfy their contracts.
 
+A practical implication: if a function `bad` has an implementation that doesn't satisfy its own `ensures(...)` clause, the verifier reports E500 on `bad`'s body — but a caller `main` that uses `bad`'s declared contract is still verified.  The bug is contained to `bad`'s body-vs-contract mismatch; `main`'s reasoning is sound under the assumption that `bad` honours its declared postcondition.  This is intentional — it keeps verification compositional and bounded by per-function complexity, rather than requiring whole-program reasoning at every call site.  The cost is that an E500 on `bad` is a real failure that downstream consumers (`vera test`, `vera verify`) MUST surface; silently classifying `bad` as verified while `main` reads its contract would break the soundness chain.
+
 ### 6.4.3 Primitive Operation Safety
 
 The verifier checks the contracts the programmer wrote.  Latent obligations on primitive operations whose well-definedness depends on operand values — `a / b` (Int / Nat), `a % b` (Int / Nat), `arr[i]`, `string_at(s, i)`, etc. — are **not auto-synthesised** by the reference compiler.  A function that performs `@Int.1 / @Int.0` with `requires(true)` will verify cleanly and trap at runtime if called with a zero divisor.

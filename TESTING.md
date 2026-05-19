@@ -516,6 +516,55 @@ These run in both pre-commit hooks and CI, so issues are caught locally before t
 
 Allowlisted entries have stale-detection: when a feature lands or a spec edit shifts line numbers, CI flags the entry for removal or the `fix_allowlists.py` script auto-fixes the line numbers. The INCOMPLETE check entries reference functions, types, or imports not defined in the block (e.g. `abs`, `Tuple`, `array_map`, `parse_int`). The 1 FUTURE check entry uses `async/await`. The 1 ILLUSTRATIVE verify entry is a spec example demonstrating multiple postconditions syntax where the contract is intentionally imprecise.
 
+## JSON Output Stability
+
+`vera check --json`, `vera verify --json`, and `vera test --json` emit structured JSON for downstream tooling (CI pipelines, IDE plugins, agent feedback loops).  The field set is a public API — see [`spec/00-introduction.md` §0.5.8](../spec/00-introduction.md#058-machine-readable-output---json) for the stability rules.  Tests in `tests/test_cli.py` assert on the documented field set, so a regression that drops a documented field will fail at least one test.
+
+### `vera check --json` / `vera verify --json`
+
+Top-level:
+
+| Field | Type | Description |
+|---|---|---|
+| `ok` | bool | `true` iff the file passed all checks at the requested stage; the canonical exit-code signal |
+| `file` | string | The source file checked (echoes the path argument) |
+| `diagnostics` | array | List of error-severity `Diagnostic` objects (see below) |
+| `warnings` | array | List of warning-severity `Diagnostic` objects |
+| `verification` | object | Only on `vera verify --json` — counts of `tier1_verified`, `tier3_runtime`, `total` |
+| `slot_environments` | array | Only when `--explain-slots` is passed — per-function slot tables |
+
+`Diagnostic` shape: `severity`, `description`, `location`, `source_line`, `rationale`, `fix`, `spec_ref`, `error_code` (the `error_code` set is documented in `vera/errors.py::ERROR_CODES`).
+
+### `vera test --json`
+
+Top-level:
+
+| Field | Type | Description |
+|---|---|---|
+| `ok` | bool | `true` iff `summary.failed == 0` and no verifier errors; the canonical exit-code signal |
+| `file` | string | The source file tested |
+| `functions` | array | Per-function `FunctionTestResult`: `name`, `category` (one of `"verified"`, `"tested"`, `"failed"`, `"skipped"`), `reason`, `trials_run`, `trials_passed`, `trials_failed`, `failures` |
+| `summary` | object | Aggregate counts (see below) |
+| `diagnostics` | array | Verifier-error diagnostics that fed into `"failed"` classifications |
+
+`summary` field set:
+
+| Field | Description |
+|---|---|
+| `verified` | Functions classified Tier 1 (proved by Z3) |
+| `tested` | Functions exercised with Z3-generated inputs |
+| `passed` | Subset of `tested` where all trials passed |
+| `failed` | Verifier-refuted OR Tier-3-tested-with-trial-failures |
+| `skipped` | Functions whose inputs can't be Z3-generated (e.g. ADT params) |
+| `total_trials` | Sum of trials run across all tested functions |
+| `total_passes` | Sum of passing trials |
+| `total_failures` | Sum of failing trials |
+| `unlisted_errors` | Verifier-error diagnostics whose attributable function isn't in the displayed `functions` list (`--fn` filtering, private helpers).  Added in v0.0.156. |
+
+### Stability contract
+
+Per `spec/00-introduction.md` §0.5.8: fields MAY be added (consumers MUST tolerate unknowns), fields MUST NOT be removed or renamed without a major version bump, and field semantics MUST NOT change.  `ok` is the canonical gate; downstream CI SHOULD read it rather than parse field-by-field.
+
 ## Pre-commit Hooks
 
 Every push is checked by 27 configured hooks across two stages: 25 are configured at the commit stage (after `pre-commit install`), and 2 (`check-changelog-updated`, `uv-lock-check`) are configured at the push stage (after `pre-commit install --hook-type pre-push`). Many commit-stage hooks use per-hook `files:` / `types:` filters and only fire when matching files are staged — a docs-only commit triggers a small subset, a compiler-level commit triggers most. Full list:

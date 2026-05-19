@@ -138,6 +138,19 @@ The `vera test` command uses contracts as test specifications. For each function
 
 The grammar is defined in EBNF notation in Chapter 10 and implemented as a machine-readable Lark LALR(1) grammar (`grammar.lark`) that is shared between the specification and the reference compiler. This grammar can be used for constrained decoding, syntax highlighting, and third-party tool integration.
 
+### 0.5.8 Machine-Readable Output (`--json`)
+
+The compiler emits structured JSON diagnostics via the `--json` flag, supported on `vera check`, `vera verify`, and `vera test`. The JSON shape is a public API for downstream tooling — CI pipelines, IDE plugins, agent feedback loops — and the field set is governed by the following stability rules:
+
+- **Fields MAY be added** in any release. Consumers MUST tolerate unknown fields.
+- **Fields MUST NOT be removed or renamed** without a major version bump.
+- **Field semantics MUST NOT change** without a major version bump. The numeric value of `summary.failed` means the same thing in every minor release.
+- **The `ok` field is the canonical exit signal.** `ok == true` corresponds to exit code 0; `ok == false` corresponds to a non-zero exit. Downstream CI MUST gate on `ok` rather than parsing field-by-field.
+
+The current field sets are documented per-command in [`TESTING.md`](../TESTING.md#json-output-stability) and verified by the test suite — a regression that drops a documented field will fail at least one test. Reference implementations are responsible for keeping their JSON output aligned with the documented set; downstream tooling SHOULD read the documented fields and ignore unknown ones.
+
+This is the same machine-readable / human-readable duality as the diagnostic format itself: `--json` is for tools, the default text output is for humans, and both are first-class.
+
 ## 0.6 Document Conventions
 
 Throughout this specification:
