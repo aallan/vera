@@ -39,6 +39,8 @@ For contributions to the reference compiler:
 6. Commit your changes with a clear commit message.
 7. Push to your fork and open a pull request.
 
+**Note for first-time contributors**: GitHub gates CI on first-time PRs behind a manual maintainer approval (you'll see `action_required` next to the CI check rather than `pending`).  A maintainer will approve the workflow once the PR is reviewed; subsequent pushes to the same PR run CI automatically.  This is a GitHub security feature, not a project-specific gate.
+
 ### Built-in functions and types
 
 When adding or modifying built-in functions (registered in `vera/environment.py`):

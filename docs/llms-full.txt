@@ -2,7 +2,7 @@
 
 > Vera is a statically typed, purely functional programming language designed for large language models to write. It uses typed slot references (@T.n) instead of variable names, requires contracts on every function, and compiles to WebAssembly.
 
-This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.155. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
+This file contains the core Vera language documentation — language reference, agent instructions, FAQ, error codes, and formal grammar — compiled into a single document. Version 0.0.156. For the full documentation index including the 13-chapter specification and supplementary docs, see llms.txt.
 
 
 ========================================================================
@@ -476,7 +476,7 @@ private data Option<T> {
 
 > **Note:** `Option<T>`, `Result<T, E>`, `Ordering`, and `UrlParts` are provided by the standard prelude and available in every program without explicit `data` declarations. You only need to define them locally if you want to shadow the prelude definition.
 
-With an invariant *(NYI — see [#560](https://github.com/aallan/vera/issues/560); use a refinement type instead, shown below)*:
+With an invariant *(NYI — see [#686](https://github.com/aallan/vera/issues/686); use a refinement type instead, shown below)*:
 
 ```vera
 private data Positive invariant(@Int.0 > 0) {
@@ -2301,15 +2301,13 @@ These are known limitations in the current reference implementation. Most are tr
 | `map_new()` / `set_new()` require type context | The empty-collection constructors `map_new()` and `set_new()` cannot infer their key/value types without a surrounding type annotation. Assign the result to a typed `let` binding: `let @Map<String, Int> = map_new();` | — |
 | `Inference.complete` has no `max_tokens` or temperature controls | The host implementation uses provider defaults. Custom parameters (max tokens, temperature, top-p, system prompt) are not yet supported at the Vera level. | [#370](https://github.com/aallan/vera/issues/370) |
 | `Inference` effect has no user-defined handlers | In the current implementation, `Inference` is always host-backed (dispatches to a real API). User-defined handlers for mocking, local models, or replay are not yet supported. | [#372](https://github.com/aallan/vera/issues/372) |
-| Browser target: terminal-style programs don't run unchanged | A program built for terminal ergonomics (`IO.sleep` between frames + ANSI escape sequences for cursor control) compiles cleanly to `--target browser` but doesn't render meaningfully — `IO.sleep` busy-waits and freezes the tab ([#609](https://github.com/aallan/vera/issues/609) tracks the JSPI-driven yield fix), and ANSI escapes appear as literal text in the DOM ([#610](https://github.com/aallan/vera/issues/610) tracks an ANSI-subset interpreter).  Closing both — neither needs a language change — would let typical terminal Vera programs render unchanged on either target. Until then, write browser-target programs as a pure simulation core with a JS driver, or stick to terminal output. | [#608](https://github.com/aallan/vera/issues/608) (umbrella) |
+| Browser target: terminal-style programs don't run unchanged | A program built for terminal ergonomics (`IO.sleep` between frames + ANSI escape sequences for cursor control) compiles cleanly to `--target browser` but doesn't render meaningfully — `IO.sleep` busy-waits and freezes the tab ([#609](https://github.com/aallan/vera/issues/609) tracks the JSPI-driven yield fix), and ANSI escapes appear as literal text in the DOM ([#610](https://github.com/aallan/vera/issues/610) tracks an ANSI-subset interpreter).  Closing both — neither needs a language change — would let typical terminal Vera programs render unchanged on either target. Until then, write browser-target programs as a pure simulation core with a JS driver, or stick to terminal output. | [#609](https://github.com/aallan/vera/issues/609), [#610](https://github.com/aallan/vera/issues/610) |
 
 ## Known Bugs and Workarounds
 
-Current reference-implementation bugs that an agent writing Vera code is likely to hit. Every entry has a confirmed reproducer and a known workaround. The full curated list is in [KNOWN_ISSUES.md](https://github.com/aallan/vera/blob/main/KNOWN_ISSUES.md); the issue tracker is the source of truth.
+Current reference-implementation bugs that an agent writing Vera code is likely to hit. The full curated list is in [KNOWN_ISSUES.md](https://github.com/aallan/vera/blob/main/KNOWN_ISSUES.md); the issue tracker is the source of truth.
 
-| Shape | Bug summary | Workaround | Issue |
-|---|---|---|---|
-| String-returning function call in string interpolation produces invalid WASM | `vera check` and `vera verify` pass; the trap surfaces only at instantiation with `type mismatch: expected i64, found i32`.  Trigger is narrow: a function call whose return type is `@String`, used directly inside a string-interpolation segment without an intervening `let`-binding.  Slot refs and Int-returning calls are unaffected. | Either let-bind the call result first (`let @String = make_str(()); IO.print("\(@String.0)\n")`) or use `string_concat` instead of interpolation (`IO.print(string_concat(make_str(()), "\n"))`). | [#602](https://github.com/aallan/vera/issues/602) |
+No known bugs.
 
 When a Vera program type-checks cleanly, compiles without errors, and then produces a runtime trap you can't explain, runtime trap diagnostics are now Vera-native end-to-end: each trap carries a `kind` label (`divide_by_zero` / `out_of_bounds` / `stack_exhausted` / `unreachable` / `overflow` / `contract_violation` / `unknown`), a per-kind `Fix:` paragraph naming the canonical remediation, and a source backtrace pointing at the offending Vera function and line — not just `wasm trap: <reason>`.  Tail-recursive iteration runs in constant WASM stack space for both non-allocating ([#517](https://github.com/aallan/vera/issues/517), v0.0.126) and allocating ([#549](https://github.com/aallan/vera/issues/549), v0.0.154) tail calls — the latter prepends a `$gc_sp` restore before each `return_call` to keep the shadow stack bounded across iterations.
 

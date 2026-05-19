@@ -687,7 +687,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **Inference: no user handlers** | `handle[Inference]` blocks not supported; host-backed only in this release | [#372](https://github.com/aallan/vera/issues/372) |
 | **No WASI compliance** | IO uses ad-hoc host imports, not standardised WASI interfaces | [#237](https://github.com/aallan/vera/issues/237) |
 | **No resource limits** | No built-in fuel, memory, or timeout controls for untrusted code | [#239](https://github.com/aallan/vera/issues/239) |
-| **Browser target: timing + rendering not fully usable for terminal programs** | `IO.sleep` busy-waits and freezes the tab; ANSI escape codes render as literal text. Terminal-style programs (animation via `IO.sleep` + cursor control via ANSI escapes) need a separate browser-shaped variant or wait for runtime fixes. Both halves close without language changes — JSPI for sleep, an ANSI-subset interpreter for rendering. | [#608](https://github.com/aallan/vera/issues/608) (umbrella), [#609](https://github.com/aallan/vera/issues/609), [#610](https://github.com/aallan/vera/issues/610) |
+| **Browser target: timing + rendering not fully usable for terminal programs** | `IO.sleep` busy-waits and freezes the tab; ANSI escape codes render as literal text. Terminal-style programs (animation via `IO.sleep` + cursor control via ANSI escapes) need a separate browser-shaped variant or wait for runtime fixes. Both halves close without language changes — JSPI for sleep, an ANSI-subset interpreter for rendering. | [#609](https://github.com/aallan/vera/issues/609), [#610](https://github.com/aallan/vera/issues/610) |
 
 ## Extending the Compiler
 

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.156] - 2026-05-19
+
+### Added
+
+- **`TestSummary.unlisted_errors: int`** — new field on the `vera.tester.TestSummary` dataclass that counts verifier-error diagnostics whose attributable function isn't in the displayed `functions` list.  This happens when `--fn` filters to a subset, or when a private helper fails verification (private functions aren't displayed by `vera test`).  Exposed in `vera test --json` output under `summary.unlisted_errors` so downstream CI consumers can read the structured count instead of re-running regex attribution against the diagnostics array.  Introduced as part of [#674](https://github.com/aallan/vera/issues/674)'s fix to keep `vera/cli.py` purely presentational — the engine is the source of truth for attribution, `cli.py` reads structured fields.
+
 ### Fixed
 
 - **[#675](https://github.com/aallan/vera/issues/675)** — E500 (`Postcondition does not hold`) `fix=` text now names all three repair classes neutrally, with implementation-repair first.  Pre-fix the text named only two classes (strengthen `requires(...)`, weaken `ensures(...)`) — implicitly biasing the user away from the most common repair when E500 catches a typo in the function body.  External report from @rzyns.  Tightened `tests/test_verifier.py::TestCounterexamples::test_violation_has_fix_suggestion` to pin all three classes (pre-existing assertion would have survived the rewrite without catching a regression dropping "implementation").
@@ -2305,7 +2311,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.155...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.156...HEAD
+[0.0.156]: https://github.com/aallan/vera/compare/v0.0.155...v0.0.156
 [0.0.155]: https://github.com/aallan/vera/compare/v0.0.154...v0.0.155
 [0.0.154]: https://github.com/aallan/vera/compare/v0.0.153...v0.0.154
 [0.0.153]: https://github.com/aallan/vera/compare/v0.0.152...v0.0.153

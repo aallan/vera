@@ -47,7 +47,7 @@ The special reference `@T.result` (where `T` is the return type) refers to the f
 
 ### 6.2.3 Invariants (`invariant`)
 
-> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#560](https://github.com/aallan/vera/issues/560).  Until the implementation lands, refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
+> **Status: Not yet implemented.** The `invariant(...)` clause on `data` declarations is specified here but is not currently working in the reference compiler — every documented form fails with `[E130] no <DataName> bindings in scope`, because the slot environment for the invariant predicate is not yet wired up.  Tracked in [#686](https://github.com/aallan/vera/issues/686) (successor to the now-closed #560 — that earlier issue was about removing the broken spec examples; the feature implementation is the remaining work).  Until the implementation lands, refinement types (Chapter 2, Section 2.6) are the working alternative for expressing constraints on data values.
 
 An invariant is a predicate declared on a data type that MUST hold for all values of that type:
 
@@ -373,4 +373,4 @@ Verification summary:
 | Limitation | Issue |
 |-----------|-------|
 | Tier 2 verification (Z3-guided with `assert`/lemma hints) is specified in §6.3.2 and §6.6 but not implemented; contracts requiring hints fall to Tier 3 | [#427](https://github.com/aallan/vera/issues/427) |
-| The `invariant(...)` clause on `data` declarations is specified in §6.2.3 but not implemented; every documented form fails with `[E130] no <DataName> bindings in scope`.  Use refinement types (Chapter 2, §2.6) for the same effect on constraint-bearing data values. | [#560](https://github.com/aallan/vera/issues/560) |
+| The `invariant(...)` clause on `data` declarations is specified in §6.2.3 but not implemented; every documented form fails with `[E130] no <DataName> bindings in scope`.  Use refinement types (Chapter 2, §2.6) for the same effect on constraint-bearing data values. | [#686](https://github.com/aallan/vera/issues/686) |
