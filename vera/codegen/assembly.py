@@ -355,8 +355,21 @@ class AssemblyMixin:
                 f"  (global $heap_ptr (export \"heap_ptr\") "
                 f"(mut i32) (i32.const {gc_heap_start}))"
             )
+            # #692: $gc_sp and $gc_stack_limit are exported so host
+            # walkers (`write_html`, `write_json`, markdown serde) can
+            # push intermediate WASM heap pointers onto the shadow
+            # stack across allocations.  Without that, a Python-held
+            # `arr_ptr` from `write_html` is invisible to the
+            # conservative GC scan; if a sub-walk triggers
+            # `$gc_collect` the block gets reclaimed and the next
+            # write scribbles into freed memory → free-list
+            # corruption → trap.  Same #570/#515/#593 bug class but
+            # on the host side.  $gc_sp is (mut) — the host
+            # advances it to push, resets it to pop.
+            # $gc_stack_limit is immutable — the host reads it to
+            # detect overflow before pushing.
             parts.append(
-                f"  (global $gc_sp (mut i32) "
+                f"  (global $gc_sp (export \"gc_sp\") (mut i32) "
                 f"(i32.const {gc_stack_base}))"
             )
             parts.append(
@@ -365,8 +378,8 @@ class AssemblyMixin:
             )
             gc_stack_limit = gc_stack_base + gc_stack_size
             parts.append(
-                f"  (global $gc_stack_limit i32 "
-                f"(i32.const {gc_stack_limit}))"
+                f"  (global $gc_stack_limit (export \"gc_stack_limit\") "
+                f"i32 (i32.const {gc_stack_limit}))"
             )
             parts.append(
                 f"  (global $gc_heap_start i32 "

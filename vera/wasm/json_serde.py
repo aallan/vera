@@ -60,51 +60,75 @@ def write_json(
     write_f64: WriteF64Fn,
     alloc_string: AllocStringFn,
     map_alloc: MapAllocFn,
+    guard: Any,
     value: Any,
 ) -> int:
     """Write a Python JSON value to WASM memory as a Json ADT.
 
     Returns the heap pointer to the allocated Json node.
+
+    *guard* is a ``_ShadowGuard`` (defined in
+    ``vera.codegen.api``).  Intermediate WASM heap pointers
+    (string body, array backing, map wrapper) are pushed onto
+    its shadow-stack window before any subsequent alloc that
+    could trigger ``$gc_collect``.  See #692 + the analogous
+    notes in ``html_serde.write_html`` for the bug class.
+
+    The returned root pointer is NOT pushed — the caller is
+    responsible for rooting it before the next alloc.
     """
     if value is None:
-        # JNull — tag=0, total=8
+        # JNull — tag=0, total=8.  Single alloc, no cross-pointer
+        # holding, no rooting needed.
         ptr = alloc(caller, 8)
         write_i32(caller, ptr, _TAG_JNULL)
         return ptr
 
     if isinstance(value, bool):
-        # JBool(Bool) — tag=1, i32 at offset 4, total=8
+        # JBool(Bool) — tag=1, i32 at offset 4, total=8.  Single
+        # alloc, no rooting needed.
         ptr = alloc(caller, 8)
         write_i32(caller, ptr, _TAG_JBOOL)
         write_i32(caller, ptr + 4, 1 if value else 0)
         return ptr
 
     if isinstance(value, (int, float)):
-        # JNumber(Float64) — tag=2, f64 at offset 8, total=16
+        # JNumber(Float64) — tag=2, f64 at offset 8, total=16.
+        # Single alloc, no rooting needed.
         ptr = alloc(caller, 16)
         write_i32(caller, ptr, _TAG_JNUMBER)
         write_f64(caller, ptr + 8, float(value))
         return ptr
 
     if isinstance(value, str):
-        # JString(String) — tag=3, i32_pair at offset 4, total=16
+        # JString(String) — tag=3, i32_pair at offset 4, total=16.
+        # Allocate the string FIRST and root it before the body
+        # alloc; the original order (body alloc then string alloc)
+        # could trigger GC mid-construction while the body is in
+        # a Python local with only the tag written.
+        s_ptr, s_len = alloc_string(caller, value)
+        if s_ptr != 0:
+            guard.push(s_ptr)
         ptr = alloc(caller, 16)
         write_i32(caller, ptr, _TAG_JSTRING)
-        s_ptr, s_len = alloc_string(caller, value)
         write_i32(caller, ptr + 4, s_ptr)
         write_i32(caller, ptr + 8, s_len)
         return ptr
 
     if isinstance(value, list):
-        # JArray(Array<Json>) — tag=4, i32_pair at offset 4, total=16
-        # First write all elements as Json pointers into an i32 array
+        # JArray(Array<Json>) — tag=4, i32_pair at offset 4,
+        # total=16.  Root arr_ptr before recursing into children
+        # (each sub-write may trigger GC) and across the final
+        # body alloc.  Child pointers become reachable via the
+        # rooted arr_ptr's slots as soon as we ``write_i32`` them.
         count = len(value)
         if count > 0:
             arr_ptr = alloc(caller, count * 4)
+            guard.push(arr_ptr)
             for i, elem in enumerate(value):
                 elem_ptr = write_json(
                     caller, alloc, write_i32, write_f64,
-                    alloc_string, map_alloc, elem,
+                    alloc_string, map_alloc, guard, elem,
                 )
                 write_i32(caller, arr_ptr + i * 4, elem_ptr)
         else:
@@ -134,14 +158,23 @@ def write_json(
         # the host dispatch).  GC reclaims the JObject's Map
         # entry from ``_map_store`` when the wrapper becomes
         # unreachable, just like a user-allocated Map.
+        #
+        # #692: each iteration's val_ptr is pushed onto the
+        # shadow stack BEFORE the next iteration's recursive
+        # ``write_json`` (which may GC).  Without this, the
+        # Python dict (``map_dict``) holds val_ptrs as ints that
+        # the conservative scan can't see; the WASM blocks they
+        # point to would be freed by the very next sub-alloc.
         map_dict: dict[object, object] = {}
         for k, v in value.items():
             val_ptr = write_json(
                 caller, alloc, write_i32, write_f64,
-                alloc_string, map_alloc, v,
+                alloc_string, map_alloc, guard, v,
             )
+            guard.push(val_ptr)
             map_dict[str(k)] = val_ptr
         wrapper_ptr = map_alloc(caller, map_dict)
+        guard.push(wrapper_ptr)
         ptr = alloc(caller, 8)
         write_i32(caller, ptr, _TAG_JOBJECT)
         write_i32(caller, ptr + 4, wrapper_ptr)
@@ -150,7 +183,7 @@ def write_json(
     # Fallback: treat as string
     return write_json(
         caller, alloc, write_i32, write_f64,
-        alloc_string, map_alloc, str(value),
+        alloc_string, map_alloc, guard, str(value),
     )
 
 

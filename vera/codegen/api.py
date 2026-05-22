@@ -955,6 +955,104 @@ def execute(
         assert isinstance(ptr, int)  # noqa: S101
         return ptr
 
+    # ------------------------------------------------------------------
+    # #692: Host-side shadow-stack rooting for multi-alloc walkers
+    # ------------------------------------------------------------------
+    #
+    # The conservative GC scan in ``$gc_collect`` (Phase 2a) only walks
+    # the WASM shadow stack (``$gc_sp`` .. ``$gc_stack_limit``) when
+    # tracing roots.  Host code that holds WASM heap pointers in
+    # Python locals across multiple ``_call_alloc`` calls is therefore
+    # invisible to GC — if one of those allocs triggers
+    # ``$gc_collect`` (because bump-alloc would overflow current
+    # memory), the Python-held pointers are reclaimed and the next
+    # write scribbles into freed memory → free-list corruption →
+    # ``Out-of-bounds memory access`` trap from inside ``$alloc``.
+    # Same #570/#515/#593 bug class but on the host side.
+    #
+    # ``_ShadowGuard`` provides exception-safe push/pop discipline.
+    # Used by ``write_html`` / ``write_json`` / markdown serde to
+    # root intermediate ``arr_ptr`` / ``name_ptr`` / ``wrapper_ptr``
+    # across sub-tree recursion and the final Result wrapper alloc.
+    #
+    # Design: ``__enter__`` snapshots the current ``$gc_sp``;
+    # ``__exit__`` resets ``$gc_sp`` to that snapshot, atomically
+    # popping every entry pushed within the ``with`` block — on both
+    # success and exception paths.  Callers push freely without
+    # counting; the outer ``with`` is the unwind boundary.
+
+    class _ShadowGuard:
+        """Push intermediate WASM heap pointers onto the GC shadow
+        stack so they survive any ``$gc_collect`` that fires during
+        a multi-alloc host walker.  Exception-safe — ``__exit__``
+        resets ``$gc_sp`` to the entry value on both success and
+        exception paths.  See #692."""
+
+        __slots__ = ("_caller", "_sp_global", "_limit_global", "_initial_sp")
+
+        def __init__(self, caller: wasmtime.Caller) -> None:
+            self._caller = caller
+            sp_global = caller["gc_sp"]
+            assert isinstance(sp_global, wasmtime.Global)  # noqa: S101
+            self._sp_global = sp_global
+            limit_global = caller["gc_stack_limit"]
+            assert isinstance(limit_global, wasmtime.Global)  # noqa: S101
+            self._limit_global = limit_global
+            self._initial_sp: int | None = None
+
+        def __enter__(self) -> "_ShadowGuard":
+            sp = self._sp_global.value(self._caller)
+            assert isinstance(sp, int)  # noqa: S101
+            self._initial_sp = sp
+            return self
+
+        def push(self, ptr: int) -> int:
+            """Push ``ptr`` onto the shadow stack.  Returns ``ptr``
+            for chaining inside an assignment expression."""
+            sp = self._sp_global.value(self._caller)
+            limit = self._limit_global.value(self._caller)
+            assert isinstance(sp, int)  # noqa: S101
+            assert isinstance(limit, int)  # noqa: S101
+            if sp >= limit:
+                # Same diagnostic shape as the WAT-side overflow path
+                # (``unreachable`` in ``gc_shadow_push``) — surface
+                # as a host-side error rather than a wasmtime trap.
+                raise RuntimeError(
+                    f"#692: host shadow-stack overflow "
+                    f"(sp={sp}, limit={limit})",
+                )
+            # Write i32 little-endian at [gc_sp].  Re-acquire
+            # ``data_ptr`` each push because ``memory.grow`` (which
+            # can fire inside ``_call_alloc``) can move the buffer.
+            # Byte-by-byte indexing through the ctypes pointer
+            # matches ``_write_bytes`` — ``struct.pack_into`` does
+            # NOT work here because wasmtime-py's ``data_ptr``
+            # returns an LP_c_ubyte, which lacks the buffer
+            # protocol that ``pack_into`` requires.
+            memory = self._caller["memory"]
+            assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+            buf = memory.data_ptr(self._caller)
+            packed = struct.pack("<I", ptr & 0xFFFF_FFFF)
+            for i, b in enumerate(packed):
+                buf[sp + i] = b
+            # Advance gc_sp by 4 (i32 width).
+            self._sp_global.set_value(self._caller, sp + 4)
+            return ptr
+
+        def __exit__(
+            self,
+            exc_type: object,
+            exc_val: object,
+            exc_tb: object,
+        ) -> None:
+            # Restore gc_sp to its entry value — atomically pops
+            # everything pushed within the ``with`` block, regardless
+            # of whether we're exiting normally or via exception.
+            if self._initial_sp is not None:
+                self._sp_global.set_value(
+                    self._caller, self._initial_sp,
+                )
+
     # #573: wrapper-ADT layout constants (must match
     # ``vera/wasm/calls_containers.py``).  Tag values are picked
     # well outside the user-ADT tag range as a debugging aid; the
@@ -1690,11 +1788,19 @@ def execute(
             text = _read_wasm_string(caller, ptr, length)
             try:
                 doc = _md_parse(text)
-                block_ptr = write_md_block(
-                    caller, _call_alloc, _write_i32,
-                    _write_bytes, _alloc_string, doc,
-                )
-                return _alloc_result_ok_i32(caller, block_ptr)
+                # #692: same shadow-stack-rooting concern as
+                # ``host_html_parse`` / ``host_json_parse``.
+                # write_md_block holds intermediate pointers
+                # (string bodies, child-array backings) in Python
+                # locals across many sub-allocs; ``guard`` keeps
+                # them visible to the conservative GC scan.
+                with _ShadowGuard(caller) as guard:
+                    block_ptr = write_md_block(
+                        caller, _call_alloc, _write_i32,
+                        _write_bytes, _alloc_string, guard, doc,
+                    )
+                    guard.push(block_ptr)
+                    return _alloc_result_ok_i32(caller, block_ptr)
             except Exception as exc:
                 return _alloc_result_err_string(caller, str(exc))
 
@@ -2794,11 +2900,21 @@ def execute(
                     parsed = _json.loads(text)
                 except (ValueError, TypeError) as exc:
                     return _alloc_result_err_string(caller, str(exc))
-                json_ptr = write_json(
-                    caller, _call_alloc, _write_i32, _write_f64,
-                    _alloc_string, _alloc_map_wrapper, parsed,
-                )
-                return _alloc_result_ok_i32(caller, json_ptr)
+                # #692: hold the shadow-stack window open across the
+                # full tree marshalling AND the final Result.Ok
+                # wrapper alloc.  ``guard.__exit__`` restores
+                # ``$gc_sp`` on the way out — pops everything we
+                # pushed.
+                with _ShadowGuard(caller) as guard:
+                    json_ptr = write_json(
+                        caller, _call_alloc, _write_i32, _write_f64,
+                        _alloc_string, _alloc_map_wrapper, guard, parsed,
+                    )
+                    # Push the tree root before the Result.Ok alloc —
+                    # that alloc could trigger GC and free the
+                    # otherwise-unrooted tree.
+                    guard.push(json_ptr)
+                    return _alloc_result_ok_i32(caller, json_ptr)
 
             linker.define_func(
                 "vera", "json_parse",
@@ -3004,11 +3120,18 @@ def execute(
                     parser = _VeraHTMLParser()
                     parser.feed(text)
                     root = parser.get_root()
-                    html_ptr = write_html(
-                        caller, _call_alloc, _write_i32,
-                        _alloc_string, _alloc_map_wrapper, root,
-                    )
-                    return _alloc_result_ok_i32(caller, html_ptr)
+                    # #692: hold the shadow-stack window open across
+                    # the full tree marshalling AND the final
+                    # Result.Ok wrapper alloc.  Same pattern as
+                    # ``host_json_parse`` above.
+                    with _ShadowGuard(caller) as guard:
+                        html_ptr = write_html(
+                            caller, _call_alloc, _write_i32,
+                            _alloc_string, _alloc_map_wrapper,
+                            guard, root,
+                        )
+                        guard.push(html_ptr)
+                        return _alloc_result_ok_i32(caller, html_ptr)
                 except (ValueError, TypeError, AttributeError) as exc:
                     # Narrow catch matches `host_json_parse` above —
                     # parser failures surface as Result.Err.  We
@@ -3063,13 +3186,24 @@ def execute(
                 matches = _html_query_py(node, selector)
                 count = len(matches)
                 if count > 0:
-                    arr_ptr = _call_alloc(caller, count * 4)
-                    for i, m in enumerate(matches):
-                        m_ptr = write_html(
-                            caller, _call_alloc, _write_i32,
-                            _alloc_string, _alloc_map_wrapper, m,
-                        )
-                        _write_i32(caller, arr_ptr + i * 4, m_ptr)
+                    # #692: same shadow-stack-rooting concern as
+                    # ``host_html_parse`` — arr_ptr would otherwise
+                    # be reclaimed if a recursive write_html grew
+                    # the heap mid-walk.  Push arr_ptr; each child
+                    # write also routes through ``guard``.  The
+                    # returned (arr_ptr, count) pair is the function
+                    # result, and WASM codegen at the call site
+                    # shadow-pushes it via the standard mechanism.
+                    with _ShadowGuard(caller) as guard:
+                        arr_ptr = _call_alloc(caller, count * 4)
+                        guard.push(arr_ptr)
+                        for i, m in enumerate(matches):
+                            m_ptr = write_html(
+                                caller, _call_alloc, _write_i32,
+                                _alloc_string, _alloc_map_wrapper,
+                                guard, m,
+                            )
+                            _write_i32(caller, arr_ptr + i * 4, m_ptr)
                 else:
                     arr_ptr = 0
                 return (arr_ptr, count)
