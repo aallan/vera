@@ -165,6 +165,18 @@ def write_json(
         # Python dict (``map_dict``) holds val_ptrs as ints that
         # the conservative scan can't see; the WASM blocks they
         # point to would be freed by the very next sub-alloc.
+        #
+        # Exception-safety note: if a recursive ``write_json``
+        # raises mid-loop, the outer ``__exit__`` resets
+        # ``$gc_sp`` and pops every prior ``val_ptr`` push.
+        # ``map_dict`` still holds those ints as plain Python
+        # values when the exception unwinds — but that's safe:
+        # the function exits via the raise BEFORE the
+        # ``map_alloc(caller, map_dict)`` call below, so the
+        # stale ints never reach WASM.  A future maintainer
+        # should NOT try to recover ``map_dict`` partial state
+        # — the val_ptrs are guaranteed-invalid after the
+        # guard exit.
         map_dict: dict[object, object] = {}
         for k, v in value.items():
             val_ptr = write_json(

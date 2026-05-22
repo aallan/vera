@@ -19224,3 +19224,70 @@ public fn main(@Unit -> @Unit)
 }
 """
         assert _run_io(src) == "ok"
+
+    def test_html_query_30_matches(self) -> None:
+        """``html_query`` over 30 matches — exercises the
+        ``host_html_query`` `_ShadowGuard` path that also gained
+        rooting in #692.  Without the guard, ``arr_ptr`` for the
+        match-array would be reclaimed when recursive
+        ``write_html`` calls grow the heap mid-walk.  Per the
+        pr-review-toolkit pr-test-analyzer review on #693.
+
+        Sized conservatively (30 vs the 500 used by html_parse
+        tests above): ``host_html_query`` re-walks every matched
+        subtree via ``write_html`` within a single guard window,
+        accumulating pushes across all iterations.  The
+        shadow-stack budget per match in practice (including the
+        ``_alloc_map_wrapper`` and ``_register_wrapper`` calls
+        and the WAT-side ``$alloc`` accounting) is materially
+        higher than the four nominal pushes (name, wrapper, arr,
+        s_ptr) of write_html element-branch — 100 matches
+        empirically overflowed the 4096-entry stack.  30 still
+        triggers GC during the walk while staying comfortable
+        under the limit."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = string_concat(
+    "<root>",
+    string_concat(string_repeat("<p>x</p>", 30), "</root>")
+  );
+  match html_parse(@String.0) {
+    Ok(@HtmlNode) -> {
+      let @Array<HtmlNode> = html_query(@HtmlNode.0, "p");
+      IO.print("ok")
+    },
+    Err(_) -> IO.print("parse_err")
+  }
+}
+"""
+        assert _run_io(src) == "ok"
+
+    def test_json_parse_500_key_object(self) -> None:
+        """500-key flat JObject — exercises the JObject branch of
+        ``write_json`` (val_ptr push per iteration, wrapper_ptr
+        push, then body alloc).  Pre-fix, the val_ptrs held in
+        ``map_dict`` as Python ints were invisible to the
+        conservative GC scan; a sub-walk's GC could free them.
+        Per the pr-review-toolkit pr-test-analyzer review on #693."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = string_concat(
+    "{",
+    string_concat(
+      string_repeat("\\"k\\":0,", 499),
+      "\\"last\\":0}"
+    )
+  );
+  match json_parse(@String.0) {
+    Ok(_) -> IO.print("ok"),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(src) == "ok"

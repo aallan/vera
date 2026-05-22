@@ -301,6 +301,18 @@ def write_md_block(
 # ``backing`` remains pushed (the caller is the one who decides
 # whether to pop it via the outer ``with`` boundary); the caller
 # can rely on the conservative scan finding the backing's slots.
+#
+# Allocation order in each helper is ``backing = alloc(...)``
+# followed immediately by ``guard.push(backing)``.  If
+# ``guard.push`` itself raises (shadow-stack overflow on
+# pathologically deep walks), the just-allocated ``backing``
+# block is unrooted.  This is the correct semantics: the
+# exception propagates as a wasmtime trap, the entire walk is
+# abandoned, and the next GC reclaims the leaked block.  A
+# future "fix" must NOT try to push BEFORE alloc (impossible
+# without a ptr) or wrap the push in try/except — both would
+# break the trap-on-overflow invariant the WAT-side helper
+# preserves.
 
 
 def _write_i64(
@@ -321,7 +333,13 @@ def _write_inline_array(
     guard: Any,
     inlines: tuple[MdInline, ...],
 ) -> tuple[int, int]:
-    """Write Array<MdInline> — backing buffer of i32 element pointers."""
+    """Write Array<MdInline> — backing buffer of i32 element pointers.
+
+    Pushes ``backing`` onto ``guard`` before iterating, so it
+    remains visible to GC across the recursive sub-walks; the
+    push stays in place after the helper returns (the caller's
+    outer ``with`` is what unwinds it).
+    """
     count = len(inlines)
     if count == 0:
         return (0, 0)  # pragma: no cover
@@ -345,7 +363,11 @@ def _write_block_array(
     guard: Any,
     blocks: tuple[MdBlock, ...],
 ) -> tuple[int, int]:
-    """Write Array<MdBlock> — backing buffer of i32 element pointers."""
+    """Write Array<MdBlock> — backing buffer of i32 element pointers.
+
+    Same rooting contract as ``_write_inline_array``: backing
+    is pushed onto ``guard`` and remains pushed after return.
+    """
     count = len(blocks)
     if count == 0:
         return (0, 0)  # pragma: no cover
@@ -369,7 +391,11 @@ def _write_array_of_block_arrays(
     guard: Any,
     items: tuple[tuple[MdBlock, ...], ...],
 ) -> tuple[int, int]:
-    """Write Array<Array<MdBlock>> — each inner array is an i32_pair."""
+    """Write Array<Array<MdBlock>> — each inner array is an i32_pair.
+
+    Pushes the outer backing onto ``guard``; inner backings are
+    pushed by the recursive ``_write_block_array`` calls.
+    """
     count = len(items)
     if count == 0:
         return (0, 0)  # pragma: no cover
@@ -394,7 +420,12 @@ def _write_table_data(
     guard: Any,
     rows: tuple[tuple[tuple[MdInline, ...], ...], ...],
 ) -> tuple[int, int]:
-    """Write Array<Array<Array<MdInline>>> — table rows."""
+    """Write Array<Array<Array<MdInline>>> — table rows.
+
+    Pushes the outer ``backing`` AND each row's ``cell_backing``
+    onto ``guard`` so all three levels of nesting stay rooted
+    during the inline-array recursion.
+    """
     row_count = len(rows)
     if row_count == 0:
         return (0, 0)  # pragma: no cover

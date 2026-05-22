@@ -992,10 +992,29 @@ def execute(
 
         def __init__(self, caller: wasmtime.Caller) -> None:
             self._caller = caller
-            sp_global = caller["gc_sp"]
+            # Lookup-failure path: a host walker should never run
+            # against a module that didn't export ``$gc_sp`` /
+            # ``$gc_stack_limit`` (assembly.py exports both whenever
+            # ``$gc_collect`` is emitted, and any host walker
+            # requires the GC).  But hand-crafted ``.wat`` fixtures
+            # or future host imports that bypass the codegen flow
+            # could trigger the KeyError below.  Re-raise as a
+            # clearer ``RuntimeError`` so the wasmtime trampoline
+            # surfaces a diagnostic that names the missing exports
+            # rather than a bare ``KeyError`` becoming a generic
+            # "python exception" trap.
+            try:
+                sp_global = caller["gc_sp"]
+                limit_global = caller["gc_stack_limit"]
+            except KeyError as exc:
+                raise RuntimeError(
+                    "#692: host walker requires the module to "
+                    "export `$gc_sp` and `$gc_stack_limit` (missing "
+                    f"{exc}); the calling module was built without "
+                    "GC support",
+                ) from exc
             assert isinstance(sp_global, wasmtime.Global)  # noqa: S101
             self._sp_global = sp_global
-            limit_global = caller["gc_stack_limit"]
             assert isinstance(limit_global, wasmtime.Global)  # noqa: S101
             self._limit_global = limit_global
             self._initial_sp: int | None = None
@@ -1048,10 +1067,16 @@ def execute(
             # Restore gc_sp to its entry value — atomically pops
             # everything pushed within the ``with`` block, regardless
             # of whether we're exiting normally or via exception.
-            if self._initial_sp is not None:
-                self._sp_global.set_value(
-                    self._caller, self._initial_sp,
-                )
+            # ``__enter__`` always sets ``_initial_sp`` before
+            # returning, so ``__exit__`` should always have a
+            # snapshot to restore.  The assert pins the invariant —
+            # if it ever fails, someone is calling ``__exit__``
+            # without going through ``__enter__`` (i.e. misuse of
+            # the context manager outside a ``with`` block).
+            assert self._initial_sp is not None  # noqa: S101
+            self._sp_global.set_value(
+                self._caller, self._initial_sp,
+            )
 
     # #573: wrapper-ADT layout constants (must match
     # ``vera/wasm/calls_containers.py``).  Tag values are picked
@@ -1794,8 +1819,10 @@ def execute(
             # write_md_block's exhaustive match, AssertionErrors
             # from internal bugs) propagate as wasmtime traps
             # rather than being swallowed as parse errors.
-            # Mirrors the narrow-catch pattern in host_html_parse
-            # and host_json_parse.
+            # Matches the parse-only-in-try structure of
+            # host_html_parse and host_json_parse (both narrow
+            # their catch around only the parse call, with
+            # _ShadowGuard usage outside).
             try:
                 doc = _md_parse(text)
             except Exception as exc:
@@ -3126,33 +3153,43 @@ def execute(
                 caller: wasmtime.Caller, ptr: int, length: int,
             ) -> int:
                 text = _read_wasm_string(caller, ptr, length)
+                # Parse-domain errors → Result.Err.  Narrow catch:
+                # parser failures (lenient HTMLParser raising on a
+                # genuinely malformed input) surface as
+                # ``Result.Err(str(exc))``.  We deliberately do NOT
+                # catch invariant violations (e.g. the
+                # ``_wrap_handle`` RuntimeError from #578 for an
+                # out-of-range handle, or any AssertionError from
+                # internal compiler bugs); those propagate as
+                # wasmtime traps so the diagnostic text reaches
+                # the user instead of being repackaged.
                 try:
                     parser = _VeraHTMLParser()
                     parser.feed(text)
                     root = parser.get_root()
-                    # #692: hold the shadow-stack window open across
-                    # the full tree marshalling AND the final
-                    # Result.Ok wrapper alloc.  Same pattern as
-                    # ``host_json_parse`` above.
-                    with _ShadowGuard(caller) as guard:
-                        html_ptr = write_html(
-                            caller, _call_alloc, _write_i32,
-                            _alloc_string, _alloc_map_wrapper,
-                            guard, root,
-                        )
-                        guard.push(html_ptr)
-                        return _alloc_result_ok_i32(caller, html_ptr)
                 except (ValueError, TypeError, AttributeError) as exc:
-                    # Narrow catch matches `host_json_parse` above —
-                    # parser failures surface as Result.Err.  We
-                    # deliberately do NOT catch invariant violations
-                    # (e.g. the `_wrap_handle` RuntimeError from #578
-                    # for an out-of-range handle, or any AssertionError
-                    # from internal compiler bugs); those propagate
-                    # to wasmtime as traps so the diagnostic text
-                    # reaches the user instead of being repackaged
-                    # as a user-domain parse error.
                     return _alloc_result_err_string(caller, str(exc))
+                # #692: hold the shadow-stack window open across
+                # the full tree marshalling AND the final
+                # Result.Ok wrapper alloc.  Shadow-stack work is
+                # OUTSIDE the parse try/except so host-side
+                # invariant violations (``_ShadowGuard`` overflow,
+                # ``_wrap_handle`` RuntimeError, AssertionErrors)
+                # propagate as wasmtime traps rather than being
+                # repackaged as user-domain parse errors.  Matches
+                # ``host_md_parse`` and ``host_json_parse``
+                # structurally — caught by pr-review-toolkit:
+                # before this restructure, the with-block was
+                # inside the narrow except above, contradicting
+                # the comment that claimed otherwise.
+                with _ShadowGuard(caller) as guard:
+                    html_ptr = write_html(
+                        caller, _call_alloc, _write_i32,
+                        _alloc_string, _alloc_map_wrapper,
+                        guard, root,
+                    )
+                    guard.push(html_ptr)
+                    return _alloc_result_ok_i32(caller, html_ptr)
 
             linker.define_func(
                 "vera", "html_parse",
@@ -3201,9 +3238,17 @@ def execute(
                     # be reclaimed if a recursive write_html grew
                     # the heap mid-walk.  Push arr_ptr; each child
                     # write also routes through ``guard``.  The
-                    # returned (arr_ptr, count) pair is the function
-                    # result, and WASM codegen at the call site
-                    # shadow-pushes it via the standard mechanism.
+                    # returned (arr_ptr, count) pair is unrooted
+                    # at the point of return (``__exit__`` resets
+                    # ``$gc_sp`` before the function returns); the
+                    # WASM-side caller is responsible for re-rooting
+                    # via ``gc_shadow_push`` once the values land in
+                    # locals — emitted by ``_translate_html_query``
+                    # in ``vera/wasm/calls_markup.py``.  Safe in
+                    # practice because no allocation happens between
+                    # the call return and the receiving local-store,
+                    # but the guard's protection does NOT extend past
+                    # the function boundary.
                     with _ShadowGuard(caller) as guard:
                         arr_ptr = _call_alloc(caller, count * 4)
                         guard.push(arr_ptr)
