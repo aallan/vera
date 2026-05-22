@@ -1786,23 +1786,33 @@ def execute(
             caller: wasmtime.Caller, ptr: int, length: int,
         ) -> int:
             text = _read_wasm_string(caller, ptr, length)
+            # Parse errors are user-domain — convert to Result.Err.
+            # The shadow-stack work + write_md_block + Result.Ok
+            # alloc are deliberately OUTSIDE this except so host-
+            # side invariant violations (shadow-stack overflow
+            # from _ShadowGuard, unknown-tag ValueError from
+            # write_md_block's exhaustive match, AssertionErrors
+            # from internal bugs) propagate as wasmtime traps
+            # rather than being swallowed as parse errors.
+            # Mirrors the narrow-catch pattern in host_html_parse
+            # and host_json_parse.
             try:
                 doc = _md_parse(text)
-                # #692: same shadow-stack-rooting concern as
-                # ``host_html_parse`` / ``host_json_parse``.
-                # write_md_block holds intermediate pointers
-                # (string bodies, child-array backings) in Python
-                # locals across many sub-allocs; ``guard`` keeps
-                # them visible to the conservative GC scan.
-                with _ShadowGuard(caller) as guard:
-                    block_ptr = write_md_block(
-                        caller, _call_alloc, _write_i32,
-                        _write_bytes, _alloc_string, guard, doc,
-                    )
-                    guard.push(block_ptr)
-                    return _alloc_result_ok_i32(caller, block_ptr)
             except Exception as exc:
                 return _alloc_result_err_string(caller, str(exc))
+            # #692: same shadow-stack-rooting concern as
+            # ``host_html_parse`` / ``host_json_parse``.
+            # write_md_block holds intermediate pointers (string
+            # bodies, child-array backings) in Python locals
+            # across many sub-allocs; ``guard`` keeps them
+            # visible to the conservative GC scan.
+            with _ShadowGuard(caller) as guard:
+                block_ptr = write_md_block(
+                    caller, _call_alloc, _write_i32,
+                    _write_bytes, _alloc_string, guard, doc,
+                )
+                guard.push(block_ptr)
+                return _alloc_result_ok_i32(caller, block_ptr)
 
         md_parse_type = wasmtime.FuncType(
             [wasmtime.ValType.i32(), wasmtime.ValType.i32()],

@@ -113,11 +113,13 @@ def write_md_inline(
         return ptr
 
     if isinstance(inline, MdEmph):
+        # ``_write_inline_array`` already roots its backing
+        # buffer via ``guard.push(backing)`` internally — no
+        # second push needed here (would double the shadow-stack
+        # footprint without protecting anything additional).
         arr_ptr, arr_len = _write_inline_array(
             caller, alloc, write_i32, alloc_string, guard, inline.children,
         )
-        if arr_ptr != 0:
-            guard.push(arr_ptr)
         ptr = alloc(caller, 16)
         write_i32(caller, ptr, 2)  # tag
         write_i32(caller, ptr + 4, arr_ptr)
@@ -128,8 +130,6 @@ def write_md_inline(
         arr_ptr, arr_len = _write_inline_array(
             caller, alloc, write_i32, alloc_string, guard, inline.children,
         )
-        if arr_ptr != 0:
-            guard.push(arr_ptr)
         ptr = alloc(caller, 16)
         write_i32(caller, ptr, 3)  # tag
         write_i32(caller, ptr + 4, arr_ptr)
@@ -140,8 +140,8 @@ def write_md_inline(
         arr_ptr, arr_len = _write_inline_array(
             caller, alloc, write_i32, alloc_string, guard, inline.children,
         )
-        if arr_ptr != 0:
-            guard.push(arr_ptr)
+        # ``alloc_string`` does NOT push — root u_ptr explicitly
+        # before the final body alloc.
         u_ptr, u_len = alloc_string(caller, inline.url)
         if u_ptr != 0:
             guard.push(u_ptr)
@@ -195,11 +195,11 @@ def write_md_block(
     #692: fields-first-then-body convention as in ``write_md_inline``.
     """
     if isinstance(block, MdParagraph):
+        # See note in ``write_md_inline``'s MdEmph branch:
+        # ``_write_inline_array`` already roots its backing buffer.
         arr_ptr, arr_len = _write_inline_array(
             caller, alloc, write_i32, alloc_string, guard, block.children,
         )
-        if arr_ptr != 0:
-            guard.push(arr_ptr)
         ptr = alloc(caller, 16)
         write_i32(caller, ptr, 0)  # tag
         write_i32(caller, ptr + 4, arr_ptr)
@@ -210,8 +210,6 @@ def write_md_block(
         arr_ptr, arr_len = _write_inline_array(
             caller, alloc, write_i32, alloc_string, guard, block.children,
         )
-        if arr_ptr != 0:
-            guard.push(arr_ptr)
         ptr = alloc(caller, 24)
         write_i32(caller, ptr, 1)  # tag
         # Nat at offset 8 as i64 (8-byte aligned)
@@ -236,12 +234,11 @@ def write_md_block(
         return ptr
 
     if isinstance(block, MdBlockQuote):
+        # ``_write_block_array`` already roots its backing.
         arr_ptr, arr_len = _write_block_array(
             caller, alloc, write_i32, write_bytes, alloc_string,
             guard, block.children,
         )
-        if arr_ptr != 0:
-            guard.push(arr_ptr)
         ptr = alloc(caller, 16)
         write_i32(caller, ptr, 3)  # tag
         write_i32(caller, ptr + 4, arr_ptr)
@@ -249,13 +246,12 @@ def write_md_block(
         return ptr
 
     if isinstance(block, MdList):
-        # Array<Array<MdBlock>> — outer array of inner arrays
+        # Array<Array<MdBlock>> — outer array of inner arrays.
+        # ``_write_array_of_block_arrays`` already roots its backing.
         arr_ptr, arr_len = _write_array_of_block_arrays(
             caller, alloc, write_i32, write_bytes, alloc_string,
             guard, block.items,
         )
-        if arr_ptr != 0:
-            guard.push(arr_ptr)
         ptr = alloc(caller, 16)
         write_i32(caller, ptr, 4)  # tag
         write_i32(caller, ptr + 4, 1 if block.ordered else 0)  # Bool
@@ -269,12 +265,11 @@ def write_md_block(
         return ptr
 
     if isinstance(block, MdTable):
-        # Array<Array<Array<MdInline>>> — rows of cells of inlines
+        # Array<Array<Array<MdInline>>> — rows of cells of inlines.
+        # ``_write_table_data`` already roots its backing.
         arr_ptr, arr_len = _write_table_data(
             caller, alloc, write_i32, alloc_string, guard, block.rows,
         )
-        if arr_ptr != 0:
-            guard.push(arr_ptr)
         ptr = alloc(caller, 16)
         write_i32(caller, ptr, 6)  # tag
         write_i32(caller, ptr + 4, arr_ptr)
@@ -282,12 +277,11 @@ def write_md_block(
         return ptr
 
     if isinstance(block, MdDocument):
+        # ``_write_block_array`` already roots its backing.
         arr_ptr, arr_len = _write_block_array(
             caller, alloc, write_i32, write_bytes, alloc_string,
             guard, block.children,
         )
-        if arr_ptr != 0:
-            guard.push(arr_ptr)
         ptr = alloc(caller, 16)
         write_i32(caller, ptr, 7)  # tag
         write_i32(caller, ptr + 4, arr_ptr)
