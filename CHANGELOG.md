@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.158] - 2026-05-19
+
+### Fixed
+
+- **[#692](https://github.com/aallan/vera/issues/692)** — `html_parse`, `json_parse`, and `md_parse` no longer trap with `Out-of-bounds memory access` on inputs large enough to pressure GC during host-side tree marshalling.  Root cause: missing-shadow-stack rooting in `vera/wasm/html_serde.py::write_html`, `vera/wasm/json_serde.py::write_json`, and `vera/wasm/markdown.py::write_md_block`/`write_md_inline` — same #570 / #515 / #593 bug class but on the host side rather than WAT-emitted user code.  The Python-held intermediate pointers (`arr_ptr` / `name_ptr` / `wrapper_ptr`) were invisible to the conservative GC scan; if a sub-walk triggered `$gc_collect`, those blocks were reclaimed and subsequent writes corrupted the free list (concrete trap signature: out-of-bounds access at `0xfffffffd` from inside `$alloc`'s free-list traversal).  Externally reported with a `summarise_urls` example that ran `html_parse` over the current `FAQ.md` body; same shape proven empirically in `write_json` (large nested JArray) and `write_md_block` (many headings).
+
+### Added
+
+- **`$gc_sp` and `$gc_stack_limit` are now exported** from the emitted WAT module, allowing host imports to read and advance the GC shadow stack pointer.  Inline export syntax on the globals; the existing WAT-side push helper (`gc_shadow_push` in `vera/wasm/helpers.py`) continues to work unchanged for user-code pushes.
+- **`_ShadowGuard` context manager** in `vera/codegen/api.py` — exception-safe push/pop discipline for host walkers.  On `__enter__` snapshots `$gc_sp`; on `__exit__` resets it to the snapshot (atomically pops every push from the block, on both success and exception paths).  Used by `host_html_parse`, `host_html_query`, `host_json_parse`, and `host_md_parse` to root intermediate WASM heap pointers across sub-tree recursion and the final Result wrapper alloc.
+- **Field-allocation-then-body-allocation convention** applied throughout `markdown.py` — every match arm now allocates its field contents first (rooting via the guard), then allocates the body last.  This eliminates the secondary bug shape where the body pointer would be held in a Python local across a subsequent string or array allocation.
+
+### Tests
+
+- New `tests/conformance/ch09_host_walker_gc_rooting.vera` (run-level, 4 sub-tests) pinning post-fix behaviour for `html_parse` (500 element siblings), `json_parse` (1000-element number array, 500-element string array), and `md_parse` (200 H1 + paragraph blocks).  All sizes selected to provoke real heap growth and multiple `$gc_collect` cycles during the walk while staying under Python's default recursion limit on tear-down paths.
+- New `tests/test_codegen.py::TestHostWalkerGCRooting692` (6 tests) — in-process regression for the same scenarios at the codegen layer, alongside the existing host-side GC-rooting regression classes for #570 / #515 / #593.  Two extra tests added per the pr-review-toolkit pr-test-analyzer review: `test_html_query_30_matches` covers the `host_html_query` `_ShadowGuard` path (re-walks each matched subtree via `write_html` in a single guard window), and `test_json_parse_500_key_object` covers the JObject branch of `write_json` (the val_ptr-pushed-per-iteration pattern that motivated the whole fix).
+
+### Documentation
+
+- Structural test in `test_codegen.py::TestWorklistOverflow348` updated to match the new `(global $gc_stack_limit (export "gc_stack_limit") ...)` WAT shape.
+
+### Fixed (post-review)
+
+- **PR #693 CodeRabbit findings** (commit `4b8c127`): narrowed `host_md_parse`'s broad `except Exception` to wrap only the parse step — shadow-stack work and `write_md_block` now sit outside, so host-side invariant violations propagate as wasmtime traps.  Removed redundant `guard.push(arr_ptr)` calls in markdown walkers after `_write_inline_array` / `_write_block_array` / `_write_array_of_block_arrays` / `_write_table_data` (the helpers already root their backing internally; the duplicate pushes were doubling shadow-stack consumption).  TESTING.md L193 count: `435 → 440`.  Added `#694` (Windows test_browser timeout flake) to `KNOWN_ISSUES.md` per the PR-generated-new-issues-must-be-tracked rule.
+- **PR #693 pr-review-toolkit findings**: same parse-only-in-try restructure applied to `host_html_parse` — the previous round had narrowed `host_md_parse` but left `host_html_parse`'s `_ShadowGuard` block inside its narrow `except (ValueError, TypeError, AttributeError)`, contradicting the in-file comment that claimed the catch matched `host_json_parse`.  Now all three host walkers structurally match: parse-only-in-try, shadow-stack work outside.  `_ShadowGuard.__init__` re-raises a missing-export `KeyError` as a clearer `RuntimeError` naming `$gc_sp` / `$gc_stack_limit` and `#692` — diagnostic-quality fix for hand-crafted-WAT scenarios.  `_ShadowGuard.__exit__` `if self._initial_sp is not None` guard tightened to an `assert` (the only way the None case is reachable is misuse of the context manager outside a `with` block; the assert pins the invariant).  Misleading `host_html_query` comment about "WASM codegen at the call site shadow-pushes via the standard mechanism" softened — the codegen does shadow-push the consuming local, but the guard's protection doesn't extend past the function boundary.  Added rooting-contract docstrings to all four markdown array helpers (`_write_inline_array`, `_write_block_array`, `_write_array_of_block_arrays`, `_write_table_data`) so future maintainers see the convention from the function signature.  Added an exception-safety note to `write_json`'s JObject branch documenting why `map_dict` partial state is safe to discard on mid-loop raise (function exits via the raise before `map_alloc` is called).  Documented the markdown helpers' `alloc-then-push` allocation order intent (a future "fix" must NOT try to push before alloc or wrap the push in try/except — both would break the trap-on-overflow invariant).
+
 ## [0.0.157] - 2026-05-19
 
 ### Added
@@ -2347,7 +2373,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.157...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.158...HEAD
+[0.0.158]: https://github.com/aallan/vera/compare/v0.0.157...v0.0.158
 [0.0.157]: https://github.com/aallan/vera/compare/v0.0.156...v0.0.157
 [0.0.156]: https://github.com/aallan/vera/compare/v0.0.155...v0.0.156
 [0.0.155]: https://github.com/aallan/vera/compare/v0.0.154...v0.0.155

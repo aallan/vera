@@ -17954,7 +17954,12 @@ public fn main(-> @Int)
         result = _compile_ok(source)
         # gc_stack_limit = 16384 (16 KiB shadow stack)
         # gc_heap_start  = 81920 (16 KiB stack + 64 KiB worklist)
-        assert "(global $gc_stack_limit i32 (i32.const 16384))" in result.wat
+        # #692: $gc_stack_limit is now exported so host walkers
+        # can check shadow-stack overflow before pushing.
+        assert (
+            '(global $gc_stack_limit (export "gc_stack_limit") '
+            'i32 (i32.const 16384))'
+        ) in result.wat
         assert "(global $gc_heap_start i32 (i32.const 81920))" in result.wat
 
     def test_worklist_overflow_traps_in_wat(self) -> None:
@@ -19112,3 +19117,177 @@ public fn main(@Unit -> @Bool)
 }
 """
         assert _run(src) == 1
+
+
+# =====================================================================
+# #692: host-walker GC rooting regression
+# =====================================================================
+
+
+class TestHostWalkerGCRooting692:
+    """Pin the #692 fix: host-side tree walkers (``write_html`` /
+    ``write_json`` / ``write_md_block``) must root intermediate
+    WASM heap pointers on the shadow stack across recursion, so a
+    ``$gc_collect`` triggered by sub-allocs does not reclaim them
+    and corrupt the free list.
+
+    The bug was reported externally with the current `FAQ.md`
+    body (~25 KB) as the trigger.  These tests use a checked-in
+    fixture path so the regression survives FAQ edits.
+
+    Cousin tests for the WAT-side shadow-stack class:
+    ``TestArrayMapGCRooting570``, ``TestFoldAccumulator515``,
+    ``TestClosureReturnShadowAsymmetry593``.
+    """
+
+    def test_html_parse_500_element_siblings(self) -> None:
+        """500 ``<a>x</a>`` siblings — exercises ``write_html``'s
+        element branch (arr_ptr, name_ptr, wrapper_ptr) across
+        500 iterations.  Heap grows from 1 page to ~3 pages,
+        firing multiple ``$gc_collect`` cycles during the walk.
+        Pre-#692-fix this trapped with ``Out-of-bounds memory
+        access`` at ``0xfffffffd`` from inside ``$alloc``."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = string_repeat("<a>x</a>", 500);
+  match html_parse(@String.0) {
+    Ok(_) -> IO.print("ok"),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(src) == "ok"
+
+    def test_json_parse_1000_number_array(self) -> None:
+        """1000-element JArray of JNumbers — exercises
+        ``write_json``'s JArray branch (arr_ptr rooting across
+        1000 sub-allocs).  Each JNumber is 16 bytes of heap so
+        the array alone produces ~16 KB of allocations on top of
+        the input string."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = string_concat(
+    "[", string_concat(string_repeat("1,", 999), "1]")
+  );
+  match json_parse(@String.0) {
+    Ok(_) -> IO.print("ok"),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(src) == "ok"
+
+    def test_json_parse_500_string_array(self) -> None:
+        """500-element JArray of JStrings — exercises BOTH the
+        JArray arr_ptr rooting AND the JString fields-first-then-
+        body convention.  Each iteration allocates a string body
+        and a 16-byte JString wrapper, doubling the alloc count
+        per element vs the JNumber test above."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = string_concat(
+    "[",
+    string_concat(string_repeat("\\"hello world\\",", 499), "\\"end\\"]")
+  );
+  match json_parse(@String.0) {
+    Ok(_) -> IO.print("ok"),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(src) == "ok"
+
+    def test_md_parse_200_headings(self) -> None:
+        """200 H1 + paragraph blocks — exercises ``write_md_block``
+        and ``write_md_inline`` walkers, including the
+        ``_write_inline_array`` / ``_write_block_array`` backing
+        rooting."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = string_repeat("# heading\\n\\nparagraph text\\n\\n", 200);
+  match md_parse(@String.0) {
+    Ok(_) -> IO.print("ok"),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(src) == "ok"
+
+    def test_html_query_30_matches(self) -> None:
+        """``html_query`` over 30 matches — exercises the
+        ``host_html_query`` `_ShadowGuard` path that also gained
+        rooting in #692.  Without the guard, ``arr_ptr`` for the
+        match-array would be reclaimed when recursive
+        ``write_html`` calls grow the heap mid-walk.  Per the
+        pr-review-toolkit pr-test-analyzer review on #693.
+
+        Sized conservatively (30 vs the 500 used by html_parse
+        tests above): ``host_html_query`` re-walks every matched
+        subtree via ``write_html`` within a single guard window,
+        accumulating pushes across all iterations.  The
+        shadow-stack budget per match in practice (including the
+        ``_alloc_map_wrapper`` and ``_register_wrapper`` calls
+        and the WAT-side ``$alloc`` accounting) is materially
+        higher than the four nominal pushes (name, wrapper, arr,
+        s_ptr) of write_html element-branch — 100 matches
+        empirically overflowed the 4096-entry stack.  30 still
+        triggers GC during the walk while staying comfortable
+        under the limit."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = string_concat(
+    "<root>",
+    string_concat(string_repeat("<p>x</p>", 30), "</root>")
+  );
+  match html_parse(@String.0) {
+    Ok(@HtmlNode) -> {
+      let @Array<HtmlNode> = html_query(@HtmlNode.0, "p");
+      IO.print("ok")
+    },
+    Err(_) -> IO.print("parse_err")
+  }
+}
+"""
+        assert _run_io(src) == "ok"
+
+    def test_json_parse_500_key_object(self) -> None:
+        """500-key flat JObject — exercises the JObject branch of
+        ``write_json`` (val_ptr push per iteration, wrapper_ptr
+        push, then body alloc).  Pre-fix, the val_ptrs held in
+        ``map_dict`` as Python ints were invisible to the
+        conservative GC scan; a sub-walk's GC could free them.
+        Per the pr-review-toolkit pr-test-analyzer review on #693."""
+        src = """
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @String = string_concat(
+    "{",
+    string_concat(
+      string_repeat("\\"k\\":0,", 499),
+      "\\"last\\":0}"
+    )
+  );
+  match json_parse(@String.0) {
+    Ok(_) -> IO.print("ok"),
+    Err(_) -> IO.print("err")
+  }
+}
+"""
+        assert _run_io(src) == "ok"

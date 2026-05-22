@@ -1,0 +1,106 @@
+-- Conformance: host-walker GC rooting (#692)
+-- ================================================================
+-- Regression for #692.  Prior to the fix, ``html_parse`` /
+-- ``json_parse`` / ``md_parse`` could trap with
+-- ``Out-of-bounds memory access`` when the input was large
+-- enough that the host-side tree marshalling triggered a
+-- ``$gc_collect`` mid-walk — intermediate WASM heap pointers
+-- (``arr_ptr`` / ``name_ptr`` / ``wrapper_ptr``) lived in Python
+-- locals invisible to the conservative GC scan, so the GC
+-- reclaimed them and the next write corrupted the free list.
+--
+-- This test uses moderately-sized inputs that historically
+-- triggered the trap.  Post-fix, each host walker pushes its
+-- intermediate pointers onto the WASM shadow stack via the
+-- ``_ShadowGuard`` context manager so they remain reachable
+-- across allocations.
+-- ================================================================
+-- test_html_parse_many_elements
+-- 500 repetitions of ``<a>x</a>`` produces ~1000 HTML nodes
+-- (500 elements + 500 text children); the resulting heap
+-- pressure historically triggered the #692 trap during
+-- ``write_html``'s recursive walk.  Post-fix returns Ok.
+-- Bounded at 500 (rather than 1000+) to stay under Python's
+-- default recursion limit during wasmtime-side teardown of
+-- the wrap-table — unrelated to the GC-rooting fix this test
+-- pins; the 500 case already exercises the GC pressure path
+-- (heap grows from 1 page to ~3 pages, fires multiple
+-- ``$gc_collect`` cycles during ``write_html``'s walk).
+-- ================================================================
+public fn test_html_parse_many_elements(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @String = string_repeat("<a>x</a>", 500);
+  match html_parse(@String.0) {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
+-- ================================================================
+-- test_json_parse_large_array
+-- 1000-element JArray of JNumbers exercises the JArray branch
+-- of ``write_json``: the ``arr_ptr`` (4000 bytes) is held in a
+-- Python local across 1000 sub-allocs.  Post-fix returns Ok.
+-- ================================================================
+public fn test_json_parse_large_array(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @String = string_concat("[", string_concat(string_repeat("1,", 999), "1]"));
+  match json_parse(@String.0) {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
+-- ================================================================
+-- test_json_parse_many_strings
+-- JArray of JStrings — exercises both the JArray ``arr_ptr``
+-- rooting AND the JString string-then-body ordering, since each
+-- element allocates both a string body and a JString wrapper.
+-- ================================================================
+public fn test_json_parse_many_strings(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @String = string_concat("[", string_concat(string_repeat("\"hello world\",", 499), "\"end\"]"));
+  match json_parse(@String.0) {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
+-- ================================================================
+-- test_md_parse_many_headings
+-- 200 repetitions of an H1 + paragraph; exercises the
+-- ``write_md_block`` and ``write_md_inline`` walkers' rooting of
+-- inline-array backings and child-block-array backings.
+-- ================================================================
+public fn test_md_parse_many_headings(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @String = string_repeat("# heading\n\nparagraph text\n\n", 200);
+  match md_parse(@String.0) {
+    Ok(_) -> 0,
+    Err(_) -> 1
+  }
+}
+
+-- ================================================================
+-- main — run all four tests; succeed iff total is 0 (all Ok).
+-- ================================================================
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = test_html_parse_many_elements(()) + test_json_parse_large_array(()) + test_json_parse_many_strings(()) + test_md_parse_many_headings(());
+  @Int.0
+}

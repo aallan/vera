@@ -873,6 +873,20 @@
     ]
   },
   {
+    "id": "ch09_host_walker_gc_rooting",
+    "file": "ch09_host_walker_gc_rooting.vera",
+    "chapter": 9,
+    "title": "Host-walker GC rooting (#692)",
+    "level": "run",
+    "spec_ref": "Section 9.7.4",
+    "features": [
+      "html_parse",
+      "json_parse",
+      "md_parse",
+      "host_walker_gc_rooting"
+    ]
+  },
+  {
     "id": "ch09_decimal",
     "file": "ch09_decimal.vera",
     "chapter": 9,
