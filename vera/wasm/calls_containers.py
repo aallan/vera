@@ -156,8 +156,12 @@ class CallsContainersMixin:
         # mirroring the host-store contents into a WASM-resident
         # bucket array.  Must come AFTER the shadow-push above so
         # the wrapper itself stays rooted during the bucket
-        # allocation's possible sub-GCs.  No-op for Decimal
-        # wrappers (kind=3).
+        # allocation's possible sub-GCs.  Decimal wrappers (kind=3)
+        # are EXEMPT: ``PyDecimal`` is value-typed (no heap pointers
+        # in the store entry), so the silent-UAF window that
+        # motivated this fix cannot apply.  The host-side dispatcher
+        # ``host_attach_bucket`` short-circuits when kind=3, leaving
+        # the wrapper's bucket_ptr at 0.
         seq.extend([
             f"local.get {wrapper_temp}",
             f"i32.const {kind}",

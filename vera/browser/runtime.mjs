@@ -1206,18 +1206,84 @@ function buildImportObject(module) {
   // (vera/codegen/api.py::host_attach_bucket) allocates a WASM-
   // resident bucket array mirroring _map_store / _set_store
   // contents so the conservative GC scan reaches the values via
-  // shadow stack → wrapper → bucket → val_ptr.
+  // shadow stack → wrapper → bucket → val_ptr.  Without this,
+  // heap-pointer Map values (e.g. JObject ptrs in Map<String,
+  // Json>) and Set elements (e.g. Json elements in Set<Json>)
+  // can be silently reclaimed by GC between map / set
+  // construction and value access — observed on the CLI side at
+  // ``TestMapHostStoreGCReachability695`` and the #705 Set
+  // analogue.
   //
-  // TODO: implement the JS-side parallel.  Currently a no-op stub
-  // so the WAT import resolves and the browser runtime keeps
-  // loading.  The browser target carries the same #695-class
-  // silent-UAF bug under heavy allocation pressure until the
-  // proper bucket-population logic lands here.  Tracked as the
-  // Phase D follow-up to the CLI fix.
-  imports.vera.attach_bucket_to_wrapper = (_wrapperPtr, _kind, _handle) => {
-    // Phase D: populate the wrapper's bucket array from
-    // mapStore.get(handle) / setStore.get(handle), parallel to
-    // the CLI implementation.  No-op for now.
+  // Slot layout (must match _SLOT_SIZE / _BUCKET_INITIAL_CAPACITY
+  // in vera/codegen/api.py):
+  //   +0  key_word_0 (i32) — String: heap ptr; Int/Bool/ADT: literal
+  //   +4  key_word_1 (i32) — String: byte length; otherwise 0
+  //   +8  val_word (i32)   — heap pointer (or 0 for non-heap values)
+  //
+  // Critical ordering: write val_word FIRST (no allocation), then
+  // alloc string key if needed.  This roots any heap-pointer val
+  // via the conservative scan (which traces every i32 word in
+  // the heap, occupied or not) before subsequent string allocs
+  // can fire $gc_collect.  Matches the CLI's
+  // ``_attach_bucket_from_dict`` ordering.
+  //
+  // Decimal (kind === 3): no-op.  Decimal is value-typed
+  // (BigInt-backed JS implementation, no heap pointers in the
+  // store entry) and cannot exhibit the #695 class of bug.
+  const _SLOT_SIZE = 12;
+  const _BUCKET_INITIAL_CAPACITY = 8;
+  imports.vera.attach_bucket_to_wrapper = (wrapperPtr, kind, handle) => {
+    if (kind === 1) {
+      const d = mapStore.get(handle);
+      if (!d) return;
+      const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, d.size * 2);
+      const bucketPtr = alloc(capacity * _SLOT_SIZE);
+      let i = 0;
+      for (const [k, v] of d) {
+        const slotBase = bucketPtr + i * _SLOT_SIZE;
+        // val_word first (no alloc).
+        const valWord =
+          typeof v === 'number' ? v :
+          typeof v === 'bigint' ? Number(v) : 0;
+        writeI32(slotBase + 8, valWord);
+        if (typeof k === 'string') {
+          const [kp, kl] = allocString(k);
+          writeI32(slotBase, kp);
+          writeI32(slotBase + 4, kl);
+        } else {
+          const kw =
+            typeof k === 'number' ? k :
+            typeof k === 'bigint' ? Number(k) : 0;
+          writeI32(slotBase, kw);
+          // key_word_1 stays 0 (zero-init from $alloc).
+        }
+        i++;
+      }
+      writeI32(wrapperPtr + 8, bucketPtr);
+    } else if (kind === 2) {
+      const s = setStore.get(handle);
+      if (!s) return;
+      const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, s.size * 2);
+      const bucketPtr = alloc(capacity * _SLOT_SIZE);
+      let i = 0;
+      for (const elem of s) {
+        const slotBase = bucketPtr + i * _SLOT_SIZE;
+        if (typeof elem === 'string') {
+          const [ep, el] = allocString(elem);
+          writeI32(slotBase, ep);
+          writeI32(slotBase + 4, el);
+        } else {
+          const ew =
+            typeof elem === 'number' ? elem :
+            typeof elem === 'bigint' ? Number(elem) : 0;
+          writeI32(slotBase, ew);
+          // key_word_1 and val_word stay 0 (zero-init).
+        }
+        i++;
+      }
+      writeI32(wrapperPtr + 8, bucketPtr);
+    }
+    // kind === 3 (Decimal): nothing to attach.
   };
 
   // #573 wrapper-ADT layout constants (must match
@@ -1237,11 +1303,23 @@ function buildImportObject(module) {
   // Used by host helpers that have already obtained a raw handle
   // and need to lift it to a wrapper pointer before stuffing into
   // an Option<T> Some payload (e.g. decimal_from_string).
+  // Wrapper body layout (must match _WRAPPER_BODY_SIZE in
+  // vera/codegen/api.py and vera/wasm/calls_containers.py):
+  //   +0  tag (i32)            [#573]
+  //   +4  handle | 0x80000000  [#578 — bit-31 tag keeps it out
+  //                             of the conservative GC scan]
+  //   +8  bucket_ptr (i32)     [#695/#705 — attached below]
   function wrapHandle(kind, rawHandle) {
     const tag = _KIND_TO_TAG_JS[kind];
-    const ptr = alloc(8);
+    const ptr = alloc(12);
     writeI32(ptr, tag);
-    writeI32(ptr + 4, rawHandle);
+    // #578: tag the handle with bit-31 so the conservative scan
+    // never mistakes it for a heap pointer.  Matches the
+    // WAT-emitted ``_emit_wrap_handle`` discipline.
+    writeI32(ptr + 4, (rawHandle | 0x80000000) | 0);
+    // #695/#705: default bucket_ptr is 0.  Map/Set callers fill it
+    // via attach_bucket_to_wrapper below; Decimal leaves it 0.
+    writeI32(ptr + 8, 0);
     if (wasm && typeof wasm.register_wrapper === "function") {
       wasm.register_wrapper(ptr, kind, rawHandle);
     }
@@ -1249,11 +1327,17 @@ function buildImportObject(module) {
   }
 
   // allocMapWrapper(d) : drop-in replacement for mapAlloc(d) used by
-  // writeJson / writeHtml.  Inserts d into mapStore and lifts the
-  // resulting handle to a wrapper pointer via wrapHandle.
+  // writeJson / writeHtml.  Inserts d into mapStore, lifts the
+  // resulting handle to a wrapper pointer via wrapHandle, and
+  // populates the wrapper's bucket array for GC reachability
+  // (#695 mirror parallel — matches CLI ``_alloc_map_wrapper``).
   function allocMapWrapper(d) {
     const handle = mapAlloc(d);
-    return wrapHandle(1, handle);
+    const ptr = wrapHandle(1, handle);
+    if (imports.vera && imports.vera.attach_bucket_to_wrapper) {
+      imports.vera.attach_bucket_to_wrapper(ptr, 1, handle);
+    }
+    return ptr;
   }
 
   // Helper: allocate Option.None on heap (tag=0, 4 bytes)

@@ -3017,6 +3017,16 @@ def execute(
         # #573 introspection (same pattern as Map; Decimal migration
         # is a separate follow-up).
         _host_store_refs["decimal"] = _decimal_store  # type: ignore[assignment]
+        # #695/#705: Decimal is intentionally EXEMPT from the bucket-
+        # array reachability fix.  ``PyDecimal`` is value-typed
+        # (immutable digit/sign/exponent attributes, no WASM heap
+        # pointers inside the stored object), so the silent-UAF
+        # window that affects Map<K, T_heap> and Set<T_heap> cannot
+        # occur for Decimal.  The wrapper's ``bucket_ptr`` field stays
+        # 0 (initialised by ``_emit_wrap_handle`` / JS ``wrapHandle``)
+        # and ``host_attach_bucket`` is a no-op for kind=3.  See also
+        # the follow-up "Phase D move" tracking issue, which still
+        # excludes Decimal for the same reason.
 
         def _decimal_alloc(d: PyDecimal) -> int:
             h = _decimal_next_handle[0]

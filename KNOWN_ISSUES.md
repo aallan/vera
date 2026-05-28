@@ -4,9 +4,7 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 ## Bugs
 
-| Bug | Issue |
-|-----|-------|
-| `Map<K, T_heap>` values (heap-allocated WASM blocks stored as Python ints in `_map_store[handle]`) are invisible to the conservative GC scan.  A `$gc_collect` triggered after the map is constructed will reclaim those blocks, leaving `map_get` returning pointers to freed memory.  Specifically affects `Map<K, Json>` (the JObject branch of `write_json`), `Map<K, HtmlNode>`, `Map<K, Md*>`, and any user-defined `Map<K, T>` where `T` is heap-allocated.  `Map<K, V_inline>` (Int / Bool / Float / etc.) and `Map<K, String>` are safe — values are stored as Python primitives or re-encoded into WASM memory at access time.  Surfaced as an outside-diff observation by CodeRabbit on PR #693; pre-dates #692 (the #692 fix improved DURING-walk safety but does not address POST-walk reachability).  Workaround: prefer `JArray` over `JObject` where the data model allows; avoid intermediate allocations between map construction and use.  Three candidate fixes (host-side WASM container per entry / extend GC tracing to walk `_map_store` / serialise values into WASM at insertion) documented in the issue body. | [#695](https://github.com/aallan/vera/issues/695) |
+No known bugs.
 
 ## Limitations
 
@@ -49,6 +47,7 @@ Files that have grown beyond a comfortable size and need decomposition. None of 
 | `tests/test_codegen.py` | 10,019 | Split into feature-focused test files (literals, arithmetic, control flow, strings, arrays, collections, effects, data types) | [#419](https://github.com/aallan/vera/issues/419) |
 | `tests/test_checker.py` | 5,522 | Split into phase-focused test files (types, functions, effects, contracts, modules, errors) | [#420](https://github.com/aallan/vera/issues/420) |
 | `vera/codegen/api.py` | 2,228 | Extract memory layout utilities → `memory.py`; extract host runtime → `runtime.py` | [#421](https://github.com/aallan/vera/issues/421) |
+| Map / Set host store mirror → bucket-as-truth | 3 places (CLI Map, CLI Set, browser runtime) | Delete `_map_store` and `_set_store`; make the WASM bucket array the sole source of truth.  Host imports take `wrapper_ptr` directly and read the bucket via `wrapper_ptr + 8`.  Follow-up to the #695 / #705 mirror fix — the mirror closes the bugs correctness-wise but data lives in two places (Python store + WASM bucket).  Includes slot-layout grow (12 → 20 bytes with occupancy flag) and bucket header (capacity + count for O(1) `map_size`).  Decimal stays exempt (value-typed, no heap pointers). | [#706](https://github.com/aallan/vera/issues/706) |
 
 ## Test coverage gaps
 

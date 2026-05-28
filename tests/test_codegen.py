@@ -19405,3 +19405,57 @@ public fn main(-> @Unit)
 """
         monkeypatch.setenv("VERA_EAGER_GC", "1")
         assert _run_io(src) == "10"
+
+    def test_eager_gc_map_of_json_user_level_post_walk_uaf(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression for the user-level ``Map<String, T_heap>`` path.
+
+        Where ``test_eager_gc_json_object_with_array_child_post_walk_uaf``
+        exercises the JSON parser's internal ``Map<String, Json>``
+        construction (via ``_alloc_map_wrapper`` / ``json_parse``),
+        this test exercises the user-level path: a Vera program
+        explicitly calling ``map_insert`` on a ``Json`` value
+        returned from ``json_parse``.  Same bug class but a
+        different alloc / wrap entry point — without the bucket
+        array mirror, the JArray's heap pointer is held only via
+        ``_map_store[handle]["arr"]`` (a Python int) until the
+        ``map_get`` retrieves it; ``VERA_EAGER_GC=1`` triggers a
+        ``$gc_collect`` during the intervening Option / Json
+        accessor allocs and reclaims the JArray block.
+
+        Closes the scope gap discussed on #705: the user-level
+        wrapper path was tested for Set but not yet for Map.
+        """
+        src = """
+effect IO { op print(String -> Unit); }
+
+private fn build_map(-> @Map<String, Json>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse(
+    "[1,2,3,4,5,6,7,8,9,10]"
+  );
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> map_insert(map_new(), "arr", @Json.0),
+    Err(@String) -> map_new()
+  }
+}
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Map<String, Json> = build_map();
+  let @Option<Json> = map_get(@Map<String, Json>.0, "arr");
+  match @Option<Json>.0 {
+    Some(@Json) -> {
+      let @Int = json_array_length(@Json.0);
+      IO.print(int_to_string(@Int.0))
+    },
+    None -> IO.print("none")
+  }
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run_io(src) == "10"
