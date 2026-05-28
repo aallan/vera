@@ -18,7 +18,13 @@ classifiers = [
 ]
 dependencies = [
     "lark>=1.3.1",
-    "z3-solver>=4.12",
+    # `>=4.15.5` matches the macOS 15+ baseline structurally: 4.15.5 is the
+    # first z3-solver release tagged `macosx_15_0_arm64` (earlier releases
+    # were `macosx_13_0_arm64`).  Pinning >=4.15.5 makes the platform support
+    # decision explicit in dep resolution — older macOS / older glibc users
+    # get a clear "no matching distribution" error instead of a cryptic
+    # source-build failure 20 minutes later.  See README §Supported platforms.
+    "z3-solver>=4.15.5",
     "wasmtime>=44.0.0",
 ]
 

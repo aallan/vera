@@ -122,6 +122,27 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+#### Supported platforms
+
+Tested in CI on every commit:
+
+- **macOS 15 (Sequoia) and macOS 26 (Tahoe)** on Apple Silicon, against Python 3.11, 3.12, 3.13
+- **Ubuntu 24.04 LTS** on x86_64, against Python 3.11, 3.12, 3.13
+- **Windows Server 2022** on x86_64, against Python 3.11, 3.12, 3.13
+
+Untested but expected to work (wheels available for all dependencies):
+
+- Linux x86_64 with glibc 2.27+ (Ubuntu 18.04+ / Debian 10+ / RHEL 8+)
+- Linux aarch64 with glibc 2.38+ (Ubuntu 23.10+ / Ubuntu 24.04 LTS / Debian 12+)
+- macOS 15+ on Intel (x86_64)
+
+Out of scope — `pip install -e .` will fail at dependency resolution (clear "no matching distribution" error rather than a cryptic source-build failure):
+
+- **macOS 14 (Sonoma) and earlier** — see [#691](https://github.com/aallan/vera/issues/691) for the documented decision and workarounds
+- **Linux aarch64 with glibc < 2.38** (e.g. Ubuntu 22.04 LTS aarch64) — see [#701](https://github.com/aallan/vera/issues/701)
+
+The macOS 15+ baseline reflects [TelemetryDeck's macOS version distribution data](https://telemetrydeck.com/survey/apple/macOS/versions/): macOS 26 (~75%) and macOS 15 (~24%) account for ~99% of the macOS install base; macOS 14 is ~1.4% and falling. The cost of supporting older macOS versions does not earn its keep at that share.
+
 ### The workflow
 
 ```
