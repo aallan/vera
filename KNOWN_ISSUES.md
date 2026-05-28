@@ -47,7 +47,6 @@ Files that have grown beyond a comfortable size and need decomposition. None of 
 | `tests/test_codegen.py` | 10,019 | Split into feature-focused test files (literals, arithmetic, control flow, strings, arrays, collections, effects, data types) | [#419](https://github.com/aallan/vera/issues/419) |
 | `tests/test_checker.py` | 5,522 | Split into phase-focused test files (types, functions, effects, contracts, modules, errors) | [#420](https://github.com/aallan/vera/issues/420) |
 | `vera/codegen/api.py` | 2,228 | Extract memory layout utilities → `memory.py`; extract host runtime → `runtime.py` | [#421](https://github.com/aallan/vera/issues/421) |
-| Map / Set host store mirror → bucket-as-truth | 3 places (CLI Map, CLI Set, browser runtime) | Delete `_map_store` and `_set_store`; make the WASM bucket array the sole source of truth.  Host imports take `wrapper_ptr` directly and read the bucket via `wrapper_ptr + 8`.  Follow-up to the #695 / #705 mirror fix — the mirror closes the bugs correctness-wise but data lives in two places (Python store + WASM bucket).  Includes slot-layout grow (12 → 20 bytes with occupancy flag) and bucket header (capacity + count for O(1) `map_size`).  Decimal stays exempt (value-typed, no heap pointers). | [#706](https://github.com/aallan/vera/issues/706) |
 
 ## Test coverage gaps
 

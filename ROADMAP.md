@@ -191,6 +191,12 @@ Addressed alongside feature work, not milestone-gated.  Prioritised by impact.
 |------|-------|--------|--------|
 | Chapter 8 (modules) conformance programs | [#679](https://github.com/aallan/vera/issues/679) | 1 day | Conformance suite has 88 programs across chapters 1, 2, 3, 4, 5, 6, 7, 9, 10.  No `ch08_*.vera` — only gap.  Codegen layer is well-covered (23 tests in `test_codegen_modules.py`); what's missing is the program-per-feature mapping with `spec_ref`.  8 small programs, one per spec section. |
 
+### Compiler internals
+
+| Item | Issue | Effort | Impact |
+|------|-------|--------|--------|
+| Move `Map` / `Set` host store from Python mirror to bucket-as-truth | [#706](https://github.com/aallan/vera/issues/706) | 1–2 days | Architectural follow-up to the v0.0.159 mirror fix that closed #695 + #705.  The mirror closes the bugs correctness-wise but data lives in two places: Python-side `_map_store` / `_set_store` and a WASM-resident bucket array that mirrors them for GC reachability.  The move deletes the Python stores, makes the WASM bucket array the sole source of truth, takes `wrapper_ptr` directly in host imports (no more handle → store lookup), and grows the slot layout (12 → 20 bytes with an explicit occupancy flag + 8-byte bucket header for O(1) `map_size`).  Three places land in parallel: CLI Map, CLI Set, browser runtime.  Decimal stays exempt (value-typed).  Initial implementation hit O(N²) in pure-Python decode/encode — the issue captures the batched `struct.unpack` / `struct.pack` perf design needed to keep the 10 000-element reclamation chain test within its current ~4-minute envelope. |
+
 ---
 
 ## Speculative
