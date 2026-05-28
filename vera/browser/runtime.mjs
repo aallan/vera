@@ -1259,18 +1259,24 @@ function buildImportObject(module) {
       for (const [k, v] of d) {
         const slotBase = bucketPtr + i * _SLOT_SIZE;
         // val_word first (no alloc).
-        const valWord =
-          typeof v === 'number' ? v :
-          typeof v === 'bigint' ? Number(v) : 0;
+        //
+        // CodeRabbit #707 (round 2): BigInt values (i64 keys / vals
+        // from Map<K, Int>) are NOT coerced via Number(v) — that
+        // would truncate large i64s, and a large value could land
+        // inside the heap range and be misread as a live heap
+        // pointer by the conservative scan, extending unrelated
+        // blocks' lifetimes.  Mirror is write-only (actual reads
+        // go through `mapStore`), so writing 0 is harmless for
+        // non-heap-pointer values.
+        const valWord = typeof v === 'number' ? v : 0;
         writeI32(slotBase + 8, valWord);
         if (typeof k === 'string') {
           const [kp, kl] = allocString(k);
           writeI32(slotBase, kp);
           writeI32(slotBase + 4, kl);
         } else {
-          const kw =
-            typeof k === 'number' ? k :
-            typeof k === 'bigint' ? Number(k) : 0;
+          // Same BigInt-as-zero discipline as valWord above.
+          const kw = typeof k === 'number' ? k : 0;
           writeI32(slotBase, kw);
           // key_word_1 stays 0 from the fill above.
         }
@@ -1293,9 +1299,8 @@ function buildImportObject(module) {
           writeI32(slotBase, ep);
           writeI32(slotBase + 4, el);
         } else {
-          const ew =
-            typeof elem === 'number' ? elem :
-            typeof elem === 'bigint' ? Number(elem) : 0;
+          // Same BigInt-as-zero discipline (CodeRabbit #707 round 2).
+          const ew = typeof elem === 'number' ? elem : 0;
           writeI32(slotBase, ew);
           // key_word_1 and val_word stay 0 from the fill above.
         }
@@ -1345,16 +1350,65 @@ function buildImportObject(module) {
     return ptr;
   }
 
+  // CodeRabbit #707 (round 2): JS-side shadow-stack push/pop using
+  // the exported ``$gc_sp`` / ``$gc_stack_limit`` mutable globals
+  // (added in v0.0.158 / #692 for host-side rooting).  Needed
+  // because the JS multi-alloc patterns (``allocMapWrapper`` and
+  // any future caller) have the same root-discipline problem as
+  // the CLI ``_ShadowGuard``: a freshly-allocated wrapper held
+  // only in a JS local is invisible to the conservative GC scan,
+  // so a sub-alloc that fires ``$gc_collect`` can reclaim it.
+  // The wrap-table region (below ``gc_heap_start``) is NOT walked
+  // by the mark phase, so ``register_wrapper`` alone isn't enough
+  // — explicit shadow-stack rooting is required.
+  //
+  // ``gcShadowPush`` reads $gc_sp, writes the value, advances $gc_sp.
+  // ``gcShadowPop`` decrements $gc_sp.  Stack-discipline must be
+  // strict — callers MUST pair push with pop on every exit path
+  // (use the try/finally pattern below).
+  function gcShadowPush(value) {
+    if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) return;
+    const sp = wasm.gc_sp.value;
+    if (sp >= wasm.gc_stack_limit.value) {
+      throw new Error('GC shadow stack overflow in browser runtime');
+    }
+    writeI32(sp, value | 0);
+    wasm.gc_sp.value = sp + 4;
+  }
+  function gcShadowPop() {
+    if (!wasm || !wasm.gc_sp) return;
+    wasm.gc_sp.value -= 4;
+  }
+
   // allocMapWrapper(d) : drop-in replacement for mapAlloc(d) used by
   // writeJson / writeHtml.  Inserts d into mapStore, lifts the
   // resulting handle to a wrapper pointer via wrapHandle, and
   // populates the wrapper's bucket array for GC reachability
   // (#695 mirror parallel — matches CLI ``_alloc_map_wrapper``).
+  //
+  // CodeRabbit #707 (round 2): the wrapper returned from
+  // ``wrapHandle`` is registered with the wrap-table but the
+  // wrap-table region is NOT scanned by Phase 2a marking, so the
+  // wrapper is only kept alive transitively (via another reachable
+  // block pointing at it).  Between ``wrapHandle`` returning and
+  // the caller (e.g. ``writeJson``'s JObject branch) storing the
+  // wrapper into a body field, the wrapper is unrooted — and the
+  // ``attach_bucket_to_wrapper`` call below internally allocates
+  // the bucket, which can fire ``$gc_collect``.  Shadow-push the
+  // wrapper across the attach so it stays alive.  Caller is still
+  // responsible for storing the returned ptr promptly (the
+  // wrapper becomes unrooted again on return — see writeJson
+  // JObject branch which is the only consumer of this helper).
   function allocMapWrapper(d) {
     const handle = mapAlloc(d);
     const ptr = wrapHandle(1, handle);
     if (imports.vera && imports.vera.attach_bucket_to_wrapper) {
-      imports.vera.attach_bucket_to_wrapper(ptr, 1, handle);
+      gcShadowPush(ptr);
+      try {
+        imports.vera.attach_bucket_to_wrapper(ptr, 1, handle);
+      } finally {
+        gcShadowPop();
+      }
     }
     return ptr;
   }

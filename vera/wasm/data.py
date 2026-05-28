@@ -204,6 +204,18 @@ class DataMixin:
             instrs.append(f"local.get {scr_local}")
             instrs.append(f"{wt}.load offset={offset}")
             instrs.append(f"local.set {local_idx}")
+            # CodeRabbit #707 (round 2): same heap-pointer rooting
+            # discipline as ``_extract_constructor_fields`` (line ~515)
+            # and the ``BindingPattern`` branch (line ~408).
+            # ``let MyAdt(@Json) = makeThing();`` extracts an i32 field
+            # into a fresh local that's invisible to the conservative
+            # scan until shadow-pushed.  Without this, a subsequent
+            # allocation can reclaim the bound heap pointer.  This was
+            # missed by the original #705 fix — match-arm paths were
+            # rooted but the parallel let-destruct path was not.
+            if wt == "i32" and type_name not in _INLINE_I32_TYPES:
+                self.needs_alloc = True
+                instrs.extend(gc_shadow_push(local_idx))
             new_env = new_env.push(type_name, local_idx)
             offset += _sizes.get(wt, 8)
 
