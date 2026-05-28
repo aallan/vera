@@ -603,7 +603,7 @@ The validation hooks are smart about triggers -- they only run when relevant fil
 
 ## CI Pipeline
 
-GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs eight parallel jobs on every push and pull request to `main`:
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the following nine parallel jobs on every push and pull request to `main` (the test row is split into a baseline variant and a coverage-instrumented variant on the gating cell, sharing the same underlying job definition):
 
 | Job | Matrix / Runner | What it checks |
 |-----|----------------|---------------|

@@ -37,7 +37,7 @@ pip install -e ".[dev]"
 ```
 
 > **Platform support**: Vera is tested in CI on macOS 15+ (Apple Silicon), Ubuntu 24.04 LTS (x86_64), and Windows Server 2022, against Python 3.11–3.13. macOS 14 (Sonoma) and earlier, and Ubuntu 22.04 LTS aarch64, are out of scope — install will fail at dependency resolution. See [README §Supported platforms](https://github.com/aallan/vera/blob/main/README.md#supported-platforms) for the full matrix, workarounds, and the data behind the baseline.
-
+>
 > **For agents running in a sandbox** (Claude.ai, Code Interpreter, container-based execution environments, etc.): the steps above work. Sandboxes typically have Python, `git`, `pip`, and outbound network access — that's all Vera needs. **Run the install commands and verify with `vera run examples/hello_world.vera` before concluding that Vera "isn't available." Don't assume the sandbox lacks the toolchain — try it.**
 >
 > One caveat: `pip install vera` (no source) installs a *different* package from PyPI (an ERAV citizen-science library — unrelated to this Vera). Always install from the GitHub source clone shown above.

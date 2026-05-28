@@ -99,7 +99,16 @@ def check_one(dep: str, platform_tag: str, python_version: str) -> tuple[bool, s
             "--dest", tmp,
             "--quiet",
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        try:
+            # 60s per (dep, platform, python) combination.  Each download
+            # is small (--no-deps), so 60s is generous; the timeout exists
+            # to prevent indefinite hangs (slow mirror, transient PyPI
+            # outage) from blocking CI for hours.
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=60,
+            )
+        except subprocess.TimeoutExpired:
+            return False, f"pip download timed out after 60s for {dep}"
     if result.returncode == 0:
         return True, ""
     # Truncate stderr to keep the report readable
