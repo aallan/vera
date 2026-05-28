@@ -63,6 +63,7 @@ python scripts/check_site_assets.py   # Verify site assets are up-to-date
 python scripts/check_version_sync.py  # Verify version consistency
 python scripts/check_doc_counts.py    # Verify documentation counts match codebase
 python scripts/check_licenses.py      # Verify all package licenses are MIT-compatible
+python scripts/check_wheel_availability.py # Verify every runtime dep has wheels for all supported platforms (README §Supported platforms)
 python scripts/check_limitations_sync.py              # Verify limitation tables are in sync
 python scripts/check_limitations_sync.py --check-states # Also verify issues are still open via GitHub API
 python scripts/fix_allowlists.py      # Preview stale allowlist line numbers
@@ -107,6 +108,7 @@ Each stage is a module with a public API function and is independently testable.
 - Version must stay in sync across `vera/__init__.py`, `pyproject.toml`, and `CHANGELOG.md`
 - All tests must pass: `pytest tests/ -v`
 - Type checking must be clean: `mypy vera/`
+- Every runtime dep must have wheels for all supported platforms: `python scripts/check_wheel_availability.py` (CI gate; see README §Supported platforms for the policy this enforces)
 
 ## Common workflows
 
@@ -180,7 +182,7 @@ This repo uses [CodeRabbit](https://coderabbit.ai) for AI code review on pull re
 
 ## Cross-platform pitfalls (test fixtures)
 
-The CI matrix tests on `{ubuntu, macos, windows} × {3.11, 3.12, 3.13}`.  When writing test fixtures, three Windows-portability rules apply — see the **Test Fixture Conventions** section in `TESTING.md` for full examples:
+The CI matrix tests on `{ubuntu-latest, macos-15, macos-26, windows-latest} × {3.11, 3.12, 3.13}` (12 combinations; macOS pinned explicitly to insulate from silent `macos-latest` migration — see README §Supported platforms).  When writing test fixtures, three Windows-portability rules apply — see the **Test Fixture Conventions** section in `TESTING.md` for full examples:
 
 - `tempfile.NamedTemporaryFile` handed off to a subprocess MUST use `delete=False` + manual `Path.unlink()` (Windows can't reopen a held file).
 - Paths embedded into Vera string literals MUST be POSIX-form (`Path(tmp_path).as_posix()`); Windows backslashes trip Vera's `\U` escape grammar.

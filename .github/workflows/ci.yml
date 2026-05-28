@@ -215,6 +215,30 @@ jobs:
         #   no fix release exists yet — revisit when pygments >2.19.2 ships
         run: pip-audit --skip-editable --ignore-vuln CVE-2026-4539
 
+  wheel-preflight:
+    # Structural backstop for #691-class regressions: if an upstream dep
+    # bumps its platform-tag baseline (e.g. z3-solver going from
+    # macosx_13_0_arm64 to macosx_15_0_arm64 between 4.15.4 and 4.15.5),
+    # this job fails fast in CI rather than letting users discover the
+    # regression at install time on their machine.  Pairs with the
+    # README §Supported platforms policy; the script enforces what the
+    # README documents.
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check wheel availability across supported platforms
+        run: python scripts/check_wheel_availability.py
+
   sbom:
     permissions:
       contents: read
