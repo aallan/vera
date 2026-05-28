@@ -1,0 +1,127 @@
+-- Conformance: host-store GC reachability (#695 / #705)
+-- ================================================================
+-- Regression for #695 (Map<K, T_heap>) and #705 (Set<T_heap>).
+-- Prior to the fix, heap-pointer values stored in the host-side
+-- ``_map_store`` / ``_set_store`` tables were invisible to the
+-- conservative GC scan because the wrapper ADT body only held the
+-- raw handle at offset +4 (an i32 index, not a heap pointer).
+-- Under GC pressure those values could be reclaimed while still
+-- logically reachable via the container, leading to silent use-
+-- after-free: ``json_array_length`` on the stale pointer would
+-- return 0 instead of the correct length.
+--
+-- The fix (PR #707) attaches a WASM-resident bucket array at
+-- wrapper body offset +8.  The bucket mirrors the heap-pointer
+-- fields from the host-side store entry, making them visible to
+-- the conservative scan.  A companion change shadow-roots
+-- match-arm / let-binding heap-pointer locals so that intermediate
+-- ``@Json`` values created during ``set_add(set_new(), @Json.0)``
+-- remain reachable across the inner ``set_new`` alloc.
+--
+-- Post-fix invariant: all four tests return 0.  Any non-zero
+-- result indicates the bucket-array mirror or shadow-rooting is
+-- not functioning correctly.
+-- ================================================================
+-- ================================================================
+-- test_map_string_json_user_level
+-- Exercises the user-level Map<String, Json> path from #695.
+-- Parse a 5-element JSON array, insert it into a fresh map under
+-- the key "arr", retrieve it via map_get, and check that
+-- json_array_length still returns 5 (not 0 due to UAF).
+-- ================================================================
+public fn test_map_string_json_user_level(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  match json_parse("[1,2,3,4,5]") {
+    Err(_) -> 1,
+    Ok(@Json) -> {
+      let @Map<String, Json> = map_insert(map_new(), "arr", @Json.0);
+      match map_get(@Map<String, Json>.0, "arr") {
+        None -> 2,
+        Some(@Json) -> if json_array_length(@Json.0) == 5 then { 0 } else { 3 }
+      }
+    }
+  }
+}
+
+-- ================================================================
+-- test_set_of_json_user_level
+-- Exercises the user-level Set<Json> path from #705.
+-- Parse a 3-element JSON array, add the value into a fresh set,
+-- convert to an array, and fold json_array_length over the elements.
+-- The set has one element of array-length 3, so the fold result
+-- should be 3.  Returns 0 on success, non-zero on GC corruption.
+-- ================================================================
+public fn test_set_of_json_user_level(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  match json_parse("[10,20,30]") {
+    Err(_) -> 1,
+    Ok(@Json) -> {
+      let @Set<Json> = set_add(set_new(), @Json.0);
+      let @Array<Json> = set_to_array(@Set<Json>.0);
+      let @Int = array_fold(@Array<Json>.0, 0, fn(@Int, @Json -> @Int) effects(pure) { json_array_length(@Json.0) + @Int.0 });
+      if @Int.0 == 3 then {
+        0
+      } else {
+        2
+      }
+    }
+  }
+}
+
+-- ================================================================
+-- test_map_chain_construction
+-- Exercises chained map_insert calls to make sure intermediate
+-- wrappers have their bucket arrays correctly populated when
+-- passed to the next insert.  Builds a Map<String, Int> with
+-- 3 entries and verifies map_size returns 3.
+-- ================================================================
+public fn test_map_chain_construction(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_insert(map_insert(map_new(), "a", 1), "b", 2), "c", 3);
+  if map_size(@Map<String, Int>.0) == 3 then {
+    0
+  } else {
+    1
+  }
+}
+
+-- ================================================================
+-- test_set_chain_construction
+-- Exercises chained set_add calls to confirm that intermediate
+-- Set<String> wrappers have their bucket arrays populated
+-- correctly before each subsequent add.  Adds 3 distinct elements
+-- and verifies set_size returns 3.
+-- ================================================================
+public fn test_set_chain_construction(@Unit -> @Int)
+  requires(true)
+  ensures(@Int.result == 0)
+  effects(pure)
+{
+  let @Set<String> = set_add(set_add(set_add(set_new(), "x"), "y"), "z");
+  if set_size(@Set<String>.0) == 3 then {
+    0
+  } else {
+    1
+  }
+}
+
+-- ================================================================
+-- main — run all four tests; return 0 iff every test passes.
+-- ================================================================
+public fn main(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = test_map_string_json_user_level(()) + test_set_of_json_user_level(()) + test_map_chain_construction(()) + test_set_chain_construction(());
+  @Int.0
+}
