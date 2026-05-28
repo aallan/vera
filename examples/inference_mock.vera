@@ -1,0 +1,28 @@
+-- Inference handler mock example: deterministic LLM responses for tests.
+-- Demonstrates: Inference.complete, algebraic effect handlers, resume.
+--
+-- `classify_sentiment` normally requires the Inference host effect. The
+-- wrapper below handles that effect locally and resumes the computation with a
+-- fixed response, making the classifier deterministic and API-key-free for
+-- check/verify workflows.
+
+private fn classify_sentiment(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(<Inference>)
+{
+  let @String = string_concat("Classify the sentiment of this text as Positive, Negative, or Neutral. Respond with one word only.\n\n", @String.0);
+  Inference.complete(@String.0)
+}
+
+public fn with_mock_inference(@String -> @Result<String, String>)
+  requires(string_length(@String.0) > 0)
+  ensures(true)
+  effects(pure)
+{
+  handle[Inference] {
+    complete(@String) -> { resume(Ok("Positive")) }
+  } in {
+    classify_sentiment(@String.0)
+  }
+}
