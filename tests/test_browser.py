@@ -1862,6 +1862,14 @@ class TestBrowserMapHostStoreGCReachability695:
         monkeypatch.setenv("VERA_EAGER_GC", "1")
         wasm_path, _ = _compile_vera(src, tmp_path)
         result = _run_node(wasm_path)
+        # PR #707 review: the Node harness surfaces traps / runtime errors
+        # via ``result["error"]``.  Eager-GC regression tests must distinguish
+        # "ran cleanly with the expected stdout" from "trapped en route" — a
+        # silent ``result.get("stdout", "")`` would hide a fresh UAF behind
+        # whatever partial output the IO.print buffer flushed before the trap.
+        assert not result.get("error"), (
+            f"Node harness reported error during VERA_EAGER_GC run: {result.get('error')!r}"
+        )
         return result.get("stdout", "").strip()
 
     def test_eager_gc_set_of_json_browser(

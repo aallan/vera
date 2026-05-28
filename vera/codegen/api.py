@@ -1022,6 +1022,21 @@ def execute(
     # always non-zero — Vera's heap region starts well above 0).  Phase
     # A only exposes string-key probing for that reason.
     #
+    # **Empty-string-key caveat (PR #707 review).** ``_alloc_string("")``
+    # returns ``(0, 0)``, so an empty-string key would currently collide
+    # with the sentinel — ``_probe_string_key`` would treat ``""`` as an
+    # empty slot.  Latent only: ``_probe_string_key`` has no callers at
+    # present.  The bucket array is a write-only GC-reachability mirror
+    # (actual map / set lookups go through ``_map_store`` / ``_set_store``
+    # Python dicts which key on Python ``str`` correctly), so the
+    # collision cannot manifest as a user-visible bug today.  The fix
+    # — either reserving a distinct non-zero encoding for the empty
+    # string, or adding an explicit occupancy flag at slot+0 — belongs
+    # in the #706 follow-up (mirror → bucket-as-truth migration), which
+    # will activate the probe path for real user-level operations.  Do
+    # not paper over here; the right shape depends on how probing is
+    # restructured under #706.
+    #
     # **Capacity and count.** Stored in the wrapper ADT (not in the
     # bucket array header); the wrapper field is added by this commit.
 

@@ -1235,7 +1235,19 @@ function buildImportObject(module) {
   imports.vera.attach_bucket_to_wrapper = (wrapperPtr, kind, handle) => {
     if (kind === 1) {
       const d = mapStore.get(handle);
-      if (!d) return;
+      // PR #707 review (silent-failure-hunter): silent return hid
+      // desynchronization between the WAT-allocated wrapper and the
+      // JS-side ``mapStore``.  The only way ``d`` is undefined here is
+      // a real bug (handle constructed outside ``mapAlloc``, or wrapper
+      // reached this host call after ``host_decref_handle`` already
+      // evicted it).  Either case leaves wrapper+8 unwritten → reader
+      // dereferences address 0 → confusing trap downstream.  Fail fast.
+      if (!d) {
+        throw new Error(
+          `attach_bucket_to_wrapper: unknown Map host-store handle ${handle} ` +
+          '(wrapper / mapStore desync — see PR #707 review)'
+        );
+      }
       const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, d.size * 2);
       const bucketBytes = capacity * _SLOT_SIZE;
       const bucketPtr = alloc(bucketBytes);
@@ -1284,7 +1296,14 @@ function buildImportObject(module) {
       }
     } else if (kind === 2) {
       const s = setStore.get(handle);
-      if (!s) return;
+      // PR #707 review (silent-failure-hunter): same shape as the Map
+      // branch above — silent return hid setStore desync.  Fail fast.
+      if (!s) {
+        throw new Error(
+          `attach_bucket_to_wrapper: unknown Set host-store handle ${handle} ` +
+          '(wrapper / setStore desync — see PR #707 review)'
+        );
+      }
       const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, s.size * 2);
       const bucketBytes = capacity * _SLOT_SIZE;
       const bucketPtr = alloc(bucketBytes);
@@ -1922,8 +1941,16 @@ function buildImportObject(module) {
         gcShadowPush(arrPtr);
         for (let i = 0; i < count; i++) {
           const ep = writeJson(value[i]);
+          // PR #707 review: push ep to root it across writeI32, then
+          // pop immediately after the store — once ep lives at
+          // ``arrPtr + i * 4`` and arrPtr is rooted, the conservative
+          // scan reaches ep via arrPtr's block, so the per-iteration
+          // push is no longer needed.  Without the matching pop the
+          // shadow stack grew O(count) and risked overflowing
+          // ``gc_stack_limit`` on large arrays.
           gcShadowPush(ep);
           writeI32(arrPtr + i * 4, ep);
+          gcShadowPop();
         }
       }
       const ptr = alloc(16);
@@ -1944,6 +1971,16 @@ function buildImportObject(module) {
       const m = new Map();
       for (const [k, v] of Object.entries(value)) {
         const ep = writeJson(v);
+        // PR #707 review: no matching pop here — unlike the JArray
+        // branch above, ``m`` is a JS Map (not WASM memory), so
+        // ``m.set(k, ep)`` does NOT make ep reachable from the
+        // conservative scan.  ep stays on the shadow stack until
+        // ``allocMapWrapper(m)`` below builds the WAT-resident bucket
+        // array and writes ep into it.  Stack depth is therefore
+        // O(n_keys) inside this loop; bounded by the same
+        // ``gc_stack_limit`` guard as everything else.  Tracked as
+        // a refactor opportunity under #706 (move-to-truth would let
+        // allocMapWrapper take a pre-rooted bucket).
         gcShadowPush(ep);
         m.set(k, ep);
       }
@@ -2233,8 +2270,14 @@ function buildImportObject(module) {
       gcShadowPush(arrPtr);
       for (let i = 0; i < count; i++) {
         const cp = writeHtml(children[i]);
+        // PR #707 review: same push+pop pairing as the JArray loop in
+        // writeJson.  Once cp is stored at ``arrPtr + i * 4`` and
+        // arrPtr is rooted, the conservative scan reaches cp via
+        // arrPtr's block, so the per-iteration push can be popped.
+        // Keeps shadow stack depth O(1) instead of O(count).
         gcShadowPush(cp);
         writeI32(arrPtr + i * 4, cp);
+        gcShadowPop();
       }
     }
     const ptr = alloc(24);

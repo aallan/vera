@@ -189,7 +189,7 @@ Addressed alongside feature work, not milestone-gated.  Prioritised by impact.
 
 | Item | Issue | Effort | Impact |
 |------|-------|--------|--------|
-| Chapter 8 (modules) conformance programs | [#679](https://github.com/aallan/vera/issues/679) | 1 day | Conformance suite has 88 programs across chapters 1, 2, 3, 4, 5, 6, 7, 9, 10.  No `ch08_*.vera` — only gap.  Codegen layer is well-covered (23 tests in `test_codegen_modules.py`); what's missing is the program-per-feature mapping with `spec_ref`.  8 small programs, one per spec section. |
+| Chapter 8 (modules) conformance programs | [#679](https://github.com/aallan/vera/issues/679) | 1 day | Conformance suite has 89 programs across chapters 1, 2, 3, 4, 5, 6, 7, 9, 10.  No `ch08_*.vera` — only gap.  Codegen layer is well-covered (23 tests in `test_codegen_modules.py`); what's missing is the program-per-feature mapping with `spec_ref`.  8 small programs, one per spec section. |
 
 ### Compiler internals
 
