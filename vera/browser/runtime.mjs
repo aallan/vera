@@ -1200,6 +1200,26 @@ function buildImportObject(module) {
     // Unknown kinds: silent no-op.
   };
 
+  // #695 / #705: attach_bucket_to_wrapper is called from
+  // _emit_wrap_handle after every wrap step to populate the
+  // wrapper's bucket_ptr field at offset +8.  The CLI-side
+  // (vera/codegen/api.py::host_attach_bucket) allocates a WASM-
+  // resident bucket array mirroring _map_store / _set_store
+  // contents so the conservative GC scan reaches the values via
+  // shadow stack → wrapper → bucket → val_ptr.
+  //
+  // TODO: implement the JS-side parallel.  Currently a no-op stub
+  // so the WAT import resolves and the browser runtime keeps
+  // loading.  The browser target carries the same #695-class
+  // silent-UAF bug under heavy allocation pressure until the
+  // proper bucket-population logic lands here.  Tracked as the
+  // Phase D follow-up to the CLI fix.
+  imports.vera.attach_bucket_to_wrapper = (_wrapperPtr, _kind, _handle) => {
+    // Phase D: populate the wrapper's bucket array from
+    // mapStore.get(handle) / setStore.get(handle), parallel to
+    // the CLI implementation.  No-op for now.
+  };
+
   // #573 wrapper-ADT layout constants (must match
   // vera/wasm/calls_containers.py).
   const _MAP_HANDLE_TAG = 0xFEEDC001 | 0;

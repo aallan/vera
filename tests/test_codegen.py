@@ -19312,6 +19312,54 @@ class TestMapHostStoreGCReachability695:
     Parallel issue for the ``Set<T_heap>`` side: #705.
     """
 
+    def test_eager_gc_set_of_json_post_walk_uaf(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression for the Set sibling bug (#705).
+
+        Builds a ``Set<Json>`` inside a helper function so the
+        original ``@Json`` local goes out of scope when the helper
+        returns.  After that, the JArray's heap pointer is held
+        only via ``_set_store[handle]`` (Python, invisible to GC)
+        — without the bucket-array fix, ``VERA_EAGER_GC=1``
+        reclaims the JArray block during ``set_to_array``'s alloc
+        and ``json_array_length`` reads from freed memory,
+        returning 0.
+
+        Sister test to ``test_eager_gc_json_object_with_array_
+        child_post_walk_uaf``: same bug class (host-store values
+        invisible to conservative scan), different container.
+        """
+        src = """
+effect IO { op print(String -> Unit); }
+
+private fn build_set(-> @Set<Json>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse(
+    "[1,2,3,4,5,6,7,8,9,10]"
+  );
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> set_add(set_new(), @Json.0),
+    Err(@String) -> set_new()
+  }
+}
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Set<Json> = build_set();
+  let @Array<Json> = set_to_array(@Set<Json>.0);
+  let @Int = array_fold(@Array<Json>.0, 0, fn(@Int, @Json -> @Int) effects(pure) {
+    json_array_length(@Json.0) + @Int.0
+  });
+  IO.print(int_to_string(@Int.0))
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run_io(src) == "10"
+
     def test_eager_gc_json_object_with_array_child_post_walk_uaf(
         self,
         monkeypatch: pytest.MonkeyPatch,

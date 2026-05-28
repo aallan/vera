@@ -19,6 +19,14 @@ if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
 
 
+# #705: Vera type names that compile to ``i32`` WASM type but are
+# inline values (not heap pointers).  Match-arm bindings of these
+# types do NOT need ``gc_shadow_push`` for GC rooting.  Any other
+# ``i32`` slot type is treated as a heap-pointer ADT field and
+# IS rooted at the binding site.
+_INLINE_I32_TYPES = frozenset({"Bool", "Byte", "Unit"})
+
+
 class DataMixin:
     """Methods for translating constructors, match expressions, and arrays."""
 
@@ -488,6 +496,17 @@ class DataMixin:
                 instrs.append(f"local.get {scr_local}")
                 instrs.append(f"{wt}.load offset={offset}")
                 instrs.append(f"local.set {local_idx}")
+                # #705: shadow-push heap-pointer match bindings so
+                # subsequent allocations (e.g. ``set_new()`` inside
+                # ``set_add(set_new(), @Json.0)``) can't reclaim
+                # them during the gap between binding and use.
+                # ``i32`` slot with a non-scalar Vera type is the
+                # signature of a heap-pointer ADT field; Bool / Byte
+                # / Unit are inline i32s that don't need rooting.
+                # The function epilogue's ``$gc_sp`` restore pops
+                # these on exit so the shadow stack stays bounded.
+                if wt == "i32" and type_name not in _INLINE_I32_TYPES:
+                    instrs.extend(gc_shadow_push(local_idx))
                 new_env = new_env.push(type_name, local_idx)
                 offset += _sizes.get(wt, 8)
 

@@ -158,6 +158,13 @@ class AssemblyMixin:
                 "(func $vera.host_decref_handle "
                 "(param i32) (param i32)))"
             )
+            # #695/#705: bucket-population host import called by
+            # ``_emit_wrap_handle`` after every wrap step.
+            parts.append(
+                '  (import "vera" "attach_bucket_to_wrapper" '
+                "(func $vera.attach_bucket_to_wrapper "
+                "(param i32) (param i32) (param i32)))"
+            )
 
         # Import Json host-import builtins
         if "json_parse" in self._json_ops_used:

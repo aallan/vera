@@ -2461,6 +2461,110 @@ def execute(
             host_decref_handle, access_caller=True,
         )
 
+        # #695/#705: bucket-population host called after every
+        # wrap step from ``_emit_wrap_handle`` in
+        # ``vera/wasm/calls_containers.py``.  Populates the
+        # wrapper's bucket_ptr field at +8 with a WASM-resident
+        # mirror of ``_map_store[handle]`` / ``_set_store[handle]``
+        # so heap-pointer values are reachable to the conservative
+        # GC scan via shadow stack → wrapper → bucket → val_ptr.
+        # No-op for Decimal (kind=3) and empty stores.
+        def host_attach_bucket(
+            caller: wasmtime.Caller, wrapper_ptr: int, kind: int,
+            handle: int,
+        ) -> None:
+            if kind == _WRAP_KIND_MAP:
+                d = _map_store.get(handle, {})
+                if not d:
+                    return
+                _attach_bucket_from_dict(caller, wrapper_ptr, d)
+            elif kind == _WRAP_KIND_SET and result.set_ops_used:
+                s = _set_store.get(handle, set())
+                if not s:
+                    return
+                _attach_bucket_from_set(caller, wrapper_ptr, s)
+            # Decimal: no-op (PyDecimal is value-typed).
+
+        linker.define_func(
+            "vera", "attach_bucket_to_wrapper",
+            wasmtime.FuncType(
+                [
+                    wasmtime.ValType.i32(),  # wrapper_ptr
+                    wasmtime.ValType.i32(),  # kind
+                    wasmtime.ValType.i32(),  # handle
+                ],
+                [],
+            ),
+            host_attach_bucket, access_caller=True,
+        )
+
+    def _attach_bucket_from_dict(
+        caller: wasmtime.Caller,
+        wrapper_ptr: int,
+        d: dict[object, object],
+    ) -> None:
+        """Allocate + populate bucket array from a Map dict, link to wrapper.
+
+        Critical ordering for GC safety without overflowing the
+        shadow stack on large maps: for each entry, write the
+        val_word to the bucket slot FIRST (no alloc), making any
+        heap-pointer value reachable via wrapper → bucket; THEN
+        alloc the key string if needed (which may GC, but value is
+        now rooted via bucket).  Without this, pre-pushing every
+        value onto the shadow stack works for small maps but
+        overflows at ~thousands of entries — observed at the
+        10000-element ``TestHostHandleReclamation573`` chain.
+        """
+        capacity = max(_BUCKET_INITIAL_CAPACITY, len(d) * 2)
+        with _ShadowGuard(caller) as guard:
+            guard.push(wrapper_ptr)
+            bucket_ptr = _alloc_bucket_array(caller, capacity)
+            guard.push(bucket_ptr)
+            for i, (k, v) in enumerate(d.items()):
+                slot_base = bucket_ptr + i * _SLOT_SIZE
+                # Write val_word FIRST (no alloc).  This roots any
+                # heap-pointer value via wrapper → bucket → slot
+                # before the key-string alloc can fire GC.
+                val_word = v if isinstance(v, int) else 0
+                _write_i32(caller, slot_base + 8, val_word)
+                if isinstance(k, str):
+                    key_ptr, key_len = _alloc_string(caller, k)
+                    _write_i32(caller, slot_base, key_ptr)
+                    _write_i32(caller, slot_base + 4, key_len)
+                else:
+                    k_int = k if isinstance(k, int) else 0
+                    _write_i32(caller, slot_base, k_int)
+                    # key_word_1 already 0 from bucket zero-init.
+        _write_i32(caller, wrapper_ptr + 8, bucket_ptr)
+
+    def _attach_bucket_from_set(
+        caller: wasmtime.Caller,
+        wrapper_ptr: int,
+        s: set[object],
+    ) -> None:
+        """Allocate + populate bucket array from a Set, link to wrapper.
+
+        Same ordering discipline as ``_attach_bucket_from_dict``:
+        for heap-pointer elements (non-string), write to the slot
+        before any potential alloc.
+        """
+        capacity = max(_BUCKET_INITIAL_CAPACITY, len(s) * 2)
+        with _ShadowGuard(caller) as guard:
+            guard.push(wrapper_ptr)
+            bucket_ptr = _alloc_bucket_array(caller, capacity)
+            guard.push(bucket_ptr)
+            for i, elem in enumerate(s):
+                slot_base = bucket_ptr + i * _SLOT_SIZE
+                if isinstance(elem, str):
+                    elem_ptr, elem_len = _alloc_string(caller, elem)
+                    _write_i32(caller, slot_base, elem_ptr)
+                    _write_i32(caller, slot_base + 4, elem_len)
+                else:
+                    elem_int = elem if isinstance(elem, int) else 0
+                    _write_i32(caller, slot_base, elem_int)
+                    # key_word_1 and val_word stay 0 (bucket zero-init).
+        _write_i32(caller, wrapper_ptr + 8, bucket_ptr)
+
     if result.map_ops_used:
 
         # map_new() → i32 handle
