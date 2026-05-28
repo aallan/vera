@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **[#691](https://github.com/aallan/vera/issues/691)** — Supported platforms are now documented explicitly in `README.md` Installation: macOS 15+ (Sequoia, Tahoe), Ubuntu x86_64 (manylinux_2_27+), Ubuntu aarch64 (manylinux_2_38+, i.e. Ubuntu 23.10+), Windows x86_64.  The macOS 15+ baseline reflects [TelemetryDeck distribution data](https://telemetrydeck.com/survey/apple/macOS/versions/) — macOS 26 (~75%) + macOS 15 (~24%) covers ~99% of the install base.  macOS 14 (Sonoma) and earlier are out of scope ([#691](https://github.com/aallan/vera/issues/691)); Ubuntu 22.04 LTS aarch64 is out of scope ([#701](https://github.com/aallan/vera/issues/701)).
+- **CI matrix**: replaced `macos-latest` with explicit pins for `macos-15` and `macos-26` (12 test combinations total).  Insulates against silent `-latest` migration when GitHub flips the alias.  First repo run on macOS 26 (Tahoe).
+- **`z3-solver` lower bound** tightened from `>=4.12` to `>=4.15.5`.  Expresses the macOS 15+ baseline structurally — unsupported platforms now fail at dependency resolution with a clear "no matching distribution" error instead of a cryptic source-build failure 20 minutes later.  Resolved version stays at 4.16.0.0 (no functional change).
+
+### Added
+
+- **`scripts/check_wheel_availability.py`** — pre-flight check that every runtime dep has prebuilt wheels for every (platform, Python-version) tuple documented in README §Supported platforms.  Runs as the new `wheel-preflight` CI job.  Structural backstop for #691-class install regressions: catches upstream platform-tag bumps before they reach users.
+
 ## [0.0.158] - 2026-05-19
 
 ### Fixed
