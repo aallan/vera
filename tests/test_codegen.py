@@ -19291,3 +19291,77 @@ public fn main(@Unit -> @Unit)
 }
 """
         assert _run_io(src) == "ok"
+
+
+class TestMapHostStoreGCReachability695:
+    """Regression target for #695 — ``Map<K, T_heap>`` values stored
+    in Python-side ``_map_store`` are invisible to the conservative GC
+    scan, so a ``$gc_collect`` between map construction and value
+    access reclaims the heap blocks pointed to from the dict.
+
+    Empirically: with ``VERA_EAGER_GC=1`` (forces a ``$gc_collect`` on
+    every alloc), the reproducer prints ``0`` instead of the JArray's
+    actual length ``10`` — silent use-after-free, no trap.  The "0"
+    comes from the free-list's next-pointer overwriting the freed
+    block's first word, which ``json_array_length`` reads as a length.
+
+    This class is xfail-strict until the fix lands; flipping the
+    marker off in the same commit as the fix is the canonical
+    "regression test passed → fix landed" handshake.
+
+    Parallel issue for the ``Set<T_heap>`` side: #705.
+    """
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "#695: Map<K, T_heap> values in _map_store invisible to "
+            "conservative GC scan; UAF surfaces with VERA_EAGER_GC=1. "
+            "Flip this marker off when the move-to-WASM fix lands."
+        ),
+    )
+    def test_eager_gc_json_object_with_array_child_post_walk_uaf(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``json_parse`` builds ``Map<String, Json>`` where the
+        "key" entry is a JArray heap block.  The block is held only
+        via ``_map_store[handle]["key"]`` — a Python int the
+        conservative scan never visits.
+
+        With ``VERA_EAGER_GC=1`` the ``Option`` alloc inside
+        ``json_get`` triggers ``$gc_collect`` between ``json_parse``
+        returning and the array length being read, freeing the
+        JArray block.  ``json_array_length`` reads from the freed
+        block and returns 0 instead of 10.
+
+        After the fix lands (Map storage migrated to WASM linear
+        memory so the conservative scan reaches all values), this
+        test will pass and the xfail marker must be removed.
+        """
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Json, String> = json_parse(
+    "{\\"key\\": [1,2,3,4,5,6,7,8,9,10]}"
+  );
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> {
+      let @Option<Json> = json_get(@Json.0, "key");
+      match @Option<Json>.0 {
+        Some(@Json) -> {
+          let @Int = json_array_length(@Json.0);
+          IO.print(int_to_string(@Int.0))
+        },
+        None -> IO.print("none")
+      }
+    },
+    Err(@String) -> IO.print("err")
+  }
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run_io(src) == "10"
