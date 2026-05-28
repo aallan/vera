@@ -1027,6 +1027,14 @@ def execute(
 
     _SLOT_SIZE = 12
 
+    # Minimum bucket-array capacity.  Small enough to keep memory
+    # footprint reasonable for empty / tiny maps; large enough that
+    # parser-built maps with up to 4 keys avoid an immediate grow.
+    # Caller is responsible for sizing up (typically ``max(_BUCKET_
+    # INITIAL_CAPACITY, len(d) * 2)`` to keep linear-probe scans
+    # short).
+    _BUCKET_INITIAL_CAPACITY = 8
+
     def _alloc_bucket_array(caller: wasmtime.Caller, capacity: int) -> int:
         """Allocate a zero-initialised bucket array of `capacity` slots.
 
@@ -1232,7 +1240,24 @@ def execute(
         _WRAP_KIND_SET: _SET_HANDLE_TAG,
         _WRAP_KIND_DECIMAL: _DECIMAL_HANDLE_TAG,
     }
-    _WRAPPER_BODY_SIZE = 8
+    # #695/#705 Phase B: wrapper grows from 8 to 12 bytes to add a
+    # ``bucket_ptr`` field at offset +8.  Layout:
+    #   +0  tag (i32)                              [#573]
+    #   +4  handle | 0x80000000 (i32, bit-31 tagged) [#578]
+    #   +8  bucket_ptr (i32, real heap pointer or 0) [#695]
+    #
+    # For Map / Set wrappers, ``bucket_ptr`` points to a WASM-side
+    # bucket array (see ``_alloc_bucket_array``) that mirrors the
+    # ``_map_store`` / ``_set_store`` contents so the conservative
+    # GC scan can reach the values.  For Decimal wrappers (which
+    # don't store heap pointers and don't need this), the field is
+    # left at 0; the conservative scan correctly skips 0 as
+    # out-of-heap-range.
+    #
+    # Codegen that reads the wrapper's handle at +4 is unchanged;
+    # the +8 field is only read by the bucket-array path inside
+    # api.py and (Phase B follow-up) the new host imports.
+    _WRAPPER_BODY_SIZE = 12
 
     def _call_register_wrapper(
         caller: wasmtime.Caller, ptr: int, kind: int, handle: int,
@@ -1284,6 +1309,12 @@ def execute(
         # still gets the RAW handle — the wrap table uses it for
         # ``host_decref_handle`` calls.
         _write_i32(caller, body_ptr + 4, raw_handle | 0x80000000)
+        # #695: default bucket_ptr is 0 (no bucket array).  For Map
+        # wrappers, ``_alloc_map_wrapper`` overwrites this with the
+        # actual bucket-array pointer after populating it.  For
+        # Set / Decimal wrappers the field stays 0 in Phase B (Phase
+        # C adds the Set side; Decimal never needs it).
+        _write_i32(caller, body_ptr + 8, 0)
         _call_register_wrapper(caller, body_ptr, kind, raw_handle)
         return body_ptr
 
@@ -1298,9 +1329,61 @@ def execute(
         parser's HtmlElement attrs.  Allocates the dict in
         ``_map_store`` (via ``_map_alloc``) and then lifts the
         resulting handle to a wrapper pointer via ``_wrap_handle``.
+
+        #695 Phase B: in addition to the Python-side dict, populate
+        a WASM-side bucket array that mirrors the (key, value)
+        pairs and link it from the wrapper's ``bucket_ptr`` field at
+        +8.  This makes heap-pointer values reachable from the
+        conservative GC scan via wrapper → bucket_array → val_ptr,
+        closing the silent-UAF window between map construction and
+        value access (empirically: ``json_parse → json_get`` with
+        ``VERA_EAGER_GC=1`` returning 0 instead of the array
+        length).
+
+        ``map_get`` still reads the value from ``_map_store`` — the
+        bucket array is currently used only as a GC reachability
+        anchor.  Phase B.3 will migrate the reads to the bucket
+        array and delete ``_map_store``; this commit prioritises
+        closing the bug with the minimum surface area.
         """
         raw_handle = _map_alloc(d)
-        return _wrap_handle(caller, _WRAP_KIND_MAP, raw_handle)
+        wrapper_ptr = _wrap_handle(caller, _WRAP_KIND_MAP, raw_handle)
+        # Populate the WASM-side bucket array.  CRITICAL: the
+        # wrapper is in the wrap table but NOT on the shadow stack
+        # yet — the wrap table tracks wrappers for Phase 2c cleanup
+        # but does NOT keep them alive across the conservative
+        # scan.  Any sub-alloc below that triggers $gc_collect would
+        # find the wrapper unreachable, Phase 2c would pop the
+        # _map_store entry, and the caller (write_json's JObject
+        # branch) would end up with a dead Map.  Empirically: this
+        # presented as ``json_get`` returning None instead of the
+        # JArray.  Same #692-class concern as the host-side tree
+        # walkers — must shadow-push the wrapper before any
+        # sub-alloc fires.
+        capacity = max(_BUCKET_INITIAL_CAPACITY, len(d) * 2)
+        with _ShadowGuard(caller) as guard:
+            guard.push(wrapper_ptr)  # keep wrapper alive across sub-allocs
+            bucket_ptr = _alloc_bucket_array(caller, capacity)
+            guard.push(bucket_ptr)
+            for i, (k, v) in enumerate(d.items()):
+                # Keys are Python strings (per write_json's
+                # ``map_dict[str(k)] = val_ptr`` invariant).
+                key_str = str(k) if not isinstance(k, str) else k
+                key_ptr, key_len = _alloc_string(caller, key_str)
+                guard.push(key_ptr)
+                # val_word: for heap-pointer values (i.e. v is an
+                # int that's a WASM heap address), this stores the
+                # pointer so the conservative scan traces it.  For
+                # non-int Python values (str, bool, etc.), store 0
+                # — those types don't have associated heap blocks
+                # to root.  The actual access still goes through
+                # _map_store today (Phase B.3 changes that).
+                val_word = v if isinstance(v, int) else 0
+                _write_slot(
+                    caller, bucket_ptr, i, key_ptr, key_len, val_word,
+                )
+        _write_i32(caller, wrapper_ptr + 8, bucket_ptr)
+        return wrapper_ptr
 
     def _alloc_string(
         caller: wasmtime.Caller, s: str,

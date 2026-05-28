@@ -19312,14 +19312,6 @@ class TestMapHostStoreGCReachability695:
     Parallel issue for the ``Set<T_heap>`` side: #705.
     """
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "#695: Map<K, T_heap> values in _map_store invisible to "
-            "conservative GC scan; UAF surfaces with VERA_EAGER_GC=1. "
-            "Flip this marker off when the move-to-WASM fix lands."
-        ),
-    )
     def test_eager_gc_json_object_with_array_child_post_walk_uaf(
         self,
         monkeypatch: pytest.MonkeyPatch,
