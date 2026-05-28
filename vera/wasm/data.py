@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from vera import ast
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
+    _INLINE_I32_TYPES,
     WasmSlotEnv,
     _element_mem_size,
     _element_load_op,
@@ -17,14 +18,6 @@ from vera.wasm.helpers import (
 
 if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
-
-
-# #705: Vera type names that compile to ``i32`` WASM type but are
-# inline values (not heap pointers).  Match-arm bindings of these
-# types do NOT need ``gc_shadow_push`` for GC rooting.  Any other
-# ``i32`` slot type is treated as a heap-pointer ADT field and
-# IS rooted at the binding site.
-_INLINE_I32_TYPES = frozenset({"Bool", "Byte", "Unit"})
 
 
 class DataMixin:
@@ -189,7 +182,7 @@ class DataMixin:
                 instrs.append(f"local.get {scr_local}")
                 instrs.append(f"i32.load offset={offset + 4}")
                 instrs.append(f"local.set {len_local}")
-                # Ultrareview #707 (round 1): same pair-type rooting
+                # PR #707 review: same pair-type rooting
                 # gap as ``_extract_constructor_fields`` — String
                 # buffer / Array<T> backing ptr needs shadow-push.
                 # ``let MyAdt(@String, ...) = ...;`` was missed by
@@ -212,7 +205,7 @@ class DataMixin:
             instrs.append(f"local.get {scr_local}")
             instrs.append(f"{wt}.load offset={offset}")
             instrs.append(f"local.set {local_idx}")
-            # CodeRabbit #707 (round 2): same heap-pointer rooting
+            # PR #707 review: same heap-pointer rooting
             # discipline as ``_extract_constructor_fields`` (line ~515)
             # and the ``BindingPattern`` branch (line ~408).
             # ``let MyAdt(@Json) = makeThing();`` extracts an i32 field
@@ -438,7 +431,7 @@ class DataMixin:
                 f"local.get {scr_local}",
                 f"local.set {local_idx}",
             ]
-            # CodeRabbit #707 (round 1): same heap-pointer rooting
+            # PR #707 review: same heap-pointer rooting
             # discipline as ``_extract_constructor_fields`` (below) —
             # ``match @Json.0 { @Json -> set_add(set_new(), @Json.0) }``
             # binds the scrutinee to a fresh local that's invisible
@@ -512,7 +505,7 @@ class DataMixin:
                     instrs.append(f"local.get {scr_local}")
                     instrs.append(f"i32.load offset={offset + 4}")
                     instrs.append(f"local.set {len_local}")
-                    # Ultrareview #707 (round 1): pair-type field
+                    # PR #707 review: pair-type field
                     # extraction in match arms — the ``ptr_local``
                     # holds a heap pointer (the String buffer or the
                     # Array<T> backing) which is invisible to the
@@ -551,7 +544,7 @@ class DataMixin:
                 # / Unit are inline i32s that don't need rooting.
                 # The function epilogue's ``$gc_sp`` restore pops
                 # these on exit so the shadow stack stays bounded.
-                # CodeRabbit #707 (round 1): ``gc_shadow_push``
+                # PR #707 review: ``gc_shadow_push``
                 # references ``$gc_sp`` / ``$gc_stack_limit`` which
                 # are only exported when ``needs_alloc`` is set on
                 # the surrounding context.  Without flipping it,

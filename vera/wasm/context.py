@@ -28,17 +28,12 @@ if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
 
 from vera.wasm.helpers import (  # noqa: F401 — re-exported for consumers
+    _INLINE_I32_TYPES,
     StringPool,
     WasmSlotEnv,
     gc_shadow_push,
     wasm_type,
 )
-
-# #705: Vera type names that compile to ``i32`` WASM type but are
-# inline values (not heap pointers).  Let-bindings of these types do
-# NOT need ``gc_shadow_push``.  Mirrors the constant in
-# ``vera/wasm/data.py`` used for match-arm bindings — same rule.
-_INLINE_I32_TYPES = frozenset({"Bool", "Byte", "Unit"})
 from vera.wasm.inference import InferenceMixin
 from vera.wasm.operators import OperatorsMixin
 from vera.wasm.calls import CallsMixin

@@ -1864,24 +1864,6 @@ class TestBrowserMapHostStoreGCReachability695:
         result = _run_node(wasm_path)
         return result.get("stdout", "").strip()
 
-    @pytest.mark.skip(
-        reason=(
-            "Browser runtime has a pre-existing GC reachability "
-            "regression that this PR's mirror approach does not "
-            "close: empirically the bucket array IS populated "
-            "correctly (slot[0]+0 holds the Json ptr, wrapperPtr+8 "
-            "holds the bucket ptr) but the Json block still gets "
-            "reclaimed by the next $gc_collect.  Suggests the "
-            "browser-side conservative scan or wrap-table compaction "
-            "isn't tracing through the bucket the same way the CLI "
-            "does, OR a subtle alignment / header / size mismatch in "
-            "the JS alloc wrapper.  Reverting to commit 4d69cb8 "
-            "(before PR-review-toolkit C1-C4) reproduces the same "
-            "stdout='0' failure — NOT introduced by those fixes.  "
-            "Tracked as #708 so this PR can ship the CLI fix without "
-            "being gated on a deeper browser-runtime investigation."
-        )
-    )
     def test_eager_gc_set_of_json_browser(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1920,13 +1902,6 @@ public fn main(-> @Unit)
 """
         assert self._run_eager_gc_node(src, monkeypatch, tmp_path) == "10"
 
-    @pytest.mark.skip(
-        reason=(
-            "Same browser-side pre-existing bug as "
-            "test_eager_gc_set_of_json_browser — see that test's "
-            "skip rationale.  Tracked as #708."
-        )
-    )
     def test_eager_gc_json_object_with_array_child_browser(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1964,13 +1939,6 @@ public fn main(-> @Unit)
 """
         assert self._run_eager_gc_node(src, monkeypatch, tmp_path) == "10"
 
-    @pytest.mark.skip(
-        reason=(
-            "Same browser-side pre-existing bug as "
-            "test_eager_gc_set_of_json_browser — see that test's "
-            "skip rationale.  Tracked as #708."
-        )
-    )
     def test_eager_gc_map_of_json_user_level_browser(
         self,
         monkeypatch: pytest.MonkeyPatch,

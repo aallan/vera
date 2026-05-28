@@ -1239,7 +1239,7 @@ function buildImportObject(module) {
       const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, d.size * 2);
       const bucketBytes = capacity * _SLOT_SIZE;
       const bucketPtr = alloc(bucketBytes);
-      // CodeRabbit #707 (round 1): three-step rooting for browser
+      // PR #707 review: three-step rooting for browser
       // GC-safety without shadow-stack JS-side API.
       // (1) Publish bucketPtr into wrapper+8 IMMEDIATELY so the
       //     wrapper (which is on the WAT shadow stack via the
@@ -1260,7 +1260,7 @@ function buildImportObject(module) {
         const slotBase = bucketPtr + i * _SLOT_SIZE;
         // val_word first (no alloc).
         //
-        // CodeRabbit #707 (round 2): BigInt values (i64 keys / vals
+        // PR #707 review: BigInt values (i64 keys / vals
         // from Map<K, Int>) are NOT coerced via Number(v) — that
         // would truncate large i64s, and a large value could land
         // inside the heap range and be misread as a live heap
@@ -1299,7 +1299,7 @@ function buildImportObject(module) {
           writeI32(slotBase, ep);
           writeI32(slotBase + 4, el);
         } else {
-          // Same BigInt-as-zero discipline (CodeRabbit #707 round 2).
+          // Same BigInt-as-zero discipline (PR #707 review).
           const ew = typeof elem === 'number' ? elem : 0;
           writeI32(slotBase, ew);
           // key_word_1 and val_word stay 0 from the fill above.
@@ -1365,7 +1365,7 @@ function buildImportObject(module) {
     return ptr;
   }
 
-  // CodeRabbit #707 (round 2): JS-side shadow-stack push/pop using
+  // PR #707 review: JS-side shadow-stack push/pop using
   // the exported ``$gc_sp`` / ``$gc_stack_limit`` mutable globals
   // (added in v0.0.158 / #692 for host-side rooting).  Needed
   // because the JS multi-alloc patterns (``allocMapWrapper`` and
@@ -1421,13 +1421,42 @@ function buildImportObject(module) {
     wasm.gc_sp.value -= 4;
   }
 
+  // #708 (PR #707): JS-side parallel of the CLI
+  // ``_ShadowGuard`` context manager added in v0.0.158 for #692.
+  // ``writeJson`` / ``writeHtml`` are multi-alloc walkers — they
+  // build a tree of heap blocks via repeated ``alloc()`` and JS-
+  // local pointer holding.  Without explicit shadow-stack rooting,
+  // intermediates (e.g. JArray's ``arrPtr`` between its allocation
+  // and the writes into it) are reclaimed by EAGER_GC and the
+  // resulting tree has dangling pointers — observed empirically as
+  // ``json_array_length`` returning 0 instead of the JArray length.
+  //
+  // ``gcGuard`` saves ``$gc_sp`` at entry and restores it on exit
+  // (success OR exception), atomically popping every push made
+  // within the callback.  Equivalent to ``_ShadowGuard.__enter__/
+  // __exit__``.  Caller pushes intermediates via ``gcShadowPush``;
+  // the guard pops them all at the end without per-push bookkeeping.
+  function gcGuard(fn) {
+    if (!wasm || !wasm.gc_sp) {
+      // Module without GC infrastructure — just call.  This is fine
+      // because such modules can't fire $gc_collect either.
+      return fn();
+    }
+    const savedSp = wasm.gc_sp.value;
+    try {
+      return fn();
+    } finally {
+      wasm.gc_sp.value = savedSp;
+    }
+  }
+
   // allocMapWrapper(d) : drop-in replacement for mapAlloc(d) used by
   // writeJson / writeHtml.  Inserts d into mapStore, lifts the
   // resulting handle to a wrapper pointer via wrapHandle, and
   // populates the wrapper's bucket array for GC reachability
   // (#695 mirror parallel — matches CLI ``_alloc_map_wrapper``).
   //
-  // CodeRabbit #707 (round 2): the wrapper returned from
+  // PR #707 review: the wrapper returned from
   // ``wrapHandle`` is registered with the wrap-table but the
   // wrap-table region is NOT scanned by Phase 2a marking, so the
   // wrapper is only kept alive transitively (via another reachable
@@ -1833,6 +1862,13 @@ function buildImportObject(module) {
 
   // Write a JS value into WASM memory as a Json ADT, returns heap pointer.
   function writeJson(value) {
+    // #708 (PR #707): wrap in gcGuard so intermediates
+    // (arrPtr, recursive results, string ptrs) can be shadow-pushed
+    // and atomically popped at function exit.  Mirrors the CLI
+    // ``write_json`` ``_ShadowGuard`` discipline from v0.0.158 (#692).
+    return gcGuard(() => writeJsonImpl(value));
+  }
+  function writeJsonImpl(value) {
     if (value === null || value === undefined) {
       // JNull — tag=0, total=8
       const ptr = alloc(8);
@@ -1855,8 +1891,15 @@ function buildImportObject(module) {
     }
     if (typeof value === "string") {
       // JString(String) — tag=3, i32_pair at offset 4, total=16
+      //
+      // #708: allocate the JString body first, push it onto the
+      // shadow stack, then allocate the string buffer.  The
+      // ``allocString`` call below can fire ``$gc_collect``; without
+      // rooting the body, it gets reclaimed and the writes scribble
+      // freed memory.
       const ptr = alloc(16);
       writeI32(ptr, 3);
+      gcShadowPush(ptr);
       const [sp, sl] = allocString(value);
       writeI32(ptr + 4, sp);
       writeI32(ptr + 8, sl);
@@ -1864,12 +1907,22 @@ function buildImportObject(module) {
     }
     if (Array.isArray(value)) {
       // JArray(Array<Json>) — tag=4, i32_pair at offset 4, total=16
+      //
+      // #708: explicitly root ``arrPtr`` (the array backing) and
+      // each element's heap ptr before storing into the backing.
+      // Without these pushes, EAGER_GC reclaims ``arrPtr`` between
+      // the recursive ``writeJson(value[i])`` calls and the writes
+      // into it, leaving a JArray with a dangling backing pointer
+      // — the failure mode observed on the browser-side
+      // ``test_eager_gc_set_of_json_browser``.
       const count = value.length;
       let arrPtr = 0;
       if (count > 0) {
         arrPtr = alloc(count * 4);
+        gcShadowPush(arrPtr);
         for (let i = 0; i < count; i++) {
           const ep = writeJson(value[i]);
+          gcShadowPush(ep);
           writeI32(arrPtr + i * 4, ep);
         }
       }
@@ -1881,11 +1934,21 @@ function buildImportObject(module) {
     }
     if (typeof value === "object") {
       // JObject(Map<String, Json>) — tag=5, i32 wrapper ptr at offset 4 (#573)
+      //
+      // #708: each recursive ``writeJson(v)`` call returns a heap
+      // ptr stored in the JS-side Map ``m`` only.  Between
+      // returning ep and ``m.set(k, ep)``, the result is in a JS
+      // local — invisible to the conservative scan.  Push each ep
+      // before storing in m, then push wrapperPtr before the
+      // final 8-byte alloc.
       const m = new Map();
       for (const [k, v] of Object.entries(value)) {
-        m.set(k, writeJson(v));
+        const ep = writeJson(v);
+        gcShadowPush(ep);
+        m.set(k, ep);
       }
       const wrapperPtr = allocMapWrapper(m);
+      gcShadowPush(wrapperPtr);
       const ptr = alloc(8);
       writeI32(ptr, 5);
       writeI32(ptr + 4, wrapperPtr);
@@ -1914,7 +1977,7 @@ function buildImportObject(module) {
     if (tag === 5) {
       // #573: i32 at +4 is now a wrapper-ADT pointer; unwrap to
       // the raw Map handle before the mapStore lookup.  CodeRabbit
-      // #707 (round 1): the wrapper body's +4 field stores the
+      // PR #707 review: the wrapper body's +4 field stores the
       // handle ORed with 0x80000000 (#578 bit-31 tag, matching the
       // CLI ``_wrap_handle`` discipline), so we must mask the
       // high bit before mapStore.get or the lookup always misses.
@@ -1940,8 +2003,15 @@ function buildImportObject(module) {
       const text = readString(ptr, len);
       try {
         const parsed = JSON.parse(text);
-        const jsonPtr = writeJson(parsed);
-        return allocResultOkI32(jsonPtr);
+        // #708 (PR #707): wrap in gcGuard and push jsonPtr
+        // before allocResultOkI32's alloc can fire GC.  writeJson
+        // has its own internal guard that pops on return — by the
+        // time control returns here, jsonPtr is unrooted again.
+        return gcGuard(() => {
+          const jsonPtr = writeJson(parsed);
+          gcShadowPush(jsonPtr);
+          return allocResultOkI32(jsonPtr);
+        });
       } catch (e) {
         return allocResultErrString(String(e.message || e));
       }
@@ -2110,24 +2180,38 @@ function buildImportObject(module) {
   // HtmlText: tag=1, String(content)+4, total=16
   // HtmlComment: tag=2, String(content)+4, total=16
   function writeHtml(node) {
+    // #708 (PR #707): same gcGuard discipline as writeJson.
+    return gcGuard(() => writeHtmlImpl(node));
+  }
+  function writeHtmlImpl(node) {
     if (node.tag === 'comment') {
+      // #708: root the comment body's ptr before allocString fires GC.
       const ptr = alloc(16);
-      const [sp, sl] = allocString(node.content || '');
       writeI32(ptr, 2);
+      gcShadowPush(ptr);
+      const [sp, sl] = allocString(node.content || '');
       writeI32(ptr + 4, sp);
       writeI32(ptr + 8, sl);
       return ptr;
     }
     if (node.tag === 'text') {
+      // Same #708 discipline as the comment branch.
       const ptr = alloc(16);
-      const [sp, sl] = allocString(node.content || '');
       writeI32(ptr, 1);
+      gcShadowPush(ptr);
+      const [sp, sl] = allocString(node.content || '');
       writeI32(ptr + 4, sp);
       writeI32(ptr + 8, sl);
       return ptr;
     }
     // element
+    //
+    // #708: root each intermediate before any alloc that could
+    // fire GC.  The CLI ``write_html`` uses ``_ShadowGuard``
+    // pushing for the same set of intermediates (np, wrapperPtr,
+    // arrPtr, and each recursive child result).
     const [np, nl] = allocString(node.name || '');
+    gcShadowPush(np);
     // Attributes as Map<String, String>
     const m = new Map();
     if (node.attrs) {
@@ -2139,14 +2223,18 @@ function buildImportObject(module) {
     // level map_get / map_contains on the attrs field unwraps
     // correctly and the entry is reclaimable by the GC.
     const wrapperPtr = allocMapWrapper(m);
+    gcShadowPush(wrapperPtr);
     // Children array
     const children = node.children || [];
     const count = children.length;
     let arrPtr = 0;
     if (count > 0) {
       arrPtr = alloc(count * 4);
+      gcShadowPush(arrPtr);
       for (let i = 0; i < count; i++) {
-        writeI32(arrPtr + i * 4, writeHtml(children[i]));
+        const cp = writeHtml(children[i]);
+        gcShadowPush(cp);
+        writeI32(arrPtr + i * 4, cp);
       }
     }
     const ptr = alloc(24);
@@ -2177,7 +2265,7 @@ function buildImportObject(module) {
     const nl = readI32(ptr + 8);
     const name = readString(np, nl);
     // #573: i32 at +12 is now a wrapper-ADT pointer; unwrap.
-    // CodeRabbit #707 (round 1): mask off the #578 bit-31 tag
+    // PR #707 review: mask off the #578 bit-31 tag
     // before the mapStore lookup (see readJson above for the
     // analogous fix on the JObject branch).
     const wrapperPtr = readI32(ptr + 12);
@@ -2299,8 +2387,14 @@ function buildImportObject(module) {
           return allocResultErrString(
             "Unsupported runtime: HTML parsing requires DOMParser (browser only)");
         }
-        const nodePtr = writeHtml(root);
-        return allocResultOkI32(nodePtr);
+        // #708 (PR #707): same gcGuard discipline as
+        // json_parse — root nodePtr before allocResultOkI32 fires
+        // GC.
+        return gcGuard(() => {
+          const nodePtr = writeHtml(root);
+          gcShadowPush(nodePtr);
+          return allocResultOkI32(nodePtr);
+        });
       } catch (e) {
         return allocResultErrString(String(e.message || 'HTML parse error'));
       }

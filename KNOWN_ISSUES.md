@@ -4,9 +4,7 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 ## Bugs
 
-| Bug | Issue |
-|-----|-------|
-| Browser runtime: the `#695` / `#705` GC reachability fix (mirror approach landed in v0.0.159) does NOT close in the browser target.  Empirically the JS-side bucket array IS populated correctly (`slot[0]+0` holds the heap-pointer value, `wrapperPtr+8` holds the bucket ptr) but the heap block still gets reclaimed by the next `$gc_collect` and `json_array_length(@Json.0)` reads `0` instead of the correct length.  Three regression tests (`tests/test_browser.py::TestBrowserMapHostStoreGCReachability695`) are `@pytest.mark.skip` with `#708` cited.  Affects `Map<K, T_heap>` and `Set<T_heap>` with eager-GC pressure on the browser target.  The CLI target is unaffected. | [#708](https://github.com/aallan/vera/issues/708) |
+No known bugs.
 
 ## Limitations
 

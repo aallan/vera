@@ -961,7 +961,7 @@ def execute(
         Module-factory-level counterpart to ``_write_i32`` (line ~944).
         A nested ``_read_i32`` exists later inside the decimal closures;
         this version is shared by all module-level helpers that need
-        to inspect linear memory (e.g. the Phase A bucket-array
+        to inspect linear memory (e.g. the bucket-array
         helpers added below for #695/#705).
         """
         memory = caller["memory"]
@@ -982,11 +982,11 @@ def execute(
     # #695 / #705: WASM-side bucket-array helpers for Map / Set storage
     # ------------------------------------------------------------------
     #
-    # Phase A of the move-to-WASM migration: introduce host-side helpers
+    # Host-side helpers for the bucket-array reachability anchor
     # that allocate and operate on WASM-resident bucket arrays without
     # changing any existing behaviour.  These helpers are intentionally
     # not called from any current code path; they are the foundation
-    # that Phase B will use when it switches the ``map_*`` host imports
+    # that the follow-up #706 will reuse when it switches the ``map_*`` host imports
     # from ``_map_store`` (Python dict) to WASM linear memory.
     #
     # **Why a separate WASM block.** The conservative GC scan in
@@ -1008,7 +1008,7 @@ def execute(
     #       - Int / Bool keys: literal value, with 0 as the legitimate
     #         zero value (so the "empty slot" discriminator for
     #         non-string keys is a separate occupancy mechanism;
-    #         deferred to Phase B as it only matters for non-string
+    #         deferred to #706 as it only matters for non-string
     #         user-level Map / Set ops)
     #     +4  key_word_1 (i32)
     #       - String keys: byte length
@@ -1023,7 +1023,7 @@ def execute(
     # A only exposes string-key probing for that reason.
     #
     # **Capacity and count.** Stored in the wrapper ADT (not in the
-    # bucket array header); Phase B adds the new wrapper field.
+    # bucket array header); the wrapper field is added by this commit.
 
     _SLOT_SIZE = 12
 
@@ -1040,7 +1040,7 @@ def execute(
 
         Returns the WASM heap pointer to the start of the array.
 
-        Ultrareview #707 (round 1): the prior comment claimed ``$alloc``
+        PR #707 review: the prior comment claimed ``$alloc``
         returns zero-initialised memory unconditionally.  That is true
         only for bump-pointer fresh allocations — the free-list reuse
         branch of ``$alloc`` returns whatever bytes the previous owner
@@ -1098,8 +1098,8 @@ def execute(
         ``capacity`` if the array is full (caller must grow before
         inserting).
 
-        Linear scan rather than hash probing in Phase A — simple,
-        deterministic across PYTHONHASHSEED variations.  Phase B may
+        Linear scan rather than hash probing for now — simple,
+        deterministic across PYTHONHASHSEED variations.  The #706 follow-up may
         upgrade to actual hash probing when measurement indicates a
         bottleneck; typical Vera maps are small (parsed JSON objects
         with < 100 keys).
@@ -1255,7 +1255,7 @@ def execute(
         _WRAP_KIND_SET: _SET_HANDLE_TAG,
         _WRAP_KIND_DECIMAL: _DECIMAL_HANDLE_TAG,
     }
-    # #695/#705 Phase B: wrapper grows from 8 to 12 bytes to add a
+    # #695/#705: wrapper grows from 8 to 12 bytes to add a
     # ``bucket_ptr`` field at offset +8.  Layout:
     #   +0  tag (i32)                              [#573]
     #   +4  handle | 0x80000000 (i32, bit-31 tagged) [#578]
@@ -1271,7 +1271,7 @@ def execute(
     #
     # Codegen that reads the wrapper's handle at +4 is unchanged;
     # the +8 field is only read by the bucket-array path inside
-    # api.py and (Phase B follow-up) the new host imports.
+    # api.py and (in the #706 follow-up) the new host imports.
     _WRAPPER_BODY_SIZE = 12
 
     def _call_register_wrapper(
@@ -1327,7 +1327,7 @@ def execute(
         # #695: default bucket_ptr is 0 (no bucket array).  For Map
         # wrappers, ``_alloc_map_wrapper`` overwrites this with the
         # actual bucket-array pointer after populating it.  For
-        # Set / Decimal wrappers the field stays 0 in Phase B (Phase
+        # Set / Decimal wrappers the field stays 0 now (the #706
         # C adds the Set side; Decimal never needs it).
         _write_i32(caller, body_ptr + 8, 0)
         _call_register_wrapper(caller, body_ptr, kind, raw_handle)
@@ -1345,7 +1345,7 @@ def execute(
         ``_map_store`` (via ``_map_alloc``) and then lifts the
         resulting handle to a wrapper pointer via ``_wrap_handle``.
 
-        #695 Phase B: in addition to the Python-side dict, populate
+        #695: in addition to the Python-side dict, populate
         a WASM-side bucket array that mirrors the (key, value)
         pairs and link it from the wrapper's ``bucket_ptr`` field at
         +8.  This makes heap-pointer values reachable from the
@@ -1357,7 +1357,7 @@ def execute(
 
         ``map_get`` still reads the value from ``_map_store`` — the
         bucket array is currently used only as a GC reachability
-        anchor.  Phase B.3 will migrate the reads to the bucket
+        anchor.  the follow-up #706 will migrate the reads to the bucket
         array and delete ``_map_store``; this commit prioritises
         closing the bug with the minimum surface area.
         """
@@ -1382,7 +1382,7 @@ def execute(
             guard.push(bucket_ptr)
             for i, (k, v) in enumerate(d.items()):
                 slot_base = bucket_ptr + i * _SLOT_SIZE
-                # CodeRabbit #707 (round 1): val_word FIRST, before
+                # PR #707 review: val_word FIRST, before
                 # any allocation in this iteration.  For heap-pointer
                 # values (i.e. ``v`` is an int that's a WASM heap
                 # address — Map<String, Json> et al.), the pointer
@@ -3092,7 +3092,7 @@ def execute(
         # occur for Decimal.  The wrapper's ``bucket_ptr`` field stays
         # 0 (initialised by ``_emit_wrap_handle`` / JS ``wrapHandle``)
         # and ``host_attach_bucket`` is a no-op for kind=3.  See also
-        # the follow-up "Phase D move" tracking issue, which still
+        # the follow-up issue #706 (host-store → bucket-as-truth move), which still
         # excludes Decimal for the same reason.
 
         def _decimal_alloc(d: PyDecimal) -> int:
