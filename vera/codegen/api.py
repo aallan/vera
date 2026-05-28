@@ -1039,11 +1039,26 @@ def execute(
         """Allocate a zero-initialised bucket array of `capacity` slots.
 
         Returns the WASM heap pointer to the start of the array.
-        ``$alloc`` returns zero-initialised memory (bump-pointer slab),
-        so empty-slot sentinels (``key_word_0 == 0``) are correct on
-        return — no further initialisation needed.
+
+        Ultrareview #707 (round 1): the prior comment claimed ``$alloc``
+        returns zero-initialised memory unconditionally.  That is true
+        only for bump-pointer fresh allocations — the free-list reuse
+        branch of ``$alloc`` returns whatever bytes the previous owner
+        left in the block.  For a write-only mirror like the bucket
+        array, stale i32s in slots beyond ``len(d)`` are NOT a
+        correctness problem for map / set operations (those go through
+        ``_map_store`` / ``_set_store``), BUT they ARE traced by the
+        conservative GC scan as potential heap pointers — extending
+        the lifetimes of unrelated blocks that happen to share an
+        address with a stale word.  Explicit zero-fill closes the
+        soundness gap.  CLI parallel of the browser-side fix that
+        ``Uint8Array.fill(0)`` applies in
+        ``vera/browser/runtime.mjs::attach_bucket_to_wrapper``.
         """
-        return _call_alloc(caller, capacity * _SLOT_SIZE)
+        total = capacity * _SLOT_SIZE
+        bucket_ptr = _call_alloc(caller, total)
+        _write_bytes(caller, bucket_ptr, b"\x00" * total)
+        return bucket_ptr
 
     def _read_slot(
         caller: wasmtime.Caller, bucket_ptr: int, slot_idx: int,

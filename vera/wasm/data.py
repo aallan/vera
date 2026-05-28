@@ -189,6 +189,14 @@ class DataMixin:
                 instrs.append(f"local.get {scr_local}")
                 instrs.append(f"i32.load offset={offset + 4}")
                 instrs.append(f"local.set {len_local}")
+                # Ultrareview #707 (round 1): same pair-type rooting
+                # gap as ``_extract_constructor_fields`` — String
+                # buffer / Array<T> backing ptr needs shadow-push.
+                # ``let MyAdt(@String, ...) = ...;`` was missed by
+                # the original #705 fix (which only covered the
+                # ``wt == "i32"`` non-inline branch).
+                self.needs_alloc = True
+                instrs.extend(gc_shadow_push(ptr_local))
                 new_env = new_env.push(type_name, ptr_local)
                 offset += 8
                 continue
@@ -504,6 +512,19 @@ class DataMixin:
                     instrs.append(f"local.get {scr_local}")
                     instrs.append(f"i32.load offset={offset + 4}")
                     instrs.append(f"local.set {len_local}")
+                    # Ultrareview #707 (round 1): pair-type field
+                    # extraction in match arms — the ``ptr_local``
+                    # holds a heap pointer (the String buffer or the
+                    # Array<T> backing) which is invisible to the
+                    # conservative scan from a WASM local.  Same #705
+                    # bug class as the ``wt == "i32"`` non-inline
+                    # branch below; the original fix missed the
+                    # pair-type branch because pair-types lower as
+                    # two i32s and only the ptr half needs rooting.
+                    # ``len_local`` is a length, not a pointer — no
+                    # rooting needed.
+                    self.needs_alloc = True
+                    instrs.extend(gc_shadow_push(ptr_local))
                     new_env = new_env.push(type_name, ptr_local)
                     offset += 8  # two i32s
                     continue
