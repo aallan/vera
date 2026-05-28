@@ -418,6 +418,19 @@ class DataMixin:
                 f"local.get {scr_local}",
                 f"local.set {local_idx}",
             ]
+            # CodeRabbit #707 (round 1): same heap-pointer rooting
+            # discipline as ``_extract_constructor_fields`` (below) —
+            # ``match @Json.0 { @Json -> set_add(set_new(), @Json.0) }``
+            # binds the scrutinee to a fresh local that's invisible
+            # to the conservative scan until shadow-pushed.  Without
+            # this, the inner ``set_new()`` allocation can reclaim
+            # the bound Json block.
+            if (
+                scr_wasm_type == "i32"
+                and type_name not in _INLINE_I32_TYPES
+            ):
+                self.needs_alloc = True
+                instrs.extend(gc_shadow_push(local_idx))
             new_env = env.push(type_name, local_idx)
             return (instrs, new_env)
 
@@ -505,7 +518,15 @@ class DataMixin:
                 # / Unit are inline i32s that don't need rooting.
                 # The function epilogue's ``$gc_sp`` restore pops
                 # these on exit so the shadow stack stays bounded.
+                # CodeRabbit #707 (round 1): ``gc_shadow_push``
+                # references ``$gc_sp`` / ``$gc_stack_limit`` which
+                # are only exported when ``needs_alloc`` is set on
+                # the surrounding context.  Without flipping it,
+                # a function that has a heap-pointer match binding
+                # but no other allocation would emit WAT referencing
+                # undefined globals.
                 if wt == "i32" and type_name not in _INLINE_I32_TYPES:
+                    self.needs_alloc = True
                     instrs.extend(gc_shadow_push(local_idx))
                 new_env = new_env.push(type_name, local_idx)
                 offset += _sizes.get(wt, 8)

@@ -1366,22 +1366,29 @@ def execute(
             bucket_ptr = _alloc_bucket_array(caller, capacity)
             guard.push(bucket_ptr)
             for i, (k, v) in enumerate(d.items()):
+                slot_base = bucket_ptr + i * _SLOT_SIZE
+                # CodeRabbit #707 (round 1): val_word FIRST, before
+                # any allocation in this iteration.  For heap-pointer
+                # values (i.e. ``v`` is an int that's a WASM heap
+                # address — Map<String, Json> et al.), the pointer
+                # is currently only held in the Python local ``v``,
+                # which is invisible to the conservative GC scan.
+                # If ``_alloc_string`` below fires ``$gc_collect``,
+                # the value's heap block would be reclaimed.
+                # Writing val_word into slot+8 BEFORE the key alloc
+                # roots it via wrapper → bucket → slot (the
+                # conservative scan traces every i32 word in the
+                # heap as a potential pointer regardless of any
+                # "occupied" flag).  Mirrors the same ordering in
+                # ``_attach_bucket_from_dict``.
+                val_word = v if isinstance(v, int) else 0
+                _write_i32(caller, slot_base + 8, val_word)
                 # Keys are Python strings (per write_json's
                 # ``map_dict[str(k)] = val_ptr`` invariant).
                 key_str = str(k) if not isinstance(k, str) else k
                 key_ptr, key_len = _alloc_string(caller, key_str)
-                guard.push(key_ptr)
-                # val_word: for heap-pointer values (i.e. v is an
-                # int that's a WASM heap address), this stores the
-                # pointer so the conservative scan traces it.  For
-                # non-int Python values (str, bool, etc.), store 0
-                # — those types don't have associated heap blocks
-                # to root.  The actual access still goes through
-                # _map_store today (Phase B.3 changes that).
-                val_word = v if isinstance(v, int) else 0
-                _write_slot(
-                    caller, bucket_ptr, i, key_ptr, key_len, val_word,
-                )
+                _write_i32(caller, slot_base, key_ptr)
+                _write_i32(caller, slot_base + 4, key_len)
         _write_i32(caller, wrapper_ptr + 8, bucket_ptr)
         return wrapper_ptr
 

@@ -1237,7 +1237,24 @@ function buildImportObject(module) {
       const d = mapStore.get(handle);
       if (!d) return;
       const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, d.size * 2);
-      const bucketPtr = alloc(capacity * _SLOT_SIZE);
+      const bucketBytes = capacity * _SLOT_SIZE;
+      const bucketPtr = alloc(bucketBytes);
+      // CodeRabbit #707 (round 1): three-step rooting for browser
+      // GC-safety without shadow-stack JS-side API.
+      // (1) Publish bucketPtr into wrapper+8 IMMEDIATELY so the
+      //     wrapper (which is on the WAT shadow stack via the
+      //     `_emit_wrap_handle` `gc_shadow_push` in
+      //     `vera/wasm/calls_containers.py`) roots the bucket
+      //     before any subsequent allocString can fire $gc_collect.
+      // (2) Zero-fill the bucket so free-list reuse can't leave
+      //     stale i32s that the conservative scan would mistake
+      //     for live heap pointers (extending unrelated blocks'
+      //     lifetimes).  Cheap: one Uint8Array.fill(0) call.
+      // (3) Only then iterate, write val_word first (no alloc) so
+      //     heap-pointer values are slot-rooted before the key
+      //     allocString fires.
+      writeI32(wrapperPtr + 8, bucketPtr);
+      new Uint8Array(mem().buffer, bucketPtr, bucketBytes).fill(0);
       let i = 0;
       for (const [k, v] of d) {
         const slotBase = bucketPtr + i * _SLOT_SIZE;
@@ -1255,16 +1272,19 @@ function buildImportObject(module) {
             typeof k === 'number' ? k :
             typeof k === 'bigint' ? Number(k) : 0;
           writeI32(slotBase, kw);
-          // key_word_1 stays 0 (zero-init from $alloc).
+          // key_word_1 stays 0 from the fill above.
         }
         i++;
       }
-      writeI32(wrapperPtr + 8, bucketPtr);
     } else if (kind === 2) {
       const s = setStore.get(handle);
       if (!s) return;
       const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, s.size * 2);
-      const bucketPtr = alloc(capacity * _SLOT_SIZE);
+      const bucketBytes = capacity * _SLOT_SIZE;
+      const bucketPtr = alloc(bucketBytes);
+      // Same three-step rooting as the Map branch above.
+      writeI32(wrapperPtr + 8, bucketPtr);
+      new Uint8Array(mem().buffer, bucketPtr, bucketBytes).fill(0);
       let i = 0;
       for (const elem of s) {
         const slotBase = bucketPtr + i * _SLOT_SIZE;
@@ -1277,11 +1297,10 @@ function buildImportObject(module) {
             typeof elem === 'number' ? elem :
             typeof elem === 'bigint' ? Number(elem) : 0;
           writeI32(slotBase, ew);
-          // key_word_1 and val_word stay 0 (zero-init).
+          // key_word_1 and val_word stay 0 from the fill above.
         }
         i++;
       }
-      writeI32(wrapperPtr + 8, bucketPtr);
     }
     // kind === 3 (Decimal): nothing to attach.
   };
@@ -1799,9 +1818,13 @@ function buildImportObject(module) {
     }
     if (tag === 5) {
       // #573: i32 at +4 is now a wrapper-ADT pointer; unwrap to
-      // the raw Map handle before the mapStore lookup.
+      // the raw Map handle before the mapStore lookup.  CodeRabbit
+      // #707 (round 1): the wrapper body's +4 field stores the
+      // handle ORed with 0x80000000 (#578 bit-31 tag, matching the
+      // CLI ``_wrap_handle`` discipline), so we must mask the
+      // high bit before mapStore.get or the lookup always misses.
       const wrapperPtr = readI32(ptr + 4);
-      const handle = readI32(wrapperPtr + 4);
+      const handle = readI32(wrapperPtr + 4) & 0x7FFFFFFF;
       const m = mapStore.get(handle);
       if (!m) {
         console.warn(`readJson: unknown JObject handle ${handle} at pointer ${ptr}; possible memory corruption`);
@@ -2059,8 +2082,11 @@ function buildImportObject(module) {
     const nl = readI32(ptr + 8);
     const name = readString(np, nl);
     // #573: i32 at +12 is now a wrapper-ADT pointer; unwrap.
+    // CodeRabbit #707 (round 1): mask off the #578 bit-31 tag
+    // before the mapStore lookup (see readJson above for the
+    // analogous fix on the JObject branch).
     const wrapperPtr = readI32(ptr + 12);
-    const handle = readI32(wrapperPtr + 4);
+    const handle = readI32(wrapperPtr + 4) & 0x7FFFFFFF;
     const arrPtr = readI32(ptr + 16);
     const arrLen = readI32(ptr + 20);
     const attrs = {};

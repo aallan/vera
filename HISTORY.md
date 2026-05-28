@@ -344,4 +344,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 158 tagged releases, 59 active development days.**
+Total: **810+ commits, 159 tagged releases, 59 active development days.**
