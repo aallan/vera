@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **[#694](https://github.com/aallan/vera/issues/694)** — bumped the `subprocess.run` timeout in `tests/test_browser.py` from 30s to 60s at both call sites.  The previous 30s budget was insufficient for cold Node startup on Windows GitHub Actions runners when combined with the `--experimental-wasm-exnref` flag's first-execution V8 codegen cost.  Symptom was an intermittent `subprocess.TimeoutExpired` on `test (windows-latest, 3.12)` only, asymmetric across the matrix — `3.11` and `3.13` running back-to-back on the same runner benefited from a warm cache.  60s gives ~2× the median budget without making real hangs painful to detect.
+
 ### Changed
 
 - **[#691](https://github.com/aallan/vera/issues/691)** — Supported platforms are now documented explicitly in `README.md` Installation: macOS 15+ (Sequoia, Tahoe), Ubuntu x86_64 (manylinux_2_27+), Ubuntu aarch64 (manylinux_2_38+, i.e. Ubuntu 23.10+), Windows x86_64.  The macOS 15+ baseline reflects [TelemetryDeck distribution data](https://telemetrydeck.com/survey/apple/macOS/versions/) — macOS 26 (~75%) + macOS 15 (~24%) covers ~99% of the install base.  macOS 14 (Sonoma) and earlier are out of scope ([#691](https://github.com/aallan/vera/issues/691)); Ubuntu 22.04 LTS aarch64 is out of scope ([#701](https://github.com/aallan/vera/issues/701)).
