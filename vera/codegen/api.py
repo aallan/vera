@@ -955,6 +955,143 @@ def execute(
         assert isinstance(ptr, int)  # noqa: S101
         return ptr
 
+    def _read_i32_at(caller: wasmtime.Caller, offset: int) -> int:
+        """Read a little-endian i32 from WASM memory at `offset`.
+
+        Module-factory-level counterpart to ``_write_i32`` (line ~944).
+        A nested ``_read_i32`` exists later inside the decimal closures;
+        this version is shared by all module-level helpers that need
+        to inspect linear memory (e.g. the Phase A bucket-array
+        helpers added below for #695/#705).
+        """
+        memory = caller["memory"]
+        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+        buf = memory.data_ptr(caller)
+        return int(struct.unpack_from("<I", bytes(buf[offset:offset + 4]))[0])
+
+    def _read_bytes_at(
+        caller: wasmtime.Caller, offset: int, length: int,
+    ) -> bytes:
+        """Read `length` raw bytes from WASM linear memory at `offset`."""
+        memory = caller["memory"]
+        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+        buf = memory.data_ptr(caller)
+        return bytes(buf[offset:offset + length])
+
+    # ------------------------------------------------------------------
+    # #695 / #705: WASM-side bucket-array helpers for Map / Set storage
+    # ------------------------------------------------------------------
+    #
+    # Phase A of the move-to-WASM migration: introduce host-side helpers
+    # that allocate and operate on WASM-resident bucket arrays without
+    # changing any existing behaviour.  These helpers are intentionally
+    # not called from any current code path; they are the foundation
+    # that Phase B will use when it switches the ``map_*`` host imports
+    # from ``_map_store`` (Python dict) to WASM linear memory.
+    #
+    # **Why a separate WASM block.** The conservative GC scan in
+    # ``$gc_collect`` (Phase 2a) walks WASM heap blocks looking for
+    # i32-shaped pointers in the heap range.  Map / Set values stored
+    # only as Python ints in ``_map_store[handle]`` / ``_set_store[h]``
+    # are invisible to that scan, causing silent use-after-free when GC
+    # fires between map construction and value access — empirically
+    # confirmed at the regression test
+    # ``TestMapHostStoreGCReachability695::
+    # test_eager_gc_json_object_with_array_child_post_walk_uaf``.
+    #
+    # **Layout.** Each bucket array is ``capacity * _SLOT_SIZE`` bytes
+    # of zero-initialised heap memory.  Each slot is 12 bytes:
+    #
+    #   slot[i] at bucket_ptr + i * 12:
+    #     +0  key_word_0 (i32)
+    #       - String keys: heap pointer to UTF-8 bytes
+    #       - Int / Bool keys: literal value, with 0 as the legitimate
+    #         zero value (so the "empty slot" discriminator for
+    #         non-string keys is a separate occupancy mechanism;
+    #         deferred to Phase B as it only matters for non-string
+    #         user-level Map / Set ops)
+    #     +4  key_word_1 (i32)
+    #       - String keys: byte length
+    #       - Int / Bool keys: 0 (reserved / padding)
+    #     +8  val_word (i32) — for heap values: heap pointer to value
+    #         block (GC-reachable through bucket array → wrapper);
+    #         for inline values: the value itself
+    #
+    # **Empty-slot sentinel.** For string keys, ``key_word_0 == 0`` is
+    # the empty-slot marker (heap pointers from ``_call_alloc`` are
+    # always non-zero — Vera's heap region starts well above 0).  Phase
+    # A only exposes string-key probing for that reason.
+    #
+    # **Capacity and count.** Stored in the wrapper ADT (not in the
+    # bucket array header); Phase B adds the new wrapper field.
+
+    _SLOT_SIZE = 12
+
+    def _alloc_bucket_array(caller: wasmtime.Caller, capacity: int) -> int:
+        """Allocate a zero-initialised bucket array of `capacity` slots.
+
+        Returns the WASM heap pointer to the start of the array.
+        ``$alloc`` returns zero-initialised memory (bump-pointer slab),
+        so empty-slot sentinels (``key_word_0 == 0``) are correct on
+        return — no further initialisation needed.
+        """
+        return _call_alloc(caller, capacity * _SLOT_SIZE)
+
+    def _read_slot(
+        caller: wasmtime.Caller, bucket_ptr: int, slot_idx: int,
+    ) -> tuple[int, int, int]:
+        """Read ``(key_word_0, key_word_1, val_word)`` at ``slot_idx``."""
+        base = bucket_ptr + slot_idx * _SLOT_SIZE
+        return (
+            _read_i32_at(caller, base),
+            _read_i32_at(caller, base + 4),
+            _read_i32_at(caller, base + 8),
+        )
+
+    def _write_slot(
+        caller: wasmtime.Caller,
+        bucket_ptr: int,
+        slot_idx: int,
+        key_word_0: int,
+        key_word_1: int,
+        val_word: int,
+    ) -> None:
+        """Write all three slot words at ``slot_idx``."""
+        base = bucket_ptr + slot_idx * _SLOT_SIZE
+        _write_i32(caller, base, key_word_0)
+        _write_i32(caller, base + 4, key_word_1)
+        _write_i32(caller, base + 8, val_word)
+
+    def _probe_string_key(
+        caller: wasmtime.Caller,
+        bucket_ptr: int,
+        capacity: int,
+        key_bytes: bytes,
+    ) -> tuple[int, bool]:
+        """Linear scan for a string key.
+
+        Returns ``(slot_idx, found)``.  When ``found`` is False the
+        slot_idx is the first empty slot (suitable for insertion), or
+        ``capacity`` if the array is full (caller must grow before
+        inserting).
+
+        Linear scan rather than hash probing in Phase A — simple,
+        deterministic across PYTHONHASHSEED variations.  Phase B may
+        upgrade to actual hash probing when measurement indicates a
+        bottleneck; typical Vera maps are small (parsed JSON objects
+        with < 100 keys).
+        """
+        key_len = len(key_bytes)
+        for i in range(capacity):
+            k0, k1, _v = _read_slot(caller, bucket_ptr, i)
+            if k0 == 0:
+                return (i, False)
+            if k1 == key_len:
+                stored = _read_bytes_at(caller, k0, k1)
+                if stored == key_bytes:
+                    return (i, True)
+        return (capacity, False)
+
     # ------------------------------------------------------------------
     # #692: Host-side shadow-stack rooting for multi-alloc walkers
     # ------------------------------------------------------------------
