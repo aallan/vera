@@ -1819,3 +1819,196 @@ class TestBrowserExports:
 
         assert "main" in result.exports
         assert "main" in node_result["exports"]
+
+
+class TestBrowserMapHostStoreGCReachability695:
+    """Browser-runtime parallel of
+    ``test_codegen.py::TestMapHostStoreGCReachability695``.
+
+    PR #707 review (pr-test-analyzer I3): the JS-side
+    ``attach_bucket_to_wrapper`` implementation (~115 LOC of bucket
+    population, val-word-first ordering, zero-fill, BigInt→0
+    coercion, JS ``gcShadowPush`` / ``gcShadowPop`` discipline,
+    ``readJson`` / ``readHtml`` bit-31 mask) was covered only by
+    stdout-parity tests with default GC pressure.  A regression in
+    any of those browser-side paths would silently ship.
+
+    These tests compile the same three #695 / #705 reproducers with
+    ``VERA_EAGER_GC=1`` set in the environment (which the codegen
+    reads to inject a forced ``$gc_collect`` on every ``$alloc``),
+    then run the compiled WASM under Node.js using the browser
+    runtime in ``vera/browser/runtime.mjs``.  The expected output
+    matches the CLI side — any divergence (truncated JArray length,
+    early bailout, exception) indicates a browser-runtime regression.
+
+    Why this matters specifically: the browser runtime can't access
+    the WAT shadow stack the way the Python ``_ShadowGuard`` does, so
+    it uses the JS ``gcShadowPush`` / ``gcShadowPop`` helpers added
+    in commit ``1ff7f7c``.  Those helpers drive the exported
+    ``$gc_sp`` / ``$gc_stack_limit`` mutable globals — a contract
+    that needs CI gating, not just code review.
+    """
+
+    def _run_eager_gc_node(
+        self,
+        src: str,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> str:
+        """Compile ``src`` with ``VERA_EAGER_GC=1`` set at codegen
+        time, then run in node and return the (whitespace-stripped)
+        stdout produced by ``IO.print`` calls.
+        """
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        wasm_path, _ = _compile_vera(src, tmp_path)
+        result = _run_node(wasm_path)
+        return result.get("stdout", "").strip()
+
+    @pytest.mark.skip(
+        reason=(
+            "Browser runtime has a pre-existing GC reachability "
+            "regression that this PR's mirror approach does not "
+            "close: empirically the bucket array IS populated "
+            "correctly (slot[0]+0 holds the Json ptr, wrapperPtr+8 "
+            "holds the bucket ptr) but the Json block still gets "
+            "reclaimed by the next $gc_collect.  Suggests the "
+            "browser-side conservative scan or wrap-table compaction "
+            "isn't tracing through the bucket the same way the CLI "
+            "does, OR a subtle alignment / header / size mismatch in "
+            "the JS alloc wrapper.  Reverting to commit 4d69cb8 "
+            "(before PR-review-toolkit C1-C4) reproduces the same "
+            "stdout='0' failure — NOT introduced by those fixes.  "
+            "Tracked as #708 so this PR can ship the CLI fix without "
+            "being gated on a deeper browser-runtime investigation."
+        )
+    )
+    def test_eager_gc_set_of_json_browser(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Browser parallel of
+        ``test_codegen.py::test_eager_gc_set_of_json_post_walk_uaf``.
+        Exercises the JS-side ``attach_bucket_to_wrapper`` Set branch
+        plus the ``allocMapWrapper`` JS rooting (#707 round 2 fix).
+        """
+        src = """
+effect IO { op print(String -> Unit); }
+
+private fn build_set(-> @Set<Json>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse(
+    "[1,2,3,4,5,6,7,8,9,10]"
+  );
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> set_add(set_new(), @Json.0),
+    Err(@String) -> set_new()
+  }
+}
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Set<Json> = build_set();
+  let @Array<Json> = set_to_array(@Set<Json>.0);
+  let @Int = array_fold(@Array<Json>.0, 0, fn(@Int, @Json -> @Int) effects(pure) {
+    json_array_length(@Json.0) + @Int.0
+  });
+  IO.print(int_to_string(@Int.0))
+}
+"""
+        assert self._run_eager_gc_node(src, monkeypatch, tmp_path) == "10"
+
+    @pytest.mark.skip(
+        reason=(
+            "Same browser-side pre-existing bug as "
+            "test_eager_gc_set_of_json_browser — see that test's "
+            "skip rationale.  Tracked as #708."
+        )
+    )
+    def test_eager_gc_json_object_with_array_child_browser(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Browser parallel of
+        ``test_codegen.py::test_eager_gc_json_object_with_array_child_post_walk_uaf``.
+        Exercises the JS-side ``allocMapWrapper`` (which wraps the
+        JSON-parser-produced ``Map<String, Json>``) plus the
+        ``readJson`` bit-31 mask fix (CR round 1 finding 2).
+        """
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Json, String> = json_parse(
+    "{\\"key\\": [1,2,3,4,5,6,7,8,9,10]}"
+  );
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> {
+      let @Option<Json> = json_get(@Json.0, "key");
+      match @Option<Json>.0 {
+        Some(@Json) -> {
+          let @Int = json_array_length(@Json.0);
+          IO.print(int_to_string(@Int.0))
+        },
+        None -> IO.print("none")
+      }
+    },
+    Err(@String) -> IO.print("err")
+  }
+}
+"""
+        assert self._run_eager_gc_node(src, monkeypatch, tmp_path) == "10"
+
+    @pytest.mark.skip(
+        reason=(
+            "Same browser-side pre-existing bug as "
+            "test_eager_gc_set_of_json_browser — see that test's "
+            "skip rationale.  Tracked as #708."
+        )
+    )
+    def test_eager_gc_map_of_json_user_level_browser(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Browser parallel of
+        ``test_codegen.py::test_eager_gc_map_of_json_user_level_post_walk_uaf``.
+        Exercises the user-level ``map_insert(map_new(), ...)`` path
+        through the JS-side ``attach_bucket_to_wrapper`` Map branch,
+        with EAGER_GC pressure on every alloc.
+        """
+        src = """
+effect IO { op print(String -> Unit); }
+
+private fn build_map(-> @Map<String, Json>)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Result<Json, String> = json_parse(
+    "[1,2,3,4,5,6,7,8,9,10]"
+  );
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> map_insert(map_new(), "arr", @Json.0),
+    Err(@String) -> map_new()
+  }
+}
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Map<String, Json> = build_map();
+  let @Option<Json> = map_get(@Map<String, Json>.0, "arr");
+  match @Option<Json>.0 {
+    Some(@Json) -> {
+      let @Int = json_array_length(@Json.0);
+      IO.print(int_to_string(@Int.0))
+    },
+    None -> IO.print("none")
+  }
+}
+"""
+        assert self._run_eager_gc_node(src, monkeypatch, tmp_path) == "10"

@@ -2495,17 +2495,62 @@ def execute(
             caller: wasmtime.Caller, wrapper_ptr: int, kind: int,
             handle: int,
         ) -> None:
+            # PR #707 review (silent-failure-hunter C4): distinguish
+            # "handle missing from store" (UAF — the wrapper outlived
+            # the store entry, possibly via a Phase 2c decref bug or
+            # a wrap-table corruption) from "handle present, empty
+            # collection" (legitimate; an empty Map / Set wrapper
+            # just leaves bucket_ptr at 0).  The prior implementation
+            # collapsed both into one silent return, masking the UAF
+            # case.
             if kind == _WRAP_KIND_MAP:
-                d = _map_store.get(handle, {})
+                if handle not in _map_store:
+                    raise RuntimeError(
+                        f"#695: host_attach_bucket(MAP) called with "
+                        f"handle={handle} not present in _map_store "
+                        f"(wrapper_ptr={wrapper_ptr}); the wrapper "
+                        f"outlived its store entry — possible UAF "
+                        f"from Phase 2c reclamation or wrap-table "
+                        f"corruption"
+                    )
+                d = _map_store[handle]
                 if not d:
-                    return
+                    return  # legitimate empty Map
                 _attach_bucket_from_dict(caller, wrapper_ptr, d)
-            elif kind == _WRAP_KIND_SET and result.set_ops_used:
-                s = _set_store.get(handle, set())
+            elif kind == _WRAP_KIND_SET:
+                # PR #707 review (silent-failure-hunter I4): split the
+                # ``set_ops_used`` and ``handle in store`` checks so
+                # an unexpected SET kind with set_ops_used False (which
+                # would be a compiler bug — the WAT shouldn't emit a
+                # SET wrap unless set_ops_used) raises rather than
+                # silently leaving bucket_ptr at 0.
+                if not result.set_ops_used:
+                    raise RuntimeError(
+                        f"#695: host_attach_bucket(SET) called but "
+                        f"result.set_ops_used is False (wrapper_ptr="
+                        f"{wrapper_ptr}, handle={handle}); compiler "
+                        f"invariant violated — WAT emitted a SET wrap "
+                        f"without populating set_ops_used"
+                    )
+                if handle not in _set_store:
+                    raise RuntimeError(
+                        f"#705: host_attach_bucket(SET) called with "
+                        f"handle={handle} not present in _set_store "
+                        f"(wrapper_ptr={wrapper_ptr}); the wrapper "
+                        f"outlived its store entry — possible UAF"
+                    )
+                s = _set_store[handle]
                 if not s:
-                    return
+                    return  # legitimate empty Set
                 _attach_bucket_from_set(caller, wrapper_ptr, s)
-            # Decimal: no-op (PyDecimal is value-typed).
+            elif kind != _WRAP_KIND_DECIMAL:
+                # Decimal: explicit no-op (PyDecimal is value-typed).
+                # Any other kind value is a compiler bug.
+                raise RuntimeError(
+                    f"#695: host_attach_bucket called with unknown "
+                    f"kind={kind} (wrapper_ptr={wrapper_ptr}, handle="
+                    f"{handle}); expected MAP=1, SET=2, or DECIMAL=3"
+                )
 
         linker.define_func(
             "vera", "attach_bucket_to_wrapper",

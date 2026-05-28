@@ -19294,22 +19294,38 @@ public fn main(@Unit -> @Unit)
 
 
 class TestMapHostStoreGCReachability695:
-    """Regression target for #695 — ``Map<K, T_heap>`` values stored
-    in Python-side ``_map_store`` are invisible to the conservative GC
-    scan, so a ``$gc_collect`` between map construction and value
-    access reclaims the heap blocks pointed to from the dict.
+    """Regression suite for #695 / #705 — pre-fix, ``Map<K, T_heap>``
+    and ``Set<T_heap>`` values stored in Python-side ``_map_store`` /
+    ``_set_store`` were invisible to the conservative GC scan, so a
+    ``$gc_collect`` between map / set construction and value access
+    reclaimed the heap blocks pointed to from the dict.
 
-    Empirically: with ``VERA_EAGER_GC=1`` (forces a ``$gc_collect`` on
-    every alloc), the reproducer prints ``0`` instead of the JArray's
-    actual length ``10`` — silent use-after-free, no trap.  The "0"
-    comes from the free-list's next-pointer overwriting the freed
-    block's first word, which ``json_array_length`` reads as a length.
+    Empirically pre-fix: with ``VERA_EAGER_GC=1`` (forces a
+    ``$gc_collect`` on every alloc), the reproducer printed ``0``
+    instead of the JArray's actual length ``10`` — silent
+    use-after-free, no trap.  The ``0`` came from the free-list's
+    next-pointer overwriting the freed block's first word, which
+    ``json_array_length`` then read as a length.
 
-    This class is xfail-strict until the fix lands; flipping the
-    marker off in the same commit as the fix is the canonical
-    "regression test passed → fix landed" handshake.
+    Post-fix (this PR, the "mirror" approach): every Map / Set
+    wrapper now carries a ``bucket_ptr`` at body offset +8 pointing
+    to a WASM-resident bucket array that mirrors the
+    ``_map_store`` / ``_set_store`` contents.  The conservative scan
+    reaches the values via shadow stack → wrapper → bucket → val_ptr.
+    Python remains the source of truth for actual map / set ops; the
+    bucket array is a write-only reachability anchor.  The
+    architectural follow-up to delete ``_map_store`` / ``_set_store``
+    and make the bucket array the sole source of truth is tracked as
+    #706 (the "move" cleanup).
 
-    Parallel issue for the ``Set<T_heap>`` side: #705.
+    Each test in this class drives the reproducer under
+    ``VERA_EAGER_GC=1`` and asserts the post-fix value (e.g. ``10``)
+    is observed.  A regression that removes the bucket-array
+    population from any of the three population paths (the
+    WAT-emitted ``attach_bucket_to_wrapper``, the host-side
+    ``_alloc_map_wrapper``, or the match-arm / let-binding
+    shadow-rooting in ``vera/wasm/data.py`` / ``vera/wasm/context.py``)
+    will flip the assertion back to ``0``.
     """
 
     def test_eager_gc_set_of_json_post_walk_uaf(
@@ -19375,9 +19391,14 @@ public fn main(-> @Unit)
         JArray block.  ``json_array_length`` reads from the freed
         block and returns 0 instead of 10.
 
-        After the fix lands (Map storage migrated to WASM linear
-        memory so the conservative scan reaches all values), this
-        test will pass and the xfail marker must be removed.
+        Post-fix (this PR, "mirror" approach): the JArray pointer is
+        also written to the bucket array at slot+8 by
+        ``_alloc_map_wrapper`` / ``_attach_bucket_from_dict``, so
+        the conservative scan reaches it via wrapper → bucket → slot.
+        ``json_get`` retrieves the still-live block and the assertion
+        observes ``10``.  The architectural follow-up — move ``_map_store``
+        reads into the bucket array and delete the Python store entirely
+        — is tracked as #706.
         """
         src = """
 effect IO { op print(String -> Unit); }
@@ -19459,3 +19480,91 @@ public fn main(-> @Unit)
 """
         monkeypatch.setenv("VERA_EAGER_GC", "1")
         assert _run_io(src) == "10"
+
+    def test_eager_gc_let_destruct_with_json_field_post_walk_uaf(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression for the ``let Ctor(@T_heap, ...) = ...`` path.
+
+        PR #707 review (pr-test-analyzer I1): the round-2 fix in
+        ``vera/wasm/data.py::_translate_let_destruct`` and the
+        round-3 pair-type extension there had NO regression test
+        — a refactor that drops the ``self.needs_alloc = True;
+        gc_shadow_push(local_idx)`` block would silently pass CI.
+
+        This test:
+          1. ``let Tuple<@Json, @String> = Tuple(json_ptr, "tag");``
+             extracts BOTH an ``i32`` heap-pointer field (`@Json`)
+             and a pair-type field (`@String`).
+          2. ``json_array_length(@Json.0)`` then allocates inside
+             the EAGER_GC window — without the shadow-push fix on
+             either rooting site, the Json buffer would be reclaimed
+             between the extraction and the access.
+
+        Asserts ``10`` (the JArray length).  A regression would
+        print ``0`` from a freed-block-misread.
+        """
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Json, String> = json_parse(
+    "[1,2,3,4,5,6,7,8,9,10]"
+  );
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> {
+      let Tuple<@Json, @String> = Tuple(@Json.0, "tag");
+      let @Int = json_array_length(@Json.0);
+      IO.print(int_to_string(@Int.0))
+    },
+    Err(@String) -> IO.print("err")
+  }
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run_io(src) == "10"
+
+    def test_eager_gc_match_binding_pattern_heap_pointer_post_walk_uaf(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Regression for the ``match expr { @T_heap -> ... }`` path.
+
+        PR #707 review (pr-test-analyzer I2): the round-1 fix in
+        ``vera/wasm/data.py`` ``ast.BindingPattern`` handler (the
+        ``match @Json.0 { @Json -> ... }`` shape) was unexercised.
+        All three existing regression tests use the
+        ``ConstructorPattern`` shape (`Ok(@Json) ->`), which goes
+        through ``_extract_constructor_fields`` — a different code
+        path.  Dropping the ``gc_shadow_push(local_idx)`` block in
+        the ``BindingPattern`` branch left no test to catch it.
+
+        This test exercises the bare ``@Json`` binding-pattern with
+        an intervening allocation (``set_add(set_new(), @Json.0)``)
+        between binding and the final array-length probe.  A
+        regression would reclaim the bound Json buffer mid-set-add
+        and the assertion would observe ``0``.
+        """
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<Json, String> = json_parse("[10,20,30]");
+  match @Result<Json, String>.0 {
+    Ok(@Json) -> match @Json.0 {
+      @Json -> {
+        let @Set<Json> = set_add(set_new(), @Json.0);
+        IO.print(int_to_string(json_array_length(@Json.0)))
+      }
+    },
+    Err(@String) -> IO.print("err")
+  }
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run_io(src) == "3"

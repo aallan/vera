@@ -1344,9 +1344,24 @@ function buildImportObject(module) {
     // #695/#705: default bucket_ptr is 0.  Map/Set callers fill it
     // via attach_bucket_to_wrapper below; Decimal leaves it 0.
     writeI32(ptr + 8, 0);
-    if (wasm && typeof wasm.register_wrapper === "function") {
-      wasm.register_wrapper(ptr, kind, rawHandle);
+    // PR #707 review (silent-failure-hunter C2): symmetric with the
+    // CLI-side ``_call_register_wrapper`` discipline.  A caller
+    // reaching wrapHandle is building a Map / Set / Decimal wrapper
+    // — so the wrap-table is required for Phase 2c reclamation.  If
+    // ``register_wrapper`` isn't exported, the wrapper is allocated
+    // and the mapStore entry created but the wrap-table registration
+    // is skipped → ``host_decref_handle`` never fires → permanent
+    // mapStore leak per write.  That's a build-config bug; raise
+    // rather than silently leak.
+    if (!wasm || typeof wasm.register_wrapper !== "function") {
+      throw new Error(
+        '#707 browser runtime: $register_wrapper not exported; ' +
+        'module was built without wrap-table support but is trying ' +
+        'to wrap a host handle.  Recompile with wrap-table-needing ' +
+        'types enabled (Map / Set / Decimal).'
+      );
     }
+    wasm.register_wrapper(ptr, kind, rawHandle);
     return ptr;
   }
 
@@ -1366,8 +1381,24 @@ function buildImportObject(module) {
   // ``gcShadowPop`` decrements $gc_sp.  Stack-discipline must be
   // strict — callers MUST pair push with pop on every exit path
   // (use the try/finally pattern below).
+  // PR #707 review (silent-failure-hunter C1): symmetric with the
+  // CLI-side ``_ShadowGuard`` discipline — raise rather than silently
+  // degrade.  A caller reaching this point (allocMapWrapper et al.)
+  // requires the wrapper to be rooted across the bucket-attach
+  // window; if ``$gc_sp`` / ``$gc_stack_limit`` are missing the
+  // module was compiled without GC support but is still trying to
+  // build Map / Set values — that's a build-config bug and should
+  // surface immediately, not as a downstream UAF.
   function gcShadowPush(value) {
-    if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) return;
+    if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+      throw new Error(
+        '#707 browser runtime: $gc_sp / $gc_stack_limit not exported; ' +
+        'module was built without GC support — Map / Set wrappers ' +
+        'cannot be rooted across the attach window.  Recompile with ' +
+        'GC enabled (any of map_ops_used / set_ops_used / ' +
+        'decimal_ops_used / wrap-table-needing types).'
+      );
+    }
     const sp = wasm.gc_sp.value;
     if (sp >= wasm.gc_stack_limit.value) {
       throw new Error('GC shadow stack overflow in browser runtime');
@@ -1376,7 +1407,17 @@ function buildImportObject(module) {
     wasm.gc_sp.value = sp + 4;
   }
   function gcShadowPop() {
-    if (!wasm || !wasm.gc_sp) return;
+    // Symmetric guard with gcShadowPush — see comment above.  Both
+    // checked against the same export-pair invariant (gc_sp and
+    // gc_stack_limit travel together) so the pop won't underflow if
+    // a future module ever exports one but not the other.
+    if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+      throw new Error(
+        '#707 browser runtime: gcShadowPop called without $gc_sp / ' +
+        '$gc_stack_limit exports — push/pop must be balanced under ' +
+        'the same export-pair invariant'
+      );
+    }
     wasm.gc_sp.value -= 4;
   }
 
