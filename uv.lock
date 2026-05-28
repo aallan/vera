@@ -665,7 +665,7 @@ requires-dist = [
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.13" },
     { name = "wasmtime", specifier = ">=44.0.0" },
-    { name = "z3-solver", specifier = ">=4.12" },
+    { name = "z3-solver", specifier = ">=4.15.5" },
 ]
 provides-extras = ["dev"]
 
