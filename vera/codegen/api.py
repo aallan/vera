@@ -1653,26 +1653,17 @@ def execute(
 
     # Host function: vera.sleep(ms: i64) -> ()
     # #463 — pause execution for `ms` milliseconds.
+    #
+    # Ctrl-C during the sleep raises `KeyboardInterrupt` here; it is
+    # allowed to propagate.  wasmtime-py 45.0.0's trampoline
+    # (`except BaseException`) unwinds the wasm call safely and
+    # re-raises it at the `func(store, ...)` call site in `execute()`,
+    # where the single `except KeyboardInterrupt` handler maps it to a
+    # clean exit code 130 (#599).  Pre-45 this needed a per-import
+    # `_VeraExit(130)` launder; see that handler for the full history.
     def host_sleep(_caller: wasmtime.Caller, ms: int) -> None:
         if ms > 0:
-            try:
-                time.sleep(ms / 1000.0)
-            except KeyboardInterrupt:
-                # Ctrl-C during `IO.sleep` — convert to a clean
-                # `_VeraExit(130)` (conventional SIGINT exit code, 128
-                # + signal-2) that propagates through wasmtime's
-                # trampoline as the existing IO.exit pattern.  Without
-                # this, `KeyboardInterrupt` escaped the host import as
-                # a raw Python traceback through wasmtime's trampoline
-                # — a `WasmTrapError` contract violation in the same
-                # class as #589's `UnicodeDecodeError` escape.  The
-                # _VeraExit chain unwrap in `execute()` (around line
-                # 3161, 3179) recognises this exit code and returns
-                # an `ExecuteResult` with `exit_code=130` and any
-                # captured stdout/stderr, so the user sees a clean
-                # process exit instead of a Python traceback +
-                # follow-on malloc abort during wasmtime cleanup.
-                raise _VeraExit(130) from None
+            time.sleep(ms / 1000.0)
 
     sleep_type = wasmtime.FuncType(
         [wasmtime.ValType.i64()],
@@ -1748,15 +1739,18 @@ def execute(
     #   - termios / msvcrt call fails (no TTY where expected, system
     #     error, restore failed): Err("<exception text>")
     #
-    # KeyboardInterrupt handling: each blocking call (read(1),
-    # getwch()) catches KeyboardInterrupt and converts it to
-    # `_VeraExit(130)`, which propagates through wasmtime's
-    # trampoline via the existing IO.exit mechanism — same fix
-    # `host_sleep` applies for the same reason (#589-class
-    # WasmTrapError contract violation when KeyboardInterrupt
-    # escapes a host import as a raw Python traceback).  The user
-    # still sees Ctrl-C terminate the program cleanly (exit code
-    # 130, the conventional 128 + SIGINT-2 value).
+    # KeyboardInterrupt handling: a Ctrl-C during any blocking read
+    # (read(1), getwch()) raises `KeyboardInterrupt`, which is allowed
+    # to propagate out of this host import.  wasmtime-py 45.0.0's
+    # trampoline unwinds the wasm call safely and re-raises it at the
+    # `func(store, ...)` call site in `execute()`, where the single
+    # `except KeyboardInterrupt` handler maps it to a clean exit code
+    # 130 (#599).  The Unix-TTY path's terminal restore lives in a
+    # `finally` (below), so the terminal is always returned to its
+    # original mode before the interrupt propagates — independent of
+    # the interrupt handling.  The user still sees Ctrl-C terminate
+    # the program cleanly (exit code 130, the conventional 128 +
+    # SIGINT-2 value).
     def host_read_char(caller: wasmtime.Caller) -> int:
         # Test fixture wins first — execute(stdin="x") feeds chars
         # in order without touching real stdin / raw mode.  Uses
@@ -1773,10 +1767,11 @@ def execute(
         # errors (closed stdin, monkey-patched stream without a
         # fileno, termios.error on weird devices) become Result.Err
         # rather than propagating as wasmtime traps.  `Exception`
-        # excludes `KeyboardInterrupt` and `SystemExit` (direct
-        # `BaseException` subclasses), so the dedicated
-        # `except KeyboardInterrupt` clauses at each blocking call
-        # below remain reachable.
+        # deliberately excludes `KeyboardInterrupt` and `SystemExit`
+        # (direct `BaseException` subclasses): a Ctrl-C must NOT be
+        # swallowed into a `Result.Err` here — it has to propagate to
+        # the single `except KeyboardInterrupt` handler in `execute()`
+        # that maps it to exit code 130 (#599).
         try:
             fd = sys.stdin.fileno()
         except Exception as exc:
@@ -1795,8 +1790,6 @@ def execute(
         if not os.isatty(fd):
             try:
                 ch = sys.stdin.read(1)
-            except KeyboardInterrupt:
-                raise _VeraExit(130) from None
             except Exception as exc:
                 return _alloc_result_err_string(
                     caller, f"stdin.read failed: {exc}",
@@ -1817,8 +1810,6 @@ def execute(
                 )
             try:
                 ch = msvcrt.getwch()  # type: ignore[attr-defined]
-            except KeyboardInterrupt:  # pragma: no cover — Windows-only
-                raise _VeraExit(130) from None
             except Exception as exc:  # pragma: no cover — Windows-only
                 return _alloc_result_err_string(
                     caller, f"getwch failed: {exc}",
@@ -1852,11 +1843,12 @@ def execute(
         # ECHO (so we get one character without waiting for Enter
         # and without echoing) but PRESERVES ISIG.  With ISIG on,
         # Ctrl-C still generates SIGINT and Python turns that into
-        # `KeyboardInterrupt`, which the outer handler converts to
-        # `_VeraExit(130)`.  `tty.setraw()` would clear ISIG, in
-        # which case Ctrl-C arrives in the read buffer as the
-        # literal byte `\x03` and the program never exits — exactly
-        # what a Tetris-style game user would expect to NOT happen.
+        # `KeyboardInterrupt`, which propagates (after the `finally`
+        # restores the terminal) to `execute()`'s exit-130 handler.
+        # `tty.setraw()` would clear ISIG, in which case Ctrl-C
+        # arrives in the read buffer as the literal byte `\x03` and
+        # the program never exits — exactly what a Tetris-style game
+        # user would expect to NOT happen.
         #
         # The restore_exc dance below preserves both error sources
         # rather than letting one mask the other.  The inner finally
@@ -1873,16 +1865,22 @@ def execute(
                 tty.setcbreak(fd)
                 ch = sys.stdin.read(1)
             finally:
+                # Always restore the terminal mode, even on Ctrl-C.
+                # This `finally` runs before a `KeyboardInterrupt`
+                # propagates, so the terminal is returned to its
+                # original (canonical/echo) mode before the interrupt
+                # reaches `execute()`'s exit-130 handler (#599).
                 try:
                     termios.tcsetattr(fd, termios.TCSADRAIN, old)
                 except Exception as exc:
                     restore_exc = exc
-        except KeyboardInterrupt:
-            raise _VeraExit(130) from None
         except Exception as exc:
             # Read (or setcbreak) failed.  Prefer the read error
             # over any restore_exc — restore failure is less
-            # actionable than the original problem.
+            # actionable than the original problem.  `Exception`
+            # excludes `KeyboardInterrupt`, so a Ctrl-C propagates
+            # past here (terminal already restored by the `finally`)
+            # to the centralized exit-130 handler in `execute()`.
             return _alloc_result_err_string(
                 caller, f"raw-mode read failed: {exc}",
             )
@@ -4104,6 +4102,41 @@ def execute(
             stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
             state={k: v[-1] for k, v in state_store.items()},
             exit_code=exit_exc.code,
+            host_store_sizes={
+                k: len(v) for k, v in _host_store_refs.items()
+            },
+        )
+    except KeyboardInterrupt:
+        # Ctrl-C arriving while a host import is on the stack (e.g.
+        # ``IO.sleep``'s ``time.sleep`` or ``IO.read_char``'s blocking
+        # read).  Python raises ``KeyboardInterrupt`` in the host
+        # callback; wasmtime's trampoline catches it (as a
+        # ``BaseException``), unwinds the wasm call safely, and
+        # re-raises the original ``KeyboardInterrupt`` here — so it
+        # lands as a bare ``KeyboardInterrupt`` at this call site
+        # rather than escaping the process or arriving wrapped in a
+        # ``Trap``.  Map it to the conventional SIGINT exit code (130
+        # = 128 + signal-2), preserving captured stdout/stderr/state
+        # exactly as the ``IO.exit`` path above does.
+        #
+        # #599: this single handler replaces four per-host-import
+        # ``except KeyboardInterrupt: raise _VeraExit(130)`` guards
+        # (one in ``host_sleep``, three across ``host_read_char``'s
+        # platform branches).  Those guards existed because the
+        # ``wasmtime<45`` trampoline caught only ``Exception``, so a
+        # raw ``KeyboardInterrupt`` (a ``BaseException``) escaped into
+        # Rust with an undefined ABI return value and aborted with a
+        # libmalloc SIGABRT (#595).  ``KeyboardInterrupt`` had to be
+        # laundered into ``_VeraExit`` (an ``Exception``) to be caught.
+        # wasmtime-py 45.0.0 ([bytecodealliance/wasmtime-py#337],
+        # `except Exception` → `except BaseException`) makes the raw
+        # propagation safe, so the mapping moves to one place.
+        return ExecuteResult(
+            value=None,
+            stdout=output_buf.getvalue(),
+            stderr=stderr_buf.getvalue() if stderr_buf is not None else "",
+            state={k: v[-1] for k, v in state_store.items()},
+            exit_code=130,
             host_store_sizes={
                 k: len(v) for k, v in _host_store_refs.items()
             },

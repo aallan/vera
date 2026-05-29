@@ -304,6 +304,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.157 | 19 May | `IO.read_char` effect operation for single-character input ([#618](https://github.com/aallan/vera/issues/618)). |
 | v0.0.158 | 19 May | Host-side shadow-stack rooting closes the last `$gc_collect`-during-host-walk free-list-corruption bug ([#692](https://github.com/aallan/vera/issues/692)). |
 | v0.0.159 | 28 May | `Map<K, T_heap>` and `Set<T_heap>` no longer drop heap-pointer values under GC pressure on either CLI or browser target ([#695](https://github.com/aallan/vera/issues/695) + [#705](https://github.com/aallan/vera/issues/705) + [#708](https://github.com/aallan/vera/issues/708)). |
+| v0.0.160 | 29 May | Centralized Ctrl-C-during-host-import handling on `wasmtime>=45.0.0`, removing the four per-import `_VeraExit(130)` workaround guards ([#599](https://github.com/aallan/vera/issues/599)). |
 
 ---
 
@@ -344,4 +345,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 159 tagged releases, 59 active development days.**
+Total: **810+ commits, 160 tagged releases, 60 active development days.**
