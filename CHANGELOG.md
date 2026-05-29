@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.160] - 2026-05-29
+
+### Changed
+
+- **[#599](https://github.com/aallan/vera/issues/599)** — bumped the `wasmtime` floor from `>=44.0.0` to `>=45.0.0`.  45.0.0 (released 2026-05-26) is the first PyPI release whose host-import trampoline catches `BaseException` rather than `Exception` ([bytecodealliance/wasmtime-py#337](https://github.com/bytecodealliance/wasmtime-py/pull/337), merged 2026-05-07 — the 44.0.0 tag predates it).  Vera filed the upstream issue ([#336](https://github.com/bytecodealliance/wasmtime-py/issues/336)) after a Ctrl-C during `IO.sleep` in a Conway's Life animation aborted with a libmalloc SIGABRT ([#595](https://github.com/aallan/vera/issues/595)): a raw `KeyboardInterrupt` (a `BaseException`) escaped the `except Exception` trampoline into Rust with an undefined ABI return value.  45.0.0 makes the raw propagation safe — the wasm call unwinds and the original `KeyboardInterrupt` re-raises in Python at the call site.
+
+### Removed
+
+- **[#599](https://github.com/aallan/vera/issues/599) / [#595](https://github.com/aallan/vera/issues/595)** — removed the four per-host-import `except KeyboardInterrupt: raise _VeraExit(130)` workaround guards (one in `host_sleep`, three across `host_read_char`'s Unix-non-TTY / Unix-TTY-cbreak / Windows-getwch branches).  These laundered `KeyboardInterrupt` into `_VeraExit` (an `Exception`) so the pre-45 buggy trampoline would catch it.  With `wasmtime>=45.0.0` the launder is unnecessary: a single `except KeyboardInterrupt` handler at the `func(store, ...)` call site in `execute()` now maps a Ctrl-C in any host import to the conventional SIGINT exit code (130), preserving captured stdout/stderr/state exactly as the `IO.exit` path does.  One source of truth replaces four duplicated guards.  The Unix-TTY path's terminal restore stays correct — it lives in a `finally`, so the terminal is returned to canonical mode before the interrupt propagates.  Net behaviour is unchanged (clean exit 130, pre-interrupt output preserved); the end-to-end test that pins this contract passes identically before and after the relocation.
+
 ## [0.0.159] - 2026-05-28
 
 ### Fixed
@@ -2391,7 +2401,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.159...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.160...HEAD
+[0.0.160]: https://github.com/aallan/vera/compare/v0.0.159...v0.0.160
 [0.0.159]: https://github.com/aallan/vera/compare/v0.0.158...v0.0.159
 [0.0.158]: https://github.com/aallan/vera/compare/v0.0.157...v0.0.158
 [0.0.157]: https://github.com/aallan/vera/compare/v0.0.156...v0.0.157

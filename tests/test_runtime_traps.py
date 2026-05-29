@@ -2158,54 +2158,88 @@ class TestNetworkResponseUtf8Hygiene591:
 
 
 class TestHostSleepKeyboardInterrupt:
-    """Ctrl-C arriving during ``IO.sleep`` must surface as a clean
-    process exit (exit code 130, conventional SIGINT) rather than a
-    raw Python ``KeyboardInterrupt`` traceback escaping through
-    wasmtime's trampoline.
+    """Ctrl-C arriving during ``IO.sleep`` (or ``IO.read_char``) must
+    surface as a clean process exit (exit code 130, conventional
+    SIGINT) rather than a raw Python ``KeyboardInterrupt`` traceback
+    escaping through wasmtime's trampoline.
 
-    Same WasmTrapError-contract class as #589 (UTF-8 decode escape) —
-    discovered when a user Ctrl-C'd a Conway's Life animation that uses
-    `IO.sleep(120)` between frames.  Pre-fix the user saw:
+    Originally discovered (#595) when a user Ctrl-C'd a Conway's Life
+    animation that uses ``IO.sleep(120)`` between frames: with
+    ``wasmtime-py < 45`` the trampoline caught only ``Exception``, so a
+    raw ``KeyboardInterrupt`` escaped into Rust with an undefined ABI
+    return value and aborted with a libmalloc SIGABRT.  Vera bridged
+    that with four per-host-import ``except KeyboardInterrupt: raise
+    _VeraExit(130)`` guards (one in ``host_sleep``, three across
+    ``host_read_char``'s platform branches) that laundered the
+    interrupt into an ``Exception`` the buggy trampoline could catch.
 
-      Traceback (most recent call last):
-        File ".../wasmtime/_func.py", line 199, in trampoline
-          pyresults = func(*pyparams)
-        File ".../vera/codegen/api.py", line 1193, in host_sleep
-          time.sleep(ms / 1000.0)
-      KeyboardInterrupt
-
-    plus a follow-on macOS malloc abort during wasmtime cleanup
-    (the abort is tracked separately as a wasmtime/native interaction
-    bug; preventing the Python exception escape is the in-our-control
-    half of the fix).
-
-    Post-fix `host_sleep` catches `KeyboardInterrupt` and raises
-    `_VeraExit(130)` from None, which propagates through wasmtime's
-    trampoline and is unwrapped at the top of `execute()` as a clean
-    `ExecuteResult` with `exit_code=130`.
+    #599: ``wasmtime-py >= 45.0.0`` catches ``BaseException`
+    (bytecodealliance/wasmtime-py#337), so the raw ``KeyboardInterrupt``
+    now unwinds the wasm call safely and re-raises in Python at the
+    ``func(store, ...)`` call site.  The four guards were removed and
+    replaced by a single ``except KeyboardInterrupt`` handler in
+    ``execute()`` that maps it to ``ExecuteResult(exit_code=130)`` —
+    one source of truth instead of four.
     """
 
-    def test_host_sleep_uses_keyboard_interrupt_guard(self) -> None:
-        """host_sleep wraps `time.sleep` in a try/except KeyboardInterrupt
-        guard.  Source-level structural assertion; survives refactor that
-        moves the body into a helper as long as the guard remains.
+    def test_keyboard_interrupt_handled_centrally_not_per_import(
+        self,
+    ) -> None:
+        """Structural assertion for the #599 relocation: the per-import
+        ``_VeraExit(130)`` guards are gone and the single centralized
+        ``except KeyboardInterrupt`` handler lives at the ``execute()``
+        call site.  Survives refactors that move host-import bodies into
+        helpers, as long as the SIGINT mapping stays centralized.
         """
         from pathlib import Path
         api_src = (
             Path(__file__).parent.parent / "vera/codegen/api.py"
-        ).read_text()
-        marker = "def host_sleep("
-        idx = api_src.index(marker)
-        body = api_src[idx:idx + 1500]
-        assert "except KeyboardInterrupt:" in body, (
-            "host_sleep must catch KeyboardInterrupt so Ctrl-C during "
-            "IO.sleep doesn't escape as a raw Python traceback through "
-            "wasmtime's trampoline."
+        ).read_text(encoding="utf-8")
+
+        # The four per-host-import launder guards must be gone.  Their
+        # signature was the `raise _VeraExit(130)` statement in
+        # executable code.  Strip full-line comments first so the
+        # surviving history-describing mentions (which legitimately
+        # quote the old `raise _VeraExit(130)` form) don't trip the
+        # assertion — only an actual `raise` statement should fail it.
+        code_only = "\n".join(
+            ln for ln in api_src.splitlines()
+            if not ln.lstrip().startswith("#")
         )
-        assert "_VeraExit(130)" in body, (
-            "host_sleep's KeyboardInterrupt handler must raise "
-            "_VeraExit(130) so execute() unwraps it as a clean "
-            "exit_code=130 (conventional SIGINT exit code)."
+        assert "raise _VeraExit(130)" not in code_only, (
+            "The per-host-import `raise _VeraExit(130)` guards must be "
+            "removed (#599) — KeyboardInterrupt now propagates to the "
+            "centralized handler in execute() instead of being "
+            "laundered into _VeraExit at each blocking call."
+        )
+
+        # host_sleep must no longer wrap time.sleep in a try/except.
+        sleep_idx = api_src.index("def host_sleep(")
+        sleep_body = api_src[sleep_idx:sleep_idx + 600]
+        assert "except KeyboardInterrupt" not in sleep_body, (
+            "host_sleep must let KeyboardInterrupt propagate (#599); "
+            "the per-import guard is replaced by execute()'s handler."
+        )
+
+        # execute() must carry the single centralized handler that maps
+        # KeyboardInterrupt -> exit_code=130.
+        exec_idx = api_src.index("def execute(")
+        exec_body = api_src[exec_idx:]
+        assert "except KeyboardInterrupt:" in exec_body, (
+            "execute() must catch KeyboardInterrupt at the wasm-call "
+            "site so a Ctrl-C in any host import exits cleanly (#599)."
+        )
+        # The handler maps to exit_code=130 (assert proximity of the
+        # handler to an exit_code=130 ExecuteResult field).
+        ki_idx = exec_body.index("except KeyboardInterrupt:")
+        # The ExecuteResult(exit_code=130) return sits after the
+        # handler's (long) rationale comment.  A forward window is
+        # safe here: the only `exit_code=130` literal in the whole
+        # file is this handler (the IO.exit handler above uses
+        # `exit_code=exit_exc.code`, not the literal 130).
+        assert "exit_code=130" in exec_body[ki_idx:ki_idx + 2500], (
+            "execute()'s KeyboardInterrupt handler must return "
+            "ExecuteResult(exit_code=130) (conventional SIGINT code)."
         )
 
     def test_host_sleep_keyboard_interrupt_end_to_end(self) -> None:
@@ -2219,9 +2253,16 @@ class TestHostSleepKeyboardInterrupt:
         Exercises the full import/trampoline path: WAT compile →
         wasmtime instance → host_sleep callback (the production
         closure, not a local mirror) → ctypes/ffi → KeyboardInterrupt
-        raised inside ``time.sleep`` → ``_VeraExit(130)`` propagates
-        through wasmtime → unwrapped by the ``_VeraExit`` chain in
-        ``execute()`` → returned as ``ExecuteResult(exit_code=130)``.
+        raised inside ``time.sleep`` → wasmtime-py 45's
+        ``except BaseException`` trampoline unwinds the wasm call and
+        re-raises → caught by ``execute()``'s single
+        ``except KeyboardInterrupt`` handler → returned as
+        ``ExecuteResult(exit_code=130)``.
+
+        This is the real behavioural contract for #599: it passed both
+        before (per-import ``_VeraExit(130)`` guard) and after (central
+        handler + ``wasmtime>=45``) the relocation, which is exactly
+        why the guard could be removed without changing UX.
 
         Replaced an earlier local-helper test that mirrored
         ``host_sleep`` in test code and asserted Python's stdlib
@@ -2264,10 +2305,10 @@ public fn main(@Unit -> @Unit)
                 exec_result = execute(result)
             except KeyboardInterrupt:  # pragma: no cover
                 raise AssertionError(
-                    "KeyboardInterrupt escaped execute() — host_sleep "
-                    "must convert to _VeraExit(130) so the wasmtime "
-                    "trampoline doesn't surface a raw Python "
-                    "traceback (#594 / #595)."
+                    "KeyboardInterrupt escaped execute() — the "
+                    "centralized handler must map it to exit_code=130 "
+                    "so the wasmtime trampoline doesn't surface a raw "
+                    "Python traceback (#594 / #595 / #599)."
                 ) from None
 
         assert exec_result.exit_code == 130, (
@@ -2284,6 +2325,81 @@ public fn main(@Unit -> @Unit)
         # The IO.print("after sleep") should NOT have executed.
         assert "after sleep" not in exec_result.stdout, (
             "Post-sleep IO.print should not have run; KeyboardInterrupt "
-            "during sleep must propagate as _VeraExit(130) without "
+            "during sleep must propagate to the exit-130 handler without "
             "letting the program continue."
+        )
+
+    def test_host_read_char_keyboard_interrupt_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sibling of the IO.sleep e2e test for the second host import
+        that blocks on real input: ``IO.read_char``.  #599 removed three
+        per-platform ``_VeraExit(130)`` guards from ``host_read_char``
+        (Unix non-TTY, Unix TTY cbreak, Windows getwch); this test pins
+        that a Ctrl-C during the blocking read still exits cleanly with
+        code 130 via the centralized ``execute()`` handler.
+
+        Exercises the Unix non-TTY branch (``sys.stdin.read(1)``), which
+        is the cross-platform-reachable path: a fake stdin whose
+        ``read`` raises ``KeyboardInterrupt`` plus ``os.isatty`` forced
+        False routes execution through that branch on any OS.  No
+        ``stdin=`` is passed to ``execute()`` so the StringIO test
+        fixture does not short-circuit the real-stdin path.
+        """
+        import os as _os
+        import sys as _sys
+
+        from vera.codegen import compile as compile_program, execute
+        from vera.parser import parse_to_ast
+
+        source = """\
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  IO.print("before read");
+  match IO.read_char(()) {
+    Ok(@String) -> IO.print(@String.0),
+    Err(@String) -> IO.stderr(@String.0)
+  }
+}
+"""
+        program = parse_to_ast(source)
+        result = compile_program(program, source=source)
+        assert result.ok, (
+            f"compile failed: "
+            f"{[d.description for d in result.diagnostics]}"
+        )
+
+        class _KIStdin:
+            """Minimal stdin stand-in: a real fileno (so the fd resolve
+            succeeds) whose ``read`` raises KeyboardInterrupt — simulates
+            Ctrl-C the instant ``IO.read_char`` blocks on input."""
+
+            def fileno(self) -> int:
+                return 0
+
+            def read(self, _n: int = -1) -> str:
+                raise KeyboardInterrupt
+
+        # Force the non-TTY branch (`sys.stdin.read(1)`) on every OS and
+        # feed it the interrupt-raising stdin.
+        monkeypatch.setattr(_os, "isatty", lambda _fd: False)
+        monkeypatch.setattr(_sys, "stdin", _KIStdin())
+
+        try:
+            exec_result = execute(result)
+        except KeyboardInterrupt:  # pragma: no cover
+            raise AssertionError(
+                "KeyboardInterrupt escaped execute() during "
+                "IO.read_char — the centralized handler must map it to "
+                "exit_code=130 (#599)."
+            ) from None
+
+        assert exec_result.exit_code == 130, (
+            f"expected exit_code=130 (SIGINT) from a Ctrl-C during "
+            f"IO.read_char, got {exec_result.exit_code}"
+        )
+        assert "before read" in exec_result.stdout, (
+            "Pre-read IO.print output should be preserved in stdout "
+            "even when the program exits via the SIGINT handler."
         )
