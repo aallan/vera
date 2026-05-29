@@ -48,10 +48,17 @@ _KIND_TO_TAG: dict[int, int] = {
     _WRAP_KIND_DECIMAL: _DECIMAL_HANDLE_TAG,
 }
 
-# #573: wrapper ADT body size.  Tag (i32, 4 bytes) + handle (i32, 4
-# bytes) = 8 bytes; ``$alloc`` rounds up to 8-byte alignment, so
-# this matches actual usage exactly.
-_WRAPPER_BODY_SIZE = 8
+# #573 / #695 / #705: wrapper ADT body size.  Layout:
+#   +0  tag (i32)                                     [#573]
+#   +4  handle | 0x80000000 (i32, bit-31 tagged)      [#578]
+#   +8  bucket_ptr (i32, heap pointer or 0)           [#695/#705]
+#
+# ``bucket_ptr`` is non-zero for Map / Set wrappers whose host-side
+# stores hold heap-pointer values; it points to a WASM-resident
+# bucket array making those values reachable to the conservative
+# scan.  Decimal wrappers and empty Map / Set wrappers leave it 0.
+# Must agree with ``_WRAPPER_BODY_SIZE`` in ``vera/codegen/api.py``.
+_WRAPPER_BODY_SIZE = 12
 
 
 class CallsContainersMixin:
@@ -118,6 +125,12 @@ class CallsContainersMixin:
             "i32.const 0x80000000",
             "i32.or",
             "i32.store offset=4",
+            # #695/#705: write 0 at +8 (default bucket_ptr).  Map/Set
+            # wrappers get this overwritten by attach_bucket_to_wrapper
+            # below; Decimal wrappers keep it at 0.
+            f"local.get {wrapper_temp}",
+            "i32.const 0",
+            "i32.store offset=8",
             # Register with wrap table: $register_wrapper(ptr, kind, handle).
             f"local.get {wrapper_temp}",
             f"i32.const {kind}",
@@ -139,6 +152,22 @@ class CallsContainersMixin:
         # grow unbounded across iterations of an enclosing
         # ``array_fold``.
         seq.extend(gc_shadow_push(wrapper_temp))
+        # #695/#705: populate the wrapper's bucket_ptr field (+8) by
+        # mirroring the host-store contents into a WASM-resident
+        # bucket array.  Must come AFTER the shadow-push above so
+        # the wrapper itself stays rooted during the bucket
+        # allocation's possible sub-GCs.  Decimal wrappers (kind=3)
+        # are EXEMPT: ``PyDecimal`` is value-typed (no heap pointers
+        # in the store entry), so the silent-UAF window that
+        # motivated this fix cannot apply.  The host-side dispatcher
+        # ``host_attach_bucket`` short-circuits when kind=3, leaving
+        # the wrapper's bucket_ptr at 0.
+        seq.extend([
+            f"local.get {wrapper_temp}",
+            f"i32.const {kind}",
+            f"local.get {handle_temp}",
+            "call $vera.attach_bucket_to_wrapper",
+        ])
         # Leave the wrapper pointer on the stack as the call result.
         seq.append(f"local.get {wrapper_temp}")
         return seq

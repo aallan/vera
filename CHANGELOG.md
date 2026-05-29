@@ -6,8 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.159] - 2026-05-28
+
 ### Fixed
 
+- **[#695](https://github.com/aallan/vera/issues/695) and [#705](https://github.com/aallan/vera/issues/705)** — closed the silent use-after-free in `Map<K, T_heap>` and `Set<T_heap>` where heap-pointer values stored in Python-side `_map_store` / `_set_store` were invisible to the conservative GC scan.  Fix: every `Map` / `Set` wrapper now points (at body offset +8) to a WASM-resident bucket array that mirrors the store's (key, value) pairs as i32 slot words.  The conservative scan reaches the values via shadow stack → wrapper → bucket → val_ptr, so a `$gc_collect` between map / set construction and value access no longer reclaims the heap blocks.  Bucket population happens in three paths: the WAT-emitted `attach_bucket_to_wrapper` import (dispatching to `host_attach_bucket` for both CLI and browser targets), the host-side `_alloc_map_wrapper` (used by `write_json`'s `JObject` branch and `write_html`'s `HtmlElement` attrs), and match-arm / let-binding shadow-rooting for heap-pointer bindings in `vera/wasm/data.py` and `vera/wasm/context.py` (the orthogonal #695-root cause: parameter shadow-pushing already covered function calls, but `match` and `let` binding sites did not).  Decimal wrappers stay exempt — `PyDecimal` is value-typed and cannot contain heap pointers.  This is the **mirror** approach: the Python store remains the source of truth and the bucket array is a write-only reachability anchor.  Follow-up [#706](https://github.com/aallan/vera/issues/706) tracks the architectural "move" cleanup (single source of truth in the bucket array, deleting `_map_store` / `_set_store`, across CLI Map / CLI Set / browser runtime).
+- **[#708](https://github.com/aallan/vera/issues/708)** — closed the browser-runtime parallel of the #692 silent-UAF in `vera/browser/runtime.mjs`'s `writeJson` / `writeHtml` walkers.  Surfaced by the new browser-side EAGER_GC regression tests added in this PR: `writeJson` allocates a tree of `Json` heap blocks via repeated `alloc()` and JS-local pointer holding, but never shadow-pushed intermediates (`arrPtr` for a `JArray`'s backing, recursive child results, string ptrs) — so under `VERA_EAGER_GC=1` each subsequent alloc fires `$gc_collect`, reclaims the in-progress tree, and the writes scribble freed memory.  Empirically the constructed `JArray`'s body ended up with `tag=0` (JNull) and `payload=self` (looked like `Result.Ok(self)`) — a `Result.Ok` shape allocated on the same address after `JArray` got reclaimed.  Fix: added JS-side `gcGuard(fn)` helper that mirrors the CLI `_ShadowGuard` discipline (save `$gc_sp` at entry, restore on exit), and `gcShadowPush` for each intermediate in `writeJson`'s JString / JArray / JObject branches, `writeHtml`'s comment / text / element branches, `json_parse`, and `html_parse`.  The CLI side already had this fix from v0.0.158 (#692); the browser side was missing it, exposing the latent bug at higher GC pressure.
 - **[#694](https://github.com/aallan/vera/issues/694)** — bumped the `subprocess.run` timeout in `tests/test_browser.py` from 30s to 60s at both call sites.  The previous 30s budget was insufficient for cold Node startup on Windows GitHub Actions runners when combined with the `--experimental-wasm-exnref` flag's first-execution V8 codegen cost.  Symptom was an intermittent `subprocess.TimeoutExpired` on `test (windows-latest, 3.12)` only, asymmetric across the matrix — `3.11` and `3.13` running back-to-back on the same runner benefited from a warm cache.  60s gives ~2× the median budget without making real hangs painful to detect.
 
 ### Changed
@@ -2387,7 +2391,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.158...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.159...HEAD
+[0.0.159]: https://github.com/aallan/vera/compare/v0.0.158...v0.0.159
 [0.0.158]: https://github.com/aallan/vera/compare/v0.0.157...v0.0.158
 [0.0.157]: https://github.com/aallan/vera/compare/v0.0.156...v0.0.157
 [0.0.156]: https://github.com/aallan/vera/compare/v0.0.155...v0.0.156

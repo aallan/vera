@@ -293,16 +293,17 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.146 | 12 May | Refinement-of-Array element inference — closes [#655](https://github.com/aallan/vera/issues/655) Shape B. |
 | v0.0.147 | 12 May | Cross-module `_fn_ret_type_exprs` propagation — closes [#628](https://github.com/aallan/vera/issues/628). |
 | v0.0.148 | 12 May | Type-alias arity check ([E133]) — closes [#660](https://github.com/aallan/vera/issues/660) and [#661](https://github.com/aallan/vera/issues/661). |
-| v0.0.149 | 12 May | **Cyclic type aliases now produce [E132]** ([#648](https://github.com/aallan/vera/issues/648)). |
-| v0.0.150 | 12 May | **Nested type aliases through `Array<...>` compile and run** ([#559](https://github.com/aallan/vera/issues/559)). |
-| v0.0.151 | 12 May | **Walker-completeness audit with pre-commit enforcement** ([#597](https://github.com/aallan/vera/issues/597)). |
-| v0.0.152 | 13 May | **Stress-test harness for scale-dependent regression coverage** ([#596](https://github.com/aallan/vera/issues/596)). |
-| v0.0.153 | 13 May | **SMT translator covers `FloatLit` / `IndexExpr` / `ArrayLit` in contracts** ([#667](https://github.com/aallan/vera/issues/667)). |
-| v0.0.154 | 13 May | **GC-aware tail-call optimization for allocating functions** ([#549](https://github.com/aallan/vera/issues/549)). |
-| v0.0.155 | 13 May | **Wrapper-handle bit-31 tagging closes the last conservative-GC retention bug; bug-tracker section empty** ([#578](https://github.com/aallan/vera/issues/578)). |
-| v0.0.156 | 19 May | **`vera test` fails closed on verifier-refuted contracts; primitive-safety docs reframed** ([#674](https://github.com/aallan/vera/issues/674) + [#675](https://github.com/aallan/vera/issues/675) + 2026-05-18 compiler-review docs sweep).  First external code contribution from @rzyns. |
-| v0.0.157 | 19 May | **`IO.read_char` effect operation — single-character input for real-time CLI programs (paced REPLs, terminal games)** ([#618](https://github.com/aallan/vera/issues/618)).  Terminal half shipped (Unix TTY cbreak via `tty.setcbreak()` preserving ISIG, Windows TTY `msvcrt.getwch()`, shared non-TTY pipe path reading one character via `sys.stdin.read(1)`); browser half awaits JSPI suspend/resume from #609.  Four CodeRabbit review rounds + an internal multi-agent review converged on the final structure: KeyboardInterrupt mirroring with `host_sleep`, restore failure captured rather than swallowed, Ctrl-D mapped to EOF in cbreak mode. |
-| v0.0.158 | 19 May | **Host-side shadow-stack rooting closes the last `$gc_collect`-during-host-walk free-list-corruption bug** ([#692](https://github.com/aallan/vera/issues/692)).  External report: `html_parse` on the current `FAQ.md` body trapped with `Out-of-bounds memory access` at `0xfffffffd` — a missing-shadow-root bug class (cousin of #570 / #515 / #593) on the host side rather than WAT-emitted user code.  Same shape proven in `write_json` and `write_md_block`.  Fix exports `$gc_sp` / `$gc_stack_limit`, introduces a `_ShadowGuard` context manager in `vera/codegen/api.py`, and threads it through all three serde walkers (html, json, markdown) so intermediate `arr_ptr` / `name_ptr` / `wrapper_ptr` pointers are visible to the conservative GC scan across sub-tree allocations. |
+| v0.0.149 | 12 May | Cyclic type aliases now produce [E132] ([#648](https://github.com/aallan/vera/issues/648)). |
+| v0.0.150 | 12 May | Nested type aliases through `Array<...>` compile and run ([#559](https://github.com/aallan/vera/issues/559)). |
+| v0.0.151 | 12 May | Walker-completeness audit with pre-commit enforcement ([#597](https://github.com/aallan/vera/issues/597)). |
+| v0.0.152 | 13 May | Stress-test harness for scale-dependent regression coverage ([#596](https://github.com/aallan/vera/issues/596)). |
+| v0.0.153 | 13 May | SMT translator covers `FloatLit` / `IndexExpr` / `ArrayLit` in contracts ([#667](https://github.com/aallan/vera/issues/667)). |
+| v0.0.154 | 13 May | GC-aware tail-call optimization for allocating functions ([#549](https://github.com/aallan/vera/issues/549)). |
+| v0.0.155 | 13 May | Wrapper-handle bit-31 tagging closes the last conservative-GC retention bug ([#578](https://github.com/aallan/vera/issues/578)). |
+| v0.0.156 | 19 May | `vera test` fails closed on verifier-refuted contracts ([#674](https://github.com/aallan/vera/issues/674)). |
+| v0.0.157 | 19 May | `IO.read_char` effect operation for single-character input ([#618](https://github.com/aallan/vera/issues/618)). |
+| v0.0.158 | 19 May | Host-side shadow-stack rooting closes the last `$gc_collect`-during-host-walk free-list-corruption bug ([#692](https://github.com/aallan/vera/issues/692)). |
+| v0.0.159 | 28 May | `Map<K, T_heap>` and `Set<T_heap>` no longer drop heap-pointer values under GC pressure on either CLI or browser target ([#695](https://github.com/aallan/vera/issues/695) + [#705](https://github.com/aallan/vera/issues/705) + [#708](https://github.com/aallan/vera/issues/708)). |
 
 ---
 
@@ -343,4 +344,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 158 tagged releases, 59 active development days.**
+Total: **810+ commits, 159 tagged releases, 59 active development days.**

@@ -1200,6 +1200,135 @@ function buildImportObject(module) {
     // Unknown kinds: silent no-op.
   };
 
+  // #695 / #705: attach_bucket_to_wrapper is called from
+  // _emit_wrap_handle after every wrap step to populate the
+  // wrapper's bucket_ptr field at offset +8.  The CLI-side
+  // (vera/codegen/api.py::host_attach_bucket) allocates a WASM-
+  // resident bucket array mirroring _map_store / _set_store
+  // contents so the conservative GC scan reaches the values via
+  // shadow stack → wrapper → bucket → val_ptr.  Without this,
+  // heap-pointer Map values (e.g. JObject ptrs in Map<String,
+  // Json>) and Set elements (e.g. Json elements in Set<Json>)
+  // can be silently reclaimed by GC between map / set
+  // construction and value access — observed on the CLI side at
+  // ``TestMapHostStoreGCReachability695`` and the #705 Set
+  // analogue.
+  //
+  // Slot layout (must match _SLOT_SIZE / _BUCKET_INITIAL_CAPACITY
+  // in vera/codegen/api.py):
+  //   +0  key_word_0 (i32) — String: heap ptr; Int/Bool/ADT: literal
+  //   +4  key_word_1 (i32) — String: byte length; otherwise 0
+  //   +8  val_word (i32)   — heap pointer (or 0 for non-heap values)
+  //
+  // Critical ordering: write val_word FIRST (no allocation), then
+  // alloc string key if needed.  This roots any heap-pointer val
+  // via the conservative scan (which traces every i32 word in
+  // the heap, occupied or not) before subsequent string allocs
+  // can fire $gc_collect.  Matches the CLI's
+  // ``_attach_bucket_from_dict`` ordering.
+  //
+  // Decimal (kind === 3): no-op.  Decimal is value-typed
+  // (BigInt-backed JS implementation, no heap pointers in the
+  // store entry) and cannot exhibit the #695 class of bug.
+  const _SLOT_SIZE = 12;
+  const _BUCKET_INITIAL_CAPACITY = 8;
+  imports.vera.attach_bucket_to_wrapper = (wrapperPtr, kind, handle) => {
+    if (kind === 1) {
+      const d = mapStore.get(handle);
+      // PR #707 review (silent-failure-hunter): silent return hid
+      // desynchronization between the WAT-allocated wrapper and the
+      // JS-side ``mapStore``.  The only way ``d`` is undefined here is
+      // a real bug (handle constructed outside ``mapAlloc``, or wrapper
+      // reached this host call after ``host_decref_handle`` already
+      // evicted it).  Either case leaves wrapper+8 unwritten → reader
+      // dereferences address 0 → confusing trap downstream.  Fail fast.
+      if (!d) {
+        throw new Error(
+          `attach_bucket_to_wrapper: unknown Map host-store handle ${handle} ` +
+          '(wrapper / mapStore desync — see PR #707 review)'
+        );
+      }
+      const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, d.size * 2);
+      const bucketBytes = capacity * _SLOT_SIZE;
+      const bucketPtr = alloc(bucketBytes);
+      // PR #707 review: three-step rooting for browser
+      // GC-safety without shadow-stack JS-side API.
+      // (1) Publish bucketPtr into wrapper+8 IMMEDIATELY so the
+      //     wrapper (which is on the WAT shadow stack via the
+      //     `_emit_wrap_handle` `gc_shadow_push` in
+      //     `vera/wasm/calls_containers.py`) roots the bucket
+      //     before any subsequent allocString can fire $gc_collect.
+      // (2) Zero-fill the bucket so free-list reuse can't leave
+      //     stale i32s that the conservative scan would mistake
+      //     for live heap pointers (extending unrelated blocks'
+      //     lifetimes).  Cheap: one Uint8Array.fill(0) call.
+      // (3) Only then iterate, write val_word first (no alloc) so
+      //     heap-pointer values are slot-rooted before the key
+      //     allocString fires.
+      writeI32(wrapperPtr + 8, bucketPtr);
+      new Uint8Array(mem().buffer, bucketPtr, bucketBytes).fill(0);
+      let i = 0;
+      for (const [k, v] of d) {
+        const slotBase = bucketPtr + i * _SLOT_SIZE;
+        // val_word first (no alloc).
+        //
+        // PR #707 review: BigInt values (i64 keys / vals
+        // from Map<K, Int>) are NOT coerced via Number(v) — that
+        // would truncate large i64s, and a large value could land
+        // inside the heap range and be misread as a live heap
+        // pointer by the conservative scan, extending unrelated
+        // blocks' lifetimes.  Mirror is write-only (actual reads
+        // go through `mapStore`), so writing 0 is harmless for
+        // non-heap-pointer values.
+        const valWord = typeof v === 'number' ? v : 0;
+        writeI32(slotBase + 8, valWord);
+        if (typeof k === 'string') {
+          const [kp, kl] = allocString(k);
+          writeI32(slotBase, kp);
+          writeI32(slotBase + 4, kl);
+        } else {
+          // Same BigInt-as-zero discipline as valWord above.
+          const kw = typeof k === 'number' ? k : 0;
+          writeI32(slotBase, kw);
+          // key_word_1 stays 0 from the fill above.
+        }
+        i++;
+      }
+    } else if (kind === 2) {
+      const s = setStore.get(handle);
+      // PR #707 review (silent-failure-hunter): same shape as the Map
+      // branch above — silent return hid setStore desync.  Fail fast.
+      if (!s) {
+        throw new Error(
+          `attach_bucket_to_wrapper: unknown Set host-store handle ${handle} ` +
+          '(wrapper / setStore desync — see PR #707 review)'
+        );
+      }
+      const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, s.size * 2);
+      const bucketBytes = capacity * _SLOT_SIZE;
+      const bucketPtr = alloc(bucketBytes);
+      // Same three-step rooting as the Map branch above.
+      writeI32(wrapperPtr + 8, bucketPtr);
+      new Uint8Array(mem().buffer, bucketPtr, bucketBytes).fill(0);
+      let i = 0;
+      for (const elem of s) {
+        const slotBase = bucketPtr + i * _SLOT_SIZE;
+        if (typeof elem === 'string') {
+          const [ep, el] = allocString(elem);
+          writeI32(slotBase, ep);
+          writeI32(slotBase + 4, el);
+        } else {
+          // Same BigInt-as-zero discipline (PR #707 review).
+          const ew = typeof elem === 'number' ? elem : 0;
+          writeI32(slotBase, ew);
+          // key_word_1 and val_word stay 0 from the fill above.
+        }
+        i++;
+      }
+    }
+    // kind === 3 (Decimal): nothing to attach.
+  };
+
   // #573 wrapper-ADT layout constants (must match
   // vera/wasm/calls_containers.py).
   const _MAP_HANDLE_TAG = 0xFEEDC001 | 0;
@@ -1217,23 +1346,160 @@ function buildImportObject(module) {
   // Used by host helpers that have already obtained a raw handle
   // and need to lift it to a wrapper pointer before stuffing into
   // an Option<T> Some payload (e.g. decimal_from_string).
+  // Wrapper body layout (must match _WRAPPER_BODY_SIZE in
+  // vera/codegen/api.py and vera/wasm/calls_containers.py):
+  //   +0  tag (i32)            [#573]
+  //   +4  handle | 0x80000000  [#578 — bit-31 tag keeps it out
+  //                             of the conservative GC scan]
+  //   +8  bucket_ptr (i32)     [#695/#705 — attached below]
   function wrapHandle(kind, rawHandle) {
     const tag = _KIND_TO_TAG_JS[kind];
-    const ptr = alloc(8);
+    const ptr = alloc(12);
     writeI32(ptr, tag);
-    writeI32(ptr + 4, rawHandle);
-    if (wasm && typeof wasm.register_wrapper === "function") {
-      wasm.register_wrapper(ptr, kind, rawHandle);
+    // #578: tag the handle with bit-31 so the conservative scan
+    // never mistakes it for a heap pointer.  Matches the
+    // WAT-emitted ``_emit_wrap_handle`` discipline.
+    writeI32(ptr + 4, (rawHandle | 0x80000000) | 0);
+    // #695/#705: default bucket_ptr is 0.  Map/Set callers fill it
+    // via attach_bucket_to_wrapper below; Decimal leaves it 0.
+    writeI32(ptr + 8, 0);
+    // PR #707 review (silent-failure-hunter C2): symmetric with the
+    // CLI-side ``_call_register_wrapper`` discipline.  A caller
+    // reaching wrapHandle is building a Map / Set / Decimal wrapper
+    // — so the wrap-table is required for Phase 2c reclamation.  If
+    // ``register_wrapper`` isn't exported, the wrapper is allocated
+    // and the mapStore entry created but the wrap-table registration
+    // is skipped → ``host_decref_handle`` never fires → permanent
+    // mapStore leak per write.  That's a build-config bug; raise
+    // rather than silently leak.
+    if (!wasm || typeof wasm.register_wrapper !== "function") {
+      throw new Error(
+        '#707 browser runtime: $register_wrapper not exported; ' +
+        'module was built without wrap-table support but is trying ' +
+        'to wrap a host handle.  Recompile with wrap-table-needing ' +
+        'types enabled (Map / Set / Decimal).'
+      );
     }
+    wasm.register_wrapper(ptr, kind, rawHandle);
     return ptr;
   }
 
+  // PR #707 review: JS-side shadow-stack push/pop using
+  // the exported ``$gc_sp`` / ``$gc_stack_limit`` mutable globals
+  // (added in v0.0.158 / #692 for host-side rooting).  Needed
+  // because the JS multi-alloc patterns (``allocMapWrapper`` and
+  // any future caller) have the same root-discipline problem as
+  // the CLI ``_ShadowGuard``: a freshly-allocated wrapper held
+  // only in a JS local is invisible to the conservative GC scan,
+  // so a sub-alloc that fires ``$gc_collect`` can reclaim it.
+  // The wrap-table region (below ``gc_heap_start``) is NOT walked
+  // by the mark phase, so ``register_wrapper`` alone isn't enough
+  // — explicit shadow-stack rooting is required.
+  //
+  // ``gcShadowPush`` reads $gc_sp, writes the value, advances $gc_sp.
+  // ``gcShadowPop`` decrements $gc_sp.  Stack-discipline must be
+  // strict — callers MUST pair push with pop on every exit path
+  // (use the try/finally pattern below).
+  // PR #707 review (silent-failure-hunter C1): symmetric with the
+  // CLI-side ``_ShadowGuard`` discipline — raise rather than silently
+  // degrade.  A caller reaching this point (allocMapWrapper et al.)
+  // requires the wrapper to be rooted across the bucket-attach
+  // window; if ``$gc_sp`` / ``$gc_stack_limit`` are missing the
+  // module was compiled without GC support but is still trying to
+  // build Map / Set values — that's a build-config bug and should
+  // surface immediately, not as a downstream UAF.
+  function gcShadowPush(value) {
+    if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+      throw new Error(
+        '#707 browser runtime: $gc_sp / $gc_stack_limit not exported; ' +
+        'module was built without GC support — Map / Set wrappers ' +
+        'cannot be rooted across the attach window.  Recompile with ' +
+        'GC enabled (any of map_ops_used / set_ops_used / ' +
+        'decimal_ops_used / wrap-table-needing types).'
+      );
+    }
+    const sp = wasm.gc_sp.value;
+    if (sp >= wasm.gc_stack_limit.value) {
+      throw new Error('GC shadow stack overflow in browser runtime');
+    }
+    writeI32(sp, value | 0);
+    wasm.gc_sp.value = sp + 4;
+  }
+  function gcShadowPop() {
+    // Symmetric guard with gcShadowPush — see comment above.  Both
+    // checked against the same export-pair invariant (gc_sp and
+    // gc_stack_limit travel together) so the pop won't underflow if
+    // a future module ever exports one but not the other.
+    if (!wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+      throw new Error(
+        '#707 browser runtime: gcShadowPop called without $gc_sp / ' +
+        '$gc_stack_limit exports — push/pop must be balanced under ' +
+        'the same export-pair invariant'
+      );
+    }
+    wasm.gc_sp.value -= 4;
+  }
+
+  // #708 (PR #707): JS-side parallel of the CLI
+  // ``_ShadowGuard`` context manager added in v0.0.158 for #692.
+  // ``writeJson`` / ``writeHtml`` are multi-alloc walkers — they
+  // build a tree of heap blocks via repeated ``alloc()`` and JS-
+  // local pointer holding.  Without explicit shadow-stack rooting,
+  // intermediates (e.g. JArray's ``arrPtr`` between its allocation
+  // and the writes into it) are reclaimed by EAGER_GC and the
+  // resulting tree has dangling pointers — observed empirically as
+  // ``json_array_length`` returning 0 instead of the JArray length.
+  //
+  // ``gcGuard`` saves ``$gc_sp`` at entry and restores it on exit
+  // (success OR exception), atomically popping every push made
+  // within the callback.  Equivalent to ``_ShadowGuard.__enter__/
+  // __exit__``.  Caller pushes intermediates via ``gcShadowPush``;
+  // the guard pops them all at the end without per-push bookkeeping.
+  function gcGuard(fn) {
+    if (!wasm || !wasm.gc_sp) {
+      // Module without GC infrastructure — just call.  This is fine
+      // because such modules can't fire $gc_collect either.
+      return fn();
+    }
+    const savedSp = wasm.gc_sp.value;
+    try {
+      return fn();
+    } finally {
+      wasm.gc_sp.value = savedSp;
+    }
+  }
+
   // allocMapWrapper(d) : drop-in replacement for mapAlloc(d) used by
-  // writeJson / writeHtml.  Inserts d into mapStore and lifts the
-  // resulting handle to a wrapper pointer via wrapHandle.
+  // writeJson / writeHtml.  Inserts d into mapStore, lifts the
+  // resulting handle to a wrapper pointer via wrapHandle, and
+  // populates the wrapper's bucket array for GC reachability
+  // (#695 mirror parallel — matches CLI ``_alloc_map_wrapper``).
+  //
+  // PR #707 review: the wrapper returned from
+  // ``wrapHandle`` is registered with the wrap-table but the
+  // wrap-table region is NOT scanned by Phase 2a marking, so the
+  // wrapper is only kept alive transitively (via another reachable
+  // block pointing at it).  Between ``wrapHandle`` returning and
+  // the caller (e.g. ``writeJson``'s JObject branch) storing the
+  // wrapper into a body field, the wrapper is unrooted — and the
+  // ``attach_bucket_to_wrapper`` call below internally allocates
+  // the bucket, which can fire ``$gc_collect``.  Shadow-push the
+  // wrapper across the attach so it stays alive.  Caller is still
+  // responsible for storing the returned ptr promptly (the
+  // wrapper becomes unrooted again on return — see writeJson
+  // JObject branch which is the only consumer of this helper).
   function allocMapWrapper(d) {
     const handle = mapAlloc(d);
-    return wrapHandle(1, handle);
+    const ptr = wrapHandle(1, handle);
+    if (imports.vera && imports.vera.attach_bucket_to_wrapper) {
+      gcShadowPush(ptr);
+      try {
+        imports.vera.attach_bucket_to_wrapper(ptr, 1, handle);
+      } finally {
+        gcShadowPop();
+      }
+    }
+    return ptr;
   }
 
   // Helper: allocate Option.None on heap (tag=0, 4 bytes)
@@ -1615,6 +1881,13 @@ function buildImportObject(module) {
 
   // Write a JS value into WASM memory as a Json ADT, returns heap pointer.
   function writeJson(value) {
+    // #708 (PR #707): wrap in gcGuard so intermediates
+    // (arrPtr, recursive results, string ptrs) can be shadow-pushed
+    // and atomically popped at function exit.  Mirrors the CLI
+    // ``write_json`` ``_ShadowGuard`` discipline from v0.0.158 (#692).
+    return gcGuard(() => writeJsonImpl(value));
+  }
+  function writeJsonImpl(value) {
     if (value === null || value === undefined) {
       // JNull — tag=0, total=8
       const ptr = alloc(8);
@@ -1637,8 +1910,15 @@ function buildImportObject(module) {
     }
     if (typeof value === "string") {
       // JString(String) — tag=3, i32_pair at offset 4, total=16
+      //
+      // #708: allocate the JString body first, push it onto the
+      // shadow stack, then allocate the string buffer.  The
+      // ``allocString`` call below can fire ``$gc_collect``; without
+      // rooting the body, it gets reclaimed and the writes scribble
+      // freed memory.
       const ptr = alloc(16);
       writeI32(ptr, 3);
+      gcShadowPush(ptr);
       const [sp, sl] = allocString(value);
       writeI32(ptr + 4, sp);
       writeI32(ptr + 8, sl);
@@ -1646,13 +1926,31 @@ function buildImportObject(module) {
     }
     if (Array.isArray(value)) {
       // JArray(Array<Json>) — tag=4, i32_pair at offset 4, total=16
+      //
+      // #708: explicitly root ``arrPtr`` (the array backing) and
+      // each element's heap ptr before storing into the backing.
+      // Without these pushes, EAGER_GC reclaims ``arrPtr`` between
+      // the recursive ``writeJson(value[i])`` calls and the writes
+      // into it, leaving a JArray with a dangling backing pointer
+      // — the failure mode observed on the browser-side
+      // ``test_eager_gc_set_of_json_browser``.
       const count = value.length;
       let arrPtr = 0;
       if (count > 0) {
         arrPtr = alloc(count * 4);
+        gcShadowPush(arrPtr);
         for (let i = 0; i < count; i++) {
           const ep = writeJson(value[i]);
+          // PR #707 review: push ep to root it across writeI32, then
+          // pop immediately after the store — once ep lives at
+          // ``arrPtr + i * 4`` and arrPtr is rooted, the conservative
+          // scan reaches ep via arrPtr's block, so the per-iteration
+          // push is no longer needed.  Without the matching pop the
+          // shadow stack grew O(count) and risked overflowing
+          // ``gc_stack_limit`` on large arrays.
+          gcShadowPush(ep);
           writeI32(arrPtr + i * 4, ep);
+          gcShadowPop();
         }
       }
       const ptr = alloc(16);
@@ -1663,11 +1961,31 @@ function buildImportObject(module) {
     }
     if (typeof value === "object") {
       // JObject(Map<String, Json>) — tag=5, i32 wrapper ptr at offset 4 (#573)
+      //
+      // #708: each recursive ``writeJson(v)`` call returns a heap
+      // ptr stored in the JS-side Map ``m`` only.  Between
+      // returning ep and ``m.set(k, ep)``, the result is in a JS
+      // local — invisible to the conservative scan.  Push each ep
+      // before storing in m, then push wrapperPtr before the
+      // final 8-byte alloc.
       const m = new Map();
       for (const [k, v] of Object.entries(value)) {
-        m.set(k, writeJson(v));
+        const ep = writeJson(v);
+        // PR #707 review: no matching pop here — unlike the JArray
+        // branch above, ``m`` is a JS Map (not WASM memory), so
+        // ``m.set(k, ep)`` does NOT make ep reachable from the
+        // conservative scan.  ep stays on the shadow stack until
+        // ``allocMapWrapper(m)`` below builds the WAT-resident bucket
+        // array and writes ep into it.  Stack depth is therefore
+        // O(n_keys) inside this loop; bounded by the same
+        // ``gc_stack_limit`` guard as everything else.  Tracked as
+        // a refactor opportunity under #706 (move-to-truth would let
+        // allocMapWrapper take a pre-rooted bucket).
+        gcShadowPush(ep);
+        m.set(k, ep);
       }
       const wrapperPtr = allocMapWrapper(m);
+      gcShadowPush(wrapperPtr);
       const ptr = alloc(8);
       writeI32(ptr, 5);
       writeI32(ptr + 4, wrapperPtr);
@@ -1695,9 +2013,13 @@ function buildImportObject(module) {
     }
     if (tag === 5) {
       // #573: i32 at +4 is now a wrapper-ADT pointer; unwrap to
-      // the raw Map handle before the mapStore lookup.
+      // the raw Map handle before the mapStore lookup.  CodeRabbit
+      // PR #707 review: the wrapper body's +4 field stores the
+      // handle ORed with 0x80000000 (#578 bit-31 tag, matching the
+      // CLI ``_wrap_handle`` discipline), so we must mask the
+      // high bit before mapStore.get or the lookup always misses.
       const wrapperPtr = readI32(ptr + 4);
-      const handle = readI32(wrapperPtr + 4);
+      const handle = readI32(wrapperPtr + 4) & 0x7FFFFFFF;
       const m = mapStore.get(handle);
       if (!m) {
         console.warn(`readJson: unknown JObject handle ${handle} at pointer ${ptr}; possible memory corruption`);
@@ -1718,8 +2040,15 @@ function buildImportObject(module) {
       const text = readString(ptr, len);
       try {
         const parsed = JSON.parse(text);
-        const jsonPtr = writeJson(parsed);
-        return allocResultOkI32(jsonPtr);
+        // #708 (PR #707): wrap in gcGuard and push jsonPtr
+        // before allocResultOkI32's alloc can fire GC.  writeJson
+        // has its own internal guard that pops on return — by the
+        // time control returns here, jsonPtr is unrooted again.
+        return gcGuard(() => {
+          const jsonPtr = writeJson(parsed);
+          gcShadowPush(jsonPtr);
+          return allocResultOkI32(jsonPtr);
+        });
       } catch (e) {
         return allocResultErrString(String(e.message || e));
       }
@@ -1888,24 +2217,38 @@ function buildImportObject(module) {
   // HtmlText: tag=1, String(content)+4, total=16
   // HtmlComment: tag=2, String(content)+4, total=16
   function writeHtml(node) {
+    // #708 (PR #707): same gcGuard discipline as writeJson.
+    return gcGuard(() => writeHtmlImpl(node));
+  }
+  function writeHtmlImpl(node) {
     if (node.tag === 'comment') {
+      // #708: root the comment body's ptr before allocString fires GC.
       const ptr = alloc(16);
-      const [sp, sl] = allocString(node.content || '');
       writeI32(ptr, 2);
+      gcShadowPush(ptr);
+      const [sp, sl] = allocString(node.content || '');
       writeI32(ptr + 4, sp);
       writeI32(ptr + 8, sl);
       return ptr;
     }
     if (node.tag === 'text') {
+      // Same #708 discipline as the comment branch.
       const ptr = alloc(16);
-      const [sp, sl] = allocString(node.content || '');
       writeI32(ptr, 1);
+      gcShadowPush(ptr);
+      const [sp, sl] = allocString(node.content || '');
       writeI32(ptr + 4, sp);
       writeI32(ptr + 8, sl);
       return ptr;
     }
     // element
+    //
+    // #708: root each intermediate before any alloc that could
+    // fire GC.  The CLI ``write_html`` uses ``_ShadowGuard``
+    // pushing for the same set of intermediates (np, wrapperPtr,
+    // arrPtr, and each recursive child result).
     const [np, nl] = allocString(node.name || '');
+    gcShadowPush(np);
     // Attributes as Map<String, String>
     const m = new Map();
     if (node.attrs) {
@@ -1917,14 +2260,24 @@ function buildImportObject(module) {
     // level map_get / map_contains on the attrs field unwraps
     // correctly and the entry is reclaimable by the GC.
     const wrapperPtr = allocMapWrapper(m);
+    gcShadowPush(wrapperPtr);
     // Children array
     const children = node.children || [];
     const count = children.length;
     let arrPtr = 0;
     if (count > 0) {
       arrPtr = alloc(count * 4);
+      gcShadowPush(arrPtr);
       for (let i = 0; i < count; i++) {
-        writeI32(arrPtr + i * 4, writeHtml(children[i]));
+        const cp = writeHtml(children[i]);
+        // PR #707 review: same push+pop pairing as the JArray loop in
+        // writeJson.  Once cp is stored at ``arrPtr + i * 4`` and
+        // arrPtr is rooted, the conservative scan reaches cp via
+        // arrPtr's block, so the per-iteration push can be popped.
+        // Keeps shadow stack depth O(1) instead of O(count).
+        gcShadowPush(cp);
+        writeI32(arrPtr + i * 4, cp);
+        gcShadowPop();
       }
     }
     const ptr = alloc(24);
@@ -1955,8 +2308,11 @@ function buildImportObject(module) {
     const nl = readI32(ptr + 8);
     const name = readString(np, nl);
     // #573: i32 at +12 is now a wrapper-ADT pointer; unwrap.
+    // PR #707 review: mask off the #578 bit-31 tag
+    // before the mapStore lookup (see readJson above for the
+    // analogous fix on the JObject branch).
     const wrapperPtr = readI32(ptr + 12);
-    const handle = readI32(wrapperPtr + 4);
+    const handle = readI32(wrapperPtr + 4) & 0x7FFFFFFF;
     const arrPtr = readI32(ptr + 16);
     const arrLen = readI32(ptr + 20);
     const attrs = {};
@@ -2074,8 +2430,14 @@ function buildImportObject(module) {
           return allocResultErrString(
             "Unsupported runtime: HTML parsing requires DOMParser (browser only)");
         }
-        const nodePtr = writeHtml(root);
-        return allocResultOkI32(nodePtr);
+        // #708 (PR #707): same gcGuard discipline as
+        // json_parse — root nodePtr before allocResultOkI32 fires
+        // GC.
+        return gcGuard(() => {
+          const nodePtr = writeHtml(root);
+          gcShadowPush(nodePtr);
+          return allocResultOkI32(nodePtr);
+        });
       } catch (e) {
         return allocResultErrString(String(e.message || 'HTML parse error'));
       }

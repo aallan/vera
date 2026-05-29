@@ -22,6 +22,20 @@ from vera.types import (
     base_type,
 )
 
+# #705: Vera type names that compile to ``i32`` WASM type but are
+# inline values (not heap pointers).  Bindings of these types — at
+# match arms, let statements, and let-destruct field extractions —
+# do NOT need to be shadow-pushed onto the GC stack, because
+# reclaiming an inline value is a no-op (the value isn't a pointer
+# to anything).
+#
+# Hoisted to ``helpers.py`` so ``data.py`` and ``context.py`` share
+# the same authoritative set — previously duplicated in both files
+# with cross-referencing comments, which would silently drift if
+# someone added a new inline-i32 type (e.g. a hypothetical ``Char``
+# primitive) to one but not the other.
+_INLINE_I32_TYPES = frozenset({"Bool", "Byte", "Unit"})
+
 
 # =====================================================================
 # Slot environment — De Bruijn → WASM local mapping

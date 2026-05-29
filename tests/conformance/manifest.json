@@ -1255,5 +1255,26 @@
       "effect_declaration",
       "result"
     ]
+  },
+  {
+    "id": "ch09_host_store_gc_reachability",
+    "file": "ch09_host_store_gc_reachability.vera",
+    "chapter": 9,
+    "title": "Host-store GC reachability (#695 / #705)",
+    "level": "run",
+    "spec_ref": "Section 9.4",
+    "features": [
+      "map_new",
+      "map_insert",
+      "map_get",
+      "map_size",
+      "set_new",
+      "set_add",
+      "set_to_array",
+      "set_size",
+      "json_parse",
+      "json_array_length",
+      "array_fold"
+    ]
   }
 ]

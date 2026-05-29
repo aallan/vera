@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from vera import ast
 from vera.skip import CodegenSkip
 from vera.wasm.helpers import (
+    _INLINE_I32_TYPES,
     WasmSlotEnv,
     _element_mem_size,
     _element_load_op,
@@ -181,6 +182,14 @@ class DataMixin:
                 instrs.append(f"local.get {scr_local}")
                 instrs.append(f"i32.load offset={offset + 4}")
                 instrs.append(f"local.set {len_local}")
+                # PR #707 review: same pair-type rooting
+                # gap as ``_extract_constructor_fields`` — String
+                # buffer / Array<T> backing ptr needs shadow-push.
+                # ``let MyAdt(@String, ...) = ...;`` was missed by
+                # the original #705 fix (which only covered the
+                # ``wt == "i32"`` non-inline branch).
+                self.needs_alloc = True
+                instrs.extend(gc_shadow_push(ptr_local))
                 new_env = new_env.push(type_name, ptr_local)
                 offset += 8
                 continue
@@ -196,6 +205,18 @@ class DataMixin:
             instrs.append(f"local.get {scr_local}")
             instrs.append(f"{wt}.load offset={offset}")
             instrs.append(f"local.set {local_idx}")
+            # PR #707 review: same heap-pointer rooting
+            # discipline as ``_extract_constructor_fields`` (line ~515)
+            # and the ``BindingPattern`` branch (line ~408).
+            # ``let MyAdt(@Json) = makeThing();`` extracts an i32 field
+            # into a fresh local that's invisible to the conservative
+            # scan until shadow-pushed.  Without this, a subsequent
+            # allocation can reclaim the bound heap pointer.  This was
+            # missed by the original #705 fix — match-arm paths were
+            # rooted but the parallel let-destruct path was not.
+            if wt == "i32" and type_name not in _INLINE_I32_TYPES:
+                self.needs_alloc = True
+                instrs.extend(gc_shadow_push(local_idx))
             new_env = new_env.push(type_name, local_idx)
             offset += _sizes.get(wt, 8)
 
@@ -410,6 +431,19 @@ class DataMixin:
                 f"local.get {scr_local}",
                 f"local.set {local_idx}",
             ]
+            # PR #707 review: same heap-pointer rooting
+            # discipline as ``_extract_constructor_fields`` (below) —
+            # ``match @Json.0 { @Json -> set_add(set_new(), @Json.0) }``
+            # binds the scrutinee to a fresh local that's invisible
+            # to the conservative scan until shadow-pushed.  Without
+            # this, the inner ``set_new()`` allocation can reclaim
+            # the bound Json block.
+            if (
+                scr_wasm_type == "i32"
+                and type_name not in _INLINE_I32_TYPES
+            ):
+                self.needs_alloc = True
+                instrs.extend(gc_shadow_push(local_idx))
             new_env = env.push(type_name, local_idx)
             return (instrs, new_env)
 
@@ -471,6 +505,19 @@ class DataMixin:
                     instrs.append(f"local.get {scr_local}")
                     instrs.append(f"i32.load offset={offset + 4}")
                     instrs.append(f"local.set {len_local}")
+                    # PR #707 review: pair-type field
+                    # extraction in match arms — the ``ptr_local``
+                    # holds a heap pointer (the String buffer or the
+                    # Array<T> backing) which is invisible to the
+                    # conservative scan from a WASM local.  Same #705
+                    # bug class as the ``wt == "i32"`` non-inline
+                    # branch below; the original fix missed the
+                    # pair-type branch because pair-types lower as
+                    # two i32s and only the ptr half needs rooting.
+                    # ``len_local`` is a length, not a pointer — no
+                    # rooting needed.
+                    self.needs_alloc = True
+                    instrs.extend(gc_shadow_push(ptr_local))
                     new_env = new_env.push(type_name, ptr_local)
                     offset += 8  # two i32s
                     continue
@@ -488,6 +535,25 @@ class DataMixin:
                 instrs.append(f"local.get {scr_local}")
                 instrs.append(f"{wt}.load offset={offset}")
                 instrs.append(f"local.set {local_idx}")
+                # #705: shadow-push heap-pointer match bindings so
+                # subsequent allocations (e.g. ``set_new()`` inside
+                # ``set_add(set_new(), @Json.0)``) can't reclaim
+                # them during the gap between binding and use.
+                # ``i32`` slot with a non-scalar Vera type is the
+                # signature of a heap-pointer ADT field; Bool / Byte
+                # / Unit are inline i32s that don't need rooting.
+                # The function epilogue's ``$gc_sp`` restore pops
+                # these on exit so the shadow stack stays bounded.
+                # PR #707 review: ``gc_shadow_push``
+                # references ``$gc_sp`` / ``$gc_stack_limit`` which
+                # are only exported when ``needs_alloc`` is set on
+                # the surrounding context.  Without flipping it,
+                # a function that has a heap-pointer match binding
+                # but no other allocation would emit WAT referencing
+                # undefined globals.
+                if wt == "i32" and type_name not in _INLINE_I32_TYPES:
+                    self.needs_alloc = True
+                    instrs.extend(gc_shadow_push(local_idx))
                 new_env = new_env.push(type_name, local_idx)
                 offset += _sizes.get(wt, 8)
 

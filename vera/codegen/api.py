@@ -955,6 +955,181 @@ def execute(
         assert isinstance(ptr, int)  # noqa: S101
         return ptr
 
+    def _read_i32_at(caller: wasmtime.Caller, offset: int) -> int:
+        """Read a little-endian i32 from WASM memory at `offset`.
+
+        Module-factory-level counterpart to ``_write_i32`` (line ~944).
+        A nested ``_read_i32`` exists later inside the decimal closures;
+        this version is shared by all module-level helpers that need
+        to inspect linear memory (e.g. the bucket-array
+        helpers added below for #695/#705).
+        """
+        memory = caller["memory"]
+        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+        buf = memory.data_ptr(caller)
+        return int(struct.unpack_from("<I", bytes(buf[offset:offset + 4]))[0])
+
+    def _read_bytes_at(
+        caller: wasmtime.Caller, offset: int, length: int,
+    ) -> bytes:
+        """Read `length` raw bytes from WASM linear memory at `offset`."""
+        memory = caller["memory"]
+        assert isinstance(memory, wasmtime.Memory)  # noqa: S101
+        buf = memory.data_ptr(caller)
+        return bytes(buf[offset:offset + length])
+
+    # ------------------------------------------------------------------
+    # #695 / #705: WASM-side bucket-array helpers for Map / Set storage
+    # ------------------------------------------------------------------
+    #
+    # Host-side helpers for the bucket-array reachability anchor
+    # that allocate and operate on WASM-resident bucket arrays without
+    # changing any existing behaviour.  These helpers are intentionally
+    # not called from any current code path; they are the foundation
+    # that the follow-up #706 will reuse when it switches the ``map_*`` host imports
+    # from ``_map_store`` (Python dict) to WASM linear memory.
+    #
+    # **Why a separate WASM block.** The conservative GC scan in
+    # ``$gc_collect`` (Phase 2a) walks WASM heap blocks looking for
+    # i32-shaped pointers in the heap range.  Map / Set values stored
+    # only as Python ints in ``_map_store[handle]`` / ``_set_store[h]``
+    # are invisible to that scan, causing silent use-after-free when GC
+    # fires between map construction and value access — empirically
+    # confirmed at the regression test
+    # ``TestMapHostStoreGCReachability695::
+    # test_eager_gc_json_object_with_array_child_post_walk_uaf``.
+    #
+    # **Layout.** Each bucket array is ``capacity * _SLOT_SIZE`` bytes
+    # of zero-initialised heap memory.  Each slot is 12 bytes:
+    #
+    #   slot[i] at bucket_ptr + i * 12:
+    #     +0  key_word_0 (i32)
+    #       - String keys: heap pointer to UTF-8 bytes
+    #       - Int / Bool keys: literal value, with 0 as the legitimate
+    #         zero value (so the "empty slot" discriminator for
+    #         non-string keys is a separate occupancy mechanism;
+    #         deferred to #706 as it only matters for non-string
+    #         user-level Map / Set ops)
+    #     +4  key_word_1 (i32)
+    #       - String keys: byte length
+    #       - Int / Bool keys: 0 (reserved / padding)
+    #     +8  val_word (i32) — for heap values: heap pointer to value
+    #         block (GC-reachable through bucket array → wrapper);
+    #         for inline values: the value itself
+    #
+    # **Empty-slot sentinel.** For string keys, ``key_word_0 == 0`` is
+    # the empty-slot marker (heap pointers from ``_call_alloc`` are
+    # always non-zero — Vera's heap region starts well above 0).  Phase
+    # A only exposes string-key probing for that reason.
+    #
+    # **Empty-string-key caveat (PR #707 review).** ``_alloc_string("")``
+    # returns ``(0, 0)``, so an empty-string key would currently collide
+    # with the sentinel — ``_probe_string_key`` would treat ``""`` as an
+    # empty slot.  Latent only: ``_probe_string_key`` has no callers at
+    # present.  The bucket array is a write-only GC-reachability mirror
+    # (actual map / set lookups go through ``_map_store`` / ``_set_store``
+    # Python dicts which key on Python ``str`` correctly), so the
+    # collision cannot manifest as a user-visible bug today.  The fix
+    # — either reserving a distinct non-zero encoding for the empty
+    # string, or adding an explicit occupancy flag at slot+0 — belongs
+    # in the #706 follow-up (mirror → bucket-as-truth migration), which
+    # will activate the probe path for real user-level operations.  Do
+    # not paper over here; the right shape depends on how probing is
+    # restructured under #706.
+    #
+    # **Capacity and count.** Stored in the wrapper ADT (not in the
+    # bucket array header); the wrapper field is added by this commit.
+
+    _SLOT_SIZE = 12
+
+    # Minimum bucket-array capacity.  Small enough to keep memory
+    # footprint reasonable for empty / tiny maps; large enough that
+    # parser-built maps with up to 4 keys avoid an immediate grow.
+    # Caller is responsible for sizing up (typically ``max(_BUCKET_
+    # INITIAL_CAPACITY, len(d) * 2)`` to keep linear-probe scans
+    # short).
+    _BUCKET_INITIAL_CAPACITY = 8
+
+    def _alloc_bucket_array(caller: wasmtime.Caller, capacity: int) -> int:
+        """Allocate a zero-initialised bucket array of `capacity` slots.
+
+        Returns the WASM heap pointer to the start of the array.
+
+        PR #707 review: the prior comment claimed ``$alloc``
+        returns zero-initialised memory unconditionally.  That is true
+        only for bump-pointer fresh allocations — the free-list reuse
+        branch of ``$alloc`` returns whatever bytes the previous owner
+        left in the block.  For a write-only mirror like the bucket
+        array, stale i32s in slots beyond ``len(d)`` are NOT a
+        correctness problem for map / set operations (those go through
+        ``_map_store`` / ``_set_store``), BUT they ARE traced by the
+        conservative GC scan as potential heap pointers — extending
+        the lifetimes of unrelated blocks that happen to share an
+        address with a stale word.  Explicit zero-fill closes the
+        soundness gap.  CLI parallel of the browser-side fix that
+        ``Uint8Array.fill(0)`` applies in
+        ``vera/browser/runtime.mjs::attach_bucket_to_wrapper``.
+        """
+        total = capacity * _SLOT_SIZE
+        bucket_ptr = _call_alloc(caller, total)
+        _write_bytes(caller, bucket_ptr, b"\x00" * total)
+        return bucket_ptr
+
+    def _read_slot(
+        caller: wasmtime.Caller, bucket_ptr: int, slot_idx: int,
+    ) -> tuple[int, int, int]:
+        """Read ``(key_word_0, key_word_1, val_word)`` at ``slot_idx``."""
+        base = bucket_ptr + slot_idx * _SLOT_SIZE
+        return (
+            _read_i32_at(caller, base),
+            _read_i32_at(caller, base + 4),
+            _read_i32_at(caller, base + 8),
+        )
+
+    def _write_slot(
+        caller: wasmtime.Caller,
+        bucket_ptr: int,
+        slot_idx: int,
+        key_word_0: int,
+        key_word_1: int,
+        val_word: int,
+    ) -> None:
+        """Write all three slot words at ``slot_idx``."""
+        base = bucket_ptr + slot_idx * _SLOT_SIZE
+        _write_i32(caller, base, key_word_0)
+        _write_i32(caller, base + 4, key_word_1)
+        _write_i32(caller, base + 8, val_word)
+
+    def _probe_string_key(
+        caller: wasmtime.Caller,
+        bucket_ptr: int,
+        capacity: int,
+        key_bytes: bytes,
+    ) -> tuple[int, bool]:
+        """Linear scan for a string key.
+
+        Returns ``(slot_idx, found)``.  When ``found`` is False the
+        slot_idx is the first empty slot (suitable for insertion), or
+        ``capacity`` if the array is full (caller must grow before
+        inserting).
+
+        Linear scan rather than hash probing for now — simple,
+        deterministic across PYTHONHASHSEED variations.  The #706 follow-up may
+        upgrade to actual hash probing when measurement indicates a
+        bottleneck; typical Vera maps are small (parsed JSON objects
+        with < 100 keys).
+        """
+        key_len = len(key_bytes)
+        for i in range(capacity):
+            k0, k1, _v = _read_slot(caller, bucket_ptr, i)
+            if k0 == 0:
+                return (i, False)
+            if k1 == key_len:
+                stored = _read_bytes_at(caller, k0, k1)
+                if stored == key_bytes:
+                    return (i, True)
+        return (capacity, False)
+
     # ------------------------------------------------------------------
     # #692: Host-side shadow-stack rooting for multi-alloc walkers
     # ------------------------------------------------------------------
@@ -1095,7 +1270,24 @@ def execute(
         _WRAP_KIND_SET: _SET_HANDLE_TAG,
         _WRAP_KIND_DECIMAL: _DECIMAL_HANDLE_TAG,
     }
-    _WRAPPER_BODY_SIZE = 8
+    # #695/#705: wrapper grows from 8 to 12 bytes to add a
+    # ``bucket_ptr`` field at offset +8.  Layout:
+    #   +0  tag (i32)                              [#573]
+    #   +4  handle | 0x80000000 (i32, bit-31 tagged) [#578]
+    #   +8  bucket_ptr (i32, real heap pointer or 0) [#695]
+    #
+    # For Map / Set wrappers, ``bucket_ptr`` points to a WASM-side
+    # bucket array (see ``_alloc_bucket_array``) that mirrors the
+    # ``_map_store`` / ``_set_store`` contents so the conservative
+    # GC scan can reach the values.  For Decimal wrappers (which
+    # don't store heap pointers and don't need this), the field is
+    # left at 0; the conservative scan correctly skips 0 as
+    # out-of-heap-range.
+    #
+    # Codegen that reads the wrapper's handle at +4 is unchanged;
+    # the +8 field is only read by the bucket-array path inside
+    # api.py and (in the #706 follow-up) the new host imports.
+    _WRAPPER_BODY_SIZE = 12
 
     def _call_register_wrapper(
         caller: wasmtime.Caller, ptr: int, kind: int, handle: int,
@@ -1147,6 +1339,12 @@ def execute(
         # still gets the RAW handle — the wrap table uses it for
         # ``host_decref_handle`` calls.
         _write_i32(caller, body_ptr + 4, raw_handle | 0x80000000)
+        # #695: default bucket_ptr is 0 (no bucket array).  For Map
+        # wrappers, ``_alloc_map_wrapper`` overwrites this with the
+        # actual bucket-array pointer after populating it.  For
+        # Set / Decimal wrappers the field stays 0 now (the #706
+        # C adds the Set side; Decimal never needs it).
+        _write_i32(caller, body_ptr + 8, 0)
         _call_register_wrapper(caller, body_ptr, kind, raw_handle)
         return body_ptr
 
@@ -1161,9 +1359,68 @@ def execute(
         parser's HtmlElement attrs.  Allocates the dict in
         ``_map_store`` (via ``_map_alloc``) and then lifts the
         resulting handle to a wrapper pointer via ``_wrap_handle``.
+
+        #695: in addition to the Python-side dict, populate
+        a WASM-side bucket array that mirrors the (key, value)
+        pairs and link it from the wrapper's ``bucket_ptr`` field at
+        +8.  This makes heap-pointer values reachable from the
+        conservative GC scan via wrapper → bucket_array → val_ptr,
+        closing the silent-UAF window between map construction and
+        value access (empirically: ``json_parse → json_get`` with
+        ``VERA_EAGER_GC=1`` returning 0 instead of the array
+        length).
+
+        ``map_get`` still reads the value from ``_map_store`` — the
+        bucket array is currently used only as a GC reachability
+        anchor.  the follow-up #706 will migrate the reads to the bucket
+        array and delete ``_map_store``; this commit prioritises
+        closing the bug with the minimum surface area.
         """
         raw_handle = _map_alloc(d)
-        return _wrap_handle(caller, _WRAP_KIND_MAP, raw_handle)
+        wrapper_ptr = _wrap_handle(caller, _WRAP_KIND_MAP, raw_handle)
+        # Populate the WASM-side bucket array.  CRITICAL: the
+        # wrapper is in the wrap table but NOT on the shadow stack
+        # yet — the wrap table tracks wrappers for Phase 2c cleanup
+        # but does NOT keep them alive across the conservative
+        # scan.  Any sub-alloc below that triggers $gc_collect would
+        # find the wrapper unreachable, Phase 2c would pop the
+        # _map_store entry, and the caller (write_json's JObject
+        # branch) would end up with a dead Map.  Empirically: this
+        # presented as ``json_get`` returning None instead of the
+        # JArray.  Same #692-class concern as the host-side tree
+        # walkers — must shadow-push the wrapper before any
+        # sub-alloc fires.
+        capacity = max(_BUCKET_INITIAL_CAPACITY, len(d) * 2)
+        with _ShadowGuard(caller) as guard:
+            guard.push(wrapper_ptr)  # keep wrapper alive across sub-allocs
+            bucket_ptr = _alloc_bucket_array(caller, capacity)
+            guard.push(bucket_ptr)
+            for i, (k, v) in enumerate(d.items()):
+                slot_base = bucket_ptr + i * _SLOT_SIZE
+                # PR #707 review: val_word FIRST, before
+                # any allocation in this iteration.  For heap-pointer
+                # values (i.e. ``v`` is an int that's a WASM heap
+                # address — Map<String, Json> et al.), the pointer
+                # is currently only held in the Python local ``v``,
+                # which is invisible to the conservative GC scan.
+                # If ``_alloc_string`` below fires ``$gc_collect``,
+                # the value's heap block would be reclaimed.
+                # Writing val_word into slot+8 BEFORE the key alloc
+                # roots it via wrapper → bucket → slot (the
+                # conservative scan traces every i32 word in the
+                # heap as a potential pointer regardless of any
+                # "occupied" flag).  Mirrors the same ordering in
+                # ``_attach_bucket_from_dict``.
+                val_word = v if isinstance(v, int) else 0
+                _write_i32(caller, slot_base + 8, val_word)
+                # Keys are Python strings (per write_json's
+                # ``map_dict[str(k)] = val_ptr`` invariant).
+                key_str = str(k) if not isinstance(k, str) else k
+                key_ptr, key_len = _alloc_string(caller, key_str)
+                _write_i32(caller, slot_base, key_ptr)
+                _write_i32(caller, slot_base + 4, key_len)
+        _write_i32(caller, wrapper_ptr + 8, bucket_ptr)
+        return wrapper_ptr
 
     def _alloc_string(
         caller: wasmtime.Caller, s: str,
@@ -2241,6 +2498,155 @@ def execute(
             host_decref_handle, access_caller=True,
         )
 
+        # #695/#705: bucket-population host called after every
+        # wrap step from ``_emit_wrap_handle`` in
+        # ``vera/wasm/calls_containers.py``.  Populates the
+        # wrapper's bucket_ptr field at +8 with a WASM-resident
+        # mirror of ``_map_store[handle]`` / ``_set_store[handle]``
+        # so heap-pointer values are reachable to the conservative
+        # GC scan via shadow stack → wrapper → bucket → val_ptr.
+        # No-op for Decimal (kind=3) and empty stores.
+        def host_attach_bucket(
+            caller: wasmtime.Caller, wrapper_ptr: int, kind: int,
+            handle: int,
+        ) -> None:
+            # PR #707 review (silent-failure-hunter C4): distinguish
+            # "handle missing from store" (UAF — the wrapper outlived
+            # the store entry, possibly via a Phase 2c decref bug or
+            # a wrap-table corruption) from "handle present, empty
+            # collection" (legitimate; an empty Map / Set wrapper
+            # just leaves bucket_ptr at 0).  The prior implementation
+            # collapsed both into one silent return, masking the UAF
+            # case.
+            if kind == _WRAP_KIND_MAP:
+                if handle not in _map_store:
+                    raise RuntimeError(
+                        f"#695: host_attach_bucket(MAP) called with "
+                        f"handle={handle} not present in _map_store "
+                        f"(wrapper_ptr={wrapper_ptr}); the wrapper "
+                        f"outlived its store entry — possible UAF "
+                        f"from Phase 2c reclamation or wrap-table "
+                        f"corruption"
+                    )
+                d = _map_store[handle]
+                if not d:
+                    return  # legitimate empty Map
+                _attach_bucket_from_dict(caller, wrapper_ptr, d)
+            elif kind == _WRAP_KIND_SET:
+                # PR #707 review (silent-failure-hunter I4): split the
+                # ``set_ops_used`` and ``handle in store`` checks so
+                # an unexpected SET kind with set_ops_used False (which
+                # would be a compiler bug — the WAT shouldn't emit a
+                # SET wrap unless set_ops_used) raises rather than
+                # silently leaving bucket_ptr at 0.
+                if not result.set_ops_used:
+                    raise RuntimeError(
+                        f"#695: host_attach_bucket(SET) called but "
+                        f"result.set_ops_used is False (wrapper_ptr="
+                        f"{wrapper_ptr}, handle={handle}); compiler "
+                        f"invariant violated — WAT emitted a SET wrap "
+                        f"without populating set_ops_used"
+                    )
+                if handle not in _set_store:
+                    raise RuntimeError(
+                        f"#705: host_attach_bucket(SET) called with "
+                        f"handle={handle} not present in _set_store "
+                        f"(wrapper_ptr={wrapper_ptr}); the wrapper "
+                        f"outlived its store entry — possible UAF"
+                    )
+                s = _set_store[handle]
+                if not s:
+                    return  # legitimate empty Set
+                _attach_bucket_from_set(caller, wrapper_ptr, s)
+            elif kind != _WRAP_KIND_DECIMAL:
+                # Decimal: explicit no-op (PyDecimal is value-typed).
+                # Any other kind value is a compiler bug.
+                raise RuntimeError(
+                    f"#695: host_attach_bucket called with unknown "
+                    f"kind={kind} (wrapper_ptr={wrapper_ptr}, handle="
+                    f"{handle}); expected MAP=1, SET=2, or DECIMAL=3"
+                )
+
+        linker.define_func(
+            "vera", "attach_bucket_to_wrapper",
+            wasmtime.FuncType(
+                [
+                    wasmtime.ValType.i32(),  # wrapper_ptr
+                    wasmtime.ValType.i32(),  # kind
+                    wasmtime.ValType.i32(),  # handle
+                ],
+                [],
+            ),
+            host_attach_bucket, access_caller=True,
+        )
+
+    def _attach_bucket_from_dict(
+        caller: wasmtime.Caller,
+        wrapper_ptr: int,
+        d: dict[object, object],
+    ) -> None:
+        """Allocate + populate bucket array from a Map dict, link to wrapper.
+
+        Critical ordering for GC safety without overflowing the
+        shadow stack on large maps: for each entry, write the
+        val_word to the bucket slot FIRST (no alloc), making any
+        heap-pointer value reachable via wrapper → bucket; THEN
+        alloc the key string if needed (which may GC, but value is
+        now rooted via bucket).  Without this, pre-pushing every
+        value onto the shadow stack works for small maps but
+        overflows at ~thousands of entries — observed at the
+        10000-element ``TestHostHandleReclamation573`` chain.
+        """
+        capacity = max(_BUCKET_INITIAL_CAPACITY, len(d) * 2)
+        with _ShadowGuard(caller) as guard:
+            guard.push(wrapper_ptr)
+            bucket_ptr = _alloc_bucket_array(caller, capacity)
+            guard.push(bucket_ptr)
+            for i, (k, v) in enumerate(d.items()):
+                slot_base = bucket_ptr + i * _SLOT_SIZE
+                # Write val_word FIRST (no alloc).  This roots any
+                # heap-pointer value via wrapper → bucket → slot
+                # before the key-string alloc can fire GC.
+                val_word = v if isinstance(v, int) else 0
+                _write_i32(caller, slot_base + 8, val_word)
+                if isinstance(k, str):
+                    key_ptr, key_len = _alloc_string(caller, k)
+                    _write_i32(caller, slot_base, key_ptr)
+                    _write_i32(caller, slot_base + 4, key_len)
+                else:
+                    k_int = k if isinstance(k, int) else 0
+                    _write_i32(caller, slot_base, k_int)
+                    # key_word_1 already 0 from bucket zero-init.
+        _write_i32(caller, wrapper_ptr + 8, bucket_ptr)
+
+    def _attach_bucket_from_set(
+        caller: wasmtime.Caller,
+        wrapper_ptr: int,
+        s: set[object],
+    ) -> None:
+        """Allocate + populate bucket array from a Set, link to wrapper.
+
+        Same ordering discipline as ``_attach_bucket_from_dict``:
+        for heap-pointer elements (non-string), write to the slot
+        before any potential alloc.
+        """
+        capacity = max(_BUCKET_INITIAL_CAPACITY, len(s) * 2)
+        with _ShadowGuard(caller) as guard:
+            guard.push(wrapper_ptr)
+            bucket_ptr = _alloc_bucket_array(caller, capacity)
+            guard.push(bucket_ptr)
+            for i, elem in enumerate(s):
+                slot_base = bucket_ptr + i * _SLOT_SIZE
+                if isinstance(elem, str):
+                    elem_ptr, elem_len = _alloc_string(caller, elem)
+                    _write_i32(caller, slot_base, elem_ptr)
+                    _write_i32(caller, slot_base + 4, elem_len)
+                else:
+                    elem_int = elem if isinstance(elem, int) else 0
+                    _write_i32(caller, slot_base, elem_int)
+                    # key_word_1 and val_word stay 0 (bucket zero-init).
+        _write_i32(caller, wrapper_ptr + 8, bucket_ptr)
+
     if result.map_ops_used:
 
         # map_new() → i32 handle
@@ -2693,6 +3099,16 @@ def execute(
         # #573 introspection (same pattern as Map; Decimal migration
         # is a separate follow-up).
         _host_store_refs["decimal"] = _decimal_store  # type: ignore[assignment]
+        # #695/#705: Decimal is intentionally EXEMPT from the bucket-
+        # array reachability fix.  ``PyDecimal`` is value-typed
+        # (immutable digit/sign/exponent attributes, no WASM heap
+        # pointers inside the stored object), so the silent-UAF
+        # window that affects Map<K, T_heap> and Set<T_heap> cannot
+        # occur for Decimal.  The wrapper's ``bucket_ptr`` field stays
+        # 0 (initialised by ``_emit_wrap_handle`` / JS ``wrapHandle``)
+        # and ``host_attach_bucket`` is a no-op for kind=3.  See also
+        # the follow-up issue #706 (host-store → bucket-as-truth move), which still
+        # excludes Decimal for the same reason.
 
         def _decimal_alloc(d: PyDecimal) -> int:
             h = _decimal_next_handle[0]

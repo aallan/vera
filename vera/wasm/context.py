@@ -28,8 +28,10 @@ if TYPE_CHECKING:
     from vera.codegen import ConstructorLayout
 
 from vera.wasm.helpers import (  # noqa: F401 — re-exported for consumers
+    _INLINE_I32_TYPES,
     StringPool,
     WasmSlotEnv,
+    gc_shadow_push,
     wasm_type,
 )
 from vera.wasm.inference import InferenceMixin
@@ -504,6 +506,21 @@ class WasmContext(
                 local_idx = self.alloc_local(wat_t)
                 instructions.extend(val_instrs)
                 instructions.append(f"local.set {local_idx}")
+                # #705: shadow-push heap-pointer let bindings so
+                # subsequent allocations in the same block (e.g. a
+                # ``set_to_array`` host call after ``let @Set =
+                # build_set()``) can't reclaim them.  Bool / Byte /
+                # Unit are inline i32s that don't need rooting; any
+                # other i32 slot is a heap-pointer ADT.  The function
+                # epilogue's ``$gc_sp`` restore pops these on exit.
+                # Setting ``needs_alloc`` here ensures the GC
+                # infrastructure (``$gc_sp``, ``$gc_stack_limit``)
+                # gets emitted even for functions that don't otherwise
+                # allocate; without it the WAT references unknown
+                # globals.
+                if wat_t == "i32" and type_name not in _INLINE_I32_TYPES:
+                    self.needs_alloc = True
+                    instructions.extend(gc_shadow_push(local_idx))
                 current_env = current_env.push(type_name, local_idx)
             elif isinstance(stmt, ast.ExprStmt):
                 stmt_instrs = self.translate_expr(stmt.expr, current_env)
