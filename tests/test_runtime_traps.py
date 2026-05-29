@@ -2194,7 +2194,7 @@ class TestHostSleepKeyboardInterrupt:
         from pathlib import Path
         api_src = (
             Path(__file__).parent.parent / "vera/codegen/api.py"
-        ).read_text()
+        ).read_text(encoding="utf-8")
 
         # The four per-host-import launder guards must be gone.  Their
         # signature was the `raise _VeraExit(130)` statement in
