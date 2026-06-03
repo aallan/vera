@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- **[#712](https://github.com/aallan/vera/issues/712)** — SHA-pinned `codecov/codecov-action` to a commit (`e79a696` = v6.0.1) instead of the floating `@v6` tag, as targeted supply-chain hardening following the Codecov → Harness acquisition (announced 2026-06-02).  An ownership change is the canonical scenario where a major-version tag could be repointed by the new owner and silently flow into CI; pinning to a reviewed commit closes that, while Dependabot continues to propose bumps under review.  Coverage is unaffected either way — the 80% gate is the on-runner `pytest --cov-fail-under=80` and the upload is `fail_ci_if_error: false`.  Also corrected a stale `SECURITY.md` cross-reference that attributed action SHA-pinning to #390 (a closed Python dependency-lockfile issue).
+
 ## [0.0.160] - 2026-05-29
 
 ### Changed
