@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.164] - 2026-06-10
+
+### Added
+
+- **[#222](https://github.com/aallan/vera/issues/222) Phase D** — `vera lsp` now serves language features over the obligation core: `publishDiagnostics` on open/change (parse, type-check, and verification diagnostics, plus a synthesised per-function verification-tier Hint — "Tier 1 — all contracts proven by Z3" / "Tier 3 — N of M obligations fall back to runtime checks" — computed from the obligation stream and suppressed for functions with violated obligations); hover showing the type of the smallest expression span under the cursor; go-to-definition on `@T.n` jumping to the parameter it names (De Bruijn most-recent-first via `slots.slot_table`; references binding through `let`/`match` return no definition — signature-level scope, with full binding resolution tracked by [#181](https://github.com/aallan/vera/issues/181)); and typed-hole completion listing the in-scope bindings with their types.  All verification is serialised through one warm `VerificationSession` under a lock.  The checker gains opt-in artifact collection (`typecheck_with_artifacts`: a `Span`→type side-table recorded by a thin `_synth_expr` wrapper, and structured `HoleSite` records factored out of the W001 hole diagnostic) at zero cost to existing callers.  `Diagnostic` gains an optional `tier` field (surfaced in `--json` only when set); the verifier's six Tier-3 fallback warnings (E520–E525) now carry `tier=3`.
+
 ## [0.0.163] - 2026-06-10
 
 ### Added
@@ -2427,7 +2433,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.163...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.164...HEAD
+[0.0.164]: https://github.com/aallan/vera/compare/v0.0.163...v0.0.164
 [0.0.163]: https://github.com/aallan/vera/compare/v0.0.162...v0.0.163
 [0.0.162]: https://github.com/aallan/vera/compare/v0.0.161...v0.0.162
 [0.0.161]: https://github.com/aallan/vera/compare/v0.0.160...v0.0.161

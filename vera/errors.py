@@ -59,6 +59,11 @@ class Diagnostic:
     spec_ref: str = ""
     severity: str = "error"
     error_code: str = ""
+    # #222 Phase D: verification tier this diagnostic concerns, when
+    # applicable.  3 on the Tier-3 fallback warnings (E520-E525);
+    # None elsewhere.  Surfaced in --json and the LSP diagnostic
+    # payload so agents can rank edits by verification strength.
+    tier: int | None = None
 
     def format(self) -> str:
         """Format as a natural language diagnostic for LLM consumption."""
@@ -121,6 +126,8 @@ class Diagnostic:
             d["spec_ref"] = self.spec_ref
         if self.error_code:
             d["error_code"] = self.error_code
+        if self.tier is not None:
+            d["tier"] = self.tier
         return d
 
 

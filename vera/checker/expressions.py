@@ -42,6 +42,29 @@ class ExpressionsMixin:
 
     def _synth_expr(self, expr: ast.Expr, *,
                     expected: Type | None = None) -> Type | None:
+        """Synthesise an expression's type, recording it when artifact
+        collection is on (#222 Phase D).
+
+        Thin wrapper around :meth:`_synth_expr_impl` (the dispatcher):
+        every synthesis — including recursive sub-expression calls —
+        flows through here, so the ``expr_types`` side-table covers the
+        whole tree.  With collection off (``self.expr_types is None``,
+        the default), this adds a single attribute test per expression.
+        """
+        result = self._synth_expr_impl(expr, expected=expected)
+        if (
+            self.expr_types is not None
+            and result is not None
+            and expr.span is not None
+        ):
+            span = expr.span
+            self.expr_types[
+                (span.line, span.column, span.end_line, span.end_column)
+            ] = pretty_type(result)
+        return result
+
+    def _synth_expr_impl(self, expr: ast.Expr, *,
+                         expected: Type | None = None) -> Type | None:
         """Synthesise the type of an expression.  Returns None on error.
 
         When *expected* is provided, it is threaded to constructors,
@@ -591,13 +614,14 @@ class ExpressionsMixin:
     # Typed holes
     # -----------------------------------------------------------------
 
-    def _check_hole(self, expr: ast.HoleExpr, *,
-                    expected: Type | None) -> Type:
-        """Emit a hole warning with expected type and available bindings."""
-        expected_str = pretty_type(expected) if expected else "unknown"
+    def _collect_scope_bindings(self) -> list[tuple[str, str]]:
+        """All bindings in scope, innermost first, as
+        ``(slot_ref_string, pretty_type_string)`` pairs.
 
-        # Collect all bindings in scope (innermost first) for the fix hint.
-        # Each binding is (slot_ref_string, type_string).
+        Shared by the W001 hole diagnostic's fix hint and the LSP
+        typed-hole completion (#222 Phase D) — same data, two
+        renderings.
+        """
         bindings: list[tuple[str, str]] = []
         index_by_type: dict[str, int] = {}
         for scope in reversed(self.env._scopes):
@@ -607,6 +631,25 @@ class ExpressionsMixin:
                 index_by_type[tname] = idx + 1
                 bindings.append((f"@{tname}.{idx}",
                                   pretty_type(binding.resolved_type)))
+        return bindings
+
+    def _check_hole(self, expr: ast.HoleExpr, *,
+                    expected: Type | None) -> Type:
+        """Emit a hole warning with expected type and available bindings."""
+        expected_str = pretty_type(expected) if expected else "unknown"
+
+        bindings = self._collect_scope_bindings()
+
+        if self.hole_sites is not None and expr.span is not None:
+            from vera.checker.core import HoleSite
+            self.hole_sites.append(HoleSite(
+                line=expr.span.line,
+                column=expr.span.column,
+                end_line=expr.span.end_line,
+                end_column=expr.span.end_column,
+                expected=expected_str,
+                bindings=list(bindings),
+            ))
 
         if bindings:
             context = "; ".join(

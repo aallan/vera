@@ -182,6 +182,7 @@ class ContractVerifier:
         rationale: str = "",
         spec_ref: str = "",
         error_code: str = "",
+        tier: int | None = None,
     ) -> None:
         """Record a verification warning (Tier 3 fallback)."""
         loc = SourceLocation(file=self.file)
@@ -196,6 +197,7 @@ class ContractVerifier:
             spec_ref=spec_ref,
             severity="warning",
             error_code=error_code,
+            tier=tier,
         ))
 
     def _get_source_line(self, line: int) -> str:
@@ -526,6 +528,7 @@ class ContractVerifier:
                                   "cannot be represented in the SMT solver.",
                         spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E520",
+                        tier=3,
                     )
                 else:
                     self.summary.tier1_verified += 1
@@ -641,6 +644,7 @@ class ContractVerifier:
                                   "quantifiers).",
                         spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E521",
+                        tier=3,
                     )
                     continue
                 assumptions.append(z3_pre)
@@ -717,6 +721,7 @@ class ContractVerifier:
                                   "generic calls).",
                         spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E522",
+                        tier=3,
                     )
                     continue
 
@@ -739,6 +744,7 @@ class ContractVerifier:
                                   "constructs that cannot be translated to SMT.",
                         spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E523",
+                        tier=3,
                     )
                     continue
 
@@ -775,6 +781,7 @@ class ContractVerifier:
                                   "the timeout was reached.",
                         spec_ref='Chapter 6, Section 6.8 "Summary of Verification Tiers"',
                         error_code="E524",
+                        tier=3,
                     )
 
         # 8. Handle decreases clauses — attempt verification
@@ -817,6 +824,7 @@ class ContractVerifier:
                                   "to Z3.",
                         spec_ref='Chapter 5, Section 5.6.1 "Decreases Clauses"',
                         error_code="E525",
+                        tier=3,
                     )
 
         # 9. Verify where-block functions

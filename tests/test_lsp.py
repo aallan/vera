@@ -267,3 +267,202 @@ class TestServerEndToEnd:
             text_document=lsp.TextDocumentIdentifier(uri="file:///x.vera"),
         ))
         assert server.store.get("file:///x.vera") is None
+
+
+# =====================================================================
+# Phase D — language features over the obligation core
+# =====================================================================
+
+from vera.lsp.features import (  # noqa: E402
+    analyze,
+    completion_at,
+    definition_at,
+    hover_at,
+    to_lsp_diagnostics,
+)
+from vera.obligations.session import VerificationSession  # noqa: E402
+
+FEATURE_SRC = (
+    "public fn dec(@Nat, @Nat -> @Nat)\n"
+    "  requires(@Nat.0 >= 1)\n"
+    "  ensures(true)\n"
+    "  effects(pure)\n"
+    "{\n"
+    "  let @Nat = @Nat.0 - 1;\n"
+    "  ?\n"
+    "}\n"
+)
+
+
+def _analyze(src: str) -> object:
+    return analyze(VerificationSession(), "file:///t.vera", src)
+
+
+class TestAnalyzeDiagnostics:
+    def test_parse_error_yields_single_diagnostic(self) -> None:
+        a = _analyze("public fn broken(")
+        assert len(a.diagnostics) == 1
+        assert a.diagnostics[0].severity == "error"
+        assert a.program is None
+        lsp_diags = to_lsp_diagnostics(a)
+        assert len(lsp_diags) == 1
+        assert lsp_diags[0].source == "vera"
+
+    def test_type_errors_short_circuit_verification(self) -> None:
+        a = _analyze(
+            "public fn f(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            '{ "nope" }\n'
+        )
+        assert any(d.severity == "error" for d in a.diagnostics)
+        assert a.obligations == []
+
+    def test_tier3_warning_carries_tier_in_data(self) -> None:
+        a = _analyze(
+            "public forall<T> fn ident(@T -> @T)\n"
+            "  requires(true)\n"
+            "  ensures(@T.result == @T.0)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @T.0\n"
+            "}\n"
+        )
+        lsp_diags = to_lsp_diagnostics(a)
+        e520 = [d for d in lsp_diags if d.code == "E520"]
+        assert len(e520) == 1
+        assert e520[0].data == {"tier": 3}
+
+    def test_tier_hint_synthesised_per_function(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        hints = [
+            d for d in to_lsp_diagnostics(a) if d.code == "tier"
+        ]
+        assert len(hints) == 1
+        assert hints[0].severity == lsp.DiagnosticSeverity.Hint
+        assert "Tier 1" in hints[0].message
+        assert "dec" in hints[0].message
+
+    def test_violated_function_gets_no_cheerful_hint(self) -> None:
+        a = _analyze(
+            "public fn bad(@Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(@Int.result > @Int.0)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0\n"
+            "}\n"
+        )
+        codes = [d.code for d in to_lsp_diagnostics(a)]
+        assert "tier" not in codes
+        assert any(d.severity == "error" for d in a.diagnostics)
+
+
+class TestHover:
+    def test_hover_reports_smallest_enclosing_expression_type(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        # line 6 (0-based 5), inside `@Nat.0` of the subtraction.
+        h = hover_at(a, lsp.Position(line=5, character=14))
+        assert h is not None
+        assert "Nat" in h.contents.value
+
+    def test_hover_off_any_expression_is_none(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        # Line 4 (`  effects(pure)`) records no expression types.
+        assert hover_at(a, lsp.Position(line=3, character=4)) is None
+
+    def test_hover_on_parse_error_document_is_none(self) -> None:
+        a = _analyze("public fn broken(")
+        assert hover_at(a, lsp.Position(line=0, character=2)) is None
+
+
+class TestDefinition:
+    def test_slot_zero_jumps_to_most_recent_parameter(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        # @Nat.0 in the requires clause (line 2, 0-based 1).
+        loc = definition_at(a, lsp.Position(line=1, character=13))
+        assert loc is not None
+        assert loc.range.start.line == 0
+        # De Bruijn: @Nat.0 = the SECOND parameter (most recent),
+        # which starts after "public fn dec(@Nat, " — not the first.
+        assert loc.range.start.character > len("public fn dec(")
+
+    def test_let_bound_index_has_no_signature_definition(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        # On line 6 the let pushes a third @Nat; an @Nat.2 reference
+        # would name a parameter, but @Nat indices beyond the param
+        # count (e.g. a hypothetical @Nat.5) resolve nowhere.  Use the
+        # hole line's bindings to pick an index >= param count via a
+        # crafted source instead:
+        src = (
+            "public fn g(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{\n"
+            "  let @Int = @Int.0 + 1;\n"
+            "  @Int.0 + @Int.1\n"
+            "}\n"
+        )
+        b = analyze(VerificationSession(), "file:///g.vera", src)
+        # @Int.0 on line 5 binds to the LET (index 0 = most recent =
+        # the let binding, beyond the single parameter's table entry
+        # only when index >= len(positions) — here positions has 1
+        # entry so @Int.1 (the param) resolves, @Int.0 (the let) does
+        # not... slot_table maps params only: @Int.0 -> positions[0]
+        # exists (the param is the only table entry, slot-0-first
+        # AFTER the let shifts indices at runtime).  Signature-level
+        # resolution is approximate for body references by design;
+        # this test pins the documented behaviour for an
+        # out-of-range index:
+        loc = definition_at(b, lsp.Position(line=4, character=12))
+        # @Int.1 with one param: positions has len 1, index 1 >= 1 →
+        # None (binds through the let-shifted environment).
+        assert loc is None
+
+    def test_position_not_on_slot_is_none(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        assert definition_at(a, lsp.Position(line=4, character=0)) is None
+
+    def test_slot_in_where_block_resolves_to_inner_params(self) -> None:
+        """A slot inside a `where` function names the INNER function's
+        parameters — the innermost-enclosing-fn rule, not the first
+        top-level match."""
+        src = (
+            "public fn outer(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{\n"
+            "  helper(@Int.0)\n"
+            "}\n"
+            "where {\n"
+            "  fn helper(@Int -> @Int)\n"
+            "    requires(true) ensures(true) effects(pure)\n"
+            "  {\n"
+            "    @Int.0 + 1\n"
+            "  }\n"
+            "}\n"
+        )
+        a = analyze(VerificationSession(), "file:///w.vera", src)
+        # @Int.0 inside helper's body (line 10, 0-based 9).
+        loc = definition_at(a, lsp.Position(line=9, character=6))
+        assert loc is not None
+        # Must land on helper's signature (line 7, 0-based 6) — not
+        # outer's (line 0).
+        assert loc.range.start.line == 6
+
+
+class TestHoleCompletion:
+    def test_completion_inside_hole_lists_bindings(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        c = completion_at(a, lsp.Position(line=6, character=2))
+        assert c is not None
+        labels = [i.label for i in c.items]
+        assert labels[0] == "@Nat.0"
+        assert len(labels) == 3  # two params + the let binding
+        assert all(i.detail == "Nat" for i in c.items)
+
+    def test_completion_immediately_after_hole(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        c = completion_at(a, lsp.Position(line=6, character=3))
+        assert c is not None and c.items
+
+    def test_completion_away_from_hole_is_none(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        assert completion_at(a, lsp.Position(line=0, character=0)) is None

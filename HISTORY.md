@@ -308,6 +308,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.161 | 10 Jun | Proof obligations reified as first-class records with a warm-Z3 `VerificationSession`, the semantic core for the LSP server ([#222](https://github.com/aallan/vera/issues/222) Phase A). |
 | v0.0.162 | 10 Jun | Incremental verification — unchanged functions replay cached obligations instead of re-entering Z3 ([#222](https://github.com/aallan/vera/issues/222) Phase B). |
 | v0.0.163 | 10 Jun | `vera lsp` serves LSP over stdio — transport skeleton, document sync, and the coordinate-conversion layer ([#222](https://github.com/aallan/vera/issues/222) Phase C). |
+| v0.0.164 | 10 Jun | LSP language features — tier-annotated diagnostics, type hover, slot go-to-definition, and typed-hole completion over the obligation core ([#222](https://github.com/aallan/vera/issues/222) Phase D). |
 
 ---
 
@@ -348,4 +349,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 163 tagged releases, 61 active development days.**
+Total: **810+ commits, 164 tagged releases, 61 active development days.**
