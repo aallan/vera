@@ -466,3 +466,117 @@ class TestHoleCompletion:
     def test_completion_away_from_hole_is_none(self) -> None:
         a = _analyze(FEATURE_SRC)
         assert completion_at(a, lsp.Position(line=0, character=0)) is None
+
+
+# =====================================================================
+# Phase E — vera/speculativeEdit proof delta
+# =====================================================================
+
+from vera.lsp.extensions import proof_delta, speculative_edit  # noqa: E402
+
+SPEC_BASE = (
+    "public fn f(@Nat -> @Nat)\n"
+    "  requires(@Nat.0 >= 1)\n"
+    "  ensures(true)\n"
+    "  effects(pure)\n"
+    "{\n"
+    "  @Nat.0 - 1\n"
+    "}\n"
+)
+
+
+class TestSpeculativeEdit:
+    def _baseline(self) -> tuple[VerificationSession, list[object]]:
+        session = VerificationSession()
+        result = session.verify_source(SPEC_BASE, file="file:///s.vera")
+        assert result.ok
+        return session, result.obligations
+
+    def test_identical_text_reports_all_unchanged(self) -> None:
+        session, baseline = self._baseline()
+        out = speculative_edit(
+            session, baseline, "file:///s.vera", SPEC_BASE,
+        )
+        assert out["ok"] is True
+        assert out["proof_delta"]["unchanged"] == len(baseline)
+        assert out["proof_delta"]["newly_undischarged"] == []
+        assert out["proof_delta"]["newly_discharged"] == []
+        assert out["diagnostics"] == 0
+
+    def test_breaking_edit_reports_newly_undischarged(self) -> None:
+        """Weakening the precondition makes the @Nat subtraction
+        violated — the keeps/drops signal the #222 design notes call
+        the one thing no generic language server can produce."""
+        session, baseline = self._baseline()
+        broken = SPEC_BASE.replace(
+            "requires(@Nat.0 >= 1)", "requires(true)",
+        )
+        out = speculative_edit(
+            session, baseline, "file:///s.vera", broken,
+        )
+        und = out["proof_delta"]["newly_undischarged"]
+        assert any(
+            i["kind"] == "nat_sub" and i["status_after"] == "violated"
+            for i in und
+        )
+        # The edit must NOT have been committed anywhere — the session
+        # still replays the ORIGINAL source fully from cache.
+        again = session.verify_source(SPEC_BASE, file="file:///s.vera")
+        assert again.ok
+        assert session.last_run_stats.replayed_fns >= 1
+
+    def test_strengthening_edit_reports_newly_discharged(self) -> None:
+        """The reverse direction: starting from the weak (violated)
+        state, the speculative strong contract discharges the
+        subtraction obligation."""
+        weak = SPEC_BASE.replace("requires(@Nat.0 >= 1)", "requires(true)")
+        session = VerificationSession()
+        result = session.verify_source(weak, file="file:///w.vera")
+        baseline = result.obligations
+        out = speculative_edit(
+            session, baseline, "file:///w.vera", SPEC_BASE,
+        )
+        dis = out["proof_delta"]["newly_discharged"]
+        assert any(i["kind"] == "nat_sub" for i in dis)
+
+    def test_parse_error_reports_not_ok(self) -> None:
+        session, baseline = self._baseline()
+        out = speculative_edit(
+            session, baseline, "file:///s.vera", "public fn broken(",
+        )
+        assert out["ok"] is False
+        assert out["proof_delta"] is None
+        assert out["diagnostics"] >= 1
+
+    def test_type_error_reports_not_ok_with_count(self) -> None:
+        session, baseline = self._baseline()
+        bad = SPEC_BASE.replace("@Nat.0 - 1", '"not a nat"')
+        out = speculative_edit(
+            session, baseline, "file:///s.vera", bad,
+        )
+        assert out["ok"] is False
+        assert out["proof_delta"] is None
+        assert out["diagnostics"] >= 1
+
+    def test_deleted_function_reports_removed(self) -> None:
+        session, baseline = self._baseline()
+        out = speculative_edit(
+            session, baseline, "file:///s.vera",
+            "public fn g(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @Int.0 }\n",
+        )
+        # All of f's obligations disappear; g's trivial contracts are
+        # new discharges.
+        assert len(out["proof_delta"]["removed"]) == len(baseline)
+        assert out["proof_delta"]["newly_discharged"]
+
+    def test_proof_delta_pure_function(self) -> None:
+        """proof_delta is a pure set-difference over identity keys."""
+        session, baseline = self._baseline()
+        delta = proof_delta(baseline, baseline)
+        assert delta["unchanged"] == len(baseline)
+        assert not delta["removed"]
+        delta2 = proof_delta(baseline, [])
+        assert len(delta2["removed"]) == len(baseline)
+        assert delta2["unchanged"] == 0

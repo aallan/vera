@@ -111,6 +111,16 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | ` ├ json_serde.py` | 209 | | WASM memory marshalling for Json ADT | |
 | ` └ html_serde.py` | 191 | | WASM memory marshalling for HtmlNode ADT | |
 | `markdown.py` | 651 | Compile | Python Markdown parser/renderer (§9.7.3 subset) | `parse_markdown()`, `render_markdown()`, `has_heading()`, `has_code_block()`, `extract_code_blocks()` |
+| `obligations/` | 637 | Verify | Reified proof obligations + warm incremental session (#222 A/B) | `ProofObligation`, `VerificationSession` |
+| `  core.py` | 109 | | ProofObligation record: identity (content_key) + discharge outcome | |
+| `  cache.py` | 219 | | Invalidation keys (structural/callee/context hashes), DischargeCache | |
+| `  session.py` | 252 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order | |
+| `lsp/` | 829 | Serve | Language Server Protocol over stdio (#222 C/D/E) | `create_server()`, `vera lsp` |
+| `  convert.py` | 144 | | Span/SourceLocation/LSP coordinate conversions, UTF-16 transcoding | |
+| `  documents.py` | 69 | | URI-keyed document store, full-text sync | |
+| `  features.py` | 292 | | Diagnostics + tier hints, hover, slot goto, hole completion | |
+| `  extensions.py` | 146 | | vera/speculativeEdit proof-delta | |
+| `  server.py` | 169 | | pygls wiring, single-session serialisation | |
 | `codegen/` | 6,618 | Compile | Codegen orchestrator (mixin package) | `compile()`, `execute()` |
 | `  api.py` | 2,288 | | Public API, dataclasses, host bindings, `execute()` | |
 | `  core.py` | 711 | | CodeGenerator class, orchestration, ability op rewriting (Pass 1.6) | |
@@ -679,7 +689,6 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 |-----------|-----|---------|
 | **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | [#294](https://github.com/aallan/vera/issues/294) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
-| **No LSP server** | No IDE integration or structured code intelligence for agents | [#222](https://github.com/aallan/vera/issues/222) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |
 | **No date/time, crypto, CSV** | Standard library limited to core types, strings, and arrays | [#233](https://github.com/aallan/vera/issues/233), [#235](https://github.com/aallan/vera/issues/235), [#236](https://github.com/aallan/vera/issues/236) |
 | **Http: GET/POST only** | No custom headers, no PUT/DELETE/PATCH, no status codes, no timeouts, no streaming, no cookies | [#351](https://github.com/aallan/vera/issues/351)–[#356](https://github.com/aallan/vera/issues/356) |

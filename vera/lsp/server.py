@@ -29,6 +29,7 @@ from pygls.lsp.server import LanguageServer
 
 from vera import __version__
 from vera.lsp.documents import DocumentStore
+from vera.lsp.extensions import speculative_edit
 from vera.lsp.features import (
     Analysis,
     analyze,
@@ -140,6 +141,25 @@ def create_server() -> VeraLanguageServer:
         if analysis is None:
             return None
         return completion_at(analysis, params.position)
+
+    @server.feature("vera/speculativeEdit")
+    def vera_speculative_edit(ls: Any, params: Any) -> dict[str, Any]:
+        """#222 Phase E: proof-delta for an in-memory edit.
+
+        The speculative verify shares the warm session (and its
+        discharge cache — pre-warming, by design) under the same lock,
+        but never touches the per-URI analysis table or published
+        diagnostics: the canonical editor state is unchanged.
+        """
+        uri = getattr(params, "uri", None) or params.get("uri")
+        text = getattr(params, "text", None) or params.get("text")
+        baseline_analysis = server.analyses.get(uri)
+        baseline = (
+            baseline_analysis.obligations
+            if baseline_analysis is not None else []
+        )
+        with server.analysis_lock:
+            return speculative_edit(server.session, baseline, uri, text)
 
     return server
 
