@@ -440,3 +440,29 @@ class TestHoleCompletion:
     def test_completion_away_from_hole_is_none(self) -> None:
         a = _analyze(FEATURE_SRC)
         assert completion_at(a, lsp.Position(line=0, character=0)) is None
+
+    def test_slot_in_where_block_resolves_to_inner_params(self) -> None:
+        """A slot inside a `where` function names the INNER function's
+        parameters — the innermost-enclosing-fn rule, not the first
+        top-level match."""
+        src = (
+            "public fn outer(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{\n"
+            "  helper(@Int.0)\n"
+            "}\n"
+            "where {\n"
+            "  fn helper(@Int -> @Int)\n"
+            "    requires(true) ensures(true) effects(pure)\n"
+            "  {\n"
+            "    @Int.0 + 1\n"
+            "  }\n"
+            "}\n"
+        )
+        a = analyze(VerificationSession(), "file:///w.vera", src)
+        # @Int.0 inside helper's body (line 10, 0-based 9).
+        loc = definition_at(a, lsp.Position(line=9, character=6))
+        assert loc is not None
+        # Must land on helper's signature (line 7, 0-based 6) — not
+        # outer's (line 0).
+        assert loc.range.start.line == 6

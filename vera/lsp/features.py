@@ -213,24 +213,37 @@ def definition_at(
     line1 = position.line + 1
     col1 = analysis.index.utf16_to_cp(position.line, position.character) + 1
 
-    slot: ast.SlotRef | None = None
+    # Resolve against the INNERMOST function containing the cursor —
+    # a slot inside a `where`-block function names that function's
+    # parameters, not the enclosing top-level function's.
     enclosing: ast.FnDecl | None = None
+    enclosing_size: tuple[int, int] | None = None
     for tld in analysis.program.declarations:
-        decl = tld.decl
-        if not isinstance(decl, ast.FnDecl):
-            continue
-        for node in walk_nodes(decl):
+        for node in walk_nodes(tld.decl):
             if (
-                isinstance(node, ast.SlotRef)
+                isinstance(node, ast.FnDecl)
                 and node.span is not None
                 and _span_contains(node.span, line1, col1)
             ):
-                slot = node
-                enclosing = decl
-                break
-        if slot is not None:
+                size = (
+                    node.span.end_line - node.span.line,
+                    node.span.end_column - node.span.column,
+                )
+                if enclosing_size is None or size < enclosing_size:
+                    enclosing, enclosing_size = node, size
+    if enclosing is None:
+        return None
+
+    slot: ast.SlotRef | None = None
+    for node in walk_nodes(enclosing):
+        if (
+            isinstance(node, ast.SlotRef)
+            and node.span is not None
+            and _span_contains(node.span, line1, col1)
+        ):
+            slot = node
             break
-    if slot is None or enclosing is None:
+    if slot is None:
         return None
 
     table = slot_table(enclosing.params)
