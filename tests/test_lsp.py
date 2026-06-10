@@ -421,26 +421,6 @@ class TestDefinition:
         a = _analyze(FEATURE_SRC)
         assert definition_at(a, lsp.Position(line=4, character=0)) is None
 
-
-class TestHoleCompletion:
-    def test_completion_inside_hole_lists_bindings(self) -> None:
-        a = _analyze(FEATURE_SRC)
-        c = completion_at(a, lsp.Position(line=6, character=2))
-        assert c is not None
-        labels = [i.label for i in c.items]
-        assert labels[0] == "@Nat.0"
-        assert len(labels) == 3  # two params + the let binding
-        assert all(i.detail == "Nat" for i in c.items)
-
-    def test_completion_immediately_after_hole(self) -> None:
-        a = _analyze(FEATURE_SRC)
-        c = completion_at(a, lsp.Position(line=6, character=3))
-        assert c is not None and c.items
-
-    def test_completion_away_from_hole_is_none(self) -> None:
-        a = _analyze(FEATURE_SRC)
-        assert completion_at(a, lsp.Position(line=0, character=0)) is None
-
     def test_slot_in_where_block_resolves_to_inner_params(self) -> None:
         """A slot inside a `where` function names the INNER function's
         parameters — the innermost-enclosing-fn rule, not the first
@@ -466,3 +446,23 @@ class TestHoleCompletion:
         # Must land on helper's signature (line 7, 0-based 6) — not
         # outer's (line 0).
         assert loc.range.start.line == 6
+
+
+class TestHoleCompletion:
+    def test_completion_inside_hole_lists_bindings(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        c = completion_at(a, lsp.Position(line=6, character=2))
+        assert c is not None
+        labels = [i.label for i in c.items]
+        assert labels[0] == "@Nat.0"
+        assert len(labels) == 3  # two params + the let binding
+        assert all(i.detail == "Nat" for i in c.items)
+
+    def test_completion_immediately_after_hole(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        c = completion_at(a, lsp.Position(line=6, character=3))
+        assert c is not None and c.items
+
+    def test_completion_away_from_hole_is_none(self) -> None:
+        a = _analyze(FEATURE_SRC)
+        assert completion_at(a, lsp.Position(line=0, character=0)) is None
