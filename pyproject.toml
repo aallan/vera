@@ -1,6 +1,6 @@
 [project]
 name = "vera"
-version = "0.0.162"
+version = "0.0.163"
 description = "Vera: a programming language designed for LLMs, with full contracts, algebraic effects, and typed slot references"
 readme = "README.md"
 license = "MIT"
@@ -46,6 +46,13 @@ Issues = "https://github.com/aallan/vera/issues"
 Changelog = "https://github.com/aallan/vera/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
+# Both pure-Python; not gated by check_wheel_availability.py (which
+# reads project.dependencies only — optional extras are exempt by
+# design, see README §Supported platforms).
+lsp = [
+    "pygls>=2.0",
+    "lsprotocol>=2023.0",
+]
 dev = [
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
@@ -54,6 +61,11 @@ dev = [
     "ruff>=0.15.16",
     "pre-commit>=4.6.0",
     "pip-licenses>=5.5.5",
+    # Self-referential extra: dev pulls in [lsp] so CI's single
+    # `pip install -e ".[dev]"` can run tests/test_lsp.py without a
+    # second pin list to keep in sync (PEP 508 extras self-reference;
+    # supported by pip >= 21.2 and uv).
+    "vera[lsp]",
 ]
 
 [project.scripts]
@@ -105,6 +117,19 @@ ignore_missing_imports = true
 # wasmtime does not ship complete type stubs.
 module = "wasmtime.*"
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# pygls ships partial typing; lsprotocol is typed but the override is
+# defensive for transitive attrs.  CI runs mypy strict over vera/lsp/.
+module = ["pygls.*", "lsprotocol.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# pygls' @server.feature(...) decorator is untyped, which strict mode
+# rejects on every handler registration.  Same narrow-exception shape
+# as the vera.transform override above.
+module = "vera.lsp.server"
+disallow_untyped_decorators = false
 
 [[tool.mypy.overrides]]
 # Checker mixin classes reference attributes (self.env, self._error, etc.)

@@ -1125,6 +1125,8 @@ Commands:
     run [--fn name]      Compile and execute a .vera file
     ast [--json]         Parse a .vera file and print the AST
     fmt [--write|--check] Format a .vera file to canonical form
+    lsp                  Serve the Language Server Protocol over stdio
+                         (needs the [lsp] extra: pip install -e ".[lsp]")
 
 Options:
     --json               Output machine-readable JSON diagnostics
@@ -1148,6 +1150,33 @@ def cmd_version() -> int:
     return 0
 
 
+def cmd_lsp() -> int:
+    """Serve the Language Server Protocol over stdio (#222).
+
+    The transport dependencies live in the optional ``[lsp]`` extra so
+    the base install stays pure-wheel-minimal; the guard below turns a
+    missing extra into an actionable message instead of a traceback.
+    """
+    try:
+        from vera.lsp.server import main as lsp_main
+    except ModuleNotFoundError as exc:
+        # Only a missing transport dependency means "extra not
+        # installed" — any other import failure inside vera.lsp is a
+        # real bug and must surface as its traceback, not be
+        # misreported as a packaging problem.
+        missing = (exc.name or "").split(".")[0]
+        if missing not in {"pygls", "lsprotocol"}:
+            raise
+        print(
+            "Error: the LSP server needs the optional [lsp] extra.\n"
+            '  Install it with: pip install -e ".[lsp]"',
+            file=sys.stderr,
+        )
+        return 1
+    lsp_main()
+    return 0
+
+
 def main() -> None:
     args = sys.argv[1:]
 
@@ -1157,6 +1186,11 @@ def main() -> None:
             print(USAGE, file=sys.stderr)
             sys.exit(1)
         sys.exit(cmd_version())
+
+    # `lsp` also takes no file argument — it serves LSP over stdio
+    # until the client disconnects (#222 Phase C).
+    if args[0] == "lsp":
+        sys.exit(cmd_lsp())
 
     if len(args) < 2:
         print(USAGE, file=sys.stderr)
