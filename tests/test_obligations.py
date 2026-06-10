@@ -287,6 +287,42 @@ class TestObligationKinds:
         # Same text, different columns → distinct identities.
         assert subs[0].content_key() != subs[1].content_key()
 
+    def test_call_pre_keyed_by_call_site_not_callee_contract(self) -> None:
+        """Two call sites violating the same callee precondition must be
+        distinct obligations: the span comes from the call site, the
+        expression text from the callee's contract, and the error code
+        matches _report_call_violation's E501.
+        """
+        source = (
+            "public fn need_pos(@Int -> @Int)\n"
+            "  requires(@Int.0 > 0)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0\n"
+            "}\n"
+            "\n"
+            "public fn caller(@Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  need_pos(0 - 1) + need_pos(0 - 2)\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        call_pres = [o for o in result.obligations if o.kind == "call_pre"]
+        assert len(call_pres) == 2
+        assert all(o.status == "violated" for o in call_pres)
+        assert all(o.error_code == "E501" for o in call_pres)
+        assert all(o.fn_name == "caller" for o in call_pres)
+        # Same contract text, but distinct identities via call-site spans.
+        assert call_pres[0].expr_text == call_pres[1].expr_text
+        assert call_pres[0].content_key() != call_pres[1].content_key()
+        # Spans point at the caller's body line, not the callee contract
+        # (line 2 of the source).
+        assert all(o.line != 2 for o in call_pres)
+
     def test_content_key_stable_across_runs(self) -> None:
         source = (
             "public fn f(@Nat -> @Nat)\n"

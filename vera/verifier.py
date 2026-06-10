@@ -218,6 +218,7 @@ class ContractVerifier:
         *,
         error_code: str = "",
         counterexample: dict[str, str] | None = None,
+        span_node: ast.Node | None = None,
     ) -> None:
         """Reify one obligation at its discharge site.
 
@@ -226,9 +227,16 @@ class ContractVerifier:
         state.  The summary counters and diagnostics remain the source
         of truth for behaviour; obligations mirror them one-to-one
         (asserted by the differential tests in test_obligations.py).
+
+        *span_node* overrides where the obligation is located when that
+        differs from where its expression text comes from — call-site
+        preconditions render the callee's contract expression but are
+        located at the call site, so two calls violating the same
+        precondition stay distinct obligations.
         """
-        line = node.span.line if node.span else 0
-        column = node.span.column if node.span else 0
+        loc = span_node if span_node is not None else node
+        line = loc.span.line if loc.span else 0
+        column = loc.span.column if loc.span else 0
         self.obligations.append(ProofObligation(
             fn_name=fn_name,
             kind=kind,
@@ -655,10 +663,15 @@ class ContractVerifier:
             # SMT layer's _translate_call and are not yet enumerated
             # (Phase B extends the SMT layer to record successes for
             # the discharge cache).  Summary counters are untouched
-            # here, mirroring the existing bookkeeping.
+            # here, mirroring the existing bookkeeping.  The span comes
+            # from the CALL SITE (not the callee's contract node) so
+            # two calls violating the same precondition remain distinct
+            # obligations; E501 matches _report_call_violation.
             self._record_obligation(
                 decl.name, "call_pre", v.precondition, "violated",
+                error_code="E501",
                 counterexample=v.counterexample,
+                span_node=v.call_node,
             )
             self._report_call_violation(
                 decl, v.callee_name, v.call_node,

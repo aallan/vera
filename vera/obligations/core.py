@@ -94,17 +94,16 @@ def expr_text_for(node: ast.Expr | ast.Contract) -> str:
     """Render the obligation's expression for identity / display.
 
     Contracts wrap their predicate expression(s); bare expressions
-    (subtraction sites) format directly.  Falls back to the node class
-    name for shapes ``format_expr`` cannot render — identity hashing
-    still works because the span disambiguates.
+    (subtraction sites) format directly.  ``format_expr`` is total —
+    it ends in a ``"<expr>"`` fallback — so no defensive guard is
+    needed; the class-name fallback below covers only non-Expr
+    contract shapes (``Invariant``, which never reaches the verifier's
+    function-contract path today).
     """
-    try:
-        if isinstance(node, ast.Requires | ast.Ensures):
-            return ast.format_expr(node.expr)
-        if isinstance(node, ast.Decreases):
-            return ", ".join(ast.format_expr(e) for e in node.exprs)
-        if isinstance(node, ast.Expr):
-            return ast.format_expr(node)
-    except Exception:  # pragma: no cover — format_expr is total today
-        pass
-    return type(node).__name__  # pragma: no cover — non-Expr contracts
+    if isinstance(node, ast.Requires | ast.Ensures):
+        return ast.format_expr(node.expr)
+    if isinstance(node, ast.Decreases):
+        return ", ".join(ast.format_expr(e) for e in node.exprs)
+    if isinstance(node, ast.Expr):
+        return ast.format_expr(node)
+    return type(node).__name__  # pragma: no cover — Invariant-only path
