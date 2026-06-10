@@ -316,12 +316,17 @@ class TestObligationKinds:
         assert all(o.status == "violated" for o in call_pres)
         assert all(o.error_code == "E501" for o in call_pres)
         assert all(o.fn_name == "caller" for o in call_pres)
-        # Same contract text, but distinct identities via call-site spans.
-        assert call_pres[0].expr_text == call_pres[1].expr_text
+        # Same contract text (the callee's precondition, rendered by
+        # format_expr without decoration), distinct identities via
+        # call-site spans.
+        assert call_pres[0].expr_text == "@Int.0 > 0"
+        assert call_pres[1].expr_text == "@Int.0 > 0"
         assert call_pres[0].content_key() != call_pres[1].content_key()
-        # Spans point at the caller's body line, not the callee contract
-        # (line 2 of the source).
-        assert all(o.line != 2 for o in call_pres)
+        # Both spans pin the caller's body line (line 14, the two calls)
+        # — not line 2, where the callee's contract lives — and the two
+        # call sites are distinguished by column.
+        assert [o.line for o in call_pres] == [14, 14]
+        assert call_pres[0].column != call_pres[1].column
 
     def test_content_key_stable_across_runs(self) -> None:
         source = (
