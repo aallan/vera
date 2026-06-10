@@ -459,14 +459,30 @@ class TestIncrementalInvalidation:
         """Identical source under a different file name is a different
         program for caching purposes: the file is baked into every
         cached diagnostic's location, so nothing may replay across
-        file boundaries."""
+        file boundaries.
+
+        The source deliberately violates a postcondition so each run
+        produces at least one diagnostic — otherwise the location-file
+        assertion below would be vacuously true over an empty list.
+        """
+        source = self.BASE.replace(
+            "ensures(@Int.result >= 0)", "ensures(@Int.result < 0)", 1,
+        )
         session = VerificationSession()
-        session.verify_source(self.BASE, file="prog_a.vera")
+        first = session.verify_source(source, file="prog_a.vera")
         assert session.last_run_stats.verified_fns == 2
-        result = session.verify_source(self.BASE, file="prog_b.vera")
+        assert len(first.verify_diagnostics) > 0
+        assert all(
+            d.location.file == "prog_a.vera"
+            for d in first.verify_diagnostics
+        )
+        result = session.verify_source(source, file="prog_b.vera")
         assert session.last_run_stats.verified_fns == 2
         assert session.last_run_stats.replayed_fns == 0
-        # And the second program's output carries its own file name.
+        # Non-vacuous: the violated ensures guarantees a diagnostic,
+        # and it must carry the SECOND file's name — a stale replay
+        # from prog_a would surface here as a prog_a.vera location.
+        assert len(result.verify_diagnostics) > 0
         assert all(
             d.location.file == "prog_b.vera"
             for d in result.verify_diagnostics
