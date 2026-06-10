@@ -450,19 +450,27 @@ class TestIncrementalInvalidation:
         edited = with_adt.replace(
             "MkBox(Int)", "MkBox(Int, Int)",
         )
-        session.verify_source(edited)
+        result = session.verify_source(edited)
         assert session.last_run_stats.verified_fns == 2
         assert session.last_run_stats.replayed_fns == 0
+        self._assert_matches_cold(edited, result)
 
     def test_cross_program_no_stale_bleed(self) -> None:
-        """Same function name, different program: the structural hash
-        differs, so nothing replays across unrelated programs."""
+        """Identical source under a different file name is a different
+        program for caching purposes: the file is baked into every
+        cached diagnostic's location, so nothing may replay across
+        file boundaries."""
         session = VerificationSession()
-        session.verify_source(self.BASE)
-        other = self.BASE.replace("helper(@Int.0)", "helper(@Int.0 + 1)")
-        result = session.verify_source(other)
-        assert session.last_run_stats.verified_fns >= 1
-        self._assert_matches_cold(other, result)
+        session.verify_source(self.BASE, file="prog_a.vera")
+        assert session.last_run_stats.verified_fns == 2
+        result = session.verify_source(self.BASE, file="prog_b.vera")
+        assert session.last_run_stats.verified_fns == 2
+        assert session.last_run_stats.replayed_fns == 0
+        # And the second program's output carries its own file name.
+        assert all(
+            d.location.file == "prog_b.vera"
+            for d in result.verify_diagnostics
+        )
 
     def test_timeout_outcomes_are_never_cached(
         self, monkeypatch: pytest.MonkeyPatch,

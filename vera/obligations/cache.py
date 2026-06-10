@@ -134,12 +134,18 @@ def program_context_hash(
     program: ast.Program,
     timeout_ms: int,
     file: str | None,
-    resolved_module_reprs: tuple[str, ...],
+    resolved_module_keys: tuple[str, ...],
 ) -> str:
     """Hash everything outside the function bodies that verification
-    reads: non-function declarations, imported-module contract
-    surfaces, the solver timeout, and the file name (which is baked
-    into every cached diagnostic's location).
+    reads: non-function declarations, imported-module surfaces, the
+    solver timeout, and the file name (which is baked into every
+    cached diagnostic's location).
+
+    *resolved_module_keys* are stable per-module digests supplied by
+    the session — (module path, source hash) pairs rather than
+    ``repr(ResolvedModule)``, which would bake in absolute filesystem
+    paths (canonicalisation-sensitive) and the full parsed AST
+    (expensive, and derived from the source anyway).
     """
     non_fn = [
         repr(tld)
@@ -149,7 +155,7 @@ def program_context_hash(
     return _sha(
         "\x1e".join(non_fn)
         + f"\x1ftimeout={timeout_ms}\x1ffile={file!r}\x1f"
-        + "\x1e".join(resolved_module_reprs)
+        + "\x1e".join(resolved_module_keys)
     )
 
 

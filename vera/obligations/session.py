@@ -172,12 +172,22 @@ class VerificationSession:
         # is unchanged and re-verifying the rest.  Declaration order is
         # what the cold path produces, so interleaving replayed and
         # fresh slices in this order keeps the output stream identical.
+        # Module keys are (module path, source digest) — deliberately
+        # NOT repr(m): ResolvedModule carries an absolute file_path
+        # (canonicalisation-sensitive across cwd/symlinks) and the full
+        # parsed AST (expensive to repr, derived from source anyway).
+        # The source digest covers every contract/signature change a
+        # caller's verification could read.
+        import hashlib as _hashlib
+
         context_hash = program_context_hash(
             program,
             self._timeout_ms,
             file,
             tuple(
-                repr(m) for m in (resolved_modules or [])
+                ".".join(m.path) + "\x1f"
+                + _hashlib.sha256(m.source.encode("utf-8")).hexdigest()
+                for m in (resolved_modules or [])
             ),
         )
         fn_map: dict[str, ast.FnDecl] = {
