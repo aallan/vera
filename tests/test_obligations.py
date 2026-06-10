@@ -344,6 +344,178 @@ class TestObligationKinds:
             [o.content_key() for o in second.obligations]
 
 
+class TestIncrementalInvalidation:
+    """#222 Phase B: discharge cache + invalidation soundness.
+
+    The corpus-wide differential oracle (TestDifferentialOracle) already
+    pins replay == cold on every corpus program — its warm-twice leg
+    goes through the cache.  These tests pin the *invalidation rules*
+    and the cache's observability/eviction behaviour on targeted edits.
+    """
+
+    BASE = (
+        "public fn helper(@Int -> @Int)\n"
+        "  requires(@Int.0 > 0)\n"
+        "  ensures(@Int.result >= 0)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  @Int.0\n"
+        "}\n"
+        "\n"
+        "public fn top(@Int -> @Int)\n"
+        "  requires(@Int.0 > 1)\n"
+        "  ensures(true)\n"
+        "  effects(pure)\n"
+        "{\n"
+        "  helper(@Int.0)\n"
+        "}\n"
+    )
+
+    def _cold(self, source: str) -> VerifyResult:
+        program = transform(parse(source))
+        diags = typecheck(program, source)
+        assert not [d for d in diags if d.severity == "error"]
+        return verify(program, source)
+
+    def _assert_matches_cold(self, source: str, warm: object) -> None:
+        cold = self._cold(source)
+        assert _diag_fingerprint(
+            warm.verify_diagnostics,  # type: ignore[attr-defined]
+        ) == _diag_fingerprint(cold.diagnostics)
+        assert warm.summary == cold.summary  # type: ignore[attr-defined]
+        assert _obligation_fingerprint(
+            warm.obligations,  # type: ignore[attr-defined]
+        ) == _obligation_fingerprint(cold.obligations)
+
+    def test_identical_source_replays_everything(self) -> None:
+        session = VerificationSession()
+        session.verify_source(self.BASE)
+        assert session.last_run_stats.verified_fns == 2
+        result = session.verify_source(self.BASE)
+        assert session.last_run_stats.replayed_fns == 2
+        assert session.last_run_stats.verified_fns == 0
+        self._assert_matches_cold(self.BASE, result)
+
+    def test_body_edit_reverifies_only_that_function(self) -> None:
+        """Callee body change must NOT invalidate callers — bodies are
+        never read across the call boundary (only contracts are)."""
+        session = VerificationSession()
+        session.verify_source(self.BASE)
+        edited = self.BASE.replace("  @Int.0\n}", "  @Int.0 + 0\n}", 1)
+        result = session.verify_source(edited)
+        assert session.last_run_stats.verified_fns == 1  # helper only
+        assert session.last_run_stats.replayed_fns == 1  # top replays
+        self._assert_matches_cold(edited, result)
+
+    def test_callee_contract_edit_invalidates_caller(self) -> None:
+        """Callers check callee preconditions and assume callee
+        postconditions, so a contract change must re-verify them."""
+        session = VerificationSession()
+        session.verify_source(self.BASE)
+        edited = self.BASE.replace(
+            "requires(@Int.0 > 0)", "requires(@Int.0 > 2)",
+        )
+        result = session.verify_source(edited)
+        assert session.last_run_stats.verified_fns == 2
+        assert session.last_run_stats.replayed_fns == 0
+        # The tightened precondition is now violated at top's call site
+        # — proof the caller genuinely re-verified.
+        call_pres = [
+            o for o in result.obligations if o.kind == "call_pre"
+        ]
+        assert [o.status for o in call_pres] == ["violated"]
+        self._assert_matches_cold(edited, result)
+
+    def test_span_shift_invalidates_conservatively(self) -> None:
+        """Inserting a line above shifts every span; cached output
+        carries spans/source_lines, so exact replay is impossible and
+        everything must re-verify (conservative by design)."""
+        session = VerificationSession()
+        session.verify_source(self.BASE)
+        shifted = "-- a leading comment\n" + self.BASE
+        result = session.verify_source(shifted)
+        assert session.last_run_stats.verified_fns == 2
+        assert session.last_run_stats.replayed_fns == 0
+        self._assert_matches_cold(shifted, result)
+
+    def test_adt_edit_invalidates_everything(self) -> None:
+        """Non-function declarations are program context: any change
+        invalidates all functions (coarse, sound)."""
+        with_adt = (
+            "public data Box { MkBox(Int) }\n\n" + self.BASE
+        )
+        session = VerificationSession()
+        session.verify_source(with_adt)
+        assert session.last_run_stats.verified_fns == 2
+        edited = with_adt.replace(
+            "MkBox(Int)", "MkBox(Int, Int)",
+        )
+        session.verify_source(edited)
+        assert session.last_run_stats.verified_fns == 2
+        assert session.last_run_stats.replayed_fns == 0
+
+    def test_cross_program_no_stale_bleed(self) -> None:
+        """Same function name, different program: the structural hash
+        differs, so nothing replays across unrelated programs."""
+        session = VerificationSession()
+        session.verify_source(self.BASE)
+        other = self.BASE.replace("helper(@Int.0)", "helper(@Int.0 + 1)")
+        result = session.verify_source(other)
+        assert session.last_run_stats.verified_fns >= 1
+        self._assert_matches_cold(other, result)
+
+    def test_timeout_outcomes_are_never_cached(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Hard rail: a function whose slice contains a timeout-status
+        obligation must be re-verified every run, never replayed."""
+        from vera.smt import SmtContext, SmtResult
+
+        source = (
+            "public fn f(@Int -> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(@Int.result == @Int.0)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0\n"
+            "}\n"
+        )
+        original = SmtContext.check_valid
+
+        def always_unknown(
+            self: SmtContext, goal: object, assumptions: object,
+        ) -> SmtResult:
+            return SmtResult(status="unknown")
+
+        monkeypatch.setattr(SmtContext, "check_valid", always_unknown)
+        session = VerificationSession()
+        r1 = session.verify_source(source)
+        assert any(o.status == "timeout" for o in r1.obligations)
+        assert session.last_run_stats.verified_fns == 1
+
+        # Second run with the solver healthy again: the function must
+        # NOT replay the stale timeout — it re-verifies and succeeds.
+        monkeypatch.setattr(SmtContext, "check_valid", original)
+        r2 = session.verify_source(source)
+        assert session.last_run_stats.verified_fns == 1
+        assert session.last_run_stats.replayed_fns == 0
+        assert all(o.status == "verified" for o in r2.obligations)
+
+    def test_cache_eviction_bound(self) -> None:
+        """The FIFO bound evicts oldest entries past max_entries."""
+        from vera.obligations.cache import DischargeCache, FnCacheEntry
+
+        cache = DischargeCache(max_entries=2)
+        entry = FnCacheEntry([], [], 0, 0, 0)
+        cache.put("a", entry)
+        cache.put("b", entry)
+        cache.put("c", entry)
+        assert len(cache) == 2
+        assert cache.get("a") is None
+        assert cache.get("b") is not None
+        assert cache.get("c") is not None
+
+
 class TestVerificationSession:
     """Session-specific behaviour not covered by the oracle."""
 
