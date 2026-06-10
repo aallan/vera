@@ -168,7 +168,13 @@ class TestDocumentStore:
         assert doc.version == 3
 
     def test_close_unknown_uri_is_noop(self) -> None:
-        DocumentStore().close("file:///never-opened.vera")
+        store = DocumentStore()
+        store.open("file:///kept.vera", "text")
+        store.close("file:///never-opened.vera")
+        # Observable postcondition: nothing raised AND unrelated
+        # documents are untouched.
+        assert len(store) == 1
+        assert store.get("file:///kept.vera") is not None
 
 
 def _lsp_msg(payload: dict[str, object]) -> bytes:
@@ -210,7 +216,15 @@ class TestServerEndToEnd:
             })
             + _lsp_msg({"jsonrpc": "2.0", "method": "exit", "params": None})
         )
-        out, err = proc.communicate(requests, timeout=60)
+        try:
+            out, err = proc.communicate(requests, timeout=60)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            out, err = proc.communicate()
+            pytest.fail(
+                "vera lsp subprocess timed out; killed to avoid an "
+                f"orphan. stdout={out[:300]!r} stderr={err[:300]!r}"
+            )
         text = out.decode("utf-8", errors="replace")
         assert '"serverInfo"' in text, (text[:300], err.decode()[:300])
         assert "vera-lsp" in text

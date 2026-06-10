@@ -1159,7 +1159,14 @@ def cmd_lsp() -> int:
     """
     try:
         from vera.lsp.server import main as lsp_main
-    except ImportError:
+    except ModuleNotFoundError as exc:
+        # Only a missing transport dependency means "extra not
+        # installed" — any other import failure inside vera.lsp is a
+        # real bug and must surface as its traceback, not be
+        # misreported as a packaging problem.
+        missing = (exc.name or "").split(".")[0]
+        if missing not in {"pygls", "lsprotocol"}:
+            raise
         print(
             "Error: the LSP server needs the optional [lsp] extra.\n"
             '  Install it with: pip install -e ".[lsp]"',

@@ -61,10 +61,11 @@ dev = [
     "ruff>=0.15.16",
     "pre-commit>=4.6.0",
     "pip-licenses>=5.5.5",
-    # Mirror of the [lsp] extra so CI's `pip install -e ".[dev]"` can
-    # run tests/test_lsp.py.  Keep these two pins in sync with [lsp].
-    "pygls>=2.0",
-    "lsprotocol>=2023.0",
+    # Self-referential extra: dev pulls in [lsp] so CI's single
+    # `pip install -e ".[dev]"` can run tests/test_lsp.py without a
+    # second pin list to keep in sync (PEP 508 extras self-reference;
+    # supported by pip >= 21.2 and uv).
+    "vera[lsp]",
 ]
 
 [project.scripts]

@@ -712,17 +712,16 @@ lsp = [
 [package.metadata]
 requires-dist = [
     { name = "lark", specifier = ">=1.3.1" },
-    { name = "lsprotocol", marker = "extra == 'dev'", specifier = ">=2023.0" },
     { name = "lsprotocol", marker = "extra == 'lsp'", specifier = ">=2023.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.1.0" },
     { name = "pip-licenses", marker = "extra == 'dev'", specifier = ">=5.5.5" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.6.0" },
-    { name = "pygls", marker = "extra == 'dev'", specifier = ">=2.0" },
     { name = "pygls", marker = "extra == 'lsp'", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.3" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
     { name = "pytest-xdist", marker = "extra == 'dev'", specifier = ">=3.6" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.16" },
+    { name = "vera", extras = ["lsp"], marker = "extra == 'dev'" },
     { name = "wasmtime", specifier = ">=45.0.0" },
     { name = "z3-solver", specifier = ">=4.15.5" },
 ]
