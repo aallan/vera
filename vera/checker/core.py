@@ -20,6 +20,7 @@ each handle a specific concern:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -75,6 +76,65 @@ def typecheck(
     return checker.errors
 
 
+@dataclass
+class HoleSite:
+    """One typed hole's location and context (#222 Phase D).
+
+    Mirrors what the W001 diagnostic narrates, as structured data the
+    LSP completion feature can serve directly: the expected type and
+    every in-scope binding (slot-reference string, pretty type),
+    innermost first.
+    """
+
+    line: int
+    column: int
+    end_line: int
+    end_column: int
+    expected: str
+    bindings: list[tuple[str, str]]
+
+
+@dataclass
+class CheckArtifacts:
+    """Side-tables collected during one opt-in type-check pass.
+
+    ``expr_types`` maps each typed expression's span — keyed
+    ``(line, column, end_line, end_column)``, all 1-based per
+    ``ast.Span`` — to its pretty-printed type.  Populated by the
+    ``_synth_expr`` recording wrapper, so every expression the checker
+    synthesises a type for is present (the LSP hover substrate).
+    """
+
+    expr_types: dict[tuple[int, int, int, int], str]
+    holes: list[HoleSite]
+
+
+def typecheck_with_artifacts(
+    program: ast.Program,
+    source: str = "",
+    file: str | None = None,
+    resolved_modules: list[ResolvedModule] | None = None,
+) -> tuple[list[Diagnostic], CheckArtifacts]:
+    """Type-check and additionally collect LSP artifacts (#222 Phase D).
+
+    Identical diagnostics to :func:`typecheck` — collection is purely
+    observational (a dict write per synthesised expression; decision R4
+    of the #222 plan chose this eager side-table over re-synthesis at
+    query time).  Existing callers keep using :func:`typecheck`; only
+    the LSP layer pays the collection cost.
+    """
+    checker = TypeChecker(
+        source=source, file=file, resolved_modules=resolved_modules,
+    )
+    checker.expr_types = {}
+    checker.hole_sites = []
+    checker.check_program(program)
+    return checker.errors, CheckArtifacts(
+        expr_types=checker.expr_types,
+        holes=checker.hole_sites,
+    )
+
+
 # =====================================================================
 # Type checker
 # =====================================================================
@@ -106,6 +166,14 @@ class TypeChecker(
         self.source = source
         self.file = file
         self._effect_ops_used: set[str] = set()
+        # #222 Phase D: opt-in artifact collection for LSP features.
+        # None = off (the default for every existing caller; zero
+        # cost).  When dicts are installed by typecheck_with_artifacts,
+        # the _synth_expr wrapper records every typed expression span
+        # and _check_hole records each hole's expected type + in-scope
+        # bindings.
+        self.expr_types: dict[tuple[int, int, int, int], str] | None = None
+        self.hole_sites: list[HoleSite] | None = None
         # Resolved modules (C7a: paths for diagnostics, C7b: full list
         # for cross-module type merging).
         self._resolved_modules: list[ResolvedModule] = (
