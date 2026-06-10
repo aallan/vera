@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.161] - 2026-06-10
+
+### Added
+
+- **[#222](https://github.com/aallan/vera/issues/222) Phase A** — proof obligations are now first-class: new `vera/obligations/` package with a `ProofObligation` record (owning function, kind, expression text, source span, stable `content_key()` digest, discharge outcome with counterexample) and a `VerificationSession` daemon that re-verifies full programs on one long-lived Z3 solver via the previously-unused `SmtContext.reset()` warm path.  `VerifyResult` gains an `obligations` field (default-empty, source-compatible); `ContractVerifier` gains a `shared_smt` hook (the cold path is unchanged: fresh context per function).  Obligation kinds cover `requires` / `ensures` / `decreases` / `@Nat`-subtraction sites / call-site preconditions (the latter recorded on violation only in Phase A — successful call-site checks discharge inside the SMT layer and are enumerated in Phase B).  Reification is observational: records are created at the existing discharge sites in discharge order, never altering solver state.  Behaviour is pinned by a 250-test differential oracle (`tests/test_obligations.py`): warm session == cold `verify()` on diagnostics, summary, and the obligation stream — plus warm-twice determinism — across all 35 examples and every verify/run-level conformance program.  This is the semantic core the #222 LSP server builds on; Phase B (incremental invalidation + discharge cache) slots in behind the same API.
+
+### Fixed
+
+- **`SmtContext.reset()` warm-reuse staleness** — `reset()` (previously dead code) kept `_length_fns` / `_index_fns` / `_array_element_sorts` / `_path_conditions` across solver resets.  `get_rank_fn` asserts its `ForAll rank(x) >= 0` axiom only at dict-miss, so a surviving cache entry after `solver.reset()` silently skipped re-asserting the axiom and ADT-measure `decreases` checks would diverge from a fresh context.  `reset()` now clears all four (re-seeding the `Int` length function) and re-applies the solver timeout.  Latent-only before this release — nothing called `reset()`; the new warm session is its first caller, and the differential oracle now pins the equivalence.
+
 ### Security
 
 - **[#712](https://github.com/aallan/vera/issues/712)** — SHA-pinned `codecov/codecov-action` to a commit (`e79a696` = v6.0.1) instead of the floating `@v6` tag, as targeted supply-chain hardening following the Codecov → Harness acquisition (announced 2026-06-02).  An ownership change is the canonical scenario where a major-version tag could be repointed by the new owner and silently flow into CI; pinning to a reviewed commit closes that, while Dependabot continues to propose bumps under review.  Coverage is unaffected either way — the 80% gate is the on-runner `pytest --cov-fail-under=80` and the upload is `fail_ci_if_error: false`.  Also corrected a stale `SECURITY.md` cross-reference that attributed action SHA-pinning to #390 (a closed Python dependency-lockfile issue).
@@ -2405,7 +2415,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.160...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.161...HEAD
+[0.0.161]: https://github.com/aallan/vera/compare/v0.0.160...v0.0.161
 [0.0.160]: https://github.com/aallan/vera/compare/v0.0.159...v0.0.160
 [0.0.159]: https://github.com/aallan/vera/compare/v0.0.158...v0.0.159
 [0.0.158]: https://github.com/aallan/vera/compare/v0.0.157...v0.0.158

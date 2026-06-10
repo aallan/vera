@@ -4,7 +4,7 @@ Where the project is going.  See [HISTORY.md](HISTORY.md) for what's been built 
 
 ## Where we are
 
-3,961 tests, 89 conformance programs, 35 examples, 13 spec chapters.
+4,212 tests, 89 conformance programs, 35 examples, 13 spec chapters.
 
 ## What's next
 

@@ -150,6 +150,8 @@ class SmtContext:
     ) -> None:
         self.solver = z3.Solver()
         self.solver.set("timeout", timeout_ms)
+        # Retained so reset() can re-apply it on warm-session reuse.
+        self._timeout_ms = timeout_ms
         self._vars: dict[str, z3.ExprRef] = {}
         self._result_var: z3.ExprRef | None = None
         # Uninterpreted functions for length (constrained >= 0)
@@ -1399,12 +1401,37 @@ class SmtContext:
         return ce
 
     def reset(self) -> None:
-        """Reset solver state for the next function."""
+        """Reset per-function state for warm-session reuse (#222 Phase A).
+
+        Called by the warm verification path between functions so one
+        ``z3.Solver`` serves a whole program.  Everything tied to the
+        previous function's solver assertions must go; only the ADT
+        registry (pure Python metadata, identical across functions of
+        one program) persists.
+
+        ``_length_fns`` / ``_index_fns`` MUST be cleared even though
+        their ``FuncDeclRef`` objects stay valid across
+        ``solver.reset()``: their side-effect axioms do not.
+        ``get_rank_fn`` asserts its ``ForAll rank(x) >= 0`` axiom only
+        at dict-miss, so a surviving cache entry would silently skip
+        re-asserting the axiom into the reset solver and ADT-measure
+        ``decreases`` checks would diverge from a fresh context (caught
+        by the cold-vs-warm differential tests in test_obligations.py).
+        """
         self.solver.reset()
+        # solver.reset() drops assertions but keeps parameters; re-apply
+        # the timeout anyway so reuse never depends on that detail.
+        self.solver.set("timeout", self._timeout_ms)
         self._vars.clear()
         self._result_var = None
         self._call_violations.clear()
         self._fresh_counter = 0
+        self._path_conditions.clear()
+        self._length_fns = {
+            "Int": z3.Function("length", z3.IntSort(), z3.IntSort()),
+        }
+        self._index_fns.clear()
+        self._array_element_sorts.clear()
         # Keep _adt_registry and _ctor_to_adt (they persist across functions)
         # but clear cached Z3 sorts (tied to solver state)
         self._z3_sorts.clear()
