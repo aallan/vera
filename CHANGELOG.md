@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.163] - 2026-06-10
+
+### Added
+
+- **[#222](https://github.com/aallan/vera/issues/222) Phase C** — `vera lsp` serves the Language Server Protocol over stdio: handshake with `serverInfo`, full-text document sync into an in-memory `DocumentStore` (the source of truth for open files — features never read disk), and the coordinate-conversion layer in `vera/lsp/convert.py` where the three coordinate systems meet (Vera `Span`: 1-based line + 1-based code-point column with exclusive end; `SourceLocation`: 1-based line but 0-based column; LSP: 0-based line + UTF-16 code units, with astral-plane transcoding and surrogate-pair snapping per the spec).  Deliberately featureless — Phase D wires diagnostics/hover/completion onto this transport so the advertised capability surface never promises something unimplemented.  The transport dependencies live in a new optional `[lsp]` extra (`pygls>=2.0`, `lsprotocol`; both pure-Python, mirrored into `[dev]` for CI) so the base install is unchanged; `vera lsp` without the extra prints an actionable install message.
+
 ## [0.0.162] - 2026-06-10
 
 ### Added
@@ -2421,7 +2427,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.162...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.163...HEAD
+[0.0.163]: https://github.com/aallan/vera/compare/v0.0.162...v0.0.163
 [0.0.162]: https://github.com/aallan/vera/compare/v0.0.161...v0.0.162
 [0.0.161]: https://github.com/aallan/vera/compare/v0.0.160...v0.0.161
 [0.0.160]: https://github.com/aallan/vera/compare/v0.0.159...v0.0.160
