@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through Stage 12, across 60 active development days.
+How the Vera compiler was built, from initial commit through Stage 12, across 61 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -305,6 +305,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.158 | 19 May | Host-side shadow-stack rooting closes the last `$gc_collect`-during-host-walk free-list-corruption bug ([#692](https://github.com/aallan/vera/issues/692)). |
 | v0.0.159 | 28 May | `Map<K, T_heap>` and `Set<T_heap>` no longer drop heap-pointer values under GC pressure on either CLI or browser target ([#695](https://github.com/aallan/vera/issues/695) + [#705](https://github.com/aallan/vera/issues/705) + [#708](https://github.com/aallan/vera/issues/708)). |
 | v0.0.160 | 29 May | Centralized Ctrl-C-during-host-import handling on `wasmtime>=45.0.0`, removing the four per-import `_VeraExit(130)` workaround guards ([#599](https://github.com/aallan/vera/issues/599)). |
+| v0.0.161 | 10 Jun | Proof obligations reified as first-class records with a warm-Z3 `VerificationSession`, the semantic core for the LSP server ([#222](https://github.com/aallan/vera/issues/222) Phase A). |
 
 ---
 
@@ -345,4 +346,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 160 tagged releases, 60 active development days.**
+Total: **810+ commits, 161 tagged releases, 61 active development days.**
