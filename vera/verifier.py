@@ -23,6 +23,12 @@ from vera.environment import FunctionInfo, TypeEnv
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
 from vera.errors import Diagnostic, SourceLocation
+from vera.obligations.core import (
+    ObligationKind,
+    ObligationStatus,
+    ProofObligation,
+    expr_text_for,
+)
 from vera.smt import CallViolation, SlotEnv, SmtContext
 from vera.types import (
     BOOL,
@@ -62,6 +68,10 @@ class VerifyResult:
 
     diagnostics: list[Diagnostic]
     summary: VerifySummary
+    # #222 Phase A: reified obligations, one per discharge site, in
+    # discharge order.  Empty-list default keeps existing constructors
+    # (tests, tooling) source-compatible.
+    obligations: list[ProofObligation] = field(default_factory=list)
 
 
 def verify(
@@ -88,6 +98,7 @@ def verify(
     return VerifyResult(
         diagnostics=verifier.errors,
         summary=verifier.summary,
+        obligations=verifier.obligations,
     )
 
 
@@ -104,10 +115,20 @@ class ContractVerifier:
         file: str | None = None,
         timeout_ms: int = 10_000,
         resolved_modules: list[ResolvedModule] | None = None,
+        shared_smt: SmtContext | None = None,
     ) -> None:
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
         self.summary = VerifySummary()
+        # #222 Phase A: reified obligations in discharge order.
+        self.obligations: list[ProofObligation] = []
+        # Warm-session hook: when provided (by
+        # obligations.session.VerificationSession), _verify_fn calls
+        # shared_smt.reset() per function instead of constructing a
+        # fresh SmtContext — reusing one z3.Solver across the whole
+        # program.  None (the default) preserves the historical
+        # fresh-context-per-function cold path exactly.
+        self._shared_smt = shared_smt
         self.source = source
         self.file = file
         self.timeout_ms = timeout_ms
@@ -183,6 +204,56 @@ class ContractVerifier:
         if 1 <= line <= len(lines):
             return lines[line - 1]
         return ""
+
+    # -----------------------------------------------------------------
+    # Obligation recording (#222 Phase A)
+    # -----------------------------------------------------------------
+
+    def _record_obligation(
+        self,
+        fn_name: str,
+        kind: ObligationKind,
+        node: ast.Expr | ast.Contract,
+        status: ObligationStatus,
+        *,
+        error_code: str = "",
+        counterexample: dict[str, str] | None = None,
+    ) -> None:
+        """Reify one obligation at its discharge site.
+
+        Purely observational: called at the moment an obligation's
+        outcome is known, never altering discharge order or solver
+        state.  The summary counters and diagnostics remain the source
+        of truth for behaviour; obligations mirror them one-to-one
+        (asserted by the differential tests in test_obligations.py).
+        """
+        line = node.span.line if node.span else 0
+        column = node.span.column if node.span else 0
+        self.obligations.append(ProofObligation(
+            fn_name=fn_name,
+            kind=kind,
+            expr_text=expr_text_for(node),
+            status=status,
+            line=line,
+            column=column,
+            error_code=error_code,
+            counterexample=counterexample,
+        ))
+
+    @staticmethod
+    def _contract_kind(contract: ast.Contract) -> ObligationKind:
+        """Map a contract AST node to its obligation kind.
+
+        ``Invariant`` (the fourth Contract subclass) is a data-decl
+        contract (#686, unimplemented) and never appears in
+        ``FnDecl.contracts``; the Decreases fallback is the only other
+        function-level contract.
+        """
+        if isinstance(contract, ast.Requires):
+            return "requires"
+        if isinstance(contract, ast.Ensures):
+            return "ensures"
+        return "decreases"
 
     # -----------------------------------------------------------------
     # Registration pass
@@ -425,6 +496,10 @@ class ContractVerifier:
                 if not self._is_trivial(contract):
                     self.summary.tier3_runtime += 1
                     self.summary.total += 1
+                    self._record_obligation(
+                        decl.name, self._contract_kind(contract),
+                        contract, "tier3", error_code="E520",
+                    )
                     self._warning(
                         contract,
                         f"Cannot statically verify contract in generic function "
@@ -437,14 +512,31 @@ class ContractVerifier:
                 else:
                     self.summary.tier1_verified += 1
                     self.summary.total += 1
+                    self._record_obligation(
+                        decl.name, self._contract_kind(contract),
+                        contract, "verified",
+                    )
             return
 
-        smt = SmtContext(
-            timeout_ms=self.timeout_ms,
-            fn_lookup=self.env.lookup_function,
-            module_fn_lookup=self._lookup_module_function,
-        )
-        # Register all known ADTs with the SMT context
+        if self._shared_smt is not None:
+            # Warm session (#222 Phase A): reuse one z3.Solver across
+            # functions.  reset() clears all per-function state (vars,
+            # assertions, sorts, path conditions, uninterpreted-fn
+            # caches) while the ADT registry persists; the lookups are
+            # rebound because they close over this verifier's env.
+            smt = self._shared_smt
+            smt.reset()
+            smt._fn_lookup = self.env.lookup_function
+            smt._module_fn_lookup = self._lookup_module_function
+        else:
+            smt = SmtContext(
+                timeout_ms=self.timeout_ms,
+                fn_lookup=self.env.lookup_function,
+                module_fn_lookup=self._lookup_module_function,
+            )
+        # Register all known ADTs with the SMT context.  Idempotent on
+        # the warm path (same AdtInfo re-registered into the persistent
+        # registry); kept per-function so cold and warm stay identical.
         for adt_info in self.env.data_types.values():
             smt.register_adt(adt_info)
         slot_env = SlotEnv()
@@ -509,10 +601,17 @@ class ContractVerifier:
                 self.summary.total += 1
                 if self._is_trivial(contract):
                     self.summary.tier1_verified += 1
+                    self._record_obligation(
+                        decl.name, "requires", contract, "verified",
+                    )
                     continue
                 z3_pre = smt.translate_expr(contract.expr, slot_env)
                 if z3_pre is None:
                     self.summary.tier3_runtime += 1
+                    self._record_obligation(
+                        decl.name, "requires", contract, "tier3",
+                        error_code="E521",
+                    )
                     self._warning(
                         contract,
                         f"Precondition in '{decl.name}' uses constructs "
@@ -528,6 +627,9 @@ class ContractVerifier:
                     continue
                 assumptions.append(z3_pre)
                 self.summary.tier1_verified += 1
+                self._record_obligation(
+                    decl.name, "requires", contract, "verified",
+                )
 
         # 4. Assert caller assumptions into solver so _translate_call
         #    can see them during body translation.
@@ -548,6 +650,16 @@ class ContractVerifier:
 
         # 6. Report any call-site precondition violations
         for v in smt.drain_call_violations():
+            # Phase A records call-site obligations only on violation:
+            # successful call-pre checks discharge silently inside the
+            # SMT layer's _translate_call and are not yet enumerated
+            # (Phase B extends the SMT layer to record successes for
+            # the discharge cache).  Summary counters are untouched
+            # here, mirroring the existing bookkeeping.
+            self._record_obligation(
+                decl.name, "call_pre", v.precondition, "violated",
+                counterexample=v.counterexample,
+            )
             self._report_call_violation(
                 decl, v.callee_name, v.call_node,
                 v.precondition, v.counterexample,
@@ -559,10 +671,17 @@ class ContractVerifier:
                 self.summary.total += 1
                 if self._is_trivial(contract):
                     self.summary.tier1_verified += 1
+                    self._record_obligation(
+                        decl.name, "ensures", contract, "verified",
+                    )
                     continue
 
                 if body_expr is None:
                     self.summary.tier3_runtime += 1
+                    self._record_obligation(
+                        decl.name, "ensures", contract, "tier3",
+                        error_code="E522",
+                    )
                     self._warning(
                         contract,
                         f"Cannot statically verify postcondition in "
@@ -584,6 +703,10 @@ class ContractVerifier:
 
                 if z3_post is None:
                     self.summary.tier3_runtime += 1
+                    self._record_obligation(
+                        decl.name, "ensures", contract, "tier3",
+                        error_code="E523",
+                    )
                     self._warning(
                         contract,
                         f"Postcondition in '{decl.name}' uses constructs "
@@ -601,14 +724,25 @@ class ContractVerifier:
 
                 if smt_result.status == "verified":
                     self.summary.tier1_verified += 1
+                    self._record_obligation(
+                        decl.name, "ensures", contract, "verified",
+                    )
                 elif smt_result.status == "violated":
                     self.summary.total -= 1  # don't count — it's an error
+                    self._record_obligation(
+                        decl.name, "ensures", contract, "violated",
+                        counterexample=smt_result.counterexample,
+                    )
                     self._report_violation(
                         decl, contract, smt_result.counterexample
                     )
                 else:  # pragma: no cover
                     # unknown / timeout
                     self.summary.tier3_runtime += 1
+                    self._record_obligation(
+                        decl.name, "ensures", contract, "timeout",
+                        error_code="E524",
+                    )
                     self._warning(
                         contract,
                         f"Could not verify postcondition in '{decl.name}' "
@@ -639,8 +773,15 @@ class ContractVerifier:
                     decl, contract, smt, slot_env, group_decls,
                 ):
                     self.summary.tier1_verified += 1
+                    self._record_obligation(
+                        decl.name, "decreases", contract, "verified",
+                    )
                 else:
                     self.summary.tier3_runtime += 1
+                    self._record_obligation(
+                        decl.name, "decreases", contract, "tier3",
+                        error_code="E525",
+                    )
                     self._warning(
                         contract,
                         f"Termination metric in '{decl.name}' cannot be "
@@ -1092,6 +1233,7 @@ class ContractVerifier:
         rhs = smt.translate_expr(expr.right, slot_env)
         if lhs is None or rhs is None:  # pragma: no cover — both Nat
             self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "nat_sub", expr, "tier3")
             return
 
         obligation = lhs >= rhs
@@ -1099,11 +1241,20 @@ class ContractVerifier:
 
         if result.status == "verified":
             self.summary.tier1_verified += 1
+            self._record_obligation(decl.name, "nat_sub", expr, "verified")
         elif result.status == "violated":
             self.summary.total -= 1  # don't count — it's an error
+            self._record_obligation(
+                decl.name, "nat_sub", expr, "violated",
+                error_code="E502",
+                counterexample=result.counterexample,
+            )
             self._report_underflow(decl, expr, result.counterexample)
         else:  # pragma: no cover — solver timeout
             self.summary.tier3_runtime += 1
+            self._record_obligation(
+                decl.name, "nat_sub", expr, "timeout",
+            )
 
     def _report_underflow(
         self,
