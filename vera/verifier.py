@@ -484,10 +484,20 @@ class ContractVerifier:
     # Verification
     # -----------------------------------------------------------------
 
-    def verify_program(self, program: ast.Program) -> None:
-        """Entry point: register modules, then local declarations, then verify."""
+    def register_program(self, program: ast.Program) -> None:
+        """Run the registration passes without verifying anything.
+
+        Public seam for the incremental session (#222 Phase B): the
+        session registers the whole program once, then drives
+        per-function verification selectively, replaying cached
+        results for functions whose inputs are unchanged.
+        """
         self._register_modules(program)  # C7d: cross-module imports
         self._register_all(program)      # local declarations shadow imports
+
+    def verify_program(self, program: ast.Program) -> None:
+        """Entry point: register modules, then local declarations, then verify."""
+        self.register_program(program)
         for tld in program.declarations:
             if isinstance(tld.decl, ast.FnDecl):
                 self._verify_fn(tld.decl)

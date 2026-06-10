@@ -27,6 +27,7 @@ from vera.obligations.core import (
 
 if TYPE_CHECKING:
     from vera.obligations.session import (
+        SessionRunStats,
         SessionVerifyResult,
         VerificationSession,
     )
@@ -35,13 +36,14 @@ __all__ = [
     "ObligationKind",
     "ObligationStatus",
     "ProofObligation",
+    "SessionRunStats",
     "SessionVerifyResult",
     "VerificationSession",
     "expr_text_for",
 ]
 
 _LAZY_SESSION_EXPORTS = frozenset(
-    {"SessionVerifyResult", "VerificationSession"},
+    {"SessionRunStats", "SessionVerifyResult", "VerificationSession"},
 )
 
 

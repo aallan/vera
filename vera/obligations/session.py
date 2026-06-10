@@ -1,4 +1,4 @@
-"""Warm verification session — the #222 Phase A daemon object.
+"""Warm incremental verification session — the #222 daemon object.
 
 A :class:`VerificationSession` owns one long-lived Z3 solver (inside a
 :class:`~vera.smt.SmtContext`) and re-verifies full programs through it,
@@ -6,12 +6,15 @@ calling :meth:`SmtContext.reset` between functions instead of paying the
 fresh-``z3.Solver()`` construction cost per function that the cold
 :func:`vera.verifier.verify` path pays.
 
-Phase A semantics are deliberately simple: every ``verify_source`` call
-re-verifies *everything* (warm but not incremental).  The public API is
-final from day one — Phase B slots incremental invalidation and the
-discharge cache in *behind* this API, validated by the differential
-oracle in ``tests/test_obligations.py`` (warm result == cold result on
-the example + conformance corpus).
+Phase A established the API and the warm re-verify-everything path.
+Phase B adds the discharge cache behind that same API: each top-level
+function's verification output (obligations, diagnostics, summary
+deltas) is cached under an invalidation key covering everything its
+verification reads (see :mod:`vera.obligations.cache` for the soundness
+model), and functions whose key is unchanged replay their cached output
+in declaration order instead of re-entering Z3.  The differential
+oracle in ``tests/test_obligations.py`` pins replay == re-verify ==
+cold on the full corpus.
 
 Scope notes (matching the #222 plan):
 
@@ -31,6 +34,12 @@ from pathlib import Path
 
 from vera import ast
 from vera.errors import Diagnostic
+from vera.obligations.cache import (
+    DischargeCache,
+    FnCacheEntry,
+    fn_cache_key,
+    program_context_hash,
+)
 from vera.obligations.core import ProofObligation
 from vera.parser import parse
 from vera.resolver import ModuleResolver, ResolvedModule
@@ -63,6 +72,19 @@ class SessionVerifyResult:
         return self.check_diagnostics + self.verify_diagnostics
 
 
+@dataclass
+class SessionRunStats:
+    """Per-run cache observability (#222 Phase B).
+
+    Additive diagnostics surface: lets tests assert the cache actually
+    replayed (the differential oracle alone would pass trivially if
+    every lookup missed) and gives the LSP layer a hit-rate signal.
+    """
+
+    replayed_fns: int = 0
+    verified_fns: int = 0
+
+
 class VerificationSession:
     """Long-lived warm-Z3 verification daemon (#222 Phase A).
 
@@ -75,10 +97,13 @@ class VerificationSession:
     def __init__(self, timeout_ms: int = 10_000) -> None:
         self._timeout_ms = timeout_ms
         self._smt: SmtContext | None = None
-        # Cached AST of the last successfully verified program — the
-        # Phase B incremental layer diffs the incoming program against
-        # this to compute the invalidation set.
+        # Phase B: per-function discharge cache (see cache.py for the
+        # invalidation-key soundness model).
+        self._cache = DischargeCache()
+        # Cached AST of the last successfully verified program.
         self.last_program: ast.Program | None = None
+        # Cache observability for the most recent verify_source call.
+        self.last_run_stats = SessionRunStats()
 
     def _acquire_smt(self) -> SmtContext:
         """Return the session's warm context, creating it on first use.
@@ -140,16 +165,88 @@ class VerificationSession:
             resolved_modules=resolved_modules,
             shared_smt=smt,
         )
-        verifier.verify_program(program)
+        verifier.register_program(program)
+
+        # Phase B incremental drive: walk declarations in order,
+        # replaying cached output for functions whose invalidation key
+        # is unchanged and re-verifying the rest.  Declaration order is
+        # what the cold path produces, so interleaving replayed and
+        # fresh slices in this order keeps the output stream identical.
+        # Module keys are (module path, source digest) — deliberately
+        # NOT repr(m): ResolvedModule carries an absolute file_path
+        # (canonicalisation-sensitive across cwd/symlinks) and the full
+        # parsed AST (expensive to repr, derived from source anyway).
+        # The source digest covers every contract/signature change a
+        # caller's verification could read.
+        import hashlib as _hashlib
+
+        context_hash = program_context_hash(
+            program,
+            self._timeout_ms,
+            file,
+            tuple(
+                ".".join(m.path) + "\x1f"
+                + _hashlib.sha256(m.source.encode("utf-8")).hexdigest()
+                for m in (resolved_modules or [])
+            ),
+        )
+        fn_map: dict[str, ast.FnDecl] = {
+            tld.decl.name: tld.decl
+            for tld in program.declarations
+            if isinstance(tld.decl, ast.FnDecl)
+        }
+
+        stats = SessionRunStats()
+        out_diags: list[Diagnostic] = list(verifier.errors)
+        out_obls: list[ProofObligation] = list(verifier.obligations)
+        summary = VerifySummary()
+
+        for tld in program.declarations:
+            if not isinstance(tld.decl, ast.FnDecl):
+                continue
+            decl = tld.decl
+            key = fn_cache_key(decl, fn_map, context_hash)
+            cached = self._cache.get(key)
+            if cached is not None:
+                out_diags.extend(cached.diagnostics)
+                out_obls.extend(cached.obligations)
+                summary.tier1_verified += cached.tier1_delta
+                summary.tier3_runtime += cached.tier3_delta
+                summary.total += cached.total_delta
+                stats.replayed_fns += 1
+                continue
+
+            d0 = len(verifier.errors)
+            o0 = len(verifier.obligations)
+            t1_0 = verifier.summary.tier1_verified
+            t3_0 = verifier.summary.tier3_runtime
+            tot_0 = verifier.summary.total
+            verifier._verify_fn(decl)
+            entry = FnCacheEntry(
+                diagnostics=list(verifier.errors[d0:]),
+                obligations=list(verifier.obligations[o0:]),
+                tier1_delta=verifier.summary.tier1_verified - t1_0,
+                tier3_delta=verifier.summary.tier3_runtime - t3_0,
+                total_delta=verifier.summary.total - tot_0,
+            )
+            self._cache.put(key, entry)
+            out_diags.extend(entry.diagnostics)
+            out_obls.extend(entry.obligations)
+            summary.tier1_verified += entry.tier1_delta
+            summary.tier3_runtime += entry.tier3_delta
+            summary.total += entry.total_delta
+            stats.verified_fns += 1
+
         self.last_program = program
+        self.last_run_stats = stats
 
         verify_errors = any(
-            d.severity == "error" for d in verifier.errors
+            d.severity == "error" for d in out_diags
         )
         return SessionVerifyResult(
             ok=not verify_errors,
             check_diagnostics=check_diags,
-            verify_diagnostics=verifier.errors,
-            summary=verifier.summary,
-            obligations=verifier.obligations,
+            verify_diagnostics=out_diags,
+            summary=summary,
+            obligations=out_obls,
         )

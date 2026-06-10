@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.162] - 2026-06-10
+
+### Added
+
+- **[#222](https://github.com/aallan/vera/issues/222) Phase B** — incremental verification: `VerificationSession` now caches each top-level function's verification output (obligations, diagnostics, summary deltas) under an invalidation key covering everything its verification reads, and replays unchanged functions instead of re-entering Z3.  The soundness model (documented in the new `vera/obligations/cache.py`): a callee *contract or signature* change invalidates its callers (call sites check preconditions and assume postconditions); a callee *body* change does not (bodies are never read across the call boundary); span shifts, ADT / type-alias / effect / import / timeout changes invalidate conservatively.  Functions whose output contains a solver-timeout obligation are never cached.  `SessionRunStats` (replayed vs verified counts) added for cache observability.  Pinned by the corpus-wide differential oracle (replay == re-verify == cold `verify()` across all 35 examples and every verify/run-level conformance program) plus targeted invalidation-rule tests, including a span-shift test that caught the structural hash being position-blind (`Node.span` is `repr=False`) before it shipped.
+
 ## [0.0.161] - 2026-06-10
 
 ### Added
@@ -2415,7 +2421,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.161...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.162...HEAD
+[0.0.162]: https://github.com/aallan/vera/compare/v0.0.161...v0.0.162
 [0.0.161]: https://github.com/aallan/vera/compare/v0.0.160...v0.0.161
 [0.0.160]: https://github.com/aallan/vera/compare/v0.0.159...v0.0.160
 [0.0.159]: https://github.com/aallan/vera/compare/v0.0.158...v0.0.159
