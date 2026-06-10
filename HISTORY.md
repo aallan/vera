@@ -306,6 +306,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.159 | 28 May | `Map<K, T_heap>` and `Set<T_heap>` no longer drop heap-pointer values under GC pressure on either CLI or browser target ([#695](https://github.com/aallan/vera/issues/695) + [#705](https://github.com/aallan/vera/issues/705) + [#708](https://github.com/aallan/vera/issues/708)). |
 | v0.0.160 | 29 May | Centralized Ctrl-C-during-host-import handling on `wasmtime>=45.0.0`, removing the four per-import `_VeraExit(130)` workaround guards ([#599](https://github.com/aallan/vera/issues/599)). |
 | v0.0.161 | 10 Jun | Proof obligations reified as first-class records with a warm-Z3 `VerificationSession`, the semantic core for the LSP server ([#222](https://github.com/aallan/vera/issues/222) Phase A). |
+| v0.0.162 | 10 Jun | Incremental verification — unchanged functions replay cached obligations instead of re-entering Z3 ([#222](https://github.com/aallan/vera/issues/222) Phase B). |
 
 ---
 
@@ -346,4 +347,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 161 tagged releases, 61 active development days.**
+Total: **810+ commits, 162 tagged releases, 61 active development days.**
