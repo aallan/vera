@@ -51,10 +51,14 @@ can serve LSP — from a clone of the repo:
 pip install -e ".[lsp]"     # or ".[dev]", which includes it
 ```
 
-The binary is resolved from `PATH` by default; point the
-`vera.lsp.path` setting at an absolute path (e.g. a venv's
-`.venv/bin/vera`) if yours lives elsewhere. Syntax highlighting works
-with no binary at all.
+The extension finds the binary in this order: the `vera.lsp.path`
+setting (if you changed it), a **workspace-local venv**
+(`.venv/bin/vera` — which means a standard from-source clone needs no
+configuration at all), then `vera` from `PATH`. VS Code launched from
+the GUI does not inherit your shell's `PATH`, so the workspace-venv
+detection is what makes the zero-config case work. If the server
+fails to start you get one warning with an *Open Settings* button;
+syntax highlighting works with no binary at all.
 
 ## Settings
 

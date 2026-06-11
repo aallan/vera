@@ -61,7 +61,7 @@
 				"vera.lsp.path": {
 					"type": "string",
 					"default": "vera",
-					"description": "Command used to launch the language server; an absolute path to the vera binary or a name resolved from PATH. The server needs the [lsp] extra: pip install -e \".[lsp]\"."
+					"description": "Command used to launch the language server. Resolution order: this setting (if changed from the default), then a workspace-local venv (.venv/bin/vera, or .venv\\Scripts\\vera.exe on Windows), then \"vera\" from PATH. The server needs the [lsp] extra: pip install -e \".[lsp]\"."
 				}
 			}
 		},

@@ -4,7 +4,9 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 ## Bugs
 
-No known bugs.
+| Bug | Issue |
+|-----|-------|
+| Duplicate E501 diagnostics for a violating call site (doubled in `--json` and LSP hover) | [#727](https://github.com/aallan/vera/issues/727) |
 
 ## Limitations
 

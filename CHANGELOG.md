@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - **[LSP_SERVER.md](LSP_SERVER.md)** — the language server's user manual: what an LSP server is, install (`pip install -e ".[lsp]"`) and editor wiring, the standard feature surface (tier-annotated diagnostics, per-function verification-tier hints, hover, slot go-to-definition, typed-hole completion), the warm incremental verification core, and full request/response shapes for the four agent-facing custom methods (`vera/speculativeEdit`, `vera/proposeEdit`, `vera/strengthenContract`, `vera/addEffect`) with the typical speculate → inspect → propose loop.
-- **VS Code extension 0.2.0** — the extension now starts `vera lsp` automatically for `.vera` files (settings `vera.lsp.enabled` / `vera.lsp.path`, command *Vera: Restart Language Server*), degrading gracefully to syntax-highlighting-only when the binary or the `npm install` is absent. Requires VS Code 1.82+.
+- **VS Code extension 0.2.0** — the extension now starts `vera lsp` automatically for `.vera` files (settings `vera.lsp.enabled` / `vera.lsp.path`, command *Vera: Restart Language Server*), degrading gracefully to syntax-highlighting-only when the binary or the `npm install` is absent. Binary resolution prefers an explicit `vera.lsp.path`, then a workspace-local venv (`.venv/bin/vera` — GUI-launched VS Code does not inherit a shell `PATH`, so a from-source clone works with zero configuration), then `PATH`; spawn failure surfaces one warning with an Open Settings action. Requires VS Code 1.82+.
 
 ### Changed
 

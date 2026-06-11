@@ -8,7 +8,7 @@ Language server integration.
   `.vera` files: proof-aware diagnostics with verification-tier hints,
   expression-type hover, De Bruijn slot go-to-definition, and
   typed-hole completion
-- New settings: `vera.lsp.enabled`, `vera.lsp.path`
+- New settings: `vera.lsp.enabled`, `vera.lsp.path` — binary resolution prefers a workspace-local venv (`.venv/bin/vera`) over `PATH`, so a from-source clone needs no configuration; spawn failure shows one actionable warning
 - New command: **Vera: Restart Language Server**
 - Degrades gracefully to syntax-highlighting-only when the `vera`
   binary (or the extension's `npm install`) is absent

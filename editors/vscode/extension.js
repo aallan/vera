@@ -10,6 +10,8 @@
 
 "use strict";
 
+const fs = require("fs");
+const path = require("path");
 const vscode = require("vscode");
 
 let client;
@@ -37,9 +39,32 @@ function loadLanguageClient() {
     }
 }
 
-function buildClient(lc) {
+function resolveServerCommand() {
     const config = vscode.workspace.getConfiguration("vera.lsp");
-    const command = config.get("path", "vera");
+    const configured = config.get("path", "vera");
+    if (configured !== "vera") {
+        return configured; // an explicit setting always wins
+    }
+    // VS Code launched from the GUI does not inherit a shell PATH, so
+    // a bare "vera" rarely resolves to the right binary (or at all).
+    // The from-source layout keeps a venv inside the workspace —
+    // prefer that before falling back to PATH.
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        for (const rel of [
+            path.join(".venv", "bin", "vera"),
+            path.join(".venv", "Scripts", "vera.exe"),
+        ]) {
+            const candidate = path.join(folder.uri.fsPath, rel);
+            if (fs.existsSync(candidate)) {
+                return candidate;
+            }
+        }
+    }
+    return configured;
+}
+
+function buildClient(lc) {
+    const command = resolveServerCommand();
     const serverOptions = {
         command,
         args: ["lsp"],
@@ -75,6 +100,19 @@ async function startClient(lc) {
             "Details: " + err.message,
         );
         client = undefined;
+        // One actionable toast — the silent output-channel line made
+        // "nothing is showing up" needlessly hard to diagnose.
+        const choice = await vscode.window.showWarningMessage(
+            "Vera language server failed to start (syntax highlighting " +
+            "still works). Point the vera.lsp.path setting at your " +
+            "vera binary, e.g. .venv/bin/vera in a clone.",
+            "Open Settings",
+        );
+        if (choice === "Open Settings") {
+            await vscode.commands.executeCommand(
+                "workbench.action.openSettings", "vera.lsp.path",
+            );
+        }
     }
 }
 
