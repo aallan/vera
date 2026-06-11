@@ -7,6 +7,9 @@ coordinate layer.  Phase D wires the obligation core in behind it:
 hover from the checker's expression-type side-table, slot
 go-to-definition, and typed-hole completion — all computed by the pure
 backing functions in :mod:`vera.lsp.features` and served here.
+Phase F adds the skill-layer workflows (:mod:`vera.lsp.workflows`):
+multi-step edit → verify → apply sequences exposed as single methods,
+so the verification gate cannot be skipped or reordered.
 
 Structure note: ``VeraLanguageServer`` subclasses pygls 2.x's typed
 ``pygls.lsp.server.LanguageServer`` (the 1.x ``pygls.server`` path no
@@ -25,6 +28,7 @@ import threading
 from typing import Any
 
 from lsprotocol import types as lsp
+from pygls.exceptions import JsonRpcInvalidParams
 from pygls.lsp.server import LanguageServer
 
 from vera import __version__
@@ -38,7 +42,57 @@ from vera.lsp.features import (
     hover_at,
     to_lsp_diagnostics,
 )
+from vera.lsp.workflows import apply_propose_edit
 from vera.obligations.session import VerificationSession
+
+
+_MISSING = object()
+
+
+def _param(params: Any, key: str) -> Any:
+    """Extract *key* from custom-method params of either shape.
+
+    pygls hands custom methods an attribute-style namespace; tests and
+    other in-process callers may pass a plain dict.  Membership is
+    decided with a sentinel, never truthiness — ``text=""`` (replace
+    with an empty document) is a present value, and falling through to
+    ``.get`` on an attribute carrier would raise ``AttributeError``.
+    """
+    value = getattr(params, key, _MISSING)
+    if value is _MISSING and hasattr(params, "get"):
+        value = params.get(key, _MISSING)
+    return None if value is _MISSING else value
+
+
+def _require_str(params: Any, key: str) -> str:
+    """Extract *key* and fail closed at the protocol boundary.
+
+    Custom methods take their params as plain JSON, so nothing
+    upstream validates the shape; a missing or non-string field would
+    otherwise surface as an opaque internal error from deep inside
+    the parse pipeline.  ``JsonRpcInvalidParams`` (-32602) is the
+    JSON-RPC-native refusal.  The empty string stays valid — it is a
+    present value (replace-with-empty-document), not a missing one.
+    """
+    value = _param(params, key)
+    if not isinstance(value, str):
+        raise JsonRpcInvalidParams(
+            message=f"{key!r} must be a string, got {type(value).__name__}",
+        )
+    return value
+
+
+def _force_param(params: Any) -> bool:
+    """The ``force`` flag, failing closed: only JSON ``true`` engages.
+
+    ``force`` bypasses the verification gate — the one bit whose whole
+    purpose is to be hard to skip — so generic truthiness is the wrong
+    coercion: a malformed payload like ``"force": "false"`` must not
+    silently apply an unverified edit.  Strictness costs a refused
+    edit with an explanatory delta; leniency costs the failure mode
+    the method exists to prevent.
+    """
+    return _param(params, "force") is True
 
 
 class VeraLanguageServer(LanguageServer):
@@ -151,8 +205,8 @@ def create_server() -> VeraLanguageServer:
         but never touches the per-URI analysis table or published
         diagnostics: the canonical editor state is unchanged.
         """
-        uri = getattr(params, "uri", None) or params.get("uri")
-        text = getattr(params, "text", None) or params.get("text")
+        uri = _require_str(params, "uri")
+        text = _require_str(params, "text")
         baseline_analysis = server.analyses.get(uri)
         baseline = (
             baseline_analysis.obligations
@@ -160,6 +214,21 @@ def create_server() -> VeraLanguageServer:
         )
         with server.analysis_lock:
             return speculative_edit(server.session, baseline, uri, text)
+
+    @server.feature("vera/proposeEdit")
+    def vera_propose_edit(ls: Any, params: Any) -> dict[str, Any]:
+        """#222 Phase F1: enforced edit → verify → apply workflow.
+
+        The whole sequence — speculative verify, gate, and (on pass)
+        ``workspace/applyEdit`` + canonical-state update — runs in
+        :func:`vera.lsp.workflows.apply_propose_edit`; this handler is
+        wire glue only.
+        """
+        uri = _require_str(params, "uri")
+        text = _require_str(params, "text")
+        return apply_propose_edit(
+            server, uri, text, _force_param(params),
+        )
 
     return server
 

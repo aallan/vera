@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.166] - 2026-06-11
+
+### Added
+
+- **[#222](https://github.com/aallan/vera/issues/222) Phase F1 — `vera/proposeEdit`**, the first skill-layer workflow: the whole edit → verify → apply sequence as one LSP method, so an agent cannot apply an unverified edit — applying *is* the final step of verifying.  The proposed text runs through the Phase E speculative verify; the gate applies it iff the proof delta has no `newly_undischarged` obligations and the proposed state has no error diagnostics (`force: true` overrides both, loudly — the delta still reports the damage).  On apply: a `workspace/applyEdit` request (the client owns the buffer, so the server round-trips the edit rather than silently diverging), the canonical `DocumentStore` updates, and diagnostics republish — the client's echoed `didChange` then replays from the warm discharge cache.  On refuse, canonical state is untouched, same isolation as `vera/speculativeEdit`.  New `vera/lsp/workflows.py` with the pure decision function separated from the effectful orchestration; ROADMAP regains a Phase F row while the reopened #222 is in flight.
+
 ## [0.0.165] - 2026-06-11
 
 ### Added
@@ -2439,7 +2445,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.165...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.166...HEAD
+[0.0.166]: https://github.com/aallan/vera/compare/v0.0.165...v0.0.166
 [0.0.165]: https://github.com/aallan/vera/compare/v0.0.164...v0.0.165
 [0.0.164]: https://github.com/aallan/vera/compare/v0.0.163...v0.0.164
 [0.0.163]: https://github.com/aallan/vera/compare/v0.0.162...v0.0.163
