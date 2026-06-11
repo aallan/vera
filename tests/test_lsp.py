@@ -590,7 +590,13 @@ import concurrent.futures  # noqa: E402
 import threading  # noqa: E402
 import types  # noqa: E402
 
-from vera.lsp.server import _force_param, _param  # noqa: E402
+from pygls.exceptions import JsonRpcInvalidParams  # noqa: E402
+
+from vera.lsp.server import (  # noqa: E402
+    _force_param,
+    _param,
+    _require_str,
+)
 from vera.lsp.workflows import (  # noqa: E402
     apply_propose_edit,
     full_document_range,
@@ -808,6 +814,24 @@ class TestParamExtraction:
     def test_missing_key_is_none(self) -> None:
         assert _param(types.SimpleNamespace(uri=URI), "force") is None
         assert _param({"uri": URI}, "force") is None
+
+    def test_require_str_accepts_present_strings(self) -> None:
+        assert _require_str({"uri": URI}, "uri") == URI
+        # Empty string is a PRESENT value (replace-with-empty-document).
+        assert _require_str({"text": ""}, "text") == ""
+        assert _require_str(
+            types.SimpleNamespace(text=""), "text",
+        ) == ""
+
+    def test_require_str_refuses_missing_or_non_string(self) -> None:
+        """Malformed payloads fail closed at the protocol boundary
+        with JSON-RPC InvalidParams, not an opaque internal error
+        from deep inside the parse pipeline."""
+        for params in ({}, {"uri": None}, {"uri": 42}, {"uri": ["x"]}):
+            with pytest.raises(JsonRpcInvalidParams):
+                _require_str(params, "uri")
+        with pytest.raises(JsonRpcInvalidParams):
+            _require_str(types.SimpleNamespace(), "text")
 
     def test_force_fails_closed(self) -> None:
         """Only JSON ``true`` engages force — the gate-bypass flag

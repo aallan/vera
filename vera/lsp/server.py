@@ -28,6 +28,7 @@ import threading
 from typing import Any
 
 from lsprotocol import types as lsp
+from pygls.exceptions import JsonRpcInvalidParams
 from pygls.lsp.server import LanguageServer
 
 from vera import __version__
@@ -61,6 +62,24 @@ def _param(params: Any, key: str) -> Any:
     if value is _MISSING and hasattr(params, "get"):
         value = params.get(key, _MISSING)
     return None if value is _MISSING else value
+
+
+def _require_str(params: Any, key: str) -> str:
+    """Extract *key* and fail closed at the protocol boundary.
+
+    Custom methods take their params as plain JSON, so nothing
+    upstream validates the shape; a missing or non-string field would
+    otherwise surface as an opaque internal error from deep inside
+    the parse pipeline.  ``JsonRpcInvalidParams`` (-32602) is the
+    JSON-RPC-native refusal.  The empty string stays valid — it is a
+    present value (replace-with-empty-document), not a missing one.
+    """
+    value = _param(params, key)
+    if not isinstance(value, str):
+        raise JsonRpcInvalidParams(
+            message=f"{key!r} must be a string, got {type(value).__name__}",
+        )
+    return value
 
 
 def _force_param(params: Any) -> bool:
@@ -186,8 +205,8 @@ def create_server() -> VeraLanguageServer:
         but never touches the per-URI analysis table or published
         diagnostics: the canonical editor state is unchanged.
         """
-        uri = _param(params, "uri")
-        text = _param(params, "text")
+        uri = _require_str(params, "uri")
+        text = _require_str(params, "text")
         baseline_analysis = server.analyses.get(uri)
         baseline = (
             baseline_analysis.obligations
@@ -205,8 +224,8 @@ def create_server() -> VeraLanguageServer:
         :func:`vera.lsp.workflows.apply_propose_edit`; this handler is
         wire glue only.
         """
-        uri = _param(params, "uri")
-        text = _param(params, "text")
+        uri = _require_str(params, "uri")
+        text = _require_str(params, "text")
         return apply_propose_edit(
             server, uri, text, _force_param(params),
         )
