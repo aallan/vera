@@ -310,6 +310,9 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.163 | 10 Jun | `vera lsp` serves LSP over stdio — transport skeleton, document sync, and the coordinate-conversion layer ([#222](https://github.com/aallan/vera/issues/222) Phase C). |
 | v0.0.164 | 10 Jun | LSP language features — tier-annotated diagnostics, type hover, slot go-to-definition, and typed-hole completion over the obligation core ([#222](https://github.com/aallan/vera/issues/222) Phase D). |
 | v0.0.165 | 11 Jun | `vera/speculativeEdit` proof-delta — agents learn whether an edit keeps, breaks, or strengthens the program's proofs before committing it, completing the LSP server ([#222](https://github.com/aallan/vera/issues/222) Phase E). |
+| v0.0.166 | 11 Jun | `vera/proposeEdit` — the first skill-layer workflow: edit → verify → apply as one LSP method, applying only when the proof delta is non-breaking ([#222](https://github.com/aallan/vera/issues/222) Phase F1). |
+| v0.0.167 | 11 Jun | `vera/strengthenContract` — contract change with a call-site audit: a tightened precondition a caller no longer satisfies refuses with `call_pre` items at the call sites ([#222](https://github.com/aallan/vera/issues/222) Phase F2). |
+| v0.0.168 | 11 Jun | `vera/addEffect` propagates an effect through the transitive-caller closure in one verified multi-site edit, closing the skill-layer phase and with it [#222](https://github.com/aallan/vera/issues/222). |
 
 ---
 

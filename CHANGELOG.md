@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.168] - 2026-06-11
+
+### Added
+
+- **[#222](https://github.com/aallan/vera/issues/222) Phase F3 — `vera/addEffect`**, the multi-site workflow that completes the skill layer: `{uri, fn, effect}` computes the transitive-caller closure over the Phase B call walker (plain calls only — module-qualified calls never propagate across the file boundary), rewrites every affected `effects(...)` clause by span (`pure` → `<E>`; `<A>` → `<A, E>` appending after the original source verbatim; functions already naming the effect are skipped, with identity the base name before type arguments so `State<Int>` is not added next to `State<Bool>`), and runs ONE candidate through the proposeEdit pipeline.  The response lists `rewritten` functions in declaration order; a row state that is already satisfied short-circuits to the documented no-op shape without touching the verifier.  Propagation is handler-unaware by design — a caller that handles the effect in a `handle[E]` block is still rewritten; bounding the closure at handlers is noted as a refinement.  This closes the #222 LSP arc: the three skill-layer methods (`proposeEdit`, `strengthenContract`, `addEffect`) shipped in v0.0.166–v0.0.168 on the obligation core and proof-delta machinery from v0.0.161–v0.0.165.
+
 ## [0.0.167] - 2026-06-11
 
 ### Added
@@ -2451,7 +2457,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.167...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.168...HEAD
+[0.0.168]: https://github.com/aallan/vera/compare/v0.0.167...v0.0.168
 [0.0.167]: https://github.com/aallan/vera/compare/v0.0.166...v0.0.167
 [0.0.166]: https://github.com/aallan/vera/compare/v0.0.165...v0.0.166
 [0.0.165]: https://github.com/aallan/vera/compare/v0.0.164...v0.0.165

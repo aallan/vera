@@ -44,6 +44,29 @@ would serialise every proposal on editor latency.  On refuse,
 canonical state is untouched: same isolation guarantee as
 ``vera/speculativeEdit``.
 
+``vera/addEffect`` (Phase F3) — request params::
+
+    {"uri": "<document uri>", "fn": "<top-level function name>",
+     "effect": "<effect ref, e.g. IO or State<Int>>"}
+
+The genuinely multi-site workflow: adding an effect to a function's
+row invalidates the row of every **transitive caller** (each call
+site would otherwise fail effect checking), so the inverse call graph
+— built from the Phase B ``direct_callee_names`` walker — determines
+the propagation set, every affected ``effects(...)`` clause is
+rewritten by span (``pure`` → ``<E>``, ``<A>`` → ``<A, E>``,
+functions already naming the effect are skipped), and ONE multi-site
+candidate runs through the proposeEdit pipeline.  The response adds
+``rewritten``: the affected functions in declaration order; if it is
+empty the row state was already satisfied and nothing ran
+(``applied: false, ok: true, proof_delta: null`` — the no-op shape).
+Propagation is handler-unaware by design (a caller that handles the
+effect inside a ``handle[E]`` block is still rewritten — refining the
+closure to stop at handlers is noted future work) and single-file
+(module-qualified calls do not propagate across the file boundary).
+Effect identity is the base name before any type arguments, so
+``State<Int>`` will not be added next to an existing ``State<Bool>``.
+
 ``vera/strengthenContract`` (Phase F2) — request params::
 
     {"uri": "<document uri>", "fn": "<top-level function name>",
@@ -73,6 +96,7 @@ from lsprotocol import types as lsp
 from vera import ast
 from vera.lsp.documents import Document
 from vera.lsp.extensions import speculative_edit
+from vera.obligations.cache import direct_callee_names
 from vera.obligations.core import ProofObligation
 from vera.obligations.session import VerificationSession
 
@@ -278,3 +302,141 @@ def strengthen_contract(
             f"no top-level function {fn_name!r} with a {kind} clause",
         )
     return apply_propose_edit(server, uri, candidate, force=False)
+
+
+def _top_level_fns(program: ast.Program) -> dict[str, ast.FnDecl]:
+    """Top-level functions by name, in declaration order (dicts
+    preserve insertion order)."""
+    fns: dict[str, ast.FnDecl] = {}
+    for top in program.declarations:
+        decl = top.decl
+        if isinstance(decl, ast.FnDecl):
+            fns[decl.name] = decl
+    return fns
+
+
+def transitive_callers(
+    program: ast.Program, fn_name: str,
+) -> list[str] | None:
+    """*fn_name* plus every top-level function that transitively calls
+    it, in declaration order; ``None`` if no such top-level function.
+
+    The inverse closure over the Phase B call walker: plain ``FnCall``
+    names only, so module-qualified calls never propagate across the
+    file boundary, and calls inside ``where`` blocks attribute to
+    their containing top-level function.
+    """
+    fns = _top_level_fns(program)
+    if fn_name not in fns:
+        return None
+    callees = {
+        name: direct_callee_names(decl) & fns.keys()
+        for name, decl in fns.items()
+    }
+    affected = {fn_name}
+    changed = True
+    while changed:
+        changed = False
+        for name, called in callees.items():
+            if name not in affected and called & affected:
+                affected.add(name)
+                changed = True
+    return [name for name in fns if name in affected]
+
+
+def _effect_base(ref_text: str) -> str:
+    """Effect identity: the reference text before any type arguments
+    (``State<Int>`` → ``State``; ``Mod.IO`` → ``Mod.IO``)."""
+    return ref_text.split("<", 1)[0].strip()
+
+
+def _row_names(row: ast.EffectSet) -> set[str]:
+    names: set[str] = set()
+    for ref in row.effects:
+        if isinstance(ref, ast.EffectRef):
+            names.add(ref.name)
+        elif isinstance(ref, ast.QualifiedEffectRef):
+            names.add(f"{ref.module}.{ref.name}")
+    return names
+
+
+def effect_row_rewrite(
+    text: str, decl: ast.FnDecl, effect: str,
+) -> tuple[int, int, str] | None:
+    """``(start, end, replacement)`` adding *effect* to *decl*'s row,
+    or ``None`` if the row already names it (idempotence).
+
+    Span facts this relies on (verified against the parser):
+    ``PureEffect.span`` covers exactly ``pure``; ``EffectSet.span``
+    covers the whole ``<...>`` including brackets, so the append
+    splice reuses the original source verbatim up to the closing
+    bracket.
+    """
+    row = decl.effect
+    if row.span is None:
+        return None
+    if isinstance(row, ast.PureEffect):
+        start, end = span_offsets(text, row.span)
+        return start, end, f"<{effect}>"
+    if isinstance(row, ast.EffectSet):
+        if _effect_base(effect) in {
+            _effect_base(n) for n in _row_names(row)
+        }:
+            return None
+        start, end = span_offsets(text, row.span)
+        return start, end, text[start : end - 1] + f", {effect}>"
+    return None
+
+
+def add_effect(
+    server: VeraLanguageServer,
+    uri: str,
+    fn_name: str,
+    effect: str,
+) -> dict[str, Any]:
+    """Run the full addEffect workflow against *server* state.
+
+    Same locking/racing model as :func:`strengthen_contract`.  Raises
+    ``ValueError`` when the request cannot name a target (no analysis,
+    unparseable document, unknown top-level function).
+    """
+    with server.analysis_lock:
+        analysis = server.analyses.get(uri)
+    if analysis is None:
+        raise ValueError(
+            f"no analysis for {uri!r} — open the document first",
+        )
+    if analysis.program is None:
+        raise ValueError(
+            f"document {uri!r} does not parse; "
+            "effect rows cannot be located",
+        )
+    affected = transitive_callers(analysis.program, fn_name)
+    if affected is None:
+        raise ValueError(f"no top-level function {fn_name!r}")
+
+    fns = _top_level_fns(analysis.program)
+    rewrites: list[tuple[int, int, str]] = []
+    rewritten: list[str] = []
+    for name in affected:
+        rewrite = effect_row_rewrite(analysis.text, fns[name], effect)
+        if rewrite is not None:
+            rewrites.append(rewrite)
+            rewritten.append(name)
+    if not rewrites:
+        # Every affected row already names the effect: nothing to
+        # verify, nothing to apply — the documented no-op shape.
+        return {
+            "applied": False,
+            "ok": True,
+            "proof_delta": None,
+            "diagnostics": 0,
+            "rewritten": [],
+        }
+
+    candidate = analysis.text
+    for start, end, replacement in sorted(rewrites, reverse=True):
+        candidate = candidate[:start] + replacement + candidate[end:]
+    response = apply_propose_edit(server, uri, candidate, force=False)
+    response["rewritten"] = rewritten
+    return response
