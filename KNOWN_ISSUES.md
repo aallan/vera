@@ -7,6 +7,7 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 | Bug | Issue |
 |-----|-------|
 | Duplicate E501 diagnostics for a violating call site (doubled in `--json` and LSP hover) | [#727](https://github.com/aallan/vera/issues/727) |
+| LSP diagnostics drop the `rationale`/`Fix:` text that `--json` carries — hovers say what broke but not how to fix it | [#728](https://github.com/aallan/vera/issues/728) |
 
 ## Limitations
 
