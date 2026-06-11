@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.167] - 2026-06-11
+
+### Added
+
+- **[#222](https://github.com/aallan/vera/issues/222) Phase F2 — `vera/strengthenContract`**, the contract-change workflow with a call-site audit: `{uri, fn, kind: requires|ensures, expr}` locates the first clause of that kind on the named top-level function, splices the new expression over the clause's span in the canonical document, and runs the candidate through the proposeEdit pipeline.  The audit is the proof delta itself — a tightened precondition some caller no longer satisfies surfaces as `newly_undischarged` `call_pre` items at the call sites (Phase A keys obligations by call-site span precisely for this) and the gate refuses; a strengthened postcondition the body proves discharges and applies.  No `force` parameter — the dedicated workflow exists to make the audited path the easy one (an agent that wants to push through a breaking change can construct the full text and call `vera/proposeEdit` with `force` explicitly).  Requests that cannot name a splice target (unknown function, unopened or unparseable document, bad `kind`) refuse with JSON-RPC InvalidParams at the boundary.
+
 ## [0.0.166] - 2026-06-11
 
 ### Added
@@ -2445,7 +2451,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.166...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.167...HEAD
+[0.0.167]: https://github.com/aallan/vera/compare/v0.0.166...v0.0.167
 [0.0.166]: https://github.com/aallan/vera/compare/v0.0.165...v0.0.166
 [0.0.165]: https://github.com/aallan/vera/compare/v0.0.164...v0.0.165
 [0.0.164]: https://github.com/aallan/vera/compare/v0.0.163...v0.0.164
