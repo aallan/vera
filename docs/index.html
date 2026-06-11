@@ -172,8 +172,9 @@
     .twocol p code, .install p code, .agents p code{background:var(--paper-hi);padding:.05rem .3rem;border-radius:3px;font-size:.85em}
     .agents p code, .agents .lead code{color:var(--ink-900)}
 
+    .editor-rows{margin-top:1.25rem;padding-left:1rem;border-left:2px solid rgba(255,176,128,.3)}
     .editor-row{display:flex;align-items:center;gap:.5rem;margin-top:.18rem}
-    .editor-row:first-of-type{margin-top:1.25rem}
+    .editor-rows .editor-row:first-of-type{margin-top:0}
     .editor-row img{height:20px;flex-shrink:0}
     .editor-row .text{font-size:.85rem;color:var(--ink-500)}
 
@@ -552,6 +553,7 @@ vera run examples/hello_world.vera
 vera compile --target browser examples/hello_world.vera</pre>
       </div>
 
+      <div class="editor-rows">
       <div class="editor-row">
         <img src="textmate-icon.png" alt="TextMate">
         <div class="text">Syntax highlighting for TextMate: download the <a href="https://github.com/aallan/vera/tree/main/editors/textmate">Vera <code>.tmbundle</code></a>.</div>
@@ -559,6 +561,7 @@ vera compile --target browser examples/hello_world.vera</pre>
       <div class="editor-row">
         <img src="vscode-icon.png" alt="VS Code">
         <div class="text">Language server client and syntax highlighting for Visual Studio Code<br>Install the <a href="https://github.com/aallan/vera/tree/main/editors/vscode">Vera extension</a> &mdash; it starts <code>vera lsp</code> automatically for <code>.vera</code> files.</div>
+      </div>
       </div>
 
       <p style="color:var(--ink-500);margin-top:1.25rem">Live proof-aware diagnostics, hover, slot go-to-definition, and typed-hole completion come from the <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">language server</a> &mdash; included in the install above (standalone: <code>pip install -e ".[lsp]"</code>). Any editor with a generic LSP client can point at <code>vera lsp</code> directly.</p>
