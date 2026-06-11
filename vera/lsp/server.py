@@ -42,7 +42,7 @@ from vera.lsp.features import (
     hover_at,
     to_lsp_diagnostics,
 )
-from vera.lsp.workflows import apply_propose_edit
+from vera.lsp.workflows import apply_propose_edit, strengthen_contract
 from vera.obligations.session import VerificationSession
 
 
@@ -229,6 +229,31 @@ def create_server() -> VeraLanguageServer:
         return apply_propose_edit(
             server, uri, text, _force_param(params),
         )
+
+    @server.feature("vera/strengthenContract")
+    def vera_strengthen_contract(
+        ls: Any, params: Any,
+    ) -> dict[str, Any]:
+        """#222 Phase F2: contract change with call-site audit.
+
+        Splice + verify + gate run in
+        :func:`vera.lsp.workflows.strengthen_contract`; requests that
+        cannot name a splice target (unknown function, unopened or
+        unparseable document) refuse with InvalidParams.
+        """
+        uri = _require_str(params, "uri")
+        fn_name = _require_str(params, "fn")
+        kind = _require_str(params, "kind")
+        expr = _require_str(params, "expr")
+        if kind not in ("requires", "ensures"):
+            raise JsonRpcInvalidParams(
+                message=f"'kind' must be 'requires' or 'ensures', "
+                f"got {kind!r}",
+            )
+        try:
+            return strengthen_contract(server, uri, fn_name, kind, expr)
+        except ValueError as exc:
+            raise JsonRpcInvalidParams(message=str(exc)) from exc
 
     return server
 

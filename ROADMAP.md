@@ -4,7 +4,7 @@ Where the project is going.  See [HISTORY.md](HISTORY.md) for what's been built 
 
 ## Where we are
 
-4,291 tests, 89 conformance programs, 35 examples, 13 spec chapters.
+4,299 tests, 89 conformance programs, 35 examples, 13 spec chapters.
 
 ## What's next
 
@@ -20,7 +20,7 @@ Where the project is going.  See [HISTORY.md](HISTORY.md) for what's been built 
 
 | Order | Issue | Why now |
 |:---:|---|---|
-| 5 | [#222](https://github.com/aallan/vera/issues/222) — LSP Phase F: skill-layer workflows | Reopened for the deferred skill layer: `vera/proposeEdit` (enforced edit → verify → apply; shipped v0.0.166), `vera/strengthenContract` (contract change with call-site audit), `vera/addEffect` (effect propagation through the call graph) — multi-step workflows composing the Phase E proof delta server-side so an agent cannot apply an unverified edit. |
+| 5 | [#222](https://github.com/aallan/vera/issues/222) — LSP Phase F: skill-layer workflows | Reopened for the deferred skill layer: `vera/proposeEdit` (enforced edit → verify → apply; shipped v0.0.166), `vera/strengthenContract` (contract change with call-site audit; shipped v0.0.167), `vera/addEffect` (effect propagation through the call graph) — multi-step workflows composing the Phase E proof delta server-side so an agent cannot apply an unverified edit. |
 | 6 | [#523](https://github.com/aallan/vera/issues/523) — `vera context` token-budgeted project export | New CLI command that walks a project's dependency graph and emits a compact LLM-consumable summary of public signatures, contracts, effects, and ADTs.  Mandatory contracts carry the semantic payload that named-variable languages convey via identifiers and docstrings, so the output is denser per byte than equivalent Python/TS exports.  Estimated 1–2 days; module system and function registry already exist internally. |
 | 7 | [#370](https://github.com/aallan/vera/issues/370) — Configurable `Inference.complete` `max_tokens` / `temperature` | Currently hardcoded.  Agent workloads need control over both — for cost gates, deterministic replays, and routing strategies.  Smallest of the Inference-hardening items but also the one that blocks the most concrete user requests. |
 

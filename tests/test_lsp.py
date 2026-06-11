@@ -601,6 +601,8 @@ from vera.lsp.workflows import (  # noqa: E402
     apply_propose_edit,
     full_document_range,
     propose_edit,
+    splice_contract,
+    strengthen_contract,
 )
 
 # Same program, every span shifted one line: parses identically but all
@@ -862,3 +864,132 @@ class TestFullDocumentRange:
         # ASTRAL_LINE = "ab🎉cd": 5 code points, 6 UTF-16 units.
         r = full_document_range(Document(uri=URI, text=ASTRAL_LINE))
         assert r.end == lsp.Position(line=0, character=6)
+
+
+# =====================================================================
+# Phase F2 — vera/strengthenContract call-site audit workflow
+# =====================================================================
+
+# A caller/callee pair with trivially-true contracts: the substrate
+# for contract-strengthening deltas in both directions.
+CALL_BASE = (
+    "public fn callee(@Nat -> @Nat)\n"
+    "  requires(true)\n"
+    "  ensures(true)\n"
+    "  effects(pure)\n"
+    "{\n"
+    "  @Nat.0\n"
+    "}\n"
+    "\n"
+    "public fn caller(@Nat -> @Nat)\n"
+    "  requires(true)\n"
+    "  ensures(true)\n"
+    "  effects(pure)\n"
+    "{\n"
+    "  callee(@Nat.0)\n"
+    "}\n"
+)
+
+
+def _program(text: str) -> object:
+    a = analyze(VerificationSession(), URI, text)
+    assert a.program is not None
+    return a.program
+
+
+class TestSpliceContract:
+    def test_replaces_first_requires_of_named_fn(self) -> None:
+        out = splice_contract(
+            _program(CALL_BASE), CALL_BASE,
+            "callee", "requires", "@Nat.0 >= 1",
+        )
+        assert out is not None
+        # callee's clause replaced, caller's untouched.
+        assert out.count("requires(@Nat.0 >= 1)") == 1
+        assert out.count("requires(true)") == 1
+        assert out.index("requires(@Nat.0 >= 1)") < out.index(
+            "requires(true)",
+        )
+        # Everything else byte-identical.
+        assert out.replace(
+            "requires(@Nat.0 >= 1)", "requires(true)", 1,
+        ) == CALL_BASE
+
+    def test_replaces_ensures(self) -> None:
+        out = splice_contract(
+            _program(CALL_BASE), CALL_BASE,
+            "caller", "ensures", "@Nat.0 >= 0",
+        )
+        assert out is not None
+        assert "ensures(@Nat.0 >= 0)" in out
+        # callee's ensures untouched: exactly one replaced.
+        assert out.count("ensures(true)") == 1
+
+    def test_unknown_fn_returns_none(self) -> None:
+        assert splice_contract(
+            _program(CALL_BASE), CALL_BASE,
+            "missing", "requires", "true",
+        ) is None
+
+
+class TestStrengthenContract:
+    def _server(self) -> _FakeServer:
+        server = _FakeServer()
+        server.store.open(URI, CALL_BASE, version=1)
+        server.analyze_and_publish(URI, CALL_BASE)
+        server.published.clear()
+        return server
+
+    def test_tightened_pre_refused_with_call_site_audit(self) -> None:
+        """The Phase F2 pin: a precondition some caller no longer
+        satisfies surfaces as newly_undischarged call_pre items at the
+        call site, and the gate refuses the edit."""
+        server = self._server()
+        out = strengthen_contract(
+            server, URI, "callee", "requires", "@Nat.0 >= 1",
+        )
+        assert out["applied"] is False
+        und = out["proof_delta"]["newly_undischarged"]
+        assert any(i["kind"] == "call_pre" for i in und)
+        # Canonical state untouched.
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text == CALL_BASE
+        assert server.applied_edits == []
+
+    def test_provable_ensures_applies(self) -> None:
+        """Strengthening callee's postcondition to something its body
+        proves (identity on @Nat is always >= 0) discharges and
+        applies."""
+        server = self._server()
+        out = strengthen_contract(
+            server, URI, "callee", "ensures", "@Nat.0 >= 0",
+        )
+        assert out["applied"] is True
+        assert out["proof_delta"]["newly_undischarged"] == []
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert "ensures(@Nat.0 >= 0)" in doc.text
+        assert server.published == [URI]
+
+    def test_no_analysis_raises(self) -> None:
+        with pytest.raises(ValueError, match="open the document"):
+            strengthen_contract(
+                _FakeServer(), URI, "callee", "requires", "true",
+            )
+
+    def test_unparseable_document_raises(self) -> None:
+        server = _FakeServer()
+        server.store.open(URI, "public fn broken(", version=1)
+        server.analyze_and_publish(URI, "public fn broken(")
+        with pytest.raises(ValueError, match="does not parse"):
+            strengthen_contract(
+                server, URI, "callee", "requires", "true",
+            )
+
+    def test_unknown_fn_raises(self) -> None:
+        server = self._server()
+        with pytest.raises(ValueError, match="missing"):
+            strengthen_contract(
+                server, URI, "missing", "requires", "true",
+            )

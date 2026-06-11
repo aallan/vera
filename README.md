@@ -204,7 +204,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.0.166 — 810+ commits, 166 releases, 4,291 tests, 96% code coverage, 89 conformance programs, 35 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.0.167 — 810+ commits, 167 releases, 4,299 tests, 96% code coverage, 89 conformance programs, 35 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [13 chapters](spec/).
 
