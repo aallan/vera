@@ -13,12 +13,6 @@
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://veralang.dev/LSP_SERVER.md</loc>
-    <lastmod>2026-06-11</lastmod>
-    <changefreq>weekly</changefreq>
-    <priority>0.8</priority>
-  </url>
-  <url>
     <loc>https://veralang.dev/llms.txt</loc>
     <lastmod>2026-06-11</lastmod>
     <changefreq>weekly</changefreq>

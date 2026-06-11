@@ -18,7 +18,7 @@ Current version: 0.0.169. The reference compiler is written in Python. Install w
 
 - [AGENTS.md](https://raw.githubusercontent.com/aallan/vera/main/AGENTS.md): Instructions for AI agents — workflow, commands, error handling, and essential rules for writing correct Vera.
 - [FAQ](https://raw.githubusercontent.com/aallan/vera/main/FAQ.md): Design rationale — why no variable names, what gets verified, comparison to Dafny/Lean/Koka, research citations.
-- [LSP_SERVER.md](https://veralang.dev/LSP_SERVER.md): The language server — live proof-aware diagnostics, hover, slot go-to-definition, hole completion, and the custom proof-delta methods for coding agents (vera/speculativeEdit, vera/proposeEdit, vera/strengthenContract, vera/addEffect).
+- [LSP_SERVER.md](https://raw.githubusercontent.com/aallan/vera/main/LSP_SERVER.md): The language server — live proof-aware diagnostics, hover, slot go-to-definition, hole completion, and the custom proof-delta methods for coding agents (vera/speculativeEdit, vera/proposeEdit, vera/strengthenContract, vera/addEffect).
 
 ## Specification
 

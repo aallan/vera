@@ -215,7 +215,7 @@ Editor support: [TextMate `.tmbundle`](https://github.com/aallan/vera/tree/main/
 This page is also a machine-readable specification. Every document here has an alternate in markdown, served on the same domain, discoverable through standard `<link rel="alternate">`, `llms.txt`, and the Mintlify `llms-txt` / `llms-full-txt` conventions.
 
 - [`SKILL.md`](https://veralang.dev/SKILL.md) — Complete language reference for writing Vera code: syntax, slots, contracts, effects, common mistakes, working examples.
-- [`LSP_SERVER.md`](https://veralang.dev/LSP_SERVER.md) — The language server: live proof-aware diagnostics and the custom proof-delta methods agents use to ask “does this edit still prove?” before committing it.
+- [`LSP_SERVER.md`](https://raw.githubusercontent.com/aallan/vera/main/LSP_SERVER.md) — The language server: live proof-aware diagnostics and the custom proof-delta methods agents use to ask “does this edit still prove?” before committing it.
 - [`AGENTS.md`](https://raw.githubusercontent.com/aallan/vera/main/AGENTS.md) — Setup instructions for any agent system (Copilot, Cursor, Windsurf, custom). Writing Vera code and working on the compiler.
 - [`CLAUDE.md`](https://raw.githubusercontent.com/aallan/vera/main/CLAUDE.md) — Project orientation for Claude Code. Key commands, repo layout, workflows, invariants.
 

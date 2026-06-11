@@ -8,7 +8,6 @@ Auto-generates from source documentation:
   - docs/sitemap.xml     XML sitemap
   - docs/index.md        Markdown companion of index.html
   - docs/SKILL.md        Language reference served on-domain (copy of SKILL.md)
-  - docs/LSP_SERVER.md   Language-server manual served on-domain (copy of LSP_SERVER.md)
 
 Run manually or from CI:
     python scripts/build_site.py
@@ -101,7 +100,7 @@ and working examples. This is the primary document for writing Vera code.
 commands, error handling, and essential rules for writing correct Vera.
 - [FAQ]({RAW}/FAQ.md): Design rationale — why no variable names, what gets \
 verified, comparison to Dafny/Lean/Koka, research citations.
-- [LSP_SERVER.md]({SITE}/LSP_SERVER.md): The language server — live \
+- [LSP_SERVER.md]({RAW}/LSP_SERVER.md): The language server — live \
 proof-aware diagnostics, hover, slot go-to-definition, hole completion, \
 and the custom proof-delta methods for coding agents \
 (vera/speculativeEdit, vera/proposeEdit, vera/strengthenContract, \
@@ -320,7 +319,6 @@ def build_sitemap_xml() -> str:
     urls = [
         (f"{SITE}/", "1.0", "weekly"),
         (f"{SITE}/SKILL.md", "0.9", "weekly"),
-        (f"{SITE}/LSP_SERVER.md", "0.8", "weekly"),
         (f"{SITE}/llms.txt", "0.8", "weekly"),
         (f"{SITE}/llms-full.txt", "0.8", "weekly"),
         (f"{SITE}/index.md", "0.5", "weekly"),
@@ -575,7 +573,7 @@ Editor support: [TextMate `.tmbundle`]({REPO}/tree/main/editors/textmate), [VS C
 This page is also a machine-readable specification. Every document here has an alternate in markdown, served on the same domain, discoverable through standard `<link rel="alternate">`, `llms.txt`, and the Mintlify `llms-txt` / `llms-full-txt` conventions.
 
 - [`SKILL.md`]({SITE}/SKILL.md) — Complete language reference for writing Vera code: syntax, slots, contracts, effects, common mistakes, working examples.
-- [`LSP_SERVER.md`]({SITE}/LSP_SERVER.md) — The language server: live proof-aware diagnostics and the custom proof-delta methods agents use to ask “does this edit still prove?” before committing it.
+- [`LSP_SERVER.md`]({RAW}/LSP_SERVER.md) — The language server: live proof-aware diagnostics and the custom proof-delta methods agents use to ask “does this edit still prove?” before committing it.
 - [`AGENTS.md`]({RAW}/AGENTS.md) — Setup instructions for any agent system (Copilot, Cursor, Windsurf, custom). Writing Vera code and working on the compiler.
 - [`CLAUDE.md`]({RAW}/CLAUDE.md) — Project orientation for Claude Code. Key commands, repo layout, workflows, invariants.
 
@@ -624,20 +622,6 @@ def build_skill_md() -> str:
     return _abs_links((ROOT / "SKILL.md").read_text(encoding="utf-8"))
 
 
-# ── LSP_SERVER.md ───────────────────────────────────────────────────
-
-
-def build_lsp_server_md() -> str:
-    """Return LSP_SERVER.md with relative links rewritten to absolute URLs.
-
-    Same on-domain treatment as SKILL.md: the language-server manual is
-    the other document agents consume outside the repository context, so
-    it is served at veralang.dev/LSP_SERVER.md with GitHub-absolute
-    links.
-    """
-    return _abs_links((ROOT / "LSP_SERVER.md").read_text(encoding="utf-8"))
-
-
 # ── main ────────────────────────────────────────────────────────────
 
 
@@ -650,7 +634,6 @@ def main() -> int:
         "sitemap.xml": build_sitemap_xml(),
         "index.md": build_index_md(version),
         "SKILL.md": build_skill_md(),
-        "LSP_SERVER.md": build_lsp_server_md(),
     }
     DOCS.mkdir(parents=True, exist_ok=True)
     for name, content in files.items():

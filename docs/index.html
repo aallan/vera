@@ -586,7 +586,7 @@ vera compile --target browser examples/hello_world.vera</pre>
           <div class="fdesc">Project orientation for Claude Code. Key commands, repo layout, workflows, invariants.</div>
         </div>
         <div class="agent-card">
-          <div class="fname"><a href="/LSP_SERVER.md">LSP_SERVER.md</a></div>
+          <div class="fname"><a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">LSP_SERVER.md</a></div>
           <div class="fdesc">The language server &mdash; live verification, and the custom proof-delta methods agents use to ask &ldquo;does this edit still prove?&rdquo; before committing it.</div>
         </div>
       </div>
@@ -598,7 +598,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       </div>
       <p>For other models: point them at <a href="/SKILL.md">SKILL.md</a> via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown.</p>
 
-      <p style="margin-top:2rem">The documents above are how machines <em>read</em> Vera. The <a href="/LSP_SERVER.md">language server</a> is how they <em>interrogate</em> it: <code>vera lsp</code> holds a warm, incremental Z3 session between edits, and four custom methods &mdash; <code>vera/speculativeEdit</code>, <code>vera/proposeEdit</code>, <code>vera/strengthenContract</code>, <code>vera/addEffect</code> &mdash; let an agent learn whether an edit <em>keeps</em>, <em>breaks</em>, or <em>strengthens</em> a program's proofs before committing it, then apply it only through the verification gate.</p>
+      <p style="margin-top:2rem">The documents above are how machines <em>read</em> Vera. The <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">language server</a> is how they <em>interrogate</em> it: <code>vera lsp</code> holds a warm, incremental Z3 session between edits, and four custom methods &mdash; <code>vera/speculativeEdit</code>, <code>vera/proposeEdit</code>, <code>vera/strengthenContract</code>, <code>vera/addEffect</code> &mdash; let an agent learn whether an edit <em>keeps</em>, <em>breaks</em>, or <em>strengthens</em> a program's proofs before committing it, then apply it only through the verification gate.</p>
       <div class="code-block">
 <pre><span class="cm"># vera/speculativeEdit — the proof delta for an in-memory edit</span>
 {"ok": true,
