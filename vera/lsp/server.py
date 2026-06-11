@@ -45,6 +45,24 @@ from vera.lsp.workflows import apply_propose_edit
 from vera.obligations.session import VerificationSession
 
 
+_MISSING = object()
+
+
+def _param(params: Any, key: str) -> Any:
+    """Extract *key* from custom-method params of either shape.
+
+    pygls hands custom methods an attribute-style namespace; tests and
+    other in-process callers may pass a plain dict.  Membership is
+    decided with a sentinel, never truthiness — ``text=""`` (replace
+    with an empty document) is a present value, and falling through to
+    ``.get`` on an attribute carrier would raise ``AttributeError``.
+    """
+    value = getattr(params, key, _MISSING)
+    if value is _MISSING and hasattr(params, "get"):
+        value = params.get(key, _MISSING)
+    return None if value is _MISSING else value
+
+
 class VeraLanguageServer(LanguageServer):
     """LanguageServer carrying document, session, and analysis state."""
 
@@ -155,8 +173,8 @@ def create_server() -> VeraLanguageServer:
         but never touches the per-URI analysis table or published
         diagnostics: the canonical editor state is unchanged.
         """
-        uri = getattr(params, "uri", None) or params.get("uri")
-        text = getattr(params, "text", None) or params.get("text")
+        uri = _param(params, "uri")
+        text = _param(params, "text")
         baseline_analysis = server.analyses.get(uri)
         baseline = (
             baseline_analysis.obligations
@@ -174,12 +192,10 @@ def create_server() -> VeraLanguageServer:
         :func:`vera.lsp.workflows.apply_propose_edit`; this handler is
         wire glue only.
         """
-        uri = getattr(params, "uri", None) or params.get("uri")
-        text = getattr(params, "text", None) or params.get("text")
-        force = getattr(params, "force", None)
-        if force is None and hasattr(params, "get"):
-            force = params.get("force")
-        return apply_propose_edit(server, uri, text, bool(force))
+        uri = _param(params, "uri")
+        text = _param(params, "text")
+        force = bool(_param(params, "force"))
+        return apply_propose_edit(server, uri, text, force)
 
     return server
 

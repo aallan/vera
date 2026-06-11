@@ -586,8 +586,11 @@ class TestSpeculativeEdit:
 # Phase F1 — vera/proposeEdit enforced edit workflow
 # =====================================================================
 
+import concurrent.futures  # noqa: E402
 import threading  # noqa: E402
+import types  # noqa: E402
 
+from vera.lsp.server import _param  # noqa: E402
 from vera.lsp.workflows import (  # noqa: E402
     apply_propose_edit,
     full_document_range,
@@ -609,7 +612,9 @@ class _FakeServer:
     ``apply_propose_edit`` touches exactly these members, so the
     wiring tests stay transport-free; the stdio e2e test owns real
     handler registration.  ``analyze_and_publish`` mirrors the real
-    method's lock-then-publish shape.
+    method's lock-then-publish shape, and ``workspace_apply_edit``
+    mirrors pygls' real signature by returning a resolved Future
+    carrying the client's verdict (``client_applies``).
     """
 
     def __init__(self) -> None:
@@ -619,11 +624,18 @@ class _FakeServer:
         self.analyses: dict[str, object] = {}
         self.applied_edits: list[lsp.ApplyWorkspaceEditParams] = []
         self.published: list[str] = []
+        self.client_applies = True
 
     def workspace_apply_edit(
         self, params: lsp.ApplyWorkspaceEditParams,
-    ) -> None:
+    ) -> concurrent.futures.Future[lsp.ApplyWorkspaceEditResult]:
         self.applied_edits.append(params)
+        fut: concurrent.futures.Future[lsp.ApplyWorkspaceEditResult]
+        fut = concurrent.futures.Future()
+        fut.set_result(
+            lsp.ApplyWorkspaceEditResult(applied=self.client_applies),
+        )
+        return fut
 
     def analyze_and_publish(self, uri: str, text: str) -> None:
         with self.analysis_lock:
@@ -742,6 +754,28 @@ class TestProposeEditWiring:
         assert doc.version == 1
         assert server.analyses[URI] is before
 
+    def test_client_refusal_does_not_roll_back(self) -> None:
+        """workspace/applyEdit is fire-and-forget by design: the
+        response's ``applied`` reports the GATE verdict, canonical
+        state reflects the request immediately, and a client that
+        declines re-converges on its next full-sync didChange.  Pinned
+        so a future move to await-the-client semantics is a conscious
+        change, not drift."""
+        server = self._server()
+        server.client_applies = False
+        out = apply_propose_edit(server, URI, SHIFTED_BASE)
+        assert out["applied"] is True
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text == SHIFTED_BASE  # no rollback
+        assert server.published == [URI]
+        # The heal path: the editor's unchanged buffer full-syncs back
+        # and simply wins, exactly like any other didChange.
+        server.store.change(URI, SPEC_BASE, version=3)
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text == SPEC_BASE
+
     def test_apply_to_unopened_document_uses_clamp_range(self) -> None:
         """proposeEdit on a URI the client never opened: empty
         baseline, sentinel whole-file range (clients clamp), and the
@@ -755,6 +789,25 @@ class TestProposeEditWiring:
         assert doc is not None
         assert doc.text == SPEC_BASE
         assert doc.version == 0
+
+
+class TestParamExtraction:
+    """Custom-method params arrive as attribute namespaces from pygls
+    or plain dicts from in-process callers; ``_param`` must treat
+    falsy-but-present values (``text=""``) as present."""
+
+    def test_empty_text_on_attribute_carrier(self) -> None:
+        params = types.SimpleNamespace(uri=URI, text="")
+        assert _param(params, "text") == ""
+        assert _param(params, "uri") == URI
+
+    def test_dict_params(self) -> None:
+        assert _param({"uri": URI, "text": ""}, "text") == ""
+        assert _param({"force": False}, "force") is False
+
+    def test_missing_key_is_none(self) -> None:
+        assert _param(types.SimpleNamespace(uri=URI), "force") is None
+        assert _param({"uri": URI}, "force") is None
 
 
 class TestFullDocumentRange:

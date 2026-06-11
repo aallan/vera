@@ -34,8 +34,14 @@ the server must round-trip the edit rather than silently diverge), the
 canonical :class:`~vera.lsp.documents.DocumentStore` text updates, and
 the document re-analyzes + republishes diagnostics.  The client's
 echoed ``didChange`` then replays as a no-op from the warm session's
-discharge cache — the pre-warming Phase E was designed around.  On
-refuse, canonical state is untouched: same isolation guarantee as
+discharge cache — the pre-warming Phase E was designed around.  The
+``applyEdit`` request is fire-and-forget: the response's ``applied``
+reports the *gate* verdict, not the client's asynchronous answer, and
+canonical state is not rolled back if the client declines — a
+declining client's buffer re-converges on its next full-sync
+``didChange``, and blocking the handler on the client round-trip
+would serialise every proposal on editor latency.  On refuse,
+canonical state is untouched: same isolation guarantee as
 ``vera/speculativeEdit``.
 """
 
