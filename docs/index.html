@@ -604,10 +604,17 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       <p style="margin-top:2rem">The documents above are how machines <em>read</em> Vera. The <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">language server</a> is how they <em>interrogate</em> it: <code>vera lsp</code> holds a warm, incremental Z3 session between edits, and four custom methods &mdash; <code>vera/speculativeEdit</code>, <code>vera/proposeEdit</code>, <code>vera/strengthenContract</code>, <code>vera/addEffect</code> &mdash; let an agent learn whether an edit <em>keeps</em>, <em>breaks</em>, or <em>strengthens</em> a program's proofs before committing it, then apply it only through the verification gate.</p>
       <div class="code-block">
 <pre><span class="cm"># vera/speculativeEdit — the proof delta for an in-memory edit</span>
-{"ok": true,
- "proof_delta": {"newly_discharged": ["..."], "newly_undischarged": [],
-                 "timed_out": [], "removed": [], "unchanged": 11},
- "diagnostics": 0}</pre>
+{
+  <span class="sl">"ok"</span>: <span class="num">true</span>,
+  <span class="sl">"proof_delta"</span>: {
+    <span class="sl">"newly_discharged"</span>: [<span class="str">"..."</span>],
+    <span class="sl">"newly_undischarged"</span>: [],
+    <span class="sl">"timed_out"</span>: [],
+    <span class="sl">"removed"</span>: [],
+    <span class="sl">"unchanged"</span>: <span class="num">11</span>
+  },
+  <span class="sl">"diagnostics"</span>: <span class="num">0</span>
+}</pre>
       </div>
     </div>
   </section>
