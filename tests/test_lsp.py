@@ -580,3 +580,198 @@ class TestSpeculativeEdit:
         delta2 = proof_delta(baseline, [])
         assert len(delta2["removed"]) == len(baseline)
         assert delta2["unchanged"] == 0
+
+
+# =====================================================================
+# Phase F1 — vera/proposeEdit enforced edit workflow
+# =====================================================================
+
+import threading  # noqa: E402
+
+from vera.lsp.workflows import (  # noqa: E402
+    apply_propose_edit,
+    full_document_range,
+    propose_edit,
+)
+
+# Same program, every span shifted one line: parses identically but all
+# obligation content keys change, so the delta is removed+rediscovered
+# with nothing undischarged — a "clean different text" fixture that
+# needs no new Vera semantics.
+SHIFTED_BASE = "-- shifted\n" + SPEC_BASE
+BROKEN_BASE = SPEC_BASE.replace("requires(@Nat.0 >= 1)", "requires(true)")
+URI = "file:///p.vera"
+
+
+class _FakeServer:
+    """Structural stand-in for ``VeraLanguageServer``.
+
+    ``apply_propose_edit`` touches exactly these members, so the
+    wiring tests stay transport-free; the stdio e2e test owns real
+    handler registration.  ``analyze_and_publish`` mirrors the real
+    method's lock-then-publish shape.
+    """
+
+    def __init__(self) -> None:
+        self.store = DocumentStore()
+        self.session = VerificationSession()
+        self.analysis_lock = threading.Lock()
+        self.analyses: dict[str, object] = {}
+        self.applied_edits: list[lsp.ApplyWorkspaceEditParams] = []
+        self.published: list[str] = []
+
+    def workspace_apply_edit(
+        self, params: lsp.ApplyWorkspaceEditParams,
+    ) -> None:
+        self.applied_edits.append(params)
+
+    def analyze_and_publish(self, uri: str, text: str) -> None:
+        with self.analysis_lock:
+            self.analyses[uri] = analyze(self.session, uri, text)
+        self.published.append(uri)
+
+
+class TestProposeEditGate:
+    def _baseline(self) -> tuple[VerificationSession, list[object]]:
+        session = VerificationSession()
+        result = session.verify_source(SPEC_BASE, file=URI)
+        assert result.ok
+        return session, result.obligations
+
+    def test_clean_edit_applies(self) -> None:
+        session, baseline = self._baseline()
+        should, response = propose_edit(
+            session, baseline, URI, SHIFTED_BASE,
+        )
+        assert should is True
+        assert response["applied"] is True
+        assert response["ok"] is True
+        assert response["diagnostics"] == 0
+        assert response["proof_delta"]["newly_undischarged"] == []
+
+    def test_strengthening_edit_applies(self) -> None:
+        """newly_discharged must not block the gate — strengthening
+        proofs is the whole point of proposing an edit."""
+        session = VerificationSession()
+        weak = session.verify_source(BROKEN_BASE, file=URI)
+        should, response = propose_edit(
+            session, weak.obligations, URI, SPEC_BASE,
+        )
+        assert should is True
+        assert response["proof_delta"]["newly_discharged"]
+
+    def test_breaking_edit_refused(self) -> None:
+        session, baseline = self._baseline()
+        should, response = propose_edit(
+            session, baseline, URI, BROKEN_BASE,
+        )
+        assert should is False
+        assert response["applied"] is False
+        und = response["proof_delta"]["newly_undischarged"]
+        assert any(i["kind"] == "nat_sub" for i in und)
+
+    def test_error_edit_refused(self) -> None:
+        session, baseline = self._baseline()
+        bad = SPEC_BASE.replace("@Nat.0 - 1", '"not a nat"')
+        should, response = propose_edit(session, baseline, URI, bad)
+        assert should is False
+        assert response["ok"] is False
+        assert response["proof_delta"] is None
+        assert response["diagnostics"] >= 1
+
+    def test_force_overrides_proof_gate(self) -> None:
+        """force applies the edit but the delta still reports the
+        damage — override is loud, not blind."""
+        session, baseline = self._baseline()
+        should, response = propose_edit(
+            session, baseline, URI, BROKEN_BASE, force=True,
+        )
+        assert should is True
+        assert response["applied"] is True
+        assert response["proof_delta"]["newly_undischarged"]
+
+    def test_force_overrides_error_gate(self) -> None:
+        session, baseline = self._baseline()
+        should, response = propose_edit(
+            session, baseline, URI, "public fn broken(", force=True,
+        )
+        assert should is True
+        assert response["ok"] is False
+        assert response["proof_delta"] is None
+
+
+class TestProposeEditWiring:
+    def _server(self) -> _FakeServer:
+        server = _FakeServer()
+        server.store.open(URI, SPEC_BASE, version=1)
+        server.analyze_and_publish(URI, SPEC_BASE)
+        server.published.clear()
+        return server
+
+    def test_apply_path_round_trips(self) -> None:
+        server = self._server()
+        out = apply_propose_edit(server, URI, SHIFTED_BASE)
+        assert out["applied"] is True
+        # One workspace/applyEdit, full-document replacement.
+        assert len(server.applied_edits) == 1
+        (edit,) = server.applied_edits[0].edit.changes[URI]
+        assert edit.new_text == SHIFTED_BASE
+        assert edit.range.start == lsp.Position(line=0, character=0)
+        # SPEC_BASE ends with a newline: end is the virtual line past
+        # the last, column 0.
+        assert edit.range.end == lsp.Position(
+            line=SPEC_BASE.count("\n"), character=0,
+        )
+        # Canonical state updated and republished.
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text == SHIFTED_BASE
+        assert doc.version == 2
+        assert server.published == [URI]
+
+    def test_refuse_path_touches_nothing(self) -> None:
+        server = self._server()
+        before = server.analyses[URI]
+        out = apply_propose_edit(server, URI, BROKEN_BASE)
+        assert out["applied"] is False
+        assert server.applied_edits == []
+        assert server.published == []
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text == SPEC_BASE
+        assert doc.version == 1
+        assert server.analyses[URI] is before
+
+    def test_apply_to_unopened_document_uses_clamp_range(self) -> None:
+        """proposeEdit on a URI the client never opened: empty
+        baseline, sentinel whole-file range (clients clamp), and the
+        store learns the document."""
+        server = _FakeServer()
+        out = apply_propose_edit(server, URI, SPEC_BASE)
+        assert out["applied"] is True
+        (edit,) = server.applied_edits[0].edit.changes[URI]
+        assert edit.range.end.line == 2**31 - 1
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text == SPEC_BASE
+        assert doc.version == 0
+
+
+class TestFullDocumentRange:
+    def test_none_document_is_clamp_sentinel(self) -> None:
+        r = full_document_range(None)
+        assert r.start == lsp.Position(line=0, character=0)
+        assert r.end.line == 2**31 - 1
+
+    def test_trailing_newline_ends_on_virtual_line(self) -> None:
+        from vera.lsp.documents import Document
+
+        r = full_document_range(Document(uri=URI, text="a\nb\n"))
+        assert r.end == lsp.Position(line=2, character=0)
+
+    def test_no_trailing_newline_ends_in_utf16_units(self) -> None:
+        from vera.lsp.documents import Document
+
+        # ASTRAL_LINE = "ab🎉cd": 5 code points, 6 UTF-16 units.
+        r = full_document_range(Document(uri=URI, text=ASTRAL_LINE))
+        assert r.end == lsp.Position(line=0, character=6)

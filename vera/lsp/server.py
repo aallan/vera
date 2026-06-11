@@ -7,6 +7,9 @@ coordinate layer.  Phase D wires the obligation core in behind it:
 hover from the checker's expression-type side-table, slot
 go-to-definition, and typed-hole completion — all computed by the pure
 backing functions in :mod:`vera.lsp.features` and served here.
+Phase F adds the skill-layer workflows (:mod:`vera.lsp.workflows`):
+multi-step edit → verify → apply sequences exposed as single methods,
+so the verification gate cannot be skipped or reordered.
 
 Structure note: ``VeraLanguageServer`` subclasses pygls 2.x's typed
 ``pygls.lsp.server.LanguageServer`` (the 1.x ``pygls.server`` path no
@@ -38,6 +41,7 @@ from vera.lsp.features import (
     hover_at,
     to_lsp_diagnostics,
 )
+from vera.lsp.workflows import apply_propose_edit
 from vera.obligations.session import VerificationSession
 
 
@@ -160,6 +164,22 @@ def create_server() -> VeraLanguageServer:
         )
         with server.analysis_lock:
             return speculative_edit(server.session, baseline, uri, text)
+
+    @server.feature("vera/proposeEdit")
+    def vera_propose_edit(ls: Any, params: Any) -> dict[str, Any]:
+        """#222 Phase F1: enforced edit → verify → apply workflow.
+
+        The whole sequence — speculative verify, gate, and (on pass)
+        ``workspace/applyEdit`` + canonical-state update — runs in
+        :func:`vera.lsp.workflows.apply_propose_edit`; this handler is
+        wire glue only.
+        """
+        uri = getattr(params, "uri", None) or params.get("uri")
+        text = getattr(params, "text", None) or params.get("text")
+        force = getattr(params, "force", None)
+        if force is None and hasattr(params, "get"):
+            force = params.get("force")
+        return apply_propose_edit(server, uri, text, bool(force))
 
     return server
 
