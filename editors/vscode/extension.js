@@ -48,8 +48,10 @@ function resolveServerCommand() {
     // VS Code launched from the GUI does not inherit a shell PATH, so
     // a bare "vera" rarely resolves to the right binary (or at all).
     // The from-source layout keeps a venv inside the workspace —
-    // prefer that before falling back to PATH.
-    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    // prefer that before falling back to PATH. In a multi-root
+    // workspace the folder owning the active document is checked
+    // first, so another project's toolchain cannot shadow it.
+    const probe = (folder) => {
         for (const rel of [
             path.join(".venv", "bin", "vera"),
             path.join(".venv", "Scripts", "vera.exe"),
@@ -58,6 +60,26 @@ function resolveServerCommand() {
             if (fs.existsSync(candidate)) {
                 return candidate;
             }
+        }
+        return null;
+    };
+    const activeDoc = vscode.window.activeTextEditor?.document;
+    const activeFolder = activeDoc
+        ? vscode.workspace.getWorkspaceFolder(activeDoc.uri)
+        : undefined;
+    if (activeFolder) {
+        const found = probe(activeFolder);
+        if (found) {
+            return found;
+        }
+    }
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+        if (activeFolder && folder.index === activeFolder.index) {
+            continue;
+        }
+        const found = probe(folder);
+        if (found) {
+            return found;
         }
     }
     return configured;

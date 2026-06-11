@@ -45,8 +45,9 @@ and exits; every other `vera` command works without it.
 - **VS Code** — the [bundled extension](editors/vscode/) starts the
   server automatically for `.vera` files, finding the binary via the
   `vera.lsp.path` setting, then a workspace-local venv
-  (`.venv/bin/vera` — so a from-source clone needs no configuration),
-  then `PATH`. See its [README](editors/vscode/README.md) for setup.
+  (`.venv/bin/vera`, or `.venv\Scripts\vera.exe` on Windows — so a
+  from-source clone needs no configuration on either platform), then
+  `PATH`. See its [README](editors/vscode/README.md) for setup.
 - **Anything else** — point your editor's generic LSP client at the
   command `vera lsp` for language `vera` / file pattern `*.vera`,
   using stdio transport and full-document sync. That is the entire
