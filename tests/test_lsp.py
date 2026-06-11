@@ -598,11 +598,14 @@ from vera.lsp.server import (  # noqa: E402
     _require_str,
 )
 from vera.lsp.workflows import (  # noqa: E402
+    add_effect,
     apply_propose_edit,
+    effect_row_rewrite,
     full_document_range,
     propose_edit,
     splice_contract,
     strengthen_contract,
+    transitive_callers,
 )
 
 # Same program, every span shifted one line: parses identically but all
@@ -993,3 +996,149 @@ class TestStrengthenContract:
             strengthen_contract(
                 server, URI, "missing", "requires", "true",
             )
+
+
+# =====================================================================
+# Phase F3 — vera/addEffect call-graph propagation workflow
+# =====================================================================
+
+def _fn(name: str, body: str, effects: str = "pure") -> str:
+    return (
+        f"public fn {name}(@Nat -> @Nat)\n"
+        f"  requires(true)\n"
+        f"  ensures(true)\n"
+        f"  effects({effects})\n"
+        "{\n"
+        f"  {body}\n"
+        "}\n"
+    )
+
+
+# Diamond: top -> left -> target, top -> right -> target, plus a
+# bystander that never calls into the diamond.
+DIAMOND = "\n".join([
+    _fn("target", "@Nat.0"),
+    _fn("left", "target(@Nat.0)"),
+    _fn("right", "target(target(@Nat.0))"),
+    _fn("top", "left(right(@Nat.0))"),
+    _fn("lone", "@Nat.0"),
+])
+
+
+class TestTransitiveCallers:
+    def test_diamond_closure_in_declaration_order(self) -> None:
+        prog = _program(DIAMOND)
+        assert transitive_callers(prog, "target") == [
+            "target", "left", "right", "top",
+        ]
+
+    def test_leaf_only_includes_itself(self) -> None:
+        assert transitive_callers(_program(DIAMOND), "lone") == ["lone"]
+
+    def test_unknown_fn_is_none(self) -> None:
+        assert transitive_callers(_program(DIAMOND), "ghost") is None
+
+    def test_recursive_fn_appears_once(self) -> None:
+        src = _fn("rec", "rec(@Nat.0)")
+        assert transitive_callers(_program(src), "rec") == ["rec"]
+
+
+class TestEffectRowRewrite:
+    def _decl(self, src: str, name: str) -> object:
+        prog = _program(src)
+        for top in prog.declarations:  # type: ignore[attr-defined]
+            if getattr(top.decl, "name", None) == name:
+                return top.decl
+        raise AssertionError(name)
+
+    def test_pure_becomes_singleton_set(self) -> None:
+        src = _fn("f", "@Nat.0")
+        start, end, repl = effect_row_rewrite(
+            src, self._decl(src, "f"), "Async",
+        )
+        assert src[start:end] == "pure"
+        assert repl == "<Async>"
+
+    def test_set_appends_preserving_source(self) -> None:
+        src = _fn("f", "@Nat.0", effects="<IO, State<Int>>")
+        start, end, repl = effect_row_rewrite(
+            src, self._decl(src, "f"), "Async",
+        )
+        assert src[start:end] == "<IO, State<Int>>"
+        assert repl == "<IO, State<Int>, Async>"
+
+    def test_already_present_is_none(self) -> None:
+        src = _fn("f", "@Nat.0", effects="<Async>")
+        assert effect_row_rewrite(
+            src, self._decl(src, "f"), "Async",
+        ) is None
+
+    def test_identity_is_base_name(self) -> None:
+        """State<Bool> blocks adding State<Int>: effect identity is
+        the base name before type arguments."""
+        src = _fn("f", "@Nat.0", effects="<State<Bool>>")
+        assert effect_row_rewrite(
+            src, self._decl(src, "f"), "State<Int>",
+        ) is None
+
+
+class TestAddEffect:
+    def _server(self, src: str) -> _FakeServer:
+        server = _FakeServer()
+        server.store.open(URI, src, version=1)
+        server.analyze_and_publish(URI, src)
+        server.published.clear()
+        return server
+
+    def test_diamond_propagation_applies(self) -> None:
+        """The Phase F3 pin: the whole transitive-caller closure is
+        rewritten in one candidate, the bystander untouched."""
+        server = self._server(DIAMOND)
+        out = add_effect(server, URI, "target", "Async")
+        assert out["applied"] is True
+        assert out["rewritten"] == ["target", "left", "right", "top"]
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert doc.text.count("effects(<Async>)") == 4
+        assert doc.text.count("effects(pure)") == 1  # lone
+        assert server.published == [URI]
+
+    def test_mixed_rows_append_and_replace(self) -> None:
+        """pure callers gain <E>; effect-set callers append; callers
+        already naming the effect are skipped but still verified."""
+        src = "\n".join([
+            _fn("target", "@Nat.0"),
+            _fn("io_caller", "target(@Nat.0)", effects="<IO>"),
+            _fn("done_caller", "target(@Nat.0)", effects="<Async>"),
+        ])
+        server = self._server(src)
+        out = add_effect(server, URI, "target", "Async")
+        assert out["applied"] is True
+        assert out["rewritten"] == ["target", "io_caller"]
+        doc = server.store.get(URI)
+        assert doc is not None
+        assert "effects(<IO, Async>)" in doc.text
+        assert doc.text.count("effects(<Async>)") == 2
+
+    def test_fully_satisfied_is_noop(self) -> None:
+        src = _fn("f", "@Nat.0", effects="<Async>")
+        server = self._server(src)
+        out = add_effect(server, URI, "f", "Async")
+        assert out == {
+            "applied": False,
+            "ok": True,
+            "proof_delta": None,
+            "diagnostics": 0,
+            "rewritten": [],
+        }
+        assert server.applied_edits == []
+        assert server.published == []
+
+    def test_unknown_fn_raises(self) -> None:
+        server = self._server(DIAMOND)
+        with pytest.raises(ValueError, match="ghost"):
+            add_effect(server, URI, "ghost", "Async")
+
+    def test_no_analysis_raises(self) -> None:
+        with pytest.raises(ValueError, match="open the document"):
+            add_effect(_FakeServer(), URI, "f", "Async")

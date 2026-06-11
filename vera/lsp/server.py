@@ -42,7 +42,11 @@ from vera.lsp.features import (
     hover_at,
     to_lsp_diagnostics,
 )
-from vera.lsp.workflows import apply_propose_edit, strengthen_contract
+from vera.lsp.workflows import (
+    add_effect,
+    apply_propose_edit,
+    strengthen_contract,
+)
 from vera.obligations.session import VerificationSession
 
 
@@ -252,6 +256,26 @@ def create_server() -> VeraLanguageServer:
             )
         try:
             return strengthen_contract(server, uri, fn_name, kind, expr)
+        except ValueError as exc:
+            raise JsonRpcInvalidParams(message=str(exc)) from exc
+
+    @server.feature("vera/addEffect")
+    def vera_add_effect(ls: Any, params: Any) -> dict[str, Any]:
+        """#222 Phase F3: effect propagation through the call graph.
+
+        Closure + multi-site rewrite + verify + gate run in
+        :func:`vera.lsp.workflows.add_effect`; requests that cannot
+        name a target refuse with InvalidParams.
+        """
+        uri = _require_str(params, "uri")
+        fn_name = _require_str(params, "fn")
+        effect = _require_str(params, "effect").strip()
+        if not effect:
+            raise JsonRpcInvalidParams(
+                message="'effect' must be a non-empty effect reference",
+            )
+        try:
+            return add_effect(server, uri, fn_name, effect)
         except ValueError as exc:
             raise JsonRpcInvalidParams(message=str(exc)) from exc
 
