@@ -590,7 +590,7 @@ import concurrent.futures  # noqa: E402
 import threading  # noqa: E402
 import types  # noqa: E402
 
-from vera.lsp.server import _param  # noqa: E402
+from vera.lsp.server import _force_param, _param  # noqa: E402
 from vera.lsp.workflows import (  # noqa: E402
     apply_propose_edit,
     full_document_range,
@@ -808,6 +808,16 @@ class TestParamExtraction:
     def test_missing_key_is_none(self) -> None:
         assert _param(types.SimpleNamespace(uri=URI), "force") is None
         assert _param({"uri": URI}, "force") is None
+
+    def test_force_fails_closed(self) -> None:
+        """Only JSON ``true`` engages force — the gate-bypass flag
+        must never be engaged by a malformed payload (``"false"`` the
+        string is truthy under bool())."""
+        assert _force_param({"force": True}) is True
+        assert _force_param(types.SimpleNamespace(force=True)) is True
+        for bad in ("false", "true", 1, 0, None, [True]):
+            assert _force_param({"force": bad}) is False
+        assert _force_param({}) is False
 
 
 class TestFullDocumentRange:

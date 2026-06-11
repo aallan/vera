@@ -63,6 +63,19 @@ def _param(params: Any, key: str) -> Any:
     return None if value is _MISSING else value
 
 
+def _force_param(params: Any) -> bool:
+    """The ``force`` flag, failing closed: only JSON ``true`` engages.
+
+    ``force`` bypasses the verification gate — the one bit whose whole
+    purpose is to be hard to skip — so generic truthiness is the wrong
+    coercion: a malformed payload like ``"force": "false"`` must not
+    silently apply an unverified edit.  Strictness costs a refused
+    edit with an explanatory delta; leniency costs the failure mode
+    the method exists to prevent.
+    """
+    return _param(params, "force") is True
+
+
 class VeraLanguageServer(LanguageServer):
     """LanguageServer carrying document, session, and analysis state."""
 
@@ -194,8 +207,9 @@ def create_server() -> VeraLanguageServer:
         """
         uri = _param(params, "uri")
         text = _param(params, "text")
-        force = bool(_param(params, "force"))
-        return apply_propose_edit(server, uri, text, force)
+        return apply_propose_edit(
+            server, uri, text, _force_param(params),
+        )
 
     return server
 
