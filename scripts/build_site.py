@@ -100,6 +100,11 @@ and working examples. This is the primary document for writing Vera code.
 commands, error handling, and essential rules for writing correct Vera.
 - [FAQ]({RAW}/FAQ.md): Design rationale — why no variable names, what gets \
 verified, comparison to Dafny/Lean/Koka, research citations.
+- [LSP_SERVER.md]({RAW}/LSP_SERVER.md): The language server — live \
+proof-aware diagnostics, hover, slot go-to-definition, hole completion, \
+and the custom proof-delta methods for coding agents \
+(vera/speculativeEdit, vera/proposeEdit, vera/strengthenContract, \
+vera/addEffect).
 
 ## Specification
 
@@ -204,7 +209,7 @@ def _abs_links(text: str) -> str:
 def build_llms_full_txt(version: str) -> str:
     """Compile core language documentation into a single markdown file.
 
-    Includes: language reference (SKILL.md), agent instructions (AGENTS.md),
+    Includes: language reference (SKILL.md), agent instructions (AGENTS.md), the language-server manual (LSP_SERVER.md),
     FAQ, error code reference, and formal grammar. For full documentation
     including the spec chapters and supplementary docs, see the individual
     files listed in llms.txt.
@@ -244,6 +249,12 @@ def build_llms_full_txt(version: str) -> str:
 
     # AGENTS.md
     section("Agent Instructions (AGENTS.md)", (ROOT / "AGENTS.md").read_text(encoding="utf-8"))
+
+    # LSP_SERVER.md
+    section(
+        "Language Server (LSP_SERVER.md)",
+        (ROOT / "LSP_SERVER.md").read_text(encoding="utf-8"),
+    )
 
     # FAQ.md
     section(
@@ -562,6 +573,7 @@ Editor support: [TextMate `.tmbundle`]({REPO}/tree/main/editors/textmate), [VS C
 This page is also a machine-readable specification. Every document here has an alternate in markdown, served on the same domain, discoverable through standard `<link rel="alternate">`, `llms.txt`, and the Mintlify `llms-txt` / `llms-full-txt` conventions.
 
 - [`SKILL.md`]({SITE}/SKILL.md) — Complete language reference for writing Vera code: syntax, slots, contracts, effects, common mistakes, working examples.
+- [`LSP_SERVER.md`]({RAW}/LSP_SERVER.md) — The language server: live proof-aware diagnostics and the custom proof-delta methods agents use to ask “does this edit still prove?” before committing it.
 - [`AGENTS.md`]({RAW}/AGENTS.md) — Setup instructions for any agent system (Copilot, Cursor, Windsurf, custom). Writing Vera code and working on the compiler.
 - [`CLAUDE.md`]({RAW}/CLAUDE.md) — Project orientation for Claude Code. Key commands, repo layout, workflows, invariants.
 

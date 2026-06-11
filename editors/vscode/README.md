@@ -1,8 +1,28 @@
 # Vera Language for Visual Studio Code
 
-Syntax highlighting and language support for the [Vera programming language](https://veralang.dev/) — a statically typed, purely functional language with algebraic effects, mandatory contracts, and typed slot references (`@T.n`), designed for LLM-generated code.
+Language server integration and syntax highlighting for the [Vera programming language](https://veralang.dev/) — a statically typed, purely functional language with algebraic effects, mandatory contracts, and typed slot references (`@T.n`), designed for LLM-generated code.
 
 ## Features
+
+**Language server integration** — the extension starts Vera's own
+language server ([`vera lsp`](../../LSP_SERVER.md)) for `.vera` files,
+which runs the full pipeline — parse, type-check, **verify** — on every
+edit and provides:
+
+- **Proof-aware diagnostics** as you type, with the same stable error
+  codes and spec references as `vera verify --json`, plus per-function
+  verification-tier hints ("Tier 1 — all contracts proven by Z3").
+- **Hover** showing the inferred type of the expression under the cursor.
+- **Go-to-definition on slot references** — jump from `@T.n` to the
+  parameter it names under De Bruijn resolution.
+- **Typed-hole completion** — at a `?` hole, completion lists the
+  in-scope bindings that fit, with their types.
+
+Requires the `vera` binary with the `[lsp]` extra (see
+[Requirements](#requirements)); without it the extension quietly stays
+in syntax-highlighting-only mode. See [LSP_SERVER.md](../../LSP_SERVER.md)
+for everything the server can do, including the custom methods for
+coding agents.
 
 **Syntax highlighting** for the full Vera language, including constructs that have no equivalent in other languages:
 
@@ -11,6 +31,7 @@ Syntax highlighting and language support for the [Vera programming language](htt
 - **Effects** — built-in effects (`IO`, `State`, `Exn`, `Http`, `Async`, `Diverge`) and qualified operation calls (`IO.print`, `Exn.throw`) are highlighted with their components broken out.
 - **String interpolation** — `\(...)` expressions inside strings get full Vera highlighting.
 - **Nestable block comments** — `{- ... {- ... -} ... -}` handled correctly.
+- **Typed holes** — the `?` placeholder expression is scoped as a language constant, so it stands out as the thing left to fill in.
 
 **Language configuration** so VS Code understands Vera's structure:
 
@@ -21,6 +42,34 @@ Syntax highlighting and language support for the [Vera programming language](htt
 - Auto-indentation on `{` / `}`
 - Word selection that understands slot references as single tokens
 
+## Requirements
+
+For language-server features the extension needs a `vera` binary that
+can serve LSP — from a clone of the repo:
+
+```bash
+pip install -e ".[lsp]"     # or ".[dev]", which includes it
+```
+
+The extension finds the binary in this order: the `vera.lsp.path`
+setting (if you changed it), a **workspace-local venv**
+(`.venv/bin/vera` — which means a standard from-source clone needs no
+configuration at all), then `vera` from `PATH`. VS Code launched from
+the GUI does not inherit your shell's `PATH`, so the workspace-venv
+detection is what makes the zero-config case work. If the server
+fails to start you get one warning with an *Open Settings* button;
+syntax highlighting works with no binary at all.
+
+## Settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `vera.lsp.enabled` | `true` | Start the language server for `.vera` files |
+| `vera.lsp.path` | `"vera"` | Command used to launch it (absolute path or `PATH`-resolved) |
+
+The **Vera: Restart Language Server** command restarts the server
+(e.g. after switching venvs or upgrading `vera`).
+
 ## Installation
 
 ### From source (recommended for now)
@@ -29,23 +78,28 @@ Syntax highlighting and language support for the [Vera programming language](htt
 
 ```bash
 git clone https://github.com/aallan/vera.git
+cd vera/editors/vscode && npm install && cd -
 ln -s "$(pwd)/vera/editors/vscode" ~/.vscode/extensions/vera-language
 ```
 
 **Existing clone** (run from the repo root):
 
 ```bash
+(cd editors/vscode && npm install)
 ln -s "$(pwd)/editors/vscode" ~/.vscode/extensions/vera-language
 ```
 
 Then reload VS Code. Any `.vera` file will be recognised automatically.
+The `npm install` fetches the LSP client library
+(`vscode-languageclient`); skipping it is fine — you just get syntax
+highlighting without the language server.
 
 ### From VSIX
 
 If a packaged `.vsix` is available:
 
 ```bash
-code --install-extension vera-language-0.1.0.vsix
+code --install-extension vera-language-0.2.0.vsix
 ```
 
 ### VS Code Marketplace
@@ -70,6 +124,7 @@ The grammar uses standard TextMate scope conventions, so it works with any colou
 | `Int`, `Bool`, `String` | `storage.type.primitive.vera` |
 | `Array`, `Option`, `Result` | `storage.type.composite.vera` |
 | `true`, `false`, `pure` | `constant.language.vera` |
+| `?` (typed hole) | `constant.language.hole.vera` |
 | `->` | `keyword.operator.arrow.vera` |
 | `|>` | `keyword.operator.pipe.vera` |
 

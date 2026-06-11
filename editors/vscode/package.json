@@ -1,8 +1,8 @@
 {
 	"name": "vera-language",
 	"displayName": "Vera Language",
-	"description": "Syntax highlighting for the Vera programming language — a statically typed, purely functional language with algebraic effects and typed slot references, designed for LLM-generated code.",
-	"version": "0.1.0",
+	"description": "Language support for the Vera programming language: proof-aware diagnostics, hover, slot go-to-definition, and typed-hole completion via the vera lsp language server, plus full syntax highlighting - for a statically typed, purely functional language with algebraic effects and mandatory contracts, designed for LLM-generated code.",
+	"version": "0.2.0",
 	"publisher": "aallan",
 	"license": "MIT",
 	"repository": {
@@ -14,7 +14,7 @@
 		"url": "https://github.com/aallan/vera/issues"
 	},
 	"engines": {
-		"vscode": "^1.75.0"
+		"vscode": "^1.82.0"
 	},
 	"categories": [
 		"Programming Languages"
@@ -49,6 +49,34 @@
 				"scopeName": "source.vera",
 				"path": "./syntaxes/vera.tmLanguage.json"
 			}
+		],
+		"configuration": {
+			"title": "Vera",
+			"properties": {
+				"vera.lsp.enabled": {
+					"type": "boolean",
+					"default": true,
+					"description": "Start the Vera language server (vera lsp) for .vera files."
+				},
+				"vera.lsp.path": {
+					"type": "string",
+					"default": "vera",
+					"description": "Command used to launch the language server. Resolution order: this setting (if changed from the default), then a workspace-local venv (.venv/bin/vera, or .venv\\Scripts\\vera.exe on Windows), then \"vera\" from PATH. The server needs the [lsp] extra: pip install -e \".[lsp]\"."
+				}
+			}
+		},
+		"commands": [
+			{
+				"command": "vera.lsp.restart",
+				"title": "Vera: Restart Language Server"
+			}
 		]
+	},
+	"main": "./extension.js",
+	"activationEvents": [
+		"onLanguage:vera"
+	],
+	"dependencies": {
+		"vscode-languageclient": "^9.0.1"
 	}
 }

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.169] - 2026-06-11
+
+### Added
+
+- **[LSP_SERVER.md](LSP_SERVER.md)** — the language server's user manual: what an LSP server is, install (`pip install -e ".[lsp]"`) and editor wiring, the standard feature surface (tier-annotated diagnostics, per-function verification-tier hints, hover, slot go-to-definition, typed-hole completion), the warm incremental verification core, and full request/response shapes for the four agent-facing custom methods (`vera/speculativeEdit`, `vera/proposeEdit`, `vera/strengthenContract`, `vera/addEffect`) with the typical speculate → inspect → propose loop.
+- **VS Code extension 0.2.0** — the extension now starts `vera lsp` automatically for `.vera` files (settings `vera.lsp.enabled` / `vera.lsp.path`, command *Vera: Restart Language Server*), degrading gracefully to syntax-highlighting-only when the binary or the `npm install` is absent. Binary resolution prefers an explicit `vera.lsp.path`, then a workspace-local venv (`.venv/bin/vera` — GUI-launched VS Code does not inherit a shell `PATH`, so a from-source clone works with zero configuration), then `PATH`; spawn failure surfaces one warning with an Open Settings action. Requires VS Code 1.82+.
+
+### Changed
+
+- **veralang.dev** — the landing page's audience-addressed sections both gain the language server: §06 *Get Started* (the VS Code row starts `vera lsp` automatically; the `[lsp]` install path) and §07 *for machines*, reframed around read vs interrogate — the markdown set is how machines *read* Vera, the server is how they *interrogate* it, with a fourth agent-card and a `speculativeEdit` proof-delta sample.  `LSP_SERVER.md` is indexed in `llms.txt` and embedded in full in `llms-full.txt`.
+- Documentation sweep after [#222](https://github.com/aallan/vera/issues/222): `vera lsp` joins the command lists in README/CLAUDE/AGENTS/SKILL; README's editor-support section, feature list, install notes, and project tree now cover the language server, `vera/obligations/`, and `vera/lsp/`; AGENTS.md gains an agent-facing section on the custom proof-delta methods; KNOWN_ISSUES drops the stale "LSP server" limitation row (shipped v0.0.161–v0.0.168) and gains three real ones — the single-file editor model ([#724](https://github.com/aallan/vera/issues/724)), parameter-only slot go-to-definition ([#181](https://github.com/aallan/vera/issues/181)), and handler-unaware `vera/addEffect` propagation ([#725](https://github.com/aallan/vera/issues/725)); `llms.txt` indexes LSP_SERVER.md; the compiler README module map's `lsp/` line count is corrected (a v0.0.168 update had silently failed); the release-count figures in README and the HISTORY footer now reflect the actual tag count (the v0.0.24.1 hotfix made releases = version + 1, uncounted since then).
+
 ## [0.0.168] - 2026-06-11
 
 ### Added
@@ -2457,7 +2469,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.168...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.169...HEAD
+[0.0.169]: https://github.com/aallan/vera/compare/v0.0.168...v0.0.169
 [0.0.168]: https://github.com/aallan/vera/compare/v0.0.167...v0.0.168
 [0.0.167]: https://github.com/aallan/vera/compare/v0.0.166...v0.0.167
 [0.0.166]: https://github.com/aallan/vera/compare/v0.0.165...v0.0.166

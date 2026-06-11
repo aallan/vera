@@ -149,6 +149,8 @@
     /* Principles + Features (condensed reference grid) */
     .reference{background:var(--paper-hi)}
     .ref-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.25rem 2rem;margin-top:1.5rem}
+    .ref-grid--flow{display:block;columns:3 260px;column-gap:2rem}
+    .ref-grid--flow .ref-item{break-inside:avoid;margin-bottom:1.25rem}
     .ref-item{padding-left:0}
     .ref-item .num{font-family:var(--mono);font-size:.7rem;color:var(--flame-400);letter-spacing:.05em;text-transform:uppercase;margin-bottom:.3rem}
     .ref-item .title{font-family:var(--serif);font-size:1.1rem;color:var(--ink-900);margin-bottom:.3rem;line-height:1.25}
@@ -170,8 +172,9 @@
     .twocol p code, .install p code, .agents p code{background:var(--paper-hi);padding:.05rem .3rem;border-radius:3px;font-size:.85em}
     .agents p code, .agents .lead code{color:var(--ink-900)}
 
+    .editor-rows{margin-top:1.25rem;padding-left:1rem;border-left:2px solid var(--flame-300)}
     .editor-row{display:flex;align-items:center;gap:.5rem;margin-top:.18rem}
-    .editor-row:first-of-type{margin-top:1.25rem}
+    .editor-rows .editor-row:first-of-type{margin-top:0}
     .editor-row img{height:20px;flex-shrink:0}
     .editor-row .text{font-size:.85rem;color:var(--ink-500)}
 
@@ -187,11 +190,11 @@
     .agents a{color:var(--flame-100);text-decoration:underline;text-decoration-color:rgba(255,176,128,.35);text-underline-offset:3px}
     .agents a:hover{color:var(--flame-300);text-decoration-color:var(--flame-300)}
     .agents .code-block{background:#000;border-color:rgba(255,226,206,.12)}
-    .agents-files{display:grid;gap:1rem;grid-template-columns:1fr;margin:1.5rem 0}
-    @media(min-width:780px){.agents-files{grid-template-columns:repeat(3,1fr)}}
-    .agent-card{padding:1.15rem;border:1px solid rgba(255,226,206,.12);border-radius:8px;background:rgba(255,226,206,.03)}
-    .agent-card .fname{font-family:var(--mono);font-size:.82rem;color:var(--flame-100);margin-bottom:.35rem}
-    .agent-card .fdesc{font-size:.87rem;color:var(--paper-hi);opacity:.8;line-height:1.5}
+    .agents-files{display:flex;flex-direction:column;gap:.85rem;margin:1.5rem 0;padding:1.15rem 1.25rem;border:1px solid rgba(255,226,206,.12);border-radius:8px;background:rgba(255,226,206,.03)}
+    .agent-card{display:flex;gap:1.25rem;align-items:baseline}
+    .agent-card .fname{font-family:var(--mono);font-size:.82rem;color:var(--flame-100);flex:0 0 9.5rem}
+    .agent-card .fdesc{font-size:.87rem;color:var(--paper-hi);opacity:.8;line-height:1.5;flex:1}
+    @media(max-width:779px){.agent-card{flex-direction:column;gap:.15rem}.agent-card .fname{flex:none}}
 
     /* Status + footer */
     .status{text-align:center;padding:3.5rem 0}
@@ -265,7 +268,7 @@
         <a href="/SKILL.md" rel="agent-instructions" type="text/markdown" class="btn btn-ghost">For Agents → SKILL.md</a>
       </div>
       <p class="version">
-        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.0.168">0.0.168</a></span>
+        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.0.169">0.0.169</a></span>
         <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" aria-label="CI status"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height:18px"></a>
       </p>
     </div>
@@ -478,12 +481,13 @@
       </div>
 
       <p class="ref-subhead">Key features</p>
-      <div class="ref-grid">
+      <div class="ref-grid ref-grid--flow">
         <div class="ref-item"><div class="title">No variable names</div><div class="desc">Typed <a href="https://github.com/aallan/vera/blob/main/DE_BRUIJN.md">De Bruijn indices</a> (<code>@T.n</code>) replace variable names: <code>@Int.0</code> is the most-recent <code>Int</code> binding, <code>@Int.1</code> the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.</div></div>
         <div class="ref-item"><div class="title">Full contracts</div><div class="desc">Mandatory preconditions, postconditions, invariants, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM &mdash; no manual test cases.</div></div>
         <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, State, Exceptions, Async, Inference, Random &mdash; declared, typed, and handled explicitly. Pure by default.</div></div>
         <div class="ref-item"><div class="title">Refinement types</div><div class="desc">Types that express constraints like &ldquo;a list of positive integers of length <code>n</code>&rdquo;.</div></div>
         <div class="ref-item"><div class="title">Three-tier verification</div><div class="desc">Static via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, guided with hints, runtime fallback for the rest.</div></div>
+        <div class="ref-item"><div class="title">Language server</div><div class="desc">A warm Z3 session between keystrokes &mdash; proofs re-check at editor latency. Custom methods hand agents <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">proof deltas</a> before an edit lands.</div></div>
         <div class="ref-item"><div class="title">Diagnostics as instructions</div><div class="desc">Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.</div></div>
         <div class="ref-item"><div class="title">LLM inference as effect</div><div class="desc"><code>Inference.complete</code> is an algebraic effect &mdash; typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot.</div></div>
         <div class="ref-item"><div class="title">Typed stdlib</div><div class="desc">JSON, HTML, Markdown, HTTP, Regex, Decimal &mdash; built-in ADTs with parse/query/serialize.</div></div>
@@ -549,14 +553,18 @@ vera run examples/hello_world.vera
 vera compile --target browser examples/hello_world.vera</pre>
       </div>
 
+      <div class="editor-rows">
       <div class="editor-row">
         <img src="textmate-icon.png" alt="TextMate">
         <div class="text">Syntax highlighting for TextMate: download the <a href="https://github.com/aallan/vera/tree/main/editors/textmate">Vera <code>.tmbundle</code></a>.</div>
       </div>
       <div class="editor-row">
         <img src="vscode-icon.png" alt="VS Code">
-        <div class="text">Syntax highlighting for Visual Studio Code: install the <a href="https://github.com/aallan/vera/tree/main/editors/vscode">Vera extension</a>.</div>
+        <div class="text">Language server client and syntax highlighting for Visual Studio Code<br>Install the <a href="https://github.com/aallan/vera/tree/main/editors/vscode">Vera extension</a> &mdash; it starts <code>vera lsp</code> automatically for <code>.vera</code> files.</div>
       </div>
+      </div>
+
+      <p style="color:var(--ink-500);margin-top:1.25rem">Live proof-aware diagnostics, hover, slot go-to-definition, and typed-hole completion come from the <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">language server</a> &mdash; included in the install above (standalone: <code>pip install -e ".[lsp]"</code>). Any editor with a generic LSP client can point at <code>vera lsp</code> directly.</p>
     </div>
   </section>
 
@@ -580,6 +588,10 @@ vera compile --target browser examples/hello_world.vera</pre>
           <div class="fname"><a href="https://github.com/aallan/vera/blob/main/CLAUDE.md">CLAUDE.md</a></div>
           <div class="fdesc">Project orientation for Claude Code. Key commands, repo layout, workflows, invariants.</div>
         </div>
+        <div class="agent-card">
+          <div class="fname"><a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">LSP_SERVER.md</a></div>
+          <div class="fdesc">The language server &mdash; live verification, and the custom proof-delta methods agents use to ask &ldquo;does this edit still prove?&rdquo; before committing it.</div>
+        </div>
       </div>
 
       <p>Claude Code discovers <a href="/SKILL.md">SKILL.md</a> and <a href="https://github.com/aallan/vera/blob/main/CLAUDE.md">CLAUDE.md</a> automatically when working inside the repo. For other projects, install the skill manually:</p>
@@ -588,6 +600,22 @@ vera compile --target browser examples/hello_world.vera</pre>
 cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       </div>
       <p>For other models: point them at <a href="/SKILL.md">SKILL.md</a> via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown.</p>
+
+      <p style="margin-top:2rem">The documents above are how machines <em>read</em> Vera. The <a href="https://github.com/aallan/vera/blob/main/LSP_SERVER.md">language server</a> is how they <em>interrogate</em> it: <code>vera lsp</code> holds a warm, incremental Z3 session between edits, and four custom methods &mdash; <code>vera/speculativeEdit</code>, <code>vera/proposeEdit</code>, <code>vera/strengthenContract</code>, <code>vera/addEffect</code> &mdash; let an agent learn whether an edit <em>keeps</em>, <em>breaks</em>, or <em>strengthens</em> a program's proofs before committing it, then apply it only through the verification gate.</p>
+      <div class="code-block">
+<pre><span class="cm"># vera/speculativeEdit — the proof delta for an in-memory edit</span>
+{
+  <span class="sl">"ok"</span>: <span class="num">true</span>,
+  <span class="sl">"proof_delta"</span>: {
+    <span class="sl">"newly_discharged"</span>: [<span class="str">"..."</span>],
+    <span class="sl">"newly_undischarged"</span>: [],
+    <span class="sl">"timed_out"</span>: [],
+    <span class="sl">"removed"</span>: [],
+    <span class="sl">"unchanged"</span>: <span class="num">11</span>
+  },
+  <span class="sl">"diagnostics"</span>: <span class="num">0</span>
+}</pre>
+      </div>
     </div>
   </section>
 
@@ -599,7 +627,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
         Vera is under <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md" style="color:inherit;text-decoration:underline;text-decoration-color:var(--flame-400);text-underline-offset:2px">active development</a>
       </div>
       <p class="status-text">
-        A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, and a 13-chapter specification. An 89-program conformance suite and 35 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
+        A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, a language server with agent-facing proof deltas, and a 13-chapter specification. An 89-program conformance suite and 35 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
       </p>
     </div>
   </section>

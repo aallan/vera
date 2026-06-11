@@ -122,6 +122,9 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
+`[dev]` includes everything (tests, linters, the language server). For a lighter install that only adds editor/agent support to the base toolchain, use `pip install -e ".[lsp]"` — see [LSP_SERVER.md](LSP_SERVER.md).
+
+
 #### Supported platforms
 
 Tested in CI on every commit:
@@ -166,6 +169,7 @@ vera test file.vera                       # contract-driven testing via Z3 + WAS
 vera fmt file.vera                        # format to canonical form
 vera verify --json file.vera              # JSON diagnostics for agent feedback loops
 vera check --explain-slots file.vera     # show slot resolution table (which @T.n maps to which param)
+vera lsp                                 # serve the Language Server Protocol over stdio (see LSP_SERVER.md)
 vera version                             # print the installed version
 ```
 
@@ -173,8 +177,10 @@ vera version                             # print the installed version
 
 ### Editor support
 
-- **[VS Code extension](editors/vscode/)** — syntax highlighting and language configuration
-- **[TextMate bundle](editors/textmate/)** — also compatible with Sublime Text and other TextMate-grammar editors
+Vera ships a [language server](LSP_SERVER.md) (`vera lsp`, via the optional `[lsp]` extra) that keeps a warm incremental Z3 session between keystrokes — diagnostics, proofs, hover, slot go-to-definition, and typed-hole completion at editor latency, plus custom proof-delta methods for coding agents. See **[LSP_SERVER.md](LSP_SERVER.md)** for setup and the full protocol surface.
+
+- **[VS Code extension](editors/vscode/)** — starts the language server automatically, plus syntax highlighting and language configuration
+- **[TextMate bundle](editors/textmate/)** — syntax highlighting for Sublime Text and other TextMate-grammar editors (any editor with a generic LSP client can use `vera lsp` directly)
 
 ## For agents
 
@@ -204,11 +210,11 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md
 
 ## Project status
 
-Vera is in **active development** at v0.0.168 — 810+ commits, 168 releases, 4,312 tests, 96% code coverage, 89 conformance programs, 35 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
+Vera is in **active development** at v0.0.169 — 810+ commits, 170 releases, 4,312 tests, 96% code coverage, 89 conformance programs, 35 examples, and a 13-chapter specification. See **[HISTORY.md](HISTORY.md)** for how the compiler was built.
 
 The reference compiler — parser, AST, type checker, contract verifier (Z3), WASM code generator, module system, browser runtime, and runtime contract insertion — is working. The language specification is in draft across [13 chapters](spec/).
 
-**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 164 built-in functions (strings, arrays, maps, sets, decimals, math, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, canonical formatter, browser runtime, and three-tier verification (Z3 static, guided, runtime fallback).
+**Key features delivered:** [typed De Bruijn indices](DE_BRUIJN.md) (`@T.n`), mandatory contracts, algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), refinement types, constrained generics (Eq, Ord, Hash, Show), algebraic data types, pattern matching, modules, 164 built-in functions (strings, arrays, maps, sets, decimals, math, JSON, HTML, Markdown, regex, base64, URL), contract-driven testing, canonical formatter, browser runtime, three-tier verification (Z3 static, guided, runtime fallback), and a [language server](LSP_SERVER.md) with warm incremental verification and agent-facing proof-delta methods.
 
 **What's next:** the path from "working language" to "the language agents actually use" — see **[ROADMAP.md](ROADMAP.md)** for the four strategic milestones. The flagship goal is a verified MCP tool server where contracts guarantee tool schemas at compile time. **[VeraBench](https://github.com/aallan/vera-bench)** — a 50-problem benchmark across 5 difficulty tiers — now covers 6 models across 3 providers (v0.0.7). The headline result: Kimi K2.5 achieves 100% run_correct on Vera, beating both Python (86%) and TypeScript (91%). Three models beat TypeScript on Vera; the flagship tier averages 93% Vera vs 93% Python — essentially parity. These are single-run results with high variance — see the [full report](https://github.com/aallan/vera-bench) for details.
 
@@ -245,9 +251,11 @@ vera/
 │   ├── browser/                   #   Browser runtime
 │   ├── formatter.py               #   Canonical code formatter
 │   ├── errors.py                  #   LLM-oriented diagnostics
+│   ├── obligations/               #   Reified proof obligations + warm incremental verification
+│   ├── lsp/                       #   Language server (see LSP_SERVER.md)
 │   └── cli.py                     #   Command-line interface
 ├── docs/                          # GitHub Pages site (veralang.dev)
-├── editors/                       # VS Code extension + TextMate bundle
+├── editors/                       # VS Code extension (LSP client + grammar) + TextMate bundle
 ├── examples/                      # 35 example Vera programs
 ├── tests/                         # Test suite (see TESTING.md)
 └── scripts/                       # CI and validation scripts

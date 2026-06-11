@@ -101,6 +101,10 @@
 			"match": "\\(\\)"
 		},
 		{
+			"name": "constant.language.hole.vera",
+			"match": "(?<![\\w?])\\?(?![\\w?])"
+		},
+		{
 			"name": "storage.type.primitive.vera",
 			"match": "\\b(Bool|Int|Nat|Float64|Byte|String|Unit|Never)\\b"
 		},

@@ -4,7 +4,7 @@
 
 Vera uses De Bruijn indexing for bindings: `@Int.0` is the most recent `Int` binding, `@Int.1` the one before. There are no variable names. Contracts are mandatory — every function must declare `requires(...)`, `ensures(...)`, and `effects(...)`. The Z3 SMT solver verifies contracts statically where possible; remaining contracts become runtime assertions. All side effects (IO, Http, State, Exceptions, Async, Inference, Random) are tracked in the type system via algebraic effects.
 
-Current version: 0.0.168. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
+Current version: 0.0.169. The reference compiler is written in Python. Install with `pip install -e .` from the repository.
 
 ## Homepage
 
@@ -18,6 +18,7 @@ Current version: 0.0.168. The reference compiler is written in Python. Install w
 
 - [AGENTS.md](https://raw.githubusercontent.com/aallan/vera/main/AGENTS.md): Instructions for AI agents — workflow, commands, error handling, and essential rules for writing correct Vera.
 - [FAQ](https://raw.githubusercontent.com/aallan/vera/main/FAQ.md): Design rationale — why no variable names, what gets verified, comparison to Dafny/Lean/Koka, research citations.
+- [LSP_SERVER.md](https://raw.githubusercontent.com/aallan/vera/main/LSP_SERVER.md): The language server — live proof-aware diagnostics, hover, slot go-to-definition, hole completion, and the custom proof-delta methods for coding agents (vera/speculativeEdit, vera/proposeEdit, vera/strengthenContract, vera/addEffect).
 
 ## Specification
 
