@@ -61,6 +61,7 @@ The grammar uses standard TextMate scope conventions so it works with any colour
 | `Int`, `Bool`, `String` | `storage.type.primitive.vera` |
 | `Array`, `Option`, `Result` | `storage.type.composite.vera` |
 | `true`, `false`, `pure` | `constant.language.vera` |
+| `?` (typed hole) | `constant.language.hole.vera` |
 | `->` | `keyword.operator.arrow.vera` |
 | `\|>` | `keyword.operator.pipe.vera` |
 
