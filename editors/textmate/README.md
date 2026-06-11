@@ -18,7 +18,7 @@ Then restart TextMate or select **Bundles → Bundle Editor → Reload Bundles**
 
 ## What gets highlighted
 
-The grammar covers the full Vera language as of v0.0.100.
+The grammar covers the full Vera language as of v0.0.168.
 
 **Slot references** are the most distinctive feature of Vera syntax, and the bundle treats them as first-class citizens. Full references like `@Int.0`, `@Array<String>.1`, and `@Nat.result` are scoped as `variable.other.slot`, while bare bindings in match arms (e.g. `Some(@Int)`) are scoped as `variable.other.slot-binding`. Both are visually distinct from all other tokens.
 

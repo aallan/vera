@@ -48,7 +48,23 @@ vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
 vera version                      # Print the installed version (also --version, -V)
+vera lsp                          # Serve LSP over stdio (needs the [lsp] extra; see LSP_SERVER.md)
 ```
+
+### The language server: proof deltas without re-running the CLI
+
+For long editing sessions, `vera lsp` (install: `pip install -e ".[lsp]"`) keeps a warm incremental Z3 session alive, so verification feedback arrives at editor latency instead of cold-start latency. Any LSP client gets diagnostics (same error codes as `--json`), per-function verification-tier hints, hover types, slot go-to-definition, and typed-hole completion.
+
+Four custom methods exist specifically for agents — full request/response shapes in [LSP_SERVER.md](LSP_SERVER.md):
+
+| Method | Question it answers |
+|---|---|
+| `vera/speculativeEdit` | "Would this edit keep, break, or strengthen the proofs?" — in-memory verify, returns a proof delta, touches nothing |
+| `vera/proposeEdit` | "Apply this edit *iff* it verifies" — the gate cannot be skipped; `force: true` overrides loudly |
+| `vera/strengthenContract` | "Tighten this contract — do all call sites still satisfy it?" — refusals point at the breaking call sites |
+| `vera/addEffect` | "Thread this effect through every transitive caller" — one verified multi-site rewrite, all-or-nothing |
+
+The intended loop: draft → `speculativeEdit` → inspect the delta → `proposeEdit`. Prefer the two structured refactors over hand-editing contracts/effect rows — the server constructs the candidate and audits the blast radius for you.
 
 ### Error handling
 

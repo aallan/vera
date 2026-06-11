@@ -4,7 +4,7 @@ Vera syntax highlighting packages for popular editors.
 
 ## VS Code
 
-A full VS Code language extension providing syntax highlighting and language configuration for `.vera` files.
+A full VS Code language extension for `.vera` files: starts the [Vera language server](../LSP_SERVER.md) (proof-aware diagnostics, hover, slot go-to-definition, typed-hole completion) and provides syntax highlighting and language configuration.
 
 See [`vscode/`](vscode/) for installation instructions.
 

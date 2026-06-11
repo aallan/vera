@@ -42,6 +42,7 @@ vera ast --json file.vera         # Print the AST as JSON
 vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
+vera lsp                          # Serve LSP over stdio (needs the [lsp] extra; see LSP_SERVER.md)
 vera version                      # Print the installed version (also --version, -V)
 
 pytest tests/ -v                  # Run the test suite (see TESTING.md)
@@ -97,6 +98,8 @@ This matters when multiple parameters share a type. See `tests/conformance/ch03_
 Read `vera/README.md` for architecture docs, module map, and design patterns.
 
 The compiler pipeline: source -> parse (`parser.py`) -> transform (`transform.py`) -> typecheck (`checker.py`) -> verify (`verifier.py`) -> compile (`codegen/` + `wasm/`) -> execute (wasmtime).
+
+The language server (`vera/lsp/`, served by `vera lsp`) and the obligation core it sits on (`vera/obligations/`: reified `ProofObligation` records + the warm incremental `VerificationSession`) are documented in `LSP_SERVER.md` (user/agent surface, including the four custom proof-delta methods) and the `vera/README.md` module map (architecture). The custom methods are the agent-facing way to ask "does this edit still prove?" without round-tripping through `vera verify`.
 
 Each stage is a module with a public API function and is independently testable. See `CONTRIBUTING.md` for contribution guidelines.
 

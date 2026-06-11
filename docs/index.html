@@ -265,7 +265,7 @@
         <a href="/SKILL.md" rel="agent-instructions" type="text/markdown" class="btn btn-ghost">For Agents → SKILL.md</a>
       </div>
       <p class="version">
-        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.0.168">0.0.168</a></span>
+        <span>v<a href="https://github.com/aallan/vera/releases/tag/v0.0.169">0.0.169</a></span>
         <a href="https://github.com/aallan/vera/actions/workflows/ci.yml" aria-label="CI status"><img src="https://github.com/aallan/vera/actions/workflows/ci.yml/badge.svg" alt="CI" style="height:18px"></a>
       </p>
     </div>
@@ -484,6 +484,7 @@
         <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, State, Exceptions, Async, Inference, Random &mdash; declared, typed, and handled explicitly. Pure by default.</div></div>
         <div class="ref-item"><div class="title">Refinement types</div><div class="desc">Types that express constraints like &ldquo;a list of positive integers of length <code>n</code>&rdquo;.</div></div>
         <div class="ref-item"><div class="title">Three-tier verification</div><div class="desc">Static via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, guided with hints, runtime fallback for the rest.</div></div>
+        <div class="ref-item"><div class="title">Language server</div><div class="desc"><code>vera lsp</code> keeps a warm, incremental Z3 session between keystrokes &mdash; proofs re-check at editor latency, not batch latency. Custom methods hand agents <a href="/LSP_SERVER.md">proof deltas</a>: does this edit still prove, before it lands.</div></div>
         <div class="ref-item"><div class="title">Diagnostics as instructions</div><div class="desc">Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.</div></div>
         <div class="ref-item"><div class="title">LLM inference as effect</div><div class="desc"><code>Inference.complete</code> is an algebraic effect &mdash; typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot.</div></div>
         <div class="ref-item"><div class="title">Typed stdlib</div><div class="desc">JSON, HTML, Markdown, HTTP, Regex, Decimal &mdash; built-in ADTs with parse/query/serialize.</div></div>
@@ -555,8 +556,10 @@ vera compile --target browser examples/hello_world.vera</pre>
       </div>
       <div class="editor-row">
         <img src="vscode-icon.png" alt="VS Code">
-        <div class="text">Syntax highlighting for Visual Studio Code: install the <a href="https://github.com/aallan/vera/tree/main/editors/vscode">Vera extension</a>.</div>
+        <div class="text">Language server client and syntax highlighting for Visual Studio Code: install the <a href="https://github.com/aallan/vera/tree/main/editors/vscode">Vera extension</a> &mdash; it starts <code>vera lsp</code> automatically for <code>.vera</code> files.</div>
       </div>
+
+      <p style="color:var(--ink-500);max-width:62ch;margin-top:1.25rem">Live proof-aware diagnostics, hover, slot go-to-definition, and typed-hole completion come from the <a href="/LSP_SERVER.md">language server</a> &mdash; included in the install above (standalone: <code>pip install -e ".[lsp]"</code>). Any editor with a generic LSP client can point at <code>vera lsp</code> directly.</p>
     </div>
   </section>
 
@@ -580,6 +583,10 @@ vera compile --target browser examples/hello_world.vera</pre>
           <div class="fname"><a href="https://github.com/aallan/vera/blob/main/CLAUDE.md">CLAUDE.md</a></div>
           <div class="fdesc">Project orientation for Claude Code. Key commands, repo layout, workflows, invariants.</div>
         </div>
+        <div class="agent-card">
+          <div class="fname"><a href="/LSP_SERVER.md">LSP_SERVER.md</a></div>
+          <div class="fdesc">The language server &mdash; live verification, and the custom proof-delta methods agents use to ask &ldquo;does this edit still prove?&rdquo; before committing it.</div>
+        </div>
       </div>
 
       <p>Claude Code discovers <a href="/SKILL.md">SKILL.md</a> and <a href="https://github.com/aallan/vera/blob/main/CLAUDE.md">CLAUDE.md</a> automatically when working inside the repo. For other projects, install the skill manually:</p>
@@ -588,6 +595,15 @@ vera compile --target browser examples/hello_world.vera</pre>
 cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
       </div>
       <p>For other models: point them at <a href="/SKILL.md">SKILL.md</a> via system prompt, file attachment, or retrieval. It's self-contained and works with any model that reads markdown.</p>
+
+      <p style="margin-top:2rem">The documents above are how machines <em>read</em> Vera. The <a href="/LSP_SERVER.md">language server</a> is how they <em>interrogate</em> it: <code>vera lsp</code> holds a warm, incremental Z3 session between edits, and four custom methods &mdash; <code>vera/speculativeEdit</code>, <code>vera/proposeEdit</code>, <code>vera/strengthenContract</code>, <code>vera/addEffect</code> &mdash; let an agent learn whether an edit <em>keeps</em>, <em>breaks</em>, or <em>strengthens</em> a program's proofs before committing it, then apply it only through the verification gate.</p>
+      <div class="code-block">
+<pre><span class="cm"># vera/speculativeEdit — the proof delta for an in-memory edit</span>
+{"ok": true,
+ "proof_delta": {"newly_discharged": ["..."], "newly_undischarged": [],
+                 "timed_out": [], "removed": [], "unchanged": 11},
+ "diagnostics": 0}</pre>
+      </div>
     </div>
   </section>
 
@@ -599,7 +615,7 @@ cp /path/to/vera/SKILL.md ~/.claude/skills/vera-language/SKILL.md</pre>
         Vera is under <a href="https://github.com/aallan/vera/blob/main/ROADMAP.md" style="color:inherit;text-decoration:underline;text-decoration-color:var(--flame-400);text-underline-offset:2px">active development</a>
       </div>
       <p class="status-text">
-        A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, and a 13-chapter specification. An 89-program conformance suite and 35 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
+        A complete compiler with 164 built-in functions, seven algebraic effects (IO, Http, State, Exceptions, Async, Inference, Random), contract-driven testing via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, a language server with agent-facing proof deltas, and a 13-chapter specification. An 89-program conformance suite and 35 worked examples are validated against the spec on every pull request. All of it is developed openly on <a href="https://github.com/aallan/vera">GitHub</a> and released under the MIT licence.
       </p>
     </div>
   </section>

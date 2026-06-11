@@ -115,7 +115,7 @@ execute(compile_result, ...)    # → run WASM via wasmtime
 | `  core.py` | 109 | | ProofObligation record: identity (content_key) + discharge outcome | |
 | `  cache.py` | 219 | | Invalidation keys (structural/callee/context hashes), DischargeCache | |
 | `  session.py` | 252 | | Warm-Z3 daemon: per-function replay vs re-verify in declaration order | |
-| `lsp/` | 1203 | Serve | Language Server Protocol over stdio (#222 C/D/E/F) | `create_server()`, `vera lsp` |
+| `lsp/` | 1389 | Serve | Language Server Protocol over stdio (#222 C/D/E/F) | `create_server()`, `vera lsp` |
 | `  convert.py` | 144 | | Span/SourceLocation/LSP coordinate conversions, UTF-16 transcoding | |
 | `  documents.py` | 69 | | URI-keyed document store, full-text sync | |
 | `  features.py` | 292 | | Diagnostics + tier hints, hover, slot goto, hole completion | |

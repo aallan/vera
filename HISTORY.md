@@ -313,6 +313,7 @@ Stage 12 opens on the morning v0.0.138 shipped: the residual GC-rooting bug in #
 | v0.0.166 | 11 Jun | `vera/proposeEdit` — the first skill-layer workflow: edit → verify → apply as one LSP method, applying only when the proof delta is non-breaking ([#222](https://github.com/aallan/vera/issues/222) Phase F1). |
 | v0.0.167 | 11 Jun | `vera/strengthenContract` — contract change with a call-site audit: a tightened precondition a caller no longer satisfies refuses with `call_pre` items at the call sites ([#222](https://github.com/aallan/vera/issues/222) Phase F2). |
 | v0.0.168 | 11 Jun | `vera/addEffect` rewrites the `effects(...)` clauses of a function and its transitive callers in one verified multi-site edit, closing the skill-layer phase and with it [#222](https://github.com/aallan/vera/issues/222). |
+| v0.0.169 | 11 Jun | The language server gets its user manual (LSP_SERVER.md) and the VS Code extension gains an LSP client — documentation sweep following [#222](https://github.com/aallan/vera/issues/222). |
 
 ---
 
@@ -353,4 +354,4 @@ Alongside the compiler, editor support and AI discoverability infrastructure wer
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% |
 
-Total: **810+ commits, 168 tagged releases, 62 active development days.**
+Total: **810+ commits, 170 tagged releases, 62 active development days.**

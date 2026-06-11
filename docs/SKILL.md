@@ -17,7 +17,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
 
-This installs the `vera` command and all runtime dependencies (Lark parser, Z3 solver, wasmtime). After installation, verify it works:
+This installs the `vera` command and all runtime dependencies (Lark parser, Z3 solver, wasmtime). For editor/agent integration via the Language Server Protocol, install the optional extra instead: `pip install -e ".[lsp]"` — see [LSP_SERVER.md](https://github.com/aallan/vera/blob/main/LSP_SERVER.md). After installation, verify it works:
 
 ```bash
 vera check examples/hello_world.vera    # should print "OK: examples/hello_world.vera"
@@ -67,6 +67,8 @@ vera fmt file.vera                # Format to canonical form (stdout)
 vera fmt --write file.vera        # Format in place
 vera fmt --check file.vera        # Check if already canonical
 vera version                      # Print the installed version (also --version, -V)
+vera lsp                          # Serve LSP over stdio: live diagnostics, hover, slot goto,
+                                  #   hole completion + agent proof-delta methods (LSP_SERVER.md)
 pytest tests/ -v                  # Run the test suite
 ```
 
