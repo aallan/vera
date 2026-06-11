@@ -4,7 +4,7 @@ Where the project is going.  See [HISTORY.md](HISTORY.md) for what's been built 
 
 ## Where we are
 
-4,265 tests, 89 conformance programs, 35 examples, 13 spec chapters.
+4,272 tests, 89 conformance programs, 35 examples, 13 spec chapters.
 
 ## What's next
 
@@ -20,7 +20,6 @@ Where the project is going.  See [HISTORY.md](HISTORY.md) for what's been built 
 
 | Order | Issue | Why now |
 |:---:|---|---|
-| 5 | [#222](https://github.com/aallan/vera/issues/222) — LSP server | Standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf).  The `--json` infrastructure provides most of what's needed.  Real-time feedback as agents write — diagnostics, hover, completion — turns Vera from "compile-and-pray" into the tight loop agents are calibrated for.  Single highest-leverage adoption enabler. |
 | 6 | [#523](https://github.com/aallan/vera/issues/523) — `vera context` token-budgeted project export | New CLI command that walks a project's dependency graph and emits a compact LLM-consumable summary of public signatures, contracts, effects, and ADTs.  Mandatory contracts carry the semantic payload that named-variable languages convey via identifiers and docstrings, so the output is denser per byte than equivalent Python/TS exports.  Estimated 1–2 days; module system and function registry already exist internally. |
 | 7 | [#370](https://github.com/aallan/vera/issues/370) — Configurable `Inference.complete` `max_tokens` / `temperature` | Currently hardcoded.  Agent workloads need control over both — for cost gates, deterministic replays, and routing strategies.  Smallest of the Inference-hardening items but also the one that blocks the most concrete user requests. |
 
@@ -98,7 +97,6 @@ These are not strictly required for the MCP demo but would make it more compelli
 
 ### Phase 3a: Agent integration
 
-- [#222](https://github.com/aallan/vera/issues/222) **LSP server** — the standard integration protocol for production coding agents (Claude Code, Cursor, Copilot, Windsurf). The existing `--json` infrastructure provides most of what's needed. An LSP enables real-time feedback as agents write code — diagnostics, hover information, completion suggestions. This is the single highest-leverage adoption enabler.
 - [#329](https://github.com/aallan/vera/issues/329) **Plumbing integration** — Vera WASM modules as verified tool calls in [Plumbing](https://arxiv.org/abs/2602.13275) agent graphs. Typed port interface maps Plumbing stream types to Vera ADTs at the JSON serialisation boundary.
 - [#523](https://github.com/aallan/vera/issues/523) **`vera context` — token-budgeted project context export** — new CLI command that walks a project's dependency graph and emits a compact summary of public signatures, contracts, effects, ADTs, and imports for LLM consumption. `--depth auto --budget 10kb` by default; the budget is a first-class navigation primitive so agents can zoom from architecture map to specific modules. Directly inspired by [Aver](https://averlang.dev)'s [`aver context` command](https://github.com/jasisz/aver#context-export); richer per byte in Vera because mandatory contracts carry the semantic payload that named-variable languages have to convey via identifiers and docstrings. Complements SKILL.md (teaches the language) and CLAUDE.md/AGENTS.md (teach the development workflow) — `vera context` teaches a specific project. Estimated 1–2 days; the module system and function registry already exist internally.
 - [#698](https://github.com/aallan/vera/issues/698) **`vera shape` — function-archetype histogram per module** — new CLI subcommand that classifies every function in scope into an archetype (match dispatcher / pipeline / orchestrator / pure helper / HOF wrapper / effect handler / Inference orchestrator / etc.) and emits a per-module histogram. The histogram makes a module's architectural layer legible at a glance: domain, parse, command, AI/strategy, infra, and handler modules each have a different shape. Pairs with `vera context` (#523) as the structural complement — `context` says *what's here*, `shape` says *what shape it is*. Inspired by [Aver](https://averlang.dev) creator [Szymon Teżewski (@jasisz1)](https://twitter.com/jasisz1)'s 24 May 2026 tweet proposing `aver shape`; Vera's archetype classifier has more signal to work with (declared effect rows, typed slot references, mandatory contracts) so the categories are finer and the layer inference is sharper. Estimated 2–3 days for v1 (classifier + per-module histogram + `--json` output); empirical baseline pass over `examples/` and `tests/conformance/` for the optional expected-shape-per-layer comparison.

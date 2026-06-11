@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.165] - 2026-06-11
+
+### Added
+
+- **[#222](https://github.com/aallan/vera/issues/222) Phase E — `vera/speculativeEdit`**, the one custom LSP method and the reason the obligation core was built first: apply an edit in memory, re-verify on the warm incremental session, and return a `proof_delta` — `newly_discharged` / `newly_undischarged` / `timed_out` / `removed` / `unchanged`, each item carrying the obligation's function, kind, expression, position, and before/after status.  An agent proposing an edit learns whether it keeps, breaks, or strengthens the program's proofs before committing it.  Speculative runs share the warm session and discharge cache (pre-warming by design) under the same lock, but never touch the canonical per-URI analyses or published diagnostics.  Parse/type errors in the speculative state report `ok: false` with the error count.  This completes the #222 plan: Phases A (reified obligations + warm Z3), B (incremental invalidation + discharge cache), C (stdio transport + coordinate layer), D (diagnostics/hover/goto/completion), and E shipped across v0.0.161–v0.0.165; the "No LSP server" row leaves the compiler limitation table and the ROADMAP.
+
 ## [0.0.164] - 2026-06-10
 
 ### Added
@@ -2433,7 +2439,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.164...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.165...HEAD
+[0.0.165]: https://github.com/aallan/vera/compare/v0.0.164...v0.0.165
 [0.0.164]: https://github.com/aallan/vera/compare/v0.0.163...v0.0.164
 [0.0.163]: https://github.com/aallan/vera/compare/v0.0.162...v0.0.163
 [0.0.162]: https://github.com/aallan/vera/compare/v0.0.161...v0.0.162
