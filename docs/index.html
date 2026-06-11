@@ -193,7 +193,7 @@
     .agent-card{display:flex;gap:1.25rem;align-items:baseline}
     .agent-card .fname{font-family:var(--mono);font-size:.82rem;color:var(--flame-100);flex:0 0 9.5rem}
     .agent-card .fdesc{font-size:.87rem;color:var(--paper-hi);opacity:.8;line-height:1.5;flex:1}
-    @media(max-width:779px){.agent-card{flex-direction:column;gap:.15rem}}
+    @media(max-width:779px){.agent-card{flex-direction:column;gap:.15rem}.agent-card .fname{flex:none}}
 
     /* Status + footer */
     .status{text-align:center;padding:3.5rem 0}
@@ -561,7 +561,7 @@ vera compile --target browser examples/hello_world.vera</pre>
         <div class="text">Language server client and syntax highlighting for Visual Studio Code<br>Install the <a href="https://github.com/aallan/vera/tree/main/editors/vscode">Vera extension</a> &mdash; it starts <code>vera lsp</code> automatically for <code>.vera</code> files.</div>
       </div>
 
-      <p style="color:var(--ink-500);max-width:62ch;margin-top:1.25rem">Live proof-aware diagnostics, hover, slot go-to-definition, and typed-hole completion come from the <a href="/LSP_SERVER.md">language server</a> &mdash; included in the install above (standalone: <code>pip install -e ".[lsp]"</code>). Any editor with a generic LSP client can point at <code>vera lsp</code> directly.</p>
+      <p style="color:var(--ink-500);margin-top:1.25rem">Live proof-aware diagnostics, hover, slot go-to-definition, and typed-hole completion come from the <a href="/LSP_SERVER.md">language server</a> &mdash; included in the install above (standalone: <code>pip install -e ".[lsp]"</code>). Any editor with a generic LSP client can point at <code>vera lsp</code> directly.</p>
     </div>
   </section>
 
