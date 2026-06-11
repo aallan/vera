@@ -31,6 +31,7 @@ coding agents.
 - **Effects** — built-in effects (`IO`, `State`, `Exn`, `Http`, `Async`, `Diverge`) and qualified operation calls (`IO.print`, `Exn.throw`) are highlighted with their components broken out.
 - **String interpolation** — `\(...)` expressions inside strings get full Vera highlighting.
 - **Nestable block comments** — `{- ... {- ... -} ... -}` handled correctly.
+- **Typed holes** — the `?` placeholder expression is scoped as a language constant, so it stands out as the thing left to fill in.
 
 **Language configuration** so VS Code understands Vera's structure:
 
@@ -119,6 +120,7 @@ The grammar uses standard TextMate scope conventions, so it works with any colou
 | `Int`, `Bool`, `String` | `storage.type.primitive.vera` |
 | `Array`, `Option`, `Result` | `storage.type.composite.vera` |
 | `true`, `false`, `pure` | `constant.language.vera` |
+| `?` (typed hole) | `constant.language.hole.vera` |
 | `->` | `keyword.operator.arrow.vera` |
 | `|>` | `keyword.operator.pipe.vera` |
 

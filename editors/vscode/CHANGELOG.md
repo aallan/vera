@@ -13,6 +13,7 @@ Language server integration.
 - Degrades gracefully to syntax-highlighting-only when the `vera`
   binary (or the extension's `npm install`) is absent
 - Requires VS Code 1.82+ (was 1.75+)
+- Grammar: typed holes (`?`) are now scoped (`constant.language.hole.vera`) — the one syntax addition since the grammar was written (v0.0.100)
 
 ## 0.1.0
 
