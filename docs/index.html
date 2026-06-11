@@ -149,6 +149,8 @@
     /* Principles + Features (condensed reference grid) */
     .reference{background:var(--paper-hi)}
     .ref-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.25rem 2rem;margin-top:1.5rem}
+    .ref-grid--flow{display:block;columns:3 260px;column-gap:2rem}
+    .ref-grid--flow .ref-item{break-inside:avoid;margin-bottom:1.25rem}
     .ref-item{padding-left:0}
     .ref-item .num{font-family:var(--mono);font-size:.7rem;color:var(--flame-400);letter-spacing:.05em;text-transform:uppercase;margin-bottom:.3rem}
     .ref-item .title{font-family:var(--serif);font-size:1.1rem;color:var(--ink-900);margin-bottom:.3rem;line-height:1.25}
@@ -187,11 +189,11 @@
     .agents a{color:var(--flame-100);text-decoration:underline;text-decoration-color:rgba(255,176,128,.35);text-underline-offset:3px}
     .agents a:hover{color:var(--flame-300);text-decoration-color:var(--flame-300)}
     .agents .code-block{background:#000;border-color:rgba(255,226,206,.12)}
-    .agents-files{display:grid;gap:1rem;grid-template-columns:1fr;margin:1.5rem 0}
-    @media(min-width:780px){.agents-files{grid-template-columns:repeat(3,1fr)}}
-    .agent-card{padding:1.15rem;border:1px solid rgba(255,226,206,.12);border-radius:8px;background:rgba(255,226,206,.03)}
-    .agent-card .fname{font-family:var(--mono);font-size:.82rem;color:var(--flame-100);margin-bottom:.35rem}
-    .agent-card .fdesc{font-size:.87rem;color:var(--paper-hi);opacity:.8;line-height:1.5}
+    .agents-files{display:flex;flex-direction:column;gap:.85rem;margin:1.5rem 0;padding:1.15rem 1.25rem;border:1px solid rgba(255,226,206,.12);border-radius:8px;background:rgba(255,226,206,.03)}
+    .agent-card{display:flex;gap:1.25rem;align-items:baseline}
+    .agent-card .fname{font-family:var(--mono);font-size:.82rem;color:var(--flame-100);flex:0 0 9.5rem}
+    .agent-card .fdesc{font-size:.87rem;color:var(--paper-hi);opacity:.8;line-height:1.5;flex:1}
+    @media(max-width:779px){.agent-card{flex-direction:column;gap:.15rem}}
 
     /* Status + footer */
     .status{text-align:center;padding:3.5rem 0}
@@ -478,13 +480,13 @@
       </div>
 
       <p class="ref-subhead">Key features</p>
-      <div class="ref-grid">
+      <div class="ref-grid ref-grid--flow">
         <div class="ref-item"><div class="title">No variable names</div><div class="desc">Typed <a href="https://github.com/aallan/vera/blob/main/DE_BRUIJN.md">De Bruijn indices</a> (<code>@T.n</code>) replace variable names: <code>@Int.0</code> is the most-recent <code>Int</code> binding, <code>@Int.1</code> the one before. The whole class of naming hallucinations is removed at the language level, not caught after the fact.</div></div>
         <div class="ref-item"><div class="title">Full contracts</div><div class="desc">Mandatory preconditions, postconditions, invariants, and effect declarations on every function. Z3 generates test inputs from the contracts and runs them through WASM &mdash; no manual test cases.</div></div>
         <div class="ref-item"><div class="title">Algebraic effects</div><div class="desc">IO, Http, State, Exceptions, Async, Inference, Random &mdash; declared, typed, and handled explicitly. Pure by default.</div></div>
         <div class="ref-item"><div class="title">Refinement types</div><div class="desc">Types that express constraints like &ldquo;a list of positive integers of length <code>n</code>&rdquo;.</div></div>
         <div class="ref-item"><div class="title">Three-tier verification</div><div class="desc">Static via <a href="https://www.microsoft.com/en-us/research/project/z3-3/">Z3</a>, guided with hints, runtime fallback for the rest.</div></div>
-        <div class="ref-item"><div class="title">Language server</div><div class="desc"><code>vera lsp</code> keeps a warm, incremental Z3 session between keystrokes &mdash; proofs re-check at editor latency, not batch latency. Custom methods hand agents <a href="/LSP_SERVER.md">proof deltas</a>: does this edit still prove, before it lands.</div></div>
+        <div class="ref-item"><div class="title">Language server</div><div class="desc">A warm Z3 session between keystrokes &mdash; proofs re-check at editor latency. Custom methods hand agents <a href="/LSP_SERVER.md">proof deltas</a> before an edit lands.</div></div>
         <div class="ref-item"><div class="title">Diagnostics as instructions</div><div class="desc">Every error is a natural-language explanation with a concrete fix, designed for LLM consumption.</div></div>
         <div class="ref-item"><div class="title">LLM inference as effect</div><div class="desc"><code>Inference.complete</code> is an algebraic effect &mdash; typed, contract-verifiable, mockable. Anthropic, OpenAI, Moonshot.</div></div>
         <div class="ref-item"><div class="title">Typed stdlib</div><div class="desc">JSON, HTML, Markdown, HTTP, Regex, Decimal &mdash; built-in ADTs with parse/query/serialize.</div></div>
@@ -556,7 +558,7 @@ vera compile --target browser examples/hello_world.vera</pre>
       </div>
       <div class="editor-row">
         <img src="vscode-icon.png" alt="VS Code">
-        <div class="text">Language server client and syntax highlighting for Visual Studio Code: install the <a href="https://github.com/aallan/vera/tree/main/editors/vscode">Vera extension</a> &mdash; it starts <code>vera lsp</code> automatically for <code>.vera</code> files.</div>
+        <div class="text">Language server client and syntax highlighting for Visual Studio Code<br>Install the <a href="https://github.com/aallan/vera/tree/main/editors/vscode">Vera extension</a> &mdash; it starts <code>vera lsp</code> automatically for <code>.vera</code> files.</div>
       </div>
 
       <p style="color:var(--ink-500);max-width:62ch;margin-top:1.25rem">Live proof-aware diagnostics, hover, slot go-to-definition, and typed-hole completion come from the <a href="/LSP_SERVER.md">language server</a> &mdash; included in the install above (standalone: <code>pip install -e ".[lsp]"</code>). Any editor with a generic LSP client can point at <code>vera lsp</code> directly.</p>
