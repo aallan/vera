@@ -29,6 +29,7 @@ from vera.obligations.core import (
     ProofObligation,
     expr_text_for,
 )
+from vera.slots import slot_table
 from vera.smt import CallViolation, SlotEnv, SmtContext
 from vera.types import (
     BOOL,
@@ -1510,6 +1511,69 @@ class ContractVerifier:
             error_code="E500",
         )
 
+    def _pre_at_call_site(
+        self,
+        callee_params: tuple[ast.TypeExpr, ...],
+        call_node: ast.FnCall | ast.ModuleCall,
+        precondition: ast.Requires,
+    ) -> str | None:
+        """The precondition rendered in CALL-SITE terms, or None.
+
+        Callee-parameter slot references are replaced by the actual
+        argument expressions of *call_node* (De Bruijn resolution via
+        :func:`vera.slots.slot_table`), and the result is rendered
+        with ``format_expr`` — turning, e.g.,
+        ``requires(string_length(@String.0) > 0)`` at the call
+        ``f("")`` into ``string_length("") > 0``.  Returns None when
+        any slot cannot be mapped (unknown type in the table, index
+        out of range, arity mismatch), in which case the caller keeps
+        the generic wording.
+        """
+        import dataclasses as _dc
+
+        table = slot_table(callee_params)
+
+        class _NoSubstitution(Exception):
+            pass
+
+        def rebuild(node: ast.Expr) -> ast.Expr:
+            if isinstance(node, ast.SlotRef):
+                positions = table.get(node.type_name)
+                if not positions or node.index >= len(positions):
+                    raise _NoSubstitution
+                pos = positions[node.index]
+                if pos > len(call_node.args):
+                    raise _NoSubstitution
+                return call_node.args[pos - 1]
+            changes: dict[str, object] = {}
+            for f in _dc.fields(node):
+                value = getattr(node, f.name)
+                if isinstance(value, ast.Expr):
+                    new_value = rebuild(value)
+                    if new_value is not value:
+                        changes[f.name] = new_value
+                elif (
+                    isinstance(value, tuple)
+                    and value
+                    and all(isinstance(x, ast.Expr) for x in value)
+                ):
+                    new_tuple = tuple(rebuild(x) for x in value)
+                    if any(
+                        a is not b for a, b in zip(new_tuple, value)
+                    ):
+                        changes[f.name] = new_tuple
+            if changes:
+                # dataclasses.replace's typeshed overload can't see
+                # the per-subclass field types through **dict.
+                return _dc.replace(node, **changes)  # type: ignore[arg-type]
+            return node
+
+        try:
+            rebuilt = rebuild(precondition.expr)
+        except _NoSubstitution:
+            return None
+        return ast.format_expr(rebuilt)
+
     def _report_call_violation(
         self,
         caller: ast.FnDecl,
@@ -1520,6 +1584,26 @@ class ContractVerifier:
     ) -> None:
         """Report a call site where the callee's precondition may not hold."""
         pre_text = self._contract_source_text(precondition)
+
+        # Render the precondition in call-site terms (callee slots
+        # replaced by the actual arguments) so the message states
+        # exactly what could not be proven — and the fix can show
+        # concrete code instead of generic advice.  Falls back to the
+        # generic wording when the callee or a slot cannot be
+        # resolved (e.g. module-qualified callees).
+        site_pre: str | None = None
+        callee_info = self.env.lookup_function(callee_name)
+        if callee_info is not None and callee_info.param_type_exprs:
+            from typing import cast
+
+            site_pre = self._pre_at_call_site(
+                cast(
+                    "tuple[ast.TypeExpr, ...]",
+                    callee_info.param_type_exprs,
+                ),
+                call_node,
+                precondition,
+            )
 
         # Build counterexample description
         ce_lines: list[str] = []
@@ -1537,6 +1621,8 @@ class ContractVerifier:
         )
         if pre_text:
             description += f"\n  Precondition: {pre_text}"
+        if site_pre:
+            description += f"\n  At this call site: {site_pre}"
         if ce_text:
             description += f"\n  {ce_text}"
 
@@ -1550,9 +1636,19 @@ class ContractVerifier:
                 "its contract."
             ),
             fix=(
-                f"Add a precondition to '{caller.name}' or guard the call "
-                f"with an if-expression that ensures the callee's "
-                f"precondition is satisfied."
+                (
+                    f"Guard the call so the precondition holds, e.g. "
+                    f"if {site_pre} then {{ "
+                    f"{ast.format_expr(call_node)} }} else {{ ... }} "
+                    f"— or strengthen '{caller.name}' with "
+                    f"requires({site_pre})."
+                )
+                if site_pre
+                else (
+                    f"Add a precondition to '{caller.name}' or guard "
+                    f"the call with an if-expression that ensures the "
+                    f"callee's precondition is satisfied."
+                )
             ),
             spec_ref='Chapter 6, Section 6.4.2 "Call-Site Verification"',
             error_code="E501",
