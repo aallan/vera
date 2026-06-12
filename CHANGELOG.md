@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.171] - 2026-06-12
+
+### Added
+
+- **Planning-document gates** ([#736](https://github.com/aallan/vera/issues/736)).  `check_doc_counts.py` now verifies the KNOWN_ISSUES.md "Refactoring needed" line counts against the measured files (±10% tolerance — the counts convey scale, and the gate trips into a re-cite rather than taxing every PR that touches a large file) and enforces the HISTORY.md version-row template (at most one issue link, no ` — ` separator per row).  `check_limitations_sync.py` now nets SKILL.md (Known Limitations + Known Bugs tables) and LSP_SERVER.md (limitations bullets converted to the standard table) alongside KNOWN_ISSUES.md, vera/README.md, and the spec chapters — and a configured section heading that goes missing now fails loudly instead of silently shrinking coverage, which surfaced the phantom spec §9.9 reference the script had been skipping since it was written: Chapter 9 now has a real Limitations section covering the Http, Inference, and missing-domain standard-library gaps.  17 new unit tests cover both checks.
+- **CONTRIBUTING.md release workflow** — the in-PR version-bump checklist, the tag-after-merge ordering with the retag-demotes-release gotcha, the fold-in release pattern, and the squash-vs-merge convention are now written down (manual until [#481](https://github.com/aallan/vera/issues/481) automates the post-merge half).
+
+### Changed
+
+- **ROADMAP.md rewritten around the June 2026 repo audit.**  The near-term plan is now four tiers ordered by the project's north star — close the silent failures, build the safety net, single-source the truth, then polish — with an explicit "Not doing now" section recording declined trade-offs, an "Ongoing threads" section (VeraBench leaves Milestone 1 to live there), and all four milestones rewritten.  Per-monomorphization generic verification ([#732](https://github.com/aallan/vera/issues/732)) is the chosen verification-depth path, with Tier 2 ([#427](https://github.com/aallan/vera/issues/427)) reframed as the Milestone 4 horizon upgrade that will use per-mono results as its differential oracle; the browser seam ([#609](https://github.com/aallan/vera/issues/609)/[#610](https://github.com/aallan/vera/issues/610)) is demoted below correctness work.  All 81 issue references in the old ROADMAP were explicitly re-homed (77 open issues) or consciously dropped (4 closed ones), and priority now lives in the ROADMAP tiers and nowhere else.
+- **KNOWN_ISSUES.md normalized to two sentences per row** — every row in every section now states what the issue is and then its impact and path forward, no more and no less.  The 781-character browser-seam row split into per-issue [#609](https://github.com/aallan/vera/issues/609)/[#610](https://github.com/aallan/vera/issues/610) rows, the Refactoring-needed line counts were re-measured (19,570 / 5,939 / 4,253 — the old citations had drifted up to 2×), the Bugs table is documented as 1:1 with the open `bug`-labelled issues, and the new bug row for [#606](https://github.com/aallan/vera/issues/606) landed with it.
+- **HISTORY.md re-staged and normalized.**  The two oversized stages split into four along their natural seams — standard-library depth (16–23 Apr), the bug-killing campaign (26 Apr – 8 May), stabilisation and memory safety (10–29 May), and the language server (10 Jun onwards) — with a stage index up top, every version row rewritten to one sentence with at most one issue link (76 of 173 rows violated the template), the parallel "Editor and tooling support" table folded into the stages it duplicated, and "By the numbers" extended through v0.0.171.
+- **Limitation wording re-synced from the canonical KNOWN_ISSUES rows** at every site: vera/README.md gains a verification-soundness row ([#552](https://github.com/aallan/vera/issues/552)/[#555](https://github.com/aallan/vera/issues/555)/[#730](https://github.com/aallan/vera/issues/730)) and splits its browser row; SKILL.md splits its browser row the same way; project-status counts (commits, releases, coverage) were re-measured everywhere they appear.
+
 ## [0.0.170] - 2026-06-12
 
 ### Fixed
@@ -2477,7 +2491,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.170...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.171...HEAD
+[0.0.171]: https://github.com/aallan/vera/compare/v0.0.170...v0.0.171
 [0.0.170]: https://github.com/aallan/vera/compare/v0.0.169...v0.0.170
 [0.0.169]: https://github.com/aallan/vera/compare/v0.0.168...v0.0.169
 [0.0.168]: https://github.com/aallan/vera/compare/v0.0.167...v0.0.168

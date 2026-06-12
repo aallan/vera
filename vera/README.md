@@ -687,6 +687,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
+| **Verification gaps that downgrade silently** | `@Nat` narrowing at let/argument binding sites is unchecked; generic (`forall<T>`) bodies skip all static verification; statement-position calls are never precondition-checked | [#552](https://github.com/aallan/vera/issues/552), [#555](https://github.com/aallan/vera/issues/555), [#730](https://github.com/aallan/vera/issues/730) |
 | **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | [#294](https://github.com/aallan/vera/issues/294) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |
@@ -698,7 +699,8 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 | **Inference: no user handlers** | `handle[Inference]` blocks not supported; host-backed only in this release | [#372](https://github.com/aallan/vera/issues/372) |
 | **No WASI compliance** | IO uses ad-hoc host imports, not standardised WASI interfaces | [#237](https://github.com/aallan/vera/issues/237) |
 | **No resource limits** | No built-in fuel, memory, or timeout controls for untrusted code | [#239](https://github.com/aallan/vera/issues/239) |
-| **Browser target: timing + rendering not fully usable for terminal programs** | `IO.sleep` busy-waits and freezes the tab; ANSI escape codes render as literal text. Terminal-style programs (animation via `IO.sleep` + cursor control via ANSI escapes) need a separate browser-shaped variant or wait for runtime fixes. Both halves close without language changes — JSPI for sleep, an ANSI-subset interpreter for rendering. | [#609](https://github.com/aallan/vera/issues/609), [#610](https://github.com/aallan/vera/issues/610) |
+| **Browser target: `IO.sleep` freezes the tab** | Busy-waits the main thread instead of yielding to the event loop; the JSPI-based suspend/resume fix needs no language change | [#609](https://github.com/aallan/vera/issues/609) |
+| **Browser target: ANSI escapes render as literal text** | No escape-sequence interpretation in `runtime.mjs`; a minimal ANSI-subset interpreter closes it without a language change | [#610](https://github.com/aallan/vera/issues/610) |
 
 ## Extending the Compiler
 

@@ -1,47 +1,52 @@
 # Known issues
 
-Bugs and limitations tracked against the [issue tracker](https://github.com/aallan/vera/issues). This file is a curated snapshot — the issue tracker is the source of truth.
+Bugs and limitations tracked against the [issue tracker](https://github.com/aallan/vera/issues). This file is a curated snapshot — the issue tracker is the source of truth, and priority/sequencing live in [ROADMAP.md](ROADMAP.md). Every row follows the same shape: one sentence on what the issue is, one sentence on impact and the path forward.
 
 ## Bugs
 
-Defects in shipped compiler, runtime, or tooling behaviour. Verification-soundness gaps are tracked under [Limitations](#limitations) with their issues; tooling and test-quality defects under their own sections below.
+Defects in shipped compiler, runtime, or tooling behaviour — this table matches the issue tracker's open [`bug`-labelled issues](https://github.com/aallan/vera/issues?q=is%3Aissue%20state%3Aopen%20label%3Abug) one-to-one. Verification-soundness gaps carry the `limitation` label instead and are tracked under [Limitations](#limitations).
 
-No known bugs.
+| Bug | Issue |
+|-----|-------|
+| `scripts/fix_allowlists.py --fix` uses a bulk-shift heuristic that misses entries when a doc file receives multiple edits at different positions in one session. A content-fingerprint anchor would be robust; the #538 fence-annotation migration would retire the script entirely. | [#606](https://github.com/aallan/vera/issues/606) |
 
 ## Limitations
 
+Things Vera cannot do yet, as distinct from defects in what it claims to do.
+
 | Limitation | Issue |
 |-----------|-------|
-| Tier 2 verification (Z3-guided with `assert`/lemma hints) is specified in §6.3.2 but not yet implemented; contracts requiring hints fall to Tier 3 (runtime check) | [#427](https://github.com/aallan/vera/issues/427) |
-| `data invariant(...)` clauses on ADT declarations are specified in §2.4.1 and §6.2.3 but not yet implemented in the reference compiler — every documented form fails `[E130] no <DataName> bindings in scope` because the slot environment for the invariant predicate isn't wired up.  Refinement types (`{ @T \| predicate }`, §2.6) are the working alternative for expressing constraints on data values until this lands.  Successor to the closed #560 (which was about removing the broken spec examples, not implementing the feature). | [#686](https://github.com/aallan/vera/issues/686) |
-| `@Nat` invariant check fires only at function return positions and at subtraction sites (the latter via #520's verifier obligation + codegen guard in `vera/wasm/operators.py`) — narrowing from `@Int` into a `@Nat`-typed let binding or function argument is not obligation-checked statically and not guarded at runtime, so a bad value can silently flow through subsequent expressions. Generalisation of #520 (which fixes the subtraction-specific subset) | [#552](https://github.com/aallan/vera/issues/552) |
-| Generic (`forall<T>`) functions bypass the E502 underflow obligation at verify time — the verifier's early return for generic functions skips `_walk_for_subtraction_obligations` along with all other static contract checks. The codegen guard fires per-monomorphization at compile time so the runtime safety net is in place; only the static check is missing. Consistent with how E520 / E521 / E523 / E524 / E525 all skip generics today; tracked alongside the broader Tier 2 verification work [#427](https://github.com/aallan/vera/issues/427) | [#555](https://github.com/aallan/vera/issues/555) |
-| `vera test` cannot generate ADT (algebraic data type) inputs | [#440](https://github.com/aallan/vera/issues/440) |
-| Effect row variable unification (full effect polymorphism) | [#294](https://github.com/aallan/vera/issues/294) |
-| Incremental compilation | [#56](https://github.com/aallan/vera/issues/56) |
-| Module re-exports | [#127](https://github.com/aallan/vera/issues/127) |
-| Package system and registry | [#130](https://github.com/aallan/vera/issues/130) |
-| REPL | [#224](https://github.com/aallan/vera/issues/224) |
-| LSP single-file model — module imports resolve from disk, not open buffers | [#724](https://github.com/aallan/vera/issues/724) |
-| LSP slot go-to-definition covers parameters only, not `let`/`match` bindings | [#181](https://github.com/aallan/vera/issues/181) |
-| LSP `vera/addEffect` propagation is handler-unaware (a `handle[E]` caller is still rewritten) | [#725](https://github.com/aallan/vera/issues/725) |
-| Calls in statement position (value discarded) are never precondition-checked — E501 only fires for calls in value position | [#730](https://github.com/aallan/vera/issues/730) |
-| Date and time handling | [#233](https://github.com/aallan/vera/issues/233) |
-| Cryptographic hashing | [#235](https://github.com/aallan/vera/issues/235) |
-| CSV parsing and generation | [#236](https://github.com/aallan/vera/issues/236) |
-| WASI 0.2 compliance | [#237](https://github.com/aallan/vera/issues/237) |
-| Resource limits (fuel, memory, timeout) | [#239](https://github.com/aallan/vera/issues/239) |
-| Http: no custom headers | [#351](https://github.com/aallan/vera/issues/351) |
-| Http: no HTTP status code access | [#352](https://github.com/aallan/vera/issues/352) |
-| Http: no request timeout control | [#353](https://github.com/aallan/vera/issues/353) |
-| Http: browser uses deprecated synchronous XHR | [#355](https://github.com/aallan/vera/issues/355) |
-| Http: no PUT, PATCH, DELETE methods | [#356](https://github.com/aallan/vera/issues/356) |
-| Inference: `embed` operation (vector embeddings) | [#371](https://github.com/aallan/vera/issues/371) |
-| Inference: no token/temperature controls (`max_tokens` hardcoded) | [#370](https://github.com/aallan/vera/issues/370) |
-| Inference: no user-defined handlers (`handle[Inference]`) | [#372](https://github.com/aallan/vera/issues/372) |
-| No float array host-alloc (`_alloc_result_ok_float_array`) | [#373](https://github.com/aallan/vera/issues/373) |
-| Browser runtime: `runtime.mjs` doesn't export the internal string-marshalling helpers (`allocString`, `readString`, `allocArrayOfStrings`), so JavaScript can't pass `String` arguments into Vera functions.  Forces all browser programs into the "compute everything upfront, drain stdout once" pattern; rules out streaming or interactive simulations driven from JS. | [#603](https://github.com/aallan/vera/issues/603) |
-| Terminal-vs-browser IO seam in the "write once, run anywhere" framing.  A program built for terminal ergonomics (`IO.sleep` for animation pacing, ANSI escapes for cursor control) compiles cleanly to `--target browser` but doesn't run meaningfully — `IO.sleep` busy-waits on the main thread ([#609](https://github.com/aallan/vera/issues/609) tracks the JSPI-driven yield fix), ANSI escapes render as literal text in the DOM ([#610](https://github.com/aallan/vera/issues/610) tracks an ANSI-subset interpreter for the browser runtime).  Closing both — neither requires a language change — would let typical terminal Vera programs render unchanged on either target.  Vera's design point ("pure core, effects at the boundary") is still right; the boundary just differs between targets. | [#609](https://github.com/aallan/vera/issues/609), [#610](https://github.com/aallan/vera/issues/610) |
+| Tier 2 verification (Z3 guided by `assert`/lemma hints) is specified in §6.3.2 but not implemented, so contracts that need hints fall to Tier 3 runtime checks. Per-monomorphization verification (#732) is the nearer-term depth work; full Tier 2 stays on the Milestone 4 horizon. | [#427](https://github.com/aallan/vera/issues/427) |
+| `data invariant(...)` clauses (spec §2.6, §6.2.3) are not implemented — every documented form fails with E130 because the slot environment for the invariant predicate isn't wired up. Refinement types (`{ @T \| predicate }`, §2.6) are the working alternative until this lands. | [#686](https://github.com/aallan/vera/issues/686) |
+| The `@Nat >= 0` invariant is checked only at function returns and subtraction sites — narrowing `@Int` into a `@Nat`-typed let binding or argument is neither statically obligated nor runtime-guarded. A bad value can flow silently through later expressions; generalising the #520 obligation pattern to every binding site is roadmap Tier 0. | [#552](https://github.com/aallan/vera/issues/552) |
+| Generic (`forall<T>`) functions skip the E502 underflow obligation at verify time, because the verifier's early return for generics skips all static checks. The codegen guard still fires per monomorphization; per-monomorphization static verification (#732) closes the static half. | [#555](https://github.com/aallan/vera/issues/555) |
+| Calls in statement position (value discarded) are never precondition-checked — E501 fires only for calls in value position. Roadmap Tier 0; until then a discarded call's `requires(...)` is enforced only by the runtime contract check. | [#730](https://github.com/aallan/vera/issues/730) |
+| `vera test` cannot generate inputs for functions with ADT parameters, so those functions are skipped with a warning. Constructor synthesis with recursive field generation is the planned fix (Milestone 1). | [#440](https://github.com/aallan/vera/issues/440) |
+| Effect row variables cannot be unified, so higher-order functions polymorphic over their effect rows are not expressible. Full effect polymorphism is Milestone 4 work. | [#294](https://github.com/aallan/vera/issues/294) |
+| Every `vera` invocation re-parses and re-checks the whole module graph from scratch. Incremental compilation is Milestone 4 work; the LSP server's warm `VerificationSession` already covers the editor loop. | [#56](https://github.com/aallan/vera/issues/56) |
+| A module cannot re-export an imported symbol, so deep module trees force consumers to import from the defining file. Sequenced behind module-qualified call disambiguation (#187) in Milestone 4. | [#127](https://github.com/aallan/vera/issues/127) |
+| There is no package system or registry — all code shares one module tree resolved from the filesystem. Milestone 4 work; the issue carries the design discussion. | [#130](https://github.com/aallan/vera/issues/130) |
+| There is no interactive read-eval-print loop; the shortest feedback path is `vera run` on a file. Milestone 3 developer-experience work. | [#224](https://github.com/aallan/vera/issues/224) |
+| The language server resolves module imports from disk rather than open editor buffers, so unsaved changes in imported files aren't seen. Buffer-aware resolution is roadmap Tier 3. | [#724](https://github.com/aallan/vera/issues/724) |
+| LSP slot go-to-definition covers parameters only — `let` and `match` bindings aren't navigable, and there is no mechanical slot-index rewriting on signature change. Roadmap Tier 3. | [#181](https://github.com/aallan/vera/issues/181) |
+| `vera/addEffect` propagates the new effect to all transitive callers even when a caller discharges it with `handle[E]`. Handler-aware propagation bounding is roadmap Tier 3. | [#725](https://github.com/aallan/vera/issues/725) |
+| There is no date or time handling beyond `IO.time` — no ISO 8601 parsing, formatting, or arithmetic. Milestone 2 server-adjacent work. | [#233](https://github.com/aallan/vera/issues/233) |
+| There are no cryptographic primitives — no hashing, no HMAC. Milestone 2 work, needed for API-authentication patterns like webhook signatures. | [#235](https://github.com/aallan/vera/issues/235) |
+| There is no CSV parsing or generation. Milestone 2 server-adjacent work; JSON is the workaround interchange format today. | [#236](https://github.com/aallan/vera/issues/236) |
+| The wasmtime integration predates WASI 0.2 — filesystem, networking, and clock access don't follow the component interfaces. Compliance is the prerequisite for the Milestone 2 server-effect chain. | [#237](https://github.com/aallan/vera/issues/237) |
+| WASM execution has no configurable fuel, memory, or timeout limits, so pathological computation runs unbounded. Milestone 2 work, essential for server workloads on untrusted input. | [#239](https://github.com/aallan/vera/issues/239) |
+| `Http.get`/`Http.post` send fixed headers — callers cannot add custom ones such as `Authorization`. Milestone 2 Http-hardening work. | [#351](https://github.com/aallan/vera/issues/351) |
+| Http responses surface only the body — status codes are not accessible, so callers cannot distinguish a 404 from a 500. Milestone 2 Http-hardening work. | [#352](https://github.com/aallan/vera/issues/352) |
+| Http requests have no per-request timeout control. Milestone 2 Http-hardening work; today a hung server hangs the program. | [#353](https://github.com/aallan/vera/issues/353) |
+| The browser runtime implements Http via deprecated synchronous XMLHttpRequest, which browsers throttle. Milestone 2 Http-hardening work, currently blocked (see the issue's relationships). | [#355](https://github.com/aallan/vera/issues/355) |
+| Http supports GET and POST only — no PUT, PATCH, or DELETE. Milestone 2 Http-hardening work. | [#356](https://github.com/aallan/vera/issues/356) |
+| `Inference.complete` hardcodes `max_tokens` and `temperature`. Configurability is Milestone 2's first Inference-hardening item — agent workloads need both for cost gates and deterministic replays. | [#370](https://github.com/aallan/vera/issues/370) |
+| `Inference.embed` (vector embeddings) is not implemented. Blocked on the float-array host-alloc infrastructure (#373). | [#371](https://github.com/aallan/vera/issues/371) |
+| The Inference effect cannot be handled in user code — `handle[Inference]` is rejected. Full handler support enables mocking, caching, and routing strategies (Milestone 2). | [#372](https://github.com/aallan/vera/issues/372) |
+| Host imports cannot return `Array<Float64>` — the `alloc_result_ok_float_array` infrastructure doesn't exist. Required by `Inference.embed` (#371). | [#373](https://github.com/aallan/vera/issues/373) |
+| `runtime.mjs` doesn't export its string-marshalling helpers, so JavaScript cannot pass `String` arguments into Vera functions in the browser. This forces browser programs into the compute-upfront/drain-stdout pattern; exporting the helpers is roadmap Tier 3. | [#603](https://github.com/aallan/vera/issues/603) |
+| `IO.sleep` busy-waits the browser's main thread, freezing the tab for the sleep duration — animations and paced simulations don't run meaningfully under `--target browser`. The JSPI-based suspend/resume fix is roadmap Tier 3, demoted below correctness work. | [#609](https://github.com/aallan/vera/issues/609) |
+| ANSI escape sequences render as literal control characters in the browser DOM, so terminal-style programs display garbage under `--target browser`. A minimal ANSI-subset interpreter in `runtime.mjs` is roadmap Tier 3. | [#610](https://github.com/aallan/vera/issues/610) |
 
 ## Refactoring needed
 
@@ -49,9 +54,9 @@ Files that have grown beyond a comfortable size and need decomposition. None of 
 
 | File | Lines | Refactoring | Issue |
 |------|-------|-------------|-------|
-| `tests/test_codegen.py` | 10,019 | Split into feature-focused test files (literals, arithmetic, control flow, strings, arrays, collections, effects, data types) | [#419](https://github.com/aallan/vera/issues/419) |
-| `tests/test_checker.py` | 5,522 | Split into phase-focused test files (types, functions, effects, contracts, modules, errors) | [#420](https://github.com/aallan/vera/issues/420) |
-| `vera/codegen/api.py` | 2,228 | Extract memory layout utilities → `memory.py`; extract host runtime → `runtime.py` | [#421](https://github.com/aallan/vera/issues/421) |
+| `tests/test_codegen.py` | 19,570 | Split into feature-focused test files (literals, arithmetic, control flow, strings, arrays, collections, effects, data types). The file has nearly doubled since the issue was filed; roadmap Tier 3. | [#419](https://github.com/aallan/vera/issues/419) |
+| `tests/test_checker.py` | 5,939 | Split into phase-focused test files (types, functions, effects, contracts, modules, errors). Currently a not-doing-now item — a close-or-annotate decision is pending. | [#420](https://github.com/aallan/vera/issues/420) |
+| `vera/codegen/api.py` | 4,253 | Extract the wasmtime execution layer into a `vera/runtime/` package, one host-binding family per PR. The characterization harness (#734) and the GC bucket-as-truth migration (#706) land first; the file has doubled since the issue was filed. | [#421](https://github.com/aallan/vera/issues/421) |
 
 ## Test coverage gaps
 
@@ -59,9 +64,8 @@ Internal test-quality items that don't affect correctness today but would make t
 
 | Gap | Issue |
 |-----|-------|
-| `TestHostPrintInvalidUtf8589` (`tests/test_runtime_traps.py`) has 6 structural source-greps and 1 end-to-end synthetic-WAT test for `host_print`. The other 5 decode sites (`host_stderr`, `host_contract_fail`, `_read_wasm_string`, `markdown.py::_read_string`, `_extract_string`) are pinned only by structural tests. A refactor that centralises the decodes into a `_safe_decode()` helper would break the structural greps even with preserved behaviour. End-to-end tests using synthetic WAT modules per site (~5 × 20 lines) would survive the refactor. Lowest-cost form: parametrize the existing test over an `(import_name, type_signature, payload_construction)` tuple. | [#592](https://github.com/aallan/vera/issues/592) |
-| `scripts/fix_allowlists.py --fix` uses a line-offset bulk-shift heuristic that doesn't reliably re-anchor when a documentation file receives multiple edits at different positions in one session.  Hit twice during PR #601's workflow — required manual line-number patching plus one mis-anchored entry that was only caught by CodeRabbit on PR review.  A content-fingerprint anchor (hash the surrounding ~5 lines of each entry) would be robust to multi-edit sequences. | [#606](https://github.com/aallan/vera/issues/606) |
-| Text-mode `open()` / `read_text()` / `write_text()` without explicit `encoding='utf-8'` in `vera/`, `scripts/`, `tests/`.  PR for #641 covered CI via `PYTHONUTF8=1` (PEP 540) and added explicit UTF-8 to the load-bearing `vera/parser.py` grammar load, but the broader audit (~30 sites) is the durable fix — locally users on Windows without `PYTHONUTF8=1` set still hit cp1252 fallbacks on individual files.  Acceptance: every text-mode call has explicit encoding + a pre-commit check enforces the convention + `PYTHONUTF8=1` line in CI can be removed. | [#645](https://github.com/aallan/vera/issues/645) |
+| Five of the six UTF-8 decode sites are pinned only by structural source-greps — a refactor that centralises the decodes would break the greps even with preserved behaviour. End-to-end tests per site (parametrizing the existing `host_print` test over an import-name/signature/payload tuple) would survive it. | [#592](https://github.com/aallan/vera/issues/592) |
+| Text-mode `open()`/`read_text()`/`write_text()` calls without explicit `encoding='utf-8'` remain at roughly 30 sites, relying on CI's `PYTHONUTF8=1` backstop. The durable fix is explicit encoding everywhere plus a pre-commit check, after which the CI variable can be dropped. | [#645](https://github.com/aallan/vera/issues/645) |
 
 ## CI workarounds
 
@@ -69,12 +73,12 @@ Defensive measures currently applied in CI (CVE ignores, forced upgrades, etc.) 
 
 | Workaround | Where | Rationale | Remove when | Issue |
 |------------|-------|-----------|-------------|-------|
-| `--ignore-vuln CVE-2026-4539` ([CVE-2026-4539](https://nvd.nist.gov/vuln/detail/CVE-2026-4539)) | `dependency-audit` step in `.github/workflows/ci.yml` | pygments 2.19.2 (transitive via pytest/rich); no fix release exists yet. | pygments > 2.19.2 ships with the fix. | — |
-| `pip install --upgrade pip` before audit | Same step | `actions/setup-python@v6` ships pip 26.0.1, which is flagged for [CVE-2026-3219](https://nvd.nist.gov/vuln/detail/CVE-2026-3219) (fixed in pip 26.1, [pypa/pip#13870](https://github.com/pypa/pip/pull/13870)). The runner doesn't track PyPI live, so `pip-audit` scans the runner's bundled pip and fails until we explicitly upgrade. | `actions/setup-python@v6` ships a runner image with pip ≥ 26.1 natively. Drop the `--upgrade pip` from the install step then. | [#537](https://github.com/aallan/vera/issues/537) |
-| `codecov/codecov-action` SHA-pinned to a commit (`e79a696` = v6.0.1) instead of the floating `@v6` tag | Both Codecov upload steps in `.github/workflows/ci.yml` | Codecov was acquired by Harness (2026-06-02); an ownership change elevates the risk that the `@v6` tag is repointed by the new owner and silently flows into CI. Pinning to a reviewed commit closes that. Coverage is not at risk either way — the 80% gate is the on-runner `--cov-fail-under`, and the upload is `fail_ci_if_error: false` — so this is pure supply-chain hardening. Dependabot still proposes version bumps under review. This is a deliberate targeted exception; the repo otherwise tag-pins all actions. | Harness completes the Codecov migration and the action / endpoint / ownership stabilises — then re-evaluate (including whether to adopt a repo-wide SHA-pin policy). | [#712](https://github.com/aallan/vera/issues/712) |
+| `--ignore-vuln CVE-2026-4539` ([CVE-2026-4539](https://nvd.nist.gov/vuln/detail/CVE-2026-4539)) | `dependency-audit` step in `.github/workflows/ci.yml` | pygments 2.19.2 (transitive via pytest/rich) is flagged for this CVE with no fixed release available yet. The ignore is scoped to this single CVE. | pygments ships a release with the fix. | — |
+| `pip install --upgrade pip` before audit | Same step | `actions/setup-python@v6` bundles pip 26.0.1, flagged for [CVE-2026-3219](https://nvd.nist.gov/vuln/detail/CVE-2026-3219) (fixed in pip 26.1), and `pip-audit` scans the runner's bundled pip. Upgrading first keeps the audit green without ignoring the CVE. | `actions/setup-python@v6` ships a runner image with pip ≥ 26.1 natively. | [#537](https://github.com/aallan/vera/issues/537) |
+| `codecov/codecov-action` SHA-pinned to a commit (`e79a696` = v6.0.1) instead of the floating `@v6` tag | Both Codecov upload steps in `.github/workflows/ci.yml` | Codecov was acquired by Harness (June 2026), elevating the risk that the floating tag is repointed and silently flows into CI; pinning to a reviewed commit closes that. Coverage enforcement is unaffected — the 80% gate is the on-runner `--cov-fail-under`, and uploads are `fail_ci_if_error: false`. | The Codecov → Harness migration stabilises — then re-evaluate, including whether to adopt a repo-wide SHA-pin policy. | [#712](https://github.com/aallan/vera/issues/712) |
 
 ## Runtime workarounds
 
 Defensive measures applied in compiler / runtime code that exist to bridge an upstream-fixed-but-unreleased bug — same shape as the CI workarounds table, but the workaround sits in shipped code rather than CI config.
 
-No runtime workarounds currently in place.  (The `host_sleep` / `host_read_char` `_VeraExit(130)` Ctrl-C guards were removed in v0.0.160 once `wasmtime>=45.0.0` shipped the upstream `except BaseException` trampoline fix — see [#599](https://github.com/aallan/vera/issues/599) and the CHANGELOG.)
+No runtime workarounds currently in place.

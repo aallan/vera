@@ -206,17 +206,11 @@ every step.
 
 ## Current limitations
 
-- **Single-file model** — module imports resolve from disk, not from
-  open editor buffers; unsaved edits to an imported module are
-  invisible until saved ([#724](https://github.com/aallan/vera/issues/724)).
-- **Slot go-to-definition covers parameters only** — references
-  binding through `let`/`match` have no definition site to jump to
-  yet ([#181](https://github.com/aallan/vera/issues/181)).
-- **`vera/addEffect` is handler-unaware** — a caller that handles the
-  effect in a `handle[E]` block is still rewritten; bounding the
-  closure at handlers is tracked as
-  [#725](https://github.com/aallan/vera/issues/725). Propagation also
-  stops at the file boundary by design.
+| Limitation | Issue |
+|-----------|-------|
+| Single-file model: module imports resolve from disk, not from open editor buffers, so unsaved edits to an imported module are invisible until saved. | [#724](https://github.com/aallan/vera/issues/724) |
+| Slot go-to-definition covers parameters only — references binding through `let`/`match` have no definition site to jump to yet. | [#181](https://github.com/aallan/vera/issues/181) |
+| `vera/addEffect` is handler-unaware: a caller that handles the effect in a `handle[E]` block is still rewritten. Propagation also stops at the file boundary, by design. | [#725](https://github.com/aallan/vera/issues/725) |
 
 ## Under the hood
 

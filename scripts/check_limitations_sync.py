@@ -1,14 +1,19 @@
 #!/usr/bin/env python
 """Verify limitation tracking is consistent across documentation tiers.
 
-Vera documents limitations in three places:
-  1. KNOWN_ISSUES.md — user-facing "Bugs" and "Limitations" tables
+Vera documents limitations in five places:
+  1. KNOWN_ISSUES.md — user-facing "Bugs" and "Limitations" tables (canonical)
   2. vera/README.md — contributor-facing "Current Limitations" table
   3. spec/ chapters — language-design-level limitation tables (ch 8, 9, 11, 12)
+  4. SKILL.md — agent-facing "Known Limitations" and "Known Bugs" tables
+  5. LSP_SERVER.md — language-server "Current limitations" table
 
 This script extracts GitHub issue numbers from each tier and checks:
-  - Every open limitation issue in spec or vera/README appears in KNOWN_ISSUES.md
+  - Every limitation issue in tiers 2–5 appears in KNOWN_ISSUES.md
   - No stale "Done" entries remain in limitation tables
+  - Every section this script is configured to read actually exists
+    (a renamed or deleted heading fails loudly instead of silently
+    shrinking the check's coverage)
 
 With --check-states, also verifies via GitHub API that no closed issues are
 listed as open limitations (slower — one API call per issue).
@@ -60,6 +65,35 @@ def extract_limitation_table_issues(text: str, table_header: str) -> set[int]:
             # Table ended
             break
 
+    return issues
+
+
+def extract_section_issues(text: str, heading: str) -> set[int] | None:
+    """Extract issue links from the table rows of one `## heading` section.
+
+    The scan is bounded at the next `## ` heading (or end of file), and
+    only lines that are Markdown table rows contribute — issue links in
+    surrounding prose are narrative, not inventory.  Returns ``None``
+    when the heading is absent so the caller can treat a renamed or
+    deleted section as an error rather than an empty result.
+    """
+    m = re.search(
+        rf"^## {re.escape(heading)}\s*$\n(.*?)(?=^## |\Z)",
+        text,
+        re.DOTALL | re.MULTILINE,
+    )
+    if not m:
+        return None
+    issues: set[int] = set()
+    for line in m.group(1).splitlines():
+        if not line.strip().startswith("|"):
+            continue
+        issues.update(
+            int(n)
+            for n in re.findall(
+                r"\[#(\d+)\]\(https://github\.com/[^)]+\)", line
+            )
+        )
     return issues
 
 
@@ -159,22 +193,59 @@ def main() -> int:
     ]
     for spec_path, heading in spec_files:
         full_path = root / spec_path
-        if full_path.exists():
-            text = full_path.read_text()
-            if heading.split("## ")[1] in text:
-                issues = extract_limitation_table_issues(text, heading)
-                if issues:
-                    spec_issues[spec_path] = issues
+        if not full_path.exists():
+            errors.append(
+                f"{spec_path}: file not found (listed in"
+                f" check_limitations_sync.py)"
+            )
+            continue
+        text = full_path.read_text()
+        if heading.split("## ")[1] not in text:
+            errors.append(
+                f"{spec_path}: expected '{heading}' section not found"
+                f" (listed in check_limitations_sync.py)"
+            )
+            continue
+        issues = extract_limitation_table_issues(text, heading)
+        if issues:
+            spec_issues[spec_path] = issues
 
     all_spec_issues: set[int] = set()
     for issues in spec_issues.values():
         all_spec_issues |= issues
 
+    # Tier 4: SKILL.md — agent-facing limitations and bugs tables
+    skill_text = (root / "SKILL.md").read_text(encoding="utf-8")
+    skill_issues: set[int] = set()
+    for heading_text in ("Known Limitations", "Known Bugs and Workarounds"):
+        found = extract_section_issues(skill_text, heading_text)
+        if found is None:
+            errors.append(
+                f"SKILL.md: expected '## {heading_text}' section not found"
+                f" (listed in check_limitations_sync.py)"
+            )
+        else:
+            skill_issues |= found
+
+    # Tier 5: LSP_SERVER.md — language-server limitations table
+    lsp_text = (root / "LSP_SERVER.md").read_text(encoding="utf-8")
+    lsp_found = extract_section_issues(lsp_text, "Current limitations")
+    if lsp_found is None:
+        errors.append(
+            "LSP_SERVER.md: expected '## Current limitations' section not"
+            " found (listed in check_limitations_sync.py)"
+        )
+        lsp_issues: set[int] = set()
+    else:
+        lsp_issues = lsp_found
+
     # ------------------------------------------------------------------
     # 2. Cross-check: every open limitation should appear in README.md
     # ------------------------------------------------------------------
 
-    all_documented_open = vera_readme_open | all_spec_issues
+    all_documented_open = (
+        vera_readme_open | all_spec_issues | skill_issues | lsp_issues
+    )
     missing_from_readme = all_documented_open - readme_issues
     for num in sorted(missing_from_readme):
         sources = []
@@ -183,6 +254,10 @@ def main() -> int:
         for spec_path, issues in spec_issues.items():
             if num in issues:
                 sources.append(spec_path)
+        if num in skill_issues:
+            sources.append("SKILL.md")
+        if num in lsp_issues:
+            sources.append("LSP_SERVER.md")
         errors.append(
             f"Issue #{num} appears in {', '.join(sources)} "
             f"but is missing from KNOWN_ISSUES.md"
@@ -204,7 +279,13 @@ def main() -> int:
     # ------------------------------------------------------------------
 
     if do_check_states:
-        all_issues = readme_issues | vera_readme_open | all_spec_issues
+        all_issues = (
+            readme_issues
+            | vera_readme_open
+            | all_spec_issues
+            | skill_issues
+            | lsp_issues
+        )
         if all_issues:
             states = check_issue_states(all_issues)
             for num in sorted(all_issues):
@@ -218,6 +299,10 @@ def main() -> int:
                     for spec_path, issues in spec_issues.items():
                         if num in issues:
                             locations.append(spec_path)
+                    if num in skill_issues:
+                        locations.append("SKILL.md")
+                    if num in lsp_issues:
+                        locations.append("LSP_SERVER.md")
                     errors.append(
                         f"Issue #{num} is CLOSED but still listed as "
                         f"open limitation in: {', '.join(locations)}"
@@ -241,7 +326,9 @@ def main() -> int:
         f"Limitation tracking is consistent{mode} "
         f"({len(readme_issues)} in KNOWN_ISSUES.md, "
         f"{len(vera_readme_open)} in vera/README.md, "
-        f"{len(all_spec_issues)} across spec chapters)."
+        f"{len(all_spec_issues)} across spec chapters, "
+        f"{len(skill_issues)} in SKILL.md, "
+        f"{len(lsp_issues)} in LSP_SERVER.md)."
     )
     return 0
 

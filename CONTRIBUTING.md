@@ -232,6 +232,26 @@ The `main` branch has the following protections enabled:
 
 If you are a maintainer setting up branch protection on a fork, configure these rules in **Settings > Branches > Branch protection rules** for the `main` branch.
 
+## Release workflow
+
+Releases are version-bumped inside the feature PR and tagged after merge. [#481](https://github.com/aallan/vera/issues/481) tracks automating the post-merge half; until it lands, the manual ordering below is the contract.
+
+**In the feature PR (the release prep):**
+
+1. Bump the version in `pyproject.toml` and `vera/__init__.py`, and update the version badge in `docs/index.html` (the version appears twice on the badge line — URL and visible text). `scripts/check_version_sync.py` gates the consistency.
+2. Add the new `## [X.Y.Z]` section to `CHANGELOG.md` with its compare-link reference at the bottom, and add the version's one-sentence row to the current stage table in `HISTORY.md`.
+3. Regenerate `uv.lock` and the site assets (`python scripts/build_site.py`) if dependencies or AI-readable docs changed.
+
+**After merge:**
+
+1. Tag the merge commit on `main`: `git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z`. If the tag was created on the feature branch during review, move it to the merge commit instead.
+2. Extract the matching CHANGELOG section as the release notes and publish: `gh release create vX.Y.Z --verify-tag --title vX.Y.Z --notes-file <extracted-section>`.
+3. If you ever re-point an existing tag, re-publish the release afterwards — GitHub demotes a release to draft when its tag moves (`gh release edit vX.Y.Z --draft=false`).
+
+**Fold-in releases:** a small immediate follow-up to a just-published release may fold into it rather than cutting a new version — add its bullets to the latest released CHANGELOG section (the changelog gate accepts new bullets there), merge, then move the tag to the new merge commit and re-publish the notes. Older sections are frozen; only the latest released section accepts additions.
+
+**Merge style:** squash-merge multi-round PRs (review iterations don't need to land on `main` individually); a merge commit is fine for single-commit PRs.
+
 ## Code of Conduct
 
 This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating, you are expected to uphold this code.
