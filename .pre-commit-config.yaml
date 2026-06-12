@@ -117,7 +117,7 @@ repos:
         entry: .venv/bin/python scripts/check_doc_counts.py
         language: system
         pass_filenames: false
-        files: '(README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|docs/index\.html$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
+        files: '(README\.md$|TESTING\.md$|CONTRIBUTING\.md$|CLAUDE\.md$|KNOWN_ISSUES\.md$|HISTORY\.md$|ROADMAP\.md$|docs/index\.html$|tests/test_.*\.py$|tests/conformance/manifest\.json$|examples/.*\.vera$|vera/codegen/api\.py$|scripts/check_doc_counts\.py$|\.pre-commit-config\.yaml$|\.github/workflows/ci\.yml$)'
 
       - id: walker-coverage
         name: walker coverage
@@ -140,7 +140,7 @@ repos:
         entry: .venv/bin/python scripts/check_limitations_sync.py
         language: system
         pass_filenames: false
-        files: '(KNOWN_ISSUES\.md$|vera/README\.md$|SKILL\.md$|LSP_SERVER\.md$|spec/0[89]-.*\.md$|spec/1[12]-.*\.md$)'
+        files: '(KNOWN_ISSUES\.md$|vera/README\.md$|SKILL\.md$|LSP_SERVER\.md$|spec/0[89]-.*\.md$|spec/1[12]-.*\.md$|scripts/check_limitations_sync\.py$)'
 
       - id: license-check
         name: license check

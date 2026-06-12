@@ -161,6 +161,9 @@ jobs:
       - name: Check documentation counts are consistent
         run: python scripts/check_doc_counts.py
 
+      - name: Check limitation tables are in sync
+        run: python scripts/check_limitations_sync.py
+
       - name: Security lint (ruff S rules)
         run: ruff check --select S vera/
 
