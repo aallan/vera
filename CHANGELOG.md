@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.170] - 2026-06-12
+
+### Fixed
+
+- **[#727](https://github.com/aallan/vera/issues/727) — duplicate E501 diagnostics.**  A violating call site inside a `let` RHS (or a subtraction operand) was recorded twice: once by the primary body translation and again when the `@Nat`-subtraction walker re-translated the expression to rebuild its slot environment.  Call-violation recording is now suppressed during the walker's re-translations (`SmtContext.suppressed_call_violations()`), so `vera verify --json` and the LSP hover emit exactly one diagnostic and one `call_pre` obligation per violating call site.  Translation behaviour is unchanged — an unprovable precondition still bails the call to Tier 3 — and the warm/cold differential oracle is untouched.
+- **[#728](https://github.com/aallan/vera/issues/728) — LSP diagnostics now carry the full instruction contract.**  The language server's diagnostic mapping put only the description into the LSP message, so editor hovers said what broke but not how to fix it.  The message now appends the rationale paragraph and the `Fix:` paragraph exactly as `--json` carries them; diagnostics without those fields map to the bare description, unchanged.
+
 ## [0.0.169] - 2026-06-11
 
 ### Added
@@ -2469,7 +2476,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.169...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.170...HEAD
+[0.0.170]: https://github.com/aallan/vera/compare/v0.0.169...v0.0.170
 [0.0.169]: https://github.com/aallan/vera/compare/v0.0.168...v0.0.169
 [0.0.168]: https://github.com/aallan/vera/compare/v0.0.167...v0.0.168
 [0.0.167]: https://github.com/aallan/vera/compare/v0.0.166...v0.0.167

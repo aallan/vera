@@ -328,6 +328,42 @@ class TestObligationKinds:
         assert [o.line for o in call_pres] == [14, 14]
         assert call_pres[0].column != call_pres[1].column
 
+    def test_call_in_let_records_violation_once(self) -> None:
+        """A violating call in a `let` RHS yields exactly ONE E501
+        diagnostic and ONE call_pre obligation (#727).
+
+        The @Nat-subtraction walker re-translates let RHSes to rebuild
+        its slot environment; before the fix, that second translation
+        re-recorded the same CallViolation, doubling both the
+        diagnostic and the obligation for the SAME call site.
+        """
+        source = (
+            "private fn need_pos(@Int -> @Int)\n"
+            "  requires(@Int.0 > 0)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0\n"
+            "}\n"
+            "\n"
+            "public fn caller(-> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  let @Int = need_pos(0);\n"
+            "  @Int.0\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        e501s = [d for d in result.diagnostics if d.error_code == "E501"]
+        assert len(e501s) == 1
+        call_pres = [
+            o for o in result.obligations if o.kind == "call_pre"
+        ]
+        assert len(call_pres) == 1
+        assert call_pres[0].status == "violated"
+
     def test_content_key_stable_across_runs(self) -> None:
         source = (
             "public fn f(@Nat -> @Nat)\n"
