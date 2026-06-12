@@ -68,6 +68,32 @@ class TestRefactoringCounts:
         assert ">10% drift" in errors[0]
         assert "big.py" in errors[0]
 
+    def test_exact_tolerance_boundary_passes(self, tmp_path: Path) -> None:
+        _write_lines(tmp_path / "big.py", 1000)
+        errors = _MOD.check_refactoring_counts(
+            _refactoring_doc("big.py", 1100), tmp_path
+        )
+        assert errors == []
+
+    def test_empty_file_with_nonzero_citation_fails(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "big.py").write_text("", encoding="utf-8")
+        errors = _MOD.check_refactoring_counts(
+            _refactoring_doc("big.py", 1000), tmp_path
+        )
+        assert len(errors) == 1
+        assert "measured 0" in errors[0]
+
+    def test_hyphenated_path_matched(self, tmp_path: Path) -> None:
+        (tmp_path / "spec").mkdir()
+        _write_lines(tmp_path / "spec" / "09-standard-library.md", 2000)
+        errors = _MOD.check_refactoring_counts(
+            _refactoring_doc("spec/09-standard-library.md", 1000), tmp_path
+        )
+        assert len(errors) == 1
+        assert ">10% drift" in errors[0]
+
     def test_missing_file_fails(self, tmp_path: Path) -> None:
         errors = _MOD.check_refactoring_counts(
             _refactoring_doc("gone.py", 1000), tmp_path

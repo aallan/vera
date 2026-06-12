@@ -140,7 +140,7 @@ repos:
         entry: .venv/bin/python scripts/check_limitations_sync.py
         language: system
         pass_filenames: false
-        files: '(KNOWN_ISSUES\.md$|vera/README\.md$|spec/0[89]-.*\.md$|spec/1[12]-.*\.md$)'
+        files: '(KNOWN_ISSUES\.md$|vera/README\.md$|SKILL\.md$|LSP_SERVER\.md$|spec/0[89]-.*\.md$|spec/1[12]-.*\.md$)'
 
       - id: license-check
         name: license check

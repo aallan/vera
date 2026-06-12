@@ -76,10 +76,12 @@ For reproducible installs with hash-pinned versions, use `uv` instead (recommend
 
 ```bash
 pip install uv
-uv sync
+uv sync --extra dev
 pre-commit install
 pre-commit install --hook-type pre-push
 ```
+
+Plain `uv sync` (without `--extra dev`) skips the dev extras and removes pytest, mypy, ruff, and pre-commit from the environment — the `--extra dev` flag is load-bearing.
 
 `uv.lock` is checked in and tracks exact versions with hashes. Run `uv lock --check` to verify
 the lockfile is consistent with `pyproject.toml`, or `uv lock` to regenerate it after updating
@@ -140,7 +142,7 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 
 PRs touching `vera/browser/runtime.mjs` have JavaScript coverage tracked by Codecov (via V8's built-in coverage). See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.  See [ENVIRONMENT.md](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, and debug flags like `VERA_EAGER_GC` for hunting GC-rooting bugs).
 
-**Doc-count gate**: any PR that adds tests will trip `scripts/check_doc_counts.py` if it doesn't also update the test counts in `TESTING.md` (per-file rows + overall total), `ROADMAP.md` ("3,917 tests" line), and `README.md` (project-status line).  Run the script locally to see exactly which numbers need updating:
+**Doc-count gate**: any PR that adds tests will trip `scripts/check_doc_counts.py` if it doesn't also update the test counts in `TESTING.md` (per-file rows + overall total), `ROADMAP.md` (the "Where we are" line), and `README.md` (project-status line).  Run the script locally to see exactly which numbers need updating:
 
 ```bash
 python scripts/check_doc_counts.py    # reports stale counts with file:field references

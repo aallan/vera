@@ -40,7 +40,7 @@ def check_refactoring_counts(known_issues_text: str, root: Path) -> list[str]:
     )
     if not section:
         return ["KNOWN_ISSUES.md: could not find '## Refactoring needed' section"]
-    rows = re.findall(r"\| `([\w./]+)` \| ([\d,]+) \|", section.group(1))
+    rows = re.findall(r"\| `([\w./-]+)` \| ([\d,]+) \|", section.group(1))
     if not rows:
         return ["KNOWN_ISSUES.md: refactoring table has no `file` | count rows"]
     for rel, cited_s in rows:
@@ -52,7 +52,14 @@ def check_refactoring_counts(known_issues_text: str, root: Path) -> list[str]:
             )
             continue
         live = len(path.read_text(encoding="utf-8").splitlines())
-        if live and abs(cited - live) / live > 0.10:
+        if live == 0:
+            if cited != 0:
+                errors.append(
+                    f"KNOWN_ISSUES.md refactoring table: {rel} cites"
+                    f" {cited:,} lines, measured 0"
+                )
+            continue
+        if abs(cited - live) / live > 0.10:
             errors.append(
                 f"KNOWN_ISSUES.md refactoring table: {rel} cites"
                 f" {cited:,} lines, measured {live:,} (>10% drift)"
