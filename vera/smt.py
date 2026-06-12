@@ -9,10 +9,9 @@ See spec/06-contracts.md, Section 6.4 "Verification Conditions".
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Iterator
+from typing import TYPE_CHECKING, Any, Callable
 
 import z3
 
@@ -177,7 +176,6 @@ class SmtContext:
         self._fn_lookup = fn_lookup
         self._module_fn_lookup = module_fn_lookup
         self._call_violations: list[CallViolation] = []
-        self._suppress_call_violations = False
         self._fresh_counter: int = 0
         # Path conditions accumulated from if/match branches so that
         # call-site precondition checks can see which branch is active.
@@ -294,24 +292,6 @@ class SmtContext:
         """Generate a unique Z3 variable name."""
         self._fresh_counter += 1
         return f"_call_{prefix}_{self._fresh_counter}"
-
-    @contextmanager
-    def suppressed_call_violations(self) -> Iterator[None]:
-        """Translation inside this context records no call violations.
-
-        For re-translations of expressions whose call sites were
-        already checked during the primary body pass — e.g. the
-        @Nat-subtraction walker rebuilding let bindings — recording
-        again would duplicate the diagnostic for the same call site
-        (#727).  Translation behaviour is otherwise unchanged: an
-        unprovable precondition still bails the call to Tier 3.
-        """
-        prev = self._suppress_call_violations
-        self._suppress_call_violations = True
-        try:
-            yield
-        finally:
-            self._suppress_call_violations = prev
 
     def drain_call_violations(self) -> list[CallViolation]:
         """Return accumulated call-site violations and clear the list."""
@@ -1082,7 +1062,20 @@ class SmtContext:
             # Check validity: solver state already has caller's assumptions
             result = self.check_valid(z3_pre, [])
             if result.status != "verified":
-                if not self._suppress_call_violations:
+                # The same call node is translated more than once per
+                # function (the @Nat-subtraction walker re-translates
+                # let RHSes, branch conditions, and subtraction
+                # operands to rebuild its state) — and for some sites,
+                # e.g. inside an ExprStmt, the walker is the ONLY
+                # translator.  Identity dedup keeps exactly one
+                # violation per (call site, precondition) regardless
+                # of how many passes visit it (#727).
+                already = any(
+                    v.call_node is call_node
+                    and v.precondition is contract
+                    for v in self._call_violations
+                )
+                if not already:
                     self._call_violations.append(CallViolation(
                         callee_name=callee_name,
                         call_node=call_node,
@@ -1446,7 +1439,6 @@ class SmtContext:
         self._vars.clear()
         self._result_var = None
         self._call_violations.clear()
-        self._suppress_call_violations = False
         self._fresh_counter = 0
         self._path_conditions.clear()
         self._length_fns = {

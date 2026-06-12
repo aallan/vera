@@ -665,15 +665,15 @@ class ContractVerifier:
         #      Walks the body looking for `@Nat - @Nat` sites and emits
         #      an obligation `lhs >= rhs` at each, dischargeable from
         #      preconditions and path conditions.
-        #      The walker re-translates let RHSes (and subtraction
-        #      operands) to build its environment; those call sites
-        #      were already checked in step 5, so violation recording
-        #      is suppressed to keep one diagnostic per site (#727).
+        #      The walker re-translates let RHSes, conditions, and
+        #      subtraction operands; the SMT layer's identity dedup
+        #      keeps one call violation per site across those repeat
+        #      visits — and lets the walker be the sole recorder for
+        #      sites the body pass never translates (#727).
         if decl.body is not None:
-            with smt.suppressed_call_violations():
-                self._walk_for_subtraction_obligations(
-                    decl, decl.body, smt, slot_env, assumptions,
-                )
+            self._walk_for_subtraction_obligations(
+                decl, decl.body, smt, slot_env, assumptions,
+            )
 
         # 6. Report any call-site precondition violations
         for v in smt.drain_call_violations():

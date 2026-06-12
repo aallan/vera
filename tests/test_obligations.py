@@ -335,7 +335,10 @@ class TestObligationKinds:
         The @Nat-subtraction walker re-translates let RHSes to rebuild
         its slot environment; before the fix, that second translation
         re-recorded the same CallViolation, doubling both the
-        diagnostic and the obligation for the SAME call site.
+        diagnostic and the obligation for the SAME call site.  The SMT
+        layer now dedups by (call node, precondition) identity at
+        recording time, so repeat translation passes collapse to one
+        violation.
         """
         source = (
             "private fn need_pos(@Int -> @Int)\n"
@@ -363,6 +366,79 @@ class TestObligationKinds:
         ]
         assert len(call_pres) == 1
         assert call_pres[0].status == "violated"
+
+    def test_walker_only_call_site_still_detected(self) -> None:
+        """A violating call that ONLY the @Nat-subtraction walker ever
+        translates — a subtraction operand inside an ExprStmt, which
+        the body pass skips — must still record its E501 exactly once
+        (#727 review round: blanket suppression of the walker hid
+        these entirely; identity dedup keeps the sole recorder).
+        """
+        source = (
+            "private fn need_pos(@Nat -> @Nat)\n"
+            "  requires(@Nat.0 >= 1)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Nat.0\n"
+            "}\n"
+            "\n"
+            "private fn consume(@Nat -> @Nat)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Nat.0\n"
+            "}\n"
+            "\n"
+            "public fn caller(@Nat -> @Nat)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  consume(need_pos(@Nat.0) - 1);\n"
+            "  @Nat.0\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        e501s = [d for d in result.diagnostics if d.error_code == "E501"]
+        assert len(e501s) == 1
+        call_pres = [
+            o for o in result.obligations if o.kind == "call_pre"
+        ]
+        assert len(call_pres) == 1
+
+    def test_let_nat_subtraction_records_once(self) -> None:
+        """A violating call as a @Nat-subtraction operand in a let RHS
+        is visited by THREE translation passes (body, walker env
+        rebuild, walker operand discharge) — pre-fix it recorded three
+        E501s; identity dedup collapses them to one (#727).
+        """
+        source = (
+            "private fn need_pos(@Nat -> @Nat)\n"
+            "  requires(@Nat.0 >= 1)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Nat.0\n"
+            "}\n"
+            "\n"
+            "public fn caller(@Nat -> @Nat)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  let @Nat = need_pos(@Nat.0) - 1;\n"
+            "  @Nat.0\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        e501s = [d for d in result.diagnostics if d.error_code == "E501"]
+        assert len(e501s) == 1
+        call_pres = [
+            o for o in result.obligations if o.kind == "call_pre"
+        ]
+        assert len(call_pres) == 1
 
     def test_content_key_stable_across_runs(self) -> None:
         source = (

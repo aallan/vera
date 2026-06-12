@@ -6,7 +6,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 4,315 across 34 files (~55,608 lines of test code; 4,284 passed + 16 stress, 15 skipped) |
+| **Tests** | 4,317 across 34 files (~55,683 lines of test code; 4,286 passed + 16 stress, 15 skipped) |
 | **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
 | **Conformance programs** | 89 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 35, all validated through `vera check` + `vera verify` |
@@ -14,7 +14,7 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 | **README code blocks** | 13 Vera blocks (12 validated, 1 allowlisted future syntax) |
 | **FAQ code blocks** | 1 Vera block in FAQ.md (0 validated, 1 allowlisted snippet) |
 | **HTML code blocks** | 4 Vera blocks in docs/index.html (4 validated: parse + check + verify) |
-| **Contract verification** | 162 of 179 contracts (90.5%) verified statically (Tier 1) |
+| **Contract verification** | 256 of 280 contracts (91.4%) verified statically (Tier 1) |
 | **CI matrix** | 12 combinations (Python 3.11/3.12/3.13 × ubuntu-latest/macos-15/macos-26/windows-latest) + browser parity (Node.js 22) + wheel-availability preflight |
 
 ## Running Tests
@@ -58,7 +58,7 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_parser.py` | 129 | 968 | Grammar rules, operator precedence, parse errors |
 | `test_ast.py` | 128 | 1,130 | AST transformation, node structure, serialisation, string escape sequences, ability declarations |
 | `test_checker.py` | 521 | 5,939 | Type synthesis, slot resolution, effects, effect subtyping, contracts, exhaustiveness, cross-module typing, visibility, error codes, string built-ins, generic rejection, IO operation types, Markdown types, Regex types, abilities, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, removed legacy name regression |
-| `test_obligations.py` | 260 | 662 | Reified proof obligations + warm `VerificationSession` (#222 Phase A): full-corpus differential oracle (warm session == cold `verify()` on diagnostics, summary, and obligation stream, plus warm-twice determinism, across all 35 examples and every verify/run-level conformance program), summary↔obligation tier-bookkeeping consistency, per-kind unit tests (requires / ensures / decreases / nat_sub / call_pre statuses, counterexamples, error codes), content-key stability + same-text-two-sites span disambiguation, session solver reuse, type-error short-circuit, ADT-registry resync between programs; plus the Phase B incremental suite — identical-source full replay, callee-body-edit replays callers while callee-contract-edit invalidates them, span-shift and ADT-edit conservative invalidation, cross-program isolation, timeout-status never cached (monkeypatched solver), FIFO eviction bound; plus the #727 dedup pin — a violating call in a let RHS records exactly one E501 diagnostic and one call_pre obligation |
+| `test_obligations.py` | 262 | 738 | Reified proof obligations + warm `VerificationSession` (#222 Phase A): full-corpus differential oracle (warm session == cold `verify()` on diagnostics, summary, and obligation stream, plus warm-twice determinism, across all 35 examples and every verify/run-level conformance program), summary↔obligation tier-bookkeeping consistency, per-kind unit tests (requires / ensures / decreases / nat_sub / call_pre statuses, counterexamples, error codes), content-key stability + same-text-two-sites span disambiguation, session solver reuse, type-error short-circuit, ADT-registry resync between programs; plus the Phase B incremental suite — identical-source full replay, callee-body-edit replays callers while callee-contract-edit invalidates them, span-shift and ADT-edit conservative invalidation, cross-program isolation, timeout-status never cached (monkeypatched solver), FIFO eviction bound; plus the #727 dedup pin — a violating call in a let RHS records exactly one E501 diagnostic and one call_pre obligation |
 | `test_verifier.py` | 146 | 2,128 | Z3 verification, counterexamples, tier classification, call-site preconditions, branch-aware preconditions, pipe operator, cross-module contracts, match/ADT verification, decreases verification, mutual recursion, refined Bool/String/Float64 param sorts, **@Nat subtraction underflow obligation** (#520 — Path-A obligation discharge via requires/path-conditions/path-aware Z3 refutation, pure-literal exclusion, Int-Int and Nat-Int → Int exemptions) |
 | `test_codegen.py` | 1,134 | 19,570 | WASM compilation, arithmetic, Float64, Byte, arrays (incl. compound element types), ADTs, match (incl. nested patterns), generics, State\<T\>, Exn\<E\> handlers, control flow, strings, string escape sequences, IO (read\_line, read\_file, write\_file, args, exit, get\_env, sleep, time, stderr), bounds checking, quantifiers, assert/assume, refinement type aliases, pipe operator, string built-ins, built-in shadowing, parse\_nat Result, GC, Markdown host bindings, Regex host bindings, Map collection, Set collection, Decimal type, Json type, Html type, Http effect, Inference effect, Random effect, example round-trips, GC shadow stack overflow, **WASM tail-call optimization** (#517 — `return_call` emission for tail-position calls, 50K- and 1M-iteration stress, structural assertions on `return_call`/plain `call` boundary, **GC-aware TCO for allocating fns (#549 — `$gc_sp` restore before each `return_call`)**, postcondition-fallback regression (still reverts to plain `call`), analyzer unit tests covering Block-trailing / IfExpr-both-branches / MatchExpr-arm-bodies / let-value-NOT-marked / call-args-NOT-marked / ExprStmt-statement-NOT-marked / IfExpr-condition-NOT-marked / MatchExpr-scrutinee-NOT-marked) |
 | `test_codegen_contracts.py` | 32 | 576 | Runtime pre/postconditions, contract fail messages, old/new state postconditions |
@@ -251,21 +251,24 @@ Across all 35 example programs:
 
 | Metric | Value |
 |--------|-------|
-| **Tier 1 (static)** | 162 contracts — proved automatically by Z3 |
-| **Tier 3 (runtime)** | 16 contracts — verified at runtime via assertion checks |
-| **Total** | 177 contracts (91.0% static) |
+| **Tier 1 (static)** | 256 contracts — proved automatically by Z3 |
+| **Tier 3 (runtime)** | 24 contracts — verified at runtime via assertion checks |
+| **Total** | 280 contracts (91.4% static) |
 
-The 16 remaining Tier 3 contracts and why they cannot be promoted:
+The 24 remaining Tier 3 contracts and why they cannot be promoted:
 
 | Example | Contract | Reason |
 |---------|----------|--------|
+| array\_utilities.vera | 4 contracts | Postconditions over array built-in pipelines (filter/sort/fold) outside the decidable fragment |
 | async\_futures.vera | 2 contracts | Async/future combinators not in decidable fragment |
 | collections.vera | 8 contracts | Collection operations (Map/Set) not modeled in Z3 |
 | gc\_pressure.vera | `decreases` in `repeat` | Termination metric not in decidable fragment |
 | generics.vera | `ensures(@T.result == @T.0)` | Generic type parameters have no Z3 sort |
 | generics.vera | `ensures(@A.result == @A.0)` | Generic type parameters have no Z3 sort |
+| html.vera | 2 contracts | Postconditions over Html ADT traversal built-ins not modeled in Z3 |
 | increment.vera | `ensures(new(State<Int>) == old(State<Int>) + 1)` | `old`/`new` state modeling not yet implemented |
-| json.vera | 2 contracts | Json ADT operations not modeled in Z3 |
+| json.vera | `decreases` in `sum_hourly` | Termination metric not in decidable fragment |
+| string\_utilities.vera | 3 contracts | Postconditions over string-splitting built-ins outside the decidable fragment |
 
 The Tier 1 fragment covers: integer/boolean arithmetic, comparisons, if/else, let bindings, match expressions, ADT constructors, function calls (modular postcondition), `length`, and `decreases` clauses (self-recursive, mutual recursion via where-blocks, Nat and structural ADT measures).
 

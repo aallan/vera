@@ -23,6 +23,7 @@ No known bugs.
 | LSP single-file model — module imports resolve from disk, not open buffers | [#724](https://github.com/aallan/vera/issues/724) |
 | LSP slot go-to-definition covers parameters only, not `let`/`match` bindings | [#181](https://github.com/aallan/vera/issues/181) |
 | LSP `vera/addEffect` propagation is handler-unaware (a `handle[E]` caller is still rewritten) | [#725](https://github.com/aallan/vera/issues/725) |
+| Calls in statement position (value discarded) are never precondition-checked — E501 only fires for calls in value position | [#730](https://github.com/aallan/vera/issues/730) |
 | Date and time handling | [#233](https://github.com/aallan/vera/issues/233) |
 | Cryptographic hashing | [#235](https://github.com/aallan/vera/issues/235) |
 | CSV parsing and generation | [#236](https://github.com/aallan/vera/issues/236) |
