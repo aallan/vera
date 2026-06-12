@@ -222,28 +222,33 @@ Coverage by module, measured by `pytest --cov=vera`:
 
 | Module | Stmts | Miss | Coverage |
 |--------|------:|-----:|---------:|
-| `codegen/` | 1,934 | 99 | 95% |
-| `checker/` | 1,117 | 73 | 93% |
-| `wasm/` | 7,473 | 268 | 96% |
+| `wasm/` | 11,130 | 566 | 95% |
+| `codegen/` | 3,605 | 239 | 93% |
+| `checker/` | 1,223 | 68 | 94% |
+| `lsp/` | 492 | 52 | 89% |
+| `obligations/` | 188 | 1 | 99% |
 | `browser/` | 21 | 0 | 100% |
-| `verifier.py` | 429 | 0 | 100% |
-| `transform.py` | 564 | 16 | 97% |
-| `formatter.py` | 673 | 54 | 92% |
-| `ast.py` | 460 | 30 | 93% |
-| `smt.py` | 495 | 0 | 100% |
+| `verifier.py` | 702 | 31 | 96% |
+| `transform.py` | 617 | 24 | 96% |
+| `formatter.py` | 675 | 49 | 93% |
+| `ast.py` | 462 | 17 | 96% |
+| `smt.py` | 651 | 32 | 95% |
 | `markdown.py` | 413 | 54 | 87% |
 | `types.py` | 182 | 7 | 96% |
-| `errors.py` | 126 | 1 | 99% |
-| `environment.py` | 239 | 8 | 97% |
-| `cli.py` | 474 | 0 | 100% |
+| `errors.py` | 129 | 1 | 99% |
+| `environment.py` | 339 | 8 | 98% |
+| `cli.py` | 583 | 29 | 95% |
 | `parser.py` | 45 | 0 | 100% |
 | `resolver.py` | 68 | 2 | 97% |
-| `tester.py` | 312 | 0 | 100% |
-| `prelude.py` | 106 | 0 | 100% |
+| `slots.py` | 41 | 5 | 88% |
+| `skip.py` | 12 | 3 | 75% |
+| `tester.py` | 389 | 3 | 99% |
+| `prelude.py` | 187 | 9 | 95% |
 | `registration.py` | 18 | 0 | 100% |
-| **Total** | **15,149** | **612** | **96%** |
+| `__init__.py` | 2 | 0 | 100% |
+| **Total** | **22,174** | **1,200** | **95%** |
 
-The lowest-coverage module is `markdown.py` at 87%, reflecting Markdown AST traversal edge cases. The `wasm/` subsystem was improved from 79% to 96% by [#156](https://github.com/aallan/vera/issues/156) and [#324](https://github.com/aallan/vera/issues/324); the remaining gaps are mostly in `wasm/inference.py` (85%) deep type-dispatch branches for specific builtin functions.
+The lowest-coverage files of any size are `vera/lsp/server.py` at 64% (pygls feature-registration glue, exercised end-to-end by editors rather than by unit tests) and `wasm/inference.py` at 80% (deep type-dispatch branches for specific builtin return types).
 
 ## Contract Verification Coverage
 
@@ -650,5 +655,5 @@ Testing infrastructure that could be added in the future:
 
 - **Property-based testing** -- `hypothesis` is installed as a dev dependency but not yet used. Could generate random programs to test parser robustness and formatter idempotency at scale.
 - **Formatter round-trip invariant** -- verify `parse(format(parse(src))) == parse(src)` for all valid programs, not just the examples.
-- **WASM inference.py coverage** -- `wasm/inference.py` at 85% has the most remaining gaps, mostly in deep type-dispatch branches for specific builtin function return types. These branches require very specific expression nesting patterns to reach.
+- **WASM inference.py coverage** -- `wasm/inference.py` at 80% has the most remaining gaps, mostly in deep type-dispatch branches for specific builtin function return types. These branches require very specific expression nesting patterns to reach.
 - **Performance benchmarks** -- no benchmark infrastructure exists. Could track compilation time and Z3 verification time across releases.
