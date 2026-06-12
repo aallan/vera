@@ -1,6 +1,6 @@
 """Tests for the KNOWN_ISSUES / HISTORY checks in scripts/check_doc_counts.py.
 
-Covers the two checks added for the v0.0.171 planning-document rework:
+Covers the two checks added in the June 2026 planning-document rework:
 
 - ``check_refactoring_counts`` — KNOWN_ISSUES.md "Refactoring needed"
   line counts must stay within ±10% of the measured file sizes.

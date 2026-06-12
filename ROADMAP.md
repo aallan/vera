@@ -2,7 +2,7 @@
 
 Where the project is going.  See [HISTORY.md](HISTORY.md) for what's been built and [CHANGELOG.md](CHANGELOG.md) for per-release detail.
 
-The north star: **a stable, working, usable language that doesn't silently fail under the agents using it.**  The near-term tiers below are shaped by the June 2026 external repo audit, which concentrated the risk in three places: the collections runtime keeping data in two stores, the size of the execution runtime, and verification gaps that downgrade silently instead of failing loudly.
+The goal is **a stable, working, usable language that doesn't silently fail under the agents using it.**  The near-term tiers below are shaped by the June 2026 external repo audit, which concentrated the risk in three places: the collections runtime keeping data in two stores, the size of the execution runtime, and verification gaps that downgrade silently instead of failing loudly.
 
 Priority lives in this file and nowhere else — issues carry kind and area labels, not priority labels.  Completed items get deleted from these tables and noted in [HISTORY.md](HISTORY.md).
 

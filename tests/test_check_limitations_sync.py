@@ -1,6 +1,6 @@
 """Tests for scripts/check_limitations_sync.py section extraction.
 
-Covers ``extract_section_issues``, added for the v0.0.171 rework when
+Covers ``extract_section_issues``, added in the June 2026 rework when
 SKILL.md and LSP_SERVER.md joined the netted tiers: bounded at the next
 heading, table-rows-only, and ``None`` (not empty) for a missing heading
 so renamed sections fail loudly.

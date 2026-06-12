@@ -381,13 +381,12 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | v0.0.168 | 11 Jun | `vera/addEffect` rewrites the `effects(...)` clauses of a function and its transitive callers in one verified multi-site edit, closing [#222](https://github.com/aallan/vera/issues/222). |
 | v0.0.169 | 11 Jun | The language server gets its user manual (LSP_SERVER.md) and the VS Code extension gains an LSP client ([#222](https://github.com/aallan/vera/issues/222) follow-up). |
 | v0.0.170 | 12 Jun | **Editor hovers now carry the same Fix: instructions as `--json`, exactly once per call site** ([#728](https://github.com/aallan/vera/issues/728)). |
-| v0.0.171 | 12 Jun | The planning-document system reworked end to end: audit-shaped ROADMAP tiers, two-sentence KNOWN_ISSUES rows, re-staged HISTORY, and extended limitation sync gates ([#736](https://github.com/aallan/vera/issues/736)). |
 
 ---
 
 ## By the numbers
 
-| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.134 (6 May) | v0.0.171 (12 Jun) |
+| Metric | v0.0.1 (23 Feb) | v0.0.9 (23 Feb) | v0.0.39 (27 Feb) | v0.0.65 (4 Mar) | v0.0.88 (12 Mar) | v0.0.101 (27 Mar) | v0.0.134 (6 May) | v0.0.170 (12 Jun) |
 |--------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
 | Compiler layers | Parser | 5 (full pipeline) | 5 + modules | 5 + modules + GC | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser | 5 + modules + GC + browser + LSP |
 | Tests | ~50 | ~300 | ~600 | ~1,400 | ~2,300 | 3,095 | 3,716 | 4,339 |
@@ -397,4 +396,4 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% | 95% |
 
-Total: **1,400+ commits, 172 tagged releases, 74 active development days.**
+Total: **1,400+ commits, 171 tagged releases, 74 active development days.**
