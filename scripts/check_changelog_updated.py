@@ -174,8 +174,10 @@ def _changelog_has_new_entry(base: str) -> bool:
 
     A "new entry" is any of:
 
-    1. An added line introducing a new version heading (``+## [X.Y.Z]``
-       or ``+## [Unreleased]``).
+    1. An added line introducing a new *versioned* heading
+       (``+## [X.Y.Z]``).  A bare ``+## [Unreleased]`` heading is
+       structural scaffolding and does not count by itself — it only
+       satisfies the check via content beneath it (rule 2).
     2. An added bullet (``+- ...``) that appears *inside* the
        ``[Unreleased]`` section.
     3. An added bullet inside the LATEST released section (the first
