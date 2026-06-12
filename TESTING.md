@@ -493,22 +493,29 @@ When extending the compiler, add tests following the existing patterns:
 
 ## Validation Scripts
 
-Thirteen scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
+Twenty scripts in `scripts/` validate cross-cutting concerns beyond unit tests (two of them — `build_site.py` and `fix_allowlists.py` — generate or repair rather than check):
 
 | Script | What it validates |
 |--------|-------------------|
 | `check_conformance.py` | All 89 conformance programs pass their declared level (parse/check/verify/run) |
 | `check_examples.py` | All 35 `.vera` examples pass `vera check` + `vera verify` |
+| `check_examples_readme.py` | Every `vera run` command in examples/README.md references an existing file and exported function |
 | `check_spec_examples.py` | 164 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_skill_examples.py` | All Vera code blocks in SKILL.md parse correctly |
 | `check_faq_examples.py` | All Vera code blocks in FAQ.md parse correctly |
+| `check_examples_doc.py` | All Vera code blocks in EXAMPLES.md parse correctly |
 | `check_html_examples.py` | All Vera code blocks in docs/index.html pass parse + check + verify |
 | `check_site_assets.py` | Generated site assets under `docs/` are up-to-date |
-| `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
-| `check_doc_counts.py` | Counts cited in TESTING.md, CONTRIBUTING.md, and CLAUDE.md match live codebase |
+| `check_version_sync.py` | `pyproject.toml`, `vera/__init__.py`, and the docs badge carry the same version |
+| `check_doc_counts.py` | Counts cited in the docs match the live codebase, KNOWN_ISSUES refactoring counts within ±10%, HISTORY version-row format |
+| `check_limitations_sync.py` | Limitation tables consistent across KNOWN_ISSUES.md, vera/README.md, spec chapters, SKILL.md, and LSP_SERVER.md |
+| `check_changelog_updated.py` | CHANGELOG.md gains an entry when substantive files change (`Skip-changelog:` trailer to bypass) |
 | `check_walker_coverage.py` | Every walker function in `vera/` covers every `Expr` subclass via `isinstance` dispatch or `# WALKER_COVERAGE:` checklist comment (#597) |
+| `check_e602_clean.py` | No unexpected E602/E604 silent-skip sites outside the explicit allowlist |
+| `check_wheel_availability.py` | Every runtime dependency ships wheels for all supported platforms |
 | `check_licenses.py` | All installed packages have MIT-compatible licenses |
+| `build_site.py` | Regenerates the AI-readable site assets that `check_site_assets.py` verifies |
 | `fix_allowlists.py` | Auto-fix stale allowlist line numbers after Markdown edits |
 
 These run in both pre-commit hooks and CI, so issues are caught locally before they reach the remote.
@@ -600,7 +607,7 @@ Every push is checked by 27 configured hooks across two stages: 25 are configure
 | `check_e602_clean.py` | No unexpected `[E602]` (body unsupported) / `[E604]` (param unsupported) silent skips outside the explicit allowlist (Layer 1 of [#626](https://github.com/aallan/vera/issues/626)) |
 | `check_doc_counts.py` | Counts in docs match live codebase |
 | `check_walker_coverage.py` | Every walker function covers every `Expr` subclass via dispatch or checklist comment (#597) |
-| `check_limitations_sync.py` | Limitation tables consistent across KNOWN_ISSUES.md, vera/README, and spec |
+| `check_limitations_sync.py` | Limitation tables consistent across KNOWN_ISSUES.md, vera/README.md, spec chapters, SKILL.md, and LSP_SERVER.md |
 | `check_licenses.py` | All package licenses are MIT-compatible |
 | `build_site.py` | Regenerate AI-readable site assets (llms.txt, llms-full.txt, robots.txt, sitemap.xml, index.md) |
 | `browser parity` | Browser runtime produces identical output to Python runtime |
