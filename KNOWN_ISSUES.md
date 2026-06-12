@@ -4,6 +4,8 @@ Bugs and limitations tracked against the [issue tracker](https://github.com/aall
 
 ## Bugs
 
+Defects in shipped compiler, runtime, or tooling behaviour. Verification-soundness gaps are tracked under [Limitations](#limitations) with their issues; tooling and test-quality defects under their own sections below.
+
 No known bugs.
 
 ## Limitations
