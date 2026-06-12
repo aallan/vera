@@ -172,18 +172,23 @@ def is_substantive(path: str) -> bool:
 def _changelog_has_new_entry(base: str) -> bool:
     """Return True if the CHANGELOG.md diff adds a new entry.
 
-    A "new entry" is either:
+    A "new entry" is any of:
 
     1. An added line introducing a new version heading (``+## [X.Y.Z]``
        or ``+## [Unreleased]``).
     2. An added bullet (``+- ...``) that appears *inside* the
        ``[Unreleased]`` section.
+    3. An added bullet inside the LATEST released section (the first
+       version heading after ``[Unreleased]``) — the tag-move fold-in
+       pattern: a follow-up PR amends the most recent release's
+       section and the tag moves to its merge commit, so bullets
+       there are release-notes-bearing.
 
     Section-tracking is necessary because CHANGELOG.md commonly has
     prose edits (typo fixes, wording tweaks) inside released-version
-    entries.  Those edits sometimes add bulleted lines, but they
-    shouldn't count as "adding a new entry" for the purposes of this
-    check — only bullets under ``[Unreleased]`` do.
+    entries.  Those edits sometimes add bulleted lines; for sections
+    OLDER than the latest release they don't count as "adding a new
+    entry" — that history is frozen.
 
     Pure whitespace or cosmetic changes to CHANGELOG.md don't count.
     """
@@ -205,6 +210,7 @@ def _changelog_has_new_entry(base: str) -> bool:
     # lines (prefixed with ``+``); we update current_section on both
     # so the tracker reflects the post-diff state of the file.
     current_section: str | None = None
+    latest_release: str | None = None
     for line in diff.splitlines():
         if line.startswith("+++") or line.startswith("---"):
             # File headers — ignore entirely.
@@ -231,6 +237,14 @@ def _changelog_has_new_entry(base: str) -> bool:
             end = content.find("]", 4)
             if end > 4:
                 current_section = content[4:end]
+                # The first versioned heading in file order is the
+                # most recent release (the diff spans the whole file
+                # via --unified=9999, so diff order == file order).
+                if (
+                    latest_release is None
+                    and current_section != "Unreleased"
+                ):
+                    latest_release = current_section
             # An *added* versioned heading (e.g. ``+## [0.0.114]``) is
             # itself a new entry — that's the release-cutting pattern.
             # But a bare ``+## [Unreleased]`` heading is just structural
@@ -241,9 +255,16 @@ def _changelog_has_new_entry(base: str) -> bool:
                 return True
             continue
 
-        # Added bullets only count inside the [Unreleased] section.
+        # Added bullets count inside [Unreleased], or inside the
+        # latest released section (the fold-in pattern; see the
+        # docstring).
         if line.startswith("+") and content.startswith("- "):
             if current_section == "Unreleased":
+                return True
+            if (
+                current_section is not None
+                and current_section == latest_release
+            ):
                 return True
 
     return False

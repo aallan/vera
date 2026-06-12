@@ -1180,6 +1180,7 @@ class TestDiagnosticInstructionContract:
         assert len(e501) == 1  # also pins #727 at the LSP surface
         message = e501[0].message
         assert "may violate the callee's precondition" in message
+        assert "At this call site:" in message
         assert "Fix:" in message
         # The fix is concrete code in call-site terms, not generic
         # advice: the guard renders the actual call and the

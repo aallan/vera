@@ -1592,7 +1592,14 @@ class ContractVerifier:
         # generic wording when the callee or a slot cannot be
         # resolved (e.g. module-qualified callees).
         site_pre: str | None = None
-        callee_info = self.env.lookup_function(callee_name)
+        # Module-qualified callees are excluded outright: lookup_function
+        # resolves the BARE name, so a local function sharing the
+        # callee's name would supply the wrong parameter table.
+        callee_info = (
+            None
+            if isinstance(call_node, ast.ModuleCall)
+            else self.env.lookup_function(callee_name)
+        )
         if callee_info is not None and callee_info.param_type_exprs:
             from typing import cast
 
