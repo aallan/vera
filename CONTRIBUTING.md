@@ -76,10 +76,12 @@ For reproducible installs with hash-pinned versions, use `uv` instead (recommend
 
 ```bash
 pip install uv
-uv sync
+uv sync --extra dev
 pre-commit install
 pre-commit install --hook-type pre-push
 ```
+
+Plain `uv sync` (without `--extra dev`) skips the dev extras and removes pytest, mypy, ruff, and pre-commit from the environment — the `--extra dev` flag is load-bearing.
 
 `uv.lock` is checked in and tracks exact versions with hashes. Run `uv lock --check` to verify
 the lockfile is consistent with `pyproject.toml`, or `uv lock` to regenerate it after updating
@@ -140,7 +142,7 @@ VERA_JS_COVERAGE=1 pytest tests/test_browser.py -v  # JS coverage
 
 PRs touching `vera/browser/runtime.mjs` have JavaScript coverage tracked by Codecov (via V8's built-in coverage). See [TESTING.md](TESTING.md) for the full testing reference -- coverage data, test helpers, and guidelines for adding tests.  See [ENVIRONMENT.md](ENVIRONMENT.md) for all `VERA_*` environment variables (provider keys, runtime knobs, and debug flags like `VERA_EAGER_GC` for hunting GC-rooting bugs).
 
-**Doc-count gate**: any PR that adds tests will trip `scripts/check_doc_counts.py` if it doesn't also update the test counts in `TESTING.md` (per-file rows + overall total), `ROADMAP.md` ("3,917 tests" line), and `README.md` (project-status line).  Run the script locally to see exactly which numbers need updating:
+**Doc-count gate**: any PR that adds tests will trip `scripts/check_doc_counts.py` if it doesn't also update the test counts in `TESTING.md` (per-file rows + overall total), `ROADMAP.md` (the "Where we are" line), and `README.md` (project-status line).  Run the script locally to see exactly which numbers need updating:
 
 ```bash
 python scripts/check_doc_counts.py    # reports stale counts with file:field references
@@ -231,6 +233,16 @@ The `main` branch has the following protections enabled:
 - **No force pushes.** History on `main` is immutable.
 
 If you are a maintainer setting up branch protection on a fork, configure these rules in **Settings > Branches > Branch protection rules** for the `main` branch.
+
+## Releases
+
+Contributors don't cut releases — the maintainer tags and publishes after merge ([#481](https://github.com/aallan/vera/issues/481) tracks automating that). What your PR needs to contain so a release can happen on top of it:
+
+1. **Bump the version** in `pyproject.toml` and `vera/__init__.py`, and update the version badge in `docs/index.html` (the version appears twice on the badge line — URL and visible text). `scripts/check_version_sync.py` gates the consistency.
+2. **Add the `## [X.Y.Z]` section** to `CHANGELOG.md` with its compare-link reference at the bottom, and add the version's one-sentence row to the current stage table in `HISTORY.md`.
+3. **Regenerate `uv.lock` and the site assets** (`python scripts/build_site.py`) if dependencies or AI-readable docs changed.
+
+Not every PR is a release: small changes can ride along and ship with the next version bump. If you're unsure whether your change merits one, leave the bump out and say so in the PR description — the maintainer will fold it into the next release.
 
 ## Code of Conduct
 

@@ -6,8 +6,8 @@ This is the single source of truth for Vera's testing infrastructure, coverage d
 
 | Metric | Value |
 |--------|-------|
-| **Tests** | 4,322 across 34 files (~55,862 lines of test code; 4,291 passed + 16 stress, 15 skipped) |
-| **Compiler code coverage** | 96% of 15,149 statements (CI minimum: 80%) |
+| **Tests** | 4,342 across 36 files (~56,089 lines of test code; 4,311 passed + 16 stress, 15 skipped) |
+| **Compiler code coverage** | 95% Python, 61% JavaScript — 91% combined (CI minimum: 80%) |
 | **Conformance programs** | 89 programs across 9 spec chapters, validating every language feature |
 | **Example programs** | 35, all validated through `vera check` + `vera verify` |
 | **Spec code blocks** | 164 parseable blocks from 13 spec chapters: 86 parse, 72 type-check, 71 verify |
@@ -88,6 +88,8 @@ python scripts/fix_allowlists.py --fix               # auto-fix stale allowlists
 | `test_html.py` | 4 | 189 | HTML landing page code samples: parse, check, verify |
 | `test_build_site.py` | 17 | 213 | `_abs_links` unit tests: relative link rewriting, fenced block immunity (backtick and tilde fences, inline backticks inside fences), http/https/fragment pass-through, Vera effect syntax not mis-parsed |
 | `test_check_changelog_updated.py` | 67 | 663 | `check_changelog_updated.py` unit + end-to-end tests: file classification (incl. file-style exact-match vs directory-style prefix-match), CHANGELOG diff parsing with `[Unreleased]` section tracking, bare-heading rejection, and full-file context (regression test for bullets far below the heading), `Skip-changelog:` trailer detection, temp-repo integration covering substantive/exempt/label/trailer paths |
+| `test_check_doc_counts.py` | 15 | 150 | `check_doc_counts.py` planning-document checks: KNOWN_ISSUES refactoring line counts (±10% tolerance band incl. the exact-boundary case, drift detection, empty-file citation, hyphenated paths, missing file/section/rows) and HISTORY version-row format (issue-link limit, ` — ` separator rejection, dateless-row and prose exemption, line-number reporting) |
+| `test_check_limitations_sync.py` | 5 | 77 | `check_limitations_sync.py` section extraction: table-rows-only issue harvesting, prose-link exemption, bounding at the next second-level heading, `None` for absent or sub-level headings so renamed sections fail loudly |
 | `test_runtime_traps.py` | 66 | 2,405 | Runtime trap categorisation (#516 Stage 1), stdout/stderr-on-trap preservation (#522), `IO.print` live tee (#543), and trap source backtrace (#516 Stage 2): `_classify_trap` per-`kind` mapping (`divide_by_zero`/`out_of_bounds`/`stack_exhausted`/`unreachable`/`overflow`/`contract_violation`/`unknown`), `WasmTrapError` shape + `RuntimeError` substitutability, end-to-end `cmd_run` text + JSON envelopes including `trap_kind`, captured `stdout`, captured `stderr`, JSON-mode "no stderr leak" invariant, cross-stream code-order regression using merged `redirect_stdout`/`redirect_stderr`, the v0.0.123 tee suite (live streaming, write-count + order preservation, JSON-mode tee suppression, trap preservation invariant under tee, per-write flush count, default-execute silence), and the v0.0.124 source-mapping suite — `_resolve_trap_frames` unit tests covering user-fn / built-in / built-in-prefix / monomorphized base-name fallback / unknown-name / no-frames-attribute / leaf-first ordering preservation; end-to-end `cmd_run` text-mode + JSON-mode backtrace including the **leaf-first** ordering invariant; contract-violation backtrace in both text and JSON modes; direct `execute()` `WasmTrapError.frames` attachment; **suppression marker** for collapsed leading runtime-helper frames (mocked `vera.codegen.execute` with synthetic `is_builtin=True` leaf frames so the collapse logic is testable deterministically); source-map population for top-level fns + lifted closures (with span-value assertion against the closure literal's exact line range); and the no-builtin-leakage regression that pins built-in helpers (`alloc` / `gc_collect` / `contract_fail`) NOT being registered in `fn_source_map`; plus the v0.0.125 Stage 3 suite (`#547`) — text-mode `Fix:` block surfacing with position-ordering invariant (Fix appears after the source backtrace), text-mode block suppression for `contract_violation` (no empty header noise), JSON-mode `fix` field always-present (schema stability) including the empty-string case, `_TRAP_FIX_PARAGRAPHS` table-completeness assertion (every kind in the taxonomy has a Fix paragraph entry), and the column-wrap invariant (~76 chars max per line, two-space indent under the `Fix:` heading); plus the UTF-8 hardening suite **`TestHostPrintInvalidUtf8589`** (`#589`) — six structural decode-site assertions pinning `errors="replace"` at every UTF-8 decode path in the host runtime (`host_print` / `host_stderr` / `host_contract_fail` / `_read_wasm_string` / `vera/wasm/markdown.py::_read_string` / the String-return decoder in `execute()`), plus one synthetic-WAT end-to-end test that imports `vera.print` and calls it with raw invalid UTF-8 bytes to pin the wasmtime-trampoline contract (a Python `UnicodeDecodeError` inside a host import escapes as a "python exception" cause iff the host decode is strict); plus the Ctrl-C-during-host-import suite **`TestHostSleepKeyboardInterrupt`** ([#595](https://github.com/aallan/vera/issues/595) / [#599](https://github.com/aallan/vera/issues/599)) — after the v0.0.160 relocation to a single `except KeyboardInterrupt` handler in `execute()` (enabled by `wasmtime>=45.0.0`'s `except BaseException` trampoline fix): one structural assertion that the four per-host-import `raise _VeraExit(130)` guards are gone and the centralized handler maps to `exit_code=130`, plus two end-to-end tests that compile real Vera programs calling `IO.sleep(...)` and `IO.read_char(())`, raise `KeyboardInterrupt` from inside the blocking call, and assert the program exits with `ExecuteResult.exit_code == 130` (pre-interrupt stdout preserved) instead of a raw Python traceback escaping wasmtime's trampoline |
 
 ## Conformance Suite
@@ -220,28 +222,33 @@ Coverage by module, measured by `pytest --cov=vera`:
 
 | Module | Stmts | Miss | Coverage |
 |--------|------:|-----:|---------:|
-| `codegen/` | 1,934 | 99 | 95% |
-| `checker/` | 1,117 | 73 | 93% |
-| `wasm/` | 7,473 | 268 | 96% |
+| `wasm/` | 11,130 | 566 | 95% |
+| `codegen/` | 3,605 | 239 | 93% |
+| `checker/` | 1,223 | 68 | 94% |
+| `lsp/` | 492 | 52 | 89% |
+| `obligations/` | 188 | 1 | 99% |
 | `browser/` | 21 | 0 | 100% |
-| `verifier.py` | 429 | 0 | 100% |
-| `transform.py` | 564 | 16 | 97% |
-| `formatter.py` | 673 | 54 | 92% |
-| `ast.py` | 460 | 30 | 93% |
-| `smt.py` | 495 | 0 | 100% |
+| `verifier.py` | 702 | 31 | 96% |
+| `transform.py` | 617 | 24 | 96% |
+| `formatter.py` | 675 | 49 | 93% |
+| `ast.py` | 462 | 17 | 96% |
+| `smt.py` | 651 | 32 | 95% |
 | `markdown.py` | 413 | 54 | 87% |
 | `types.py` | 182 | 7 | 96% |
-| `errors.py` | 126 | 1 | 99% |
-| `environment.py` | 239 | 8 | 97% |
-| `cli.py` | 474 | 0 | 100% |
+| `errors.py` | 129 | 1 | 99% |
+| `environment.py` | 339 | 8 | 98% |
+| `cli.py` | 583 | 29 | 95% |
 | `parser.py` | 45 | 0 | 100% |
 | `resolver.py` | 68 | 2 | 97% |
-| `tester.py` | 312 | 0 | 100% |
-| `prelude.py` | 106 | 0 | 100% |
+| `slots.py` | 41 | 5 | 88% |
+| `skip.py` | 12 | 3 | 75% |
+| `tester.py` | 389 | 3 | 99% |
+| `prelude.py` | 187 | 9 | 95% |
 | `registration.py` | 18 | 0 | 100% |
-| **Total** | **15,149** | **612** | **96%** |
+| `__init__.py` | 2 | 0 | 100% |
+| **Total** | **22,174** | **1,200** | **95%** |
 
-The lowest-coverage module is `markdown.py` at 87%, reflecting Markdown AST traversal edge cases. The `wasm/` subsystem was improved from 79% to 96% by [#156](https://github.com/aallan/vera/issues/156) and [#324](https://github.com/aallan/vera/issues/324); the remaining gaps are mostly in `wasm/inference.py` (85%) deep type-dispatch branches for specific builtin functions.
+The lowest-coverage files of any size are `vera/lsp/server.py` at 64% (pygls feature-registration glue, exercised end-to-end by editors rather than by unit tests) and `wasm/inference.py` at 80% (deep type-dispatch branches for specific builtin return types).
 
 ## Contract Verification Coverage
 
@@ -491,22 +498,29 @@ When extending the compiler, add tests following the existing patterns:
 
 ## Validation Scripts
 
-Thirteen scripts in `scripts/` validate cross-cutting concerns beyond unit tests:
+Twenty scripts in `scripts/` validate cross-cutting concerns beyond unit tests (two of them — `build_site.py` and `fix_allowlists.py` — generate or repair rather than check):
 
 | Script | What it validates |
 |--------|-------------------|
 | `check_conformance.py` | All 89 conformance programs pass their declared level (parse/check/verify/run) |
 | `check_examples.py` | All 35 `.vera` examples pass `vera check` + `vera verify` |
+| `check_examples_readme.py` | Every `vera run` command in examples/README.md references an existing file and exported function |
 | `check_spec_examples.py` | 164 parseable code blocks from spec chapters: parse, type-check, and verify |
 | `check_readme_examples.py` | All Vera code blocks in README.md parse correctly |
 | `check_skill_examples.py` | All Vera code blocks in SKILL.md parse correctly |
 | `check_faq_examples.py` | All Vera code blocks in FAQ.md parse correctly |
+| `check_examples_doc.py` | All Vera code blocks in EXAMPLES.md parse correctly |
 | `check_html_examples.py` | All Vera code blocks in docs/index.html pass parse + check + verify |
 | `check_site_assets.py` | Generated site assets under `docs/` are up-to-date |
-| `check_version_sync.py` | `pyproject.toml` and `vera/__init__.py` versions match |
-| `check_doc_counts.py` | Counts cited in TESTING.md, CONTRIBUTING.md, and CLAUDE.md match live codebase |
+| `check_version_sync.py` | `pyproject.toml`, `vera/__init__.py`, and the docs badge carry the same version |
+| `check_doc_counts.py` | Counts cited in the docs match the live codebase, KNOWN_ISSUES refactoring counts within ±10%, HISTORY version-row format |
+| `check_limitations_sync.py` | Limitation tables consistent across KNOWN_ISSUES.md, vera/README.md, spec chapters, SKILL.md, and LSP_SERVER.md |
+| `check_changelog_updated.py` | CHANGELOG.md gains an entry when substantive files change (`Skip-changelog:` trailer to bypass) |
 | `check_walker_coverage.py` | Every walker function in `vera/` covers every `Expr` subclass via `isinstance` dispatch or `# WALKER_COVERAGE:` checklist comment (#597) |
+| `check_e602_clean.py` | No unexpected E602/E604 silent-skip sites outside the explicit allowlist |
+| `check_wheel_availability.py` | Every runtime dependency ships wheels for all supported platforms |
 | `check_licenses.py` | All installed packages have MIT-compatible licenses |
+| `build_site.py` | Regenerates the AI-readable site assets that `check_site_assets.py` verifies |
 | `fix_allowlists.py` | Auto-fix stale allowlist line numbers after Markdown edits |
 
 These run in both pre-commit hooks and CI, so issues are caught locally before they reach the remote.
@@ -598,7 +612,7 @@ Every push is checked by 27 configured hooks across two stages: 25 are configure
 | `check_e602_clean.py` | No unexpected `[E602]` (body unsupported) / `[E604]` (param unsupported) silent skips outside the explicit allowlist (Layer 1 of [#626](https://github.com/aallan/vera/issues/626)) |
 | `check_doc_counts.py` | Counts in docs match live codebase |
 | `check_walker_coverage.py` | Every walker function covers every `Expr` subclass via dispatch or checklist comment (#597) |
-| `check_limitations_sync.py` | Limitation tables consistent across KNOWN_ISSUES.md, vera/README, and spec |
+| `check_limitations_sync.py` | Limitation tables consistent across KNOWN_ISSUES.md, vera/README.md, spec chapters, SKILL.md, and LSP_SERVER.md |
 | `check_licenses.py` | All package licenses are MIT-compatible |
 | `build_site.py` | Regenerate AI-readable site assets (llms.txt, llms-full.txt, robots.txt, sitemap.xml, index.md) |
 | `browser parity` | Browser runtime produces identical output to Python runtime |
@@ -616,7 +630,7 @@ GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the
 | **test** | Python 3.11, 3.12, 3.13 × ubuntu-latest, macos-15, macos-26, windows-latest (12 combos) | `pytest -v` passes on all combinations |
 | **test** (coverage) | Python 3.12 x Ubuntu only | `pytest --cov=vera --cov-fail-under=80` |
 | **typecheck** | Python 3.12 x Ubuntu | `mypy vera/` clean in strict mode |
-| **lint** | Python 3.12 x Ubuntu | `check_changelog_updated.py`, `check_conformance.py`, `check_examples.py`, `check_examples_readme.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_e602_clean.py`, `check_site_assets.py`, `check_licenses.py`, `check_doc_counts.py`, `ruff check --select S vera/` (security rules) |
+| **lint** | Python 3.12 x Ubuntu | `check_changelog_updated.py`, `check_conformance.py`, `check_examples.py`, `check_examples_readme.py`, `check_version_sync.py`, `check_spec_examples.py`, `check_readme_examples.py`, `check_skill_examples.py`, `check_faq_examples.py`, `check_html_examples.py`, `check_e602_clean.py`, `check_site_assets.py`, `check_licenses.py`, `check_doc_counts.py`, `check_limitations_sync.py`, `ruff check --select S vera/` (security rules) |
 | **security** | Ubuntu | [Gitleaks](https://github.com/gitleaks/gitleaks-action) secret scanning on full history |
 | **dependency-audit** | Python 3.12 x Ubuntu | `pip-audit --skip-editable --ignore-vuln CVE-2026-4539` — checks all installed packages against the OSV vulnerability database (skips the local editable `vera` package; `CVE-2026-4539` suppressed pending a pygments fix release) |
 | **wheel-preflight** | Python 3.12 x Ubuntu | `python scripts/check_wheel_availability.py` — verifies every runtime dep has prebuilt wheels for every (platform, python-version) tuple documented in README §Supported platforms; structural backstop for #691-class install regressions |
@@ -641,5 +655,5 @@ Testing infrastructure that could be added in the future:
 
 - **Property-based testing** -- `hypothesis` is installed as a dev dependency but not yet used. Could generate random programs to test parser robustness and formatter idempotency at scale.
 - **Formatter round-trip invariant** -- verify `parse(format(parse(src))) == parse(src)` for all valid programs, not just the examples.
-- **WASM inference.py coverage** -- `wasm/inference.py` at 85% has the most remaining gaps, mostly in deep type-dispatch branches for specific builtin function return types. These branches require very specific expression nesting patterns to reach.
+- **WASM inference.py coverage** -- `wasm/inference.py` at 80% has the most remaining gaps, mostly in deep type-dispatch branches for specific builtin function return types. These branches require very specific expression nesting patterns to reach.
 - **Performance benchmarks** -- no benchmark infrastructure exists. Could track compilation time and Z3 verification time across releases.

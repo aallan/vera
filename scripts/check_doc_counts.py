@@ -5,7 +5,9 @@ Checks filesystem-derivable counts (conformance programs, examples, test
 files, pre-commit hooks, CI jobs) and pytest-collection counts (total tests,
 per-file test counts and line counts) against the numbers written in
 TESTING.md, CONTRIBUTING.md, CLAUDE.md, README.md, SKILL.md, AGENTS.md,
-FAQ.md, and ROADMAP.md.
+FAQ.md, and ROADMAP.md.  Also checks the KNOWN_ISSUES.md "Refactoring
+needed" line counts (±10% tolerance) and the HISTORY.md version-row
+format (one issue link max, no " — " separator per row).
 
 Intentionally excludes CHANGELOG.md: its counts are historical records
 (e.g. "64 programs, was 63") that are frozen snapshots of the project state
@@ -20,6 +22,77 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+
+def check_refactoring_counts(known_issues_text: str, root: Path) -> list[str]:
+    """Compare KNOWN_ISSUES.md "Refactoring needed" line counts to disk.
+
+    Uses a ±10% tolerance band rather than exact equality: the cited
+    counts exist to convey scale, and exact pinning would tax every PR
+    that touches one of the named files with a doc edit.  When the gate
+    trips, the fix is re-citing the measured number.
+    """
+    errors: list[str] = []
+    section = re.search(
+        r"## Refactoring needed\n(.*?)(?=\n## |\Z)",
+        known_issues_text,
+        re.DOTALL,
+    )
+    if not section:
+        return ["KNOWN_ISSUES.md: could not find '## Refactoring needed' section"]
+    rows = re.findall(r"\| `([\w./-]+)` \| ([\d,]+) \|", section.group(1))
+    if not rows:
+        return ["KNOWN_ISSUES.md: refactoring table has no `file` | count rows"]
+    for rel, cited_s in rows:
+        cited = int(cited_s.replace(",", ""))
+        path = root / rel
+        if not path.exists():
+            errors.append(
+                f"KNOWN_ISSUES.md refactoring table: {rel} does not exist"
+            )
+            continue
+        live = len(path.read_text(encoding="utf-8").splitlines())
+        if live == 0:
+            if cited != 0:
+                errors.append(
+                    f"KNOWN_ISSUES.md refactoring table: {rel} cites"
+                    f" {cited:,} lines, measured 0"
+                )
+            continue
+        if abs(cited - live) / live > 0.10:
+            errors.append(
+                f"KNOWN_ISSUES.md refactoring table: {rel} cites"
+                f" {cited:,} lines, measured {live:,} (>10% drift)"
+            )
+    return errors
+
+
+_HISTORY_VERSION_ROW = re.compile(r"^\| v0\.0\.[\d.]")
+
+
+def check_history_row_format(history_text: str) -> list[str]:
+    """Enforce the HISTORY.md version-row template.
+
+    Each `| v0.0.N |` table row carries at most one issue link and no
+    " — " separator — CHANGELOG.md is the per-release log of record,
+    so secondary links and multi-clause rows belong there, not here.
+    """
+    errors: list[str] = []
+    for lineno, line in enumerate(history_text.splitlines(), 1):
+        if not _HISTORY_VERSION_ROW.match(line):
+            continue
+        links = len(re.findall(r"issues/\d+", line))
+        if links > 1:
+            errors.append(
+                f"HISTORY.md line {lineno}: version row has {links}"
+                f" issue links (max 1; secondary links live in CHANGELOG.md)"
+            )
+        if " — " in line:
+            errors.append(
+                f"HISTORY.md line {lineno}: version row contains a"
+                f" ' — ' separator (one plain sentence per row)"
+            )
+    return errors
 
 
 def main() -> int:
@@ -534,6 +607,20 @@ def main() -> int:
                     f"ROADMAP.md: conformance count: doc says {doc_conf},"
                     f" live is {live_conformance}"
                 )
+
+    # ------------------------------------------------------------------
+    # 15. Check KNOWN_ISSUES.md refactoring line counts (±10%)
+    # ------------------------------------------------------------------
+
+    known_issues_md = (root / "KNOWN_ISSUES.md").read_text(encoding="utf-8")
+    errors.extend(check_refactoring_counts(known_issues_md, root))
+
+    # ------------------------------------------------------------------
+    # 16. Check HISTORY.md version-row format
+    # ------------------------------------------------------------------
+
+    history_md = (root / "HISTORY.md").read_text(encoding="utf-8")
+    errors.extend(check_history_row_format(history_md))
 
     # ------------------------------------------------------------------
     # Report

@@ -2347,3 +2347,22 @@ Ability operations are compiled via two mechanisms:
 1. **AST-level rewriting** (Pass 1.6): `eq(a, b)` is rewritten to `a == b`, and `compare(a, b)` is rewritten to `if a < b then Less else if a == b then Equal else Greater`. This reuses existing comparison codegen.
 
 2. **WASM-level dispatch**: `show(x)` and `hash(x)` are dispatched at WASM generation time based on the inferred type of the argument, routing to type-specific implementations (e.g., `to_string` for Int, FNV-1a for String hashing).
+
+## 9.9 Limitations
+
+The standard library and built-in effects have the following limitations, each tracked as a GitHub issue:
+
+| Limitation | Issue |
+|-----------|-------|
+| No date or time handling beyond `IO.time` — no ISO 8601 parsing, formatting, or arithmetic | [#233](https://github.com/aallan/vera/issues/233) |
+| No cryptographic primitives (hashing, HMAC) | [#235](https://github.com/aallan/vera/issues/235) |
+| No CSV parsing or generation | [#236](https://github.com/aallan/vera/issues/236) |
+| `Http`: fixed request headers — no custom header support | [#351](https://github.com/aallan/vera/issues/351) |
+| `Http`: response status codes are not accessible | [#352](https://github.com/aallan/vera/issues/352) |
+| `Http`: no per-request timeout control | [#353](https://github.com/aallan/vera/issues/353) |
+| `Http`: browser runtime uses deprecated synchronous XMLHttpRequest | [#355](https://github.com/aallan/vera/issues/355) |
+| `Http`: GET and POST only — no PUT, PATCH, or DELETE | [#356](https://github.com/aallan/vera/issues/356) |
+| `Inference.complete`: `max_tokens` and `temperature` are not configurable | [#370](https://github.com/aallan/vera/issues/370) |
+| `Inference`: no `embed` operation (vector embeddings) | [#371](https://github.com/aallan/vera/issues/371) |
+| `Inference`: no user-defined handlers — `handle[Inference]` is rejected | [#372](https://github.com/aallan/vera/issues/372) |
+| Host imports cannot return `Array<Float64>` (`alloc_result_ok_float_array` infrastructure) | [#373](https://github.com/aallan/vera/issues/373) |
