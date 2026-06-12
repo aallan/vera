@@ -270,33 +270,58 @@ class TestChangelogHasNewEntry:
         monkeypatch.setattr(_mod, "_run", lambda cmd: diff)
         assert _mod._changelog_has_new_entry("origin/main") is False
 
-    def test_bullet_outside_unreleased_does_not_count(
+    def test_bullet_in_older_released_section_does_not_count(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Added bullets inside a *released* version entry are not new entries.
+        """Added bullets inside sections OLDER than the latest release
+        are not new entries — that history is frozen.
 
-        A prose fix that inserts a bullet into an existing version's
-        description isn't "adding a new entry" — only bullets under the
-        [Unreleased] section (or a new ``## [X.Y.Z]`` heading) count.
-
-        Regression test: prior to the fix, any added ``+- `` line
-        counted, so editing v0.0.111's description would have satisfied
-        the check for any substantive change on the branch.
+        (Bullets in the LATEST released section DO count — the
+        tag-move fold-in pattern; see the companion test below.)
         """
         diff = textwrap.dedent("""\
             diff --git a/CHANGELOG.md b/CHANGELOG.md
-            @@ -5,7 +5,10 @@
+            @@ -5,7 +5,12 @@
              ## [Unreleased]
+
+             ## [0.0.112] - 2026-04-11
+
+             ### Added
+
+             - The latest release's existing bullet.
 
              ## [0.0.111] - 2026-04-10
 
              ### Fixed
             +
-            +- Additional clarification bullet on an existing fix.
+            +- Additional clarification bullet on an old fix.
              - **SMT translator: String/Float64 parameters**...
             """)
         monkeypatch.setattr(_mod, "_run", lambda cmd: diff)
         assert _mod._changelog_has_new_entry("origin/main") is False
+
+    def test_bullet_in_latest_released_section_counts(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Added bullets in the FIRST version section after
+        [Unreleased] count: the tag-move fold-in pattern amends the
+        most recent release's section and re-releases it."""
+        diff = textwrap.dedent("""\
+            diff --git a/CHANGELOG.md b/CHANGELOG.md
+            @@ -5,7 +5,10 @@
+             ## [Unreleased]
+
+             ## [0.0.112] - 2026-04-11
+
+             ### Fixed
+            +
+            +- Fold-in bullet for the re-released version.
+             - An existing bullet.
+
+             ## [0.0.111] - 2026-04-10
+            """)
+        monkeypatch.setattr(_mod, "_run", lambda cmd: diff)
+        assert _mod._changelog_has_new_entry("origin/main") is True
 
     def test_bullet_under_unreleased_counts(
         self, monkeypatch: pytest.MonkeyPatch,

@@ -474,6 +474,85 @@ class TestObligationKinds:
         ]
         assert len(call_pres) == 1
 
+    def test_e501_renders_precondition_in_call_site_terms(self) -> None:
+        """E501's message states the precondition with the actual
+        arguments substituted, and the fix shows concrete code — the
+        guard with the rendered call, and the requires() to add.
+        """
+        source = (
+            "private fn need_pos(@String -> @String)\n"
+            "  requires(string_length(@String.0) > 0)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @String.0\n"
+            "}\n"
+            "\n"
+            "public fn caller(-> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            '  let @String = need_pos("");\n'
+            "  0\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        e501 = [d for d in result.diagnostics if d.error_code == "E501"]
+        assert len(e501) == 1
+        d = e501[0]
+        assert 'At this call site: string_length("") > 0' in d.description
+        assert d.fix is not None
+        assert (
+            'if string_length("") > 0 then { need_pos("") } else { ... }'
+            in d.fix
+        )
+        assert "requires(string_length(\"\") > 0)" in d.fix
+
+    def test_e501_substitution_resolves_de_bruijn_order(self) -> None:
+        """Slot substitution must honour De Bruijn most-recent-first:
+        for callee (@Int, @Int) with requires(@Int.1 > @Int.0),
+        @Int.1 is parameter 1 and @Int.0 is parameter 2."""
+        source = (
+            "private fn cmp(@Int, @Int -> @Int)\n"
+            "  requires(@Int.1 > @Int.0)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Int.0\n"
+            "}\n"
+            "\n"
+            "public fn caller(-> @Int)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  let @Int = cmp(1, 2);\n"
+            "  @Int.0\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        e501 = [d for d in result.diagnostics if d.error_code == "E501"]
+        assert len(e501) == 1
+        assert "At this call site: 1 > 2" in e501[0].description
+
+    def test_e501_unmappable_slot_keeps_generic_fix(self) -> None:
+        """When a precondition slot cannot be mapped to an argument,
+        the message keeps the generic wording instead of guessing."""
+        from vera import ast as A
+        from vera.verifier import ContractVerifier
+
+        v = ContractVerifier.__new__(ContractVerifier)
+        pre = A.Requires(
+            expr=A.SlotRef(
+                type_name="String", type_args=None, index=5, span=None,
+            ),
+            span=None,
+        )
+        call = A.FnCall(name="f", args=(), span=None)
+        out = v._pre_at_call_site((), call, pre)
+        assert out is None
+
     def test_content_key_stable_across_runs(self) -> None:
         source = (
             "public fn f(@Nat -> @Nat)\n"

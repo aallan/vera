@@ -1180,8 +1180,14 @@ class TestDiagnosticInstructionContract:
         assert len(e501) == 1  # also pins #727 at the LSP surface
         message = e501[0].message
         assert "may violate the callee's precondition" in message
+        assert "At this call site: 0 > 0" in message
         assert "Fix:" in message
-        assert "guard the call" in message
+        # The fix is concrete code in call-site terms, not generic
+        # advice: the guard renders the actual call and the
+        # substituted precondition.
+        assert "Guard the call so the precondition holds" in message
+        assert "if 0 > 0 then { need_pos(0) } else { ... }" in message
+        assert "requires(0 > 0)" in message
         # The rationale paragraph travels too.
         assert "SMT solver could not prove" in message
 
