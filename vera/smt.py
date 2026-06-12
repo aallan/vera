@@ -1062,12 +1062,38 @@ class SmtContext:
             # Check validity: solver state already has caller's assumptions
             result = self.check_valid(z3_pre, [])
             if result.status != "verified":
-                self._call_violations.append(CallViolation(
-                    callee_name=callee_name,
-                    call_node=call_node,
-                    precondition=contract,
-                    counterexample=result.counterexample,
-                ))
+                # The same call site is translated more than once per
+                # function (the @Nat-subtraction walker re-translates
+                # let RHSes, branch conditions, and subtraction
+                # operands to rebuild its state) — and for some sites,
+                # e.g. inside an ExprStmt, the walker is the ONLY
+                # translator.  Dedup keeps exactly one violation per
+                # (call site, precondition) regardless of how many
+                # passes visit it (#727).  The site is keyed by SPAN,
+                # not node identity: pipe translation desugars to a
+                # fresh synthetic FnCall on every pass, so the node
+                # object differs while the span (copied from the pipe
+                # expression) is stable.  Spanless nodes fall back to
+                # object identity rather than colliding on None.
+                already = any(
+                    v.precondition is contract
+                    and (
+                        v.call_node.span == call_node.span
+                        if (
+                            v.call_node.span is not None
+                            and call_node.span is not None
+                        )
+                        else v.call_node is call_node
+                    )
+                    for v in self._call_violations
+                )
+                if not already:
+                    self._call_violations.append(CallViolation(
+                        callee_name=callee_name,
+                        call_node=call_node,
+                        precondition=contract,
+                        counterexample=result.counterexample,
+                    ))
                 return None
 
         # Create fresh return variable

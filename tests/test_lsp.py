@@ -1142,3 +1142,64 @@ class TestAddEffect:
     def test_no_analysis_raises(self) -> None:
         with pytest.raises(ValueError, match="open the document"):
             add_effect(_FakeServer(), URI, "f", "Async")
+
+
+# =====================================================================
+# #728 — LSP diagnostics carry the full instruction contract
+# =====================================================================
+
+VIOLATING_CALL = (
+    "private fn need_pos(@Int -> @Int)\n"
+    "  requires(@Int.0 > 0)\n"
+    "  ensures(true)\n"
+    "  effects(pure)\n"
+    "{\n"
+    "  @Int.0\n"
+    "}\n"
+    "\n"
+    "public fn caller(-> @Int)\n"
+    "  requires(true)\n"
+    "  ensures(true)\n"
+    "  effects(pure)\n"
+    "{\n"
+    "  let @Int = need_pos(0);\n"
+    "  @Int.0\n"
+    "}\n"
+)
+
+
+class TestDiagnosticInstructionContract:
+    def test_message_carries_rationale_and_fix(self) -> None:
+        """The editor surface honours the same diagnostics-as-
+        instructions contract as --json: description, rationale, and
+        the Fix: paragraph all reach the LSP message (#728)."""
+        a = analyze(VerificationSession(), URI, VIOLATING_CALL)
+        e501 = [
+            d for d in to_lsp_diagnostics(a) if d.code == "E501"
+        ]
+        assert len(e501) == 1  # also pins #727 at the LSP surface
+        message = e501[0].message
+        assert "may violate the callee's precondition" in message
+        assert "Fix:" in message
+        assert "guard the call" in message
+        # The rationale paragraph travels too.
+        assert "SMT solver could not prove" in message
+
+    def test_message_without_fix_or_rationale_is_bare(self) -> None:
+        """A diagnostic carrying neither rationale nor fix maps to the
+        bare description — no stray labels or separators appear."""
+        from vera.errors import Diagnostic, SourceLocation
+        from vera.lsp.convert import LineIndex
+
+        from vera.lsp.features import Analysis
+
+        bare = Diagnostic(
+            description="bare description",
+            location=SourceLocation(file=URI, line=1, column=0),
+        )
+        a = Analysis(
+            uri=URI, text="x\n", index=LineIndex("x\n"),
+            diagnostics=[bare],
+        )
+        msgs = [d.message for d in to_lsp_diagnostics(a)]
+        assert msgs[0] == "bare description"

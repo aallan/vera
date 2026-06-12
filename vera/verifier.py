@@ -665,6 +665,11 @@ class ContractVerifier:
         #      Walks the body looking for `@Nat - @Nat` sites and emits
         #      an obligation `lhs >= rhs` at each, dischargeable from
         #      preconditions and path conditions.
+        #      The walker re-translates let RHSes, conditions, and
+        #      subtraction operands; the SMT layer's identity dedup
+        #      keeps one call violation per site across those repeat
+        #      visits — and lets the walker be the sole recorder for
+        #      sites the body pass never translates (#727).
         if decl.body is not None:
             self._walk_for_subtraction_obligations(
                 decl, decl.body, smt, slot_env, assumptions,

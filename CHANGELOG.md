@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.170] - 2026-06-12
+
+### Fixed
+
+- **[#727](https://github.com/aallan/vera/issues/727) — duplicate E501 diagnostics.**  A violating call site could be recorded once per translation pass: the primary body translation, the `@Nat`-subtraction walker's let-RHS environment rebuild, and the walker's operand discharge each re-translate the same call (a `@Nat`-subtraction operand in a `let` RHS recorded **three** identical E501s).  The SMT layer now dedups at recording time by (call node, precondition) identity, so every topology collapses to exactly one diagnostic and one `call_pre` obligation per violating site — while sites that only the walker ever translates — a violating call inside a `@Nat`-subtraction operand in statement position, checked via the walker's operand discharge — keep their single recording rather than being suppressed.  (Bare statement-position calls with no enclosing subtraction remain unchecked either way; that pre-existing gap is tracked as [#730](https://github.com/aallan/vera/issues/730).)  Translation behaviour is unchanged and the warm/cold differential oracle is untouched.
+- **[#728](https://github.com/aallan/vera/issues/728) — LSP diagnostics now carry the full instruction contract.**  The language server's diagnostic mapping put only the description into the LSP message, so editor hovers said what broke but not how to fix it.  The message now appends the rationale paragraph and the `Fix:` paragraph exactly as `--json` carries them; diagnostics without those fields map to the bare description, unchanged.
+
 ## [0.0.169] - 2026-06-11
 
 ### Added
@@ -2469,7 +2476,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.169...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.170...HEAD
+[0.0.170]: https://github.com/aallan/vera/compare/v0.0.169...v0.0.170
 [0.0.169]: https://github.com/aallan/vera/compare/v0.0.168...v0.0.169
 [0.0.168]: https://github.com/aallan/vera/compare/v0.0.167...v0.0.168
 [0.0.167]: https://github.com/aallan/vera/compare/v0.0.166...v0.0.167

@@ -142,9 +142,17 @@ def to_lsp_diagnostics(analysis: Analysis) -> list[lsp.Diagnostic]:
     out: list[lsp.Diagnostic] = []
     for d in analysis.diagnostics:
         data = {"tier": d.tier} if d.tier is not None else None
+        # The editor surface honours the same diagnostics-as-
+        # instructions contract as --json: description, then the
+        # rationale paragraph, then the Fix: paragraph (#728).
+        message = d.description
+        if d.rationale:
+            message += f"\n\n{d.rationale}"
+        if d.fix:
+            message += f"\n\nFix: {d.fix}"
         out.append(lsp.Diagnostic(
             range=location_to_range(d.location, analysis.index),
-            message=d.description,
+            message=message,
             severity=_SEVERITY.get(d.severity, lsp.DiagnosticSeverity.Error),
             source="vera",
             code=d.error_code or None,
