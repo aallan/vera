@@ -440,6 +440,40 @@ class TestObligationKinds:
         ]
         assert len(call_pres) == 1
 
+    def test_pipe_call_violation_records_once(self) -> None:
+        """A violating call reached via pipe desugaring records once.
+
+        Pipe translation constructs a fresh synthetic ``ast.FnCall``
+        on every pass, so object-identity dedup misses repeat visits —
+        the dedup keys on the (stable) call-site span instead (#729
+        round 2).
+        """
+        source = (
+            "private fn need_pos(@Nat -> @Nat)\n"
+            "  requires(@Nat.0 >= 1)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  @Nat.0\n"
+            "}\n"
+            "\n"
+            "public fn caller(@Nat -> @Nat)\n"
+            "  requires(true)\n"
+            "  ensures(true)\n"
+            "  effects(pure)\n"
+            "{\n"
+            "  let @Nat = (@Nat.0 |> need_pos()) - 1;\n"
+            "  @Nat.0\n"
+            "}\n"
+        )
+        result = self._verify_source(source)
+        e501s = [d for d in result.diagnostics if d.error_code == "E501"]
+        assert len(e501s) == 1
+        call_pres = [
+            o for o in result.obligations if o.kind == "call_pre"
+        ]
+        assert len(call_pres) == 1
+
     def test_content_key_stable_across_runs(self) -> None:
         source = (
             "public fn f(@Nat -> @Nat)\n"
