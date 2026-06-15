@@ -2591,9 +2591,17 @@ def execute(
             caller: wasmtime.Caller, value: int,
         ) -> int:
             """Option.Some wrapping an i32 value."""
-            adt_ptr = _call_alloc(caller, 8)
-            _write_i32(caller, adt_ptr, 1)  # tag = Some
-            _write_i32(caller, adt_ptr + 4, value)
+            # GC-rooting (folded into #706): root a heap-pointer payload
+            # (e.g. a Decimal wrapper from decimal_from_string /
+            # decimal_div) across the struct alloc.  Harmless for
+            # non-pointer i32 values — 0 no-ops, small ints are out of
+            # heap range.  Mirrors _alloc_result_ok_i32.
+            with _ShadowGuard(caller) as guard:
+                if value != 0:
+                    guard.push(value)
+                adt_ptr = _call_alloc(caller, 8)
+                _write_i32(caller, adt_ptr, 1)  # tag = Some
+                _write_i32(caller, adt_ptr + 4, value)
             return adt_ptr
 
         def _alloc_option_some_f64(

@@ -18813,6 +18813,35 @@ public fn main(-> @Int)
         monkeypatch.setenv("VERA_EAGER_GC", "1")
         assert _run(src) == 300
 
+    def test_decimal_from_string_wrapper_survives_eager_gc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``decimal_from_string`` builds a Decimal wrapper, then wraps it
+        in ``Option.Some`` via ``_alloc_option_some_i32``; the helper roots
+        the wrapper across the struct alloc.  300x under eager GC the
+        Decimal reads back as "3.14" — pre-fix the wrapper could be swept /
+        Phase-2c-decref'd before the ``Some`` payload stored it."""
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold(
+    array_range(0, 300),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      match decimal_from_string("3.14") {
+        Some(@Decimal) ->
+          if string_contains(decimal_to_string(@Decimal.0), "3.14")
+          then { @Int.1 + 1 } else { @Int.1 },
+        None -> @Int.1
+      }
+    }
+  )
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run(src) == 300
+
 
 class TestSameValueZeroKeys743:
     """PR #743 (folded into #706): Float64 Map keys / Set elements compare
