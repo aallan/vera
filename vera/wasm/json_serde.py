@@ -142,7 +142,7 @@ def write_json(
 
     if isinstance(value, dict):
         # JObject(Map<String, Json>) — tag=5, i32 at offset 4, total=8
-        # Create a Map<String, Json> using the host map store.
+        # Build a Map<String, Json> as a bucket-as-truth wrapper (#706).
         # Keys are stored as Python strings (matching map_contains$ks
         # which reads WASM strings and compares against Python strings).
         # Values are i32 Json heap pointers.

@@ -1516,7 +1516,8 @@ def execute(
         wrapper pointer.  GC discipline: the new wrapper and bucket are
         shadow-rooted across the whole encode; incoming heap-pointer
         keys / values stay live via their own source's rooting for the
-        duration of this synchronous host call (see plan).  FAST path
+        duration of this synchronous host call (the #695 / #705
+        reachability tests pin this).  FAST path
         (no String key / val) builds the whole bucket as one ``bytes``
         and emits a single ``memory.write``; SLOW path (String present)
         writes each slot in place, val-first, allocating key / val

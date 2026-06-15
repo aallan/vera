@@ -113,9 +113,7 @@ def write_html(
             guard.push(name_ptr)
 
         # Allocate Map<String, String> for attributes.
-        # Keys and values are Python strings — the Map host runtime
-        # stores Python values and converts to WASM on access (via
-        # map_get which calls _alloc_option_some_string).
+        # Keys and values are Python strings.
         # #706: ``map_alloc`` (``_alloc_map_wrapper``) encodes this
         # Python dict into a fresh bucket-as-truth wrapper; store the
         # wrapper pointer in HtmlElement's attrs field so user-level

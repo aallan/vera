@@ -18754,30 +18754,40 @@ public fn main(-> @Int)
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """``map_keys`` on a ``Map<String, Int>`` builds an
-        ``Array<String>`` backing 300x under eager GC.
-        ``_alloc_array_of_strings`` roots the backing across the
-        per-element string allocs; without it the backing is swept
-        mid-fill and the element write corrupts the free list, trapping a
-        later alloc.  (Vera has no generic ``Array`` element accessor, so
-        this exercises the builder via that trap rather than reading the
-        strings back.)"""
+        ``Array<String>`` backing under eager GC, and this folds over that
+        array reading each key's bytes via ``string_contains`` — so a
+        backing (or key string) swept mid-fill reads garbage and misses
+        the substring (or traps).  ``_alloc_array_of_strings`` roots the
+        backing across the per-element string allocs; the outer fold
+        rebuilds the keys array 200x to force free-block reuse.  ``array_fold``
+        is the element accessor (``array_length`` reads the host-pushed
+        count and would NOT dereference a swept backing)."""
         src = """
 public fn main(-> @Int)
   requires(true) ensures(true) effects(pure)
 {
-  let @Map<String, Int> = map_insert(map_insert(map_new(), "k1", 1), "k2", 2);
+  let @Map<String, Int> = map_insert(map_insert(map_new(), "alpha_k", 1), "beta_k", 2);
   array_fold(
-    array_range(0, 300),
+    array_range(0, 200),
     0,
     fn(@Int, @Int -> @Int) effects(pure) {
-      @Int.1 + array_length(map_keys(@Map<String, Int>.0))
+      let @Array<String> = map_keys(@Map<String, Int>.0);
+      @Int.1 + array_fold(
+        @Array<String>.0,
+        0,
+        fn(@Int, @String -> @Int) effects(pure) {
+          if string_contains(@String.0, "_k") then { @Int.0 + 1 }
+          else { @Int.0 }
+        }
+      )
     }
   )
 }
 """
         monkeypatch.setenv("VERA_EAGER_GC", "1")
-        # 300 iterations x 2 keys = 600 (a swept backing would trap first).
-        assert _run(src) == 600
+        # 200 outer x 2 keys (both contain "_k") = 400; a swept/corrupted
+        # backing reads garbage bytes (miss) or traps.
+        assert _run(src) == 400
 
     def test_regex_find_result_payload_survives_eager_gc(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -18834,6 +18844,34 @@ public fn main(-> @Int)
           if string_contains(decimal_to_string(@Decimal.0), "3.14")
           then { @Int.1 + 1 } else { @Int.1 },
         None -> @Int.1
+      }
+    }
+  )
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run(src) == 300
+
+    def test_regex_find_err_payload_survives_eager_gc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``regex_find`` with an invalid pattern returns ``Result.Err``
+        via ``_alloc_result_err_string``; 300x under eager GC the error
+        string reads back intact (the Err-path string builder roots its
+        payload across the struct alloc)."""
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold(
+    array_range(0, 300),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      match regex_find("x", "[") {
+        Ok(@Option<String>) -> @Int.1,
+        Err(@String) ->
+          if string_contains(@String.0, "regex") then { @Int.1 + 1 }
+          else { @Int.1 }
       }
     }
   )
@@ -18908,6 +18946,21 @@ public fn main(-> @Int)
         # deduped to size 1; contains finds NaN → 1.
         assert _run(src) == 1
 
+    def test_nan_set_element_removed(self) -> None:
+        """``set_remove`` finds and drops a NaN element (SameValueZero in
+        the structural rebuild); the later size is 0."""
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Float64 = 0.0 / 0.0;
+  let @Set<Float64> = set_add(set_new(), @Float64.0);
+  let @Set<Float64> = set_remove(@Set<Float64>.0, @Float64.0);
+  nat_to_int(set_size(@Set<Float64>.0))
+}
+"""
+        assert _run(src) == 0
+
 
 class TestHostHandleReclamation573:
     """Reclamation regressions originally for the heap-wrap-as-ADT
@@ -18975,8 +19028,9 @@ public fn main(@Unit -> @Int)
         a bucket-as-truth wrapper (``_alloc_map_wrapper``).  Parse 5 000
         transient JObjects in an iterative ``array_fold`` and read a field
         back out of each, round-tripping every one through the bucket
-        *encode* (``_alloc_map_wrapper``) and *decode* (``decode_jobject``
-        via ``json_get_int``) paths at scale without corruption.
+        *encode* (``_alloc_map_wrapper``) and *decode* (``_decode_map``
+        via ``map_get``, reached through ``json_get_int``) paths at scale
+        without corruption.
 
         This is a functional round-trip check, not a leak check.  Each
         JObject is a constant-size single-key map, so even total

@@ -1660,8 +1660,9 @@ function buildImportObject(module) {
     });
   }
 
-  // #706: every Map host import takes the wrapper pointer and goes
-  // through the bucket codec above.
+  // Serialize a JS array of decoded keys / values / elements into a WASM
+  // Array<T> ([backingPtr, count]); used by map_keys / map_values /
+  // set_to_array.
   function emitArray(values, tag) {
     if (tag === 's') return mapAllocArrayOfStrings(values.map(String));
     const count = values.length;

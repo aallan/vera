@@ -2086,3 +2086,33 @@ public fn main(-> @Unit)
 """
         # deduped to size 1; contains finds NaN → 1.
         assert self._eager_stdout(src, monkeypatch, tmp_path) == "1"
+
+    def test_decimal_from_string_wrapper_survives_eager_gc_browser(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Browser parallel of the CLI Decimal-wrapper rooting:
+        ``decimal_from_string`` wraps the handle in ``Option.Some`` via
+        ``gcRooted(wrapHandle(3, h))``; 200x under eager GC the Decimal
+        reads back as "3.14"."""
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Int = array_fold(
+    array_range(0, 200),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      match decimal_from_string("3.14") {
+        Some(@Decimal) ->
+          if string_contains(decimal_to_string(@Decimal.0), "3.14")
+          then { @Int.1 + 1 } else { @Int.1 },
+        None -> @Int.1
+      }
+    }
+  );
+  IO.print(int_to_string(@Int.0))
+}
+"""
+        assert self._eager_stdout(src, monkeypatch, tmp_path) == "200"
