@@ -116,12 +116,12 @@ def write_html(
         # Keys and values are Python strings — the Map host runtime
         # stores Python values and converts to WASM on access (via
         # map_get which calls _alloc_option_some_string).
-        # #573: ``map_alloc`` returns a wrapper-ADT pointer (see
-        # ``vera/codegen/api.py::_alloc_map_wrapper``); store that
-        # in HtmlElement's attrs field so user-level
-        # ``map_get`` / ``map_contains`` calls unwrap correctly
-        # and the underlying ``_map_store`` entry is reclaimed
-        # when the wrapper becomes unreachable.
+        # #706: ``map_alloc`` (``_alloc_map_wrapper``) encodes this
+        # Python dict into a fresh bucket-as-truth wrapper; store the
+        # wrapper pointer in HtmlElement's attrs field so user-level
+        # ``map_get`` / ``map_contains`` calls take it directly.  The
+        # attrs Map is reclaimed by ordinary mark-sweep when the
+        # wrapper becomes unreachable — no host store to evict.
         map_dict: dict[object, object] = {}
         for k, v in attrs.items():
             map_dict[str(k)] = str(v)
@@ -212,16 +212,10 @@ def read_html(
         name_ptr = read_i32(caller, ptr + 4)
         name_len = read_i32(caller, ptr + 8)
         name = read_string(caller, name_ptr, name_len)
-        # #573: HtmlElement's i32 field at offset 12 is now a
-        # wrapper-ADT pointer (see write_html).  Unwrap to the
-        # raw Map handle before looking up the dict in
-        # ``map_store``.
-        #
-        # #578: the in-heap handle field is tagged with bit 31
-        # (so the conservative GC scan can't mistake it for a
-        # heap pointer).  Mask with 0x7FFFFFFF to recover the
-        # raw handle.  Mirrors the WAT-side ``_emit_unwrap_handle``
-        # in ``vera/wasm/calls_containers.py``.
+        # #706: HtmlElement's i32 field at offset 12 is the attrs
+        # Map's wrapper pointer (see write_html).  Its bucket IS the
+        # map, so ``decode_attrs`` decodes it directly — no handle to
+        # unwrap, no ``map_store`` lookup.
         wrapper_ptr = read_i32(caller, ptr + 12)
         arr_ptr = read_i32(caller, ptr + 16)
         arr_len = read_i32(caller, ptr + 20)

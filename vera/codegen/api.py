@@ -1146,23 +1146,20 @@ def execute(
         _WRAP_KIND_SET: _SET_HANDLE_TAG,
         _WRAP_KIND_DECIMAL: _DECIMAL_HANDLE_TAG,
     }
-    # #695/#705: wrapper grows from 8 to 12 bytes to add a
-    # ``bucket_ptr`` field at offset +8.  Layout:
-    #   +0  tag (i32)                              [#573]
-    #   +4  handle | 0x80000000 (i32, bit-31 tagged) [#578]
-    #   +8  bucket_ptr (i32, real heap pointer or 0) [#695]
+    # #695/#706: 12-byte wrapper with a ``bucket_ptr`` field at +8.
+    # Layout depends on the type:
+    #   +0  tag (i32)                                 [#573]
+    #   +4  Decimal: handle | 0x80000000 (bit-31)     [#578]
+    #       Map / Set: vestigial (0) — no handle post-#706
+    #   +8  bucket_ptr (i32, real heap pointer or 0)  [#695/#706]
     #
-    # For Map / Set wrappers, ``bucket_ptr`` points to a WASM-side
-    # bucket array (see ``_alloc_bucket_array``) that mirrors the
-    # ``_map_store`` / ``_set_store`` contents so the conservative
-    # GC scan can reach the values.  For Decimal wrappers (which
-    # don't store heap pointers and don't need this), the field is
-    # left at 0; the conservative scan correctly skips 0 as
-    # out-of-heap-range.
-    #
-    # Codegen that reads the wrapper's handle at +4 is unchanged;
-    # the +8 field is only read by the bucket-array path inside
-    # api.py and (in the #706 follow-up) the new host imports.
+    # #706: for Map / Set the ``bucket_ptr`` points to the WASM-side
+    # bucket that IS the map / set (see ``_alloc_bucket`` and the codec
+    # below); the host imports read and rebuild it directly — there is
+    # no ``_map_store`` / ``_set_store`` mirror.  Decimal leaves it 0
+    # (value-typed) and the conservative scan skips 0 as
+    # out-of-heap-range.  Must agree with ``_WRAPPER_BODY_SIZE`` in
+    # ``vera/wasm/calls_containers.py``.
     _WRAPPER_BODY_SIZE = 12
 
     def _call_register_wrapper(
@@ -1186,9 +1183,10 @@ def execute(
     def _wrap_handle(
         caller: wasmtime.Caller, kind: int, raw_handle: int,
     ) -> int:
-        """Wrap an existing host handle into a GC-tracked ADT (#573).
+        """Wrap an existing host handle into a GC-tracked ADT (#573;
+        Decimal-only post-#706).
 
-        Allocates an 8-byte wrapper ADT in WASM memory (tag at
+        Allocates a 12-byte wrapper ADT in WASM memory (tag at
         body[0], handle at body[4]), registers with the wrap
         table, and returns the wrapper pointer.  Used by host
         helpers that have already allocated their store entry
@@ -1215,11 +1213,10 @@ def execute(
         # still gets the RAW handle — the wrap table uses it for
         # ``host_decref_handle`` calls.
         _write_i32(caller, body_ptr + 4, raw_handle | 0x80000000)
-        # #695: default bucket_ptr is 0 (no bucket array).  For Map
-        # wrappers, ``_alloc_map_wrapper`` overwrites this with the
-        # actual bucket-array pointer after populating it.  For
-        # Set / Decimal wrappers the field stays 0 now (the #706
-        # C adds the Set side; Decimal never needs it).
+        # Decimal wrappers carry no bucket (value-typed), so
+        # bucket_ptr stays 0.  (``_wrap_handle`` is Decimal-only
+        # post-#706; Map / Set wrappers come from ``_alloc_wrapper``
+        # with a real bucket_ptr.)
         _write_i32(caller, body_ptr + 8, 0)
         _call_register_wrapper(caller, body_ptr, kind, raw_handle)
         return body_ptr
@@ -2615,16 +2612,27 @@ def execute(
             host_decref_handle, access_caller=True,
         )
 
-        # #706: attach_bucket_to_wrapper is now a no-op.  Map / Set
-        # wrappers carry their bucket directly (bucket-as-truth) and
-        # Decimal is value-typed, so nothing needs a bucket attached.
+        # #706: attach_bucket_to_wrapper no longer populates a bucket.
+        # Map / Set wrappers carry their bucket directly (bucket-as-truth)
+        # and Decimal is value-typed, so nothing needs a bucket attached.
         # The import stays defined because Decimal's ``_emit_wrap_handle``
-        # still emits a call to it.
+        # still emits a call to it; the body is a tripwire asserting only
+        # Decimal (kind=3) reaches this path, so a regression that routes a
+        # Map / Set wrapper back through ``_emit_wrap_handle`` fails loudly
+        # here instead of silently leaving its bucket unpopulated.
         def host_attach_bucket(
-            _caller: wasmtime.Caller, _wrapper_ptr: int, _kind: int,
+            _caller: wasmtime.Caller, _wrapper_ptr: int, kind: int,
             _handle: int,
         ) -> None:
-            pass
+            # Only Decimal (kind=3) should reach this no-op path; Map (1)
+            # and Set (2) are bucket-as-truth and never wrap a handle.
+            if kind != 3:
+                raise RuntimeError(
+                    f"#706: attach_bucket_to_wrapper called with kind={kind}; "
+                    "expected Decimal (3).  A Map/Set wrapper was routed back "
+                    "through _emit_wrap_handle — the bucket-as-truth invariant "
+                    "is violated."
+                )
 
         linker.define_func(
             "vera", "attach_bucket_to_wrapper",
@@ -3060,19 +3068,17 @@ def execute(
 
         _decimal_store: dict[int, PyDecimal] = {}
         _decimal_next_handle = [1]
-        # #573 introspection (same pattern as Map; Decimal migration
-        # is a separate follow-up).
+        # Decimal keeps a value-typed Python store — the only host store
+        # remaining after #706 moved Map / Set to bucket-as-truth.
         _host_store_refs["decimal"] = _decimal_store  # type: ignore[assignment]
-        # #695/#705: Decimal is intentionally EXEMPT from the bucket-
-        # array reachability fix.  ``PyDecimal`` is value-typed
-        # (immutable digit/sign/exponent attributes, no WASM heap
-        # pointers inside the stored object), so the silent-UAF
-        # window that affects Map<K, T_heap> and Set<T_heap> cannot
-        # occur for Decimal.  The wrapper's ``bucket_ptr`` field stays
-        # 0 (initialised by ``_emit_wrap_handle`` / JS ``wrapHandle``)
-        # and ``host_attach_bucket`` is a no-op for kind=3.  See also
-        # the follow-up issue #706 (host-store → bucket-as-truth move), which still
-        # excludes Decimal for the same reason.
+        # #695/#706: Decimal is intentionally EXEMPT from the bucket-as-
+        # truth migration.  ``PyDecimal`` is value-typed (immutable
+        # digit/sign/exponent attributes, no WASM heap pointers inside
+        # the stored object), so the silent-UAF window that affects
+        # Map<K, T_heap> and Set<T_heap> cannot occur for Decimal.  Its
+        # wrapper keeps the #573 tagged-handle layout (initialised by
+        # ``_emit_wrap_handle`` / JS ``wrapHandle``), leaves ``bucket_ptr``
+        # 0, and ``host_attach_bucket`` accepts only kind=3.
 
         def _decimal_alloc(d: PyDecimal) -> int:
             h = _decimal_next_handle[0]

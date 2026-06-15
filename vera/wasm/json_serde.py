@@ -35,10 +35,11 @@ AllocFn = Callable[[wasmtime.Caller, int], int]
 WriteI32Fn = Callable[[wasmtime.Caller, int, int], None]
 WriteF64Fn = Callable[[wasmtime.Caller, int, float], None]
 AllocStringFn = Callable[[wasmtime.Caller, str], tuple[int, int]]
-# #573: map_alloc now returns a wrapper-ADT pointer, not a raw
-# handle.  The signature accepts ``caller`` so the helper can call
-# the exported ``$alloc`` and ``$register_wrapper`` to construct
-# the wrapper in WASM memory.
+# #706: map_alloc is ``_alloc_map_wrapper`` — it encodes the Python
+# dict into a fresh bucket-as-truth wrapper and returns the wrapper
+# pointer (no host store, no wrap-table registration).  It accepts
+# ``caller`` so it can call the exported ``$alloc`` to build the
+# wrapper + bucket in WASM memory.
 MapAllocFn = Callable[[wasmtime.Caller, dict[object, object]], int]
 ReadI32Fn = Callable[[wasmtime.Caller, int], int]
 ReadF64Fn = Callable[[wasmtime.Caller, int], float]
@@ -146,18 +147,15 @@ def write_json(
         # which reads WASM strings and compares against Python strings).
         # Values are i32 Json heap pointers.
         #
-        # #573: ``map_alloc`` is now ``_alloc_map_wrapper`` (in
-        # ``vera/codegen/api.py``), which both allocates the host
-        # dict AND emits an 8-byte wrapper ADT in WASM memory
-        # registered with ``$register_wrapper``.  The returned
-        # value is therefore a wrapper-ADT pointer, not a raw
-        # handle.  This makes the JObject's i32 field type-
-        # compatible with user-level ``map_get`` /
-        # ``map_contains`` calls (which now expect wrapper
-        # pointers and unwrap with ``i32.load offset=4`` before
-        # the host dispatch).  GC reclaims the JObject's Map
-        # entry from ``_map_store`` when the wrapper becomes
-        # unreachable, just like a user-allocated Map.
+        # #706: ``map_alloc`` is ``_alloc_map_wrapper`` (in
+        # ``vera/codegen/api.py``), which encodes this Python dict
+        # into a fresh bucket-as-truth wrapper + bucket and returns
+        # the wrapper pointer.  That makes the JObject's i32 field
+        # type-compatible with user-level ``map_get`` /
+        # ``map_contains`` calls, which take the wrapper pointer
+        # directly.  The JObject's Map is reclaimed by ordinary
+        # mark-sweep when the wrapper becomes unreachable — there is
+        # no host store to evict.
         #
         # #692: each iteration's val_ptr is pushed onto the
         # shadow stack BEFORE the next iteration's recursive

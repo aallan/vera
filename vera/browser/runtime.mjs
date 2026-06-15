@@ -1366,8 +1366,21 @@ function buildImportObject(module) {
   // #706: Map and Set are bucket-as-truth (their wrappers carry the
   // bucket directly) and Decimal is value-typed, so nothing needs a
   // bucket attached.  The import stays defined because the Decimal wrap
-  // path (_emit_wrap_handle) still emits a call to it.
-  imports.vera.attach_bucket_to_wrapper = () => {};
+  // path (_emit_wrap_handle) still emits a call to it; the body is a
+  // tripwire asserting only Decimal (kind=3) reaches it (mirrors the
+  // CLI host_attach_bucket), so a regression that routes a Map / Set
+  // wrapper back through this path fails loudly instead of silently
+  // leaving its bucket unpopulated.
+  imports.vera.attach_bucket_to_wrapper = (_wrapperPtr, kind) => {
+    if (kind !== 3) {
+      throw new Error(
+        '#706 browser runtime: attach_bucket_to_wrapper called with ' +
+        'kind=' + kind + '; expected Decimal (3).  A Map/Set wrapper ' +
+        'was routed back through _emit_wrap_handle — the bucket-as-truth ' +
+        'invariant is violated.'
+      );
+    }
+  };
 
   // #573 wrapper-ADT layout constants (must match
   // vera/wasm/calls_containers.py).
@@ -1381,17 +1394,18 @@ function buildImportObject(module) {
   };
 
   // wrapHandle(kind, rawHandle) — JS counterpart of `_wrap_handle`
-  // in vera/codegen/api.py.  Allocates an 8-byte wrapper ADT,
+  // in vera/codegen/api.py.  Allocates a 12-byte wrapper ADT,
   // writes tag + handle, calls the exported $register_wrapper.
-  // Used by host helpers that have already obtained a raw handle
-  // and need to lift it to a wrapper pointer before stuffing into
-  // an Option<T> Some payload (e.g. decimal_from_string).
+  // Decimal-only post-#706: Map / Set are bucket-as-truth and no
+  // longer wrap a handle.  Used by decimal host helpers that have a
+  // raw handle and need to lift it to a wrapper pointer before
+  // stuffing into an Option<Decimal> Some payload.
   // Wrapper body layout (must match _WRAPPER_BODY_SIZE in
   // vera/codegen/api.py and vera/wasm/calls_containers.py):
   //   +0  tag (i32)            [#573]
   //   +4  handle | 0x80000000  [#578 — bit-31 tag keeps it out
   //                             of the conservative GC scan]
-  //   +8  bucket_ptr (i32)     [#695/#705 — attached below]
+  //   +8  bucket_ptr (i32)     [0 — Decimal is value-typed]
   function wrapHandle(kind, rawHandle) {
     const tag = _KIND_TO_TAG_JS[kind];
     const ptr = alloc(12);
@@ -1400,18 +1414,18 @@ function buildImportObject(module) {
     // never mistakes it for a heap pointer.  Matches the
     // WAT-emitted ``_emit_wrap_handle`` discipline.
     writeI32(ptr + 4, (rawHandle | 0x80000000) | 0);
-    // #695/#705: default bucket_ptr is 0.  Map/Set callers fill it
-    // via attach_bucket_to_wrapper below; Decimal leaves it 0.
+    // bucket_ptr is 0 — Decimal is value-typed (and this helper is
+    // Decimal-only post-#706, so nothing attaches a bucket here).
     writeI32(ptr + 8, 0);
     // PR #707 review (silent-failure-hunter C2): symmetric with the
     // CLI-side ``_call_register_wrapper`` discipline.  A caller
-    // reaching wrapHandle is building a Map / Set / Decimal wrapper
-    // — so the wrap-table is required for Phase 2c reclamation.  If
+    // reaching wrapHandle is building a Decimal wrapper — so the
+    // wrap-table is required for Phase 2c reclamation.  If
     // ``register_wrapper`` isn't exported, the wrapper is allocated
-    // and the mapStore entry created but the wrap-table registration
-    // is skipped → ``host_decref_handle`` never fires → permanent
-    // mapStore leak per write.  That's a build-config bug; raise
-    // rather than silently leak.
+    // and the decimalStore entry created but the wrap-table
+    // registration is skipped → ``host_decref_handle`` never fires →
+    // permanent decimalStore leak per write.  That's a build-config
+    // bug; raise rather than silently leak.
     if (!wasm || typeof wasm.register_wrapper !== "function") {
       throw new Error(
         '#707 browser runtime: $register_wrapper not exported; ' +
@@ -1509,25 +1523,17 @@ function buildImportObject(module) {
     }
   }
 
-  // allocMapWrapper(d) : drop-in replacement for mapAlloc(d) used by
-  // writeJson / writeHtml.  Inserts d into mapStore, lifts the
-  // resulting handle to a wrapper pointer via wrapHandle, and
-  // populates the wrapper's bucket array for GC reachability
-  // (#695 mirror parallel — matches CLI ``_alloc_map_wrapper``).
-  //
-  // PR #707 review: the wrapper returned from
-  // ``wrapHandle`` is registered with the wrap-table but the
-  // wrap-table region is NOT scanned by Phase 2a marking, so the
-  // wrapper is only kept alive transitively (via another reachable
-  // block pointing at it).  Between ``wrapHandle`` returning and
-  // the caller (e.g. ``writeJson``'s JObject branch) storing the
-  // wrapper into a body field, the wrapper is unrooted — and the
-  // ``attach_bucket_to_wrapper`` call below internally allocates
-  // the bucket, which can fire ``$gc_collect``.  Shadow-push the
-  // wrapper across the attach so it stays alive.  Caller is still
-  // responsible for storing the returned ptr promptly (the
-  // wrapper becomes unrooted again on return — see writeJson
-  // JObject branch which is the only consumer of this helper).
+  // allocMapWrapper(d) — used by writeJson / writeHtml to build the
+  // Map<String, V> wrapper for a JObject / HtmlElement's attrs.
+  // #706: it encodes ``d`` directly into a bucket-as-truth wrapper +
+  // bucket via ``encodeEntries`` (matches the CLI
+  // ``_alloc_map_wrapper``); there is no ``mapStore`` and no
+  // ``wrapHandle``.  ``encodeEntries`` shadow-roots the new wrapper +
+  // bucket across the per-entry string allocations, so a sub-alloc
+  // that fires ``$gc_collect`` mid-encode can't reclaim them.  The
+  // caller is responsible for storing the returned ptr promptly (it
+  // is unrooted again on return — see writeJson's JObject branch,
+  // the only consumer of this helper).
   function allocMapWrapper(d) {
     // #706: build a bucket-as-truth Map<String, V> wrapper directly.
     // write_json's JObject values are Json heap pointers ("b");

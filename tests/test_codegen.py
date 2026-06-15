@@ -18544,26 +18544,21 @@ public fn main(@Unit -> @Int)
         assert _run(src) == 1
 
 # =====================================================================
-# #573: Active reclamation of host-store handles
+# Reclamation of transient Map / Set / Decimal values
 # =====================================================================
-# Pre-fix: every map_new / map_insert / map_remove allocated a new
-# entry in `_map_store` (in `vera/codegen/api.py`) and never released
-# transient predecessors — the store grew monotonically across an
-# `execute()` call.  Bounded by Python GC at execute() exit, so
-# single-shot programs leaked but didn't OOM; mattered for long-
-# running execution contexts (server programs, repeated execute()).
+# Historically (#573) every map_new / map_insert / map_remove
+# allocated an entry in `_map_store` (in `vera/codegen/api.py`) that a
+# Phase-2c `$gc_collect` walk evicted via `host_decref_handle` once the
+# owning wrapper was unmarked.
 #
-# Post-fix (heap-wrap-as-ADT): each Map value is now a pointer to
-# an 8-byte wrapper ADT on the GC heap (tag at offset 0, raw host
-# handle at offset 4).  Wrappers register with the WASM-side wrap
-# table at allocation; Phase 2c of `$gc_collect` walks the wrap
-# table and fires `host_decref_handle(MAP_KIND, raw_handle)` for
-# every wrapper that was unmarked, evicting the corresponding
-# `_map_store` entry.
-#
-# `ExecuteResult.host_store_sizes` exposes the post-execution
-# population of each host store so tests can verify reclamation
-# without introspecting linker-internal state.
+# Post-#706 (bucket-as-truth): Map and Set hold no Python store at all
+# — each op builds a fresh wrapper whose `bucket_ptr` (+8) owns the
+# data, and transient wrappers + buckets are reclaimed by ordinary
+# mark-sweep.  `ExecuteResult.peak_heap_bytes` (the exported `$heap_ptr`
+# high-water mark) is the leak signal: a working reclaimer keeps it
+# ~O(N) across an insert chain; a leak grows it ~O(N^2).  Decimal alone
+# still uses a Python store, so `ExecuteResult.host_store_sizes` keeps
+# reporting its post-execution population.
 # =====================================================================
 
 
@@ -18667,26 +18662,78 @@ public fn main(@Unit -> @Int)
 """
         assert _run(src) == 1
 
+    def test_empty_string_key_contains(self) -> None:
+        """map_contains finds the "" key via the occupancy flag."""
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "", 42);
+  if map_contains(@Map<String, Int>.0, "") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+    def test_empty_string_key_counts_in_size(self) -> None:
+        """A "" key occupies a slot, so map_size counts it (not skipped
+        as an empty slot)."""
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "", 42);
+  nat_to_int(map_size(@Map<String, Int>.0))
+}
+"""
+        assert _run(src) == 1
+
+    def test_empty_string_key_removed(self) -> None:
+        """map_remove("") clears the slot; a later lookup then misses,
+        confirming the structural rebuild honours the sentinel key."""
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "", 42);
+  let @Map<String, Int> = map_remove(@Map<String, Int>.0, "");
+  match map_get(@Map<String, Int>.0, "") {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+"""
+        assert _run(src) == -1
+
 
 class TestHostHandleReclamation573:
-    """Reclamation regressions for the heap-wrap-as-ADT migration of
-    Map (#573), Set (#575), and Decimal (#576) — all shipped together
-    in v0.0.134.
+    """Reclamation regressions originally for the heap-wrap-as-ADT
+    migration of Map (#573), Set (#575), and Decimal (#576), updated
+    for the #706 bucket-as-truth move.
 
-    Covers three failure modes per type:
+    After #706 Map and Set hold no Python store: each op builds a fresh
+    wrapper + bucket and the transients are reclaimed by ordinary
+    mark-sweep (no Phase 2c destructor).  Decimal alone still uses a
+    Python store, reclaimed via ``host_decref_handle``.
 
-    * **chain reclaims transients** — a 5K–10K-iter ``array_fold``
-      chain leaves the corresponding host store at a bounded
-      residual (single-digit for Map, < 2K for Set, < 1.5K for
-      Decimal); proves Phase 2c is firing destructors.
-    * **value correct after pressure** — multiple lookups against
-      the live final value across heavy GC cadence; proves the
-      destructor isn't evicting live entries.
-    * **JSON-only / HTML-only programs include wrap-table** —
-      the host parsers' internal Map allocations register through
-      the same wrap-table machinery; pins the
-      ``_needs_wrap_table`` flip on ``_json_ops_used`` /
-      ``_html_ops_used``.
+    Covers:
+
+    * **chain reclaims transients** — a 1K/10K-iter ``array_fold``
+      chain keeps only the final Map / Set reachable; ``peak_heap_bytes``
+      grows ~O(N) (a leak would grow ~O(N^2)).  The Decimal chain still
+      asserts a bounded host-store residual.
+    * **value correct after pressure** — repeated lookups against the
+      live final value across heavy GC cadence prove reclamation never
+      evicts live entries.
+    * **JObject bucket path at scale** — the JSON parser's internal
+      ``Map<String, Json>`` allocations round-trip through the bucket
+      codec thousands of times without corruption.
+    * **wrap-table machinery present** — Map / Set / JSON / HTML /
+      Decimal modules emit the ``host_decref_handle`` import,
+      ``$register_wrapper`` (with its #579 compaction slow path), and
+      export.  Post-#706 only Decimal actually registers; the infra is
+      still gated on the broad ops predicate, so it is emitted (but
+      unused) for non-Decimal modules too — conservative and
+      correctness-neutral.
     """
 
     def test_map_chain_reclaims_transients(self) -> None:
@@ -18719,39 +18766,49 @@ public fn main(@Unit -> @Int)
 """
         _assert_chain_reclaims(chain, 1000, 10000, 500, 5000)
 
-    def test_json_object_map_reclaimed(self) -> None:
-        """#706: JSON's internal ``Map<String, Json>`` for each JObject
-        is a bucket-as-truth wrapper (``_alloc_map_wrapper``); transient
-        JObjects parsed in a fold are reclaimed by mark-sweep.
+    def test_json_object_map_bucket_path_at_scale(self) -> None:
+        """#706: JSON's internal ``Map<String, Json>`` for each JObject is
+        a bucket-as-truth wrapper (``_alloc_map_wrapper``).  Parse 5 000
+        transient JObjects in an iterative ``array_fold`` and read a field
+        back out of each, round-tripping every one through the bucket
+        *encode* (``_alloc_map_wrapper``) and *decode* (``decode_jobject``
+        via ``json_get_int``) paths at scale without corruption.
 
-        Each JObject is a constant single-key map, so the working set is
-        constant and ``peak_heap_bytes`` stays nearly flat across
-        iteration counts (≈1x for 5x the parses); a leak would grow it
-        linearly.  The iterative ``array_fold`` shape is essential —
-        recursive variants keep all Results alive via per-frame shadow
-        roots (a correctness property, not a leak).
+        This is a functional round-trip check, not a leak check.  Each
+        JObject is a constant-size single-key map, so even total
+        reclamation failure grows the heap only ~O(N) — the same order as
+        the live ``array_range(0, N)`` input array — and a
+        ``peak_heap_bytes`` ratio cannot separate the two (that signal
+        needs healthy O(N) vs leaked O(N^2), which holds for the Map/Set
+        chains above but never for constant-size transients).  Reclamation
+        of these JObject wrappers is covered there — the chains leak
+        O(N^2) through the same ``_alloc_map_wrapper`` encode path — and
+        their value reachability by ``TestMapHostStoreGCReachability695``
+        under ``VERA_EAGER_GC=1``.
         """
-        def chain(n: int) -> str:
-            return f"""
+        src = """
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{{
+{
   let @Int = 0;
   array_fold(
-    array_range(0, {n}),
+    array_range(0, 5000),
     @Int.0,
-    fn(@Int, @Int -> @Int) effects(pure) {{
-      let @Result<Json, String> = json_parse("{{\\"k\\": 1}}");
-      match @Result<Json, String>.0 {{
-        Ok(@Json) -> @Int.1 + 1,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      match json_parse("{\\"k\\": 7}") {
+        Ok(@Json) ->
+          match json_get_int(@Json.0, "k") {
+            Some(@Int) -> @Int.2 + @Int.0,
+            None -> @Int.1
+          },
         Err(@String) -> @Int.1
-      }}
-    }}
+      }
+    }
   )
-}}
+}
 """
-        # Constant-size transients → flat heap, so a tight ratio.
-        _assert_chain_reclaims(chain, 1000, 5000, 1000, 5000, ratio=5)
+        # 5 000 round-trips, each reading "k" = 7 back out → 5000 * 7.
+        assert _run(src) == 35000
 
     def test_map_value_lookup_after_gc_pressure(self) -> None:
         """Functional integrity after heavy reclamation pressure.
@@ -18907,23 +18964,19 @@ public fn main(@Unit -> @Bool)
 
     def test_json_only_module_includes_wrap_table(self) -> None:
         """A module that uses ONLY ``json_parse`` (no user-level
-        ``map_*`` ops) must still emit the wrap-table
-        infrastructure.
+        ``map_*`` ops) still emits the wrap-table infrastructure
+        (``host_decref_handle`` import, ``$register_wrapper``, export).
 
-        ``write_json``'s JObject branch allocates Map wrappers
-        host-side via ``_alloc_map_wrapper``, which calls
-        ``$register_wrapper``.  Pre-fix the wrap-table flag only
-        flipped on direct Map / Set / Decimal use, so JSON-only
-        programs would either: (a) compile cleanly but leak
-        ``_map_store`` entries for every parsed JObject (no
-        Phase 2c, no destructor import), or (b) trap at
-        instantiation if ``host_json_parse`` tried to call the
-        non-existent ``register_wrapper`` export.
-
-        Post-fix the flag flips on ``_json_ops_used`` /
-        ``_html_ops_used`` too.  This structural test asserts
-        the WAT contains the wrap-table imports, exports, and
-        sweep machinery.
+        The ``_decref_used`` / ``_needs_wrap_table`` predicates flip on
+        ``_json_ops_used`` / ``_html_ops_used`` (this was #573 finding
+        5: JSON / HTML modules must not trap at instantiation when the
+        host accesses the ``register_wrapper`` export).  Post-#706
+        ``write_json``'s JObject branch builds its ``Map<String, Json>``
+        as a bucket-as-truth wrapper, which does NOT register — so this
+        infra is conservatively emitted but unused for a JSON-only
+        module (Decimal is the only registerer post-#706).  This
+        structural test pins that the emission + instantiation path
+        stays present and trap-free.
         """
         src = """
 public fn main(@Unit -> @Int)
@@ -18941,23 +18994,17 @@ public fn main(@Unit -> @Int)
             'import "vera" "host_decref_handle"' in wat
         ), (
             "#573 finding 5 regression: JSON-only program is "
-            "missing the host_decref_handle import.  Without it, "
-            "Phase 2c can't reclaim Map wrappers allocated by "
-            "write_json's JObject path."
+            "missing the host_decref_handle import (gated on "
+            "_json_ops_used so the wrap-table machinery is present)."
         )
         assert "$register_wrapper" in wat, (
             "#573 finding 5 regression: JSON-only program is "
-            "missing the $register_wrapper helper.  Without it, "
-            "_alloc_map_wrapper's call from host_json_parse "
-            "either no-ops (silent leak) or traps at "
-            "instantiation."
+            "missing the $register_wrapper helper; the host must not "
+            "trap at instantiation reaching for the export."
         )
         assert '(export "register_wrapper"' in wat, (
             "#573 finding 5 regression: JSON-only program is "
-            "missing the register_wrapper export.  Host-side "
-            "_alloc_map_wrapper accesses this export via "
-            "caller[\"register_wrapper\"]; without it the cast "
-            "returns None and registration is silently skipped."
+            "missing the register_wrapper export."
         )
         # Functional check too: the program runs and returns 1.
         assert _run(src) == 1
@@ -18966,16 +19013,15 @@ public fn main(@Unit -> @Int)
         """An HTML-using program emits the wrap-table machinery
         (mirror of ``test_json_only_module_includes_wrap_table``).
 
-        ``write_html``'s HtmlElement attrs branch allocates Map
-        wrappers via ``_alloc_map_wrapper`` exactly like
-        ``write_json``'s JObject branch.  Note that compiling
-        ``html_parse`` typically also pulls in the prelude's
-        ``html_attr`` (which dispatches to ``map_get``), so
-        ``_map_ops_used`` would be set anyway in practice — but
-        the ``_needs_wrap_table`` gating on ``_html_ops_used``
-        is the load-bearing fix if that prelude transitivity
-        ever changes (or if a future codegen DCE eliminates the
-        unused ``html_attr`` import).
+        ``write_html``'s HtmlElement attrs branch builds its
+        ``Map<String, String>`` as a bucket-as-truth wrapper exactly
+        like ``write_json``'s JObject branch — neither registers
+        post-#706, so the infra is emitted (gated on ``_html_ops_used``)
+        but unused here.  Compiling ``html_parse`` typically also pulls
+        in the prelude's ``html_attr`` (which dispatches to
+        ``map_get``), so ``_map_ops_used`` is set anyway in practice —
+        but the ``_html_ops_used`` gating is the load-bearing one if
+        that prelude transitivity ever changes.
         """
         src = """
 public fn main(@Unit -> @Int)
@@ -18992,9 +19038,8 @@ public fn main(@Unit -> @Int)
             'import "vera" "host_decref_handle"' in wat
         ), (
             "#573 finding 5 regression (HTML): missing "
-            "host_decref_handle import.  Without it, Phase 2c "
-            "can't reclaim Map wrappers allocated by "
-            "write_html's HtmlElement-attrs path."
+            "host_decref_handle import (gated on _html_ops_used so "
+            "the wrap-table machinery is present)."
         )
         assert "$register_wrapper" in wat, (
             "#573 finding 5 regression (HTML): missing "
@@ -19341,25 +19386,20 @@ class TestMapHostStoreGCReachability695:
     next-pointer overwriting the freed block's first word, which
     ``json_array_length`` then read as a length.
 
-    Post-fix (this PR, the "mirror" approach): every Map / Set
-    wrapper now carries a ``bucket_ptr`` at body offset +8 pointing
-    to a WASM-resident bucket array that mirrors the
-    ``_map_store`` / ``_set_store`` contents.  The conservative scan
-    reaches the values via shadow stack → wrapper → bucket → val_ptr.
-    Python remains the source of truth for actual map / set ops; the
-    bucket array is a write-only reachability anchor.  The
-    architectural follow-up to delete ``_map_store`` / ``_set_store``
-    and make the bucket array the sole source of truth is tracked as
-    #706 (the "move" cleanup).
+    Post-fix (#706 bucket-as-truth): every Map / Set wrapper carries a
+    ``bucket_ptr`` at body offset +8 pointing to a WASM-resident bucket
+    that IS the map / set — there is no ``_map_store`` / ``_set_store``
+    anymore.  The conservative scan reaches the values via shadow stack
+    → wrapper → bucket → val_ptr, so a ``Json`` value held only inside a
+    Set or JObject stays reachable across the synchronous host call.
 
     Each test in this class drives the reproducer under
     ``VERA_EAGER_GC=1`` and asserts the post-fix value (e.g. ``10``)
-    is observed.  A regression that removes the bucket-array
-    population from any of the three population paths (the
-    WAT-emitted ``attach_bucket_to_wrapper``, the host-side
-    ``_alloc_map_wrapper``, or the match-arm / let-binding
-    shadow-rooting in ``vera/wasm/data.py`` / ``vera/wasm/context.py``)
-    will flip the assertion back to ``0``.
+    is observed.  A regression that breaks bucket reachability — the
+    encode-time shadow-rooting of the new wrapper + bucket in
+    ``_encode_entries`` / ``_alloc_map_wrapper``, or the match-arm /
+    let-binding shadow-rooting in ``vera/wasm/data.py`` /
+    ``vera/wasm/context.py`` — flips the assertion back to ``0``.
     """
 
     def test_eager_gc_set_of_json_post_walk_uaf(
