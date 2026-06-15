@@ -18567,6 +18567,107 @@ public fn main(@Unit -> @Int)
 # =====================================================================
 
 
+def _assert_chain_reclaims(
+    chain,  # (int) -> str: builds the chain source for a given size
+    small_n: int,
+    large_n: int,
+    small_val: int,
+    large_val: int,
+    ratio: int = 30,
+) -> None:
+    """#706: run an insert/add chain at two sizes and assert the heap
+    high-water mark grows ~O(N), proving transient wrappers + buckets
+    are reclaimed by mark-sweep.
+
+    With power-of-two bucket sizing a working reclaimer reuses freed
+    same-size buckets, so 10x the inserts gives only ~6x the peak heap.
+    A leak (transients never freed) grows ~O(N^2) → ~100x.  The bound
+    sits well between the two.
+    """
+    small = execute(_compile_ok(chain(small_n)))
+    large = execute(_compile_ok(chain(large_n)))
+    assert small.value == small_val, (
+        f"chain(n={small_n}) returned {small.value}, expected {small_val}"
+    )
+    assert large.value == large_val, (
+        f"chain(n={large_n}) returned {large.value}, expected {large_val}"
+    )
+    assert large.peak_heap_bytes < small.peak_heap_bytes * ratio, (
+        f"#706 reclamation regression: peak heap for n={large_n} "
+        f"({large.peak_heap_bytes:,} bytes) exceeds {ratio}x the n="
+        f"{small_n} peak ({small.peak_heap_bytes:,} bytes).  Transient "
+        f"Map/Set wrappers + buckets are not being reclaimed — O(N^2) "
+        f"high-water growth indicates a leak, vs the ~O(N) expected from "
+        f"mark-sweep plus power-of-two bucket sizing."
+    )
+
+
+class TestBucketOccupancy706:
+    """#706: the 20-byte bucket slot carries an explicit occupancy flag,
+    so an empty-string key (``(ptr, len) == (0, 0)``) and an Int ``0``
+    key are distinguished from a genuinely empty slot — closing the
+    sentinel collision the old write-only mirror left latent (#707
+    review).
+    """
+
+    def test_empty_string_key_round_trips(self) -> None:
+        """A "" key is found, not mistaken for an empty slot."""
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "", 42);
+  match map_get(@Map<String, Int>.0, "") {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+"""
+        assert _run(src) == 42
+
+    def test_empty_string_key_miss_returns_none(self) -> None:
+        """A different key still misses when only "" is present."""
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_new(), "", 42);
+  match map_get(@Map<String, Int>.0, "x") {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+"""
+        assert _run(src) == -1
+
+    def test_int_zero_key_round_trips(self) -> None:
+        """An Int 0 key is found, not mistaken for an empty slot."""
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, Int> = map_insert(map_new(), 0, 99);
+  match map_get(@Map<Int, Int>.0, 0) {
+    Some(@Int) -> @Int.0,
+    None -> -1
+  }
+}
+"""
+        assert _run(src) == 99
+
+    def test_empty_string_element_in_set(self) -> None:
+        """A "" element round-trips through Set (occupancy flag)."""
+        src = """
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Set<String> = set_add(set_new(), "");
+  if set_contains(@Set<String>.0, "") then { 1 } else { 0 }
+}
+"""
+        assert _run(src) == 1
+
+
 class TestHostHandleReclamation573:
     """Reclamation regressions for the heap-wrap-as-ADT migration of
     Map (#573), Set (#575), and Decimal (#576) — all shipped together
@@ -18589,116 +18690,68 @@ class TestHostHandleReclamation573:
     """
 
     def test_map_chain_reclaims_transients(self) -> None:
-        """A 10 000-element ``array_fold`` over ``map_insert`` only
-        keeps the final Map reachable.  Pre-fix ``_map_store`` size
-        would be 10 001 at execute-end (one entry per insert + the
-        empty starting map).  Post-fix Phase 2c reclaims every
-        transient and the store holds a small constant — typically 1
-        (just the live final Map).
+        """#706: a long ``array_fold`` over ``map_insert`` keeps only the
+        final Map reachable; every transient wrapper + bucket is
+        reclaimed by ordinary mark-sweep (no Python store to evict).
+
+        Measured via ``peak_heap_bytes`` (the bump high-water mark): with
+        reclamation the heap grows ~O(N) across the chain (≈6x for 10x
+        the inserts); a leak would grow ~O(N^2) (≈100x).
         """
-        src = """
+        def chain(n: int) -> str:
+            return f"""
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{
+{{
   let @Map<Int, Int> = map_new();
   let @Map<Int, Int> = array_fold(
-    array_range(1, 10001),
+    array_range(1, {n + 1}),
     @Map<Int, Int>.0,
-    fn(@Map<Int, Int>, @Int -> @Map<Int, Int>) effects(pure) {
+    fn(@Map<Int, Int>, @Int -> @Map<Int, Int>) effects(pure) {{
       map_insert(@Map<Int, Int>.0, @Int.0, @Int.0)
-    }
+    }}
   );
-  match map_get(@Map<Int, Int>.0, 5000) {
+  match map_get(@Map<Int, Int>.0, {n // 2}) {{
     Some(@Int) -> @Int.0,
     None -> -1
-  }
-}
+  }}
+}}
 """
-        result = _compile_ok(src)
-        exec_result = execute(result)
-        # Functional check: looked up key=5000 returns 5000.
-        assert exec_result.value == 5000, (
-            f"Map lookup returned {exec_result.value}, expected 5000"
-        )
-        # Reclamation check: store should be a small constant, not
-        # ~10 000.  Use a generous bound (<= 100) so slight churn
-        # in GC scheduling doesn't make the test flaky.
-        store_size = exec_result.host_store_sizes.get("map", 0)
-        # Empirically observed: 1 entry (the live final Map) after
-        # 10 000 transient inserts.  The bound of 10 admits any
-        # single-digit residual from in-flight wrappers between
-        # the last allocation and the function-epilogue's
-        # gc_sp restore.  Pre-fix this was 10 001, so any bound
-        # below ~100 demonstrates reclamation is working; the
-        # tighter bound here enforces "only the live final Map"
-        # behaviour rather than just "GC fires occasionally".
-        assert store_size <= 10, (
-            f"#573 regression: _map_store has {store_size} entries "
-            f"after a 10 000-iter map_insert chain.  Pre-fix this "
-            f"was monotonic in iterations (~10 001); post-fix the "
-            f"GC reclaims transients via the Phase 2c destructor "
-            f"hook and only the live final Map should remain. "
-            f"A size > 10 indicates either: (a) the wrap table "
-            f"isn't being populated, (b) Phase 2c isn't running, "
-            f"(c) `host_decref_handle` isn't evicting entries, or "
-            f"(d) the GC fires too rarely on this path."
-        )
+        _assert_chain_reclaims(chain, 1000, 10000, 500, 5000)
 
     def test_json_object_map_reclaimed(self) -> None:
-        """JSON's internal Map for JObject is also wrapped (#573).
+        """#706: JSON's internal ``Map<String, Json>`` for each JObject
+        is a bucket-as-truth wrapper (``_alloc_map_wrapper``); transient
+        JObjects parsed in a fold are reclaimed by mark-sweep.
 
-        ``json_parse`` allocates a ``Map<String, Json>`` for each
-        JObject; the wrapper migration extends to those host-side
-        allocations via ``_alloc_map_wrapper`` in
-        ``vera/codegen/api.py``.  Parses 5 000 distinct JSON
-        objects via ``array_fold`` so each intermediate Json is
-        unreachable on the next iteration — the iterative shape
-        is essential, recursive variants keep all Results alive
-        via per-frame shadow-stack roots (a correctness property,
-        not a leak).  Counts successful parses and checks the
-        store is bounded well below the total iteration count.
+        Each JObject is a constant single-key map, so the working set is
+        constant and ``peak_heap_bytes`` stays nearly flat across
+        iteration counts (≈1x for 5x the parses); a leak would grow it
+        linearly.  The iterative ``array_fold`` shape is essential —
+        recursive variants keep all Results alive via per-frame shadow
+        roots (a correctness property, not a leak).
         """
-        src = """
+        def chain(n: int) -> str:
+            return f"""
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{
+{{
   let @Int = 0;
   array_fold(
-    array_range(0, 5000),
+    array_range(0, {n}),
     @Int.0,
-    fn(@Int, @Int -> @Int) effects(pure) {
-      let @Result<Json, String> = json_parse("{\\"k\\": 1}");
-      match @Result<Json, String>.0 {
+    fn(@Int, @Int -> @Int) effects(pure) {{
+      let @Result<Json, String> = json_parse("{{\\"k\\": 1}}");
+      match @Result<Json, String>.0 {{
         Ok(@Json) -> @Int.1 + 1,
         Err(@String) -> @Int.1
-      }
-    }
+      }}
+    }}
   )
-}
+}}
 """
-        result = _compile_ok(src)
-        exec_result = execute(result)
-        assert exec_result.value == 5000, (
-            f"All 5 000 parses should succeed; got {exec_result.value}"
-        )
-        # 5 000 transient JObject Maps, none reachable at exit
-        # (the closure return is ``@Int.1 + 1``, not the Json).
-        # Steady-state residual is bounded by collection cadence
-        # rather than total allocations.  Pre-fix this was
-        # monotonic at ~5 000; post-fix Phase 2c reclaims the
-        # wrappers and ``host_decref_handle`` evicts the host-
-        # store entries.  We assert << 5000 (proof of reclamation,
-        # not zero — GC fires periodically, not on every alloc).
-        store_size = exec_result.host_store_sizes.get("map", 0)
-        assert store_size < 1500, (
-            f"#573 regression: _map_store has {store_size} entries "
-            f"after 5 000 transient JObject allocations.  Pre-fix "
-            f"this was monotonic (~5 000); post-fix the GC reclaims "
-            f"unreachable JObject Maps via the same wrap-table "
-            f"mechanism as user-allocated Maps.  Steady-state "
-            f"residual depends on GC cadence but should stay well "
-            f"below the total allocation count."
-        )
+        # Constant-size transients → flat heap, so a tight ratio.
+        _assert_chain_reclaims(chain, 1000, 5000, 1000, 5000, ratio=5)
 
     def test_map_value_lookup_after_gc_pressure(self) -> None:
         """Functional integrity after heavy reclamation pressure.
@@ -18740,49 +18793,28 @@ public fn main(@Unit -> @Int)
         assert _run(src) == 6993
 
     def test_set_chain_reclaims_transients(self) -> None:
-        """A 10 000-element ``array_fold`` over ``set_add`` only
-        keeps the final Set reachable.  Pre-#573 phase 2 the
-        ``_set_store`` would have 10 001 entries at execute-end
-        (one per add + the empty start).  Post-fix Phase 2c
-        reclaims most transients.
+        """#706: a long ``array_fold`` over ``set_add`` keeps only the
+        final Set reachable; transients are reclaimed by mark-sweep.
 
-        Steady-state residual is bounded by GC cadence rather
-        than total allocations: Set's host op is cheap (Python
-        ``set.add``), so GC fires less often than for Map's
-        dict-copy-on-insert and the residual is correspondingly
-        higher.  We assert the residual is well below the total
-        (< 2 000 vs. 10 001) to prove reclamation is working
-        without over-specifying the exact count.
+        Same ``peak_heap_bytes`` ~O(N) signal as the Map chain.
         """
-        src = """
+        def chain(n: int) -> str:
+            return f"""
 public fn main(@Unit -> @Int)
   requires(true) ensures(true) effects(pure)
-{
+{{
   let @Set<Int> = set_new();
   let @Set<Int> = array_fold(
-    array_range(1, 10001),
+    array_range(1, {n + 1}),
     @Set<Int>.0,
-    fn(@Set<Int>, @Int -> @Set<Int>) effects(pure) {
+    fn(@Set<Int>, @Int -> @Set<Int>) effects(pure) {{
       set_add(@Set<Int>.0, @Int.0)
-    }
+    }}
   );
-  if set_contains(@Set<Int>.0, 5000) then { 1 } else { 0 }
-}
+  if set_contains(@Set<Int>.0, {n // 2}) then {{ 1 }} else {{ 0 }}
+}}
 """
-        result = _compile_ok(src)
-        exec_result = execute(result)
-        assert exec_result.value == 1, (
-            f"set_contains(5000) should be true; got {exec_result.value}"
-        )
-        store_size = exec_result.host_store_sizes.get("set", 0)
-        assert store_size < 2000, (
-            f"#573 phase 2 regression: _set_store has {store_size} "
-            f"entries after a 10 000-iter set_add chain.  Pre-fix "
-            f"this was monotonic (~10 001); post-fix the GC reclaims "
-            f"transients via the same Phase 2c destructor hook as "
-            f"Map (`kind == 2` in host_decref_handle).  A size > "
-            f"2 000 indicates reclamation isn't keeping pace."
-        )
+        _assert_chain_reclaims(chain, 1000, 10000, 1, 1)
 
     def test_set_value_correct_after_gc_pressure(self) -> None:
         """Functional integrity for Set under GC pressure.

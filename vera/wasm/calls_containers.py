@@ -5,17 +5,16 @@ All three use the host-import pattern with lazy registration of
 type-specialised imports (e.g. ``map_insert$ks_vi`` for String key /
 Int value).
 
-#573 (phase 1 — Map only): Map host functions return raw i32 handles
-(indices into ``_map_store`` in ``vera/codegen/api.py``).  Each
-Map-returning call-site now wraps that handle in an 8-byte ADT on
-the GC heap (tag at offset 0, handle at offset 4) and registers the
-wrapper with ``$register_wrapper`` so Phase 2c of ``$gc_collect``
-can fire ``host_decref_handle`` when the wrapper becomes
-unreachable.  Map-consuming call-sites unwrap by loading the handle
-back via ``i32.load offset=4`` before the host call.  Set and
-Decimal still use the raw-handle scheme; they migrate in their own
-follow-ups so each domain's wrapping decisions can be reviewed
-independently.
+#706: Map and Set are bucket-as-truth.  Their host functions take and
+return the wrapper pointer directly — the wrapper's bucket array (in
+``vera/codegen/api.py``) IS the map / set, so there is no host-side
+store and no per-call wrap/unwrap.  Copy-on-write ops (insert / add /
+remove / new) return a fresh wrapper that the call-site shadow-roots
+(``_emit_root_result``).  Decimal is the one type that keeps the
+value-typed Python store and the #573 wrap/unwrap scheme: its
+call-sites still wrap a raw handle in an ADT (tag at offset 0, handle
+at offset 4), register it with ``$register_wrapper``, and unwrap via
+``i32.load offset=4`` before the host call.
 """
 
 from __future__ import annotations
@@ -528,14 +527,12 @@ class CallsContainersMixin:
     def _translate_map_new(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """map_new() → wrapped Map handle via host import (#573).
+        """map_new() → wrapper_ptr for an empty bucket-as-truth Map (#706).
 
-        Allocates a fresh empty map on the host side, then wraps the
-        raw handle in an 8-byte ADT on the GC heap so the existing
-        mark-sweep collector can reclaim it.  Phase 2c of
-        ``$gc_collect`` fires ``host_decref_handle(MAP, handle)``
-        when the wrapper becomes unreachable, evicting the dead
-        entry from ``_map_store``.
+        The host returns the wrapper pointer for a fresh empty Map (its
+        bucket_ptr is 0 until the first insert builds a bucket); the
+        call-site shadow-roots it.  Reclaimed by ordinary mark-sweep
+        when unreachable — no host store, no Phase 2c destructor.
         """
         wasm_name = "$vera.map_new"
         sig = "(func $vera.map_new (result i32))"

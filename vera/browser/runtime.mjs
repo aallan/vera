@@ -1200,6 +1200,18 @@ function buildImportObject(module) {
   const _BKT_HEADER = 8;
   const _BKT_SLOT = 20;
 
+  // #706: slot capacity rounded UP to a power of two (min
+  // _BUCKET_INITIAL_CAPACITY) — same-size-class inserts reuse freed
+  // buckets from the GC free list, keeping an insert chain's heap
+  // high-water ~O(N) rather than ~O(N^2).  Mirrors _bkt_capacity in
+  // vera/codegen/api.py.
+  function bktCapacity(count) {
+    const want = Math.max(_BUCKET_INITIAL_CAPACITY, count * 2);
+    let cap = _BUCKET_INITIAL_CAPACITY;
+    while (cap < want) cap *= 2;
+    return cap;
+  }
+
   function allocBucket(capacity) {
     const total = _BKT_HEADER + capacity * _BKT_SLOT;
     const ptr = alloc(total);
@@ -1287,7 +1299,7 @@ function buildImportObject(module) {
   // rooted before the key-string alloc fires.
   function encodeEntries(kind, entries, kt, vt) {
     const count = entries.length;
-    const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, count * 2);
+    const capacity = bktCapacity(count);
     const wrapperPtr = allocBktWrapper(kind, 0);
     gcShadowPush(wrapperPtr);
     try {
@@ -1333,7 +1345,7 @@ function buildImportObject(module) {
     gcShadowPush(newWrapper);
     try {
       const newBucket = allocBucket(
-        Math.max(_BUCKET_INITIAL_CAPACITY, survivors.length * 2),
+        bktCapacity(survivors.length),
       );
       gcShadowPush(newBucket);
       try {
