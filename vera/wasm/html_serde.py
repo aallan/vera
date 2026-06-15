@@ -196,11 +196,14 @@ def read_html(
     ptr: int,
     read_i32: ReadI32Fn,
     read_string: ReadStringFn,
-    map_store: dict[int, Any],
+    decode_attrs: "Callable[[wasmtime.Caller, int], dict[Any, Any]]",
 ) -> dict[str, Any]:
     """Read an HtmlNode ADT from WASM memory back to a Python dict.
 
     Returns a dict with 'tag' key indicating the node type.
+
+    #706: ``decode_attrs(caller, wrapper_ptr)`` decodes an HtmlElement's
+    ``Map<String, String>`` attributes from its bucket-as-truth wrapper.
     """
     tag = read_i32(caller, ptr)
 
@@ -220,25 +223,21 @@ def read_html(
         # raw handle.  Mirrors the WAT-side ``_emit_unwrap_handle``
         # in ``vera/wasm/calls_containers.py``.
         wrapper_ptr = read_i32(caller, ptr + 12)
-        handle = read_i32(caller, wrapper_ptr + 4) & 0x7FFFFFFF
         arr_ptr = read_i32(caller, ptr + 16)
         arr_len = read_i32(caller, ptr + 20)
 
-        # Read attributes from map store.
-        # Values are Python strings (stored by write_html and by the
-        # Map host runtime for Map<String, String>).
+        # #706: decode attributes (Map<String, String>) directly from
+        # the wrapper's bucket — values are Python strings.
         attrs: dict[str, str] = {}
-        if handle in map_store:
-            raw_map = map_store[handle]
-            for k, v in raw_map.items():
-                attrs[str(k)] = str(v)
+        for k, v in decode_attrs(caller, wrapper_ptr).items():
+            attrs[str(k)] = str(v)
 
         # Read children
         children: list[dict[str, Any]] = []
         for i in range(arr_len):
             child_ptr = read_i32(caller, arr_ptr + i * 4)
             children.append(read_html(
-                caller, child_ptr, read_i32, read_string, map_store,
+                caller, child_ptr, read_i32, read_string, decode_attrs,
             ))
 
         return {

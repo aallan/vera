@@ -205,11 +205,15 @@ def read_json(
     read_i32: ReadI32Fn,
     read_f64: ReadF64Fn,
     read_string: ReadStringFn,
-    map_store: dict[int, Any],
+    decode_jobject: "Callable[[wasmtime.Caller, int], dict[Any, Any]]",
 ) -> Any:
     """Read a Json ADT from WASM memory back to a Python value.
 
     Returns: None, bool, float, str, list, or dict.
+
+    #706: ``decode_jobject(caller, wrapper_ptr)`` decodes a JObject's
+    ``Map<String, Json>`` from its bucket-as-truth wrapper (there is no
+    ``_map_store`` to look up by handle anymore).
     """
     tag = read_i32(caller, ptr)
 
@@ -235,40 +239,22 @@ def read_json(
             elem_ptr = read_i32(caller, arr_ptr + i * 4)
             items.append(read_json(
                 caller, elem_ptr, read_i32, read_f64,
-                read_string, map_store,
+                read_string, decode_jobject,
             ))
         return items
 
     if tag == _TAG_JOBJECT:
-        # #573: JObject's i32 field at offset 4 is now a wrapper-
-        # ADT pointer, not a raw handle.  Wrapper layout: tag at
-        # body[0], handle at body[4].  Unwrap before looking up
-        # the dict in ``map_store``.
-        #
-        # #578: the in-heap handle field is tagged with bit 31
-        # (so the conservative GC scan can't mistake it for a
-        # heap pointer).  Mask with 0x7FFFFFFF to recover the
-        # raw handle.  Mirrors the WAT-side ``_emit_unwrap_handle``
-        # in ``vera/wasm/calls_containers.py``.
+        # #706: JObject's i32 field at offset 4 is a Map wrapper
+        # pointer whose bucket IS the map (bucket-as-truth).  Decode
+        # the ``Map<String, Json>`` directly from the bucket — the
+        # values are i32 Json heap pointers.
         wrapper_ptr = read_i32(caller, ptr + 4)
-        handle = read_i32(caller, wrapper_ptr + 4) & 0x7FFFFFFF
-        if handle not in map_store:
-            import warnings
-            warnings.warn(
-                f"read_json: unknown JObject handle {handle} at pointer {ptr}; "
-                "possible memory corruption or missing map allocation",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return {}
-        raw_map = map_store[handle]
+        raw_map = decode_jobject(caller, wrapper_ptr)
         obj: dict[str, Any] = {}
         for k, v in raw_map.items():
-            key_str = str(k)
-            # v is an i32 Json heap pointer
-            obj[key_str] = read_json(
-                caller, v, read_i32, read_f64,
-                read_string, map_store,
+            obj[str(k)] = read_json(
+                caller, int(v), read_i32, read_f64,
+                read_string, decode_jobject,
             )
         return obj
 

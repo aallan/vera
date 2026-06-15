@@ -15585,9 +15585,13 @@ class TestWrapperHandleTagging578:
     the in-heap field is always >= 2 GiB, structurally outside
     any heap-range check (the `$alloc` heap-ceiling guard
     enforces `heap_ptr < 0x80000000`).  The unwrap site ANDs
-    with 0x7FFFFFFF to recover the raw handle.  Two host-side
-    readers (`vera/wasm/json_serde.py`, `vera/wasm/html_serde.py`)
-    apply the same mask when reading the field directly.
+    with 0x7FFFFFFF to recover the raw handle.
+
+    #706: `Map` / `Set` are now bucket-as-truth — their wrappers
+    carry no host handle (the +4 field is vestigial), so they no
+    longer wrap/unwrap.  `Decimal` keeps the value-typed Python
+    store and is the remaining type exercising the bit-31 tagging,
+    so these codegen tests use a Decimal program.
     """
 
     def test_wrap_emits_tag_or(self) -> None:
@@ -15605,11 +15609,10 @@ class TestWrapperHandleTagging578:
         which already pins the full 3-instruction unwrap sequence.
         """
         source = """\
-public fn main(@Unit -> @Int)
+public fn main(@Unit -> @Decimal)
   requires(true) ensures(true) effects(pure)
 {
-  let @Map<Int, Int> = map_insert(map_new(), 1, 100);
-  option_unwrap_or(map_get(@Map<Int, Int>.0, 1), 0)
+  decimal_add(decimal_from_int(1), decimal_from_int(2))
 }
 """
         result = _compile_ok(source)
@@ -15629,11 +15632,10 @@ public fn main(@Unit -> @Int)
     def test_unwrap_emits_mask_and(self) -> None:
         """Unwrap site emits adjacent load-const-and sequence."""
         source = """\
-public fn main(@Unit -> @Int)
+public fn main(@Unit -> @Decimal)
   requires(true) ensures(true) effects(pure)
 {
-  let @Map<Int, Int> = map_insert(map_new(), 1, 100);
-  option_unwrap_or(map_get(@Map<Int, Int>.0, 1), 0)
+  decimal_add(decimal_from_int(1), decimal_from_int(2))
 }
 """
         result = _compile_ok(source)

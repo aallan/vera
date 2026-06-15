@@ -1352,79 +1352,342 @@ def execute(
         _call_register_wrapper(caller, body_ptr, kind, raw_handle)
         return body_ptr
 
+    # ------------------------------------------------------------------
+    # #706: bucket-as-truth codec for Map / Set
+    # ------------------------------------------------------------------
+    #
+    # The WASM-resident bucket array is now the SOLE source of truth
+    # for Map / Set contents (``_map_store`` / ``_set_store`` deleted).
+    # Host imports take the wrapper pointer, decode the bucket into a
+    # transient Python dict / set, run the operation, and (for the
+    # copy-on-write ops) encode a fresh wrapper + bucket.  The wrapper
+    # IS the map / set value.
+    #
+    # Bucket region layout (grown from the 12-byte write-only mirror):
+    #   header (8 bytes):  capacity (i32 @+0), count (i32 @+4)
+    #   slot i at HEADER + i*20:
+    #     +0  occupancy (i32: 1 = live, 0 = empty)
+    #     +4  key_lo / +8  key_hi   — i64 (``<q``) / f64 (``<d``) /
+    #                                  (ptr,len) for String / i32 in lo
+    #     +12 val_lo / +16 val_hi   — same encoding by value tag
+    #
+    # The explicit occupancy flag (rather than ``key_word_0 == 0``)
+    # distinguishes an empty slot from a legitimate ``0`` Int key or an
+    # empty-string key (``_alloc_string("")`` → ``(0, 0)``), closing the
+    # collision flagged in the #707 review.
+    _BKT_HEADER = 8
+    _BKT_SLOT = 20
+
+    def _bkt_region_size(capacity: int) -> int:
+        return _BKT_HEADER + capacity * _BKT_SLOT
+
+    def _alloc_bucket(caller: wasmtime.Caller, capacity: int) -> int:
+        """Allocate a zero-filled bucket region; write capacity, count=0."""
+        total = _bkt_region_size(capacity)
+        bucket_ptr = _call_alloc(caller, total)
+        _write_bytes(caller, bucket_ptr, b"\x00" * total)
+        _write_i32(caller, bucket_ptr, capacity)
+        return bucket_ptr
+
+    def _alloc_wrapper(
+        caller: wasmtime.Caller, kind: int, bucket_ptr: int = 0,
+    ) -> int:
+        """Allocate a Map / Set wrapper ADT (#706).
+
+        Body: tag @+0, 0 @+4 (vestigial — the host handle is gone),
+        bucket_ptr @+8 (the GC-traced pointer to the bucket region).
+        No wrap-table registration: Map / Set wrappers and their
+        buckets are now plain heap objects reclaimed by ordinary
+        mark-sweep, so the Phase 2c destructor path is Decimal-only.
+        """
+        body_ptr = _call_alloc(caller, _WRAPPER_BODY_SIZE)
+        _write_i32(caller, body_ptr, _KIND_TO_TAG_API[kind])
+        _write_i32(caller, body_ptr + 4, 0)
+        _write_i32(caller, body_ptr + 8, bucket_ptr)
+        return body_ptr
+
+    def _encode_field(tag: str, value: Any) -> bytes:
+        """Encode an inline (non-String) key/val into its 8-byte field."""
+        if tag == "i":
+            return struct.pack("<q", int(value))  # signed i64
+        if tag == "f":
+            return struct.pack("<d", float(value))
+        # "b": Bool / Byte / ADT / heap pointer — i32 in lo, 0 in hi.
+        return struct.pack("<II", int(value) & 0xFFFF_FFFF, 0)
+
+    def _decode_field(
+        caller: wasmtime.Caller, tag: str, buf: bytes, off: int,
+    ) -> object:
+        """Decode an 8-byte field at ``off`` within ``buf`` per tag."""
+        if tag == "i":
+            return int(struct.unpack_from("<q", buf, off)[0])
+        if tag == "f":
+            return float(struct.unpack_from("<d", buf, off)[0])
+        if tag == "s":
+            ptr, ln = struct.unpack_from("<II", buf, off)
+            return _read_wasm_string(caller, ptr, ln) if ln else ""
+        return int(struct.unpack_from("<I", buf, off)[0])
+
+    def _decode_map(
+        caller: wasmtime.Caller, wrapper_ptr: int, kt: str, vt: str,
+    ) -> dict[object, object]:
+        """Decode a Map wrapper's bucket into a Python dict."""
+        bucket_ptr = _read_i32_at(caller, wrapper_ptr + 8)
+        if bucket_ptr == 0:
+            return {}
+        cap, count = struct.unpack(
+            "<II", _read_bytes_at(caller, bucket_ptr, _BKT_HEADER),
+        )
+        if count == 0:
+            return {}
+        slots = _read_bytes_at(
+            caller, bucket_ptr + _BKT_HEADER, cap * _BKT_SLOT,
+        )
+        d: dict[object, object] = {}
+        for i in range(cap):
+            base = i * _BKT_SLOT
+            if struct.unpack_from("<I", slots, base)[0] == 0:
+                continue
+            k = _decode_field(caller, kt, slots, base + 4)
+            v = _decode_field(caller, vt, slots, base + 12)
+            d[k] = v
+            if len(d) == count:
+                break
+        return d
+
+    def _decode_set(
+        caller: wasmtime.Caller, wrapper_ptr: int, et: str,
+    ) -> set[object]:
+        """Decode a Set wrapper's bucket into a Python set."""
+        bucket_ptr = _read_i32_at(caller, wrapper_ptr + 8)
+        if bucket_ptr == 0:
+            return set()
+        cap, count = struct.unpack(
+            "<II", _read_bytes_at(caller, bucket_ptr, _BKT_HEADER),
+        )
+        if count == 0:
+            return set()
+        slots = _read_bytes_at(
+            caller, bucket_ptr + _BKT_HEADER, cap * _BKT_SLOT,
+        )
+        s: set[object] = set()
+        for i in range(cap):
+            base = i * _BKT_SLOT
+            if struct.unpack_from("<I", slots, base)[0] == 0:
+                continue
+            s.add(_decode_field(caller, et, slots, base + 4))
+            if len(s) == count:
+                break
+        return s
+
+    def _decode_column(
+        caller: wasmtime.Caller, wrapper_ptr: int, tag: str, off: int,
+    ) -> list[object]:
+        """Decode one field column (keys at off=4, vals at off=12).
+
+        Returns occupied-slot values in insertion order — used by
+        ``map_keys`` / ``map_values`` / ``set_to_array``, which need only
+        one side of each slot and don't have both type tags in scope.
+        """
+        bucket_ptr = _read_i32_at(caller, wrapper_ptr + 8)
+        if bucket_ptr == 0:
+            return []
+        cap, count = struct.unpack(
+            "<II", _read_bytes_at(caller, bucket_ptr, _BKT_HEADER),
+        )
+        if count == 0:
+            return []
+        slots = _read_bytes_at(
+            caller, bucket_ptr + _BKT_HEADER, cap * _BKT_SLOT,
+        )
+        out: list[object] = []
+        for i in range(cap):
+            base = i * _BKT_SLOT
+            if struct.unpack_from("<I", slots, base)[0] == 0:
+                continue
+            out.append(_decode_field(caller, tag, slots, base + off))
+            if len(out) == count:
+                break
+        return out
+
+    def _bkt_count(caller: wasmtime.Caller, wrapper_ptr: int) -> int:
+        """O(1) live-entry count from the bucket header (0 if empty)."""
+        bucket_ptr = _read_i32_at(caller, wrapper_ptr + 8)
+        if bucket_ptr == 0:
+            return 0
+        return _read_i32_at(caller, bucket_ptr + 4)
+
+    def _bkt_raw_entries(
+        caller: wasmtime.Caller, wrapper_ptr: int,
+    ) -> "list[tuple[bytes, bytes]]":
+        """Occupied slots as verbatim (key_field, val_field) byte pairs.
+
+        Used by ``map_remove`` / ``set_remove``, which rebuild the
+        collection without interpreting the value type: the 8-byte key
+        and val fields are copied as-is, so String / heap-pointer blocks
+        are SHARED with the source (immutable, so sharing is safe) and
+        no re-encode tag is needed.
+        """
+        bucket_ptr = _read_i32_at(caller, wrapper_ptr + 8)
+        if bucket_ptr == 0:
+            return []
+        cap, count = struct.unpack(
+            "<II", _read_bytes_at(caller, bucket_ptr, _BKT_HEADER),
+        )
+        if count == 0:
+            return []
+        slots = _read_bytes_at(
+            caller, bucket_ptr + _BKT_HEADER, cap * _BKT_SLOT,
+        )
+        out: list[tuple[bytes, bytes]] = []
+        for i in range(cap):
+            base = i * _BKT_SLOT
+            if struct.unpack_from("<I", slots, base)[0] == 0:
+                continue
+            out.append((slots[base + 4:base + 12], slots[base + 12:base + 20]))
+            if len(out) == count:
+                break
+        return out
+
+    def _encode_raw(
+        caller: wasmtime.Caller,
+        kind: int,
+        raws: "list[tuple[bytes, bytes]]",
+    ) -> int:
+        """Encode verbatim (key_field, val_field) pairs into a wrapper.
+
+        No string re-allocation (fields copied as-is), so always the
+        single-batched-write fast path.  Survivor heap blocks stay live
+        via the source wrapper across the wrapper / bucket allocs, then
+        via the new bucket after the write.
+        """
+        count = len(raws)
+        capacity = max(_BUCKET_INITIAL_CAPACITY, count * 2)
+        wrapper_ptr = _alloc_wrapper(caller, kind, 0)
+        with _ShadowGuard(caller) as guard:
+            guard.push(wrapper_ptr)
+            bucket_ptr = _alloc_bucket(caller, capacity)
+            guard.push(bucket_ptr)
+            buf = bytearray(capacity * _BKT_SLOT)
+            for i, (kb, vb) in enumerate(raws):
+                base = i * _BKT_SLOT
+                struct.pack_into("<I", buf, base, 1)
+                buf[base + 4:base + 12] = kb
+                buf[base + 12:base + 20] = vb
+            _write_bytes(caller, bucket_ptr + _BKT_HEADER, bytes(buf))
+            _write_i32(caller, bucket_ptr + 4, count)
+            _write_i32(caller, wrapper_ptr + 8, bucket_ptr)  # link
+        return wrapper_ptr
+
+    def _encode_entries(
+        caller: wasmtime.Caller,
+        kind: int,
+        entries: "list[tuple[object, object]]",
+        kt: str,
+        vt: str | None,
+    ) -> int:
+        """Encode (key, val) entries into a fresh wrapper + bucket (#706).
+
+        ``vt`` is None for Sets (val field stays zero).  Returns the new
+        wrapper pointer.  GC discipline: the new wrapper and bucket are
+        shadow-rooted across the whole encode; incoming heap-pointer
+        keys / values stay live via their own source's rooting for the
+        duration of this synchronous host call (see plan).  FAST path
+        (no String key / val) builds the whole bucket as one ``bytes``
+        and emits a single ``memory.write``; SLOW path (String present)
+        writes each slot in place, val-first, allocating key / val
+        strings into the already-rooted bucket.
+        """
+        needs_string = kt == "s" or vt == "s"
+        count = len(entries)
+        capacity = max(_BUCKET_INITIAL_CAPACITY, count * 2)
+        wrapper_ptr = _alloc_wrapper(caller, kind, 0)
+        with _ShadowGuard(caller) as guard:
+            guard.push(wrapper_ptr)
+            bucket_ptr = _alloc_bucket(caller, capacity)
+            guard.push(bucket_ptr)
+            slots_base = bucket_ptr + _BKT_HEADER
+            if not needs_string:
+                buf = bytearray(capacity * _BKT_SLOT)
+                for i, (k, v) in enumerate(entries):
+                    base = i * _BKT_SLOT
+                    struct.pack_into("<I", buf, base, 1)
+                    buf[base + 4:base + 12] = _encode_field(kt, k)
+                    if vt is not None:
+                        buf[base + 12:base + 20] = _encode_field(vt, v)
+                _write_bytes(caller, slots_base, bytes(buf))
+            else:
+                for i, (k, v) in enumerate(entries):
+                    slot = slots_base + i * _BKT_SLOT
+                    _write_i32(caller, slot, 1)
+                    # Val first: roots a heap-pointer value before the
+                    # key-string alloc can fire GC.
+                    if vt == "s":
+                        vp, vl = _alloc_string(caller, str(v))
+                        _write_i32(caller, slot + 12, vp)
+                        _write_i32(caller, slot + 16, vl)
+                    elif vt is not None:
+                        _write_bytes(caller, slot + 12, _encode_field(vt, v))
+                    if kt == "s":
+                        kp, kl = _alloc_string(caller, str(k))
+                        _write_i32(caller, slot + 4, kp)
+                        _write_i32(caller, slot + 8, kl)
+                    else:
+                        _write_bytes(caller, slot + 4, _encode_field(kt, k))
+            _write_i32(caller, bucket_ptr + 4, count)  # header.count
+            _write_i32(caller, wrapper_ptr + 8, bucket_ptr)  # link
+        return wrapper_ptr
+
+    def _encode_map(
+        caller: wasmtime.Caller, d: dict[object, object], kt: str, vt: str,
+    ) -> int:
+        """Encode a Python dict into a fresh Map wrapper + bucket."""
+        return _encode_entries(
+            caller, _WRAP_KIND_MAP, list(d.items()), kt, vt,
+        )
+
+    def _encode_set(
+        caller: wasmtime.Caller, s: set[object], et: str,
+    ) -> int:
+        """Encode a Python set into a fresh Set wrapper + bucket."""
+        return _encode_entries(
+            caller, _WRAP_KIND_SET, [(e, 0) for e in s], et, None,
+        )
+
     def _alloc_map_wrapper(
         caller: wasmtime.Caller, d: dict[object, object],
     ) -> int:
-        """Allocate a Map host-store entry plus GC-tracked wrapper (#573).
+        """Build a Map<String, V> wrapper from a host-built dict (#706).
 
-        Drop-in replacement for ``_map_alloc(d)`` in host code
-        paths whose result flows back to user-level Map<K, V>
-        handling: ``write_json``'s JObject branch and the HTML
-        parser's HtmlElement attrs.  Allocates the dict in
-        ``_map_store`` (via ``_map_alloc``) and then lifts the
-        resulting handle to a wrapper pointer via ``_wrap_handle``.
-
-        #695: in addition to the Python-side dict, populate
-        a WASM-side bucket array that mirrors the (key, value)
-        pairs and link it from the wrapper's ``bucket_ptr`` field at
-        +8.  This makes heap-pointer values reachable from the
-        conservative GC scan via wrapper → bucket_array → val_ptr,
-        closing the silent-UAF window between map construction and
-        value access (empirically: ``json_parse → json_get`` with
-        ``VERA_EAGER_GC=1`` returning 0 instead of the array
-        length).
-
-        ``map_get`` still reads the value from ``_map_store`` — the
-        bucket array is currently used only as a GC reachability
-        anchor.  the follow-up #706 will migrate the reads to the bucket
-        array and delete ``_map_store``; this commit prioritises
-        closing the bug with the minimum surface area.
+        Used by the JSON / HTML parser paths (``write_json``'s JObject
+        branch, HtmlElement attrs), whose keys are always strings.
+        Bucket-as-truth: the wrapper's bucket IS the map; no
+        ``_map_store`` entry.  Heap-pointer values stay reachable from
+        the conservative scan via wrapper → bucket → val word, closing
+        the #695 silent-UAF window.  Keys are coerced to ``str`` per
+        ``write_json``'s ``map_dict[str(k)] = val`` invariant.
         """
-        raw_handle = _map_alloc(d)
-        wrapper_ptr = _wrap_handle(caller, _WRAP_KIND_MAP, raw_handle)
-        # Populate the WASM-side bucket array.  CRITICAL: the
-        # wrapper is in the wrap table but NOT on the shadow stack
-        # yet — the wrap table tracks wrappers for Phase 2c cleanup
-        # but does NOT keep them alive across the conservative
-        # scan.  Any sub-alloc below that triggers $gc_collect would
-        # find the wrapper unreachable, Phase 2c would pop the
-        # _map_store entry, and the caller (write_json's JObject
-        # branch) would end up with a dead Map.  Empirically: this
-        # presented as ``json_get`` returning None instead of the
-        # JArray.  Same #692-class concern as the host-side tree
-        # walkers — must shadow-push the wrapper before any
-        # sub-alloc fires.
-        capacity = max(_BUCKET_INITIAL_CAPACITY, len(d) * 2)
-        with _ShadowGuard(caller) as guard:
-            guard.push(wrapper_ptr)  # keep wrapper alive across sub-allocs
-            bucket_ptr = _alloc_bucket_array(caller, capacity)
-            guard.push(bucket_ptr)
-            for i, (k, v) in enumerate(d.items()):
-                slot_base = bucket_ptr + i * _SLOT_SIZE
-                # PR #707 review: val_word FIRST, before
-                # any allocation in this iteration.  For heap-pointer
-                # values (i.e. ``v`` is an int that's a WASM heap
-                # address — Map<String, Json> et al.), the pointer
-                # is currently only held in the Python local ``v``,
-                # which is invisible to the conservative GC scan.
-                # If ``_alloc_string`` below fires ``$gc_collect``,
-                # the value's heap block would be reclaimed.
-                # Writing val_word into slot+8 BEFORE the key alloc
-                # roots it via wrapper → bucket → slot (the
-                # conservative scan traces every i32 word in the
-                # heap as a potential pointer regardless of any
-                # "occupied" flag).  Mirrors the same ordering in
-                # ``_attach_bucket_from_dict``.
-                val_word = v if isinstance(v, int) else 0
-                _write_i32(caller, slot_base + 8, val_word)
-                # Keys are Python strings (per write_json's
-                # ``map_dict[str(k)] = val_ptr`` invariant).
-                key_str = str(k) if not isinstance(k, str) else k
-                key_ptr, key_len = _alloc_string(caller, key_str)
-                _write_i32(caller, slot_base, key_ptr)
-                _write_i32(caller, slot_base + 4, key_len)
-        _write_i32(caller, wrapper_ptr + 8, bucket_ptr)
-        return wrapper_ptr
+        items: list[tuple[object, object]] = [
+            (str(k), v) for k, v in d.items()
+        ]
+        # Value tag follows the caller: write_json's JObject values are
+        # Json heap pointers (int → "b"); write_html's attrs values are
+        # strings ("s").  The two callers never mix value types, so a
+        # single uniform tag per map is correct.
+        vt = "s" if any(isinstance(v, str) for _, v in items) else "b"
+        return _encode_entries(caller, _WRAP_KIND_MAP, items, "s", vt)
+
+    def _decode_jobject(
+        caller: wasmtime.Caller, wrapper_ptr: int,
+    ) -> dict[object, object]:
+        """Decode a JObject's Map<String, Json> (values are Json ptrs)."""
+        return _decode_map(caller, wrapper_ptr, "s", "b")
+
+    def _decode_attrs(
+        caller: wasmtime.Caller, wrapper_ptr: int,
+    ) -> dict[object, object]:
+        """Decode an HtmlElement's Map<String, String> attributes."""
+        return _decode_map(caller, wrapper_ptr, "s", "s")
 
     def _alloc_string(
         caller: wasmtime.Caller, s: str,
@@ -2651,9 +2914,9 @@ def execute(
 
     if result.map_ops_used:
 
-        # map_new() → i32 handle
-        def host_map_new(_caller: wasmtime.Caller) -> int:
-            return _map_alloc({})
+        # map_new() → wrapper_ptr for an empty bucket-as-truth Map (#706).
+        def host_map_new(caller: wasmtime.Caller) -> int:
+            return _alloc_wrapper(caller, _WRAP_KIND_MAP, 0)
 
         linker.define_func(
             "vera", "map_new",
@@ -2661,21 +2924,17 @@ def execute(
             host_map_new, access_caller=True,
         )
 
-        # Dynamically define type-specific Map host imports based on
-        # what the compiled program actually uses.
-        _KEY_READERS = {
-            "i": lambda _c, k: k,            # i64 key as-is
-            "f": lambda _c, k: k,            # f64 key as-is
-            "b": lambda _c, k: k,            # i32 key as-is
-            "s": lambda c, p, l: _read_wasm_string(c, p, l),  # String
-        }
+        # #706: every Map host import now takes the wrapper pointer
+        # (``wp``) instead of an opaque handle, decodes the wrapper's
+        # bucket into a transient Python dict, runs the operation, and —
+        # for the copy-on-write ops — encodes a fresh wrapper + bucket.
 
         def _define_map_insert(kt: str, vt: str) -> None:
             name = f"map_insert$k{kt}_v{vt}"
             key_types = _VAL_WASM_TYPES[kt]
             val_types = _VAL_WASM_TYPES[vt]
             param_types = (
-                [wasmtime.ValType.i32()]  # handle
+                [wasmtime.ValType.i32()]  # wrapper_ptr
                 + key_types + val_types
             )
             ftype = wasmtime.FuncType(param_types, [wasmtime.ValType.i32()])
@@ -2683,39 +2942,39 @@ def execute(
             if kt == "s" and vt == "s":
                 def host_fn(
                     caller: wasmtime.Caller,
-                    h: int, kp: int, kl: int, vp: int, vl: int,
+                    wp: int, kp: int, kl: int, vp: int, vl: int,
                 ) -> int:
                     k = _read_wasm_string(caller, kp, kl)
                     v = _read_wasm_string(caller, vp, vl)
-                    new_d = dict(_map_store.get(h, {}))
+                    new_d = _decode_map(caller, wp, kt, vt)
                     new_d[k] = v
-                    return _map_alloc(new_d)
+                    return _encode_map(caller, new_d, kt, vt)
             elif kt == "s":
                 def host_fn(  # type: ignore[misc]
                     caller: wasmtime.Caller,
-                    h: int, kp: int, kl: int, v: int | float,
+                    wp: int, kp: int, kl: int, v: int | float,
                 ) -> int:
                     k = _read_wasm_string(caller, kp, kl)
-                    new_d = dict(_map_store.get(h, {}))
+                    new_d = _decode_map(caller, wp, kt, vt)
                     new_d[k] = v
-                    return _map_alloc(new_d)
+                    return _encode_map(caller, new_d, kt, vt)
             elif vt == "s":
                 def host_fn(  # type: ignore[misc]
                     caller: wasmtime.Caller,
-                    h: int, k: int | float, vp: int, vl: int,
+                    wp: int, k: int | float, vp: int, vl: int,
                 ) -> int:
                     v = _read_wasm_string(caller, vp, vl)
-                    new_d = dict(_map_store.get(h, {}))
+                    new_d = _decode_map(caller, wp, kt, vt)
                     new_d[k] = v
-                    return _map_alloc(new_d)
+                    return _encode_map(caller, new_d, kt, vt)
             else:
                 def host_fn(  # type: ignore[misc]
-                    _caller: wasmtime.Caller,
-                    h: int, k: int | float, v: int | float,
+                    caller: wasmtime.Caller,
+                    wp: int, k: int | float, v: int | float,
                 ) -> int:
-                    new_d = dict(_map_store.get(h, {}))
+                    new_d = _decode_map(caller, wp, kt, vt)
                     new_d[k] = v
-                    return _map_alloc(new_d)
+                    return _encode_map(caller, new_d, kt, vt)
 
             linker.define_func(
                 "vera", name, ftype, host_fn, access_caller=True,
@@ -2751,17 +3010,17 @@ def execute(
             if kt == "s":
                 def host_fn(
                     caller: wasmtime.Caller,
-                    h: int, kp: int, kl: int,
+                    wp: int, kp: int, kl: int,
                 ) -> int:
                     k = _read_wasm_string(caller, kp, kl)
-                    d = _map_store.get(h, {})
+                    d = _decode_map(caller, wp, kt, vt)
                     return _make_option(caller, d.get(k))
             else:
                 def host_fn(  # type: ignore[misc]
                     caller: wasmtime.Caller,
-                    h: int, k: int | float,
+                    wp: int, k: int | float,
                 ) -> int:
-                    d = _map_store.get(h, {})
+                    d = _decode_map(caller, wp, kt, vt)
                     return _make_option(caller, d.get(k))
 
             linker.define_func(
@@ -2777,16 +3036,16 @@ def execute(
             if kt == "s":
                 def host_fn(
                     caller: wasmtime.Caller,
-                    h: int, kp: int, kl: int,
+                    wp: int, kp: int, kl: int,
                 ) -> int:
                     k = _read_wasm_string(caller, kp, kl)
-                    return 1 if k in _map_store.get(h, {}) else 0
+                    return 1 if k in _decode_column(caller, wp, kt, 4) else 0
             else:
                 def host_fn(  # type: ignore[misc]
-                    _caller: wasmtime.Caller,
-                    h: int, k: int | float,
+                    caller: wasmtime.Caller,
+                    wp: int, k: int | float,
                 ) -> int:
-                    return 1 if k in _map_store.get(h, {}) else 0
+                    return 1 if k in _decode_column(caller, wp, kt, 4) else 0
 
             linker.define_func(
                 "vera", name, ftype, host_fn, access_caller=True,
@@ -2798,33 +3057,40 @@ def execute(
             param_types = [wasmtime.ValType.i32()] + key_types
             ftype = wasmtime.FuncType(param_types, [wasmtime.ValType.i32()])
 
+            # Structural rebuild: drop the matching key's slot and copy the
+            # rest verbatim (vt not needed — value fields are opaque here).
+            def _without(
+                caller: wasmtime.Caller, wp: int, k: object,
+            ) -> int:
+                survivors = [
+                    (kb, vb)
+                    for kb, vb in _bkt_raw_entries(caller, wp)
+                    if _decode_field(caller, kt, kb, 0) != k
+                ]
+                return _encode_raw(caller, _WRAP_KIND_MAP, survivors)
+
             if kt == "s":
                 def host_fn(
                     caller: wasmtime.Caller,
-                    h: int, kp: int, kl: int,
+                    wp: int, kp: int, kl: int,
                 ) -> int:
-                    k = _read_wasm_string(caller, kp, kl)
-                    new_d = dict(_map_store.get(h, {}))
-                    new_d.pop(k, None)
-                    return _map_alloc(new_d)
+                    return _without(caller, wp, _read_wasm_string(caller, kp, kl))
             else:
                 def host_fn(  # type: ignore[misc]
-                    _caller: wasmtime.Caller,
-                    h: int, k: int | float,
+                    caller: wasmtime.Caller,
+                    wp: int, k: int | float,
                 ) -> int:
-                    new_d = dict(_map_store.get(h, {}))
-                    new_d.pop(k, None)
-                    return _map_alloc(new_d)
+                    return _without(caller, wp, k)
 
             linker.define_func(
                 "vera", name, ftype, host_fn, access_caller=True,
             )
 
-        # map_size(h) → i64
+        # map_size(wp) → i64 (O(1) from the bucket header).
         def host_map_size(
-            _caller: wasmtime.Caller, h: int,
+            caller: wasmtime.Caller, wp: int,
         ) -> int:
-            return len(_map_store.get(h, {}))
+            return _bkt_count(caller, wp)
 
         linker.define_func(
             "vera", "map_size",
@@ -2842,10 +3108,9 @@ def execute(
             )
 
             def host_fn(
-                caller: wasmtime.Caller, h: int,
+                caller: wasmtime.Caller, wp: int,
             ) -> tuple[int, int]:
-                d = _map_store.get(h, {})
-                keys = list(d.keys())
+                keys = _decode_column(caller, wp, kt, 4)
                 if kt == "s":
                     return _alloc_array_of_strings(caller, keys)  # type: ignore[arg-type]
                 if kt == "i":
@@ -2866,10 +3131,9 @@ def execute(
             )
 
             def host_fn(
-                caller: wasmtime.Caller, h: int,
+                caller: wasmtime.Caller, wp: int,
             ) -> tuple[int, int]:
-                d = _map_store.get(h, {})
-                vals = list(d.values())
+                vals = _decode_column(caller, wp, vt, 12)
                 if vt == "s":
                     return _alloc_array_of_strings(caller, vals)  # type: ignore[arg-type]
                 if vt == "i":
@@ -3386,7 +3650,7 @@ def execute(
             ) -> tuple[int, int]:
                 value = read_json(
                     caller, ptr, _read_i32, _read_f64,
-                    _read_wasm_string, _map_store,
+                    _read_wasm_string, _decode_jobject,
                 )
                 # Note: json.dumps rejects NaN/Infinity by default
                 # (raises ValueError).  This matches the JSON spec
@@ -3624,7 +3888,7 @@ def execute(
             ) -> tuple[int, int]:
                 node = read_html(
                     caller, ptr, _read_i32,
-                    _read_wasm_string, _map_store,
+                    _read_wasm_string, _decode_attrs,
                 )
                 text = _html_to_string_py(node)
                 return _alloc_string(caller, text)
@@ -3645,7 +3909,7 @@ def execute(
             ) -> tuple[int, int]:
                 node = read_html(
                     caller, node_ptr, _read_i32,
-                    _read_wasm_string, _map_store,
+                    _read_wasm_string, _decode_attrs,
                 )
                 selector = _read_wasm_string(caller, sel_ptr, sel_len)
                 matches = _html_query_py(node, selector)
@@ -3697,7 +3961,7 @@ def execute(
             ) -> tuple[int, int]:
                 node = read_html(
                     caller, ptr, _read_i32,
-                    _read_wasm_string, _map_store,
+                    _read_wasm_string, _decode_attrs,
                 )
                 text = _html_text_py(node)
                 return _alloc_string(caller, text)
