@@ -1,21 +1,20 @@
 """Container type translation mixin for WasmContext.
 
-Handles the three opaque-handle types: Map<K,V>, Set<E>, and Decimal.
-All three use the host-import pattern with lazy registration of
+Handles Map<K,V> and Set<E> (bucket-as-truth) and the opaque-handle
+Decimal type.  All three use the host-import pattern with lazy registration of
 type-specialised imports (e.g. ``map_insert$ks_vi`` for String key /
 Int value).
 
-#573 (phase 1 — Map only): Map host functions return raw i32 handles
-(indices into ``_map_store`` in ``vera/codegen/api.py``).  Each
-Map-returning call-site now wraps that handle in an 8-byte ADT on
-the GC heap (tag at offset 0, handle at offset 4) and registers the
-wrapper with ``$register_wrapper`` so Phase 2c of ``$gc_collect``
-can fire ``host_decref_handle`` when the wrapper becomes
-unreachable.  Map-consuming call-sites unwrap by loading the handle
-back via ``i32.load offset=4`` before the host call.  Set and
-Decimal still use the raw-handle scheme; they migrate in their own
-follow-ups so each domain's wrapping decisions can be reviewed
-independently.
+#706: Map and Set are bucket-as-truth.  Their host functions take and
+return the wrapper pointer directly — the wrapper's bucket array (in
+``vera/codegen/api.py``) IS the map / set, so there is no host-side
+store and no per-call wrap/unwrap.  Copy-on-write ops (insert / add /
+remove / new) return a fresh wrapper that the call-site shadow-roots
+(``_emit_root_result``).  Decimal is the one type that keeps the
+value-typed Python store and the #573 wrap/unwrap scheme: its
+call-sites still wrap a raw handle in an ADT (tag at offset 0, handle
+at offset 4), register it with ``$register_wrapper``, and unwrap via
+``i32.load offset=4`` before the host call.
 """
 
 from __future__ import annotations
@@ -48,15 +47,16 @@ _KIND_TO_TAG: dict[int, int] = {
     _WRAP_KIND_DECIMAL: _DECIMAL_HANDLE_TAG,
 }
 
-# #573 / #695 / #705: wrapper ADT body size.  Layout:
+# Wrapper ADT body size.  Layout depends on the type:
 #   +0  tag (i32)                                     [#573]
-#   +4  handle | 0x80000000 (i32, bit-31 tagged)      [#578]
-#   +8  bucket_ptr (i32, heap pointer or 0)           [#695/#705]
+#   +4  Decimal: handle | 0x80000000 (bit-31 tagged)  [#578]
+#       Map / Set: vestigial (0) — no handle post-#706
+#   +8  bucket_ptr (i32, heap pointer or 0)           [#695/#706]
 #
-# ``bucket_ptr`` is non-zero for Map / Set wrappers whose host-side
-# stores hold heap-pointer values; it points to a WASM-resident
-# bucket array making those values reachable to the conservative
-# scan.  Decimal wrappers and empty Map / Set wrappers leave it 0.
+# #706: for Map / Set the ``bucket_ptr`` points to the WASM-resident
+# bucket that IS the map / set (no host-side store); empty collections
+# leave it 0.  Decimal keeps the +4 tagged handle and leaves
+# ``bucket_ptr`` 0 (value-typed, nothing to anchor).
 # Must agree with ``_WRAPPER_BODY_SIZE`` in ``vera/codegen/api.py``.
 _WRAPPER_BODY_SIZE = 12
 
@@ -65,7 +65,8 @@ class CallsContainersMixin:
     """Methods for translating Map, Set, and Decimal built-in functions."""
 
     # -----------------------------------------------------------------
-    # #573: handle wrap / unwrap helpers (Map only — phase 1)
+    # Decimal handle wrap / unwrap helpers (#573).  Map / Set migrated
+    # to bucket-as-truth in #706 and no longer use these.
     # -----------------------------------------------------------------
 
     def _emit_wrap_handle(
@@ -125,9 +126,9 @@ class CallsContainersMixin:
             "i32.const 0x80000000",
             "i32.or",
             "i32.store offset=4",
-            # #695/#705: write 0 at +8 (default bucket_ptr).  Map/Set
-            # wrappers get this overwritten by attach_bucket_to_wrapper
-            # below; Decimal wrappers keep it at 0.
+            # Write 0 at +8 (bucket_ptr).  This helper is Decimal-only
+            # post-#706, and Decimal keeps bucket_ptr at 0 (value-typed,
+            # nothing for the GC scan to anchor).
             f"local.get {wrapper_temp}",
             "i32.const 0",
             "i32.store offset=8",
@@ -152,16 +153,13 @@ class CallsContainersMixin:
         # grow unbounded across iterations of an enclosing
         # ``array_fold``.
         seq.extend(gc_shadow_push(wrapper_temp))
-        # #695/#705: populate the wrapper's bucket_ptr field (+8) by
-        # mirroring the host-store contents into a WASM-resident
-        # bucket array.  Must come AFTER the shadow-push above so
-        # the wrapper itself stays rooted during the bucket
-        # allocation's possible sub-GCs.  Decimal wrappers (kind=3)
-        # are EXEMPT: ``PyDecimal`` is value-typed (no heap pointers
-        # in the store entry), so the silent-UAF window that
-        # motivated this fix cannot apply.  The host-side dispatcher
-        # ``host_attach_bucket`` short-circuits when kind=3, leaving
-        # the wrapper's bucket_ptr at 0.
+        # #706: this helper is now Decimal-only, and Decimal needs no
+        # bucket (``PyDecimal`` is value-typed).  The
+        # ``attach_bucket_to_wrapper`` call is retained as a vestigial
+        # tripwire: its host-side dispatcher asserts kind=3, so if a
+        # future change ever routes a Map / Set wrapper back through
+        # this path the mismatch fails loudly instead of silently
+        # leaving the bucket unpopulated.
         seq.extend([
             f"local.get {wrapper_temp}",
             f"i32.const {kind}",
@@ -189,6 +187,21 @@ class CallsContainersMixin:
             "i32.const 0x7FFFFFFF",
             "i32.and",
         ]
+
+    def _emit_root_result(self, wrapper_temp: int) -> list[str]:
+        """#706: shadow-root a host-returned bucket-as-truth wrapper_ptr.
+
+        The migrated Map / Set host imports return the wrapper pointer
+        directly — there is no raw handle to re-wrap.  Shadow-push it so
+        a subsequent allocation in the same function frame can't sweep
+        it, then leave it on the operand stack as the call's result.
+        The function epilogue's ``gc_sp`` restore clears the push, so the
+        shadow stack doesn't grow across enclosing-loop iterations.
+        """
+        seq = [f"local.set {wrapper_temp}"]
+        seq.extend(gc_shadow_push(wrapper_temp))
+        seq.append(f"local.get {wrapper_temp}")
+        return seq
 
     # -----------------------------------------------------------------
     # Decimal built-in operations (§9.7.2)
@@ -311,6 +324,8 @@ class CallsContainersMixin:
         wasm_name = self._register_decimal_import(
             "decimal_to_string", ["i32"], ["i32", "i32"])
         self.needs_alloc = True
+        # Decimal keeps the wrapper/handle scheme: unwrap the wrapper to
+        # the raw decimal-store handle before the host call.
         ins: list[str] = list(arg_instrs)
         ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
@@ -511,41 +526,35 @@ class CallsContainersMixin:
     def _translate_map_new(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """map_new() → wrapped Map handle via host import (#573).
+        """map_new() → wrapper_ptr for an empty bucket-as-truth Map (#706).
 
-        Allocates a fresh empty map on the host side, then wraps the
-        raw handle in an 8-byte ADT on the GC heap so the existing
-        mark-sweep collector can reclaim it.  Phase 2c of
-        ``$gc_collect`` fires ``host_decref_handle(MAP, handle)``
-        when the wrapper becomes unreachable, evicting the dead
-        entry from ``_map_store``.
+        The host returns the wrapper pointer for a fresh empty Map (its
+        bucket_ptr is 0 until the first insert builds a bucket); the
+        call-site shadow-roots it.  Reclaimed by ordinary mark-sweep
+        when unreachable — no host store, no Phase 2c destructor.
         """
         wasm_name = "$vera.map_new"
         sig = "(func $vera.map_new (result i32))"
         self._map_imports.add(f'  (import "vera" "map_new" {sig})')
         self._map_ops_used.add("map_new")
         self.needs_alloc = True
+        # #706: the host returns a wrapper_ptr (empty bucket-as-truth
+        # Map) directly; shadow-root it as the result.
         ins: list[str] = [f"call {wasm_name}"]
-        handle_tmp = self.alloc_local("i32")
         wrapper_tmp = self.alloc_local("i32")
-        ins.append(f"local.set {handle_tmp}")
-        ins.extend(
-            self._emit_wrap_handle(
-                _WRAP_KIND_MAP, handle_tmp, wrapper_tmp,
-            )
-        )
+        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_map_insert(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """map_insert(m, k, v) → wrapped Map handle via host import.
+        """map_insert(m, k, v) → fresh Map wrapper_ptr via host import.
 
         Emits a type-specific host import based on the key and value
-        types.  Per #573, the input ``m`` is a wrapper-ADT pointer
-        and we must unwrap it (``i32.load offset=4``) to get the
-        raw host handle before calling the host helper; the result
-        is a fresh raw handle that we re-wrap before returning.
+        types.  #706 (bucket-as-truth): the input ``m`` is a wrapper
+        pointer passed straight to the host (no unwrap); the host
+        decodes its bucket, inserts, and returns a fresh wrapper_ptr
+        that the call-site shadow-roots via ``_emit_root_result``.
         """
         key_type = self._infer_vera_type(call.args[1])
         val_type = self._infer_vera_type(call.args[2])
@@ -560,7 +569,7 @@ class CallsContainersMixin:
                 "Map/Set with Array-typed key, value, or element is not supported",
             )
 
-        params = ["i32"]  # map handle
+        params = ["i32"]  # wrapper_ptr
         params.extend(self._map_wasm_types(kt))  # key
         params.extend(self._map_wasm_types(vt))  # value
         wasm_name = self._register_map_import(
@@ -568,12 +577,12 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
-        # Eval `m` (wrapper ptr) and unwrap to raw handle.
+        # #706: pass the Map wrapper_ptr directly (bucket-as-truth — no
+        # handle to unwrap); the host returns a fresh wrapper_ptr.
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
-        ins.extend(self._emit_unwrap_handle())
         # Eval remaining args.
         for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
@@ -581,16 +590,10 @@ class CallsContainersMixin:
                 return None
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
-        # Wrap result.
+        # Shadow-root the returned wrapper_ptr as the result.
         self.needs_alloc = True
-        handle_tmp = self.alloc_local("i32")
         wrapper_tmp = self.alloc_local("i32")
-        ins.append(f"local.set {handle_tmp}")
-        ins.extend(
-            self._emit_wrap_handle(
-                _WRAP_KIND_MAP, handle_tmp, wrapper_tmp,
-            )
-        )
+        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_map_get(
@@ -598,8 +601,9 @@ class CallsContainersMixin:
     ) -> list[str] | None:
         """map_get(m, k) → i32 (Option<V> heap pointer) via host import.
 
-        The host reads the value from its internal dict, constructs an
-        Option ADT (Some/None) in WASM memory, and returns the pointer.
+        #706: the host decodes ``m``'s bucket, looks up the key,
+        constructs an Option ADT (Some/None) in WASM memory, and
+        returns the pointer.
         """
         key_type = self._infer_vera_type(call.args[1])
         kt = self._map_wasm_tag(key_type)
@@ -624,7 +628,7 @@ class CallsContainersMixin:
                 "Map/Set with Array-typed key, value, or element is not supported",
             )
 
-        params = ["i32"]  # map handle
+        params = ["i32"]  # wrapper_ptr
         params.extend(self._map_wasm_types(kt))  # key
         wasm_name = self._register_map_import(
             "map_get", kt, vt,
@@ -632,13 +636,12 @@ class CallsContainersMixin:
         )
         self.needs_alloc = True
         ins: list[str] = []
-        # Unwrap the Map argument (#573).  Result is an Option ADT
-        # heap pointer built by the host helper, so no re-wrap.
+        # #706: pass the Map wrapper_ptr directly (bucket-as-truth).
+        # Result is an Option ADT heap pointer built by the host helper.
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
-        ins.extend(self._emit_unwrap_handle())
         for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -692,19 +695,19 @@ class CallsContainersMixin:
                 "Map/Set with Array-typed key, value, or element is not supported",
             )
 
-        params = ["i32"]  # map handle
+        params = ["i32"]  # wrapper_ptr
         params.extend(self._map_wasm_types(kt))  # key
         wasm_name = self._register_map_import(
             "map_contains", kt, None,
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
-        # Unwrap the Map argument (#573).  Result is Bool — no wrap.
+        # #706: pass the Map wrapper_ptr directly (bucket-as-truth).
+        # Result is Bool — no wrap.
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
-        ins.extend(self._emit_unwrap_handle())
         for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -716,7 +719,7 @@ class CallsContainersMixin:
     def _translate_map_remove(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """map_remove(m, k) → i32 (new handle) via host import."""
+        """map_remove(m, k) → i32 (fresh Map wrapper_ptr) via host import."""
         key_type = self._infer_vera_type(call.args[1])
         kt = self._map_wasm_tag(key_type)
 
@@ -728,19 +731,19 @@ class CallsContainersMixin:
                 "Map/Set with Array-typed key, value, or element is not supported",
             )
 
-        params = ["i32"]  # map handle
+        params = ["i32"]  # wrapper_ptr
         params.extend(self._map_wasm_types(kt))  # key
         wasm_name = self._register_map_import(
             "map_remove", kt, None,
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
-        # Unwrap the Map argument (#573); re-wrap the new handle.
+        # #706: pass the Map wrapper_ptr directly; host returns a fresh
+        # wrapper_ptr with the key removed (bucket-as-truth).
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
-        ins.extend(self._emit_unwrap_handle())
         for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -748,14 +751,8 @@ class CallsContainersMixin:
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
-        handle_tmp = self.alloc_local("i32")
         wrapper_tmp = self.alloc_local("i32")
-        ins.append(f"local.set {handle_tmp}")
-        ins.extend(
-            self._emit_wrap_handle(
-                _WRAP_KIND_MAP, handle_tmp, wrapper_tmp,
-            )
-        )
+        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_map_size(
@@ -763,8 +760,8 @@ class CallsContainersMixin:
     ) -> list[str] | None:
         """map_size(m) → i64 (Int) via host import.
 
-        Per #573 the Map argument is a wrapper-ADT pointer; unwrap
-        before calling the host.  The result is i64, no re-wrap.
+        #706: the Map argument is a wrapper_ptr passed directly; the
+        host reads the bucket header's count.  The result is i64.
         """
         wasm_name = "$vera.map_size"
         sig = "(func $vera.map_size (param i32) (result i64))"
@@ -774,7 +771,6 @@ class CallsContainersMixin:
         if arg_instrs is None:
             return None
         ins: list[str] = list(arg_instrs)
-        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins
 
@@ -802,8 +798,8 @@ class CallsContainersMixin:
         arg_instrs = self.translate_expr(call.args[0], env)
         if arg_instrs is None:
             return None
+        # #706: pass the Map wrapper_ptr directly (bucket-as-truth).
         ins: list[str] = list(arg_instrs)
-        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins
 
@@ -830,8 +826,8 @@ class CallsContainersMixin:
         arg_instrs = self.translate_expr(call.args[0], env)
         if arg_instrs is None:
             return None
+        # #706: pass the Map wrapper_ptr directly (bucket-as-truth).
         ins: list[str] = list(arg_instrs)
-        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins
 
@@ -940,7 +936,7 @@ class CallsContainersMixin:
     def _translate_set_new(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_new() → wrapped Set handle via host import (#573 phase 2).
+        """set_new() → empty Set wrapper_ptr via host import (#706).
 
         Mirror of ``_translate_map_new``; see there for design.
         """
@@ -949,23 +945,21 @@ class CallsContainersMixin:
         self._set_imports.add(f'  (import "vera" "set_new" {sig})')
         self._set_ops_used.add("set_new")
         self.needs_alloc = True
+        # #706: the host returns a wrapper_ptr (empty bucket-as-truth
+        # Set); shadow-root it as the result.
         ins: list[str] = [f"call {wasm_name}"]
-        handle_tmp = self.alloc_local("i32")
         wrapper_tmp = self.alloc_local("i32")
-        ins.append(f"local.set {handle_tmp}")
-        ins.extend(
-            self._emit_wrap_handle(
-                _WRAP_KIND_SET, handle_tmp, wrapper_tmp,
-            )
-        )
+        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_set_add(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_add(s, elem) → wrapped Set handle (#573).
+        """set_add(s, elem) → fresh Set wrapper_ptr (#706).
 
-        Unwrap ``s``, call host, re-wrap result.
+        Pass ``s``'s wrapper_ptr directly; the host decodes its
+        bucket, adds the element, and returns a fresh wrapper_ptr
+        that the call-site shadow-roots.
         """
         elem_type = self._infer_vera_type(call.args[1])
         et = self._map_wasm_tag(elem_type)
@@ -978,18 +972,19 @@ class CallsContainersMixin:
                 "Map/Set with Array-typed key, value, or element is not supported",
             )
 
-        params = ["i32"]  # set handle
+        params = ["i32"]  # wrapper_ptr
         params.extend(self._map_wasm_types(et))  # element
         wasm_name = self._register_set_import(
             "set_add", et,
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
+        # #706: pass the Set wrapper_ptr directly; the host returns a
+        # fresh wrapper_ptr (bucket-as-truth).
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
-        ins.extend(self._emit_unwrap_handle())
         for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -997,20 +992,14 @@ class CallsContainersMixin:
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
-        handle_tmp = self.alloc_local("i32")
         wrapper_tmp = self.alloc_local("i32")
-        ins.append(f"local.set {handle_tmp}")
-        ins.extend(
-            self._emit_wrap_handle(
-                _WRAP_KIND_SET, handle_tmp, wrapper_tmp,
-            )
-        )
+        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_set_contains(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_contains(s, elem) → Bool (#573: unwrap input only)."""
+        """set_contains(s, elem) → Bool (#706: pass wrapper_ptr directly)."""
         elem_type = self._infer_vera_type(call.args[1])
         et = self._map_wasm_tag(elem_type)
 
@@ -1022,18 +1011,18 @@ class CallsContainersMixin:
                 "Map/Set with Array-typed key, value, or element is not supported",
             )
 
-        params = ["i32"]  # set handle
+        params = ["i32"]  # wrapper_ptr
         params.extend(self._map_wasm_types(et))  # element
         wasm_name = self._register_set_import(
             "set_contains", et,
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
+        # #706: pass the Set wrapper_ptr directly (bucket-as-truth).
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
-        ins.extend(self._emit_unwrap_handle())
         for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -1045,7 +1034,7 @@ class CallsContainersMixin:
     def _translate_set_remove(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_remove(s, elem) → wrapped Set handle (#573)."""
+        """set_remove(s, elem) → fresh Set wrapper_ptr (#706)."""
         elem_type = self._infer_vera_type(call.args[1])
         et = self._map_wasm_tag(elem_type)
 
@@ -1057,18 +1046,19 @@ class CallsContainersMixin:
                 "Map/Set with Array-typed key, value, or element is not supported",
             )
 
-        params = ["i32"]  # set handle
+        params = ["i32"]  # wrapper_ptr
         params.extend(self._map_wasm_types(et))  # element
         wasm_name = self._register_set_import(
             "set_remove", et,
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
+        # #706: pass the Set wrapper_ptr directly; the host returns a
+        # fresh wrapper_ptr (bucket-as-truth).
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
-        ins.extend(self._emit_unwrap_handle())
         for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -1076,20 +1066,14 @@ class CallsContainersMixin:
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
-        handle_tmp = self.alloc_local("i32")
         wrapper_tmp = self.alloc_local("i32")
-        ins.append(f"local.set {handle_tmp}")
-        ins.extend(
-            self._emit_wrap_handle(
-                _WRAP_KIND_SET, handle_tmp, wrapper_tmp,
-            )
-        )
+        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_set_size(
         self, arg: "ast.Expr", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_size(s) → i64 (#573: unwrap input only)."""
+        """set_size(s) → i64 (#706: pass wrapper_ptr directly)."""
         wasm_name = "$vera.set_size"
         sig = "(func $vera.set_size (param i32) (result i64))"
         self._set_imports.add(f'  (import "vera" "set_size" {sig})')
@@ -1097,15 +1081,15 @@ class CallsContainersMixin:
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
+        # #706: pass the Set wrapper_ptr directly (bucket-as-truth).
         ins: list[str] = list(arg_instrs)
-        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins
 
     def _translate_set_to_array(
         self, call: "ast.FnCall", env: WasmSlotEnv,
     ) -> list[str] | None:
-        """set_to_array(s) → Array<T> (#573: unwrap input only)."""
+        """set_to_array(s) → Array<T> (#706: pass wrapper_ptr directly)."""
         elem_type = self._infer_set_elem_from_set_arg(call.args[0])
         et = self._map_wasm_tag(elem_type)
 
@@ -1125,7 +1109,7 @@ class CallsContainersMixin:
         arg_instrs = self.translate_expr(call.args[0], env)
         if arg_instrs is None:
             return None
+        # #706: pass the Set wrapper_ptr directly (bucket-as-truth).
         ins: list[str] = list(arg_instrs)
-        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins

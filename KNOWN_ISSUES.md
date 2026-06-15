@@ -9,6 +9,7 @@ Defects in shipped compiler, runtime, or tooling behaviour — this table matche
 | Bug | Issue |
 |-----|-------|
 | `scripts/fix_allowlists.py --fix` uses a bulk-shift heuristic that misses entries when a doc file receives multiple edits at different positions in one session. A content-fingerprint anchor would be robust; the #538 fence-annotation migration would retire the script entirely. | [#606](https://github.com/aallan/vera/issues/606) |
+| The Markdown ADT builders (`writeMdInline` / `writeMdBlock` and the CLI `vera/wasm/markdown.py` mirror) lack the `gcGuard` / shadow-stack rooting the JSON / HTML walkers got in #692, so under `VERA_EAGER_GC=1` or heap pressure an intermediate `MdNode` pointer can be swept mid-build and corrupt the tree. The #692 fix's missed sibling, surfaced by the PR #743 review; the fix mirrors the `writeJson` / `writeHtml` rooting on both runtimes with eager-GC regression tests. | [#744](https://github.com/aallan/vera/issues/744) |
 
 ## Limitations
 

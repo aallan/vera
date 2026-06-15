@@ -110,24 +110,67 @@ function allocString(str) {
 // ADT allocation helpers (mirror api.py _alloc_result_*, _alloc_option_*)
 // ---------------------------------------------------------------------------
 
+/**
+ * Root a freshly-allocated WASM heap pointer on the GC shadow stack
+ * across fn(), then pop it.  No-op when the module has no GC
+ * infrastructure (then $alloc never collects, so nothing can sweep ptr)
+ * or when ptr is 0 (the GC's "not a heap object" sentinel).  Mirrors the
+ * CLI _ShadowGuard discipline for host-side ADT builders; folded into
+ * #706 to close a pre-existing rooting gap in these helpers.
+ */
+function gcRooted(ptr, fn) {
+  if (ptr === 0 || !wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+    return fn();
+  }
+  const sp = wasm.gc_sp.value;
+  if (sp >= wasm.gc_stack_limit.value) {
+    throw new Error('GC shadow stack overflow in browser runtime (gcRooted)');
+  }
+  writeI32(sp, ptr | 0);
+  wasm.gc_sp.value = sp + 4;
+  try {
+    return fn();
+  } finally {
+    wasm.gc_sp.value = sp;
+  }
+}
+
+/**
+ * SameValueZero equality (the semantics native JS Map/Set use): like
+ * ===, but NaN equals NaN.  Used for Float64 Map-key / Set-element
+ * comparisons in the bucket codec (decodeColumn lists), so a NaN
+ * key/element round-trips the way the old native-Map runtime did for
+ * free.  Folded into #706.
+ */
+function sameValueZero(a, b) {
+  return a === b || (a !== a && b !== b);
+}
+
 /** Allocate Result.Ok(String) → heap pointer. Tag=0, str at +4/+8. */
 function allocResultOkString(str) {
   const [strPtr, strLen] = allocString(str);
-  const ptr = alloc(12);
-  writeI32(ptr, 0);            // tag = Ok
-  writeI32(ptr + 4, strPtr);
-  writeI32(ptr + 8, strLen);
-  return ptr;
+  // GC-rooting (folded into #706): strPtr lives only in this JS local
+  // across the struct alloc; root it so a GC there can't sweep it.
+  return gcRooted(strPtr, () => {
+    const ptr = alloc(12);
+    writeI32(ptr, 0);            // tag = Ok
+    writeI32(ptr + 4, strPtr);
+    writeI32(ptr + 8, strLen);
+    return ptr;
+  });
 }
 
 /** Allocate Result.Err(String) → heap pointer. Tag=1, str at +4/+8. */
 function allocResultErrString(str) {
   const [strPtr, strLen] = allocString(str);
-  const ptr = alloc(12);
-  writeI32(ptr, 1);            // tag = Err
-  writeI32(ptr + 4, strPtr);
-  writeI32(ptr + 8, strLen);
-  return ptr;
+  // GC-rooting (folded into #706): see allocResultOkString.
+  return gcRooted(strPtr, () => {
+    const ptr = alloc(12);
+    writeI32(ptr, 1);            // tag = Err
+    writeI32(ptr + 4, strPtr);
+    writeI32(ptr + 8, strLen);
+    return ptr;
+  });
 }
 
 /** Allocate Result.Ok(()) → heap pointer. Tag=0, no payload. */
@@ -139,20 +182,28 @@ function allocResultOkUnit() {
 
 /** Allocate Result.Ok(i32) → heap pointer. Tag=0, value at +4. */
 function allocResultOkI32(value) {
-  const ptr = alloc(8);
-  writeI32(ptr, 0);            // tag = Ok
-  writeI32(ptr + 4, value);
-  return ptr;
+  // GC-rooting (#706): root the heap-pointer payload across the struct
+  // alloc.  Harmless for the one Bool caller (0 no-ops, 1 is out of heap
+  // range); redundant-safe for callers that already root (json/html parse).
+  return gcRooted(value, () => {
+    const ptr = alloc(8);
+    writeI32(ptr, 0);            // tag = Ok
+    writeI32(ptr + 4, value);
+    return ptr;
+  });
 }
 
 /** Allocate Option.Some(String) → heap pointer. Tag=1, str at +4/+8. */
 function allocOptionSomeString(str) {
   const [strPtr, strLen] = allocString(str);
-  const ptr = alloc(12);
-  writeI32(ptr, 1);            // tag = Some
-  writeI32(ptr + 4, strPtr);
-  writeI32(ptr + 8, strLen);
-  return ptr;
+  // GC-rooting (#706): root strPtr across the option-struct alloc.
+  return gcRooted(strPtr, () => {
+    const ptr = alloc(12);
+    writeI32(ptr, 1);            // tag = Some
+    writeI32(ptr + 4, strPtr);
+    writeI32(ptr + 8, strLen);
+    return ptr;
+  });
 }
 
 /** Allocate Option.None → heap pointer. Tag=0, no payload. */
@@ -182,12 +233,16 @@ function allocArrayOfStrings(strings) {
   const count = strings.length;
   if (count === 0) return [0, 0];
   const backingPtr = alloc(count * 8);
-  for (let i = 0; i < count; i++) {
-    const [sPtr, sLen] = allocString(strings[i]);
-    writeI32(backingPtr + i * 8, sPtr);
-    writeI32(backingPtr + i * 8 + 4, sLen);
-  }
-  return [backingPtr, count];
+  // GC-rooting (#706): root the backing array across the per-element
+  // string allocs.
+  return gcRooted(backingPtr, () => {
+    for (let i = 0; i < count; i++) {
+      const [sPtr, sLen] = allocString(strings[i]);
+      writeI32(backingPtr + i * 8, sPtr);
+      writeI32(backingPtr + i * 8 + 4, sLen);
+    }
+    return [backingPtr, count];
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,12 +1103,15 @@ function hostRegexFindAll(inPtr, inLen, patPtr, patLen) {
       if (m[0].length === 0) re.lastIndex++;
     }
     const [backingPtr, count] = allocArrayOfStrings(matches);
-    // Wrap in Result.Ok — layout: tag=0, backing_ptr, count (12 bytes)
-    const ptr = alloc(12);
-    writeI32(ptr, 0);              // tag = Ok
-    writeI32(ptr + 4, backingPtr);
-    writeI32(ptr + 8, count);
-    return ptr;
+    // GC-rooting (#706): root backingPtr across the Result.Ok alloc.
+    return gcRooted(backingPtr, () => {
+      // Wrap in Result.Ok — layout: tag=0, backing_ptr, count (12 bytes)
+      const ptr = alloc(12);
+      writeI32(ptr, 0);              // tag = Ok
+      writeI32(ptr + 4, backingPtr);
+      writeI32(ptr + 8, count);
+      return ptr;
+    });
   } catch (e) {
     return allocResultErrString(`invalid regex: ${e.message}`);
   }
@@ -1172,161 +1230,214 @@ function buildImportObject(module) {
     if (needed.has(name)) imports.vera[name] = fn;
   }
 
-  // Map<K, V> bindings — host-side dictionary via opaque i32 handles.
-  // Import names are type-specific: map_insert$ks_vi, map_get$ki_vb, etc.
-  const mapStore = new Map();   // handle → JS Map
-  let mapNextHandle = 1;
-  function mapAlloc(d) {
-    const h = mapNextHandle++;
-    mapStore.set(h, d);
-    return h;
-  }
+  // Map<K, V> bindings — #706: the WASM bucket array is the sole
+  // source of truth.  Host imports take the wrapper pointer and
+  // decode / encode the bucket directly (no JS-side mapStore).  Import
+  // names stay type-specific: map_insert$ks_vi, map_get$ki_vb, etc.
 
-  // #573: heap-wrap-as-ADT mirror.  See vera/wasm/calls_containers.py
-  // and vera/codegen/api.py for the long version.
-  //
-  // host_decref_handle is called from Phase 2c of $gc_collect for
-  // every wrapper-ADT object that became unmarked.  It evicts the
-  // entry from the corresponding host store; kind=1 (Map),
-  // kind=2 (Set), kind=3 (Decimal) are all live post-#573 phase 3.
+  // #573: host_decref_handle is called from Phase 2c of $gc_collect for
+  // every wrapper-ADT object that became unmarked.  #706: Map / Set
+  // wrappers are no longer registered (they are plain heap objects
+  // reclaimed by ordinary mark-sweep), so only Decimal (kind=3) — which
+  // keeps the value-typed JS store — needs eviction here.
   imports.vera.host_decref_handle = (kind, handle) => {
-    if (kind === 1) {
-      mapStore.delete(handle);
-    } else if (kind === 2) {
-      setStore.delete(handle);
-    } else if (kind === 3) {
+    if (kind === 3) {
       decimalStore.delete(handle);
     }
+    // Map (1) / Set (2) are bucket-as-truth — no store entry to evict.
     // Unknown kinds: silent no-op.
   };
 
-  // #695 / #705: attach_bucket_to_wrapper is called from
-  // _emit_wrap_handle after every wrap step to populate the
-  // wrapper's bucket_ptr field at offset +8.  The CLI-side
-  // (vera/codegen/api.py::host_attach_bucket) allocates a WASM-
-  // resident bucket array mirroring _map_store / _set_store
-  // contents so the conservative GC scan reaches the values via
-  // shadow stack → wrapper → bucket → val_ptr.  Without this,
-  // heap-pointer Map values (e.g. JObject ptrs in Map<String,
-  // Json>) and Set elements (e.g. Json elements in Set<Json>)
-  // can be silently reclaimed by GC between map / set
-  // construction and value access — observed on the CLI side at
-  // ``TestMapHostStoreGCReachability695`` and the #705 Set
-  // analogue.
-  //
-  // Slot layout (must match _SLOT_SIZE / _BUCKET_INITIAL_CAPACITY
-  // in vera/codegen/api.py):
-  //   +0  key_word_0 (i32) — String: heap ptr; Int/Bool/ADT: literal
-  //   +4  key_word_1 (i32) — String: byte length; otherwise 0
-  //   +8  val_word (i32)   — heap pointer (or 0 for non-heap values)
-  //
-  // Critical ordering: write val_word FIRST (no allocation), then
-  // alloc string key if needed.  This roots any heap-pointer val
-  // via the conservative scan (which traces every i32 word in
-  // the heap, occupied or not) before subsequent string allocs
-  // can fire $gc_collect.  Matches the CLI's
-  // ``_attach_bucket_from_dict`` ordering.
-  //
-  // Decimal (kind === 3): no-op.  Decimal is value-typed
-  // (BigInt-backed JS implementation, no heap pointers in the
-  // store entry) and cannot exhibit the #695 class of bug.
-  const _SLOT_SIZE = 12;
-  const _BUCKET_INITIAL_CAPACITY = 8;
-  imports.vera.attach_bucket_to_wrapper = (wrapperPtr, kind, handle) => {
-    if (kind === 1) {
-      const d = mapStore.get(handle);
-      // PR #707 review (silent-failure-hunter): silent return hid
-      // desynchronization between the WAT-allocated wrapper and the
-      // JS-side ``mapStore``.  The only way ``d`` is undefined here is
-      // a real bug (handle constructed outside ``mapAlloc``, or wrapper
-      // reached this host call after ``host_decref_handle`` already
-      // evicted it).  Either case leaves wrapper+8 unwritten → reader
-      // dereferences address 0 → confusing trap downstream.  Fail fast.
-      if (!d) {
-        throw new Error(
-          `attach_bucket_to_wrapper: unknown Map host-store handle ${handle} ` +
-          '(wrapper / mapStore desync — see PR #707 review)'
-        );
-      }
-      const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, d.size * 2);
-      const bucketBytes = capacity * _SLOT_SIZE;
-      const bucketPtr = alloc(bucketBytes);
-      // PR #707 review: three-step rooting for browser
-      // GC-safety without shadow-stack JS-side API.
-      // (1) Publish bucketPtr into wrapper+8 IMMEDIATELY so the
-      //     wrapper (which is on the WAT shadow stack via the
-      //     `_emit_wrap_handle` `gc_shadow_push` in
-      //     `vera/wasm/calls_containers.py`) roots the bucket
-      //     before any subsequent allocString can fire $gc_collect.
-      // (2) Zero-fill the bucket so free-list reuse can't leave
-      //     stale i32s that the conservative scan would mistake
-      //     for live heap pointers (extending unrelated blocks'
-      //     lifetimes).  Cheap: one Uint8Array.fill(0) call.
-      // (3) Only then iterate, write val_word first (no alloc) so
-      //     heap-pointer values are slot-rooted before the key
-      //     allocString fires.
-      writeI32(wrapperPtr + 8, bucketPtr);
-      new Uint8Array(mem().buffer, bucketPtr, bucketBytes).fill(0);
-      let i = 0;
-      for (const [k, v] of d) {
-        const slotBase = bucketPtr + i * _SLOT_SIZE;
-        // val_word first (no alloc).
-        //
-        // PR #707 review: BigInt values (i64 keys / vals
-        // from Map<K, Int>) are NOT coerced via Number(v) — that
-        // would truncate large i64s, and a large value could land
-        // inside the heap range and be misread as a live heap
-        // pointer by the conservative scan, extending unrelated
-        // blocks' lifetimes.  Mirror is write-only (actual reads
-        // go through `mapStore`), so writing 0 is harmless for
-        // non-heap-pointer values.
-        const valWord = typeof v === 'number' ? v : 0;
-        writeI32(slotBase + 8, valWord);
-        if (typeof k === 'string') {
-          const [kp, kl] = allocString(k);
-          writeI32(slotBase, kp);
-          writeI32(slotBase + 4, kl);
-        } else {
-          // Same BigInt-as-zero discipline as valWord above.
-          const kw = typeof k === 'number' ? k : 0;
-          writeI32(slotBase, kw);
-          // key_word_1 stays 0 from the fill above.
+  // #706: bucket-as-truth codec (JS parallel of the Python codec in
+  // vera/codegen/api.py).  Layout must match: 8-byte header (capacity
+  // @+0, count @+4) + capacity * 20-byte slots (occupancy @+0,
+  // key_lo @+4, key_hi @+8, val_lo @+12, val_hi @+16).  The browser
+  // runs small programs (no 10K perf chain — that's CLI-only), so
+  // per-slot access is fine; each helper refetches mem().buffer so an
+  // intervening memory.grow can't leave a detached DataView.
+  const _BKT_HEADER = 8;
+  const _BKT_SLOT = 20;
+
+  // #706: slot capacity rounded UP to a power of two (min
+  // _BUCKET_INITIAL_CAPACITY) — same-size-class inserts reuse freed
+  // buckets from the GC free list, keeping an insert chain's heap
+  // high-water ~O(N) rather than ~O(N^2).  Mirrors _bkt_capacity in
+  // vera/codegen/api.py.
+  function bktCapacity(count) {
+    const want = Math.max(_BUCKET_INITIAL_CAPACITY, count * 2);
+    let cap = _BUCKET_INITIAL_CAPACITY;
+    while (cap < want) cap *= 2;
+    return cap;
+  }
+
+  function allocBucket(capacity) {
+    const total = _BKT_HEADER + capacity * _BKT_SLOT;
+    const ptr = alloc(total);
+    new Uint8Array(mem().buffer, ptr, total).fill(0);
+    writeI32(ptr, capacity);
+    return ptr;
+  }
+
+  function allocBktWrapper(kind, bucketPtr) {
+    const ptr = alloc(12); // tag(4) + vestigial(4) + bucket_ptr(4)
+    writeI32(ptr, _KIND_TO_TAG_JS[kind]);
+    writeI32(ptr + 4, 0); // vestigial — no host handle
+    writeI32(ptr + 8, bucketPtr | 0);
+    return ptr;
+  }
+
+  function encodeField(tag, base, value) {
+    if (tag === 'i') { writeI64(base, value); }
+    else if (tag === 'f') { writeF64(base, Number(value)); }
+    else if (tag === 's') {
+      const [p, l] = allocString(String(value)); // may grow memory
+      writeI32(base, p);
+      writeI32(base + 4, l);
+    } else { // "b": Bool / Byte / ADT / heap pointer
+      writeI32(base, Number(value) | 0);
+      writeI32(base + 4, 0);
+    }
+  }
+
+  function decodeField(tag, base) {
+    const dv = new DataView(mem().buffer);
+    if (tag === 'i') return dv.getBigInt64(base, true);
+    if (tag === 'f') return dv.getFloat64(base, true);
+    if (tag === 's') {
+      const p = dv.getInt32(base, true);
+      const l = dv.getInt32(base + 4, true);
+      return l ? readString(p, l) : '';
+    }
+    return dv.getInt32(base, true) >>> 0; // "b" — unsigned i32
+  }
+
+  // Decode a Map wrapper's bucket into a JS Map.
+  function decodeMap(wrapperPtr, kt, vt) {
+    const out = new Map();
+    const bucketPtr = readI32(wrapperPtr + 8);
+    if (bucketPtr === 0) return out;
+    const count = readI32(bucketPtr + 4);
+    if (count === 0) return out;
+    const cap = readI32(bucketPtr);
+    const slotsBase = bucketPtr + _BKT_HEADER;
+    for (let i = 0; i < cap && out.size < count; i++) {
+      const base = slotsBase + i * _BKT_SLOT;
+      if (readI32(base) === 0) continue;
+      out.set(decodeField(kt, base + 4), decodeField(vt, base + 12));
+    }
+    return out;
+  }
+
+  // Decode one field column (keys at off=4, vals at off=12) in order.
+  function decodeColumn(wrapperPtr, tag, off) {
+    const out = [];
+    const bucketPtr = readI32(wrapperPtr + 8);
+    if (bucketPtr === 0) return out;
+    const count = readI32(bucketPtr + 4);
+    if (count === 0) return out;
+    const cap = readI32(bucketPtr);
+    const slotsBase = bucketPtr + _BKT_HEADER;
+    for (let i = 0; i < cap && out.length < count; i++) {
+      const base = slotsBase + i * _BKT_SLOT;
+      if (readI32(base) === 0) continue;
+      out.push(decodeField(tag, base + off));
+    }
+    return out;
+  }
+
+  function bktCount(wrapperPtr) {
+    const bp = readI32(wrapperPtr + 8);
+    return bp === 0 ? 0 : readI32(bp + 4);
+  }
+
+  // Encode [key, val] entries into a fresh wrapper + bucket.  vt === null
+  // for Sets (val field stays 0).  The new wrapper + bucket are
+  // shadow-rooted across the encode so a string alloc's GC can't sweep
+  // them; val is written before the key so a heap-pointer value is
+  // rooted before the key-string alloc fires.
+  function encodeEntries(kind, entries, kt, vt) {
+    const count = entries.length;
+    const capacity = bktCapacity(count);
+    const wrapperPtr = allocBktWrapper(kind, 0);
+    gcShadowPush(wrapperPtr);
+    try {
+      const bucketPtr = allocBucket(capacity);
+      gcShadowPush(bucketPtr);
+      try {
+        writeI32(wrapperPtr + 8, bucketPtr);
+        const slotsBase = bucketPtr + _BKT_HEADER;
+        for (let i = 0; i < count; i++) {
+          const slot = slotsBase + i * _BKT_SLOT;
+          writeI32(slot, 1);
+          if (vt !== null) encodeField(vt, slot + 12, entries[i][1]);
+          encodeField(kt, slot + 4, entries[i][0]);
         }
-        i++;
-      }
-    } else if (kind === 2) {
-      const s = setStore.get(handle);
-      // PR #707 review (silent-failure-hunter): same shape as the Map
-      // branch above — silent return hid setStore desync.  Fail fast.
-      if (!s) {
-        throw new Error(
-          `attach_bucket_to_wrapper: unknown Set host-store handle ${handle} ` +
-          '(wrapper / setStore desync — see PR #707 review)'
-        );
-      }
-      const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, s.size * 2);
-      const bucketBytes = capacity * _SLOT_SIZE;
-      const bucketPtr = alloc(bucketBytes);
-      // Same three-step rooting as the Map branch above.
-      writeI32(wrapperPtr + 8, bucketPtr);
-      new Uint8Array(mem().buffer, bucketPtr, bucketBytes).fill(0);
-      let i = 0;
-      for (const elem of s) {
-        const slotBase = bucketPtr + i * _SLOT_SIZE;
-        if (typeof elem === 'string') {
-          const [ep, el] = allocString(elem);
-          writeI32(slotBase, ep);
-          writeI32(slotBase + 4, el);
-        } else {
-          // Same BigInt-as-zero discipline (PR #707 review).
-          const ew = typeof elem === 'number' ? elem : 0;
-          writeI32(slotBase, ew);
-          // key_word_1 and val_word stay 0 from the fill above.
-        }
-        i++;
+        writeI32(bucketPtr + 4, count);
+      } finally { gcShadowPop(); }
+    } finally { gcShadowPop(); }
+    return wrapperPtr;
+  }
+
+  // Structural rebuild dropping the matching key (no value tag needed —
+  // 16-byte key+val field regions are copied verbatim, sharing the
+  // immutable String / heap blocks with the source).
+  function rebuildWithout(wrapperPtr, kt, key, kind) {
+    const survivors = [];
+    const bucketPtr = readI32(wrapperPtr + 8);
+    if (bucketPtr !== 0) {
+      const count = readI32(bucketPtr + 4);
+      const cap = readI32(bucketPtr);
+      const slotsBase = bucketPtr + _BKT_HEADER;
+      let seen = 0;
+      for (let i = 0; i < cap && seen < count; i++) {
+        const base = slotsBase + i * _BKT_SLOT;
+        if (readI32(base) === 0) continue;
+        seen++;
+        if (sameValueZero(decodeField(kt, base + 4), key)) continue;
+        const fields = new Uint8Array(16);
+        fields.set(new Uint8Array(mem().buffer, base + 4, 16));
+        survivors.push(fields);
       }
     }
-    // kind === 3 (Decimal): nothing to attach.
+    const newWrapper = allocBktWrapper(kind, 0);
+    gcShadowPush(newWrapper);
+    try {
+      const newBucket = allocBucket(
+        bktCapacity(survivors.length),
+      );
+      gcShadowPush(newBucket);
+      try {
+        writeI32(newWrapper + 8, newBucket);
+        const slotsBase = newBucket + _BKT_HEADER;
+        for (let i = 0; i < survivors.length; i++) {
+          const slot = slotsBase + i * _BKT_SLOT;
+          writeI32(slot, 1);
+          new Uint8Array(mem().buffer, slot + 4, 16).set(survivors[i]);
+        }
+        writeI32(newBucket + 4, survivors.length);
+      } finally { gcShadowPop(); }
+    } finally { gcShadowPop(); }
+    return newWrapper;
+  }
+
+  const _BUCKET_INITIAL_CAPACITY = 8;
+  // #706: Map and Set are bucket-as-truth (their wrappers carry the
+  // bucket directly) and Decimal is value-typed, so nothing needs a
+  // bucket attached.  The import stays defined because the Decimal wrap
+  // path (_emit_wrap_handle) still emits a call to it; the body is a
+  // tripwire asserting only Decimal (kind=3) reaches it (mirrors the
+  // CLI host_attach_bucket), so a regression that routes a Map / Set
+  // wrapper back through this path fails loudly instead of silently
+  // leaving its bucket unpopulated.
+  imports.vera.attach_bucket_to_wrapper = (_wrapperPtr, kind) => {
+    if (kind !== 3) {
+      throw new Error(
+        '#706 browser runtime: attach_bucket_to_wrapper called with ' +
+        'kind=' + kind + '; expected Decimal (3).  A Map/Set wrapper ' +
+        'was routed back through _emit_wrap_handle — the bucket-as-truth ' +
+        'invariant is violated.'
+      );
+    }
   };
 
   // #573 wrapper-ADT layout constants (must match
@@ -1341,17 +1452,18 @@ function buildImportObject(module) {
   };
 
   // wrapHandle(kind, rawHandle) — JS counterpart of `_wrap_handle`
-  // in vera/codegen/api.py.  Allocates an 8-byte wrapper ADT,
+  // in vera/codegen/api.py.  Allocates a 12-byte wrapper ADT,
   // writes tag + handle, calls the exported $register_wrapper.
-  // Used by host helpers that have already obtained a raw handle
-  // and need to lift it to a wrapper pointer before stuffing into
-  // an Option<T> Some payload (e.g. decimal_from_string).
+  // Decimal-only post-#706: Map / Set are bucket-as-truth and no
+  // longer wrap a handle.  Used by decimal host helpers that have a
+  // raw handle and need to lift it to a wrapper pointer before
+  // stuffing into an Option<Decimal> Some payload.
   // Wrapper body layout (must match _WRAPPER_BODY_SIZE in
   // vera/codegen/api.py and vera/wasm/calls_containers.py):
   //   +0  tag (i32)            [#573]
   //   +4  handle | 0x80000000  [#578 — bit-31 tag keeps it out
   //                             of the conservative GC scan]
-  //   +8  bucket_ptr (i32)     [#695/#705 — attached below]
+  //   +8  bucket_ptr (i32)     [0 — Decimal is value-typed]
   function wrapHandle(kind, rawHandle) {
     const tag = _KIND_TO_TAG_JS[kind];
     const ptr = alloc(12);
@@ -1360,18 +1472,18 @@ function buildImportObject(module) {
     // never mistakes it for a heap pointer.  Matches the
     // WAT-emitted ``_emit_wrap_handle`` discipline.
     writeI32(ptr + 4, (rawHandle | 0x80000000) | 0);
-    // #695/#705: default bucket_ptr is 0.  Map/Set callers fill it
-    // via attach_bucket_to_wrapper below; Decimal leaves it 0.
+    // bucket_ptr is 0 — Decimal is value-typed (and this helper is
+    // Decimal-only post-#706, so nothing attaches a bucket here).
     writeI32(ptr + 8, 0);
     // PR #707 review (silent-failure-hunter C2): symmetric with the
     // CLI-side ``_call_register_wrapper`` discipline.  A caller
-    // reaching wrapHandle is building a Map / Set / Decimal wrapper
-    // — so the wrap-table is required for Phase 2c reclamation.  If
+    // reaching wrapHandle is building a Decimal wrapper — so the
+    // wrap-table is required for Phase 2c reclamation.  If
     // ``register_wrapper`` isn't exported, the wrapper is allocated
-    // and the mapStore entry created but the wrap-table registration
-    // is skipped → ``host_decref_handle`` never fires → permanent
-    // mapStore leak per write.  That's a build-config bug; raise
-    // rather than silently leak.
+    // and the decimalStore entry created but the wrap-table
+    // registration is skipped → ``host_decref_handle`` never fires →
+    // permanent decimalStore leak per write.  That's a build-config
+    // bug; raise rather than silently leak.
     if (!wasm || typeof wasm.register_wrapper !== "function") {
       throw new Error(
         '#707 browser runtime: $register_wrapper not exported; ' +
@@ -1469,37 +1581,25 @@ function buildImportObject(module) {
     }
   }
 
-  // allocMapWrapper(d) : drop-in replacement for mapAlloc(d) used by
-  // writeJson / writeHtml.  Inserts d into mapStore, lifts the
-  // resulting handle to a wrapper pointer via wrapHandle, and
-  // populates the wrapper's bucket array for GC reachability
-  // (#695 mirror parallel — matches CLI ``_alloc_map_wrapper``).
-  //
-  // PR #707 review: the wrapper returned from
-  // ``wrapHandle`` is registered with the wrap-table but the
-  // wrap-table region is NOT scanned by Phase 2a marking, so the
-  // wrapper is only kept alive transitively (via another reachable
-  // block pointing at it).  Between ``wrapHandle`` returning and
-  // the caller (e.g. ``writeJson``'s JObject branch) storing the
-  // wrapper into a body field, the wrapper is unrooted — and the
-  // ``attach_bucket_to_wrapper`` call below internally allocates
-  // the bucket, which can fire ``$gc_collect``.  Shadow-push the
-  // wrapper across the attach so it stays alive.  Caller is still
-  // responsible for storing the returned ptr promptly (the
-  // wrapper becomes unrooted again on return — see writeJson
-  // JObject branch which is the only consumer of this helper).
+  // allocMapWrapper(d) — used by writeJson / writeHtml to build the
+  // Map<String, V> wrapper for a JObject / HtmlElement's attrs.
+  // #706: it encodes ``d`` directly into a bucket-as-truth wrapper +
+  // bucket via ``encodeEntries`` (matches the CLI
+  // ``_alloc_map_wrapper``); there is no ``mapStore`` and no
+  // ``wrapHandle``.  ``encodeEntries`` shadow-roots the new wrapper +
+  // bucket across the per-entry string allocations, so a sub-alloc
+  // that fires ``$gc_collect`` mid-encode can't reclaim them.  The
+  // caller is responsible for storing the returned ptr promptly (it
+  // is unrooted again on return — see writeJson's JObject branch,
+  // the only consumer of this helper).
   function allocMapWrapper(d) {
-    const handle = mapAlloc(d);
-    const ptr = wrapHandle(1, handle);
-    if (imports.vera && imports.vera.attach_bucket_to_wrapper) {
-      gcShadowPush(ptr);
-      try {
-        imports.vera.attach_bucket_to_wrapper(ptr, 1, handle);
-      } finally {
-        gcShadowPop();
-      }
-    }
-    return ptr;
+    // #706: build a bucket-as-truth Map<String, V> wrapper directly.
+    // write_json's JObject values are Json heap pointers ("b");
+    // write_html's attrs values are strings ("s").  The two callers
+    // never mix value types, so a single uniform tag is correct.
+    const entries = [...d.entries()].map(([k, v]) => [String(k), v]);
+    const vt = entries.some(([, v]) => typeof v === 'string') ? 's' : 'b';
+    return encodeEntries(1, entries, 's', vt);
   }
 
   // Helper: allocate Option.None on heap (tag=0, 4 bytes)
@@ -1526,11 +1626,14 @@ function buildImportObject(module) {
     }
     if (vt === 's') {
       const [sp, sl] = allocString(String(val));
-      const p = alloc(12); // tag(4) + ptr(4) + len(4)
-      writeI32(p, 1);
-      writeI32(p + 4, sp);
-      writeI32(p + 8, sl);
-      return p;
+      // GC-rooting (#706): root sp across the option-struct alloc.
+      return gcRooted(sp, () => {
+        const p = alloc(12); // tag(4) + ptr(4) + len(4)
+        writeI32(p, 1);
+        writeI32(p + 4, sp);
+        writeI32(p + 8, sl);
+        return p;
+      });
     }
     // i32 (Bool, Byte, ADT, Map handle)
     const p = alloc(8); // tag(4) + i32(4)
@@ -1544,19 +1647,42 @@ function buildImportObject(module) {
     const count = strings.length;
     if (count === 0) return [0, 0];
     const ptr = alloc(count * 8); // each string is (i32 ptr, i32 len)
+    // GC-rooting (#706): root the backing array across the per-element
+    // string allocs; each str ptr is written into the rooted backing
+    // immediately, so no element pointer is held unrooted across an alloc.
+    return gcRooted(ptr, () => {
+      for (let i = 0; i < count; i++) {
+        const [sp, sl] = allocString(strings[i]);
+        writeI32(ptr + i * 8, sp);
+        writeI32(ptr + i * 8 + 4, sl);
+      }
+      return [ptr, count];
+    });
+  }
+
+  // Serialize a JS array of decoded keys / values / elements into a WASM
+  // Array<T> ([backingPtr, count]); used by map_keys / map_values /
+  // set_to_array.
+  function emitArray(values, tag) {
+    if (tag === 's') return mapAllocArrayOfStrings(values.map(String));
+    const count = values.length;
+    if (count === 0) return [0, 0];
+    const elemSize = tag === 'i' || tag === 'f' ? 8 : 4;
+    const ptr = alloc(count * elemSize);
+    const view = new DataView(mem().buffer);
     for (let i = 0; i < count; i++) {
-      const [sp, sl] = allocString(strings[i]);
-      writeI32(ptr + i * 8, sp);
-      writeI32(ptr + i * 8 + 4, sl);
+      if (tag === 'i') view.setBigInt64(ptr + i * 8, BigInt(values[i]), true);
+      else if (tag === 'f') view.setFloat64(ptr + i * 8, Number(values[i]), true);
+      else view.setInt32(ptr + i * 4, Number(values[i]), true);
     }
     return [ptr, count];
   }
 
   if (needed.has('map_new')) {
-    imports.vera.map_new = () => mapAlloc(new Map());
+    imports.vera.map_new = () => allocBktWrapper(1, 0);
   }
   if (needed.has('map_size')) {
-    imports.vera.map_size = (h) => BigInt(mapStore.get(h)?.size ?? 0);
+    imports.vera.map_size = (wp) => BigInt(bktCount(wp));
   }
 
   for (const name of needed) {
@@ -1564,13 +1690,13 @@ function buildImportObject(module) {
     let m = name.match(/^map_insert\$k(.)_v(.)$/);
     if (m) {
       const [, kt, vt] = m;
-      imports.vera[name] = (h, ...args) => {
-        const d = new Map(mapStore.get(h) || []);
+      imports.vera[name] = (wp, ...args) => {
         let idx = 0;
         const k = kt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
         const v = vt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
+        const d = decodeMap(wp, kt, vt);
         d.set(k, v);
-        return mapAlloc(d);
+        return encodeEntries(1, [...d.entries()], kt, vt);
       };
       continue;
     }
@@ -1578,11 +1704,10 @@ function buildImportObject(module) {
     m = name.match(/^map_get\$k(.)_v(.)$/);
     if (m) {
       const [, kt, vt] = m;
-      imports.vera[name] = (h, ...args) => {
+      imports.vera[name] = (wp, ...args) => {
         let idx = 0;
         const k = kt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
-        const d = mapStore.get(h) || new Map();
-        return mapAllocOption(d.get(k), vt);
+        return mapAllocOption(decodeMap(wp, kt, vt).get(k), vt);
       };
       continue;
     }
@@ -1590,10 +1715,10 @@ function buildImportObject(module) {
     m = name.match(/^map_contains\$k(.)$/);
     if (m) {
       const [, kt] = m;
-      imports.vera[name] = (h, ...args) => {
+      imports.vera[name] = (wp, ...args) => {
         let idx = 0;
         const k = kt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
-        return (mapStore.get(h) || new Map()).has(k) ? 1 : 0;
+        return decodeColumn(wp, kt, 4).some((x) => sameValueZero(x, k)) ? 1 : 0;
       };
       continue;
     }
@@ -1601,12 +1726,10 @@ function buildImportObject(module) {
     m = name.match(/^map_remove\$k(.)$/);
     if (m) {
       const [, kt] = m;
-      imports.vera[name] = (h, ...args) => {
+      imports.vera[name] = (wp, ...args) => {
         let idx = 0;
         const k = kt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
-        const d = new Map(mapStore.get(h) || []);
-        d.delete(k);
-        return mapAlloc(d);
+        return rebuildWithout(wp, kt, k, 1);
       };
       continue;
     }
@@ -1614,66 +1737,28 @@ function buildImportObject(module) {
     m = name.match(/^map_keys\$k(.)$/);
     if (m) {
       const [, kt] = m;
-      imports.vera[name] = (h) => {
-        const d = mapStore.get(h) || new Map();
-        const keys = [...d.keys()];
-        if (kt === 's') return mapAllocArrayOfStrings(keys);
-        const elemSize = kt === 'i' || kt === 'f' ? 8 : 4;
-        const count = keys.length;
-        if (count === 0) return [0, 0];
-        const ptr = alloc(count * elemSize);
-        const view = new DataView(mem().buffer);
-        for (let i = 0; i < count; i++) {
-          if (kt === 'i') view.setBigInt64(ptr + i * 8, BigInt(keys[i]), true);
-          else if (kt === 'f') view.setFloat64(ptr + i * 8, Number(keys[i]), true);
-          else view.setInt32(ptr + i * 4, Number(keys[i]), true);
-        }
-        return [ptr, count];
-      };
+      imports.vera[name] = (wp) => emitArray(decodeColumn(wp, kt, 4), kt);
       continue;
     }
     // map_values$v<vt>
     m = name.match(/^map_values\$v(.)$/);
     if (m) {
       const [, vt] = m;
-      imports.vera[name] = (h) => {
-        const d = mapStore.get(h) || new Map();
-        const vals = [...d.values()];
-        if (vt === 's') return mapAllocArrayOfStrings(vals);
-        const elemSize = vt === 'i' || vt === 'f' ? 8 : 4;
-        const count = vals.length;
-        if (count === 0) return [0, 0];
-        const ptr = alloc(count * elemSize);
-        const view = new DataView(mem().buffer);
-        for (let i = 0; i < count; i++) {
-          if (vt === 'i') view.setBigInt64(ptr + i * 8, BigInt(vals[i]), true);
-          else if (vt === 'f') view.setFloat64(ptr + i * 8, Number(vals[i]), true);
-          else view.setInt32(ptr + i * 4, Number(vals[i]), true);
-        }
-        return [ptr, count];
-      };
+      imports.vera[name] = (wp) => emitArray(decodeColumn(wp, vt, 12), vt);
       continue;
     }
   }
 
-  // Set<T> bindings — host-side Set via opaque i32 handles.
-  // Import names are type-specific: set_add$ei, set_contains$es, etc.
-  const setStore = new Map();   // handle → JS Set
-  let setNextHandle = 1;
-  function setAlloc(s) {
-    const h = setNextHandle++;
-    setStore.set(h, s);
-    return h;
-  }
-
-  // set_new — always needed if any set op is used
+  // Set<T> bindings — #706: bucket-as-truth, parallel to Map.  The
+  // element lives in the slot's key field (decodeColumn off=4); the val
+  // field is unused (encodeEntries with vt === null).  Int elements stay
+  // BigInt end-to-end so the JS Set dedups consistently with the i64
+  // round-trip (the old runtime coerced to Number).
   if (needed.has("set_new")) {
-    imports.vera["set_new"] = () => setAlloc(new Set());
+    imports.vera["set_new"] = () => allocBktWrapper(2, 0);
   }
-
-  // set_size — unparameterised
   if (needed.has("set_size")) {
-    imports.vera["set_size"] = (h) => BigInt(setStore.get(h)?.size ?? 0);
+    imports.vera["set_size"] = (wp) => BigInt(bktCount(wp));
   }
 
   for (const name of needed) {
@@ -1682,20 +1767,14 @@ function buildImportObject(module) {
     m = name.match(/^set_add\$e(.)$/);
     if (m) {
       const et = m[1];
-      if (et === "s") {
-        imports.vera[name] = (h, ptr, len) => {
-          const e = readString(ptr, len);
-          const ns = new Set(setStore.get(h));
-          ns.add(e);
-          return setAlloc(ns);
-        };
-      } else {
-        imports.vera[name] = (h, e) => {
-          const ns = new Set(setStore.get(h));
-          ns.add(et === "i" ? Number(e) : e);
-          return setAlloc(ns);
-        };
-      }
+      const add = (wp, e) => {
+        const s = new Set(decodeColumn(wp, et, 4));
+        s.add(e);
+        return encodeEntries(2, [...s].map((x) => [x, 0]), et, null);
+      };
+      imports.vera[name] = et === "s"
+        ? (wp, ptr, len) => add(wp, readString(ptr, len))
+        : (wp, e) => add(wp, e);
       continue;
     }
 
@@ -1703,17 +1782,10 @@ function buildImportObject(module) {
     m = name.match(/^set_contains\$e(.)$/);
     if (m) {
       const et = m[1];
-      if (et === "s") {
-        imports.vera[name] = (h, ptr, len) => {
-          const e = readString(ptr, len);
-          return setStore.get(h)?.has(e) ? 1 : 0;
-        };
-      } else {
-        imports.vera[name] = (h, e) => {
-          const val = et === "i" ? Number(e) : e;
-          return setStore.get(h)?.has(val) ? 1 : 0;
-        };
-      }
+      const has = (wp, e) => decodeColumn(wp, et, 4).some((x) => sameValueZero(x, e)) ? 1 : 0;
+      imports.vera[name] = et === "s"
+        ? (wp, ptr, len) => has(wp, readString(ptr, len))
+        : (wp, e) => has(wp, e);
       continue;
     }
 
@@ -1721,20 +1793,9 @@ function buildImportObject(module) {
     m = name.match(/^set_remove\$e(.)$/);
     if (m) {
       const et = m[1];
-      if (et === "s") {
-        imports.vera[name] = (h, ptr, len) => {
-          const e = readString(ptr, len);
-          const ns = new Set(setStore.get(h));
-          ns.delete(e);
-          return setAlloc(ns);
-        };
-      } else {
-        imports.vera[name] = (h, e) => {
-          const ns = new Set(setStore.get(h));
-          ns.delete(et === "i" ? Number(e) : e);
-          return setAlloc(ns);
-        };
-      }
+      imports.vera[name] = et === "s"
+        ? (wp, ptr, len) => rebuildWithout(wp, et, readString(ptr, len), 2)
+        : (wp, e) => rebuildWithout(wp, et, e, 2);
       continue;
     }
 
@@ -1742,31 +1803,7 @@ function buildImportObject(module) {
     m = name.match(/^set_to_array\$e(.)$/);
     if (m) {
       const et = m[1];
-      imports.vera[name] = (h) => {
-        const elems = [...(setStore.get(h) ?? [])];
-        const count = elems.length;
-        if (count === 0) return [0, 0];
-        if (et === "s") {
-          return allocArrayOfStrings(elems);
-        }
-        if (et === "i") {
-          const ptr = alloc(count * 8);
-          const dv = new DataView(mem().buffer);
-          for (let i = 0; i < count; i++) dv.setBigInt64(ptr + i * 8, BigInt(elems[i]), true);
-          return [ptr, count];
-        }
-        if (et === "f") {
-          const ptr = alloc(count * 8);
-          const dv = new DataView(mem().buffer);
-          for (let i = 0; i < count; i++) dv.setFloat64(ptr + i * 8, elems[i], true);
-          return [ptr, count];
-        }
-        // "b" — i32 elements
-        const ptr = alloc(count * 4);
-        const dv = new DataView(mem().buffer);
-        for (let i = 0; i < count; i++) dv.setInt32(ptr + i * 4, elems[i], true);
-        return [ptr, count];
-      };
+      imports.vera[name] = (wp) => emitArray(decodeColumn(wp, et, 4), et);
       continue;
     }
   }
@@ -1803,7 +1840,10 @@ function buildImportObject(module) {
       if (/^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s.trim())) {
         const h = decimalAlloc(s.trim());
         // #573 phase 3: wrap before stuffing into Some.
-        return allocOptionSomeI32(wrapHandle(3, h));
+        // GC-rooting (#706): root the wrapper across the Option alloc —
+        // register_wrapper is not a mark root.
+        const wrapperPtr = wrapHandle(3, h);
+        return gcRooted(wrapperPtr, () => allocOptionSomeI32(wrapperPtr));
       }
       return allocOptionNone();
     };
@@ -1834,7 +1874,9 @@ function buildImportObject(module) {
       const bVal = Number(decimalStore.get(b));
       if (bVal === 0) return allocOptionNone();
       const h = decimalAlloc(decStrDiv(decimalStore.get(a), decimalStore.get(b)));
-      return allocOptionSomeI32(wrapHandle(3, h));
+      // GC-rooting (#706): root the wrapper across the Option alloc.
+      const wrapperPtr = wrapHandle(3, h);
+      return gcRooted(wrapperPtr, () => allocOptionSomeI32(wrapperPtr));
     };
   }
   if (needed.has("decimal_neg")) {
@@ -2012,22 +2054,13 @@ function buildImportObject(module) {
       return result;
     }
     if (tag === 5) {
-      // #573: i32 at +4 is now a wrapper-ADT pointer; unwrap to
-      // the raw Map handle before the mapStore lookup.  CodeRabbit
-      // PR #707 review: the wrapper body's +4 field stores the
-      // handle ORed with 0x80000000 (#578 bit-31 tag, matching the
-      // CLI ``_wrap_handle`` discipline), so we must mask the
-      // high bit before mapStore.get or the lookup always misses.
+      // #706: the i32 at +4 is a Map wrapper whose bucket IS the map
+      // (bucket-as-truth).  Decode the Map<String, Json> directly; the
+      // values are i32 Json heap pointers.
       const wrapperPtr = readI32(ptr + 4);
-      const handle = readI32(wrapperPtr + 4) & 0x7FFFFFFF;
-      const m = mapStore.get(handle);
-      if (!m) {
-        console.warn(`readJson: unknown JObject handle ${handle} at pointer ${ptr}; possible memory corruption`);
-        return {};
-      }
       const result = {};
-      for (const [k, v] of m.entries()) {
-        result[String(k)] = readJson(v);
+      for (const [k, v] of decodeMap(wrapperPtr, 's', 'b')) {
+        result[String(k)] = readJson(Number(v));
       }
       return result;
     }
@@ -2307,20 +2340,14 @@ function buildImportObject(module) {
     const np = readI32(ptr + 4);
     const nl = readI32(ptr + 8);
     const name = readString(np, nl);
-    // #573: i32 at +12 is now a wrapper-ADT pointer; unwrap.
-    // PR #707 review: mask off the #578 bit-31 tag
-    // before the mapStore lookup (see readJson above for the
-    // analogous fix on the JObject branch).
+    // #706: the i32 at +12 is a Map wrapper whose bucket IS the
+    // attributes Map<String, String> (bucket-as-truth).
     const wrapperPtr = readI32(ptr + 12);
-    const handle = readI32(wrapperPtr + 4) & 0x7FFFFFFF;
     const arrPtr = readI32(ptr + 16);
     const arrLen = readI32(ptr + 20);
     const attrs = {};
-    const m = mapStore.get(handle);
-    if (m) {
-      for (const [k, v] of m.entries()) {
-        attrs[String(k)] = String(v);
-      }
+    for (const [k, v] of decodeMap(wrapperPtr, 's', 's')) {
+      attrs[String(k)] = String(v);
     }
     const children = [];
     for (let i = 0; i < arrLen; i++) {
@@ -2461,9 +2488,12 @@ function buildImportObject(module) {
       let arrPtr = 0;
       if (count > 0) {
         arrPtr = alloc(count * 4);
-        for (let i = 0; i < count; i++) {
-          writeI32(arrPtr + i * 4, writeHtml(matches[i]));
-        }
+        // GC-rooting (#706): root arrPtr across writeHtml's allocations.
+        gcRooted(arrPtr, () => {
+          for (let i = 0; i < count; i++) {
+            writeI32(arrPtr + i * 4, writeHtml(matches[i]));
+          }
+        });
       }
       return [arrPtr, count];
     };

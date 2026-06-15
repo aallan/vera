@@ -11,7 +11,7 @@ Write direction (Python → WASM):
 
 Read direction (WASM → Python):
   read_json(caller, ptr, read_i32, read_f64, read_string,
-            map_store) → Any
+            decode_jobject) → Any
 
 Json ADT layouts (from prelude injection → registration.py):
   JNull                        tag=0  ()               total=8
@@ -35,10 +35,11 @@ AllocFn = Callable[[wasmtime.Caller, int], int]
 WriteI32Fn = Callable[[wasmtime.Caller, int, int], None]
 WriteF64Fn = Callable[[wasmtime.Caller, int, float], None]
 AllocStringFn = Callable[[wasmtime.Caller, str], tuple[int, int]]
-# #573: map_alloc now returns a wrapper-ADT pointer, not a raw
-# handle.  The signature accepts ``caller`` so the helper can call
-# the exported ``$alloc`` and ``$register_wrapper`` to construct
-# the wrapper in WASM memory.
+# #706: map_alloc is ``_alloc_map_wrapper`` — it encodes the Python
+# dict into a fresh bucket-as-truth wrapper and returns the wrapper
+# pointer (no host store, no wrap-table registration).  It accepts
+# ``caller`` so it can call the exported ``$alloc`` to build the
+# wrapper + bucket in WASM memory.
 MapAllocFn = Callable[[wasmtime.Caller, dict[object, object]], int]
 ReadI32Fn = Callable[[wasmtime.Caller, int], int]
 ReadF64Fn = Callable[[wasmtime.Caller, int], float]
@@ -141,23 +142,20 @@ def write_json(
 
     if isinstance(value, dict):
         # JObject(Map<String, Json>) — tag=5, i32 at offset 4, total=8
-        # Create a Map<String, Json> using the host map store.
+        # Build a Map<String, Json> as a bucket-as-truth wrapper (#706).
         # Keys are stored as Python strings (matching map_contains$ks
         # which reads WASM strings and compares against Python strings).
         # Values are i32 Json heap pointers.
         #
-        # #573: ``map_alloc`` is now ``_alloc_map_wrapper`` (in
-        # ``vera/codegen/api.py``), which both allocates the host
-        # dict AND emits an 8-byte wrapper ADT in WASM memory
-        # registered with ``$register_wrapper``.  The returned
-        # value is therefore a wrapper-ADT pointer, not a raw
-        # handle.  This makes the JObject's i32 field type-
-        # compatible with user-level ``map_get`` /
-        # ``map_contains`` calls (which now expect wrapper
-        # pointers and unwrap with ``i32.load offset=4`` before
-        # the host dispatch).  GC reclaims the JObject's Map
-        # entry from ``_map_store`` when the wrapper becomes
-        # unreachable, just like a user-allocated Map.
+        # #706: ``map_alloc`` is ``_alloc_map_wrapper`` (in
+        # ``vera/codegen/api.py``), which encodes this Python dict
+        # into a fresh bucket-as-truth wrapper + bucket and returns
+        # the wrapper pointer.  That makes the JObject's i32 field
+        # type-compatible with user-level ``map_get`` /
+        # ``map_contains`` calls, which take the wrapper pointer
+        # directly.  The JObject's Map is reclaimed by ordinary
+        # mark-sweep when the wrapper becomes unreachable — there is
+        # no host store to evict.
         #
         # #692: each iteration's val_ptr is pushed onto the
         # shadow stack BEFORE the next iteration's recursive
@@ -205,11 +203,15 @@ def read_json(
     read_i32: ReadI32Fn,
     read_f64: ReadF64Fn,
     read_string: ReadStringFn,
-    map_store: dict[int, Any],
+    decode_jobject: "Callable[[wasmtime.Caller, int], dict[Any, Any]]",
 ) -> Any:
     """Read a Json ADT from WASM memory back to a Python value.
 
     Returns: None, bool, float, str, list, or dict.
+
+    #706: ``decode_jobject(caller, wrapper_ptr)`` decodes a JObject's
+    ``Map<String, Json>`` from its bucket-as-truth wrapper (there is no
+    ``_map_store`` to look up by handle anymore).
     """
     tag = read_i32(caller, ptr)
 
@@ -235,40 +237,22 @@ def read_json(
             elem_ptr = read_i32(caller, arr_ptr + i * 4)
             items.append(read_json(
                 caller, elem_ptr, read_i32, read_f64,
-                read_string, map_store,
+                read_string, decode_jobject,
             ))
         return items
 
     if tag == _TAG_JOBJECT:
-        # #573: JObject's i32 field at offset 4 is now a wrapper-
-        # ADT pointer, not a raw handle.  Wrapper layout: tag at
-        # body[0], handle at body[4].  Unwrap before looking up
-        # the dict in ``map_store``.
-        #
-        # #578: the in-heap handle field is tagged with bit 31
-        # (so the conservative GC scan can't mistake it for a
-        # heap pointer).  Mask with 0x7FFFFFFF to recover the
-        # raw handle.  Mirrors the WAT-side ``_emit_unwrap_handle``
-        # in ``vera/wasm/calls_containers.py``.
+        # #706: JObject's i32 field at offset 4 is a Map wrapper
+        # pointer whose bucket IS the map (bucket-as-truth).  Decode
+        # the ``Map<String, Json>`` directly from the bucket — the
+        # values are i32 Json heap pointers.
         wrapper_ptr = read_i32(caller, ptr + 4)
-        handle = read_i32(caller, wrapper_ptr + 4) & 0x7FFFFFFF
-        if handle not in map_store:
-            import warnings
-            warnings.warn(
-                f"read_json: unknown JObject handle {handle} at pointer {ptr}; "
-                "possible memory corruption or missing map allocation",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-            return {}
-        raw_map = map_store[handle]
+        raw_map = decode_jobject(caller, wrapper_ptr)
         obj: dict[str, Any] = {}
         for k, v in raw_map.items():
-            key_str = str(k)
-            # v is an i32 Json heap pointer
-            obj[key_str] = read_json(
-                caller, v, read_i32, read_f64,
-                read_string, map_store,
+            obj[str(k)] = read_json(
+                caller, int(v), read_i32, read_f64,
+                read_string, decode_jobject,
             )
         return obj
 

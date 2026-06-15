@@ -1988,3 +1988,131 @@ public fn main(-> @Unit)
 }
 """
         assert self._run_eager_gc_node(src, monkeypatch, tmp_path) == "10"
+
+
+class TestBrowserRound4Fixes743:
+    """Browser-runtime parallel of ``test_codegen.py``'s
+    ``TestAdtBuilderRooting743`` and ``TestSameValueZeroKeys743`` — pins
+    the JS ``gcRooted`` ADT-builder rooting and the ``sameValueZero``
+    Float64-key comparison (folded into #706, surfaced by the CodeRabbit
+    review).
+    """
+
+    def _eager_stdout(
+        self, src: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> str:
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        wasm_path, _ = _compile_vera(src, tmp_path)
+        result = _run_node(wasm_path)
+        assert not result.get("error"), (
+            f"Node harness reported error during VERA_EAGER_GC run: "
+            f"{result.get('error')!r}"
+        )
+        return result.get("stdout", "").strip()
+
+    def test_map_get_string_value_survives_eager_gc_browser(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """``mapAllocOption('s')`` roots the string across the option
+        struct alloc — 200 ``map_get`` calls on a ``Map<Int, String>``
+        under eager GC each return the live string (pre-fix: 0)."""
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Map<Int, String> = map_insert(map_new(), 1, "alphabet_soup_xyz");
+  let @Int = array_fold(
+    array_range(0, 200),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      match map_get(@Map<Int, String>.0, 1) {
+        Some(@String) ->
+          if string_contains(@String.0, "soup") then { @Int.1 + 1 }
+          else { @Int.1 },
+        None -> @Int.1
+      }
+    }
+  );
+  IO.print(int_to_string(@Int.0))
+}
+"""
+        assert self._eager_stdout(src, monkeypatch, tmp_path) == "200"
+
+    def test_nan_float_map_key_round_trips_browser(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """A NaN ``Float64`` map key is found via the JS ``sameValueZero``
+        ``map_contains`` / native-Map ``map_get`` (pre-fix the
+        ``decodeColumn`` ``===`` could not find NaN)."""
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Float64 = 0.0 / 0.0;
+  let @Map<Float64, Int> = map_insert(map_new(), @Float64.0, 42);
+  let @Int = if map_contains(@Map<Float64, Int>.0, @Float64.0) then {
+    match map_get(@Map<Float64, Int>.0, @Float64.0) {
+      Some(@Int) -> @Int.0,
+      None -> -2
+    }
+  } else { -1 };
+  IO.print(int_to_string(@Int.0))
+}
+"""
+        assert self._eager_stdout(src, monkeypatch, tmp_path) == "42"
+
+    def test_nan_float_set_element_round_trips_browser(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """A NaN ``Float64`` Set element dedups and is found via the JS
+        ``sameValueZero`` ``set_contains`` (parallel of the Map case)."""
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Float64 = 0.0 / 0.0;
+  let @Set<Float64> = set_add(set_add(set_new(), @Float64.0), @Float64.0);
+  let @Int = if set_contains(@Set<Float64>.0, @Float64.0) then {
+    nat_to_int(set_size(@Set<Float64>.0))
+  } else { -1 };
+  IO.print(int_to_string(@Int.0))
+}
+"""
+        # deduped to size 1; contains finds NaN → 1.
+        assert self._eager_stdout(src, monkeypatch, tmp_path) == "1"
+
+    def test_decimal_from_string_wrapper_survives_eager_gc_browser(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """Browser parallel of the CLI Decimal-wrapper rooting:
+        ``decimal_from_string`` wraps the handle in ``Option.Some`` via
+        ``gcRooted(wrapHandle(3, h))``; 200x under eager GC the Decimal
+        reads back as "3.14"."""
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Int = array_fold(
+    array_range(0, 200),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      match decimal_from_string("3.14") {
+        Some(@Decimal) ->
+          if string_contains(decimal_to_string(@Decimal.0), "3.14")
+          then { @Int.1 + 1 } else { @Int.1 },
+        None -> @Int.1
+      }
+    }
+  );
+  IO.print(int_to_string(@Int.0))
+}
+"""
+        assert self._eager_stdout(src, monkeypatch, tmp_path) == "200"
