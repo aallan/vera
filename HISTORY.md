@@ -381,6 +381,7 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | v0.0.168 | 11 Jun | `vera/addEffect` rewrites the `effects(...)` clauses of a function and its transitive callers in one verified multi-site edit, closing [#222](https://github.com/aallan/vera/issues/222). |
 | v0.0.169 | 11 Jun | The language server gets its user manual (LSP_SERVER.md) and the VS Code extension gains an LSP client ([#222](https://github.com/aallan/vera/issues/222) follow-up). |
 | v0.0.170 | 12 Jun | **Editor hovers now carry the same Fix: instructions as `--json`, exactly once per call site** ([#728](https://github.com/aallan/vera/issues/728)). |
+| v0.0.171 | 15 Jun | **Map and Set host storage moved to bucket-as-truth across the CLI and browser runtimes, deleting the Python/JS mirror so collection contents live in one place** ([#706](https://github.com/aallan/vera/issues/706)). |
 
 ---
 
@@ -396,4 +397,4 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% | 95% |
 
-Total: **1,400+ commits, 171 tagged releases, 74 active development days.**
+Total: **1,400+ commits, 172 tagged releases, 74 active development days.**
