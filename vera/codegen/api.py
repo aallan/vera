@@ -1731,10 +1731,18 @@ def execute(
         caller: wasmtime.Caller, value: int,
     ) -> int:
         """Allocate Result.Ok(i32) — wraps a heap pointer in Ok."""
-        # Layout: tag(i32)=0 at +0, value(i32) at +4
-        adt_ptr = _call_alloc(caller, 8)
-        _write_i32(caller, adt_ptr, 0)       # tag = Ok
-        _write_i32(caller, adt_ptr + 4, value)
+        # GC-rooting (folded into #706): ``value`` is a heap pointer held
+        # only in this Python local across the struct alloc below; root it
+        # so a GC there can't sweep the payload the caller just built (the
+        # Option / Json / HtmlNode / regex match).  Harmless for the one
+        # Bool caller — 0 no-ops, 1 is out of heap range.
+        with _ShadowGuard(caller) as guard:
+            if value != 0:
+                guard.push(value)
+            # Layout: tag(i32)=0 at +0, value(i32) at +4
+            adt_ptr = _call_alloc(caller, 8)
+            _write_i32(caller, adt_ptr, 0)       # tag = Ok
+            _write_i32(caller, adt_ptr + 4, value)
         return adt_ptr
 
     # -----------------------------------------------------------------
@@ -2468,11 +2476,16 @@ def execute(
                 backing_ptr, count = _alloc_array_of_strings(
                     caller, matches,
                 )
-                # Wrap in Result.Ok: tag=0, backing_ptr, count (12 bytes)
-                adt_ptr = _call_alloc(caller, 12)
-                _write_i32(caller, adt_ptr, 0)            # tag = Ok
-                _write_i32(caller, adt_ptr + 4, backing_ptr)
-                _write_i32(caller, adt_ptr + 8, count)
+                # GC-rooting (folded into #706): root backing_ptr across
+                # the Result.Ok struct alloc so a GC can't sweep it.
+                with _ShadowGuard(caller) as guard:
+                    if backing_ptr != 0:
+                        guard.push(backing_ptr)
+                    # Wrap in Result.Ok: tag=0, backing_ptr, count (12 bytes)
+                    adt_ptr = _call_alloc(caller, 12)
+                    _write_i32(caller, adt_ptr, 0)            # tag = Ok
+                    _write_i32(caller, adt_ptr + 4, backing_ptr)
+                    _write_i32(caller, adt_ptr + 8, count)
                 return adt_ptr
             except _re.error as exc:
                 return _alloc_result_err_string(

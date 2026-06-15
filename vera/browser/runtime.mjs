@@ -182,20 +182,28 @@ function allocResultOkUnit() {
 
 /** Allocate Result.Ok(i32) → heap pointer. Tag=0, value at +4. */
 function allocResultOkI32(value) {
-  const ptr = alloc(8);
-  writeI32(ptr, 0);            // tag = Ok
-  writeI32(ptr + 4, value);
-  return ptr;
+  // GC-rooting (#706): root the heap-pointer payload across the struct
+  // alloc.  Harmless for the one Bool caller (0 no-ops, 1 is out of heap
+  // range); redundant-safe for callers that already root (json/html parse).
+  return gcRooted(value, () => {
+    const ptr = alloc(8);
+    writeI32(ptr, 0);            // tag = Ok
+    writeI32(ptr + 4, value);
+    return ptr;
+  });
 }
 
 /** Allocate Option.Some(String) → heap pointer. Tag=1, str at +4/+8. */
 function allocOptionSomeString(str) {
   const [strPtr, strLen] = allocString(str);
-  const ptr = alloc(12);
-  writeI32(ptr, 1);            // tag = Some
-  writeI32(ptr + 4, strPtr);
-  writeI32(ptr + 8, strLen);
-  return ptr;
+  // GC-rooting (#706): root strPtr across the option-struct alloc.
+  return gcRooted(strPtr, () => {
+    const ptr = alloc(12);
+    writeI32(ptr, 1);            // tag = Some
+    writeI32(ptr + 4, strPtr);
+    writeI32(ptr + 8, strLen);
+    return ptr;
+  });
 }
 
 /** Allocate Option.None → heap pointer. Tag=0, no payload. */
@@ -225,12 +233,16 @@ function allocArrayOfStrings(strings) {
   const count = strings.length;
   if (count === 0) return [0, 0];
   const backingPtr = alloc(count * 8);
-  for (let i = 0; i < count; i++) {
-    const [sPtr, sLen] = allocString(strings[i]);
-    writeI32(backingPtr + i * 8, sPtr);
-    writeI32(backingPtr + i * 8 + 4, sLen);
-  }
-  return [backingPtr, count];
+  // GC-rooting (#706): root the backing array across the per-element
+  // string allocs.
+  return gcRooted(backingPtr, () => {
+    for (let i = 0; i < count; i++) {
+      const [sPtr, sLen] = allocString(strings[i]);
+      writeI32(backingPtr + i * 8, sPtr);
+      writeI32(backingPtr + i * 8 + 4, sLen);
+    }
+    return [backingPtr, count];
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1091,12 +1103,15 @@ function hostRegexFindAll(inPtr, inLen, patPtr, patLen) {
       if (m[0].length === 0) re.lastIndex++;
     }
     const [backingPtr, count] = allocArrayOfStrings(matches);
-    // Wrap in Result.Ok — layout: tag=0, backing_ptr, count (12 bytes)
-    const ptr = alloc(12);
-    writeI32(ptr, 0);              // tag = Ok
-    writeI32(ptr + 4, backingPtr);
-    writeI32(ptr + 8, count);
-    return ptr;
+    // GC-rooting (#706): root backingPtr across the Result.Ok alloc.
+    return gcRooted(backingPtr, () => {
+      // Wrap in Result.Ok — layout: tag=0, backing_ptr, count (12 bytes)
+      const ptr = alloc(12);
+      writeI32(ptr, 0);              // tag = Ok
+      writeI32(ptr + 4, backingPtr);
+      writeI32(ptr + 8, count);
+      return ptr;
+    });
   } catch (e) {
     return allocResultErrString(`invalid regex: ${e.message}`);
   }
@@ -1824,7 +1839,10 @@ function buildImportObject(module) {
       if (/^-?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s.trim())) {
         const h = decimalAlloc(s.trim());
         // #573 phase 3: wrap before stuffing into Some.
-        return allocOptionSomeI32(wrapHandle(3, h));
+        // GC-rooting (#706): root the wrapper across the Option alloc —
+        // register_wrapper is not a mark root.
+        const wrapperPtr = wrapHandle(3, h);
+        return gcRooted(wrapperPtr, () => allocOptionSomeI32(wrapperPtr));
       }
       return allocOptionNone();
     };
@@ -1855,7 +1873,9 @@ function buildImportObject(module) {
       const bVal = Number(decimalStore.get(b));
       if (bVal === 0) return allocOptionNone();
       const h = decimalAlloc(decStrDiv(decimalStore.get(a), decimalStore.get(b)));
-      return allocOptionSomeI32(wrapHandle(3, h));
+      // GC-rooting (#706): root the wrapper across the Option alloc.
+      const wrapperPtr = wrapHandle(3, h);
+      return gcRooted(wrapperPtr, () => allocOptionSomeI32(wrapperPtr));
     };
   }
   if (needed.has("decimal_neg")) {

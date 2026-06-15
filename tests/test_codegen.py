@@ -18779,6 +18779,40 @@ public fn main(-> @Int)
         # 300 iterations x 2 keys = 600 (a swept backing would trap first).
         assert _run(src) == 600
 
+    def test_regex_find_result_payload_survives_eager_gc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``regex_find`` wraps a freshly-built ``Option<String>`` in
+        ``Result.Ok``; ``_alloc_result_ok_i32`` roots the payload across
+        the struct alloc.  300x under eager GC the matched substring reads
+        back intact — pre-fix the Option block was swept during the
+        ``Result.Ok`` alloc.  (Same builder roots the Json / HtmlNode
+        payloads of ``json_parse`` / ``html_parse``.)"""
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  array_fold(
+    array_range(0, 300),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      match regex_find("alphabet_soup_xyz", "soup") {
+        Ok(@Option<String>) ->
+          match @Option<String>.0 {
+            Some(@String) ->
+              if string_contains(@String.0, "soup") then { @Int.1 + 1 }
+              else { @Int.1 },
+            None -> @Int.1
+          },
+        Err(@String) -> @Int.1
+      }
+    }
+  )
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run(src) == 300
+
 
 class TestSameValueZeroKeys743:
     """PR #743 (folded into #706): Float64 Map keys / Set elements compare

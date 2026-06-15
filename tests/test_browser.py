@@ -2064,3 +2064,25 @@ public fn main(-> @Unit)
 }
 """
         assert self._eager_stdout(src, monkeypatch, tmp_path) == "42"
+
+    def test_nan_float_set_element_round_trips_browser(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    ) -> None:
+        """A NaN ``Float64`` Set element dedups and is found via the JS
+        ``sameValueZero`` ``set_contains`` (parallel of the Map case)."""
+        src = """
+effect IO { op print(String -> Unit); }
+
+public fn main(-> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Float64 = 0.0 / 0.0;
+  let @Set<Float64> = set_add(set_add(set_new(), @Float64.0), @Float64.0);
+  let @Int = if set_contains(@Set<Float64>.0, @Float64.0) then {
+    nat_to_int(set_size(@Set<Float64>.0))
+  } else { -1 };
+  IO.print(int_to_string(@Int.0))
+}
+"""
+        # deduped to size 1; contains finds NaN → 1.
+        assert self._eager_stdout(src, monkeypatch, tmp_path) == "1"
