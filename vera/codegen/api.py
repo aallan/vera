@@ -3195,15 +3195,19 @@ def execute(
             _set_store[h] = s
             return h
 
-        # set_new() → i32 handle
-        def host_set_new(_caller: wasmtime.Caller) -> int:
-            return _set_alloc(set())
+        # set_new() → wrapper_ptr for an empty bucket-as-truth Set (#706).
+        def host_set_new(caller: wasmtime.Caller) -> int:
+            return _alloc_wrapper(caller, _WRAP_KIND_SET, 0)
 
         linker.define_func(
             "vera", "set_new",
             wasmtime.FuncType([], [wasmtime.ValType.i32()]),
             host_set_new, access_caller=True,
         )
+
+        # #706: every Set host import takes the wrapper pointer (``wp``)
+        # and goes through the bucket codec — the element lives in the
+        # slot's key field, the val field is unused.
 
         def _define_set_add(et: str) -> None:
             name = f"set_add$e{et}"
@@ -3213,33 +3217,18 @@ def execute(
 
             if et == "s":
                 def host_fn(
-                    caller: wasmtime.Caller, h: int, ep: int, el: int,
+                    caller: wasmtime.Caller, wp: int, ep: int, el: int,
                 ) -> int:
-                    e = _read_wasm_string(caller, ep, el)
-                    new_s = set(_set_store.get(h, set()))
-                    new_s.add(e)
-                    return _set_alloc(new_s)
-            elif et == "i":
+                    s = _decode_set(caller, wp, et)
+                    s.add(_read_wasm_string(caller, ep, el))
+                    return _encode_set(caller, s, et)
+            else:
                 def host_fn(  # type: ignore[misc]
-                    _caller: wasmtime.Caller, h: int, e: int,
+                    caller: wasmtime.Caller, wp: int, e: int | float,
                 ) -> int:
-                    new_s = set(_set_store.get(h, set()))
-                    new_s.add(e)
-                    return _set_alloc(new_s)
-            elif et == "f":
-                def host_fn(  # type: ignore[misc]
-                    _caller: wasmtime.Caller, h: int, e: float,
-                ) -> int:
-                    new_s = set(_set_store.get(h, set()))
-                    new_s.add(e)
-                    return _set_alloc(new_s)
-            else:  # "b" — Bool/Byte/ADT handle
-                def host_fn(  # type: ignore[misc]
-                    _caller: wasmtime.Caller, h: int, e: int,
-                ) -> int:
-                    new_s = set(_set_store.get(h, set()))
-                    new_s.add(e)
-                    return _set_alloc(new_s)
+                    s = _decode_set(caller, wp, et)
+                    s.add(e)
+                    return _encode_set(caller, s, et)
 
             linker.define_func(
                 "vera", name, ftype, host_fn, access_caller=True,
@@ -3253,20 +3242,15 @@ def execute(
 
             if et == "s":
                 def host_fn(
-                    caller: wasmtime.Caller, h: int, ep: int, el: int,
+                    caller: wasmtime.Caller, wp: int, ep: int, el: int,
                 ) -> int:
                     e = _read_wasm_string(caller, ep, el)
-                    return 1 if e in _set_store.get(h, set()) else 0
-            elif et == "f":
+                    return 1 if e in _decode_column(caller, wp, et, 4) else 0
+            else:
                 def host_fn(  # type: ignore[misc]
-                    _caller: wasmtime.Caller, h: int, e: float,
+                    caller: wasmtime.Caller, wp: int, e: int | float,
                 ) -> int:
-                    return 1 if e in _set_store.get(h, set()) else 0
-            else:  # "i" or "b"
-                def host_fn(  # type: ignore[misc]
-                    _caller: wasmtime.Caller, h: int, e: int,
-                ) -> int:
-                    return 1 if e in _set_store.get(h, set()) else 0
+                    return 1 if e in _decode_column(caller, wp, et, 4) else 0
 
             linker.define_func(
                 "vera", name, ftype, host_fn, access_caller=True,
@@ -3278,36 +3262,36 @@ def execute(
             param_types = [wasmtime.ValType.i32()] + elem_types
             ftype = wasmtime.FuncType(param_types, [wasmtime.ValType.i32()])
 
+            # Structural rebuild dropping the matching element (the elem
+            # lives in the key field; val field is copied verbatim).
+            def _without(
+                caller: wasmtime.Caller, wp: int, e: object,
+            ) -> int:
+                survivors = [
+                    (kb, vb)
+                    for kb, vb in _bkt_raw_entries(caller, wp)
+                    if _decode_field(caller, et, kb, 0) != e
+                ]
+                return _encode_raw(caller, _WRAP_KIND_SET, survivors)
+
             if et == "s":
                 def host_fn(
-                    caller: wasmtime.Caller, h: int, ep: int, el: int,
+                    caller: wasmtime.Caller, wp: int, ep: int, el: int,
                 ) -> int:
-                    e = _read_wasm_string(caller, ep, el)
-                    new_s = set(_set_store.get(h, set()))
-                    new_s.discard(e)
-                    return _set_alloc(new_s)
-            elif et == "f":
+                    return _without(caller, wp, _read_wasm_string(caller, ep, el))
+            else:
                 def host_fn(  # type: ignore[misc]
-                    _caller: wasmtime.Caller, h: int, e: float,
+                    caller: wasmtime.Caller, wp: int, e: int | float,
                 ) -> int:
-                    new_s = set(_set_store.get(h, set()))
-                    new_s.discard(e)
-                    return _set_alloc(new_s)
-            else:  # "i" or "b"
-                def host_fn(  # type: ignore[misc]
-                    _caller: wasmtime.Caller, h: int, e: int,
-                ) -> int:
-                    new_s = set(_set_store.get(h, set()))
-                    new_s.discard(e)
-                    return _set_alloc(new_s)
+                    return _without(caller, wp, e)
 
             linker.define_func(
                 "vera", name, ftype, host_fn, access_caller=True,
             )
 
-        # set_size() — unparameterised, always i32 → i64
-        def host_set_size(_caller: wasmtime.Caller, h: int) -> int:
-            return len(_set_store.get(h, set()))
+        # set_size(wp) → i64 (O(1) from the bucket header).
+        def host_set_size(caller: wasmtime.Caller, wp: int) -> int:
+            return _bkt_count(caller, wp)
 
         linker.define_func(
             "vera", "set_size",
@@ -3326,9 +3310,9 @@ def execute(
             )
 
             def host_fn(
-                caller: wasmtime.Caller, h: int,
+                caller: wasmtime.Caller, wp: int,
             ) -> tuple[int, int]:
-                elems = list(_set_store.get(h, set()))
+                elems = _decode_column(caller, wp, et, 4)
                 if et == "s":
                     return _alloc_array_of_strings(caller, elems)  # type: ignore[arg-type]
                 if et == "i":

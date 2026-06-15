@@ -1350,43 +1350,12 @@ function buildImportObject(module) {
     return newWrapper;
   }
 
-  // #705: attach_bucket_to_wrapper still populates Set wrappers' buckets
-  // from setStore (Set migrates to bucket-as-truth in a later step).
-  // #706: the Map (kind=1) branch is gone — Map wrappers carry their
-  // bucket directly.  Decimal (kind=3) is a no-op.
-  const _SLOT_SIZE = 12;
   const _BUCKET_INITIAL_CAPACITY = 8;
-  imports.vera.attach_bucket_to_wrapper = (wrapperPtr, kind, handle) => {
-    if (kind === 2) {
-      const s = setStore.get(handle);
-      if (!s) {
-        throw new Error(
-          `attach_bucket_to_wrapper: unknown Set host-store handle ${handle} ` +
-          '(wrapper / setStore desync — see PR #707 review)'
-        );
-      }
-      const capacity = Math.max(_BUCKET_INITIAL_CAPACITY, s.size * 2);
-      const bucketBytes = capacity * _SLOT_SIZE;
-      const bucketPtr = alloc(bucketBytes);
-      writeI32(wrapperPtr + 8, bucketPtr);
-      new Uint8Array(mem().buffer, bucketPtr, bucketBytes).fill(0);
-      let i = 0;
-      for (const elem of s) {
-        const slotBase = bucketPtr + i * _SLOT_SIZE;
-        if (typeof elem === 'string') {
-          const [ep, el] = allocString(elem);
-          writeI32(slotBase, ep);
-          writeI32(slotBase + 4, el);
-        } else {
-          const ew = typeof elem === 'number' ? elem : 0;
-          writeI32(slotBase, ew);
-        }
-        i++;
-      }
-    }
-    // kind === 1 (Map): bucket-as-truth, nothing to attach.
-    // kind === 3 (Decimal): value-typed, nothing to attach.
-  };
+  // #706: Map and Set are bucket-as-truth (their wrappers carry the
+  // bucket directly) and Decimal is value-typed, so nothing needs a
+  // bucket attached.  The import stays defined because the Decimal wrap
+  // path (_emit_wrap_handle) still emits a call to it.
+  imports.vera.attach_bucket_to_wrapper = () => {};
 
   // #573 wrapper-ADT layout constants (must match
   // vera/wasm/calls_containers.py).
@@ -1695,24 +1664,16 @@ function buildImportObject(module) {
     }
   }
 
-  // Set<T> bindings — host-side Set via opaque i32 handles.
-  // Import names are type-specific: set_add$ei, set_contains$es, etc.
-  const setStore = new Map();   // handle → JS Set
-  let setNextHandle = 1;
-  function setAlloc(s) {
-    const h = setNextHandle++;
-    setStore.set(h, s);
-    return h;
-  }
-
-  // set_new — always needed if any set op is used
+  // Set<T> bindings — #706: bucket-as-truth, parallel to Map.  The
+  // element lives in the slot's key field (decodeColumn off=4); the val
+  // field is unused (encodeEntries with vt === null).  Int elements stay
+  // BigInt end-to-end so the JS Set dedups consistently with the i64
+  // round-trip (the old runtime coerced to Number).
   if (needed.has("set_new")) {
-    imports.vera["set_new"] = () => setAlloc(new Set());
+    imports.vera["set_new"] = () => allocBktWrapper(2, 0);
   }
-
-  // set_size — unparameterised
   if (needed.has("set_size")) {
-    imports.vera["set_size"] = (h) => BigInt(setStore.get(h)?.size ?? 0);
+    imports.vera["set_size"] = (wp) => BigInt(bktCount(wp));
   }
 
   for (const name of needed) {
@@ -1721,20 +1682,14 @@ function buildImportObject(module) {
     m = name.match(/^set_add\$e(.)$/);
     if (m) {
       const et = m[1];
-      if (et === "s") {
-        imports.vera[name] = (h, ptr, len) => {
-          const e = readString(ptr, len);
-          const ns = new Set(setStore.get(h));
-          ns.add(e);
-          return setAlloc(ns);
-        };
-      } else {
-        imports.vera[name] = (h, e) => {
-          const ns = new Set(setStore.get(h));
-          ns.add(et === "i" ? Number(e) : e);
-          return setAlloc(ns);
-        };
-      }
+      const add = (wp, e) => {
+        const s = new Set(decodeColumn(wp, et, 4));
+        s.add(e);
+        return encodeEntries(2, [...s].map((x) => [x, 0]), et, null);
+      };
+      imports.vera[name] = et === "s"
+        ? (wp, ptr, len) => add(wp, readString(ptr, len))
+        : (wp, e) => add(wp, e);
       continue;
     }
 
@@ -1742,17 +1697,10 @@ function buildImportObject(module) {
     m = name.match(/^set_contains\$e(.)$/);
     if (m) {
       const et = m[1];
-      if (et === "s") {
-        imports.vera[name] = (h, ptr, len) => {
-          const e = readString(ptr, len);
-          return setStore.get(h)?.has(e) ? 1 : 0;
-        };
-      } else {
-        imports.vera[name] = (h, e) => {
-          const val = et === "i" ? Number(e) : e;
-          return setStore.get(h)?.has(val) ? 1 : 0;
-        };
-      }
+      const has = (wp, e) => decodeColumn(wp, et, 4).some((x) => x === e) ? 1 : 0;
+      imports.vera[name] = et === "s"
+        ? (wp, ptr, len) => has(wp, readString(ptr, len))
+        : (wp, e) => has(wp, e);
       continue;
     }
 
@@ -1760,20 +1708,9 @@ function buildImportObject(module) {
     m = name.match(/^set_remove\$e(.)$/);
     if (m) {
       const et = m[1];
-      if (et === "s") {
-        imports.vera[name] = (h, ptr, len) => {
-          const e = readString(ptr, len);
-          const ns = new Set(setStore.get(h));
-          ns.delete(e);
-          return setAlloc(ns);
-        };
-      } else {
-        imports.vera[name] = (h, e) => {
-          const ns = new Set(setStore.get(h));
-          ns.delete(et === "i" ? Number(e) : e);
-          return setAlloc(ns);
-        };
-      }
+      imports.vera[name] = et === "s"
+        ? (wp, ptr, len) => rebuildWithout(wp, et, readString(ptr, len), 2)
+        : (wp, e) => rebuildWithout(wp, et, e, 2);
       continue;
     }
 
@@ -1781,31 +1718,7 @@ function buildImportObject(module) {
     m = name.match(/^set_to_array\$e(.)$/);
     if (m) {
       const et = m[1];
-      imports.vera[name] = (h) => {
-        const elems = [...(setStore.get(h) ?? [])];
-        const count = elems.length;
-        if (count === 0) return [0, 0];
-        if (et === "s") {
-          return allocArrayOfStrings(elems);
-        }
-        if (et === "i") {
-          const ptr = alloc(count * 8);
-          const dv = new DataView(mem().buffer);
-          for (let i = 0; i < count; i++) dv.setBigInt64(ptr + i * 8, BigInt(elems[i]), true);
-          return [ptr, count];
-        }
-        if (et === "f") {
-          const ptr = alloc(count * 8);
-          const dv = new DataView(mem().buffer);
-          for (let i = 0; i < count; i++) dv.setFloat64(ptr + i * 8, elems[i], true);
-          return [ptr, count];
-        }
-        // "b" — i32 elements
-        const ptr = alloc(count * 4);
-        const dv = new DataView(mem().buffer);
-        for (let i = 0; i < count; i++) dv.setInt32(ptr + i * 4, elems[i], true);
-        return [ptr, count];
-      };
+      imports.vera[name] = (wp) => emitArray(decodeColumn(wp, et, 4), et);
       continue;
     }
   }

@@ -326,6 +326,8 @@ class CallsContainersMixin:
         wasm_name = self._register_decimal_import(
             "decimal_to_string", ["i32"], ["i32", "i32"])
         self.needs_alloc = True
+        # Decimal keeps the wrapper/handle scheme: unwrap the wrapper to
+        # the raw decimal-store handle before the host call.
         ins: list[str] = list(arg_instrs)
         ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
@@ -946,15 +948,11 @@ class CallsContainersMixin:
         self._set_imports.add(f'  (import "vera" "set_new" {sig})')
         self._set_ops_used.add("set_new")
         self.needs_alloc = True
+        # #706: the host returns a wrapper_ptr (empty bucket-as-truth
+        # Set); shadow-root it as the result.
         ins: list[str] = [f"call {wasm_name}"]
-        handle_tmp = self.alloc_local("i32")
         wrapper_tmp = self.alloc_local("i32")
-        ins.append(f"local.set {handle_tmp}")
-        ins.extend(
-            self._emit_wrap_handle(
-                _WRAP_KIND_SET, handle_tmp, wrapper_tmp,
-            )
-        )
+        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_set_add(
@@ -982,11 +980,12 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
+        # #706: pass the Set wrapper_ptr directly; the host returns a
+        # fresh wrapper_ptr (bucket-as-truth).
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
-        ins.extend(self._emit_unwrap_handle())
         for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -994,14 +993,8 @@ class CallsContainersMixin:
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
-        handle_tmp = self.alloc_local("i32")
         wrapper_tmp = self.alloc_local("i32")
-        ins.append(f"local.set {handle_tmp}")
-        ins.extend(
-            self._emit_wrap_handle(
-                _WRAP_KIND_SET, handle_tmp, wrapper_tmp,
-            )
-        )
+        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_set_contains(
@@ -1026,11 +1019,11 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
+        # #706: pass the Set wrapper_ptr directly (bucket-as-truth).
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
-        ins.extend(self._emit_unwrap_handle())
         for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -1061,11 +1054,12 @@ class CallsContainersMixin:
             extra_params=params, results=["i32"],
         )
         ins: list[str] = []
+        # #706: pass the Set wrapper_ptr directly; the host returns a
+        # fresh wrapper_ptr (bucket-as-truth).
         arg0 = self.translate_expr(call.args[0], env)
         if arg0 is None:
             return None
         ins.extend(arg0)
-        ins.extend(self._emit_unwrap_handle())
         for arg in call.args[1:]:
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
@@ -1073,14 +1067,8 @@ class CallsContainersMixin:
             ins.extend(arg_instrs)
         ins.append(f"call {wasm_name}")
         self.needs_alloc = True
-        handle_tmp = self.alloc_local("i32")
         wrapper_tmp = self.alloc_local("i32")
-        ins.append(f"local.set {handle_tmp}")
-        ins.extend(
-            self._emit_wrap_handle(
-                _WRAP_KIND_SET, handle_tmp, wrapper_tmp,
-            )
-        )
+        ins.extend(self._emit_root_result(wrapper_tmp))
         return ins
 
     def _translate_set_size(
@@ -1094,8 +1082,8 @@ class CallsContainersMixin:
         arg_instrs = self.translate_expr(arg, env)
         if arg_instrs is None:
             return None
+        # #706: pass the Set wrapper_ptr directly (bucket-as-truth).
         ins: list[str] = list(arg_instrs)
-        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins
 
@@ -1122,7 +1110,7 @@ class CallsContainersMixin:
         arg_instrs = self.translate_expr(call.args[0], env)
         if arg_instrs is None:
             return None
+        # #706: pass the Set wrapper_ptr directly (bucket-as-truth).
         ins: list[str] = list(arg_instrs)
-        ins.extend(self._emit_unwrap_handle())
         ins.append(f"call {wasm_name}")
         return ins
