@@ -1297,6 +1297,44 @@ def execute(
             return _read_wasm_string(caller, ptr, ln) if ln else ""
         return int(struct.unpack_from("<I", buf, off)[0])
 
+    # ------------------------------------------------------------------
+    # #706: SameValueZero key/element comparison.
+    # ------------------------------------------------------------------
+    # Float64 keys / Set elements compare under SameValueZero (the
+    # semantics native JS Map/Set use): NaN equals NaN, and +0.0 == -0.0.
+    # Python's ``==`` and dict / set / list membership all treat NaN as
+    # unequal to itself, so without this a NaN key can never be found,
+    # removed, or deduped.  The browser runtime carries the parallel
+    # ``sameValueZero`` helper.  These collapse to plain ``==`` / dict
+    # ops for every non-float key, so the Int-keyed hot paths (e.g. the
+    # 10K insert chain) are unaffected.
+    def _is_nan(v: object) -> bool:
+        return isinstance(v, float) and v != v
+
+    def _same_value_zero(a: object, b: object) -> bool:
+        return a is b or a == b or (_is_nan(a) and _is_nan(b))
+
+    def _map_lookup(d: dict[object, object], k: object) -> object:
+        """``d.get(k)`` with SameValueZero (finds a NaN key); O(1) for
+        the common non-NaN case."""
+        if _is_nan(k):
+            return next((vv for kk, vv in d.items() if _is_nan(kk)), None)
+        return d.get(k)
+
+    def _map_put(d: dict[object, object], k: object, v: object) -> None:
+        """``d[k] = v`` with SameValueZero key dedup (NaN keys collapse
+        to one entry; a plain dict cannot dedup NaN)."""
+        if _is_nan(k):
+            for existing in [kk for kk in d if _is_nan(kk)]:
+                del d[existing]
+        d[k] = v
+
+    def _set_add_svz(s: set[object], e: object) -> None:
+        """``s.add(e)`` with SameValueZero dedup (at most one NaN)."""
+        if _is_nan(e) and any(_is_nan(x) for x in s):
+            return
+        s.add(e)
+
     def _decode_map(
         caller: wasmtime.Caller, wrapper_ptr: int, kt: str, vt: str,
     ) -> dict[object, object]:
@@ -1592,11 +1630,19 @@ def execute(
     ) -> int:
         """Allocate Result.Ok(String) on the WASM heap; returns ADT ptr."""
         str_ptr, str_len = _alloc_string(caller, s)
-        # Layout: tag(i32)=0 at +0, str_ptr(i32) at +4, str_len(i32) at +8
-        adt_ptr = _call_alloc(caller, 12)
-        _write_i32(caller, adt_ptr, 0)       # tag = Ok
-        _write_i32(caller, adt_ptr + 4, str_ptr)
-        _write_i32(caller, adt_ptr + 8, str_len)
+        # GC-rooting (folded into #706): ``str_ptr`` lives only in this
+        # Python local across the struct ``_call_alloc`` below; the
+        # conservative scan can't see it, so a GC there would sweep the
+        # string block and we'd store a dangling pointer.  Root it across
+        # the alloc; its reachability transfers to the ADT's +4 field.
+        with _ShadowGuard(caller) as guard:
+            if str_ptr != 0:
+                guard.push(str_ptr)
+            # Layout: tag(i32)=0 at +0, str_ptr(i32) at +4, str_len(i32) at +8
+            adt_ptr = _call_alloc(caller, 12)
+            _write_i32(caller, adt_ptr, 0)       # tag = Ok
+            _write_i32(caller, adt_ptr + 4, str_ptr)
+            _write_i32(caller, adt_ptr + 8, str_len)
         return adt_ptr
 
     def _alloc_result_err_string(
@@ -1604,11 +1650,16 @@ def execute(
     ) -> int:
         """Allocate Result.Err(String) on the WASM heap; returns ADT ptr."""
         str_ptr, str_len = _alloc_string(caller, s)
-        # Layout: tag(i32)=1 at +0, str_ptr(i32) at +4, str_len(i32) at +8
-        adt_ptr = _call_alloc(caller, 12)
-        _write_i32(caller, adt_ptr, 1)       # tag = Err
-        _write_i32(caller, adt_ptr + 4, str_ptr)
-        _write_i32(caller, adt_ptr + 8, str_len)
+        # GC-rooting (folded into #706): see _alloc_result_ok_string —
+        # root str_ptr across the struct alloc so a GC can't sweep it.
+        with _ShadowGuard(caller) as guard:
+            if str_ptr != 0:
+                guard.push(str_ptr)
+            # Layout: tag(i32)=1 at +0, str_ptr(i32) at +4, str_len(i32) at +8
+            adt_ptr = _call_alloc(caller, 12)
+            _write_i32(caller, adt_ptr, 1)       # tag = Err
+            _write_i32(caller, adt_ptr + 4, str_ptr)
+            _write_i32(caller, adt_ptr + 8, str_len)
         return adt_ptr
 
     def _alloc_result_ok_unit(caller: wasmtime.Caller) -> int:
@@ -1623,11 +1674,16 @@ def execute(
     ) -> int:
         """Allocate Option.Some(String) on the WASM heap; returns ADT ptr."""
         str_ptr, str_len = _alloc_string(caller, s)
-        # Layout: tag(i32)=1 at +0, str_ptr(i32) at +4, str_len(i32) at +8
-        adt_ptr = _call_alloc(caller, 12)
-        _write_i32(caller, adt_ptr, 1)       # tag = Some
-        _write_i32(caller, adt_ptr + 4, str_ptr)
-        _write_i32(caller, adt_ptr + 8, str_len)
+        # GC-rooting (folded into #706): see _alloc_result_ok_string —
+        # root str_ptr across the struct alloc so a GC can't sweep it.
+        with _ShadowGuard(caller) as guard:
+            if str_ptr != 0:
+                guard.push(str_ptr)
+            # Layout: tag(i32)=1 at +0, str_ptr(i32) at +4, str_len(i32) at +8
+            adt_ptr = _call_alloc(caller, 12)
+            _write_i32(caller, adt_ptr, 1)       # tag = Some
+            _write_i32(caller, adt_ptr + 4, str_ptr)
+            _write_i32(caller, adt_ptr + 8, str_len)
         return adt_ptr
 
     def _alloc_option_none(caller: wasmtime.Caller) -> int:
@@ -1657,11 +1713,18 @@ def execute(
         count = len(strings)
         if count == 0:
             return (0, 0)
-        backing_ptr = _call_alloc(caller, count * 8)
-        for i, s in enumerate(strings):
-            str_ptr, str_len = _alloc_string(caller, s)
-            _write_i32(caller, backing_ptr + i * 8, str_ptr)
-            _write_i32(caller, backing_ptr + i * 8 + 4, str_len)
+        # GC-rooting (folded into #706): root the backing array across the
+        # per-element string allocs.  It lives only in this Python local and
+        # would otherwise be swept by a GC inside the loop; each element's
+        # str_ptr is written into the (now rooted) backing immediately, so
+        # no element pointer is ever held unrooted across an alloc.
+        with _ShadowGuard(caller) as guard:
+            backing_ptr = _call_alloc(caller, count * 8)
+            guard.push(backing_ptr)
+            for i, s in enumerate(strings):
+                str_ptr, str_len = _alloc_string(caller, s)
+                _write_i32(caller, backing_ptr + i * 8, str_ptr)
+                _write_i32(caller, backing_ptr + i * 8 + 4, str_len)
         return (backing_ptr, count)
 
     def _alloc_result_ok_i32(
@@ -2682,7 +2745,7 @@ def execute(
                     k = _read_wasm_string(caller, kp, kl)
                     v = _read_wasm_string(caller, vp, vl)
                     new_d = _decode_map(caller, wp, kt, vt)
-                    new_d[k] = v
+                    _map_put(new_d, k, v)
                     return _encode_map(caller, new_d, kt, vt)
             elif kt == "s":
                 def host_fn(  # type: ignore[misc]
@@ -2691,7 +2754,7 @@ def execute(
                 ) -> int:
                     k = _read_wasm_string(caller, kp, kl)
                     new_d = _decode_map(caller, wp, kt, vt)
-                    new_d[k] = v
+                    _map_put(new_d, k, v)
                     return _encode_map(caller, new_d, kt, vt)
             elif vt == "s":
                 def host_fn(  # type: ignore[misc]
@@ -2700,7 +2763,7 @@ def execute(
                 ) -> int:
                     v = _read_wasm_string(caller, vp, vl)
                     new_d = _decode_map(caller, wp, kt, vt)
-                    new_d[k] = v
+                    _map_put(new_d, k, v)
                     return _encode_map(caller, new_d, kt, vt)
             else:
                 def host_fn(  # type: ignore[misc]
@@ -2708,7 +2771,7 @@ def execute(
                     wp: int, k: int | float, v: int | float,
                 ) -> int:
                     new_d = _decode_map(caller, wp, kt, vt)
-                    new_d[k] = v
+                    _map_put(new_d, k, v)
                     return _encode_map(caller, new_d, kt, vt)
 
             linker.define_func(
@@ -2749,14 +2812,14 @@ def execute(
                 ) -> int:
                     k = _read_wasm_string(caller, kp, kl)
                     d = _decode_map(caller, wp, kt, vt)
-                    return _make_option(caller, d.get(k))
+                    return _make_option(caller, _map_lookup(d, k))
             else:
                 def host_fn(  # type: ignore[misc]
                     caller: wasmtime.Caller,
                     wp: int, k: int | float,
                 ) -> int:
                     d = _decode_map(caller, wp, kt, vt)
-                    return _make_option(caller, d.get(k))
+                    return _make_option(caller, _map_lookup(d, k))
 
             linker.define_func(
                 "vera", name, ftype, host_fn, access_caller=True,
@@ -2774,13 +2837,19 @@ def execute(
                     wp: int, kp: int, kl: int,
                 ) -> int:
                     k = _read_wasm_string(caller, kp, kl)
-                    return 1 if k in _decode_column(caller, wp, kt, 4) else 0
+                    return 1 if any(
+                        _same_value_zero(k, x)
+                        for x in _decode_column(caller, wp, kt, 4)
+                    ) else 0
             else:
                 def host_fn(  # type: ignore[misc]
                     caller: wasmtime.Caller,
                     wp: int, k: int | float,
                 ) -> int:
-                    return 1 if k in _decode_column(caller, wp, kt, 4) else 0
+                    return 1 if any(
+                        _same_value_zero(k, x)
+                        for x in _decode_column(caller, wp, kt, 4)
+                    ) else 0
 
             linker.define_func(
                 "vera", name, ftype, host_fn, access_caller=True,
@@ -2800,7 +2869,7 @@ def execute(
                 survivors = [
                     (kb, vb)
                     for kb, vb in _bkt_raw_entries(caller, wp)
-                    if _decode_field(caller, kt, kb, 0) != k
+                    if not _same_value_zero(_decode_field(caller, kt, kb, 0), k)
                 ]
                 return _encode_raw(caller, _WRAP_KIND_MAP, survivors)
 
@@ -2942,14 +3011,14 @@ def execute(
                     caller: wasmtime.Caller, wp: int, ep: int, el: int,
                 ) -> int:
                     s = _decode_set(caller, wp, et)
-                    s.add(_read_wasm_string(caller, ep, el))
+                    _set_add_svz(s, _read_wasm_string(caller, ep, el))
                     return _encode_set(caller, s, et)
             else:
                 def host_fn(  # type: ignore[misc]
                     caller: wasmtime.Caller, wp: int, e: int | float,
                 ) -> int:
                     s = _decode_set(caller, wp, et)
-                    s.add(e)
+                    _set_add_svz(s, e)
                     return _encode_set(caller, s, et)
 
             linker.define_func(
@@ -2967,12 +3036,18 @@ def execute(
                     caller: wasmtime.Caller, wp: int, ep: int, el: int,
                 ) -> int:
                     e = _read_wasm_string(caller, ep, el)
-                    return 1 if e in _decode_column(caller, wp, et, 4) else 0
+                    return 1 if any(
+                        _same_value_zero(e, x)
+                        for x in _decode_column(caller, wp, et, 4)
+                    ) else 0
             else:
                 def host_fn(  # type: ignore[misc]
                     caller: wasmtime.Caller, wp: int, e: int | float,
                 ) -> int:
-                    return 1 if e in _decode_column(caller, wp, et, 4) else 0
+                    return 1 if any(
+                        _same_value_zero(e, x)
+                        for x in _decode_column(caller, wp, et, 4)
+                    ) else 0
 
             linker.define_func(
                 "vera", name, ftype, host_fn, access_caller=True,
@@ -2992,7 +3067,7 @@ def execute(
                 survivors = [
                     (kb, vb)
                     for kb, vb in _bkt_raw_entries(caller, wp)
-                    if _decode_field(caller, et, kb, 0) != e
+                    if not _same_value_zero(_decode_field(caller, et, kb, 0), e)
                 ]
                 return _encode_raw(caller, _WRAP_KIND_SET, survivors)
 

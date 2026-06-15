@@ -110,24 +110,67 @@ function allocString(str) {
 // ADT allocation helpers (mirror api.py _alloc_result_*, _alloc_option_*)
 // ---------------------------------------------------------------------------
 
+/**
+ * Root a freshly-allocated WASM heap pointer on the GC shadow stack
+ * across fn(), then pop it.  No-op when the module has no GC
+ * infrastructure (then $alloc never collects, so nothing can sweep ptr)
+ * or when ptr is 0 (the GC's "not a heap object" sentinel).  Mirrors the
+ * CLI _ShadowGuard discipline for host-side ADT builders; folded into
+ * #706 to close a pre-existing rooting gap in these helpers.
+ */
+function gcRooted(ptr, fn) {
+  if (ptr === 0 || !wasm || !wasm.gc_sp || !wasm.gc_stack_limit) {
+    return fn();
+  }
+  const sp = wasm.gc_sp.value;
+  if (sp >= wasm.gc_stack_limit.value) {
+    throw new Error('GC shadow stack overflow in browser runtime (gcRooted)');
+  }
+  writeI32(sp, ptr | 0);
+  wasm.gc_sp.value = sp + 4;
+  try {
+    return fn();
+  } finally {
+    wasm.gc_sp.value = sp;
+  }
+}
+
+/**
+ * SameValueZero equality (the semantics native JS Map/Set use): like
+ * ===, but NaN equals NaN.  Used for Float64 Map-key / Set-element
+ * comparisons in the bucket codec (decodeColumn lists), so a NaN
+ * key/element round-trips the way the old native-Map runtime did for
+ * free.  Folded into #706.
+ */
+function sameValueZero(a, b) {
+  return a === b || (a !== a && b !== b);
+}
+
 /** Allocate Result.Ok(String) → heap pointer. Tag=0, str at +4/+8. */
 function allocResultOkString(str) {
   const [strPtr, strLen] = allocString(str);
-  const ptr = alloc(12);
-  writeI32(ptr, 0);            // tag = Ok
-  writeI32(ptr + 4, strPtr);
-  writeI32(ptr + 8, strLen);
-  return ptr;
+  // GC-rooting (folded into #706): strPtr lives only in this JS local
+  // across the struct alloc; root it so a GC there can't sweep it.
+  return gcRooted(strPtr, () => {
+    const ptr = alloc(12);
+    writeI32(ptr, 0);            // tag = Ok
+    writeI32(ptr + 4, strPtr);
+    writeI32(ptr + 8, strLen);
+    return ptr;
+  });
 }
 
 /** Allocate Result.Err(String) → heap pointer. Tag=1, str at +4/+8. */
 function allocResultErrString(str) {
   const [strPtr, strLen] = allocString(str);
-  const ptr = alloc(12);
-  writeI32(ptr, 1);            // tag = Err
-  writeI32(ptr + 4, strPtr);
-  writeI32(ptr + 8, strLen);
-  return ptr;
+  // GC-rooting (folded into #706): see allocResultOkString.
+  return gcRooted(strPtr, () => {
+    const ptr = alloc(12);
+    writeI32(ptr, 1);            // tag = Err
+    writeI32(ptr + 4, strPtr);
+    writeI32(ptr + 8, strLen);
+    return ptr;
+  });
 }
 
 /** Allocate Result.Ok(()) → heap pointer. Tag=0, no payload. */
@@ -1335,7 +1378,7 @@ function buildImportObject(module) {
         const base = slotsBase + i * _BKT_SLOT;
         if (readI32(base) === 0) continue;
         seen++;
-        if (decodeField(kt, base + 4) === key) continue;
+        if (sameValueZero(decodeField(kt, base + 4), key)) continue;
         const fields = new Uint8Array(16);
         fields.set(new Uint8Array(mem().buffer, base + 4, 16));
         survivors.push(fields);
@@ -1568,11 +1611,14 @@ function buildImportObject(module) {
     }
     if (vt === 's') {
       const [sp, sl] = allocString(String(val));
-      const p = alloc(12); // tag(4) + ptr(4) + len(4)
-      writeI32(p, 1);
-      writeI32(p + 4, sp);
-      writeI32(p + 8, sl);
-      return p;
+      // GC-rooting (#706): root sp across the option-struct alloc.
+      return gcRooted(sp, () => {
+        const p = alloc(12); // tag(4) + ptr(4) + len(4)
+        writeI32(p, 1);
+        writeI32(p + 4, sp);
+        writeI32(p + 8, sl);
+        return p;
+      });
     }
     // i32 (Bool, Byte, ADT, Map handle)
     const p = alloc(8); // tag(4) + i32(4)
@@ -1586,12 +1632,17 @@ function buildImportObject(module) {
     const count = strings.length;
     if (count === 0) return [0, 0];
     const ptr = alloc(count * 8); // each string is (i32 ptr, i32 len)
-    for (let i = 0; i < count; i++) {
-      const [sp, sl] = allocString(strings[i]);
-      writeI32(ptr + i * 8, sp);
-      writeI32(ptr + i * 8 + 4, sl);
-    }
-    return [ptr, count];
+    // GC-rooting (#706): root the backing array across the per-element
+    // string allocs; each str ptr is written into the rooted backing
+    // immediately, so no element pointer is held unrooted across an alloc.
+    return gcRooted(ptr, () => {
+      for (let i = 0; i < count; i++) {
+        const [sp, sl] = allocString(strings[i]);
+        writeI32(ptr + i * 8, sp);
+        writeI32(ptr + i * 8 + 4, sl);
+      }
+      return [ptr, count];
+    });
   }
 
   // #706: every Map host import takes the wrapper pointer and goes
@@ -1651,7 +1702,7 @@ function buildImportObject(module) {
       imports.vera[name] = (wp, ...args) => {
         let idx = 0;
         const k = kt === 's' ? readString(args[idx++], args[idx++]) : args[idx++];
-        return decodeColumn(wp, kt, 4).some((x) => x === k) ? 1 : 0;
+        return decodeColumn(wp, kt, 4).some((x) => sameValueZero(x, k)) ? 1 : 0;
       };
       continue;
     }
@@ -1715,7 +1766,7 @@ function buildImportObject(module) {
     m = name.match(/^set_contains\$e(.)$/);
     if (m) {
       const et = m[1];
-      const has = (wp, e) => decodeColumn(wp, et, 4).some((x) => x === e) ? 1 : 0;
+      const has = (wp, e) => decodeColumn(wp, et, 4).some((x) => sameValueZero(x, e)) ? 1 : 0;
       imports.vera[name] = et === "s"
         ? (wp, ptr, len) => has(wp, readString(ptr, len))
         : (wp, e) => has(wp, e);
@@ -2416,9 +2467,12 @@ function buildImportObject(module) {
       let arrPtr = 0;
       if (count > 0) {
         arrPtr = alloc(count * 4);
-        for (let i = 0; i < count; i++) {
-          writeI32(arrPtr + i * 4, writeHtml(matches[i]));
-        }
+        // GC-rooting (#706): root arrPtr across writeHtml's allocations.
+        gcRooted(arrPtr, () => {
+          for (let i = 0; i < count; i++) {
+            writeI32(arrPtr + i * 4, writeHtml(matches[i]));
+          }
+        });
       }
       return [arrPtr, count];
     };

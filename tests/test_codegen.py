@@ -18705,6 +18705,147 @@ public fn main(@Unit -> @Int)
         assert _run(src) == -1
 
 
+class TestAdtBuilderRooting743:
+    """PR #743 (folded into #706): host-side ADT result builders root a
+    freshly-allocated string / backing-array block across the enclosing
+    struct/array alloc.
+
+    The CLI ``_alloc_option_some_string`` / ``_alloc_result_*_string`` /
+    ``_alloc_array_of_strings`` and the browser ``mapAllocOption`` /
+    ``mapAllocArrayOfStrings`` / ``allocResult*String`` allocate a string,
+    then allocate the wrapping struct/array — a GC fired by the second
+    alloc would sweep the still-host-local string pointer and store a
+    dangling reference.  Pre-existing (the #692/#695 work hardened the
+    JSON/HTML walkers but not these simpler builders); surfaced by the
+    CodeRabbit review of #706.  Reproduces only under ``VERA_EAGER_GC=1``
+    / heap pressure.
+    """
+
+    def test_map_get_string_value_survives_eager_gc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """500 ``map_get`` calls on a ``Map<Int, String>`` under eager GC
+        each return the live string.  Pre-fix returned 0: the string block
+        was swept during the ``Option<String>`` struct alloc and
+        ``string_contains`` read reclaimed memory."""
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<Int, String> = map_insert(map_new(), 1, "alphabet_soup_xyz");
+  array_fold(
+    array_range(0, 500),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      match map_get(@Map<Int, String>.0, 1) {
+        Some(@String) ->
+          if string_contains(@String.0, "soup") then { @Int.1 + 1 }
+          else { @Int.1 },
+        None -> @Int.1
+      }
+    }
+  )
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        assert _run(src) == 500
+
+    def test_map_keys_string_backing_survives_eager_gc(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``map_keys`` on a ``Map<String, Int>`` builds an
+        ``Array<String>`` backing 300x under eager GC.
+        ``_alloc_array_of_strings`` roots the backing across the
+        per-element string allocs; without it the backing is swept
+        mid-fill and the element write corrupts the free list, trapping a
+        later alloc.  (Vera has no generic ``Array`` element accessor, so
+        this exercises the builder via that trap rather than reading the
+        strings back.)"""
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Map<String, Int> = map_insert(map_insert(map_new(), "k1", 1), "k2", 2);
+  array_fold(
+    array_range(0, 300),
+    0,
+    fn(@Int, @Int -> @Int) effects(pure) {
+      @Int.1 + array_length(map_keys(@Map<String, Int>.0))
+    }
+  )
+}
+"""
+        monkeypatch.setenv("VERA_EAGER_GC", "1")
+        # 300 iterations x 2 keys = 600 (a swept backing would trap first).
+        assert _run(src) == 600
+
+
+class TestSameValueZeroKeys743:
+    """PR #743 (folded into #706): Float64 Map keys / Set elements compare
+    under SameValueZero, so a NaN key/element round-trips (NaN equals NaN).
+
+    Pre-existing: the CLI Python dict / the browser ``decodeColumn`` list
+    use ``==`` / ``===``, which treat NaN as unequal to itself, so a NaN
+    key could never be found, removed, or deduped.  ``0.0 / 0.0`` verifies
+    and runs to NaN, so this is reachable.  Surfaced by the CodeRabbit
+    review of #706.
+    """
+
+    def test_nan_map_key_found(self) -> None:
+        """A NaN ``Float64`` map key is found by ``map_contains`` /
+        ``map_get`` (pre-fix: not found → -1)."""
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Float64 = 0.0 / 0.0;
+  let @Map<Float64, Int> = map_insert(map_new(), @Float64.0, 42);
+  if map_contains(@Map<Float64, Int>.0, @Float64.0) then {
+    match map_get(@Map<Float64, Int>.0, @Float64.0) {
+      Some(@Int) -> @Int.0,
+      None -> -2
+    }
+  } else { -1 }
+}
+"""
+        assert _run(src) == 42
+
+    def test_nan_map_key_dedups_and_removes(self) -> None:
+        """Inserting a NaN key twice dedups to one entry; ``map_remove``
+        then clears it (pre-fix: dedup and removal both failed)."""
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Float64 = 0.0 / 0.0;
+  let @Map<Float64, Int> = map_insert(map_insert(map_new(), @Float64.0, 1), @Float64.0, 99);
+  let @Int = nat_to_int(map_size(@Map<Float64, Int>.0));
+  let @Map<Float64, Int> = map_remove(@Map<Float64, Int>.0, @Float64.0);
+  let @Int = nat_to_int(map_size(@Map<Float64, Int>.0));
+  @Int.1 * 100 + @Int.0
+}
+"""
+        # size 1 after dedup, size 0 after remove → 100.
+        assert _run(src) == 100
+
+    def test_nan_set_element_round_trips(self) -> None:
+        """A NaN ``Float64`` Set element dedups and is found by
+        ``set_contains`` (pre-fix: duplicated and not found)."""
+        src = """
+public fn main(-> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Float64 = 0.0 / 0.0;
+  let @Set<Float64> = set_add(set_add(set_new(), @Float64.0), @Float64.0);
+  if set_contains(@Set<Float64>.0, @Float64.0) then {
+    nat_to_int(set_size(@Set<Float64>.0))
+  } else { -1 }
+}
+"""
+        # deduped to size 1; contains finds NaN → 1.
+        assert _run(src) == 1
+
+
 class TestHostHandleReclamation573:
     """Reclamation regressions originally for the heap-wrap-as-ADT
     migration of Map (#573), Set (#575), and Decimal (#576), updated
