@@ -934,12 +934,16 @@ def execute(
     def _write_bytes(
         caller: wasmtime.Caller, offset: int, data: bytes,
     ) -> None:
-        """Write raw bytes into WASM linear memory."""
+        """Write raw bytes into WASM linear memory.
+
+        Uses wasmtime's batched ``Memory.write`` (one bounds-checked
+        copy) rather than a per-byte ``data_ptr`` loop: the old loop was
+        O(n) Python-level assignments and turned bucket-array writes into
+        an O(N²) hot path on large Map / Set chains (#706).
+        """
         memory = caller["memory"]
         assert isinstance(memory, wasmtime.Memory)  # noqa: S101
-        buf = memory.data_ptr(store)
-        for i, b in enumerate(data):
-            buf[offset + i] = b
+        memory.write(caller, data, offset)
 
     def _write_i32(
         caller: wasmtime.Caller, offset: int, value: int,
