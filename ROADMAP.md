@@ -20,7 +20,6 @@ The cases where Vera accepts a program and quietly does something weaker than it
 
 | Issue | What | Why it's first |
 |---|---|---|
-| [#706](https://github.com/aallan/vera/issues/706) | Move `Map`/`Set` host stores from Python mirror to bucket-as-truth | Collection data currently lives in two places (Python-side store + WASM-resident mirror for GC reachability); any future host import that forgets the mirror step corrupts data silently.  The audit's top architectural risk. |
 | [#552](https://github.com/aallan/vera/issues/552) | `@Nat` invariant check at all binding sites | Narrowing `@Int` into a `@Nat`-typed let binding or argument is neither obligation-checked nor runtime-guarded, so a negative value can flow on invisibly.  Same shape as the closed #520 subtraction hole. |
 | [#732](https://github.com/aallan/vera/issues/732) | Per-monomorphization static verification for generic functions | Generic (`forall<T>`) bodies skip all static verification today — a silent downgrade from Tier 1 to Tier 3.  Verifying each concrete instantiation reuses the existing pipeline; closes the static half of [#555](https://github.com/aallan/vera/issues/555). |
 | [#730](https://github.com/aallan/vera/issues/730) | Precondition-check calls in statement position | E501 fires only for calls in value position; a call whose result is discarded is never checked against its `requires(...)`. |
@@ -32,7 +31,7 @@ The infrastructure that catches the next regression before a user does, plus the
 
 | Issue | What |
 |---|---|
-| [#734](https://github.com/aallan/vera/issues/734) | Characterization harness for `execute()` — pin the observable contract (every `ExecuteResult` field × normal/trap/interrupt) before decomposing.  Sequenced with #706: both land **before** #421. |
+| [#734](https://github.com/aallan/vera/issues/734) | Characterization harness for `execute()` — pin the observable contract (every `ExecuteResult` field × normal/trap/interrupt) before decomposing.  Sequenced after #706 (bucket-as-truth, now landed); lands **before** #421. |
 | [#421](https://github.com/aallan/vera/issues/421) | Decompose `vera/codegen/api.py` into a `vera/runtime/` package, one host-binding family per PR.  The file has doubled since the issue was filed (now 4,253 lines); the issue carries a supersession comment with the current scope. |
 | [#733](https://github.com/aallan/vera/issues/733) | Adopt ruff as an enforced CI + pre-commit gate and clear the 178 existing findings. |
 | [#392](https://github.com/aallan/vera/issues/392) | Audit the `smt.py` Z3 translation layer for soundness — a bug here silently bypasses verification. |

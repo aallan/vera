@@ -11,7 +11,7 @@ Write direction (Python → WASM):
 
 Read direction (WASM → Python):
   read_json(caller, ptr, read_i32, read_f64, read_string,
-            map_store) → Any
+            decode_jobject) → Any
 
 Json ADT layouts (from prelude injection → registration.py):
   JNull                        tag=0  ()               total=8

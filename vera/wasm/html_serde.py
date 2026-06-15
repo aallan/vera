@@ -10,7 +10,7 @@ Write direction (Python -> WASM):
 
 Read direction (WASM -> Python):
   read_html(caller, ptr, read_i32, read_string,
-            map_store) -> dict
+            decode_attrs) -> dict
 
 HtmlNode ADT layouts (from prelude injection -> registration.py):
   HtmlElement(String, Map<String,String>, Array<HtmlNode>)
