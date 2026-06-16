@@ -1522,6 +1522,34 @@ class ContractVerifier:
                     )
             return
 
+        # Expression containers that hold arbitrary sub-expressions: a
+        # narrowing nested inside one (e.g. `[takes_nat(@Int.0)]`) must
+        # still be visited.  (The #520 subtraction walker has the same
+        # pre-existing container gap; aligning it is out of #552's scope.)
+        if isinstance(expr, ast.ArrayLit):
+            for elem in expr.elements:
+                self._walk_for_nat_binding_obligations(
+                    decl, elem, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, ast.IndexExpr):
+            self._walk_for_nat_binding_obligations(
+                decl, expr.collection, smt, slot_env, assumptions,
+            )
+            self._walk_for_nat_binding_obligations(
+                decl, expr.index, smt, slot_env, assumptions,
+            )
+            return
+
+        if isinstance(expr, ast.InterpolatedString):
+            for part in expr.parts:
+                if isinstance(part, ast.Expr):
+                    self._walk_for_nat_binding_obligations(
+                        decl, part, smt, slot_env, assumptions,
+                    )
+            return
+
         # Other expression types — no nested binding site to walk.
         return
 

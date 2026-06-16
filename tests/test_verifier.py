@@ -1114,6 +1114,27 @@ private fn f(@Int -> @Nat)
 }
 """, "may be negative")
 
+    def test_narrowing_inside_array_literal_caught(self) -> None:
+        """A narrowing nested in an expression container (array literal)
+        is visited by the walker, not skipped at the fallthrough
+        (CodeRabbit, PR #748)."""
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Nat> = [takes_nat(@Int.0)];
+  0
+}
+""", "may be negative")
+
 
 # =====================================================================
 # Summary
