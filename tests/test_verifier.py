@@ -744,6 +744,268 @@ private fn negative_sentinel(@Unit -> @Int)
 """)
 
 
+class TestNatBindingObligation552:
+    """`@Int` narrowing into a `@Nat` slot carries a Tier-1 `value >= 0`
+    obligation at every binding site (#552, generalising #520).
+
+    Fires when the target slot is `@Nat` AND the bound value is not
+    already statically `@Nat` — the single condition that keeps #552
+    disjoint from #520's `@Nat - @Nat` subtraction obligation (a
+    `@Nat - @Nat` value is already `@Nat`, so it is not a narrowing).
+    Discharged from preconditions and path conditions; an undischarged
+    narrowing fails with E503 and a counterexample.
+
+    Projection sites whose *source* type the verifier cannot resolve
+    statically — ADT sub-pattern binds (`Some(@Nat.0)`) and non-literal
+    tuple destructures — are left to the Tier-3 codegen runtime guard.
+    """
+
+    # ---- Site 1: let bindings -------------------------------------
+    def test_let_narrow_unguarded_fails(self) -> None:
+        _verify_err("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+""", "may be negative")
+
+    def test_let_narrow_requires_discharges(self) -> None:
+        _verify_ok("""
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+""")
+
+    def test_let_narrow_if_guard_discharges(self) -> None:
+        """Path condition `@Int.0 >= 0` discharges the let narrowing."""
+        _verify_ok("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 >= 0 then {
+    let @Nat = @Int.0;
+    @Nat.0
+  } else {
+    0
+  }
+}
+""")
+
+    def test_let_already_nat_not_flagged(self) -> None:
+        """`let @Nat = @Nat.0` is Nat->Nat — no narrowing, no obligation."""
+        result = _verify("""
+private fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Nat.0;
+  @Nat.0
+}
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == []
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+
+    # ---- Site 2: call arguments -----------------------------------
+    def test_call_arg_narrow_unguarded_fails(self) -> None:
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ takes_nat(@Int.0) }
+""", "may be negative")
+
+    def test_call_arg_narrow_requires_discharges(self) -> None:
+        _verify_ok("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{ takes_nat(@Int.0) }
+""")
+
+    # ---- Site 3: constructor fields -------------------------------
+    def test_ctor_field_narrow_unguarded_fails(self) -> None:
+        _verify_err("""
+private data Box { MkBox(Nat) }
+
+private fn f(@Int -> @Box)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ MkBox(@Int.0) }
+""", "may be negative")
+
+    def test_ctor_field_narrow_requires_discharges(self) -> None:
+        _verify_ok("""
+private data Box { MkBox(Nat) }
+
+private fn f(@Int -> @Box)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{ MkBox(@Int.0) }
+""")
+
+    # ---- Site 4: top-level match binds ----------------------------
+    def test_match_bind_narrow_unguarded_fails(self) -> None:
+        _verify_err("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    @Nat -> @Nat.0
+  }
+}
+""", "may be negative")
+
+    def test_match_bind_narrow_requires_discharges(self) -> None:
+        _verify_ok("""
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    @Nat -> @Nat.0
+  }
+}
+""")
+
+    # ---- Site 6: literal-tuple destructure ------------------------
+    def test_destructure_narrow_unguarded_fails(self) -> None:
+        """Component 0 (`@Int.0`) narrows; component 1 (literal 5) does not."""
+        _verify_err("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Nat, @Nat> = Tuple(@Int.0, 5);
+  @Nat.0
+}
+""", "may be negative")
+
+    def test_destructure_narrow_requires_discharges(self) -> None:
+        _verify_ok("""
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Nat, @Nat> = Tuple(@Int.0, 5);
+  @Nat.0
+}
+""")
+
+    # ---- Double-emit disjointness with #520 -----------------------
+    def test_nat_minus_nat_is_sub_not_bind(self) -> None:
+        """`let @Nat = @Nat.0 - @Nat.1`: value already @Nat -> #520 only."""
+        result = _verify("""
+private fn f(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Nat.0 - @Nat.1;
+  @Nat.0
+}
+""")
+        kinds = [o.kind for o in result.obligations]
+        assert kinds.count("nat_bind") == 0, kinds
+        assert kinds.count("nat_sub") == 1, kinds
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_int_minus_literal_is_bind_not_sub(self) -> None:
+        """`let @Nat = @Int.0 - 100`: value @Int -> #552 only."""
+        result = _verify("""
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 100)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0 - 100;
+  @Nat.0
+}
+""")
+        kinds = [o.kind for o in result.obligations]
+        assert kinds.count("nat_bind") == 1, kinds
+        assert kinds.count("nat_sub") == 0, kinds
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_nat_addition_not_flagged(self) -> None:
+        """`let @Nat = @Nat.0 + @Nat.1`: value already @Nat, no obligation."""
+        result = _verify("""
+private fn f(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Nat.0 + @Nat.1;
+  @Nat.0
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+
+    def test_pure_literal_subtraction_caught(self) -> None:
+        """`let @Nat = 0 - 1`: typed @Nat but valued -1.  #520 exempts the
+        pure-literal subtraction (no @Nat provenance) and defers it here;
+        #552 must catch it (E503)."""
+        _verify_err("""
+private fn f(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = 0 - 1;
+  @Nat.0
+}
+""", "may be negative")
+
+    def test_nonneg_literal_not_flagged(self) -> None:
+        """`let @Nat = 5`: a non-negative literal is genuinely @Nat — no
+        obligation.  The pure-literal carve-out is subtraction-only, so
+        bare literals and additions don't fire."""
+        result = _verify("""
+private fn f(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = 5;
+  @Nat.0
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+
+
 # =====================================================================
 # Summary
 # =====================================================================
@@ -1828,6 +2090,13 @@ private fn sum(@List<Int> -> @Int)
           implementation) added 2 T1 + 2 contracts — the trivial
           `requires(true) ensures(true)` on `main`.  Net: +2 T1,
           +2 total.
+        * 256/28/284 after #552 generalised the @Nat `>= 0` invariant
+          to all binding sites.  `json.vera` gains 1 T1 (a
+          provably-safe @Int→@Nat narrowing).  `string_utilities.vera`
+          gains 3 T3: each `nat_to_int(array_length(...))` narrows
+          array_length's @Int result into nat_to_int's @Nat param, and
+          array_length is untranslatable to Z3 so the `>= 0` obligation
+          drops to a Tier-3 runtime guard.  Net: +1 T1, +3 T3, +4 total.
         """
         t1 = t3 = total = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -1838,9 +2107,9 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 255, f"Expected 255 T1, got {t1}"
-        assert t3 == 25, f"Expected 25 T3, got {t3}"
-        assert total == 280, f"Expected 280 total, got {total}"
+        assert t1 == 256, f"Expected 256 T1, got {t1}"
+        assert t3 == 28, f"Expected 28 T3, got {t3}"
+        assert total == 284, f"Expected 284 total, got {total}"
 
 
 # =====================================================================

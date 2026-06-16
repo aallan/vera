@@ -16338,6 +16338,135 @@ public fn main(@Unit -> @Nat)
 
 
 # =====================================================================
+# @Nat binding-site narrowing runtime guard (#552)
+# =====================================================================
+
+class TestNatBindingRuntimeGuard552:
+    """Codegen emits a runtime `value >= 0` guard at `let @Nat = <Int>`
+    narrowing sites (#552), the binding-site generalisation of the #520
+    subtraction guard.
+
+    The verifier emits a Tier-1 `value >= 0` obligation; codegen mirrors
+    the detection (_narrows_into_nat, sharing _is_static_nat_typed +
+    _has_nat_origin_codegen) and traps if a negative value would reach a
+    @Nat slot.  Like the #520 guard, it protects programs compiled
+    without `vera verify`.
+
+    Only the canonical `let` site is guarded at codegen; the verifier
+    statically covers the other binding sites (call-arg, ctor-field,
+    match-bind, destructure).  Extending the runtime guard there needs
+    callee/field type plumbing or scrutinee-type inference (follow-up).
+    """
+
+    _GUARDED_LET = """
+private fn narrow(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  narrow(0 - 1)
+}
+"""
+
+    _SAFE_LET = """
+private fn narrow(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  narrow(7)
+}
+"""
+
+    def test_negative_narrowing_traps_at_runtime(self) -> None:
+        """narrow(0 - 1) feeds -1 into `let @Nat`, tripping the guard.
+
+        Without the guard, `local.set` would store -1 silently in a
+        @Nat slot.  With it, the function traps before the bad value
+        propagates.
+        """
+        result = _compile_ok(self._GUARDED_LET)
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    def test_nonnegative_narrowing_returns_value(self) -> None:
+        """narrow(7) passes the guard and returns 7 — no spurious trap."""
+        assert _run(self._SAFE_LET) == 7
+
+    def test_guard_emitted_in_wat_for_let_narrowing(self) -> None:
+        """The `narrow` body contains the `i64.lt_s` + `unreachable` guard."""
+        result = _compile_ok(self._GUARDED_LET)
+        wat = result.wat
+        idx = wat.find("(func $narrow")
+        assert idx >= 0, "narrow function not found in WAT"
+        body_end = wat.find("\n  (func ", idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[idx:body_end]
+        assert "i64.lt_s" in body, (
+            f"Expected `i64.lt_s` in narrow body for the @Nat guard. "
+            f"Body:\n{body}"
+        )
+        assert "unreachable" in body, (
+            f"Expected `unreachable` in narrow body for the @Nat guard. "
+            f"Body:\n{body}"
+        )
+
+    def test_already_nat_let_emits_no_guard(self) -> None:
+        """`let @Nat = @Nat.0` is not a narrowing — no guard emitted.
+
+        Sister to the structural test above: the guard fires only when
+        the bound value is not already statically @Nat (or is a
+        pure-literal subtraction), so a @Nat -> @Nat let must emit no
+        `i64.lt_[su]`.
+        """
+        src = """
+private fn passthru(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Nat.0;
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  passthru(5)
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        idx = wat.find("(func $passthru")
+        assert idx >= 0
+        body_end = wat.find("\n  (func ", idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[idx:body_end]
+        assert not re.search(r"\bi64\.lt_[su]\b", body), (
+            f"`let @Nat = @Nat.0` is not a narrowing and must not get a "
+            f"guard. Body:\n{body}"
+        )
+
+
+# =====================================================================
 # WASM call translator critical bug fixes (#475 PR 1)
 # =====================================================================
 

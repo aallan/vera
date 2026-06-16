@@ -46,6 +46,9 @@ ObligationKind = Literal[
                   # per-recursive-call-site checks inside
                   # _verify_decreases aggregate into this record)
     "nat_sub",    # @Nat - @Nat underflow obligation at one site (#520)
+    "nat_bind",   # @Int value narrowing into a @Nat slot at a binding
+                  # site — let / call-arg / ctor-field / match-bind /
+                  # destructure (#552, generalising the #520 pattern)
     "call_pre",   # callee precondition at a call site (#C7d); recorded
                   # only on violation in Phase A — successful call-site
                   # checks discharge silently inside the SMT layer and

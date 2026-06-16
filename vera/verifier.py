@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from vera import ast
-from vera.environment import FunctionInfo, TypeEnv
+from vera.environment import ConstructorInfo, FunctionInfo, TypeEnv
 
 if TYPE_CHECKING:
     from vera.resolver import ResolvedModule
@@ -676,6 +676,21 @@ class ContractVerifier:
                 decl, decl.body, smt, slot_env, assumptions,
             )
 
+        # 5.7. Check @Nat binding-site narrowing obligations (#552).
+        #      Generalises #520 from @Nat-@Nat subtraction to every
+        #      site where an @Int value narrows into a @Nat slot: let
+        #      bindings, call arguments, constructor fields, top-level
+        #      match binds, and literal-tuple destructures.  Emits
+        #      `value >= 0` at each, discharged from preconditions and
+        #      path conditions exactly like #520.  Projection sites
+        #      whose source type is not statically resolvable here
+        #      (ADT sub-pattern binds, non-literal destructures) fall
+        #      to the Tier-3 codegen runtime guard instead.
+        if decl.body is not None:
+            self._walk_for_nat_binding_obligations(
+                decl, decl.body, smt, slot_env, assumptions,
+            )
+
         # 6. Report any call-site precondition violations
         for v in smt.drain_call_violations():
             # Phase A records call-site obligations only on violation:
@@ -1250,6 +1265,247 @@ class ContractVerifier:
         # closures, indexing, etc.) — no nested arithmetic to walk.
         return
 
+    def _lookup_constructor_info(self, name: str) -> ConstructorInfo | None:
+        """Find a constructor's info from either registry.
+
+        ``lookup_constructor`` searches only the flat ``constructors``
+        dict that built-ins (``Some`` / ``Ok`` / …) register into;
+        :py:meth:`_register_data` files user ``data`` constructors under
+        ``data_types[...].constructors`` instead, so look there too.
+        """
+        ci = self.env.lookup_constructor(name)
+        if ci is not None:
+            return ci
+        for adt in self.env.data_types.values():
+            if name in adt.constructors:
+                return adt.constructors[name]
+        return None
+
+    def _walk_for_nat_binding_obligations(
+        self,
+        decl: ast.FnDecl,
+        expr: ast.Expr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """Walk *expr* emitting ``value >= 0`` at @Int→@Nat narrowing sites.
+
+        The binding-site generalisation of #520
+        (:py:meth:`_walk_for_subtraction_obligations`).  Fires wherever
+        an @Int-typed value flows into a freshly-declared @Nat slot:
+
+        * ``let @Nat = <Int>``                  — let bindings;
+        * ``f(<Int>)`` with an @Nat formal      — call arguments;
+        * ``Ctor(<Int>)`` with an @Nat field    — constructor fields;
+        * ``match <Int> { @Nat -> ... }``       — top-level match binds;
+        * ``let Tuple<@Nat, ...> = Tuple(<Int>, ...)`` — destructuring a
+          literal tuple.
+
+        The obligation fires only when the target is @Nat AND the value
+        is *not* already statically @Nat (``not _is_nat_typed(value)``)
+        — the single condition that keeps #552 disjoint from #520's
+        @Nat-@Nat subtraction obligation (a @Nat-@Nat value is already
+        @Nat, so it is not a narrowing).  Path conditions are tracked
+        via ``smt._path_conditions`` so :py:meth:`SmtContext.check_valid`
+        discharges each obligation under the in-scope branch guards.
+
+        Projection sites whose *source* type the verifier cannot resolve
+        statically — ADT sub-pattern binds (``Some(@Nat.0)``) and
+        non-literal tuple destructures — are deliberately left to the
+        Tier-3 codegen runtime guard rather than risk a false E503: the
+        bound value's Z3 term is an uninterpreted accessor with no
+        non-negativity assertion, so an already-@Nat source would fail
+        the proof spuriously.
+        """
+        if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
+            # Site 2: @Nat formal parameters narrowing an @Int argument.
+            if isinstance(expr, ast.FnCall):
+                callee: object | None = self.env.lookup_function(expr.name)
+            else:
+                callee = self._lookup_module_function(expr.path, expr.name)
+            param_types = getattr(callee, "param_types", None)
+            if param_types is not None:
+                for arg, formal in zip(expr.args, param_types):
+                    if self._is_nat_type(formal) and self._narrows_into_nat(arg):
+                        self._check_nat_binding_obligation(
+                            decl, arg, smt, slot_env, assumptions,
+                            site="call argument",
+                        )
+            for arg in expr.args:
+                self._walk_for_nat_binding_obligations(
+                    decl, arg, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, ast.ConstructorCall):
+            # Site 3: @Nat constructor fields narrowing an @Int argument.
+            # Only *concretely* @Nat fields fire — a generic field
+            # (TypeVar) instantiated to @Nat is not visible here without
+            # the call-site type arguments, so it degrades to the runtime
+            # guard.
+            ci = self._lookup_constructor_info(expr.name)
+            if ci is not None and ci.field_types is not None:
+                for arg, field_ty in zip(expr.args, ci.field_types):
+                    if (self._is_nat_type(field_ty)
+                            and self._narrows_into_nat(arg)):
+                        self._check_nat_binding_obligation(
+                            decl, arg, smt, slot_env, assumptions,
+                            site="constructor field",
+                        )
+            for arg in expr.args:
+                self._walk_for_nat_binding_obligations(
+                    decl, arg, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, ast.QualifiedCall):
+            for arg in expr.args:
+                self._walk_for_nat_binding_obligations(
+                    decl, arg, smt, slot_env, assumptions,
+                )
+            return
+
+        if isinstance(expr, ast.IfExpr):
+            self._walk_for_nat_binding_obligations(
+                decl, expr.condition, smt, slot_env, assumptions,
+            )
+            z3_cond = smt.translate_expr(expr.condition, slot_env)
+            if z3_cond is not None:
+                import z3 as z3mod
+                smt._path_conditions.append(z3_cond)
+                try:
+                    self._walk_for_nat_binding_obligations(
+                        decl, expr.then_branch, smt, slot_env, assumptions,
+                    )
+                finally:
+                    smt._path_conditions.pop()
+                if expr.else_branch is not None:
+                    smt._path_conditions.append(z3mod.Not(z3_cond))
+                    try:
+                        self._walk_for_nat_binding_obligations(
+                            decl, expr.else_branch, smt, slot_env,
+                            assumptions,
+                        )
+                    finally:
+                        smt._path_conditions.pop()
+            else:  # pragma: no cover — condition untranslatable
+                self._walk_for_nat_binding_obligations(
+                    decl, expr.then_branch, smt, slot_env, assumptions,
+                )
+                if expr.else_branch is not None:
+                    self._walk_for_nat_binding_obligations(
+                        decl, expr.else_branch, smt, slot_env, assumptions,
+                    )
+            return
+
+        if isinstance(expr, ast.Block):
+            cur_env = slot_env
+            for stmt in expr.statements:
+                if isinstance(stmt, ast.LetStmt):
+                    # Site 1: `let @Nat = <Int>`.
+                    self._walk_for_nat_binding_obligations(
+                        decl, stmt.value, smt, cur_env, assumptions,
+                    )
+                    if (self._is_nat_type(self._resolve_type(stmt.type_expr))
+                            and self._narrows_into_nat(stmt.value)):
+                        self._check_nat_binding_obligation(
+                            decl, stmt.value, smt, cur_env, assumptions,
+                            site="let binding",
+                        )
+                    val = smt.translate_expr(stmt.value, cur_env)
+                    if val is not None:
+                        type_name = smt._type_expr_to_slot_name(stmt.type_expr)
+                        if type_name is not None:
+                            cur_env = cur_env.push(type_name, val)
+                elif isinstance(stmt, ast.LetDestruct):
+                    # Site 6: `let Tuple<@Nat, ...> = Tuple(<Int>, ...)`.
+                    # Only a literal-constructor source pairs each binding
+                    # with a translatable sub-expression; non-literal
+                    # sources degrade to the runtime guard.
+                    self._walk_for_nat_binding_obligations(
+                        decl, stmt.value, smt, cur_env, assumptions,
+                    )
+                    if (isinstance(stmt.value, ast.ConstructorCall)
+                            and stmt.value.name == stmt.constructor):
+                        for te, sub in zip(stmt.type_bindings, stmt.value.args):
+                            if (self._is_nat_type(self._resolve_type(te))
+                                    and self._narrows_into_nat(sub)):
+                                self._check_nat_binding_obligation(
+                                    decl, sub, smt, cur_env, assumptions,
+                                    site="tuple destructure",
+                                )
+                elif isinstance(stmt, ast.ExprStmt):  # pragma: no cover
+                    self._walk_for_nat_binding_obligations(
+                        decl, stmt.expr, smt, cur_env, assumptions,
+                    )
+            self._walk_for_nat_binding_obligations(
+                decl, expr.expr, smt, cur_env, assumptions,
+            )
+            return
+
+        if isinstance(expr, ast.BinaryExpr):
+            self._walk_for_nat_binding_obligations(
+                decl, expr.left, smt, slot_env, assumptions,
+            )
+            self._walk_for_nat_binding_obligations(
+                decl, expr.right, smt, slot_env, assumptions,
+            )
+            return
+
+        if isinstance(expr, ast.UnaryExpr):
+            self._walk_for_nat_binding_obligations(
+                decl, expr.operand, smt, slot_env, assumptions,
+            )
+            return
+
+        if isinstance(expr, ast.MatchExpr):
+            self._walk_for_nat_binding_obligations(
+                decl, expr.scrutinee, smt, slot_env, assumptions,
+            )
+            scrutinee_z3 = smt.translate_expr(expr.scrutinee, slot_env)
+            for arm in expr.arms:
+                arm_env = slot_env
+                pat_cond = None
+                if scrutinee_z3 is not None:
+                    bound = smt._bind_pattern(
+                        scrutinee_z3, arm.pattern, slot_env,
+                    )
+                    if bound is not None:
+                        arm_env = bound
+                    pat_cond = smt._pattern_condition(
+                        scrutinee_z3, arm.pattern,
+                    )
+                # Site 4: top-level `match <Int> { @Nat -> ... }`.  A
+                # binding pattern is irrefutable, so the scrutinee >= 0
+                # obligation holds whenever the arm is taken — check it
+                # under the function's preconditions + outer path
+                # conditions (no per-arm guard needed).
+                if (isinstance(arm.pattern, ast.BindingPattern)
+                        and self._is_nat_type(
+                            self._resolve_type(arm.pattern.type_expr))
+                        and self._narrows_into_nat(expr.scrutinee)):
+                    self._check_nat_binding_obligation(
+                        decl, expr.scrutinee, smt, slot_env, assumptions,
+                        site="match binding",
+                    )
+                if pat_cond is not None:
+                    smt._path_conditions.append(pat_cond)
+                    try:
+                        self._walk_for_nat_binding_obligations(
+                            decl, arm.body, smt, arm_env, assumptions,
+                        )
+                    finally:
+                        smt._path_conditions.pop()
+                else:
+                    self._walk_for_nat_binding_obligations(
+                        decl, arm.body, smt, arm_env, assumptions,
+                    )
+            return
+
+        # Other expression types — no nested binding site to walk.
+        return
+
     def _check_subtraction_obligation(
         self,
         decl: ast.FnDecl,
@@ -1292,6 +1548,50 @@ class ContractVerifier:
             self._record_obligation(
                 decl.name, "nat_sub", expr, "timeout",
             )
+
+    def _check_nat_binding_obligation(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+        *,
+        site: str,
+    ) -> None:
+        """Discharge a ``value >= 0`` obligation at one @Nat binding site.
+
+        Mirrors :py:meth:`_check_subtraction_obligation`: on success
+        increments ``tier1_verified``; on a Z3 counterexample emits an
+        E503 error; when the value is untranslatable or the solver
+        times out, falls back to Tier 3 (the codegen runtime guard).
+        Path conditions in ``smt._path_conditions`` are folded in
+        automatically by :py:meth:`SmtContext.check_valid`.
+        """
+        self.summary.total += 1
+        val = smt.translate_expr(value_node, slot_env)
+        if val is None:
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "nat_bind", value_node, "tier3")
+            return
+
+        obligation = val >= 0
+        result = smt.check_valid(obligation, list(assumptions))
+
+        if result.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(decl.name, "nat_bind", value_node, "verified")
+        elif result.status == "violated":
+            self.summary.total -= 1  # don't count — it's an error
+            self._record_obligation(
+                decl.name, "nat_bind", value_node, "violated",
+                error_code="E503",
+                counterexample=result.counterexample,
+            )
+            self._report_nat_binding(decl, value_node, site, result.counterexample)
+        else:  # pragma: no cover — solver timeout
+            self.summary.tier3_runtime += 1
+            self._record_obligation(decl.name, "nat_bind", value_node, "timeout")
 
     def _report_underflow(
         self,
@@ -1336,6 +1636,53 @@ class ContractVerifier:
                 'and Chapter 11, Section 11.2.1 "Nat as i64"'
             ),
             error_code="E502",
+        )
+
+    def _report_nat_binding(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        site: str,
+        counterexample: dict[str, str] | None,
+    ) -> None:
+        """Emit an E503 diagnostic for an undischarged @Nat narrowing."""
+        ce_lines: list[str] = []
+        if counterexample:
+            ce_lines.append("Counterexample:")
+            for name, value in sorted(counterexample.items()):
+                if name != "@result":
+                    ce_lines.append(f"    {name} = {value}")
+        ce_text = "\n  ".join(ce_lines) if ce_lines else ""
+
+        description = (
+            f"@Int value narrowing into a @Nat {site} in '{decl.name}' "
+            f"may be negative."
+        )
+        if ce_text:
+            description += f"\n  {ce_text}"
+
+        self._error(
+            node,
+            description,
+            rationale=(
+                "A @Nat slot carries a non-negativity invariant, but the "
+                "type checker permits Int <: Nat narrowing and defers the "
+                "`>= 0` proof to verification.  The SMT solver found "
+                "inputs where the narrowed value is negative — a negative "
+                "i64 would be stored in a @Nat slot, violating the type's "
+                "invariant."
+            ),
+            fix=(
+                "Add a precondition ruling out the bad inputs, e.g. "
+                "`requires(@Int.0 >= 0)`.  Alternatively, guard the "
+                "binding: `if @Int.0 >= 0 then ... else ...` — the path "
+                "condition discharges the obligation in the then-branch."
+            ),
+            spec_ref=(
+                'Chapter 4, Section 4.5 "Let Bindings" and Chapter 11, '
+                'Section 11.2.1 "Nat as i64"'
+            ),
+            error_code="E503",
         )
 
     def _is_nat_typed(self, expr: ast.Expr) -> bool:
@@ -1448,6 +1795,32 @@ class ContractVerifier:
                 return False
             return any(self._has_nat_origin(arm.body) for arm in expr.arms)
         return False
+
+    def _narrows_into_nat(self, value: ast.Expr) -> bool:
+        """Return True iff binding *value* into a @Nat slot is a
+        narrowing that needs a ``value >= 0`` obligation (#552).
+
+        Two shapes fire:
+
+        * the value is not statically @Nat — a genuine @Int narrowing
+          (``@Int.0``, ``@Int.0 - 100``, ``-1``); or
+        * the value is a pure-literal subtraction (``0 - 1``) — typed
+          @Nat (both operands non-negative literals) but carrying no
+          @Nat provenance, which #520 deliberately exempts from its
+          underflow obligation and defers here.  ``_is_nat_typed`` calls
+          such a value @Nat, yet it can be negative, so the binding-site
+          obligation must still fire.
+
+        A genuine @Nat value (slot ref, @Nat-returning call, non-negative
+        literal, or @Nat-origin arithmetic) returns False; a #520-covered
+        ``@Nat - @Nat`` with @Nat origin also returns False so the two
+        obligations never co-fire on one site.
+        """
+        if not self._is_nat_typed(value):
+            return True
+        return (isinstance(value, ast.BinaryExpr)
+                and value.op == ast.BinOp.SUB
+                and not self._has_nat_origin(value))
 
     # -----------------------------------------------------------------
     # Counterexample reporting
