@@ -1090,6 +1090,30 @@ private fn f(@Nat, @Nat -> @Nat)
         assert kinds.count("nat_sub") == 1, kinds
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
+    def test_destructure_threads_cur_env_for_later_obligation(self) -> None:
+        """After a literal destructure, a later statement's narrowing
+        obligation must translate against the destructured slot, not a
+        stale outer binding of the same slot name (CodeRabbit, PR #748).
+        Both components are -5, so `takes_nat(@Int.0)` must fail (E503),
+        proving the destructured value rather than the @Int param (which
+        `requires(@Int.0 >= 0)` would have wrongly discharged)."""
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Int, @Int> = Tuple(0 - 5, 0 - 5);
+  takes_nat(@Int.0)
+}
+""", "may be negative")
+
 
 # =====================================================================
 # Summary

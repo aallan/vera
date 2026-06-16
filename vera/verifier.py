@@ -1439,6 +1439,21 @@ class ContractVerifier:
                                     decl, sub, smt, cur_env, assumptions,
                                     site="tuple destructure",
                                 )
+                        # Thread the destructured slots into cur_env so a
+                        # later statement's obligation translates against the
+                        # destructured value, not a stale outer binding of
+                        # the same slot name (CodeRabbit, PR #748).  Translate
+                        # every component in the *outer* env first, then push,
+                        # so an element referring to an outer slot of the same
+                        # type is not shadowed by an earlier push.
+                        pushed: list[tuple[str, object]] = []
+                        for te, sub in zip(stmt.type_bindings, stmt.value.args):
+                            type_name = smt._type_expr_to_slot_name(te)
+                            sub_val = smt.translate_expr(sub, cur_env)
+                            if type_name is not None and sub_val is not None:
+                                pushed.append((type_name, sub_val))
+                        for type_name, sub_val in pushed:
+                            cur_env = cur_env.push(type_name, sub_val)
                 elif isinstance(stmt, ast.ExprStmt):  # pragma: no cover
                     self._walk_for_nat_binding_obligations(
                         decl, stmt.expr, smt, cur_env, assumptions,

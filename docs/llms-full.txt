@@ -2279,7 +2279,7 @@ public fn main(@Unit -> @Unit)
 
 ## Conformance Suite
 
-The `tests/conformance/` directory contains 90 small, self-contained programs that validate every language feature against the spec — one program per feature. These are the best minimal working examples of Vera syntax and semantics.
+The `tests/conformance/` directory contains 90 small, self-contained programs that validate every language feature against the spec — often one program per feature, though some features (slot references, match, contracts) span several. These are the best minimal working examples of Vera syntax and semantics.
 
 Each program is organized by spec chapter (`ch01_int_literals.vera`, `ch04_match_basic.vera`, `ch07_state_handler.vera`, etc.) and the `manifest.json` file maps features to programs. When you need to see how a specific construct works, check the conformance program before reading the spec.
 
@@ -2351,7 +2351,7 @@ Read `SKILL.md` for the full language reference. It covers syntax, slot referenc
 
 ### Conformance programs as reference
 
-The conformance suite in `tests/conformance/` contains 90 small, self-contained programs — one per language feature — that serve as minimal working examples. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
+The conformance suite in `tests/conformance/` contains 90 small, self-contained programs — often one per language feature, though some span several — that serve as minimal working examples. Each program must pass its declared verification level (see `manifest.json` for mappings: `parse`, `check`, `verify`, or `run`). When you need to see how a specific construct works (e.g. effect handlers, match expressions, closures), check the corresponding conformance program before reading the spec.
 
 ### Workflow
 
