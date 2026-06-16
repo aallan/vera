@@ -687,7 +687,7 @@ Honest inventory of what the compiler cannot do, and where each limitation is ad
 
 | Limitation | Why | Planned |
 |-----------|-----|---------|
-| **Verification gaps that downgrade silently** | `@Nat` narrowing at let/argument binding sites is unchecked; generic (`forall<T>`) bodies skip all static verification; statement-position calls are never precondition-checked | [#552](https://github.com/aallan/vera/issues/552), [#555](https://github.com/aallan/vera/issues/555), [#730](https://github.com/aallan/vera/issues/730) |
+| **Verification gaps that downgrade silently** | `@Nat` narrowing through ADT sub-pattern binds and non-literal tuple destructures is unchecked (let/argument/constructor-field/match-bind/literal-destructure narrowing is obligated, #552); generic (`forall<T>`) bodies skip all static verification; statement-position calls are never precondition-checked | [#747](https://github.com/aallan/vera/issues/747), [#555](https://github.com/aallan/vera/issues/555), [#730](https://github.com/aallan/vera/issues/730) |
 | **No effect row variable unification** | Subeffecting implemented; `forall<E>` row variables permissive (full row-variable unification deferred) | [#294](https://github.com/aallan/vera/issues/294) |
 | **No incremental compilation** | Full file processed from scratch each time | [#56](https://github.com/aallan/vera/issues/56) |
 | **No REPL** | No interactive evaluation; all code must be written to files | [#224](https://github.com/aallan/vera/issues/224) |

@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-4,383 tests, 89 conformance programs, 35 examples, 13 spec chapters.
+4,390 tests, 90 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -20,7 +20,8 @@ The cases where Vera accepts a program and quietly does something weaker than it
 
 | Issue | What | Why it's first |
 |---|---|---|
-| [#552](https://github.com/aallan/vera/issues/552) | `@Nat` invariant check at all binding sites | Narrowing `@Int` into a `@Nat`-typed let binding or argument is neither obligation-checked nor runtime-guarded, so a negative value can flow on invisibly.  Same shape as the closed #520 subtraction hole. |
+| [#747](https://github.com/aallan/vera/issues/747) | `@Nat` narrowing at projection binding sites | `let`/argument/constructor-field/match-bind/literal-destructure narrowing is now obligation-checked (#552); ADT sub-pattern binds and non-literal destructures still need scrutinee-type inference to obligate the projected source. |
+| [#746](https://github.com/aallan/vera/issues/746) | Refinement-type predicate verification | User refinement predicates (`{ @Int \| p }`) are parsed but verified nowhere — a value violating the predicate is accepted silently.  Needs predicate→Z3 translation, binder substitution, and discharge at every binding site. |
 | [#732](https://github.com/aallan/vera/issues/732) | Per-monomorphization static verification for generic functions | Generic (`forall<T>`) bodies skip all static verification today — a silent downgrade from Tier 1 to Tier 3.  Verifying each concrete instantiation reuses the existing pipeline; closes the static half of [#555](https://github.com/aallan/vera/issues/555). |
 | [#730](https://github.com/aallan/vera/issues/730) | Precondition-check calls in statement position | E501 fires only for calls in value position; a call whose result is discarded is never checked against its `requires(...)`. |
 | [#680](https://github.com/aallan/vera/issues/680) | Auto-inject obligations for primitive operations (division, modulo, array index) | Aligns the implementation with the README's "compiler proves primitive safety" claim, generalising the #520 obligation-discharge pattern. |

@@ -1,0 +1,69 @@
+-- Conformance: @Nat binding-site narrowing obligation (Chapter 4)
+--
+-- Tests the proof obligation introduced by #552: a value that can be
+-- negative narrowing into a @Nat slot must statically prove
+-- `value >= 0` at the binding site.  Generalises the #520 subtraction
+-- obligation from `@Nat - @Nat` to every binding site that introduces
+-- a @Nat slot (let, call argument, tuple destructure).  Per spec/04
+-- and spec/11 §11.2.1 (Tier-3 fallback emits a runtime guard).
+--
+-- All sites here verify at Tier 1 — discharged from explicit `requires`
+-- clauses or path conditions in `if` branches.
+-- let narrowing, discharged via requires.
+public fn clamp_let(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+
+-- let narrowing, discharged via path condition.
+public fn guard_let(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 >= 0 then {
+    let @Nat = @Int.0;
+    @Nat.0
+  } else {
+    0
+  }
+}
+
+-- call-argument narrowing, discharged via requires.
+public fn take_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  @Nat.0
+}
+
+public fn call_narrow(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  take_nat(@Int.0)
+}
+
+-- tuple-destructure narrowing, discharged via requires.
+public fn destruct_narrow(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Nat, @Nat> = Tuple(@Int.0, 5);
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  clamp_let(5)
+}

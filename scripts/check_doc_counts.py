@@ -537,11 +537,13 @@ def main() -> int:
 
     index_html = (root / "docs/index.html").read_text()
 
-    m = re.search(r"An (\d+)-program conformance suite", index_html)
+    # Accept "A" or "An" — the article depends on how the number reads
+    # ("an 89-program" but "a 90-program"), so don't force one form.
+    m = re.search(r"An? (\d+)-program conformance suite", index_html)
     if not m:
         errors.append(
             "docs/index.html: could not find conformance count pattern"
-            " (`An NN-program conformance suite`)"
+            " (`A[n] NN-program conformance suite`)"
         )
     else:
         doc_conf = int(m.group(1))
