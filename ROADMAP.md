@@ -72,6 +72,7 @@ Real improvements that still rank below correctness and robustness.  The browser
 | [#739](https://github.com/aallan/vera/issues/739) | Typed `Protocol` interfaces for the mixin mypy carve-outs — sequenced after the #421 decomposition reshapes the mixin sets. |
 | [#737](https://github.com/aallan/vera/issues/737) | Document the distribution policy (git-clone now; PyPI `veralang` publication gated on #481). |
 | [#745](https://github.com/aallan/vera/issues/745) | Narrow the wrap-table / Phase 2c emission to `decimal_ops_used` only — post-#706 only Decimal registers wrappers, but the machinery (`$register_wrapper`, `host_decref_handle`, the Phase 2c walk) is still emitted dead for any Map/Set/JSON/HTML module.  Coupled to Phase 2c emission, so de-gating needs care. |
+| [#749](https://github.com/aallan/vera/issues/749) | `@Nat`-narrowing review follow-ups from #748 — container `IndexExpr`/`InterpolatedString` test pins, a `_fresh_slot_var` alias unit-test, a verifier/codegen `_narrows_into_nat` differential test, and a dedicated `@Nat`-guard trap kind.  Polish / test-debt; no correctness gap. |
 
 ### Not doing now
 
