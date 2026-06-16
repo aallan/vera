@@ -1389,6 +1389,10 @@ class ContractVerifier:
             op = self.env.lookup_effect_op(expr.name, qualifier=expr.qualifier)
             param_types = getattr(op, "param_types", None)
             if param_types is not None:
+                # A generic (TypeVar) formal — `E<T>.wait` instantiated as
+                # `E<Nat>` — is skipped by `_is_nat_type`: only a concretely
+                # @Nat formal obligates, mirroring generic constructor fields.
+                # Resolving the instantiation is deferred to #747.
                 for arg, formal in zip(expr.args, param_types):
                     if (self._is_nat_type(formal)
                             and self._narrows_into_nat(arg)):
@@ -1456,36 +1460,46 @@ class ContractVerifier:
                             cur_env = cur_env.push(type_name, val)
                 elif isinstance(stmt, ast.LetDestruct):
                     # Site 6: `let Tuple<@Nat, ...> = Tuple(<Int>, ...)`.
-                    # Only a literal-constructor source pairs each binding
-                    # with a translatable sub-expression; non-literal
-                    # sources degrade to the runtime guard.
+                    # A literal-constructor source pairs each binding with a
+                    # translatable sub-expression and is obligation-checked;
+                    # a non-literal source degrades to the runtime guard.
                     self._walk_for_nat_binding_obligations(
                         decl, stmt.value, smt, cur_env, assumptions,
                     )
+                    lit_args: tuple[ast.Expr, ...] = ()
                     if (isinstance(stmt.value, ast.ConstructorCall)
                             and stmt.value.name == stmt.constructor):
-                        for te, sub in zip(stmt.type_bindings, stmt.value.args):
+                        lit_args = stmt.value.args
+                        for te, sub in zip(stmt.type_bindings, lit_args):
                             if (self._is_nat_type(self._resolve_type(te))
                                     and self._narrows_into_nat(sub)):
                                 self._check_nat_binding_obligation(
                                     decl, sub, smt, cur_env, assumptions,
                                     site="tuple destructure",
                                 )
-                        # Thread the destructured slots into cur_env so a
-                        # later statement's obligation translates against the
-                        # destructured value, not a stale outer binding of
-                        # the same slot name (CodeRabbit, PR #748).  Translate
-                        # every component in the *outer* env first, then push,
-                        # so an element referring to an outer slot of the same
-                        # type is not shadowed by an earlier push.
-                        pushed: list[tuple[str, object]] = []
-                        for te, sub in zip(stmt.type_bindings, stmt.value.args):
-                            type_name = smt._type_expr_to_slot_name(te)
-                            sub_val = smt.translate_expr(sub, cur_env)
-                            if type_name is not None and sub_val is not None:
-                                pushed.append((type_name, sub_val))
-                        for type_name, sub_val in pushed:
-                            cur_env = cur_env.push(type_name, sub_val)
+                    # Rebind every destructured slot in cur_env so a later
+                    # obligation translates against the destructured value,
+                    # not a stale outer binding of the same slot name
+                    # (CodeRabbit, PR #748).  A literal component is
+                    # translated in the *outer* env first (avoiding same-type
+                    # self-shadowing); a non-literal source — or a component
+                    # the SMT layer can't translate — falls back to a fresh
+                    # slot var carrying only its type invariant, so the stale
+                    # outer binding is never reused for a later obligation.
+                    pushed: list[tuple[str, object]] = []
+                    for i, te in enumerate(stmt.type_bindings):
+                        type_name = smt._type_expr_to_slot_name(te)
+                        if type_name is None:
+                            continue
+                        slot_val: object | None = None
+                        if i < len(lit_args):
+                            slot_val = smt.translate_expr(lit_args[i], cur_env)
+                        if slot_val is None:
+                            slot_val = self._fresh_slot_var(smt, type_name)
+                        if slot_val is not None:
+                            pushed.append((type_name, slot_val))
+                    for tn, sv in pushed:
+                        cur_env = cur_env.push(tn, sv)
                 elif isinstance(stmt, ast.ExprStmt):  # pragma: no cover
                     self._walk_for_nat_binding_obligations(
                         decl, stmt.expr, smt, cur_env, assumptions,
@@ -1627,6 +1641,33 @@ class ContractVerifier:
             self._record_obligation(
                 decl.name, "nat_sub", expr, "timeout",
             )
+
+    def _fresh_slot_var(
+        self, smt: SmtContext, slot_name: str,
+    ) -> object | None:
+        """A fresh Z3 var carrying *slot_name*'s type invariant.
+
+        Used to invalidate a stale outer binding when a destructure rebinds
+        a slot to a value the SMT layer cannot translate (a non-literal
+        source, or a literal component that does not translate), so a later
+        obligation never reads the old, more-constrained binding of the same
+        slot name (CodeRabbit, PR #748).  Returns ``None`` for slot types
+        with no scalar SMT sort (the stale binding is then irrelevant to a
+        `value >= 0` obligation anyway).
+        """
+        fresh = smt._fresh_name("destructure_" + slot_name)
+        result: object | None = None
+        if slot_name == "Nat":
+            result = smt.declare_nat(fresh)
+        elif slot_name == "Int":
+            result = smt.declare_int(fresh)
+        elif slot_name == "Bool":
+            result = smt.declare_bool(fresh)
+        elif slot_name == "Float64":
+            result = smt.declare_float64(fresh)
+        elif slot_name == "String":
+            result = smt.declare_string(fresh)
+        return result
 
     def _check_nat_binding_obligation(
         self,

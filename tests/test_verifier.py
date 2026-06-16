@@ -1115,6 +1115,32 @@ private fn f(@Int -> @Nat)
 }
 """, "may be negative")
 
+    def test_destructure_non_literal_source_invalidates_stale_binding(
+        self,
+    ) -> None:
+        """A non-literal destructure source (here an `if`-expression) cannot
+        pair each binding with a translatable component, so the destructured
+        slots must be rebound to fresh vars — otherwise `takes_nat(@Int.0)`
+        would wrongly discharge against the `@Int` param's
+        `requires(@Int.0 >= 0)` instead of the unknown destructured value
+        (CodeRabbit, PR #748)."""
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Int, @Int> = if @Int.0 > 0 then { Tuple(0 - 1, 0 - 1) } else { Tuple(1, 1) };
+  takes_nat(@Int.0)
+}
+""", "may be negative")
+
     def test_narrowing_inside_array_literal_caught(self) -> None:
         """A narrowing nested in an expression container (array literal)
         is visited by the walker, not skipped at the fallthrough
@@ -1183,6 +1209,24 @@ public fn f(@Int -> @Unit)
   E.wait(@Int.0)
 }
 """, "may be negative")
+
+    def test_user_effect_op_argument_narrowing_discharged(self) -> None:
+        """The user-effect-op narrowing verifies cleanly when the argument
+        is constrained non-negative — the discharged companion to
+        test_user_effect_op_argument_narrowing_caught (CodeRabbit, PR #748)."""
+        _verify_ok("""
+effect E {
+  op wait(Nat -> Unit);
+}
+
+public fn f(@Int -> @Unit)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(<E>)
+{
+  E.wait(@Int.0)
+}
+""")
 
 
 # =====================================================================
