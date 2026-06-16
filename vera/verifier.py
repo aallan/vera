@@ -1364,6 +1364,18 @@ class ContractVerifier:
             return
 
         if isinstance(expr, ast.QualifiedCall):
+            # Effect operations (e.g. `IO.sleep : Nat -> Unit`) narrow an
+            # @Int argument into a @Nat formal just like a plain call.
+            op = self.env.lookup_effect_op(expr.name, qualifier=expr.qualifier)
+            param_types = getattr(op, "param_types", None)
+            if param_types is not None:
+                for arg, formal in zip(expr.args, param_types):
+                    if (self._is_nat_type(formal)
+                            and self._narrows_into_nat(arg)):
+                        self._check_nat_binding_obligation(
+                            decl, arg, smt, slot_env, assumptions,
+                            site="effect-operation argument",
+                        )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
                     decl, arg, smt, slot_env, assumptions,

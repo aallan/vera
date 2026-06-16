@@ -1048,6 +1048,7 @@ private fn f(@Int -> @Nat)
 }
 """)
         assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
 
     def test_caught_narrowing_carries_e503_and_nat_bind(self) -> None:
         """A caught narrowing is tagged E503 with a `nat_bind`-kind
@@ -1132,6 +1133,21 @@ private fn f(@Int -> @Nat)
 {
   let @Array<Nat> = [takes_nat(@Int.0)];
   0
+}
+""", "may be negative")
+
+    def test_effect_op_argument_narrowing_caught(self) -> None:
+        """An @Int narrowing into an effect operation's @Nat formal
+        (`IO.sleep : Nat -> Unit`) is obligated — qualified calls were
+        previously only recursed into, never checked against their
+        formal parameter types (CodeRabbit, PR #748)."""
+        _verify_err("""
+public fn f(@Int -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.sleep(@Int.0)
 }
 """, "may be negative")
 
