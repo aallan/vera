@@ -1405,13 +1405,22 @@ class SmtContext:
         self.solver.add(z3.Not(goal))
 
         result = self.solver.check()
+        # Extract the model BEFORE popping: a Z3 model is only valid
+        # while the assertions that produced it remain on the solver
+        # stack.  Popping first leaves model() describing the base
+        # context, so model_completion fills the now-unconstrained
+        # slots with arbitrary defaults — yielding counterexamples that
+        # don't witness the violation (e.g. `@Int.0 = 0` for the goal
+        # `@Int.0 >= 0`).  Affects E502 / E503 / call-site precondition
+        # diagnostics alike.
+        ce: dict[str, str] | None = None
+        if result == z3.sat:
+            ce = self._extract_counterexample(self.solver.model())
         self.solver.pop()
 
         if result == z3.unsat:
             return SmtResult(status="verified")
         elif result == z3.sat:
-            model = self.solver.model()
-            ce = self._extract_counterexample(model)
             return SmtResult(status="violated", counterexample=ce)
         else:  # pragma: no cover
             return SmtResult(status="unknown")

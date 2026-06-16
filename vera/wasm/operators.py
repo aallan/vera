@@ -922,3 +922,83 @@ class OperatorsMixin:
             f"local.get {rhs_tmp}",
             "i64.sub",
         ]
+
+    def _emit_nat_bind_guard(self, value: list[str]) -> list[str]:
+        """Emit a guarded value that traps if it is a negative i64.
+
+        The binding-site analogue of :py:meth:`_emit_nat_sub_guard`
+        (#552): a runtime safety net for a `let @Nat = <Int>` narrowing
+        the verifier could not discharge statically (Tier 3), or that
+        reaches codegen without ``vera verify`` having run.  Pattern:
+
+            [value]
+            local.tee $tmp     ;; leave value on stack, copy to temp
+            i64.const 0
+            i64.lt_s           ;; value < 0?
+            if
+              unreachable      ;; trap; classified "unreachable"
+            end                ;;   by vera/codegen/api.py:_classify_trap
+            local.get $tmp     ;; restore the (now-checked) value
+
+        Like the #520 guard, the bare ``unreachable`` trap reuses the
+        existing taxonomy; a dedicated "negative-nat" trap kind with a
+        tailored Fix paragraph is left as a follow-up enhancement.  The
+        guard never fires on a value the verifier proved non-negative,
+        so a Tier-1-clean program pays only dead instructions, never a
+        trap.
+        """
+        tmp = self.alloc_local("i64")
+        return [
+            *value,
+            f"local.tee {tmp}",
+            "i64.const 0",
+            "i64.lt_s",
+            "if",
+            "  unreachable",
+            "end",
+            f"local.get {tmp}",
+        ]
+
+    def _narrows_into_nat(self, value: ast.Expr) -> bool:
+        """Codegen mirror of ``ContractVerifier._narrows_into_nat`` (#552).
+
+        True iff binding *value* into a @Nat slot needs a runtime
+        ``value >= 0`` guard — a genuine @Int narrowing, or a value whose
+        tree contains a pure-literal subtraction (``0 - 1``) that
+        ``_is_static_nat_typed`` calls @Nat but which can underflow
+        negative.  Should agree with the verifier so a Tier-1-clean
+        program never *traps*.  (Codegen sees a user function's i64
+        return type, not its @Nat Vera type, so it may emit a dead guard
+        on ``let @Nat = <user-fn returning @Nat>`` — harmless, since the
+        value is provably >= 0 and never trips the trap; recovering @Nat
+        user-fn returns is a precision follow-up.)
+        """
+        if not self._is_static_nat_typed(value):
+            return True
+        return self._has_underflow_leaf(value)
+
+    def _has_underflow_leaf(self, value: ast.Expr) -> bool:
+        """Codegen mirror of ``ContractVerifier._has_underflow_leaf`` (#552).
+
+        True iff a statically-@Nat *value*'s value-producing tree
+        contains a pure-literal subtraction (no @Nat provenance) — the
+        #520-exempt ``0 - 1`` idiom, however wrapped (block / if / match)
+        or nested in arithmetic.
+        """
+        if isinstance(value, ast.BinaryExpr):
+            if (value.op == ast.BinOp.SUB
+                    and not self._has_nat_origin_codegen(value)):
+                return True
+            return (self._has_underflow_leaf(value.left)
+                    or self._has_underflow_leaf(value.right))
+        if isinstance(value, ast.Block):
+            return self._has_underflow_leaf(value.expr)
+        if isinstance(value, ast.IfExpr):
+            if value.else_branch is None:
+                return False
+            return (self._has_underflow_leaf(value.then_branch)
+                    or self._has_underflow_leaf(value.else_branch))
+        if isinstance(value, ast.MatchExpr):
+            return any(self._has_underflow_leaf(arm.body)
+                       for arm in value.arms)
+        return False

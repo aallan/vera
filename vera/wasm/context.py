@@ -504,7 +504,18 @@ class WasmContext(
                         f"let binding type {type_name!r} has no WASM representation",
                     )
                 local_idx = self.alloc_local(wat_t)
-                instructions.extend(val_instrs)
+                # #552: guard an @Int -> @Nat let narrowing at runtime
+                # when the verifier could not discharge `value >= 0`
+                # statically (Tier 3), or when codegen runs without
+                # `vera verify`.  The guard never trips on a provably-@Nat
+                # value, mirroring the #520 subtraction guard's
+                # belt-and-suspenders role.
+                if (type_name == "Nat"
+                        and self._narrows_into_nat(stmt.value)):
+                    instructions.extend(
+                        self._emit_nat_bind_guard(val_instrs))
+                else:
+                    instructions.extend(val_instrs)
                 instructions.append(f"local.set {local_idx}")
                 # #705: shadow-push heap-pointer let bindings so
                 # subsequent allocations in the same block (e.g. a

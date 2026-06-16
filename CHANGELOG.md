@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **The `@Nat >= 0` invariant is now obligation-checked at binding sites** ([#552](https://github.com/aallan/vera/issues/552)).  Generalises the #520 subtraction obligation: a value narrowing from `@Int` into a `@Nat` slot carries a Tier-1 `value >= 0` proof obligation (`E503`) at `let` bindings, call arguments, effect-operation arguments (built-in `IO.sleep` and user-declared effects), constructor fields, top-level match binds, and literal-tuple destructures, discharged from preconditions and path conditions.  The pure-literal `let @Nat = 0 - 1` idiom the #520 obligation deliberately defers is now caught.  Codegen emits a runtime guard at the `let` site so programs compiled without `vera verify` still trap rather than store a negative `@Nat`.  At a non-`let` site a narrowing the solver cannot discharge has no runtime guard, so it surfaces an `E504` warning rather than being silently counted as runtime-covered.  Narrowing through ADT sub-pattern binds, non-literal destructures, generic-instantiated or imported constructor fields, and generic effect-operation formals (the projected source / call-site / module type is not statically resolved) is deferred to [#747](https://github.com/aallan/vera/issues/747); general refinement-predicate verification is [#746](https://github.com/aallan/vera/issues/746).
+
+### Fixed
+
+- **Verification counterexamples now witness the violation.**  `SmtContext.check_valid` extracted the Z3 model *after* popping the assertion scope, so the counterexample described the base context — `model_completion` filled the now-unconstrained slots with arbitrary defaults (e.g. `@Int.0 = 0` for the goal `@Int.0 >= 0`) instead of the violating assignment.  Extracting the model before the pop fixes `E502` (@Nat subtraction), `E503` (@Nat binding-site narrowing), and call-site precondition diagnostics alike.
+
 ## [0.0.171] - 2026-06-15
 
 ### Added

@@ -744,6 +744,622 @@ private fn negative_sentinel(@Unit -> @Int)
 """)
 
 
+class TestNatBindingObligation552:
+    """`@Int` narrowing into a `@Nat` slot carries a Tier-1 `value >= 0`
+    obligation at every binding site (#552, generalising #520).
+
+    Fires when the target slot is `@Nat` AND the bound value is not
+    already statically `@Nat` — the single condition that keeps #552
+    disjoint from #520's `@Nat - @Nat` subtraction obligation (a
+    `@Nat - @Nat` value is already `@Nat`, so it is not a narrowing).
+    Discharged from preconditions and path conditions; an undischarged
+    narrowing fails with E503 and a counterexample.
+
+    Projection sites whose *source* type the verifier cannot resolve
+    statically — ADT sub-pattern binds (`Some(@Nat.0)`) and non-literal
+    tuple destructures — are left to the Tier-3 codegen runtime guard.
+    """
+
+    # ---- Site 1: let bindings -------------------------------------
+    def test_let_narrow_unguarded_fails(self) -> None:
+        _verify_err("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+""", "may be negative")
+
+    def test_let_narrow_requires_discharges(self) -> None:
+        _verify_ok("""
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+""")
+
+    def test_let_narrow_if_guard_discharges(self) -> None:
+        """Path condition `@Int.0 >= 0` discharges the let narrowing.
+
+        Asserts the obligation actually *fired and verified* on the
+        constrained path, not merely that no error surfaced — a regression
+        that dropped the obligation would otherwise pass silently (#748
+        review)."""
+        result = _verify("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  if @Int.0 >= 0 then {
+    let @Nat = @Int.0;
+    @Nat.0
+  } else {
+    0
+  }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"]
+
+    def test_let_already_nat_not_flagged(self) -> None:
+        """`let @Nat = @Nat.0` is Nat->Nat — no narrowing, no obligation."""
+        result = _verify("""
+private fn f(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Nat.0;
+  @Nat.0
+}
+""")
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert errors == []
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+
+    # ---- Site 2: call arguments -----------------------------------
+    def test_call_arg_narrow_unguarded_fails(self) -> None:
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ takes_nat(@Int.0) }
+""", "may be negative")
+
+    def test_call_arg_narrow_requires_discharges(self) -> None:
+        _verify_ok("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{ takes_nat(@Int.0) }
+""")
+
+    # ---- Site 3: constructor fields -------------------------------
+    def test_ctor_field_narrow_unguarded_fails(self) -> None:
+        _verify_err("""
+private data Box { MkBox(Nat) }
+
+private fn f(@Int -> @Box)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ MkBox(@Int.0) }
+""", "may be negative")
+
+    def test_ctor_field_narrow_requires_discharges(self) -> None:
+        _verify_ok("""
+private data Box { MkBox(Nat) }
+
+private fn f(@Int -> @Box)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{ MkBox(@Int.0) }
+""")
+
+    # ---- Site 4: top-level match binds ----------------------------
+    def test_match_bind_narrow_unguarded_fails(self) -> None:
+        _verify_err("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    @Nat -> @Nat.0
+  }
+}
+""", "may be negative")
+
+    def test_match_bind_narrow_requires_discharges(self) -> None:
+        _verify_ok("""
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  match @Int.0 {
+    @Nat -> @Nat.0
+  }
+}
+""")
+
+    # ---- Site 6: literal-tuple destructure ------------------------
+    def test_destructure_narrow_unguarded_fails(self) -> None:
+        """Component 0 (`@Int.0`) narrows; component 1 (literal 5) does not."""
+        _verify_err("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Nat, @Nat> = Tuple(@Int.0, 5);
+  @Nat.0
+}
+""", "may be negative")
+
+    def test_destructure_narrow_requires_discharges(self) -> None:
+        result = _verify("""
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Nat, @Nat> = Tuple(@Int.0, 5);
+  @Nat.0
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"]
+
+    # ---- Double-emit disjointness with #520 -----------------------
+    def test_nat_minus_nat_is_sub_not_bind(self) -> None:
+        """`let @Nat = @Nat.0 - @Nat.1`: value already @Nat -> #520 only."""
+        result = _verify("""
+private fn f(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Nat.0 - @Nat.1;
+  @Nat.0
+}
+""")
+        kinds = [o.kind for o in result.obligations]
+        assert kinds.count("nat_bind") == 0, kinds
+        assert kinds.count("nat_sub") == 1, kinds
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_int_minus_literal_is_bind_not_sub(self) -> None:
+        """`let @Nat = @Int.0 - 100`: value @Int -> #552 only."""
+        result = _verify("""
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 100)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0 - 100;
+  @Nat.0
+}
+""")
+        kinds = [o.kind for o in result.obligations]
+        assert kinds.count("nat_bind") == 1, kinds
+        assert kinds.count("nat_sub") == 0, kinds
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_nat_addition_not_flagged(self) -> None:
+        """`let @Nat = @Nat.0 + @Nat.1`: value already @Nat, no obligation."""
+        result = _verify("""
+private fn f(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Nat.0 + @Nat.1;
+  @Nat.0
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+
+    def test_pure_literal_subtraction_caught(self) -> None:
+        """`let @Nat = 0 - 1`: typed @Nat but valued -1.  #520 exempts the
+        pure-literal subtraction (no @Nat provenance) and defers it here;
+        #552 must catch it (E503)."""
+        _verify_err("""
+private fn f(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = 0 - 1;
+  @Nat.0
+}
+""", "may be negative")
+
+    def test_nonneg_literal_not_flagged(self) -> None:
+        """`let @Nat = 5`: a non-negative literal is genuinely @Nat — no
+        obligation.  The pure-literal carve-out is subtraction-only, so
+        bare literals and additions don't fire."""
+        result = _verify("""
+private fn f(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = 5;
+  @Nat.0
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+
+    def test_wrapped_underflow_subtraction_caught(self) -> None:
+        """A pure-literal subtraction wrapped in a block / if-branch /
+        match arm, or nested in arithmetic, still narrows a
+        possibly-negative value into @Nat.  `_is_nat_typed` calls the
+        wrapper @Nat, so a top-level-only check would miss these — the
+        obligation must look through to the value-producing leaf
+        (#552 review)."""
+        for body in (
+            "let @Nat = { 0 - 1 };\n  @Nat.0",
+            "let @Nat = if @Int.0 >= 0 then { 5 } else { 0 - 1 };\n  @Nat.0",
+            "let @Nat = match @Int.0 { @Int -> 0 - 1 };\n  @Nat.0",
+            "let @Nat = (0 - 1) + (0 - 1);\n  @Nat.0",
+        ):
+            src = (
+                "private fn f(@Int -> @Nat)\n"
+                "  requires(true)\n"
+                "  ensures(true)\n"
+                "  effects(pure)\n"
+                "{\n"
+                "  " + body + "\n"
+                "}\n"
+            )
+            _verify_err(src, "may be negative")
+
+    def test_adt_subpattern_bind_not_obligated_yet(self) -> None:
+        """ADT sub-pattern binds (`Some(@Nat)` on `Option<Int>`) narrow a
+        projected field whose source type the verifier cannot resolve
+        statically — deferred to #747.  Pin the CURRENT behaviour (no
+        `nat_bind` obligation) so the #747 fix must update this test
+        consciously rather than silently changing it."""
+        result = _verify("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Some(@Int.0) {
+    Some(@Nat) -> @Nat.0,
+    None -> 0
+  }
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_generic_effect_op_formal_not_obligated_yet(self) -> None:
+        """A generic effect-op formal instantiated to @Nat (`E<Nat>.wait`)
+        is a TypeVar here, so `_is_nat_type` skips it — deferred to #747
+        (same class as the generic constructor field).  Pin the current
+        no-obligation behaviour so the #747 fix updates this test
+        consciously rather than silently flipping it (#748 review)."""
+        result = _verify("""
+effect E<T> {
+  op wait(T -> Unit);
+}
+
+public fn f(@Int -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<E<Nat>>)
+{
+  E.wait(@Int.0)
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_generic_ctor_field_not_obligated_yet(self) -> None:
+        """A generic constructor field instantiated to @Nat (`Some(@Int.0)`
+        as an `Option<Nat>`) is a TypeVar field, so `_is_nat_type` skips it
+        — deferred to #747.  Pin the current no-obligation behaviour so the
+        #747 fix updates this consciously (#748 review)."""
+        result = _verify("""
+private fn f(@Int -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_non_literal_nat_destructure_not_obligated_yet(self) -> None:
+        """A non-literal tuple-destructure source narrowing @Int into @Nat
+        slots is not obligated (the projected source type isn't resolved
+        here) — deferred to #747.  Pin the current behaviour (#748 review)."""
+        result = _verify("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Nat, @Nat> = if @Int.0 > 0 then { Tuple(@Int.0, @Int.0) } else { Tuple(@Int.0, @Int.0) };
+  @Nat.0
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_caught_narrowing_carries_e503_and_nat_bind(self) -> None:
+        """A caught narrowing is tagged E503 with a `nat_bind`-kind
+        obligation — not merely a description substring (#552 review)."""
+        result = _verify("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+""")
+        violated = [o for o in result.obligations
+                    if o.kind == "nat_bind" and o.status == "violated"]
+        assert len(violated) == 1, [o.kind for o in result.obligations]
+        assert violated[0].error_code == "E503"
+        # The counterexample must WITNESS the violation with a negative
+        # @Int.0, not a model-completed default — pins the check_valid
+        # model-before-pop fix, which a revert silently degrades to
+        # @Int.0 = 0 (a non-witness for `value >= 0`) (#748 review).
+        ce = violated[0].counterexample or {}
+        assert "@Int.0" in ce and int(ce["@Int.0"]) < 0, ce
+
+    def test_non_let_tier3_narrowing_warns_unguarded(self) -> None:
+        """A non-let narrowing whose value the SMT layer can't translate
+        (here `array_length` of an untranslatable string split) surfaces
+        an E504 warning + a `tier3_unguarded` obligation — NOT a silent
+        `tier3_runtime` 'runtime check', since codegen guards only the let
+        site (#552 review / #747)."""
+        result = _verify('''
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  nat_to_int(array_length(string_lines("a\\nb")))
+}
+''')
+        unguarded = [o for o in result.obligations
+                     if o.status == "tier3_unguarded"]
+        assert len(unguarded) == 1, [o.status for o in result.obligations]
+        assert unguarded[0].error_code == "E504"
+        warns = [d for d in result.diagnostics if d.error_code == "E504"]
+        assert len(warns) == 1 and warns[0].severity == "warning"
+        # excluded from the discharged totals (like a violation)
+        assert not any(o.status == "tier3" for o in result.obligations
+                       if o.kind == "nat_bind")
+
+    def test_call_arg_nat_minus_nat_is_sub_not_bind(self) -> None:
+        """A `@Nat - @Nat` *call argument* is #520's obligation (nat_sub),
+        not #552's — the disjointness holds at a non-let site too, where
+        the site walk (not just `_narrows_into_nat`) could regress
+        (#552 review)."""
+        result = _verify("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(true)
+  effects(pure)
+{ takes_nat(@Nat.0 - @Nat.1) }
+""")
+        kinds = [o.kind for o in result.obligations]
+        assert kinds.count("nat_bind") == 0, kinds
+        assert kinds.count("nat_sub") == 1, kinds
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_destructure_threads_cur_env_for_later_obligation(self) -> None:
+        """After a literal destructure, a later statement's narrowing
+        obligation must translate against the destructured slot, not a
+        stale outer binding of the same slot name (CodeRabbit, PR #748).
+        Both components are -5, so `takes_nat(@Int.0)` must fail (E503),
+        proving the destructured value rather than the @Int param (which
+        `requires(@Int.0 >= 0)` would have wrongly discharged)."""
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Int, @Int> = Tuple(0 - 5, 0 - 5);
+  takes_nat(@Int.0)
+}
+""", "may be negative")
+
+    def test_destructure_non_literal_source_invalidates_stale_binding(
+        self,
+    ) -> None:
+        """A non-literal destructure source (here an `if`-expression) cannot
+        pair each binding with a translatable component, so the destructured
+        slots must be rebound to fresh vars — otherwise `takes_nat(@Int.0)`
+        would wrongly discharge against the `@Int` param's
+        `requires(@Int.0 >= 0)` instead of the unknown destructured value
+        (CodeRabbit, PR #748)."""
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Int, @Int> = if @Int.0 > 0 then { Tuple(0 - 1, 0 - 1) } else { Tuple(1, 1) };
+  takes_nat(@Int.0)
+}
+""", "may be negative")
+
+    def test_let_non_translatable_source_invalidates_stale_binding(
+        self,
+    ) -> None:
+        """An untranslatable `let` RHS (here `array_length(string_lines(...))`)
+        rebinds the slot to a fresh var, so a later `takes_nat(@Int.0)` cannot
+        falsely discharge against the `@Int` param's `requires(@Int.0 >= 0)` —
+        the let-statement analogue of the destructure stale-binding fix
+        (CodeRabbit, PR #748)."""
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = array_length(string_lines("ab"));
+  takes_nat(@Int.0)
+}
+""", "may be negative")
+
+    def test_narrowing_inside_array_literal_caught(self) -> None:
+        """A narrowing nested in an expression container (array literal)
+        is visited by the walker, not skipped at the fallthrough
+        (CodeRabbit, PR #748)."""
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Array<Nat> = [takes_nat(@Int.0)];
+  0
+}
+""", "may be negative")
+
+    def test_effect_op_argument_narrowing_caught(self) -> None:
+        """An @Int narrowing into an effect operation's @Nat formal
+        (`IO.sleep : Nat -> Unit`) is obligated — qualified calls were
+        previously only recursed into, never checked against their
+        formal parameter types (CodeRabbit, PR #748)."""
+        _verify_err("""
+public fn f(@Int -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.sleep(@Int.0)
+}
+""", "may be negative")
+
+    def test_effect_op_argument_narrowing_discharged(self) -> None:
+        """The effect-op narrowing verifies cleanly when the argument is
+        constrained non-negative — guards against an over-conservative
+        regression at the new binding site (CodeRabbit, PR #748)."""
+        result = _verify("""
+public fn f(@Int -> @Unit)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.sleep(@Int.0)
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"]
+
+    def test_user_effect_op_argument_narrowing_caught(self) -> None:
+        """A user-declared effect operation with a @Nat parameter obligates
+        an @Int argument the same as built-in IO.sleep. User effects must
+        register their OpInfo (operations were previously stored empty), so
+        lookup_effect_op exposes param_types (CodeRabbit, PR #748)."""
+        _verify_err("""
+effect E {
+  op wait(Nat -> Unit);
+}
+
+public fn f(@Int -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<E>)
+{
+  E.wait(@Int.0)
+}
+""", "may be negative")
+
+    def test_user_effect_op_argument_narrowing_discharged(self) -> None:
+        """The user-effect-op narrowing verifies cleanly when the argument
+        is constrained non-negative — the discharged companion to
+        test_user_effect_op_argument_narrowing_caught.  Asserts the
+        `nat_bind` obligation actually fired and verified, not merely "no
+        error" (CodeRabbit, PR #748)."""
+        result = _verify("""
+effect E {
+  op wait(Nat -> Unit);
+}
+
+public fn f(@Int -> @Unit)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(<E>)
+{
+  E.wait(@Int.0)
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"]
+
+
 # =====================================================================
 # Summary
 # =====================================================================
@@ -1828,8 +2444,21 @@ private fn sum(@List<Int> -> @Int)
           implementation) added 2 T1 + 2 contracts — the trivial
           `requires(true) ensures(true)` on `main`.  Net: +2 T1,
           +2 total.
+        * 256/28/284 after #552 generalised the @Nat `>= 0` invariant
+          to all binding sites.  `json.vera` gains 1 T1 (a
+          provably-safe @Int→@Nat narrowing).  `string_utilities.vera`
+          gains 3 T3: each `nat_to_int(array_length(...))` narrows
+          array_length's @Int result into nat_to_int's @Nat param, and
+          array_length is untranslatable to Z3 so the `>= 0` obligation
+          drops to a Tier-3 runtime guard.  Net: +1 T1, +3 T3, +4 total.
+        * 256/25/281 after the #552 review round.  `string_utilities.vera`'s
+          three `nat_to_int(array_length(...))` narrowings are non-`let`
+          sites with no codegen runtime guard, so each is surfaced as an
+          E504 `tier3_unguarded` warning and excluded from the totals
+          (#747) rather than silently counted as a runtime check: -3 T3,
+          -3 total, +3 tier3_unguarded.
         """
-        t1 = t3 = total = 0
+        t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
             text = f.read_text()
             prog = parse_to_ast(text)
@@ -1838,9 +2467,12 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
-        assert t1 == 255, f"Expected 255 T1, got {t1}"
+            t3u += sum(1 for o in result.obligations
+                       if o.status == "tier3_unguarded")
+        assert t1 == 256, f"Expected 256 T1, got {t1}"
         assert t3 == 25, f"Expected 25 T3, got {t3}"
-        assert total == 280, f"Expected 280 total, got {total}"
+        assert total == 281, f"Expected 281 total, got {total}"
+        assert t3u == 3, f"Expected 3 tier3_unguarded, got {t3u}"
 
 
 # =====================================================================

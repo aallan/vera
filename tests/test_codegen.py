@@ -16338,6 +16338,192 @@ public fn main(@Unit -> @Nat)
 
 
 # =====================================================================
+# @Nat binding-site narrowing runtime guard (#552)
+# =====================================================================
+
+class TestNatBindingRuntimeGuard552:
+    """Codegen emits a runtime `value >= 0` guard at `let @Nat = <Int>`
+    narrowing sites (#552), the binding-site generalisation of the #520
+    subtraction guard.
+
+    The verifier emits a Tier-1 `value >= 0` obligation; codegen mirrors
+    the detection (_narrows_into_nat, sharing _is_static_nat_typed +
+    _has_nat_origin_codegen) and traps if a negative value would reach a
+    @Nat slot.  Like the #520 guard, it protects programs compiled
+    without `vera verify`.
+
+    Only the canonical `let` site is guarded at codegen; the verifier
+    statically covers the other binding sites (call-arg, ctor-field,
+    match-bind, destructure).  Extending the runtime guard there needs
+    callee/field type plumbing or scrutinee-type inference (follow-up).
+    """
+
+    _GUARDED_LET = """
+private fn narrow(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  narrow(0 - 1)
+}
+"""
+
+    _SAFE_LET = """
+private fn narrow(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  narrow(7)
+}
+"""
+
+    def test_negative_narrowing_traps_at_runtime(self) -> None:
+        """narrow(0 - 1) feeds -1 into `let @Nat`, tripping the guard.
+
+        Without the guard, `local.set` would store -1 silently in a
+        @Nat slot.  With it, the function traps before the bad value
+        propagates.
+        """
+        result = _compile_ok(self._GUARDED_LET)
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    def test_nonnegative_narrowing_returns_value(self) -> None:
+        """narrow(7) passes the guard and returns 7 — no spurious trap."""
+        assert _run(self._SAFE_LET) == 7
+
+    def test_guard_emitted_in_wat_for_let_narrowing(self) -> None:
+        """The `narrow` body contains the `i64.lt_s` + `unreachable` guard."""
+        result = _compile_ok(self._GUARDED_LET)
+        wat = result.wat
+        idx = wat.find("(func $narrow")
+        assert idx >= 0, "narrow function not found in WAT"
+        body_end = wat.find("\n  (func ", idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[idx:body_end]
+        assert "i64.lt_s" in body, (
+            f"Expected `i64.lt_s` in narrow body for the @Nat guard. "
+            f"Body:\n{body}"
+        )
+        assert "unreachable" in body, (
+            f"Expected `unreachable` in narrow body for the @Nat guard. "
+            f"Body:\n{body}"
+        )
+
+    def test_guard_emitted_for_untranslatable_let_narrowing(self) -> None:
+        """The let-site guard fires even when the narrowed value is
+        untranslatable to Z3 (a Tier-3 narrowing — the case the guard
+        primarily exists for).  Codegen keys on static @Nat-typing, not
+        Z3-translatability, so `let @Nat = array_length(...)` is guarded
+        like any other @Int->@Nat let (#748 review)."""
+        src = """
+private fn narrow_len(@Array<Int> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = array_length(@Array<Int>.0);
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  narrow_len([1, 2, 3])
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        idx = wat.find("(func $narrow_len")
+        assert idx >= 0, "narrow_len function not found in WAT"
+        body_end = wat.find("\n  (func ", idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[idx:body_end]
+        assert "i64.lt_s" in body, (
+            f"Expected `i64.lt_s` @Nat guard for an untranslatable let "
+            f"narrowing. Body:\n{body}"
+        )
+        assert "unreachable" in body
+
+    def test_already_nat_let_emits_no_guard(self) -> None:
+        """`let @Nat = @Nat.0` is not a narrowing — no guard emitted.
+
+        Sister to the structural test above: the guard fires only when
+        the bound value is not already statically @Nat (or is a
+        pure-literal subtraction), so a @Nat -> @Nat let must emit no
+        `i64.lt_[su]`.
+        """
+        src = """
+private fn passthru(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Nat.0;
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  passthru(5)
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        idx = wat.find("(func $passthru")
+        assert idx >= 0
+        body_end = wat.find("\n  (func ", idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[idx:body_end]
+        assert not re.search(r"\bi64\.lt_[su]\b", body), (
+            f"`let @Nat = @Nat.0` is not a narrowing and must not get a "
+            f"guard. Body:\n{body}"
+        )
+
+    def test_wrapped_subtraction_traps_at_runtime(self) -> None:
+        """`let @Nat = { 0 - 1 }` — a pure-literal underflow wrapped in a
+        block — now gets the guard and traps, matching the verifier.  The
+        top-level-only check missed this; the guard descends to the
+        value-producing leaf (#552 review)."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Nat = { 0 - 1 };
+  @Nat.0
+}
+"""
+        result = _compile_ok(src)
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+
+# =====================================================================
 # WASM call translator critical bug fixes (#475 PR 1)
 # =====================================================================
 

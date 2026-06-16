@@ -24,9 +24,10 @@ Identity vs. outcome:
 - *Outcome* fields record what discharging produced this run.  The
   ``status`` vocabulary mirrors the verifier's summary bookkeeping:
   ``verified`` ↔ ``tier1_verified``; ``tier3`` and ``timeout`` ↔
-  ``tier3_runtime``; ``violated`` ↔ an error diagnostic (excluded from
-  the summary totals, matching the existing ``summary.total -= 1``
-  convention at the violation sites).
+  ``tier3_runtime``; ``violated`` ↔ an error diagnostic and
+  ``tier3_unguarded`` ↔ a warning diagnostic (both excluded from the
+  summary totals, matching the existing ``summary.total -= 1``
+  convention at those sites).
 """
 
 from __future__ import annotations
@@ -46,6 +47,9 @@ ObligationKind = Literal[
                   # per-recursive-call-site checks inside
                   # _verify_decreases aggregate into this record)
     "nat_sub",    # @Nat - @Nat underflow obligation at one site (#520)
+    "nat_bind",   # @Int value narrowing into a @Nat slot at a binding
+                  # site — let / call-arg / effect-op-arg / ctor-field /
+                  # match-bind / destructure (#552, generalising #520)
     "call_pre",   # callee precondition at a call site (#C7d); recorded
                   # only on violation in Phase A — successful call-site
                   # checks discharge silently inside the SMT layer and
@@ -57,6 +61,9 @@ ObligationStatus = Literal[
     "violated",  # Z3 produced a counterexample; an error was emitted
     "tier3",     # outside the decidable fragment; runtime check emitted
     "timeout",   # solver returned unknown; falls back to runtime check
+    "tier3_unguarded",  # untranslatable/timeout at a non-let narrowing
+                        # site with no runtime guard — surfaced as an E504
+                        # warning, excluded from totals (#552/#747)
 ]
 
 
