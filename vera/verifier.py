@@ -1352,6 +1352,10 @@ class ContractVerifier:
                 callee = self._lookup_module_function(expr.path, expr.name)
             param_types = getattr(callee, "param_types", None)
             if param_types is not None:
+                # A generic function whose `TypeVar` formal is fixed to @Nat
+                # by context (e.g. `T = Nat`) is skipped by `_is_nat_type`:
+                # only a concretely-@Nat formal obligates, mirroring generic
+                # constructor fields and effect-op formals — deferred to #747.
                 for arg, formal in zip(expr.args, param_types):
                     if self._is_nat_type(formal) and self._narrows_into_nat(arg):
                         self._check_nat_binding_obligation(
@@ -1456,7 +1460,16 @@ class ContractVerifier:
                             decl, stmt.value, smt, cur_env, assumptions,
                             site="let binding",
                         )
+                    # Rebind the let slot in cur_env so a later obligation
+                    # translates against this value, not a stale outer binding
+                    # of the same slot name.  An untranslatable RHS (e.g.
+                    # `let @Int = E.next(())`) falls back to a fresh slot var
+                    # carrying its type invariant only, so the stale outer
+                    # binding is never reused for a later obligation — mirrors
+                    # the destructure path (CodeRabbit, PR #748).
                     val = smt.translate_expr(stmt.value, cur_env)
+                    if val is None:
+                        val = self._fresh_slot_var(smt, stmt.type_expr)
                     if val is not None:
                         type_name = smt._type_expr_to_slot_name(stmt.type_expr)
                         if type_name is not None:
@@ -1465,7 +1478,8 @@ class ContractVerifier:
                     # Site 6: `let Tuple<@Nat, ...> = Tuple(<Int>, ...)`.
                     # A literal-constructor source pairs each binding with a
                     # translatable sub-expression and is obligation-checked;
-                    # a non-literal source degrades to the runtime guard.
+                    # a non-literal source is left unchecked here — there is
+                    # no runtime guard off the `let` site (#747).
                     self._walk_for_nat_binding_obligations(
                         decl, stmt.value, smt, cur_env, assumptions,
                     )

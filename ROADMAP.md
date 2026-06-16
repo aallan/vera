@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-4,407 tests, 90 conformance programs, 35 examples, 13 spec chapters.
+4,408 tests, 90 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -20,7 +20,7 @@ The cases where Vera accepts a program and quietly does something weaker than it
 
 | Issue | What | Why it's first |
 |---|---|---|
-| [#747](https://github.com/aallan/vera/issues/747) | `@Nat` narrowing at projection binding sites | `let`/argument/effect-operation-argument/constructor-field/match-bind/literal-destructure narrowing is now obligation-checked (#552); ADT sub-pattern binds, non-literal destructures, generic constructor fields and effect-operation formals instantiated to `@Nat`, and imported ADT constructors still need scrutinee/call-site type inference or imported-module constructor lookup to obligate, and the Tier-3 runtime guard backs only the `let` site. |
+| [#747](https://github.com/aallan/vera/issues/747) | `@Nat` narrowing at projection binding sites | `let`/argument/effect-operation-argument/constructor-field/match-bind/literal-destructure narrowing is now obligation-checked (#552); ADT sub-pattern binds, non-literal destructures, generic constructor fields, effect-operation formals, and function formals instantiated to `@Nat`, and imported ADT constructors still need scrutinee/call-site type inference or imported-module constructor lookup to obligate, and the Tier-3 runtime guard backs only the `let` site. |
 | [#746](https://github.com/aallan/vera/issues/746) | Refinement-type predicate verification | User refinement predicates (`{ @Int \| p }`) are parsed but verified nowhere — a value violating the predicate is accepted silently.  Needs predicate→Z3 translation, binder substitution, and discharge at every binding site. |
 | [#732](https://github.com/aallan/vera/issues/732) | Per-monomorphization static verification for generic functions | Generic (`forall<T>`) bodies skip all static verification today — a silent downgrade from Tier 1 to Tier 3.  Verifying each concrete instantiation reuses the existing pipeline; closes the static half of [#555](https://github.com/aallan/vera/issues/555). |
 | [#730](https://github.com/aallan/vera/issues/730) | Precondition-check calls in statement position | E501 fires only for calls in value position; a call whose result is discarded is never checked against its `requires(...)`. |

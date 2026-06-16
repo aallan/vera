@@ -1239,6 +1239,31 @@ private fn f(@Int -> @Nat)
 }
 """, "may be negative")
 
+    def test_let_non_translatable_source_invalidates_stale_binding(
+        self,
+    ) -> None:
+        """An untranslatable `let` RHS (here `array_length(string_lines(...))`)
+        rebinds the slot to a fresh var, so a later `takes_nat(@Int.0)` cannot
+        falsely discharge against the `@Int` param's `requires(@Int.0 >= 0)` —
+        the let-statement analogue of the destructure stale-binding fix
+        (CodeRabbit, PR #748)."""
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  let @Int = array_length(string_lines("ab"));
+  takes_nat(@Int.0)
+}
+""", "may be negative")
+
     def test_narrowing_inside_array_literal_caught(self) -> None:
         """A narrowing nested in an expression container (array literal)
         is visited by the walker, not skipped at the fallthrough
@@ -1314,8 +1339,10 @@ public fn f(@Int -> @Unit)
     def test_user_effect_op_argument_narrowing_discharged(self) -> None:
         """The user-effect-op narrowing verifies cleanly when the argument
         is constrained non-negative — the discharged companion to
-        test_user_effect_op_argument_narrowing_caught (CodeRabbit, PR #748)."""
-        _verify_ok("""
+        test_user_effect_op_argument_narrowing_caught.  Asserts the
+        `nat_bind` obligation actually fired and verified, not merely "no
+        error" (CodeRabbit, PR #748)."""
+        result = _verify("""
 effect E {
   op wait(Nat -> Unit);
 }
@@ -1328,6 +1355,9 @@ public fn f(@Int -> @Unit)
   E.wait(@Int.0)
 }
 """)
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"]
 
 
 # =====================================================================
