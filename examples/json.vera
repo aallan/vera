@@ -30,18 +30,17 @@ private fn has_required_fields(@Json -> @Bool)
 -- Sum all numeric values in a JSON array.  Non-number elements are
 -- treated as 0.0.  Uses json_as_number to type-coerce each element
 -- without an explicit `match @Json.0 { JNumber(@Float64) -> ... }`.
-private fn sum_hourly(@Array<Json>, @Int, @Float64 -> @Float64)
-  requires(@Int.0 >= 0)
+private fn sum_hourly(@Array<Json>, @Nat, @Float64 -> @Float64)
   ensures(true)
-  decreases(@Int.0)
+  decreases(@Nat.0)
   effects(pure)
 {
-  if @Int.0 == 0 then {
+  if @Nat.0 == 0 then {
     @Float64.0
   } else {
-    let @Int = @Int.0 - 1;
-    let @Float64 = match json_as_number(@Array<Json>.0[@Int.0]) { Some(@Float64) -> @Float64.0, None -> 0.0 };
-    sum_hourly(@Array<Json>.0, @Int.0, @Float64.1 + @Float64.0)
+    let @Nat = @Nat.0 - 1;
+    let @Float64 = match json_as_number(@Array<Json>.0[@Nat.0]) { Some(@Float64) -> @Float64.0, None -> 0.0 };
+    sum_hourly(@Array<Json>.0, @Nat.0, @Float64.1 + @Float64.0)
   }
 }
 
@@ -51,11 +50,11 @@ private fn average(@Array<Json> -> @Float64)
   ensures(true)
   effects(pure)
 {
-  let @Int = nat_to_int(array_length(@Array<Json>.0));
-  if @Int.0 == 0 then {
+  let @Nat = array_length(@Array<Json>.0);
+  if @Nat.0 == 0 then {
     0.0
   } else {
-    sum_hourly(@Array<Json>.0, @Int.0, 0.0) / int_to_float(@Int.0)
+    sum_hourly(@Array<Json>.0, @Nat.0, 0.0) / int_to_float(nat_to_int(@Nat.0))
   }
 }
 
@@ -112,6 +111,9 @@ private fn round1(@Float64 -> @Float64)
 -- current temp = 18.5, average hourly = 18.0 (mean of 17, 17.5, 18, 18.5, 19)
 public fn main(@Unit -> @Int)
   requires(true)
+  ensures(true)
+  effects(pure)
+{
   -- `ensures(true)`: the actual return-zero outcome depends on
   -- the specific JSON literal hard-coded in the body parsing
   -- successfully and the helper return values matching expected
@@ -129,9 +131,6 @@ public fn main(@Unit -> @Int)
   -- on every helper, `@Int.result == 0` isn't provable), and
   -- reports E500 (verification error) — the contract has been
   -- honestly relaxed.
-  ensures(true)
-  effects(pure)
-{
   let @String = "{\"location\":\"London\",\"current\":{\"temp_c\":18.5,\"condition\":\"Cloudy\"},\"hourly\":[17.0,17.5,18.0,18.5,19.0]}";
   match parse_current_temp(@String.0) {
     Err(_) -> 1,
