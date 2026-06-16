@@ -325,13 +325,33 @@ class ContractVerifier:
         self.env.type_params = saved_params
 
     def _register_effect(self, decl: ast.EffectDecl) -> None:
-        """Register an effect declaration."""
+        """Register an effect declaration.
+
+        Populates an ``OpInfo`` per declared operation (mirroring
+        :py:meth:`_register_ability`) so the binding-site walker's
+        ``lookup_effect_op`` sees user-effect signatures — a user effect's
+        @Nat-parameter narrowing is obligated just like built-in
+        ``IO.sleep`` (#552 / PR #748 review).
+        """
         from vera.environment import EffectInfo, OpInfo
+        from vera.types import TypeVar
+        saved_params = dict(self.env.type_params)
+        if decl.type_params:
+            for tv in decl.type_params:
+                self.env.type_params[tv] = TypeVar(tv)
+        ops: dict[str, OpInfo] = {}
+        for op in decl.operations:
+            param_types = tuple(
+                self._resolve_type(p) for p in op.param_types)
+            ret_type = self._resolve_type(op.return_type)
+            ops[op.name] = OpInfo(op.name, param_types, ret_type,
+                                  decl.name)
         self.env.effects[decl.name] = EffectInfo(
             name=decl.name,
             type_params=decl.type_params,
-            operations={},
+            operations=ops,
         )
+        self.env.type_params = saved_params
 
     def _register_alias(self, decl: ast.TypeAliasDecl) -> None:
         """Register a type alias."""

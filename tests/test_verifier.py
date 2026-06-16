@@ -1151,6 +1151,39 @@ public fn f(@Int -> @Unit)
 }
 """, "may be negative")
 
+    def test_effect_op_argument_narrowing_discharged(self) -> None:
+        """The effect-op narrowing verifies cleanly when the argument is
+        constrained non-negative — guards against an over-conservative
+        regression at the new binding site (CodeRabbit, PR #748)."""
+        _verify_ok("""
+public fn f(@Int -> @Unit)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(<IO>)
+{
+  IO.sleep(@Int.0)
+}
+""")
+
+    def test_user_effect_op_argument_narrowing_caught(self) -> None:
+        """A user-declared effect operation with a @Nat parameter obligates
+        an @Int argument the same as built-in IO.sleep. User effects must
+        register their OpInfo (operations were previously stored empty), so
+        lookup_effect_op exposes param_types (CodeRabbit, PR #748)."""
+        _verify_err("""
+effect E {
+  op wait(Nat -> Unit);
+}
+
+public fn f(@Int -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<E>)
+{
+  E.wait(@Int.0)
+}
+""", "may be negative")
+
 
 # =====================================================================
 # Summary
