@@ -500,6 +500,7 @@ ERROR_CODES: dict[str, str] = {
     "E501": "Call-site precondition violation",
     "E502": "@Nat subtraction underflow obligation not discharged",
     "E503": "@Nat binding-site narrowing may be negative",
+    "E504": "@Nat narrowing unverified and not runtime-guarded",
     "E520": "Cannot verify contract (generic function)",
     "E521": "Cannot verify precondition (undecidable)",
     "E522": "Cannot verify postcondition (body undecidable)",

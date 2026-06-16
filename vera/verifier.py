@@ -699,8 +699,9 @@ class ContractVerifier:
         # 5.7. Check @Nat binding-site narrowing obligations (#552).
         #      Generalises #520 from @Nat-@Nat subtraction to every
         #      site where an @Int value narrows into a @Nat slot: let
-        #      bindings, call arguments, constructor fields, top-level
-        #      match binds, and literal-tuple destructures.  Emits
+        #      bindings, call arguments, effect-operation arguments,
+        #      constructor fields, top-level match binds, and literal-
+        #      tuple destructures.  Emits
         #      `value >= 0` at each, discharged from preconditions and
         #      path conditions exactly like #520.  Projection sites
         #      whose source type is not statically resolvable here
@@ -1318,6 +1319,7 @@ class ContractVerifier:
 
         * ``let @Nat = <Int>``                  — let bindings;
         * ``f(<Int>)`` with an @Nat formal      — call arguments;
+        * ``E.op(<Int>)`` with an @Nat formal   — effect-operation args;
         * ``Ctor(<Int>)`` with an @Nat field    — constructor fields;
         * ``match <Int> { @Nat -> ... }``       — top-level match binds;
         * ``let Tuple<@Nat, ...> = Tuple(<Int>, ...)`` — destructuring a
@@ -1366,8 +1368,9 @@ class ContractVerifier:
             # Site 3: @Nat constructor fields narrowing an @Int argument.
             # Only *concretely* @Nat fields fire — a generic field
             # (TypeVar) instantiated to @Nat is not visible here without
-            # the call-site type arguments, so it degrades to the runtime
-            # guard.
+            # the call-site type arguments, so it is left unchecked
+            # (neither obligated here nor codegen-guarded) — deferred to
+            # #747, mirroring the generic effect-op formal case.
             ci = self._lookup_constructor_info(expr.name)
             if ci is not None and ci.field_types is not None:
                 for arg, field_ty in zip(expr.args, ci.field_types):
@@ -1495,7 +1498,7 @@ class ContractVerifier:
                         if i < len(lit_args):
                             slot_val = smt.translate_expr(lit_args[i], cur_env)
                         if slot_val is None:
-                            slot_val = self._fresh_slot_var(smt, type_name)
+                            slot_val = self._fresh_slot_var(smt, te)
                         if slot_val is not None:
                             pushed.append((type_name, slot_val))
                     for tn, sv in pushed:
@@ -1643,29 +1646,34 @@ class ContractVerifier:
             )
 
     def _fresh_slot_var(
-        self, smt: SmtContext, slot_name: str,
+        self, smt: SmtContext, te: ast.TypeExpr,
     ) -> object | None:
-        """A fresh Z3 var carrying *slot_name*'s type invariant.
+        """A fresh Z3 var carrying the binding type's invariant.
 
         Used to invalidate a stale outer binding when a destructure rebinds
         a slot to a value the SMT layer cannot translate (a non-literal
         source, or a literal component that does not translate), so a later
         obligation never reads the old, more-constrained binding of the same
-        slot name (CodeRabbit, PR #748).  Returns ``None`` for slot types
-        with no scalar SMT sort (the stale binding is then irrelevant to a
-        `value >= 0` obligation anyway).
+        slot name (CodeRabbit, PR #748).  Dispatches on the *resolved* type
+        so a scalar reached through an alias (e.g. ``type Count = Nat``) is
+        still invalidated; returns ``None`` only for a type with no scalar
+        SMT sort (the stale binding is then irrelevant to a `value >= 0`
+        obligation anyway).
         """
-        fresh = smt._fresh_name("destructure_" + slot_name)
+        resolved = self._resolve_type(te)
+        fresh = smt._fresh_name("destructure")
         result: object | None = None
-        if slot_name == "Nat":
+        if self._is_nat_type(resolved):
             result = smt.declare_nat(fresh)
-        elif slot_name == "Int":
+        elif resolved == INT or (
+            isinstance(resolved, RefinedType) and resolved.base == INT
+        ):
             result = smt.declare_int(fresh)
-        elif slot_name == "Bool":
+        elif self._is_bool_type(resolved):
             result = smt.declare_bool(fresh)
-        elif slot_name == "Float64":
+        elif self._is_float64_type(resolved):
             result = smt.declare_float64(fresh)
-        elif slot_name == "String":
+        elif self._is_string_type(resolved):
             result = smt.declare_string(fresh)
         return result
 
@@ -1683,18 +1691,19 @@ class ContractVerifier:
 
         Mirrors :py:meth:`_check_subtraction_obligation`: on success
         increments ``tier1_verified``; on a Z3 counterexample emits an
-        E503 error; when the value is untranslatable or the solver
-        times out, records a Tier-3 obligation.  The codegen runtime
-        guard backs the let site; at the other sites a Tier-3 narrowing
-        relies on `vera verify` until #747 extends the guard.
-        Path conditions in ``smt._path_conditions`` are folded in
-        automatically by :py:meth:`SmtContext.check_valid`.
+        E503 error.  When the value is untranslatable or the solver times
+        out the outcome depends on the site — the `let` site is backed by
+        the codegen runtime guard (counted ``tier3_runtime``), while every
+        other site has no guard, so the narrowing is surfaced as an E504
+        warning and excluded from the totals (#747; see
+        :py:meth:`_record_nat_bind_tier3`).  Path conditions in
+        ``smt._path_conditions`` are folded in automatically by
+        :py:meth:`SmtContext.check_valid`.
         """
         self.summary.total += 1
         val = smt.translate_expr(value_node, slot_env)
         if val is None:
-            self.summary.tier3_runtime += 1
-            self._record_obligation(decl.name, "nat_bind", value_node, "tier3")
+            self._record_nat_bind_tier3(decl, value_node, site, "tier3")
             return
 
         obligation = val >= 0
@@ -1712,8 +1721,65 @@ class ContractVerifier:
             )
             self._report_nat_binding(decl, value_node, site, result.counterexample)
         else:  # pragma: no cover — solver timeout
+            self._record_nat_bind_tier3(decl, value_node, site, "timeout")
+
+    def _record_nat_bind_tier3(
+        self,
+        decl: ast.FnDecl,
+        value_node: ast.Expr,
+        site: str,
+        status: ObligationStatus,
+    ) -> None:
+        """Record a Tier-3 nat_bind outcome (untranslatable value or solver
+        timeout), distinguishing the guarded `let` site from unguarded
+        non-let sites.
+
+        The codegen runtime guard backs only the `let` site, so a Tier-3
+        narrowing there genuinely falls to a runtime check (``tier3_runtime``).
+        At every other site (#747) there is no guard: rather than silently
+        counting it as a "runtime check" it never gets, surface an E504
+        warning and exclude it from the discharged totals (like a violation).
+        """
+        if site == "let binding":
             self.summary.tier3_runtime += 1
-            self._record_obligation(decl.name, "nat_bind", value_node, "timeout")
+            self._record_obligation(decl.name, "nat_bind", value_node, status)
+        else:
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "nat_bind", value_node, "tier3_unguarded",
+                error_code="E504",
+            )
+            self._report_nat_binding_unguarded(decl, value_node, site)
+
+    def _report_nat_binding_unguarded(
+        self,
+        decl: ast.FnDecl,
+        node: ast.Expr,
+        site: str,
+    ) -> None:
+        """Emit an E504 warning for a non-let @Nat narrowing the SMT layer
+        could not discharge and codegen does not guard (#747)."""
+        self._warning(
+            node,
+            (
+                f"@Int value narrowing into a @Nat {site} in '{decl.name}' "
+                "could not be verified statically and is not runtime-guarded "
+                "(#747) — add `requires(... >= 0)`, bind it to a `let @Nat` "
+                "first (which is guarded), or guard it with "
+                "`if ... >= 0 then ... else ...`."
+            ),
+            rationale=(
+                "The narrowed value is outside Z3's decidable fragment "
+                "(untranslatable or the solver timed out), so the `>= 0` "
+                "obligation could not be discharged.  The codegen runtime "
+                "guard currently backs only the `let` site, so at this site "
+                "the narrowing is neither statically proven nor runtime-"
+                "checked."
+            ),
+            spec_ref='Chapter 11, Section 11.2.1 "Nat as i64"',
+            error_code="E504",
+            tier=3,
+        )
 
     def _report_underflow(
         self,

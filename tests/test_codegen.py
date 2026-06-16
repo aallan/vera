@@ -16428,6 +16428,44 @@ public fn main(@Unit -> @Nat)
             f"Body:\n{body}"
         )
 
+    def test_guard_emitted_for_untranslatable_let_narrowing(self) -> None:
+        """The let-site guard fires even when the narrowed value is
+        untranslatable to Z3 (a Tier-3 narrowing — the case the guard
+        primarily exists for).  Codegen keys on static @Nat-typing, not
+        Z3-translatability, so `let @Nat = array_length(...)` is guarded
+        like any other @Int->@Nat let (#748 review)."""
+        src = """
+private fn narrow_len(@Array<Int> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = array_length(@Array<Int>.0);
+  @Nat.0
+}
+
+public fn main(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  narrow_len([1, 2, 3])
+}
+"""
+        result = _compile_ok(src)
+        wat = result.wat
+        idx = wat.find("(func $narrow_len")
+        assert idx >= 0, "narrow_len function not found in WAT"
+        body_end = wat.find("\n  (func ", idx + 1)
+        if body_end < 0:
+            body_end = len(wat)
+        body = wat[idx:body_end]
+        assert "i64.lt_s" in body, (
+            f"Expected `i64.lt_s` @Nat guard for an untranslatable let "
+            f"narrowing. Body:\n{body}"
+        )
+        assert "unreachable" in body
+
     def test_already_nat_let_emits_no_guard(self) -> None:
         """`let @Nat = @Nat.0` is not a narrowing — no guard emitted.
 

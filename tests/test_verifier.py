@@ -786,8 +786,13 @@ private fn f(@Int -> @Nat)
 """)
 
     def test_let_narrow_if_guard_discharges(self) -> None:
-        """Path condition `@Int.0 >= 0` discharges the let narrowing."""
-        _verify_ok("""
+        """Path condition `@Int.0 >= 0` discharges the let narrowing.
+
+        Asserts the obligation actually *fired and verified* on the
+        constrained path, not merely that no error surfaced — a regression
+        that dropped the obligation would otherwise pass silently (#748
+        review)."""
+        result = _verify("""
 private fn f(@Int -> @Nat)
   requires(true)
   ensures(true)
@@ -801,6 +806,9 @@ private fn f(@Int -> @Nat)
   }
 }
 """)
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"]
 
     def test_let_already_nat_not_flagged(self) -> None:
         """`let @Nat = @Nat.0` is Nat->Nat — no narrowing, no obligation."""
@@ -914,7 +922,7 @@ private fn f(@Int -> @Nat)
 """, "may be negative")
 
     def test_destructure_narrow_requires_discharges(self) -> None:
-        _verify_ok("""
+        result = _verify("""
 private fn f(@Int -> @Nat)
   requires(@Int.0 >= 0)
   ensures(true)
@@ -924,6 +932,9 @@ private fn f(@Int -> @Nat)
   @Nat.0
 }
 """)
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"]
 
     # ---- Double-emit disjointness with #520 -----------------------
     def test_nat_minus_nat_is_sub_not_bind(self) -> None:
@@ -1050,6 +1061,62 @@ private fn f(@Int -> @Nat)
         assert not [o for o in result.obligations if o.kind == "nat_bind"]
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
+    def test_generic_effect_op_formal_not_obligated_yet(self) -> None:
+        """A generic effect-op formal instantiated to @Nat (`E<Nat>.wait`)
+        is a TypeVar here, so `_is_nat_type` skips it — deferred to #747
+        (same class as the generic constructor field).  Pin the current
+        no-obligation behaviour so the #747 fix updates this test
+        consciously rather than silently flipping it (#748 review)."""
+        result = _verify("""
+effect E<T> {
+  op wait(T -> Unit);
+}
+
+public fn f(@Int -> @Unit)
+  requires(true)
+  ensures(true)
+  effects(<E<Nat>>)
+{
+  E.wait(@Int.0)
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_generic_ctor_field_not_obligated_yet(self) -> None:
+        """A generic constructor field instantiated to @Nat (`Some(@Int.0)`
+        as an `Option<Nat>`) is a TypeVar field, so `_is_nat_type` skips it
+        — deferred to #747.  Pin the current no-obligation behaviour so the
+        #747 fix updates this consciously (#748 review)."""
+        result = _verify("""
+private fn f(@Int -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_non_literal_nat_destructure_not_obligated_yet(self) -> None:
+        """A non-literal tuple-destructure source narrowing @Int into @Nat
+        slots is not obligated (the projected source type isn't resolved
+        here) — deferred to #747.  Pin the current behaviour (#748 review)."""
+        result = _verify("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Nat, @Nat> = if @Int.0 > 0 then { Tuple(@Int.0, @Int.0) } else { Tuple(@Int.0, @Int.0) };
+  @Nat.0
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
     def test_caught_narrowing_carries_e503_and_nat_bind(self) -> None:
         """A caught narrowing is tagged E503 with a `nat_bind`-kind
         obligation — not merely a description substring (#552 review)."""
@@ -1067,6 +1134,37 @@ private fn f(@Int -> @Nat)
                     if o.kind == "nat_bind" and o.status == "violated"]
         assert len(violated) == 1, [o.kind for o in result.obligations]
         assert violated[0].error_code == "E503"
+        # The counterexample must WITNESS the violation with a negative
+        # @Int.0, not a model-completed default — pins the check_valid
+        # model-before-pop fix, which a revert silently degrades to
+        # @Int.0 = 0 (a non-witness for `value >= 0`) (#748 review).
+        ce = violated[0].counterexample or {}
+        assert "@Int.0" in ce and int(ce["@Int.0"]) < 0, ce
+
+    def test_non_let_tier3_narrowing_warns_unguarded(self) -> None:
+        """A non-let narrowing whose value the SMT layer can't translate
+        (here `array_length` of an untranslatable string split) surfaces
+        an E504 warning + a `tier3_unguarded` obligation — NOT a silent
+        `tier3_runtime` 'runtime check', since codegen guards only the let
+        site (#552 review / #747)."""
+        result = _verify('''
+public fn f(@Unit -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  nat_to_int(array_length(string_lines("a\\nb")))
+}
+''')
+        unguarded = [o for o in result.obligations
+                     if o.status == "tier3_unguarded"]
+        assert len(unguarded) == 1, [o.status for o in result.obligations]
+        assert unguarded[0].error_code == "E504"
+        warns = [d for d in result.diagnostics if d.error_code == "E504"]
+        assert len(warns) == 1 and warns[0].severity == "warning"
+        # excluded from the discharged totals (like a violation)
+        assert not any(o.status == "tier3" for o in result.obligations
+                       if o.kind == "nat_bind")
 
     def test_call_arg_nat_minus_nat_is_sub_not_bind(self) -> None:
         """A `@Nat - @Nat` *call argument* is #520's obligation (nat_sub),
@@ -1181,7 +1279,7 @@ public fn f(@Int -> @Unit)
         """The effect-op narrowing verifies cleanly when the argument is
         constrained non-negative — guards against an over-conservative
         regression at the new binding site (CodeRabbit, PR #748)."""
-        _verify_ok("""
+        result = _verify("""
 public fn f(@Int -> @Unit)
   requires(@Int.0 >= 0)
   ensures(true)
@@ -1190,6 +1288,9 @@ public fn f(@Int -> @Unit)
   IO.sleep(@Int.0)
 }
 """)
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"]
 
     def test_user_effect_op_argument_narrowing_caught(self) -> None:
         """A user-declared effect operation with a @Nat parameter obligates
@@ -2320,8 +2421,14 @@ private fn sum(@List<Int> -> @Int)
           array_length's @Int result into nat_to_int's @Nat param, and
           array_length is untranslatable to Z3 so the `>= 0` obligation
           drops to a Tier-3 runtime guard.  Net: +1 T1, +3 T3, +4 total.
+        * 256/25/281 after the #552 review round.  `string_utilities.vera`'s
+          three `nat_to_int(array_length(...))` narrowings are non-`let`
+          sites with no codegen runtime guard, so each is surfaced as an
+          E504 `tier3_unguarded` warning and excluded from the totals
+          (#747) rather than silently counted as a runtime check: -3 T3,
+          -3 total, +3 tier3_unguarded.
         """
-        t1 = t3 = total = 0
+        t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
             text = f.read_text()
             prog = parse_to_ast(text)
@@ -2330,9 +2437,12 @@ private fn sum(@List<Int> -> @Int)
             t1 += result.summary.tier1_verified
             t3 += result.summary.tier3_runtime
             total += result.summary.total
+            t3u += sum(1 for o in result.obligations
+                       if o.status == "tier3_unguarded")
         assert t1 == 256, f"Expected 256 T1, got {t1}"
-        assert t3 == 28, f"Expected 28 T3, got {t3}"
-        assert total == 284, f"Expected 284 total, got {total}"
+        assert t3 == 25, f"Expected 25 T3, got {t3}"
+        assert total == 281, f"Expected 281 total, got {total}"
+        assert t3u == 3, f"Expected 3 tier3_unguarded, got {t3u}"
 
 
 # =====================================================================
