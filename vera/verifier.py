@@ -684,8 +684,9 @@ class ContractVerifier:
         #      `value >= 0` at each, discharged from preconditions and
         #      path conditions exactly like #520.  Projection sites
         #      whose source type is not statically resolvable here
-        #      (ADT sub-pattern binds, non-literal destructures) fall
-        #      to the Tier-3 codegen runtime guard instead.
+        #      (ADT sub-pattern binds, non-literal destructures) are
+        #      left unchecked — neither obligated here nor guarded by
+        #      codegen — tracked as #747 (needs scrutinee-type inference).
         if decl.body is not None:
             self._walk_for_nat_binding_obligations(
                 decl, decl.body, smt, slot_env, assumptions,
@@ -1302,21 +1303,24 @@ class ContractVerifier:
         * ``let Tuple<@Nat, ...> = Tuple(<Int>, ...)`` — destructuring a
           literal tuple.
 
-        The obligation fires only when the target is @Nat AND the value
-        is *not* already statically @Nat (``not _is_nat_typed(value)``)
-        — the single condition that keeps #552 disjoint from #520's
-        @Nat-@Nat subtraction obligation (a @Nat-@Nat value is already
-        @Nat, so it is not a narrowing).  Path conditions are tracked
-        via ``smt._path_conditions`` so :py:meth:`SmtContext.check_valid`
-        discharges each obligation under the in-scope branch guards.
+        The obligation fires when ``_narrows_into_nat(value)`` — either a
+        genuine @Int narrowing, or a statically-@Nat value whose tree
+        contains a pure-literal subtraction (``0 - 1``) that #520 defers.
+        This keeps #552 disjoint from #520's @Nat-@Nat (with @Nat origin)
+        obligation so the two never co-fire on one site.  Path conditions
+        are tracked via ``smt._path_conditions`` so
+        :py:meth:`SmtContext.check_valid` discharges each obligation under
+        the in-scope branch guards.
 
         Projection sites whose *source* type the verifier cannot resolve
         statically — ADT sub-pattern binds (``Some(@Nat.0)``) and
-        non-literal tuple destructures — are deliberately left to the
-        Tier-3 codegen runtime guard rather than risk a false E503: the
-        bound value's Z3 term is an uninterpreted accessor with no
+        non-literal tuple destructures — are deliberately left unchecked
+        (tracked as #747) rather than risk a false E503: the bound
+        value's Z3 term is an uninterpreted accessor with no
         non-negativity assertion, so an already-@Nat source would fail
-        the proof spuriously.
+        the proof spuriously.  Codegen does not guard them either (the
+        runtime guard covers only the let site), so closing them needs
+        scrutinee-type inference.
         """
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             # Site 2: @Nat formal parameters narrowing an @Int argument.
@@ -1564,7 +1568,9 @@ class ContractVerifier:
         Mirrors :py:meth:`_check_subtraction_obligation`: on success
         increments ``tier1_verified``; on a Z3 counterexample emits an
         E503 error; when the value is untranslatable or the solver
-        times out, falls back to Tier 3 (the codegen runtime guard).
+        times out, records a Tier-3 obligation.  The codegen runtime
+        guard backs the let site; at the other sites a Tier-3 narrowing
+        relies on `vera verify` until #747 extends the guard.
         Path conditions in ``smt._path_conditions`` are folded in
         automatically by :py:meth:`SmtContext.check_valid`.
         """
@@ -1679,7 +1685,7 @@ class ContractVerifier:
                 "condition discharges the obligation in the then-branch."
             ),
             spec_ref=(
-                'Chapter 4, Section 4.5 "Let Bindings" and Chapter 11, '
+                'Chapter 4, Section 4.7 "Let Bindings" and Chapter 11, '
                 'Section 11.2.1 "Nat as i64"'
             ),
             error_code="E503",
@@ -1800,27 +1806,56 @@ class ContractVerifier:
         """Return True iff binding *value* into a @Nat slot is a
         narrowing that needs a ``value >= 0`` obligation (#552).
 
-        Two shapes fire:
+        Fires in two shapes:
 
         * the value is not statically @Nat — a genuine @Int narrowing
           (``@Int.0``, ``@Int.0 - 100``, ``-1``); or
-        * the value is a pure-literal subtraction (``0 - 1``) — typed
-          @Nat (both operands non-negative literals) but carrying no
-          @Nat provenance, which #520 deliberately exempts from its
-          underflow obligation and defers here.  ``_is_nat_typed`` calls
-          such a value @Nat, yet it can be negative, so the binding-site
-          obligation must still fire.
+        * the value is statically @Nat but its value-producing tree
+          contains a pure-literal subtraction that can underflow
+          (``0 - 1``, however wrapped or nested) — ``_is_nat_typed`` calls
+          such a value @Nat, yet it can be negative.  #520 deliberately
+          exempts these (no @Nat provenance) and defers them here.
 
         A genuine @Nat value (slot ref, @Nat-returning call, non-negative
-        literal, or @Nat-origin arithmetic) returns False; a #520-covered
-        ``@Nat - @Nat`` with @Nat origin also returns False so the two
-        obligations never co-fire on one site.
+        literal, @Nat-origin arithmetic, or a #520-covered ``@Nat - @Nat``
+        with @Nat origin) returns False so the two obligations never
+        co-fire on one site.  See :py:meth:`_has_underflow_leaf`.
         """
         if not self._is_nat_typed(value):
             return True
-        return (isinstance(value, ast.BinaryExpr)
-                and value.op == ast.BinOp.SUB
-                and not self._has_nat_origin(value))
+        return self._has_underflow_leaf(value)
+
+    def _has_underflow_leaf(self, value: ast.Expr) -> bool:
+        """True iff a statically-@Nat *value* can still be negative
+        because its value-producing tree contains a pure-literal
+        subtraction (a subtraction with no @Nat provenance).
+
+        Descends arithmetic operands, ``Block`` tails, ``IfExpr``
+        branches, and ``MatchExpr`` arms, so the #520-exempt ``0 - 1``
+        idiom is caught however it is wrapped: ``{ 0 - 1 }``,
+        ``if c then 5 else 0 - 1``, ``(0 - 1) + x`` all qualify.  A value
+        with no such subtraction (a non-negative literal, an addition of
+        @Nat values, or a ``@Nat - @Nat`` with @Nat origin) returns
+        False.  Z3 then discharges the genuinely-safe cases (``5 - 1``)
+        at Tier 1 and rejects the negative ones (``0 - 1``) with E503.
+        """
+        if isinstance(value, ast.BinaryExpr):
+            if (value.op == ast.BinOp.SUB
+                    and not self._has_nat_origin(value)):
+                return True
+            return (self._has_underflow_leaf(value.left)
+                    or self._has_underflow_leaf(value.right))
+        if isinstance(value, ast.Block):
+            return self._has_underflow_leaf(value.expr)
+        if isinstance(value, ast.IfExpr):
+            if value.else_branch is None:
+                return False
+            return (self._has_underflow_leaf(value.then_branch)
+                    or self._has_underflow_leaf(value.else_branch))
+        if isinstance(value, ast.MatchExpr):
+            return any(self._has_underflow_leaf(arm.body)
+                       for arm in value.arms)
+        return False
 
     # -----------------------------------------------------------------
     # Counterexample reporting

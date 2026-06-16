@@ -16465,6 +16465,25 @@ public fn main(@Unit -> @Nat)
             f"guard. Body:\n{body}"
         )
 
+    def test_wrapped_subtraction_traps_at_runtime(self) -> None:
+        """`let @Nat = { 0 - 1 }` — a pure-literal underflow wrapped in a
+        block — now gets the guard and traps, matching the verifier.  The
+        top-level-only check missed this; the guard descends to the
+        value-producing leaf (#552 review)."""
+        src = """
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @Nat = { 0 - 1 };
+  @Nat.0
+}
+"""
+        result = _compile_ok(src)
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
 
 # =====================================================================
 # WASM call translator critical bug fixes (#475 PR 1)

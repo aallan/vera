@@ -1005,6 +1005,91 @@ private fn f(@Unit -> @Nat)
 """)
         assert not [o for o in result.obligations if o.kind == "nat_bind"]
 
+    def test_wrapped_underflow_subtraction_caught(self) -> None:
+        """A pure-literal subtraction wrapped in a block / if-branch /
+        match arm, or nested in arithmetic, still narrows a
+        possibly-negative value into @Nat.  `_is_nat_typed` calls the
+        wrapper @Nat, so a top-level-only check would miss these — the
+        obligation must look through to the value-producing leaf
+        (#552 review)."""
+        for body in (
+            "let @Nat = { 0 - 1 };\n  @Nat.0",
+            "let @Nat = if @Int.0 >= 0 then { 5 } else { 0 - 1 };\n  @Nat.0",
+            "let @Nat = match @Int.0 { @Int -> 0 - 1 };\n  @Nat.0",
+            "let @Nat = (0 - 1) + (0 - 1);\n  @Nat.0",
+        ):
+            src = (
+                "private fn f(@Int -> @Nat)\n"
+                "  requires(true)\n"
+                "  ensures(true)\n"
+                "  effects(pure)\n"
+                "{\n"
+                "  " + body + "\n"
+                "}\n"
+            )
+            _verify_err(src, "may be negative")
+
+    def test_adt_subpattern_bind_not_obligated_yet(self) -> None:
+        """ADT sub-pattern binds (`Some(@Nat)` on `Option<Int>`) narrow a
+        projected field whose source type the verifier cannot resolve
+        statically — deferred to #747.  Pin the CURRENT behaviour (no
+        `nat_bind` obligation) so the #747 fix must update this test
+        consciously rather than silently changing it."""
+        result = _verify("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match Some(@Int.0) {
+    Some(@Nat) -> @Nat.0,
+    None -> 0
+  }
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+
+    def test_caught_narrowing_carries_e503_and_nat_bind(self) -> None:
+        """A caught narrowing is tagged E503 with a `nat_bind`-kind
+        obligation — not merely a description substring (#552 review)."""
+        result = _verify("""
+private fn f(@Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let @Nat = @Int.0;
+  @Nat.0
+}
+""")
+        violated = [o for o in result.obligations
+                    if o.kind == "nat_bind" and o.status == "violated"]
+        assert len(violated) == 1, [o.kind for o in result.obligations]
+        assert violated[0].error_code == "E503"
+
+    def test_call_arg_nat_minus_nat_is_sub_not_bind(self) -> None:
+        """A `@Nat - @Nat` *call argument* is #520's obligation (nat_sub),
+        not #552's — the disjointness holds at a non-let site too, where
+        the site walk (not just `_narrows_into_nat`) could regress
+        (#552 review)."""
+        result = _verify("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Nat, @Nat -> @Nat)
+  requires(@Nat.0 >= @Nat.1)
+  ensures(true)
+  effects(pure)
+{ takes_nat(@Nat.0 - @Nat.1) }
+""")
+        kinds = [o.kind for o in result.obligations]
+        assert kinds.count("nat_bind") == 0, kinds
+        assert kinds.count("nat_sub") == 1, kinds
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
 
 # =====================================================================
 # Summary

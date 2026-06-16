@@ -291,7 +291,7 @@
     "chapter": 4,
     "title": "@Nat binding-site narrowing obligation (#552)",
     "level": "run",
-    "spec_ref": "Section 4.4 / Section 11.2.1",
+    "spec_ref": "Section 4.7 / Section 11.2.1",
     "features": [
       "nat_binding",
       "binding_narrowing",
