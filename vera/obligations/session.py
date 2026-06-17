@@ -147,10 +147,11 @@ class VerificationSession:
             resolved_modules = resolver.resolve_imports(program, path)
             resolver_errors = resolver.errors
 
-        from vera.checker import typecheck
-        check_diags = resolver_errors + typecheck(
+        from vera.checker import typecheck_with_artifacts
+        check_diags_raw, artifacts = typecheck_with_artifacts(
             program, source, file=file, resolved_modules=resolved_modules,
         )
+        check_diags = resolver_errors + check_diags_raw
         if any(d.severity == "error" for d in check_diags):
             # Type errors: skip verification, matching cmd_verify.
             return SessionVerifyResult(
@@ -164,6 +165,8 @@ class VerificationSession:
             timeout_ms=self._timeout_ms,
             resolved_modules=resolved_modules,
             shared_smt=smt,
+            expr_types=artifacts.expr_semantic_types,
+            expr_target_types=artifacts.expr_target_types,
         )
         verifier.register_program(program)
 

@@ -80,6 +80,8 @@ def verify(
     file: str | None = None,
     timeout_ms: int = 10_000,
     resolved_modules: list[ResolvedModule] | None = None,
+    expr_types: dict[tuple[int, int, int, int], Type] | None = None,
+    expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
 ) -> VerifyResult:
     """Verify contracts in a type-checked Vera Program AST.
 
@@ -93,6 +95,7 @@ def verify(
     verifier = ContractVerifier(
         source=source, file=file, timeout_ms=timeout_ms,
         resolved_modules=resolved_modules,
+        expr_types=expr_types, expr_target_types=expr_target_types,
     )
     verifier.verify_program(program)
     return VerifyResult(
@@ -116,6 +119,8 @@ class ContractVerifier:
         timeout_ms: int = 10_000,
         resolved_modules: list[ResolvedModule] | None = None,
         shared_smt: SmtContext | None = None,
+        expr_types: dict[tuple[int, int, int, int], Type] | None = None,
+        expr_target_types: dict[tuple[int, int, int, int], Type] | None = None,
     ) -> None:
         self.env = TypeEnv()
         self.errors: list[Diagnostic] = []
@@ -143,6 +148,47 @@ class ContractVerifier:
         self._import_names: dict[
             tuple[str, ...], set[str] | None
         ] = {}
+        # #747: checker-provided span-keyed semantic-type side-tables
+        # (from typecheck_with_artifacts).  Empty when a caller verifies
+        # without collecting them (the imported-module sub-verifier, or a
+        # bare verify() with no tables) — the projection /
+        # generic-instantiation narrowing sites then stay deferred
+        # exactly as pre-#747.
+        self._expr_types: dict[tuple[int, int, int, int], Type] = (
+            expr_types or {}
+        )
+        self._expr_target_types: dict[tuple[int, int, int, int], Type] = (
+            expr_target_types or {}
+        )
+
+    # -----------------------------------------------------------------
+    # #747: checker-provided expression types (span-keyed)
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _span_key(expr: ast.Expr) -> tuple[int, int, int, int] | None:
+        sp = getattr(expr, "span", None)
+        if sp is None:
+            return None
+        return (sp.line, sp.column, sp.end_line, sp.end_column)
+
+    def _resolved_type_of(self, expr: ast.Expr) -> Type | None:
+        """The checker's synthesised *result* type for *expr* (#747).
+
+        ``None`` when the side-table wasn't collected or the node has no
+        span — callers treat that as "unknown" and fall back to the
+        pre-#747 static checks, never as a positive @Nat answer.
+        """
+        key = self._span_key(expr)
+        return self._expr_types.get(key) if key is not None else None
+
+    def _target_type_of(self, expr: ast.Expr) -> Type | None:
+        """The instantiated *expected* type *expr* was checked against
+        (#747) — the @Nat target at a generic call / construction site;
+        ``None`` semantics as :py:meth:`_resolved_type_of`.
+        """
+        key = self._span_key(expr)
+        return self._expr_target_types.get(key) if key is not None else None
 
     # -----------------------------------------------------------------
     # Diagnostics

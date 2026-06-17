@@ -215,7 +215,7 @@ def cmd_check(
 
 def cmd_verify(path: str, as_json: bool = False, quiet: bool = False) -> int:
     """Parse, transform, type-check, and verify a .vera file."""
-    from vera.checker import typecheck
+    from vera.checker import typecheck_with_artifacts
     from vera.resolver import ModuleResolver
     from vera.verifier import verify
 
@@ -228,10 +228,13 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False) -> int:
         resolver = ModuleResolver(_root=p.parent)
         resolved = resolver.resolve_imports(ast, p)
 
-        # First type-check
-        type_diags = resolver.errors + typecheck(
+        # First type-check, collecting the #747 semantic-type side-tables
+        # so the verifier can obligate projection / generic-instantiation
+        # @Nat narrowings.
+        check_diags, artifacts = typecheck_with_artifacts(
             ast, source, file=str(p), resolved_modules=resolved,
         )
+        type_diags = resolver.errors + check_diags
         type_errors = [d for d in type_diags if d.severity == "error"]
         type_warnings = [d for d in type_diags if d.severity == "warning"]
 
@@ -251,7 +254,9 @@ def cmd_verify(path: str, as_json: bool = False, quiet: bool = False) -> int:
 
         # Then verify contracts
         result = verify(ast, source, file=str(p),
-                        resolved_modules=resolved)
+                        resolved_modules=resolved,
+                        expr_types=artifacts.expr_semantic_types,
+                        expr_target_types=artifacts.expr_target_types)
 
         errors = [d for d in result.diagnostics if d.severity == "error"]
         warnings = [d for d in result.diagnostics if d.severity == "warning"]

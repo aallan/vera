@@ -35,6 +35,7 @@ from vera.environment import (
 from vera.types import (
     BOOL,
     PureEffectRow,
+    Type,
     TypeVar,
     UnknownType,
     canonical_type_name,
@@ -107,6 +108,9 @@ class CheckArtifacts:
 
     expr_types: dict[tuple[int, int, int, int], str]
     holes: list[HoleSite]
+    # #747: semantic-type side-tables for the verifier (see TypeChecker).
+    expr_semantic_types: dict[tuple[int, int, int, int], Type]
+    expr_target_types: dict[tuple[int, int, int, int], Type]
 
 
 def typecheck_with_artifacts(
@@ -127,11 +131,15 @@ def typecheck_with_artifacts(
         source=source, file=file, resolved_modules=resolved_modules,
     )
     checker.expr_types = {}
+    checker.expr_semantic_types = {}
+    checker.expr_target_types = {}
     checker.hole_sites = []
     checker.check_program(program)
     return checker.errors, CheckArtifacts(
         expr_types=checker.expr_types,
         holes=checker.hole_sites,
+        expr_semantic_types=checker.expr_semantic_types,
+        expr_target_types=checker.expr_target_types,
     )
 
 
@@ -173,6 +181,18 @@ class TypeChecker(
         # and _check_hole records each hole's expected type + in-scope
         # bindings.
         self.expr_types: dict[tuple[int, int, int, int], str] | None = None
+        # #747: parallel side-tables of *semantic* types (not pretty
+        # strings) for the verifier — the result type and the ``expected``
+        # (instantiated target) type each expression was checked against,
+        # so the narrowing walker can resolve the @Nat target at
+        # projection / generic-instantiation binding sites.  Co-enabled
+        # with ``expr_types`` (both installed by typecheck_with_artifacts).
+        self.expr_semantic_types: (
+            dict[tuple[int, int, int, int], Type] | None
+        ) = None
+        self.expr_target_types: (
+            dict[tuple[int, int, int, int], Type] | None
+        ) = None
         self.hole_sites: list[HoleSite] | None = None
         # Resolved modules (C7a: paths for diagnostics, C7b: full list
         # for cross-module type merging).
