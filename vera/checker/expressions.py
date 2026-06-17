@@ -548,7 +548,7 @@ class ExpressionsMixin:
 
     def _check_let_destruct(self, stmt: ast.LetDestruct) -> None:
         """Type-check a destructuring let."""
-        val_type = self._synth_expr(stmt.value)
+        self._synth_expr(stmt.value)
 
         for te in stmt.type_bindings:
             resolved = self._resolve_type(te)

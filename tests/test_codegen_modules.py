@@ -11,15 +11,11 @@ import wasmtime
 
 from vera.codegen import (
     CompileResult,
-    ConstructorLayout,
-    ExecuteResult,
-    _align_up,
-    _wasm_type_align,
-    _wasm_type_size,
     compile,
     execute,
 )
 from vera.parser import parse_file
+from vera.resolver import ResolvedModule
 from vera.transform import transform
 
 
@@ -32,7 +28,6 @@ def _compile(source: str) -> CompileResult:
     """Compile a Vera source string to WASM."""
     # Write to a temp source and parse
     import tempfile
-    from pathlib import Path
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".vera", delete=False
@@ -178,12 +173,10 @@ private fn internal(@Int -> @Int)
     @staticmethod
     def _resolved(
         path: tuple[str, ...], source: str,
-    ) -> "ResolvedModule":
+    ) -> ResolvedModule:
         """Build a ResolvedModule from source text."""
         import tempfile
         from pathlib import Path
-
-        from vera.resolver import ResolvedModule as RM
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".vera", delete=False
@@ -194,7 +187,7 @@ private fn internal(@Int -> @Int)
 
         tree = parse_file(fpath)
         prog = transform(tree)
-        return RM(
+        return ResolvedModule(
             path=path,
             file_path=Path(fpath),
             program=prog,
@@ -461,10 +454,9 @@ class TestCrossModuleNameCollision661:
     @staticmethod
     def _resolved(
         path: tuple[str, ...], source: str,
-    ) -> "ResolvedModule":
+    ) -> ResolvedModule:
         import tempfile
         from pathlib import Path
-        from vera.resolver import ResolvedModule as RM
         # Explicit utf-8 encoding (Windows-portability) + try/finally
         # cleanup so the temp file is removed after parse + transform.
         # Safe because `compile()` works off the in-memory `source`
@@ -480,7 +472,7 @@ class TestCrossModuleNameCollision661:
         try:
             tree = parse_file(fpath)
             prog = transform(tree)
-            return RM(
+            return ResolvedModule(
                 path=path, file_path=Path(fpath), program=prog,
                 source=source,
             )
@@ -631,7 +623,7 @@ class TestNameCollisionDetection:
     @staticmethod
     def _resolved(
         path: tuple[str, ...], source: str,
-    ) -> "ResolvedModule":
+    ) -> ResolvedModule:
         """Build a ResolvedModule from source text."""
         return TestCrossModuleCodegen._resolved(path, source)
 

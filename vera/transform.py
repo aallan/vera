@@ -27,14 +27,10 @@ from vera.ast import (
     Constructor,
     ConstructorCall,
     ConstructorPattern,
-    Contract,
     DataDecl,
-    Decl,
     Decreases,
     EffectDecl,
     EffectRef,
-    EffectRefNode,
-    EffectRow,
     EffectSet,
     Ensures,
     ExistsExpr,
@@ -54,7 +50,6 @@ from vera.ast import (
     InterpolatedString,
     IntLit,
     IntPattern,
-    Invariant,
     LetDestruct,
     LetStmt,
     MatchArm,
@@ -81,7 +76,6 @@ from vera.ast import (
     Stmt,
     TopLevelDecl,
     TypeAliasDecl,
-    TypeExpr,
     UnaryExpr,
     UnaryOp,
     UnitLit,
@@ -549,11 +543,16 @@ class VeraTransformer(Transformer):
             forall_vars = children[idx].vars
             forall_constraints = children[idx].constraints
             idx += 1
-        name = children[idx]; idx += 1
-        sig = children[idx]; idx += 1
-        contracts = children[idx]; idx += 1
-        effect = children[idx]; idx += 1
-        body = children[idx]; idx += 1
+        name = children[idx]
+        idx += 1
+        sig = children[idx]
+        idx += 1
+        contracts = children[idx]
+        idx += 1
+        effect = children[idx]
+        idx += 1
+        body = children[idx]
+        idx += 1
         where_fns = None
         if idx < len(children) and isinstance(children[idx], _WhereFns):
             where_fns = children[idx].fns
@@ -1110,11 +1109,14 @@ class VeraTransformer(Transformer):
         # fn(fn_params? -> @type_expr) effect_clause fn_body
         idx = 0
         if isinstance(children[idx], tuple):
-            params = children[idx]; idx += 1
+            params = children[idx]
+            idx += 1
         else:
             params = ()
-        return_type = children[idx]; idx += 1
-        effect = children[idx]; idx += 1
+        return_type = children[idx]
+        idx += 1
+        effect = children[idx]
+        idx += 1
         body = children[idx]
         return AnonFn(
             params=params, return_type=return_type,

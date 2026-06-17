@@ -118,7 +118,7 @@ def verify_file(path: str | Path) -> "VerifyResult":
     """
     from vera.checker import typecheck
     from vera.transform import transform
-    from vera.verifier import VerifyResult, verify
+    from vera.verifier import verify
 
     path = Path(path)
     source = path.read_text(encoding="utf-8")

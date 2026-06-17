@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 
 from vera.types import (
-    INT, NAT, BOOL, FLOAT64, STRING, UNIT, NEVER, BYTE,
-    PrimitiveType, AdtType, FunctionType, RefinedType, TypeVar, UnknownType,
+    INT, NAT, BOOL, STRING, NEVER, AdtType, FunctionType, RefinedType, TypeVar, UnknownType,
     PureEffectRow, ConcreteEffectRow, EffectInstance,
     is_subtype, is_effect_subtype, types_equal, substitute, substitute_effect,
     pretty_type, pretty_effect, canonical_type_name, base_type,

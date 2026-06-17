@@ -13,6 +13,7 @@ import pytest
 
 from vera.parser import parse_to_ast
 from vera.checker import typecheck
+from vera.resolver import ResolvedModule
 from vera.verifier import VerifyResult, verify
 
 EXAMPLES_DIR = Path(__file__).parent.parent / "examples"
@@ -43,7 +44,7 @@ def _verify_err(source: str, match: str) -> list:
     """Assert source produces at least one verification error matching *match*."""
     result = _verify(source)
     errors = [d for d in result.diagnostics if d.severity == "error"]
-    assert errors, f"Expected at least one error, got none"
+    assert errors, "Expected at least one error, got none"
     matched = [e for e in errors if match.lower() in e.description.lower()]
     assert matched, (
         f"No error matched '{match}'. Errors: {[e.description for e in errors]}"
@@ -55,7 +56,7 @@ def _verify_warn(source: str, match: str) -> list:
     """Assert source produces at least one verification warning matching *match*."""
     result = _verify(source)
     warnings = [d for d in result.diagnostics if d.severity == "warning"]
-    assert warnings, f"Expected at least one warning, got none"
+    assert warnings, "Expected at least one warning, got none"
     matched = [w for w in warnings if match.lower() in w.description.lower()]
     assert matched, (
         f"No warning matched '{match}'. Warnings: {[w.description for w in warnings]}"
@@ -1928,11 +1929,10 @@ private fn internal(@Int -> @Int)
     @staticmethod
     def _resolved(
         path: tuple[str, ...], source: str,
-    ) -> "ResolvedModule":
+    ) -> ResolvedModule:
         """Build a ResolvedModule from source text."""
-        from vera.resolver import ResolvedModule as RM
         prog = parse_to_ast(source)
-        return RM(
+        return ResolvedModule(
             path=path,
             file_path=Path(f"/fake/{'/'.join(path)}.vera"),
             program=prog,
@@ -1942,7 +1942,7 @@ private fn internal(@Int -> @Int)
     @staticmethod
     def _verify_mod(
         source: str,
-        modules: list["ResolvedModule"],
+        modules: list[ResolvedModule],
     ) -> VerifyResult:
         """Parse, type-check, and verify with resolved modules."""
         prog = parse_to_ast(source)

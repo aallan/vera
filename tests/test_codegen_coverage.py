@@ -12,11 +12,6 @@ import wasmtime
 
 from vera.codegen import (
     CompileResult,
-    ConstructorLayout,
-    ExecuteResult,
-    _align_up,
-    _wasm_type_align,
-    _wasm_type_size,
     compile,
     execute,
 )
@@ -35,7 +30,6 @@ def _compile(source: str) -> CompileResult:
     """Compile a Vera source string to WASM."""
     # Write to a temp source and parse
     import tempfile
-    from pathlib import Path
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".vera", delete=False
@@ -231,7 +225,7 @@ class TestCodegenCoverageGaps:
 
     def test_cross_module_unknown_module_call(self) -> None:
         """ModuleCall to a non-existent module function is detected."""
-        from vera.ast import Block, IntLit, ModuleCall, NamedType
+        from vera.ast import Block, IntLit, ModuleCall
 
         body = Block(
             statements=(),

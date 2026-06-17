@@ -1022,7 +1022,7 @@ class CallsEncodingMixin:
         slen = self.alloc_local("i32")
         out = self.alloc_local("i32")    # Result ADT pointer
         dst = self.alloc_local("i32")    # decoded bytes pointer
-        out_len = self.alloc_local("i32")
+        self.alloc_local("i32")          # reserved slot (keeps indices stable)
         i = self.alloc_local("i32")      # input index
         k = self.alloc_local("i32")      # output index
         ch = self.alloc_local("i32")     # current byte

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **ruff is now an enforced lint gate** ([#733](https://github.com/aallan/vera/issues/733)).  `ruff check` (default `F`/`E` rules) runs in pre-commit (before mypy) and the CI lint job — ruff shipped in the `[dev]` extras but nothing ran it, so ~176 findings had accumulated silently.  All cleared: 134 auto-fixed (unused imports, placeholder-less f-strings, redefinitions) and 41 hand-triaged (the three dead `skip_langs` sets, unused locals, ambiguous names, `ResolvedModule` string-annotation hoists, semicolon splits, a `type()` comparison).  Bundles the ruff `0.15.16` → `0.15.17` bump ([#741](https://github.com/aallan/vera/pull/741)).
+
 ## [0.0.172] - 2026-06-16
 
 ### Added

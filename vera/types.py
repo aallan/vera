@@ -318,7 +318,7 @@ def types_equal(a: Type, b: Type) -> bool:
     """Structural type equality."""
     if isinstance(a, UnknownType) or isinstance(b, UnknownType):
         return True
-    if type(a) != type(b):
+    if type(a) is not type(b):
         return False
     if isinstance(a, PrimitiveType) and isinstance(b, PrimitiveType):
         return a.name == b.name

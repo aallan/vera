@@ -9,7 +9,6 @@ See spec/06-contracts.md, Section 6.4 "Verification Conditions".
 
 from __future__ import annotations
 
-from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -23,7 +22,6 @@ from vera.types import (
     TypeVar,
     BOOL,
     FLOAT64,
-    INT,
     NAT,
     STRING,
 )

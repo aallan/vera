@@ -2690,7 +2690,7 @@ public fn buggy_hash(@Int -> @Int)
 """
         path = tmp_path / "fail.vera"
         path.write_text(source)
-        rc = cmd_test(str(path), trials=50)
+        cmd_test(str(path), trials=50)
         out = capsys.readouterr().out
         assert "Testing:" in out
         assert "Results:" in out
@@ -2715,7 +2715,7 @@ public fn buggy_hash(@Int -> @Int)
 """
         path = tmp_path / "fail.vera"
         path.write_text(source)
-        rc = cmd_test(str(path), as_json=True, trials=50)
+        cmd_test(str(path), as_json=True, trials=50)
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "functions" in data

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
-import sys
 from pathlib import Path
 
-import pytest
 
 # ---------------------------------------------------------------------------
 # Import _abs_links from the script directly (it lives in scripts/, not in

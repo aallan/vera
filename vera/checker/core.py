@@ -370,8 +370,8 @@ class TypeChecker(
                     f"{pretty_type(return_type)}.",
                     rationale="The function body's type must match the "
                               "declared return type.",
-                    fix=f"Change the return type or adjust the body "
-                        f"expression.",
+                    fix="Change the return type or adjust the body "
+                        "expression.",
                     spec_ref='Chapter 5, Section 5.1 "Function Declarations"',
                     error_code="E121",
                 )

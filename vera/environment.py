@@ -26,7 +26,6 @@ from vera.types import (
     PureEffectRow,
     Type,
     TypeVar,
-    canonical_type_name,
 )
 
 

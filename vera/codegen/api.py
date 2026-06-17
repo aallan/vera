@@ -700,7 +700,7 @@ def _classify_trap(
 
 
 # Import Diagnostic here to avoid circular imports at module level
-from vera.errors import Diagnostic, SourceLocation  # noqa: E402
+from vera.errors import Diagnostic  # noqa: E402
 
 
 def compile(
@@ -3861,9 +3861,7 @@ def execute(
             def host_inference_complete(
                 caller: wasmtime.Caller, ptr: int, length: int,
             ) -> int:
-                import json as _json
                 import os as _os
-                import urllib.request as _urlreq
 
                 prompt = _read_wasm_string(caller, ptr, length)
                 _env = env_vars if env_vars is not None else _os.environ

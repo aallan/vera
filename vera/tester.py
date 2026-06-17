@@ -11,7 +11,7 @@ See spec/06-contracts.md, Section 6.8 "Summary of Verification Tiers".
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import z3
@@ -188,7 +188,6 @@ class _TestEngine:
 
     def run(self) -> TestResult:
         """Execute the full test pipeline."""
-        from vera.checker import typecheck
         from vera.codegen import compile as codegen_compile
         from vera.verifier import verify
 

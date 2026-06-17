@@ -30,7 +30,7 @@ from vera.obligations.core import (
     expr_text_for,
 )
 from vera.slots import slot_table
-from vera.smt import CallViolation, SlotEnv, SmtContext
+from vera.smt import SlotEnv, SmtContext
 from vera.types import (
     BOOL,
     FLOAT64,
@@ -45,7 +45,6 @@ from vera.types import (
     RefinedType,
     Type,
     TypeVar,
-    canonical_type_name,
 )
 
 
@@ -299,7 +298,6 @@ class ContractVerifier:
     def _register_data(self, decl: ast.DataDecl) -> None:
         """Register an ADT with constructor info for SMT translation."""
         from vera.environment import AdtInfo, ConstructorInfo
-        from vera.types import TypeVar
         # Set up type params for resolving constructor field types
         saved_params = dict(self.env.type_params)
         if decl.type_params:
@@ -334,7 +332,6 @@ class ContractVerifier:
         ``IO.sleep`` (#552 / PR #748 review).
         """
         from vera.environment import EffectInfo, OpInfo
-        from vera.types import TypeVar
         saved_params = dict(self.env.type_params)
         if decl.type_params:
             for tv in decl.type_params:
@@ -366,7 +363,6 @@ class ContractVerifier:
     def _register_ability(self, decl: ast.AbilityDecl) -> None:
         """Register an ability declaration."""
         from vera.environment import AbilityInfo, OpInfo
-        from vera.types import TypeVar
         saved_params = dict(self.env.type_params)
         if decl.type_params:
             for tv in decl.type_params:
@@ -616,7 +612,6 @@ class ContractVerifier:
 
         # 2. Declare result variable
         ret_type = self._resolve_type(decl.return_type)
-        ret_type_name = self._type_expr_to_slot_name(decl.return_type)
         if self._is_nat_type(ret_type):
             result_var = smt.declare_nat("@result")
         elif self._is_bool_type(ret_type):
@@ -2064,9 +2059,6 @@ class ContractVerifier:
         counterexample: dict[str, str] | None,
     ) -> None:
         """Report a contract violation with counterexample."""
-        # Build the contract text from source
-        contract_text = self._contract_source_text(contract)
-
         # Build counterexample description
         ce_lines: list[str] = []
         if counterexample:

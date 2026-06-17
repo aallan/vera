@@ -13,23 +13,7 @@ format_source(source, file=None) -> str
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
-
-_STRING_ENCODE_MAP = {
-    "\\": "\\\\",
-    '"': '\\"',
-    "\n": "\\n",
-    "\t": "\\t",
-    "\r": "\\r",
-    "\0": "\\0",
-}
-
-
-def _encode_string_escapes(s: str) -> str:
-    """Re-encode special characters as Vera escape sequences."""
-    return "".join(_STRING_ENCODE_MAP.get(c, c) for c in s)
-
 
 from vera.ast import (
     AbilityDecl,
@@ -47,7 +31,6 @@ from vera.ast import (
     ConstructorPattern,
     Contract,
     DataDecl,
-    Decl,
     Decreases,
     EffectDecl,
     EffectRef,
@@ -65,7 +48,6 @@ from vera.ast import (
     ForallExpr,
     HandleExpr,
     HandlerClause,
-    HandlerState,
     IfExpr,
     ImportDecl,
     IndexExpr,
@@ -75,7 +57,6 @@ from vera.ast import (
     Invariant,
     LetDestruct,
     LetStmt,
-    MatchArm,
     MatchExpr,
     ModuleCall,
     ModuleDecl,
@@ -109,6 +90,20 @@ from vera.ast import (
 from vera.parser import parse as vera_parse, parse_file
 from vera.transform import transform
 
+_STRING_ENCODE_MAP = {
+    "\\": "\\\\",
+    '"': '\\"',
+    "\n": "\\n",
+    "\t": "\\t",
+    "\r": "\\r",
+    "\0": "\\0",
+}
+
+
+def _encode_string_escapes(s: str) -> str:
+    """Re-encode special characters as Vera escape sequences."""
+    return "".join(_STRING_ENCODE_MAP.get(c, c) for c in s)
+
 
 # =====================================================================
 # Comment extraction
@@ -127,8 +122,6 @@ class Comment:
 def extract_comments(source: str) -> list[Comment]:
     """Extract all comments from Vera source, preserving positions."""
     comments: list[Comment] = []
-    lines = source.split("\n")
-    i = 0
     src = source
     pos = 0
 
@@ -140,7 +133,6 @@ def extract_comments(source: str) -> list[Comment]:
             if end == -1:
                 end = len(src)
             text = src[pos:end]
-            col = pos - source.rfind("\n", 0, pos) - 1
             # Check if code precedes this comment on the same line
             line_start = source.rfind("\n", 0, pos) + 1
             before = source[line_start:pos]

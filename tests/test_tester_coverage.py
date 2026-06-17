@@ -349,7 +349,7 @@ public fn closure_add(@Int -> @Int)
 }
 """
         path = _write_vera(tmp_path, source)
-        rc = cmd_test(path, trials=10)
+        cmd_test(path, trials=10)
         out = capsys.readouterr().out
         # Should be tested (Tier 3 because of closure body)
         assert "Testing:" in out
@@ -372,7 +372,7 @@ public fn bad_closure(@Int -> @Int)
 }
 """
         path = _write_vera(tmp_path, source)
-        rc = cmd_test(path, trials=50)
+        cmd_test(path, trials=50)
         out = capsys.readouterr().out
         assert "Testing:" in out
         assert "Results:" in out
@@ -420,7 +420,7 @@ public fn closure_id(@Int -> @Int)
 }
 """
         path = _write_vera(tmp_path, source)
-        rc = cmd_test(path, as_json=True, trials=10)
+        cmd_test(path, as_json=True, trials=10)
         out = capsys.readouterr().out
         data = json.loads(out)
         assert "functions" in data
@@ -727,7 +727,7 @@ class TestTesterUnitFunctions:
     def test_get_param_types_refinement_primitive(self) -> None:
         """Cover line 482: RefinementType with primitive base returns RefinedType."""
         from vera.tester import _get_param_types
-        from vera.types import RefinedType, INT
+        from vera.types import RefinedType
         from vera import ast as vera_ast
 
         pred = vera_ast.BoolLit(value=True)
@@ -859,7 +859,7 @@ class TestTesterUnitFunctions:
     def test_generate_inputs_unsupported_type(self) -> None:
         """Cover the unsupported-type returns-None path (ADT, not Float64)."""
         from vera.tester import _generate_inputs
-        from vera.types import AdtType, Type
+        from vera.types import AdtType
         from vera import ast as vera_ast
 
         # ADT types are unsupported; _generate_inputs should return None
