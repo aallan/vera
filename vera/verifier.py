@@ -45,6 +45,7 @@ from vera.types import (
     RefinedType,
     Type,
     TypeVar,
+    contains_typevar,
 )
 
 
@@ -92,6 +93,18 @@ def verify(
     contract verification (C7d).  Imported function preconditions are
     checked at call sites; postconditions are assumed.
     """
+    if expr_types is None and expr_target_types is None:
+        # #747: when the caller didn't supply the checker's semantic-type
+        # side-tables, collect them here so a bare verify() matches the CLI
+        # (cmd_verify) and LSP (VerificationSession) paths — both of which
+        # thread them — keeping the warm/cold differential oracle and any
+        # external caller consistent.  Lazy import avoids a module cycle.
+        from vera.checker import typecheck_with_artifacts
+        _diags, _arts = typecheck_with_artifacts(
+            program, source, file=file, resolved_modules=resolved_modules,
+        )
+        expr_types = _arts.expr_semantic_types
+        expr_target_types = _arts.expr_target_types
     verifier = ContractVerifier(
         source=source, file=file, timeout_ms=timeout_ms,
         resolved_modules=resolved_modules,
@@ -189,6 +202,28 @@ class ContractVerifier:
         """
         key = self._span_key(expr)
         return self._expr_target_types.get(key) if key is not None else None
+
+    def _nat_binding_target(
+        self, arg: ast.Expr, formal: Type | None
+    ) -> bool:
+        """True if *arg* narrows into a binding slot whose declared or
+        *instantiated* type is @Nat.
+
+        A concretely-@Nat *formal* / field obligates without the
+        side-table, exactly as #552.  When *formal* is generic (a
+        ``TypeVar`` constructor field, effect-op formal, or function
+        formal fixed to @Nat at this call site) it is not statically
+        @Nat, so we consult the checker's recorded *instantiated target*
+        for *arg* (#747).  A concretely-typed non-@Nat formal is never
+        second-guessed via the table, so the #552 concrete sites keep
+        their table-independent behaviour exactly.
+        """
+        if formal is not None and self._is_nat_type(formal):
+            return True
+        if formal is not None and not contains_typevar(formal):
+            return False
+        target = self._target_type_of(arg)
+        return target is not None and self._is_nat_type(target)
 
     # -----------------------------------------------------------------
     # Diagnostics
@@ -1398,7 +1433,8 @@ class ContractVerifier:
                 # only a concretely-@Nat formal obligates, mirroring generic
                 # constructor fields and effect-op formals — deferred to #747.
                 for arg, formal in zip(expr.args, param_types):
-                    if self._is_nat_type(formal) and self._narrows_into_nat(arg):
+                    if (self._nat_binding_target(arg, formal)
+                            and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
                             site="call argument",
@@ -1419,7 +1455,7 @@ class ContractVerifier:
             ci = self._lookup_constructor_info(expr.name)
             if ci is not None and ci.field_types is not None:
                 for arg, field_ty in zip(expr.args, ci.field_types):
-                    if (self._is_nat_type(field_ty)
+                    if (self._nat_binding_target(arg, field_ty)
                             and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
@@ -1442,7 +1478,7 @@ class ContractVerifier:
                 # @Nat formal obligates, mirroring generic constructor fields.
                 # Resolving the instantiation is deferred to #747.
                 for arg, formal in zip(expr.args, param_types):
-                    if (self._is_nat_type(formal)
+                    if (self._nat_binding_target(arg, formal)
                             and self._narrows_into_nat(arg)):
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,

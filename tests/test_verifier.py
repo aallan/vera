@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from vera.parser import parse_to_ast
-from vera.checker import typecheck
+from vera.checker import typecheck, typecheck_with_artifacts
 from vera.resolver import ResolvedModule
 from vera.verifier import VerifyResult, verify
 
@@ -27,10 +27,20 @@ ALL_EXAMPLES = sorted(f.name for f in EXAMPLES_DIR.glob("*.vera"))
 # =====================================================================
 
 def _verify(source: str) -> VerifyResult:
-    """Parse, type-check, and verify a source string."""
+    """Parse, type-check, and verify a source string.
+
+    Mirrors the CLI verify path (``cmd_verify``): collects the #747
+    semantic-type side-tables during type-check and threads them into
+    ``verify()``, so the projection / generic-instantiation @Nat
+    narrowing obligations fire here exactly as for ``vera verify``.
+    """
     ast = parse_to_ast(source)
-    typecheck(ast, source)
-    return verify(ast, source)
+    _diags, arts = typecheck_with_artifacts(ast, source)
+    return verify(
+        ast, source,
+        expr_types=arts.expr_semantic_types,
+        expr_target_types=arts.expr_target_types,
+    )
 
 
 def _verify_ok(source: str) -> None:
@@ -1062,12 +1072,11 @@ private fn f(@Int -> @Nat)
         assert not [o for o in result.obligations if o.kind == "nat_bind"]
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
-    def test_generic_effect_op_formal_not_obligated_yet(self) -> None:
+    def test_generic_effect_op_formal_nat_obligated(self) -> None:
         """A generic effect-op formal instantiated to @Nat (`E<Nat>.wait`)
-        is a TypeVar here, so `_is_nat_type` skips it — deferred to #747
-        (same class as the generic constructor field).  Pin the current
-        no-obligation behaviour so the #747 fix updates this test
-        consciously rather than silently flipping it (#748 review)."""
+        narrows an @Int argument.  #747 makes the checker synthesise op
+        arguments against their instantiated formal, recording the @Nat
+        target, so the obligation now fires (deferred pre-#747)."""
         result = _verify("""
 effect E<T> {
   op wait(T -> Unit);
@@ -1081,14 +1090,74 @@ public fn f(@Int -> @Unit)
   E.wait(@Int.0)
 }
 """)
-        assert not [o for o in result.obligations if o.kind == "nat_bind"]
-        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o for o in result.obligations if o.kind == "nat_bind"], \
+            "expected a nat_bind obligation at the generic effect-op formal"
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert any("may be negative" in e.description.lower() for e in errors)
 
-    def test_generic_ctor_field_not_obligated_yet(self) -> None:
+    def test_generic_effect_op_formal_nat_discharged(self) -> None:
+        """The generic effect-op narrowing discharges from a precondition."""
+        _verify_ok("""
+effect E<T> {
+  op wait(T -> Unit);
+}
+
+public fn f(@Int -> @Unit)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(<E<Nat>>)
+{
+  E.wait(@Int.0)
+}
+""")
+
+    def test_generic_function_formal_nat_obligated(self) -> None:
+        """A generic function formal fixed to @Nat by a sibling argument
+        (`pick(@Nat.0, @Int.0)` with `pick<T>(@T, @T -> @T)`) narrows the
+        @Int argument into the @Nat-instantiated formal.  #747 recovers the
+        instantiation from the target side-table (deferred pre-#747)."""
+        result = _verify("""
+private forall<T>
+fn pick(@T, @T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @T.0 }
+
+private fn f(@Nat, @Int -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ pick(@Nat.0, @Int.0) }
+""")
+        assert [o for o in result.obligations if o.kind == "nat_bind"], \
+            "expected a nat_bind obligation at the generic function formal"
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert any("may be negative" in e.description.lower() for e in errors)
+
+    def test_generic_function_formal_nat_discharged(self) -> None:
+        """The generic function-formal narrowing discharges from a
+        precondition constraining the @Int argument."""
+        _verify_ok("""
+private forall<T>
+fn pick(@T, @T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @T.0 }
+
+private fn f(@Nat, @Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{ pick(@Nat.0, @Int.0) }
+""")
+
+    def test_generic_ctor_field_nat_obligated(self) -> None:
         """A generic constructor field instantiated to @Nat (`Some(@Int.0)`
-        as an `Option<Nat>`) is a TypeVar field, so `_is_nat_type` skips it
-        — deferred to #747.  Pin the current no-obligation behaviour so the
-        #747 fix updates this consciously (#748 review)."""
+        building an `Option<Nat>`) narrows an @Int into the @Nat field.
+        #747 recovers the instantiation from the checker's *target*
+        side-table, so the obligation now fires (deferred pre-#747)."""
         result = _verify("""
 private fn f(@Int -> @Option<Nat>)
   requires(true)
@@ -1098,8 +1167,23 @@ private fn f(@Int -> @Option<Nat>)
   Some(@Int.0)
 }
 """)
-        assert not [o for o in result.obligations if o.kind == "nat_bind"]
-        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert [o for o in result.obligations if o.kind == "nat_bind"], \
+            "expected a nat_bind obligation at the generic constructor field"
+        errors = [d for d in result.diagnostics if d.severity == "error"]
+        assert any("may be negative" in e.description.lower() for e in errors)
+
+    def test_generic_ctor_field_nat_discharged(self) -> None:
+        """The generic constructor-field narrowing discharges from a
+        precondition, exactly like the concrete-field case (#747)."""
+        _verify_ok("""
+private fn f(@Int -> @Option<Nat>)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+""")
 
     def test_non_literal_nat_destructure_not_obligated_yet(self) -> None:
         """A non-literal tuple-destructure source narrowing @Int into @Nat
