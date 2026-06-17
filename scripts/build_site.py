@@ -313,8 +313,23 @@ Sitemap: {SITE}/sitemap.xml
 # ── sitemap.xml ─────────────────────────────────────────────────────
 
 
+def _without_lastmod(sitemap: str) -> str:
+    """Blank out ``<lastmod>`` values so two sitemaps compare equal when only
+    their build dates differ (the date is noise, not content)."""
+    return re.sub(r"<lastmod>[^<]*</lastmod>", "<lastmod></lastmod>", sitemap)
+
+
 def build_sitemap_xml() -> str:
-    """Build an XML sitemap for the site."""
+    """Build an XML sitemap for the site.
+
+    ``<lastmod>`` dates are preserved from the committed sitemap whenever the
+    URL set is otherwise unchanged.  Most rebuilds are triggered by an
+    unrelated source edit (the ``site-assets`` pre-commit hook fires on
+    ``vera/errors.py``, ``SKILL.md``, etc.); rewriting the dates to
+    ``date.today()`` on each one churns a field that carries no real signal —
+    and trips the hook into a "files were modified by this hook" failure on the
+    first commit.  The dates refresh only when the URL set actually changes.
+    """
     today = date.today().isoformat()
     urls = [
         (f"{SITE}/", "1.0", "weekly"),
@@ -333,12 +348,18 @@ def build_sitemap_xml() -> str:
             f"    <priority>{priority}</priority>\n"
             f"  </url>"
         )
-    return (
+    new = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
         + "\n".join(url_entries)
         + "\n</urlset>\n"
     )
+    existing_path = DOCS / "sitemap.xml"
+    if existing_path.exists():
+        existing = existing_path.read_text(encoding="utf-8")
+        if _without_lastmod(existing) == _without_lastmod(new):
+            return existing
+    return new
 
 
 # ── index.md ────────────────────────────────────────────────────────
