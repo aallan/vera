@@ -38,11 +38,10 @@ class RegistrationMixin:
         self._fn_sigs[decl.name] = (param_types, ret_type)
         # #747: per-parameter concrete-@Nat flags for the runtime
         # narrowing guard at call sites.  `decl.params` holds the
-        # parameter TypeExprs; a direct `@Nat` annotation is a
-        # `NamedType("Nat")`.
+        # parameter TypeExprs; resolve through aliases / refinements so a
+        # `type Count = Nat` or `{ @Nat | p }` formal is guarded too.
         self._fn_nat_params[decl.name] = tuple(
-            isinstance(p, ast.NamedType) and p.name == "Nat"
-            for p in decl.params
+            self._type_resolves_to_nat(p) for p in decl.params
         )
         # #614: also register the full Vera return type expression so
         # `_infer_index_element_type_expr` can extract the element type
@@ -265,10 +264,7 @@ class RegistrationMixin:
                 # narrowing guard at construction.  A generic field
                 # (type param) instantiated to @Nat is erased to i64
                 # here, so it stays statically-only (verifier-obligated).
-                nat_fields.append(
-                    isinstance(field_te, ast.NamedType)
-                    and field_te.name == "Nat"
-                )
+                nat_fields.append(self._type_resolves_to_nat(field_te))
 
         total_size = _align_up(offset, 8) if offset > 0 else 8
         return ConstructorLayout(
@@ -277,6 +273,33 @@ class RegistrationMixin:
             total_size=total_size,
             nat_fields=tuple(nat_fields),
         )
+
+    def _type_resolves_to_nat(self, te: ast.TypeExpr) -> bool:
+        """True if *te* is ``@Nat`` directly, through a ``type X = Nat``
+        alias, or as the base of a refinement (``{ @Nat | p }``) — used for
+        the #747 runtime-guard metadata so an alias/refinement-typed @Nat
+        formal or field is still guarded (CR #756), mirroring the verifier's
+        alias-aware ``_is_nat_type``.
+
+        Alias resolution uses ``self._type_aliases``, populated in
+        declaration order during ``_register_all``; a `@Nat` alias declared
+        *after* the function/data that uses it is not yet visible here and
+        falls back to the verifier's static obligation.
+        """
+        seen: set[str] = set()
+        while True:
+            if isinstance(te, ast.RefinementType):
+                te = te.base_type
+                continue
+            if isinstance(te, ast.NamedType):
+                if te.name == "Nat":
+                    return True
+                alias = self._type_aliases.get(te.name)
+                if alias is not None and te.name not in seen:
+                    seen.add(te.name)
+                    te = alias
+                    continue
+            return False
 
     def _resolve_field_wasm_type(
         self,

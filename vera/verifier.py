@@ -522,23 +522,31 @@ class ContractVerifier:
                 if name_filter is None or fn_name in name_filter:
                     self.env.functions.setdefault(fn_name, fn_info)
 
-            # 5. Harvest the module's data constructors so an imported
-            #    ctor's @Nat field resolves its field types (#747 site 4).
-            #    A fallback registry — the local lookups in
-            #    _lookup_constructor_info take precedence — so over-
-            #    harvesting (a re-exported builtin, an unreferenced or
-            #    private ctor the checker would have rejected at the call
-            #    site) is inert: it is only consulted for a name the walker
-            #    already resolved as a constructor.
-            #    Keyed by bare ctor name with first-writer-wins `setdefault`:
-            #    two imported modules exporting a same-named ctor collapse to
-            #    the first.  Benign while same-named ctors agree on which
-            #    fields are @Nat (the only fact read here); a divergent
-            #    @Nat-vs-Int field across two `Wrap`s would need
-            #    (module_path, ctor_name) keying to disambiguate.
-            for adt in temp.env.data_types.values():
+            # 5. Harvest the module's PUBLIC data constructors so an
+            #    imported ctor's @Nat field resolves its field types (#747
+            #    site 4), mirroring the public + import-name filtering used
+            #    for functions above.  Without it, a private or unimported
+            #    same-named ctor from an earlier module could shadow the one
+            #    the program actually resolves and yield the wrong field
+            #    types (CR #756).  The registry is a fallback consulted only
+            #    for a name the walker already resolved as a constructor;
+            #    `setdefault` keeps the first writer, so a residual same-name
+            #    clash across two imported public modules would still need
+            #    (module_path, ctor_name) keying — out of scope here since
+            #    the obligation targets the local @Int argument.
+            public_adts = {
+                tld.decl.name
+                for tld in mod.program.declarations
+                if isinstance(tld.decl, ast.DataDecl)
+                and tld.visibility == "public"
+            }
+            for adt_name, adt in temp.env.data_types.items():
+                if adt_name not in public_adts:
+                    continue
                 for ctor_name, ctor_info in adt.constructors.items():
-                    self._module_constructors.setdefault(ctor_name, ctor_info)
+                    if name_filter is None or ctor_name in name_filter:
+                        self._module_constructors.setdefault(
+                            ctor_name, ctor_info)
 
     def _lookup_module_function(
         self, path: tuple[str, ...], name: str,
@@ -1682,39 +1690,41 @@ class ContractVerifier:
                     pat_cond = smt._pattern_condition(
                         scrutinee_z3, arm.pattern,
                     )
-                # Site 4: top-level `match <Int> { @Nat -> ... }`.  A
-                # binding pattern is irrefutable, so the scrutinee >= 0
-                # obligation holds whenever the arm is taken — check it
-                # under the function's preconditions + outer path
-                # conditions (no per-arm guard needed).
-                if (isinstance(arm.pattern, ast.BindingPattern)
-                        and self._is_nat_type(
-                            self._resolve_type(arm.pattern.type_expr))
-                        and self._narrows_into_nat(expr.scrutinee)):
-                    self._check_nat_binding_obligation(
-                        decl, expr.scrutinee, smt, slot_env, assumptions,
-                        site="match binding",
-                    )
-                elif isinstance(arm.pattern, ast.ConstructorPattern):
-                    # Site 1 (#747): @Nat sub-patterns narrowing a non-@Nat
-                    # ADT field — the @Int payload of `Some(@Nat.0)` on an
-                    # `Option<Int>` scrutinee.
-                    self._obligate_subpattern_narrowings(
-                        decl, expr.scrutinee, scrutinee_z3, arm.pattern,
-                        smt, slot_env, assumptions,
-                    )
-                if pat_cond is not None:
+                # Prove the arm's @Nat narrowing obligations AND walk its
+                # body under the arm's discriminant condition `pat_cond`
+                # (`is-<Ctor>(scrutinee)`).  A sub-pattern field accessor is
+                # only read when the arm is taken, so discharging it must
+                # assume the constructor matched — otherwise Z3 may witness a
+                # negative payload in a branch that never reads it, a false
+                # E503 (CR #756).  A `BindingPattern` is irrefutable, so its
+                # pat_cond is None and the push is a no-op.
+                arm_cond_pushed = pat_cond is not None
+                if arm_cond_pushed:
                     smt._path_conditions.append(pat_cond)
-                    try:
-                        self._walk_for_nat_binding_obligations(
-                            decl, arm.body, smt, arm_env, assumptions,
+                try:
+                    # Site 4: top-level `match <Int> { @Nat -> ... }`.
+                    if (isinstance(arm.pattern, ast.BindingPattern)
+                            and self._is_nat_type(
+                                self._resolve_type(arm.pattern.type_expr))
+                            and self._narrows_into_nat(expr.scrutinee)):
+                        self._check_nat_binding_obligation(
+                            decl, expr.scrutinee, smt, slot_env, assumptions,
+                            site="match binding",
                         )
-                    finally:
-                        smt._path_conditions.pop()
-                else:
+                    elif isinstance(arm.pattern, ast.ConstructorPattern):
+                        # Site 1 (#747): @Nat sub-patterns narrowing a
+                        # non-@Nat ADT field — the @Int payload of
+                        # `Some(@Nat.0)` on an `Option<Int>` scrutinee.
+                        self._obligate_subpattern_narrowings(
+                            decl, expr.scrutinee, scrutinee_z3, arm.pattern,
+                            smt, slot_env, assumptions,
+                        )
                     self._walk_for_nat_binding_obligations(
                         decl, arm.body, smt, arm_env, assumptions,
                     )
+                finally:
+                    if arm_cond_pushed:
+                        smt._path_conditions.pop()
             return
 
         # Expression containers that hold arbitrary sub-expressions: a
@@ -1968,16 +1978,12 @@ class ContractVerifier:
             lit_args = scrutinee.args
         sort = None
         idx = None
-        if lit_args is None:
-            if scrutinee_z3 is None:
-                return
+        if lit_args is None and scrutinee_z3 is not None:
             try:
                 sort = scrutinee_z3.sort()  # type: ignore[attr-defined]
                 idx = smt._find_ctor_index(sort, pattern.name)
             except Exception:  # pragma: no cover — non-datatype scrutinee
-                return
-            if idx is None:  # pragma: no cover
-                return
+                sort = idx = None
         for i, (sub_pat, field_ty) in enumerate(
                 zip(pattern.sub_patterns, field_types)):
             if not isinstance(sub_pat, ast.BindingPattern):
@@ -1992,13 +1998,22 @@ class ContractVerifier:
                         decl, lit_args[i], smt, slot_env, assumptions,
                         site="ADT sub-pattern bind",
                     )
-            else:
-                assert sort is not None  # set above when lit_args is None
+            elif sort is not None and idx is not None:
                 field_term = sort.accessor(idx, i)(scrutinee_z3)
                 self._check_nat_binding_obligation_term(
                     decl, field_term, smt, assumptions,
                     site="ADT sub-pattern bind", node=scrutinee,
                 )
+            else:
+                # An opaque scrutinee the SMT layer cannot translate (e.g. a
+                # function call returning the ADT): the narrowing is real but
+                # unprojectable, so record it as a Tier-3 obligation + E504
+                # rather than dropping it silently (mirrors the destructure
+                # and non-let untranslatable-value paths; the +1 balances the
+                # subtraction _record_nat_bind_tier3 makes for a non-let site).
+                self.summary.total += 1
+                self._record_nat_bind_tier3(
+                    decl, scrutinee, "ADT sub-pattern bind", "tier3_unguarded")
 
     def _obligate_destructure_narrowings(
         self,
@@ -2053,6 +2068,11 @@ class ContractVerifier:
             except Exception:  # pragma: no cover — non-datatype RHS
                 sort = idx = None
         if sort is None or idx is None:
+            # _record_nat_bind_tier3 nets out a non-let site by subtracting
+            # one from summary.total, so it assumes the caller already
+            # counted the obligation (mirrors the +1 before the term/let
+            # tier-3 paths).  Increment here so the summary stays balanced.
+            self.summary.total += 1
             self._record_nat_bind_tier3(
                 decl, stmt.value, "tuple destructure", "tier3_unguarded")
             return

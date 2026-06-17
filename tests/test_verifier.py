@@ -2449,6 +2449,23 @@ private fn f(@Int -> @Box<Nat>)
                                     for o in result.obligations]
         assert violated[0].error_code == "E503"
 
+    def test_imported_ctor_generic_field_nat_discharged(self) -> None:
+        """The imported generic-constructor narrowing discharges from a
+        precondition — pins that imported generic-field instantiation isn't
+        always treated as violated (CodeRabbit, PR #756)."""
+        mod = self._resolved(("boxes",), self.BOXES_MODULE)
+        result = self._verify_mod("""\
+import boxes(Wrap, Box);
+private fn f(@Int -> @Box<Nat>)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{ Wrap(@Int.0) }
+""", [mod])
+        assert not [o for o in result.obligations
+                    if o.kind == "nat_bind" and o.status == "violated"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
 
 # =====================================================================
 # Phase A: Match + ADT verification tests

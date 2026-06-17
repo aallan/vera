@@ -593,4 +593,4 @@ Imported functions are **not** exported from the WASM module — only the import
 
 ## 11.17 Limitations
 
-No open limitations.
+The Tier-3 runtime guard for the `@Nat >= 0` narrowing invariant covers every binding site except the effect-operation argument, and a tripped guard reports a generic trap rather than the `requires(... >= 0)` fix; both residuals are tracked as [#754](https://github.com/aallan/vera/issues/754).
