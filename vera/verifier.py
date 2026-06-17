@@ -123,6 +123,19 @@ def verify(
 # Contract verifier
 # =====================================================================
 
+# #747: the @Nat binding sites codegen unconditionally runtime-guards, so a
+# Tier-3 (untranslatable / timed-out) narrowing there falls to a runtime
+# check rather than an unguarded E504.  The effect-operation argument and
+# the generic-instantiated constructor-field / call-argument cases are NOT
+# in this set — codegen guards only their concrete form (#754).
+_GUARDED_NAT_BIND_SITES = frozenset({
+    "let binding",
+    "tuple destructure",
+    "match binding",
+    "ADT sub-pattern bind",
+})
+
+
 class ContractVerifier:
     """Walks the AST, generates VCs, and submits them to Z3."""
 
@@ -543,8 +556,14 @@ class ContractVerifier:
             for adt_name, adt in temp.env.data_types.items():
                 if adt_name not in public_adts:
                     continue
+                # Accept a ctor when the import names it directly
+                # (`import m(Wrap)`) OR names its data type (`import m(List)`
+                # brings `Cons` / `Nil`); a wildcard import (`name_filter is
+                # None`) takes all public ctors.
                 for ctor_name, ctor_info in adt.constructors.items():
-                    if name_filter is None or ctor_name in name_filter:
+                    if (name_filter is None
+                            or adt_name in name_filter
+                            or ctor_name in name_filter):
                         self._module_constructors.setdefault(
                             ctor_name, ctor_info)
 
@@ -2007,13 +2026,14 @@ class ContractVerifier:
             else:
                 # An opaque scrutinee the SMT layer cannot translate (e.g. a
                 # function call returning the ADT): the narrowing is real but
-                # unprojectable, so record it as a Tier-3 obligation + E504
-                # rather than dropping it silently (mirrors the destructure
-                # and non-let untranslatable-value paths; the +1 balances the
-                # subtraction _record_nat_bind_tier3 makes for a non-let site).
+                # unprojectable here, yet codegen still guards the @Nat
+                # sub-pattern bind at run time — so record a guarded Tier-3
+                # outcome rather than dropping it silently.  The +1 counts the
+                # obligation (a guarded site leaves total untouched in
+                # _record_nat_bind_tier3, mirroring the let / destructure path).
                 self.summary.total += 1
                 self._record_nat_bind_tier3(
-                    decl, scrutinee, "ADT sub-pattern bind", "tier3_unguarded")
+                    decl, scrutinee, "ADT sub-pattern bind", "tier3")
 
     def _obligate_destructure_narrowings(
         self,
@@ -2068,13 +2088,15 @@ class ContractVerifier:
             except Exception:  # pragma: no cover — non-datatype RHS
                 sort = idx = None
         if sort is None or idx is None:
-            # _record_nat_bind_tier3 nets out a non-let site by subtracting
-            # one from summary.total, so it assumes the caller already
-            # counted the obligation (mirrors the +1 before the term/let
-            # tier-3 paths).  Increment here so the summary stays balanced.
+            # The SMT layer can't project this source (e.g. an if-expression
+            # over tuples), but codegen still guards the @Nat destructure
+            # component at run time, so record a guarded Tier-3 outcome.
+            # `_record_nat_bind_tier3` counts a guarded site as tier3_runtime
+            # without touching total, so add the +1 here (mirrors the let /
+            # term tier-3 callers) to count the obligation.
             self.summary.total += 1
             self._record_nat_bind_tier3(
-                decl, stmt.value, "tuple destructure", "tier3_unguarded")
+                decl, stmt.value, "tuple destructure", "tier3")
             return
         for i in narrowing:
             try:
@@ -2094,16 +2116,20 @@ class ContractVerifier:
         status: ObligationStatus,
     ) -> None:
         """Record a Tier-3 nat_bind outcome (untranslatable value or solver
-        timeout), distinguishing the guarded `let` site from unguarded
-        non-let sites.
+        timeout), distinguishing codegen-guarded sites from unguarded ones.
 
-        The codegen runtime guard backs only the `let` site, so a Tier-3
-        narrowing there genuinely falls to a runtime check (``tier3_runtime``).
-        At every other site (#747) there is no guard: rather than silently
-        counting it as a "runtime check" it never gets, surface an E504
-        warning and exclude it from the discharged totals (like a violation).
+        Codegen unconditionally guards the `let`, tuple-destructure,
+        top-level match-bind, and ADT-sub-pattern sites (#747), so a Tier-3
+        narrowing there genuinely falls to a runtime check
+        (``tier3_runtime``).  At the remaining sites — the
+        effect-operation argument (no guard) and the generic-instantiated
+        constructor-field / call-argument cases (codegen guards only the
+        *concrete* form) — an untranslatable narrowing may be neither
+        statically proven nor runtime-checked, so surface an E504 warning
+        and exclude it from the discharged totals (like a violation) rather
+        than silently counting a runtime check it never gets.
         """
-        if site == "let binding":
+        if site in _GUARDED_NAT_BIND_SITES:
             self.summary.tier3_runtime += 1
             self._record_obligation(decl.name, "nat_bind", value_node, status)
         else:

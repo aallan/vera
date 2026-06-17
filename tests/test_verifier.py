@@ -1277,13 +1277,13 @@ private fn f(@Unit -> @Nat)
         assert not [o for o in result.obligations if o.kind == "nat_bind"]
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
-    def test_if_expr_destructure_tier3_unguarded(self) -> None:
+    def test_if_expr_destructure_tier3_runtime(self) -> None:
         """#747: an `if`-expression tuple source the SMT layer does not model
         as a projectable datatype leaves a real @Int->@Nat destructure
-        narrowing unverifiable and (off the `let` site) unguarded — surfaced
-        as an E504 warning + a `tier3_unguarded` obligation, not silently
-        dropped.  Pins the non-let untranslatable-value honesty path for the
-        residual SMT-completeness gap (#747)."""
+        narrowing unverifiable *statically* — but codegen guards every @Nat
+        destructure component at run time, so it is recorded as a guarded
+        Tier-3 obligation (`tier3` / `tier3_runtime`), not a false unguarded
+        E504 (CodeRabbit, PR #756)."""
         result = _verify("""
 private fn f(@Int -> @Nat)
   requires(true)
@@ -1294,13 +1294,13 @@ private fn f(@Int -> @Nat)
   @Nat.0
 }
 """)
-        unguarded = [o for o in result.obligations
-                     if o.kind == "nat_bind" and o.status == "tier3_unguarded"]
-        assert len(unguarded) == 1, [(o.kind, o.status)
-                                     for o in result.obligations]
-        assert unguarded[0].error_code == "E504"
-        warns = [d for d in result.diagnostics if d.error_code == "E504"]
-        assert len(warns) == 1 and warns[0].severity == "warning"
+        tier3 = [o for o in result.obligations
+                 if o.kind == "nat_bind" and o.status == "tier3"]
+        assert len(tier3) == 1, [(o.kind, o.status)
+                                 for o in result.obligations]
+        # Codegen-guarded → counted as a runtime check, with no E504 warning.
+        assert result.summary.tier3_runtime >= 1
+        assert not [d for d in result.diagnostics if d.error_code == "E504"]
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
     def test_caught_narrowing_carries_e503_and_nat_bind(self) -> None:
@@ -2462,8 +2462,13 @@ private fn f(@Int -> @Box<Nat>)
   effects(pure)
 { Wrap(@Int.0) }
 """, [mod])
-        assert not [o for o in result.obligations
-                    if o.kind == "nat_bind" and o.status == "violated"]
+        # The obligation must be present AND verified — not merely absent
+        # (a regression that stopped emitting it would also be "not
+        # violated") (CodeRabbit, PR #756).
+        verified = [o for o in result.obligations
+                    if o.kind == "nat_bind" and o.status == "verified"]
+        assert len(verified) == 1, [(o.kind, o.status)
+                                    for o in result.obligations]
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
 
