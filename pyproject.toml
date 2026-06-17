@@ -54,7 +54,7 @@ lsp = [
     "lsprotocol>=2023.0",
 ]
 dev = [
-    "pytest>=9.0.3",
+    "pytest>=9.1.0",
     "pytest-cov>=7.1.0",
     "pytest-xdist>=3.6",
     "mypy>=2.1.0",
