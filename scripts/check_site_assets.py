@@ -27,8 +27,10 @@ from build_site import (  # noqa: E402
     build_llms_full_txt,
     build_llms_txt,
     build_robots_txt,
+    build_sitemap_xml,
     build_skill_md,
     _version,
+    _without_lastmod,
 )
 
 
@@ -51,9 +53,17 @@ def main() -> int:
         elif path.read_text(encoding="utf-8") != content:
             stale.append(f"  {name}: stale (run: python scripts/build_site.py)")
 
-    # For sitemap.xml, just check it exists (date changes daily)
-    if not (DOCS / "sitemap.xml").exists():
+    # sitemap.xml: compare ignoring <lastmod> dates.  build_site preserves the
+    # dates when the URL set is unchanged (so they no longer churn per build),
+    # but they can still differ across machines/days — the URL structure is
+    # what must match.
+    sitemap_path = DOCS / "sitemap.xml"
+    if not sitemap_path.exists():
         stale.append("  sitemap.xml: missing (run: python scripts/build_site.py)")
+    else:
+        committed = _without_lastmod(sitemap_path.read_text(encoding="utf-8"))
+        if committed != _without_lastmod(build_sitemap_xml()):
+            stale.append("  sitemap.xml: stale (run: python scripts/build_site.py)")
 
     if stale:
         print(f"ERROR: {len(stale)} site asset(s) out of date:")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -211,3 +212,51 @@ def test_nested_fence_markers_handled():
     assert "[C](c.md)" in result
     # D is outside fence — rewritten
     assert f"[D]({_expected('d.md')})" in result
+
+
+# ---------------------------------------------------------------------------
+# sitemap <lastmod> stability (no per-build date churn)
+# ---------------------------------------------------------------------------
+
+def test_without_lastmod_blanks_dates():
+    s = "  <lastmod>2026-06-17</lastmod>\n  <lastmod>2020-01-01</lastmod>"
+    assert _mod._without_lastmod(s) == "  <lastmod></lastmod>\n  <lastmod></lastmod>"
+
+
+def test_sitemap_lastmod_preserved_when_structure_unchanged(tmp_path, monkeypatch):
+    """A rebuild whose URL set matches the committed sitemap preserves the
+    existing <lastmod> dates verbatim — no churn to today's date (which would
+    trip the site-assets pre-commit hook on every unrelated source edit)."""
+    monkeypatch.setattr(_mod, "DOCS", tmp_path)
+    fresh = _mod.build_sitemap_xml()  # no existing file → today's date
+    stale = _mod._without_lastmod(fresh).replace(
+        "<lastmod></lastmod>", "<lastmod>2020-01-01</lastmod>"
+    )
+    (tmp_path / "sitemap.xml").write_text(stale, encoding="utf-8")
+    rebuilt = _mod.build_sitemap_xml()
+    assert rebuilt == stale
+    assert "2020-01-01" in rebuilt
+    assert date.today().isoformat() not in rebuilt
+
+
+def test_sitemap_lastmod_refreshes_when_structure_changes(tmp_path, monkeypatch):
+    """When the committed sitemap's URL set differs from the code's, the
+    rebuild refreshes the dates to today — preservation applies only to an
+    otherwise-identical sitemap."""
+    monkeypatch.setattr(_mod, "DOCS", tmp_path)
+    (tmp_path / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        "  <url>\n"
+        "    <loc>https://veralang.dev/gone.md</loc>\n"
+        "    <lastmod>2020-01-01</lastmod>\n"
+        "    <changefreq>weekly</changefreq>\n"
+        "    <priority>0.1</priority>\n"
+        "  </url>\n"
+        "</urlset>\n",
+        encoding="utf-8",
+    )
+    rebuilt = _mod.build_sitemap_xml()
+    assert date.today().isoformat() in rebuilt
+    assert "2020-01-01" not in rebuilt
+    assert "gone.md" not in rebuilt
