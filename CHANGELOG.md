@@ -6,9 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.0.173] - 2026-06-17
+
 ### Added
 
 - **ruff is now an enforced lint gate** ([#733](https://github.com/aallan/vera/issues/733)).  `ruff check` (default `F`/`E` rules) runs in pre-commit (before mypy) and the CI lint job — ruff shipped in the `[dev]` extras but nothing ran it, so ~176 findings had accumulated silently.  All cleared: 134 auto-fixed (unused imports, placeholder-less f-strings, redefinitions) and 41 hand-triaged (the three dead `skip_langs` sets, unused locals, ambiguous names, `ResolvedModule` string-annotation hoists, semicolon splits, a `type()` comparison).  Bundles the ruff `0.15.16` → `0.15.17` bump ([#741](https://github.com/aallan/vera/pull/741)).
+- **The `@Nat >= 0` narrowing invariant is now obligated at every binding site** ([#747](https://github.com/aallan/vera/issues/747)).  #552 covered `let` / call-argument / effect-operation-argument / concrete-constructor-field / match-bind / literal-tuple-destructure narrowing; #747 extends the **static** obligation to the projection and instantiation sites — ADT sub-pattern binds (`match opt { Some(@Nat) -> }` on `Option<Int>`), non-literal tuple destructures (via new Z3 tuple-datatype support in the SMT layer), generic constructor / effect-operation / function formals instantiated to `@Nat`, and imported ADT constructors with `@Nat` fields — by threading the checker's instantiated expression types into the verifier, so every narrowing shape now verifies statically.  The Tier-3 **runtime** guard also extends to the tuple-destructure, top-level match-bind, ADT-sub-pattern, concrete-constructor-field, and call-argument sites, so an unverified compile traps on a negative `@Nat` rather than storing it silently (the effect-operation-argument runtime guard and a dedicated guard trap kind are tracked as [#754](https://github.com/aallan/vera/issues/754)).  Folds in the [#749](https://github.com/aallan/vera/issues/749) review-debt test pins (IndexExpr / InterpolatedString walker recursion, the `_fresh_slot_var` nat-alias path, and a `_narrows_into_nat` verifier/codegen parity test).
 
 ### Changed
 
@@ -2517,7 +2520,8 @@ Small docs sweep — closes six aging documentation issues in one PR.  No code c
 - Grammar: handler body simplified to avoid LALR reduce/reduce conflict
 - `pyproject.toml`: corrected build backend, package discovery, PEP 639 compliance
 
-[Unreleased]: https://github.com/aallan/vera/compare/v0.0.172...HEAD
+[Unreleased]: https://github.com/aallan/vera/compare/v0.0.173...HEAD
+[0.0.173]: https://github.com/aallan/vera/compare/v0.0.172...v0.0.173
 [0.0.172]: https://github.com/aallan/vera/compare/v0.0.171...v0.0.172
 [0.0.171]: https://github.com/aallan/vera/compare/v0.0.170...v0.0.171
 [0.0.170]: https://github.com/aallan/vera/compare/v0.0.169...v0.0.170
