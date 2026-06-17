@@ -236,7 +236,6 @@ class CallsHandlersMixin:
                 expr, "State<T> type argument must be a named type"
             )
 
-        wasm_type = self._type_name_to_wasm(type_name)
         put_import = f"$vera.state_put_{type_name}"
         get_import = f"$vera.state_get_{type_name}"
         push_import = f"$vera.state_push_{type_name}"

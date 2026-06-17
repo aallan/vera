@@ -7,9 +7,7 @@ expression translation branches via the full compilation pipeline.
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
 
-import pytest
 
 from vera.wasm import StringPool, WasmSlotEnv
 from vera.codegen import CompileResult, compile, execute
@@ -143,7 +141,7 @@ class TestWasmSlotEnv:
 
     def test_immutability(self) -> None:
         env = WasmSlotEnv()
-        env2 = env.push("Int", 5)
+        env.push("Int", 5)
         # Original env unchanged
         assert env.resolve("Int", 0) is None
 

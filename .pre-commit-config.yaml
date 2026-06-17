@@ -21,6 +21,13 @@ repos:
   # Project-specific checks — require activated venv
   - repo: local
     hooks:
+      - id: ruff
+        name: ruff
+        entry: .venv/bin/ruff check .
+        language: system
+        types: [python]
+        pass_filenames: false
+
       - id: mypy
         name: mypy
         entry: .venv/bin/mypy vera/

@@ -12,7 +12,6 @@ See issue #156.
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
 
 import pytest
 import wasmtime
@@ -29,7 +28,6 @@ from vera.types import (
     STRING,
     UNIT,
     FunctionType,
-    PrimitiveType,
     PureEffectRow,
     RefinedType,
 )

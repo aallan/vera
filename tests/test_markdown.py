@@ -11,7 +11,6 @@ from vera.markdown import (
     MdBlockQuote,
     MdCode,
     MdCodeBlock,
-    MdDocument,
     MdEmph,
     MdHeading,
     MdImage,

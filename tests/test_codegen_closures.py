@@ -15,11 +15,6 @@ import wasmtime
 
 from vera.codegen import (
     CompileResult,
-    ConstructorLayout,
-    ExecuteResult,
-    _align_up,
-    _wasm_type_align,
-    _wasm_type_size,
     compile,
     execute,
 )
@@ -36,7 +31,6 @@ def _compile(source: str) -> CompileResult:
     """Compile a Vera source string to WASM."""
     # Write to a temp source and parse
     import tempfile
-    from pathlib import Path
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".vera", delete=False

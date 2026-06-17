@@ -387,7 +387,7 @@ class TestDefinition:
         assert loc.range.start.character > len("public fn dec(")
 
     def test_let_bound_index_has_no_signature_definition(self) -> None:
-        a = _analyze(FEATURE_SRC)
+        _analyze(FEATURE_SRC)
         # On line 6 the let pushes a third @Nat; an @Nat.2 reference
         # would name a parameter, but @Nat indices beyond the param
         # count (e.g. a hypothetical @Nat.5) resolve nowhere.  Use the

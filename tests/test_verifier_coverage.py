@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from vera.parser import parse_to_ast
 from vera.checker import typecheck
@@ -633,7 +632,7 @@ class TestSmtContextDirect:
         """declare_nat creates a variable with >= 0 constraint."""
         from vera.smt import SmtContext
         ctx = SmtContext()
-        v = ctx.declare_nat("n")
+        ctx.declare_nat("n")
         assert ctx.get_var("n") is not None
 
     def test_adt_sort_key_with_type_var(self) -> None:

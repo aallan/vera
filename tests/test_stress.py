@@ -98,7 +98,7 @@ def _run(
         result = compile(program, source=src, file=path)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, (
-            f"Compilation failed:\n"
+            "Compilation failed:\n"
             + "\n".join(e.description for e in errors)
         )
         exec_result = execute(result, fn_name=fn_name)
@@ -538,7 +538,7 @@ public fn main(@Unit -> @Unit)
         result = compile(program, source=src, file=path)
         errors = [d for d in result.diagnostics if d.severity == "error"]
         assert not errors, (
-            f"Compilation failed:\n"
+            "Compilation failed:\n"
             + "\n".join(e.description for e in errors)
         )
         exec_result = execute(result, fn_name="main", tee_stdout=True)

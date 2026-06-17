@@ -162,9 +162,9 @@ class CallsMixin:
                     rationale="A function can only be called from a context "
                               "that permits all of its declared effects "
                               "(subeffecting).",
-                    fix=f"Either add the missing effects to the calling "
-                        f"function's effects clause, or handle the effects "
-                        f"with a handler.",
+                    fix="Either add the missing effects to the calling "
+                        "function's effects clause, or handle the effects "
+                        "with a handler.",
                     spec_ref='Chapter 7, Section 7.8 "Effect Subtyping"',
                     error_code="E125",
                 )

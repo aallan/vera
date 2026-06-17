@@ -9,7 +9,6 @@ from textwrap import dedent
 import pytest
 
 from vera.formatter import (
-    Comment,
     extract_comments,
     format_source,
 )
@@ -778,7 +777,7 @@ class TestMatchBlockArms:
         # Final arm: closing brace without comma
         lines = src.strip().splitlines()
         # Find the closing brace of the block arm
-        block_close = [l for l in lines if l.strip() == "}"]
+        block_close = [line for line in lines if line.strip() == "}"]
         assert len(block_close) >= 1  # at least one bare }
 
     def test_match_arm_block_inline_context(self) -> None:
@@ -982,7 +981,7 @@ class TestInteriorComments:
                 closing_brace_idx = i
         assert closing_brace_idx is not None
         # Nothing after closing brace except empty lines
-        after = [l for l in lines[closing_brace_idx + 1:] if l.strip()]
+        after = [line for line in lines[closing_brace_idx + 1:] if line.strip()]
         assert not after, f"Comment leaked to footer: {after}"
         # Comment is inside the body
         assert "-- this stays inside" in src
