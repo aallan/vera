@@ -123,18 +123,6 @@ def verify(
 # Contract verifier
 # =====================================================================
 
-# #747: the @Nat binding sites codegen unconditionally runtime-guards, so a
-# Tier-3 (untranslatable / timed-out) narrowing there falls to a runtime
-# check rather than an unguarded E504.  The effect-operation argument and
-# the generic-instantiated constructor-field / call-argument cases are NOT
-# in this set — codegen guards only their concrete form (#754).
-_GUARDED_NAT_BIND_SITES = frozenset({
-    "let binding",
-    "tuple destructure",
-    "match binding",
-    "ADT sub-pattern bind",
-})
-
 
 class ContractVerifier:
     """Walks the AST, generates VCs, and submits them to Z3."""
@@ -1505,6 +1493,11 @@ class ContractVerifier:
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
                             site="call argument",
+                            # codegen guards only a *concrete* @Nat formal;
+                            # a generic formal fixed to @Nat at the call site
+                            # erases to i64, so an untranslatable arg there is
+                            # genuinely unguarded.
+                            guarded=self._is_nat_type(formal),
                         )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
@@ -1526,6 +1519,10 @@ class ContractVerifier:
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
                             site="constructor field",
+                            # codegen guards a concrete @Nat field; a generic
+                            # field instantiated to @Nat here erases to i64, so
+                            # an untranslatable arg is genuinely unguarded.
+                            guarded=self._is_nat_type(field_ty),
                         )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
@@ -1550,6 +1547,10 @@ class ContractVerifier:
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
                             site="effect-operation argument",
+                            # codegen does NOT yet guard effect-op arguments
+                            # (#754), so an untranslatable narrowing here is
+                            # unguarded regardless of formal concreteness.
+                            guarded=False,
                         )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
@@ -1861,6 +1862,7 @@ class ContractVerifier:
         assumptions: list[object],
         *,
         site: str,
+        guarded: bool = True,
     ) -> None:
         """Discharge a ``value >= 0`` obligation at one @Nat binding site.
 
@@ -1878,7 +1880,8 @@ class ContractVerifier:
         self.summary.total += 1
         val = smt.translate_expr(value_node, slot_env)
         if val is None:
-            self._record_nat_bind_tier3(decl, value_node, site, "tier3")
+            self._record_nat_bind_tier3(
+                decl, value_node, site, "tier3", guarded=guarded)
             return
 
         obligation = val >= 0
@@ -1896,7 +1899,8 @@ class ContractVerifier:
             )
             self._report_nat_binding(decl, value_node, site, result.counterexample)
         else:  # pragma: no cover — solver timeout
-            self._record_nat_bind_tier3(decl, value_node, site, "timeout")
+            self._record_nat_bind_tier3(
+                decl, value_node, site, "timeout", guarded=guarded)
 
     def _check_nat_binding_obligation_term(
         self,
@@ -1935,7 +1939,10 @@ class ContractVerifier:
             )
             self._report_nat_binding(decl, node, site, result.counterexample)
         else:  # pragma: no cover — solver timeout
-            self._record_nat_bind_tier3(decl, node, site, "timeout")
+            # Projection sites (sub-pattern / destructure) are unconditionally
+            # codegen-guarded.
+            self._record_nat_bind_tier3(
+                decl, node, site, "timeout", guarded=True)
 
     def _instantiated_field_types(
         self, ctor_name: str, scrut_ty: Type | None,
@@ -2033,7 +2040,8 @@ class ContractVerifier:
                 # _record_nat_bind_tier3, mirroring the let / destructure path).
                 self.summary.total += 1
                 self._record_nat_bind_tier3(
-                    decl, scrutinee, "ADT sub-pattern bind", "tier3")
+                    decl, scrutinee, "ADT sub-pattern bind", "tier3",
+                    guarded=True)
 
     def _obligate_destructure_narrowings(
         self,
@@ -2090,13 +2098,18 @@ class ContractVerifier:
         if sort is None or idx is None:
             # The SMT layer can't project this source (e.g. an if-expression
             # over tuples), but codegen still guards the @Nat destructure
-            # component at run time, so record a guarded Tier-3 outcome.
-            # `_record_nat_bind_tier3` counts a guarded site as tier3_runtime
-            # without touching total, so add the +1 here (mirrors the let /
-            # term tier-3 callers) to count the obligation.
-            self.summary.total += 1
-            self._record_nat_bind_tier3(
-                decl, stmt.value, "tuple destructure", "tier3")
+            # component at run time, so record a guarded Tier-3 outcome — one
+            # per narrowing component, matching the projectable path (the
+            # literal/projectable paths record per component, so a multi-@Nat
+            # destructure must too).  `_record_nat_bind_tier3` counts a
+            # guarded site as tier3_runtime without touching total, so the +1
+            # per component counts the obligation (mirrors the let / term
+            # tier-3 callers).
+            for _ in narrowing:
+                self.summary.total += 1
+                self._record_nat_bind_tier3(
+                    decl, stmt.value, "tuple destructure", "tier3",
+                    guarded=True)
             return
         for i in narrowing:
             # `i` is a valid field index (filtered into `narrowing` against
@@ -2115,22 +2128,28 @@ class ContractVerifier:
         value_node: ast.Expr,
         site: str,
         status: ObligationStatus,
+        *,
+        guarded: bool,
     ) -> None:
         """Record a Tier-3 nat_bind outcome (untranslatable value or solver
-        timeout), distinguishing codegen-guarded sites from unguarded ones.
+        timeout), distinguishing codegen-guarded narrowings from unguarded
+        ones via the caller-supplied *guarded* flag.
 
         Codegen unconditionally guards the `let`, tuple-destructure,
-        top-level match-bind, and ADT-sub-pattern sites (#747), so a Tier-3
+        top-level match-bind, and ADT-sub-pattern sites, and the *concrete*
+        @Nat constructor-field / call-argument forms (#747), so a Tier-3
         narrowing there genuinely falls to a runtime check
-        (``tier3_runtime``).  At the remaining sites — the
-        effect-operation argument (no guard) and the generic-instantiated
-        constructor-field / call-argument cases (codegen guards only the
-        *concrete* form) — an untranslatable narrowing may be neither
-        statically proven nor runtime-checked, so surface an E504 warning
-        and exclude it from the discharged totals (like a violation) rather
-        than silently counting a runtime check it never gets.
+        (``tier3_runtime``).  The unguarded cases — the effect-operation
+        argument and the generic-instantiated constructor-field /
+        call-argument forms (codegen erases their @Nat to i64) — may be
+        neither statically proven nor runtime-checked, so surface an E504
+        warning and exclude them from the discharged totals (like a
+        violation) rather than silently counting a runtime check they never
+        get.  The caller knows which case applies (it has the formal /
+        field type), so it passes *guarded* rather than inferring it from
+        the broad *site* string.
         """
-        if site in _GUARDED_NAT_BIND_SITES:
+        if guarded:
             self.summary.tier3_runtime += 1
             self._record_obligation(decl.name, "nat_bind", value_node, status)
         else:
@@ -2154,17 +2173,19 @@ class ContractVerifier:
             (
                 f"@Int value narrowing into a @Nat {site} in '{decl.name}' "
                 "could not be verified statically and is not runtime-guarded "
-                "(#747) — add `requires(... >= 0)`, bind it to a `let @Nat` "
+                "(#754) — add `requires(... >= 0)`, bind it to a `let @Nat` "
                 "first (which is guarded), or guard it with "
                 "`if ... >= 0 then ... else ...`."
             ),
             rationale=(
                 "The narrowed value is outside Z3's decidable fragment "
                 "(untranslatable or the solver timed out), so the `>= 0` "
-                "obligation could not be discharged.  The codegen runtime "
-                "guard currently backs only the `let` site, so at this site "
-                "the narrowing is neither statically proven nor runtime-"
-                "checked."
+                "obligation could not be discharged.  Codegen runtime-guards "
+                "the concrete @Nat binding sites (let, destructure, match, "
+                "sub-pattern, concrete field / argument) but not this one — an "
+                "effect-operation argument or a generic field/argument whose "
+                "@Nat instantiation erases to i64 (#754) — so here the "
+                "narrowing is neither statically proven nor runtime-checked."
             ),
             spec_ref='Chapter 11, Section 11.2.1 "Nat as i64"',
             error_code="E504",

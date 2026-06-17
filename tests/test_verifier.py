@@ -1281,9 +1281,12 @@ private fn f(@Unit -> @Nat)
         """#747: an `if`-expression tuple source the SMT layer does not model
         as a projectable datatype leaves a real @Int->@Nat destructure
         narrowing unverifiable *statically* — but codegen guards every @Nat
-        destructure component at run time, so it is recorded as a guarded
+        destructure component at run time, so each is recorded as a guarded
         Tier-3 obligation (`tier3` / `tier3_runtime`), not a false unguarded
-        E504 (CodeRabbit, PR #756)."""
+        E504 (CodeRabbit, PR #756).  Both @Nat components of the
+        `Tuple<@Nat, @Nat>` are recorded independently — the per-component
+        accounting the untranslatable fallback must mirror the projectable
+        path (CodeRabbit, PR #756 round 6)."""
         result = _verify("""
 private fn f(@Int -> @Nat)
   requires(true)
@@ -1296,10 +1299,11 @@ private fn f(@Int -> @Nat)
 """)
         tier3 = [o for o in result.obligations
                  if o.kind == "nat_bind" and o.status == "tier3"]
-        assert len(tier3) == 1, [(o.kind, o.status)
+        # One Tier-3 obligation per @Nat component (the 2-tuple → 2).
+        assert len(tier3) == 2, [(o.kind, o.status)
                                  for o in result.obligations]
-        # Codegen-guarded → counted as a runtime check, with no E504 warning.
-        assert result.summary.tier3_runtime >= 1
+        # Codegen-guarded → counted as runtime checks, with no E504 warning.
+        assert result.summary.tier3_runtime == 2
         assert not [d for d in result.diagnostics if d.error_code == "E504"]
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
@@ -1328,18 +1332,28 @@ private fn f(@Int -> @Nat)
         assert "@Int.0" in ce and int(ce["@Int.0"]) < 0, ce
 
     def test_non_let_tier3_narrowing_warns_unguarded(self) -> None:
-        """A non-let narrowing whose value the SMT layer can't translate
-        (here `array_length` of an untranslatable string split) surfaces
-        an E504 warning + a `tier3_unguarded` obligation — NOT a silent
-        `tier3_runtime` 'runtime check', since codegen guards only the let
-        site (#552 review / #747)."""
+        """A narrowing at a *genuinely unguarded* site whose value the SMT
+        layer can't translate surfaces an E504 warning + a `tier3_unguarded`
+        obligation — NOT a silent `tier3_runtime` 'runtime check'.  The
+        effect-operation argument is the canonical unguarded site: codegen
+        does not yet emit a runtime guard there (#754), so an untranslatable
+        narrowing into a @Nat effect-op formal (here `array_length`'s opaque
+        @Int into `E.wait(Nat)`) is neither statically proven nor
+        runtime-checked.  Distinct from the concrete @Nat *call argument*
+        form, which #747 codegen DOES guard (now a `tier3_runtime`) — the
+        `guarded` flag the verifier threads must distinguish them
+        (CodeRabbit, PR #756 round 6)."""
         result = _verify('''
-public fn f(@Unit -> @Int)
+effect E {
+  op wait(Nat -> Unit);
+}
+
+public fn f(@Unit -> @Unit)
   requires(true)
   ensures(true)
-  effects(pure)
+  effects(<E>)
 {
-  nat_to_int(array_length(string_lines("a\\nb")))
+  E.wait(array_length(string_lines("a\\nb")))
 }
 ''')
         unguarded = [o for o in result.obligations
@@ -1351,6 +1365,7 @@ public fn f(@Unit -> @Int)
         # excluded from the discharged totals (like a violation)
         assert not any(o.status == "tier3" for o in result.obligations
                        if o.kind == "nat_bind")
+        assert result.summary.tier3_runtime == 0
 
     def test_call_arg_nat_minus_nat_is_sub_not_bind(self) -> None:
         """A `@Nat - @Nat` *call argument* is #520's obligation (nat_sub),
@@ -2788,7 +2803,7 @@ private fn sum(@List<Int> -> @Int)
         assert result.summary.tier1_verified == 8
 
     def test_overall_tier_counts(self) -> None:
-        """All examples together: 255 T1 / 25 T3 / 280 total (current).
+        """All examples together: 256 T1 / 28 T3 / 284 total (current).
 
         Counts move when examples are added or their contracts become
         more / less verifiable.  Trajectory:
@@ -2836,11 +2851,21 @@ private fn sum(@List<Int> -> @Int)
           array_length is untranslatable to Z3 so the `>= 0` obligation
           drops to a Tier-3 runtime guard.  Net: +1 T1, +3 T3, +4 total.
         * 256/25/281 after the #552 review round.  `string_utilities.vera`'s
-          three `nat_to_int(array_length(...))` narrowings are non-`let`
-          sites with no codegen runtime guard, so each is surfaced as an
-          E504 `tier3_unguarded` warning and excluded from the totals
-          (#747) rather than silently counted as a runtime check: -3 T3,
-          -3 total, +3 tier3_unguarded.
+          three `nat_to_int(array_length(...))` narrowings were treated as
+          non-`let` sites with no codegen runtime guard, so each was surfaced
+          as an E504 `tier3_unguarded` warning and excluded from the totals
+          rather than counted as a runtime check: -3 T3, -3 total,
+          +3 tier3_unguarded.
+        * 256/28/284 after #747 (PR #756) extended codegen's runtime guard to
+          the concrete @Nat *call-argument* site (`vera/wasm/calls.py`).  The
+          three `nat_to_int(array_length(...))` narrowings pass an opaque @Int
+          into nat_to_int's CONCRETE @Nat formal, which codegen now traps on
+          `< 0` at run time — so each is correctly a codegen-guarded
+          `tier3_runtime` again, not an E504: +3 T3, +3 total,
+          -3 tier3_unguarded.  Only genuinely-unguarded sites (effect-op
+          arguments, generic-instantiated fields/args whose @Nat erases to
+          i64 — #754) still warn, and no example exercises one: +0
+          tier3_unguarded.
         """
         t1 = t3 = total = t3u = 0
         for f in sorted(EXAMPLES_DIR.glob("*.vera")):
@@ -2854,9 +2879,9 @@ private fn sum(@List<Int> -> @Int)
             t3u += sum(1 for o in result.obligations
                        if o.status == "tier3_unguarded")
         assert t1 == 256, f"Expected 256 T1, got {t1}"
-        assert t3 == 25, f"Expected 25 T3, got {t3}"
-        assert total == 281, f"Expected 281 total, got {total}"
-        assert t3u == 3, f"Expected 3 tier3_unguarded, got {t3u}"
+        assert t3 == 28, f"Expected 28 T3, got {t3}"
+        assert total == 284, f"Expected 284 total, got {total}"
+        assert t3u == 0, f"Expected 0 tier3_unguarded, got {t3u}"
 
 
 # =====================================================================
