@@ -1,4 +1,4 @@
-"""Tests for scripts/build_site.py — focuses on _abs_links behaviour."""
+"""Tests for the site-asset tooling: scripts/build_site.py and scripts/check_site_assets.py."""
 
 from __future__ import annotations
 
@@ -27,6 +27,21 @@ def _load_build_site():
 _mod = _load_build_site()
 _abs_links = _mod._abs_links
 REPO = _mod.REPO  # "https://github.com/aallan/vera"
+
+
+_CHECK_SCRIPT = Path(__file__).parent.parent / "scripts" / "check_site_assets.py"
+
+
+def _load_check_site_assets():
+    spec = importlib.util.spec_from_file_location("check_site_assets", _CHECK_SCRIPT)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+_check = _load_check_site_assets()
 
 
 # ---------------------------------------------------------------------------
@@ -258,3 +273,44 @@ def test_sitemap_lastmod_refreshes_when_structure_changes(tmp_path, monkeypatch)
     assert date.today().isoformat() in rebuilt
     assert "2020-01-01" not in rebuilt
     assert "gone.md" not in rebuilt
+
+
+# ---------------------------------------------------------------------------
+# check_site_assets.sitemap_stale_reason — the CI-gating staleness branch
+# ---------------------------------------------------------------------------
+
+_SITEMAP = (
+    '<?xml version="1.0" encoding="UTF-8"?>\n'
+    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+    "  <url>\n"
+    "    <loc>https://veralang.dev/index.md</loc>\n"
+    "    <lastmod>2026-06-17</lastmod>\n"
+    "  </url>\n"
+    "</urlset>\n"
+)
+
+
+def test_sitemap_stale_reason_missing_file(tmp_path):
+    """No committed sitemap on disk → reported as missing."""
+    reason = _check.sitemap_stale_reason(tmp_path / "sitemap.xml", _SITEMAP)
+    assert reason is not None
+    assert "missing" in reason
+
+
+def test_sitemap_stale_reason_date_only_diff_is_clean(tmp_path):
+    """Same URL structure, older <lastmod> dates → not stale (returns None).
+
+    This is the whole point of the structure-only check: a committed sitemap
+    whose dates lag the freshly-built one must not trip the CI gate."""
+    committed = _SITEMAP.replace("2026-06-17", "2020-01-01")
+    (tmp_path / "sitemap.xml").write_text(committed, encoding="utf-8")
+    assert _check.sitemap_stale_reason(tmp_path / "sitemap.xml", _SITEMAP) is None
+
+
+def test_sitemap_stale_reason_structural_diff_is_stale(tmp_path):
+    """A changed URL set → reported stale even after dates are blanked."""
+    committed = _SITEMAP.replace("/index.md", "/gone.md")
+    (tmp_path / "sitemap.xml").write_text(committed, encoding="utf-8")
+    reason = _check.sitemap_stale_reason(tmp_path / "sitemap.xml", _SITEMAP)
+    assert reason is not None
+    assert "stale" in reason
