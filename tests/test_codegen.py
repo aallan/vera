@@ -8317,7 +8317,7 @@ public fn main(-> @Unit)
         import tempfile
         import os
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False,
+            mode="w", suffix=".txt", delete=False, encoding="utf-8",
         ) as f:
             f.write("file contents")
             f.flush()
