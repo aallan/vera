@@ -1539,11 +1539,18 @@ private fn f(@Int -> @String)
         assert verifier._fresh_slot_var(smt, named("SomeUserAdt")) is None
 
     def test_narrows_into_nat_verifier_codegen_parity(self) -> None:
-        """`_narrows_into_nat` is hand-mirrored in the verifier and codegen;
-        they must agree on whether a value bound into a @Nat slot needs a
-        `value >= 0` check, or a builtin added to one mirror and not the
-        other would silently desync the static obligation from the runtime
-        guard (#749 item 3)."""
+        """`_narrows_into_nat` is hand-mirrored in the verifier and codegen
+        (#749 item 3).  The soundness-relevant property is an *implication*,
+        not equality: codegen must emit a runtime guard for everything the
+        verifier obligates (`verifier ⟹ codegen`).  The reverse — codegen
+        guarding a value the verifier already proves @Nat — is a harmless
+        over-guard (e.g. `string_length`, whose @Nat return codegen's
+        `_is_static_nat_typed` does not recognise, so it conservatively
+        guards while the verifier raises no obligation).  The *dangerous*
+        desync is verifier-obligates-but-codegen-doesn't-guard, which would
+        let a negative @Nat escape an unverified compile — a builtin's @Nat
+        return wired into the verifier mirror but not codegen would trip the
+        assertion below."""
         from vera.verifier import ContractVerifier
         from vera.wasm.context import StringPool, WasmContext
 
@@ -1553,17 +1560,24 @@ private fn f(@Int -> @String)
             "@Int.0", "@Nat.0", "0 - 1", "5 - 1", "@Int.0 + 1",
             "@Nat.0 - @Nat.1", "-1", "{ 0 - 1 }",
             "if @Int.0 > 0 then { 1 } else { 0 - 1 }",
+            # FnCall returns are the most likely place the two mirrors desync,
+            # since each independently classifies the callee's @Nat-ness.
+            "array_length(@Array<Int>.0)", 'string_length("hi")',
+            "abs(@Int.0)", "nat_to_int(@Nat.0)",
         ]
         for body in corpus:
             src = (
-                "private fn f(@Int, @Nat -> @Int)\n"
+                "private fn f(@Int, @Nat, @Array<Int> -> @Int)\n"
                 "  requires(true) ensures(true) effects(pure)\n"
                 f"{{ {body} }}"
             )
             expr = parse_to_ast(src).declarations[0].decl.body.expr
-            assert (verifier._narrows_into_nat(expr)
-                    == codegen._narrows_into_nat(expr)), (
-                f"verifier/codegen `_narrows_into_nat` disagree on {body!r}")
+            v = verifier._narrows_into_nat(expr)
+            c = codegen._narrows_into_nat(expr)
+            # codegen guards ⊇ verifier obligates (no unsound miss).
+            assert (not v) or c, (
+                f"unsound `_narrows_into_nat` desync on {body!r}: the verifier "
+                f"obligates a `>= 0` check but codegen emits no runtime guard")
 
     def test_effect_op_argument_narrowing_caught(self) -> None:
         """An @Int narrowing into an effect operation's @Nat formal

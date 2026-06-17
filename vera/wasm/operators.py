@@ -945,9 +945,9 @@ class OperatorsMixin:
 
         Like the #520 guard, the bare ``unreachable`` trap reuses the
         existing taxonomy; a dedicated "negative-nat" trap kind with a
-        tailored Fix paragraph (#749 item 4) needs the contract-fail
-        host-import channel wired through to a guard emitted mid-expression
-        and is tracked as a follow-up.  The guard never fires on a value
+        tailored Fix paragraph (#754) needs the contract-fail host-import
+        channel wired through to a guard emitted mid-expression and is
+        tracked as a follow-up.  The guard never fires on a value
         the verifier proved non-negative, so a Tier-1-clean program pays
         only dead instructions, never a trap.
         """

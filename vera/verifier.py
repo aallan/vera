@@ -530,6 +530,12 @@ class ContractVerifier:
             #    private ctor the checker would have rejected at the call
             #    site) is inert: it is only consulted for a name the walker
             #    already resolved as a constructor.
+            #    Keyed by bare ctor name with first-writer-wins `setdefault`:
+            #    two imported modules exporting a same-named ctor collapse to
+            #    the first.  Benign while same-named ctors agree on which
+            #    fields are @Nat (the only fact read here); a divergent
+            #    @Nat-vs-Int field across two `Wrap`s would need
+            #    (module_path, ctor_name) keying to disambiguate.
             for adt in temp.env.data_types.values():
                 for ctor_name, ctor_info in adt.constructors.items():
                     self._module_constructors.setdefault(ctor_name, ctor_info)
@@ -1445,9 +1451,14 @@ class ContractVerifier:
         source component the checker types as non-@Nat — is obligated; an
         already-@Nat source is skipped to avoid a spurious E503.  A source
         the SMT layer cannot project into components (an ``if``-expression
-        over tuples, which it does not model as a datatype) is surfaced as
-        an unguarded Tier-3 obligation (E504), since codegen guards only the
-        let site (#747).
+        over tuples, which it does not model as a datatype) is surfaced as a
+        Tier-3 obligation (E504): the verifier counts only the literal
+        ``let @Nat = <Int>`` site as backed by a runtime check, so a non-let
+        narrowing it cannot discharge statically is reported rather than
+        silently counted as runtime-checked.  Codegen does still guard the
+        projection sites at run time (``data.py``) — the E504 is a
+        static-unverifiability signal, not a claim that no guard exists
+        (#747).
         """
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             # Site 2: @Nat formal parameters narrowing an @Int argument.
@@ -1874,9 +1885,11 @@ class ContractVerifier:
 
         Unlike :py:meth:`_check_nat_binding_obligation` the value is an
         uninterpreted field accessor, not an AST expression, so there is
-        no translation step and no ``let``-style runtime guard: an
+        no translation step and no ``let``-style Tier-3 downgrade: an
         undischarged obligation is a genuine E503 (the accessor is
-        unconstrained, so Z3 witnesses the negative payload).  *node*
+        unconstrained, so Z3 witnesses the negative payload).  Codegen
+        independently runtime-guards these projection sites (``data.py``);
+        this method's accounting is purely the static verdict.  *node*
         gives the diagnostic location.
         """
         self.summary.total += 1
@@ -1933,6 +1946,13 @@ class ContractVerifier:
         *genuine* narrowing (the source field is not already @Nat) is
         obligated; an already-@Nat field would fail the proof spuriously
         (its accessor carries no ``>= 0`` fact).
+
+        Only *direct* ``BindingPattern`` sub-patterns are obligated; a
+        nested ``ConstructorPattern`` (``Some(Some(@Nat.0))`` on
+        ``Option<Option<Int>>``) is not recursed — matching codegen's
+        ``_extract_constructor_fields``, which likewise binds only direct
+        sub-patterns — so the inner narrowing is currently neither obligated
+        nor runtime-guarded (tracked as #754).
         """
         field_types = self._instantiated_field_types(
             pattern.name, self._resolved_type_of(scrutinee))
@@ -2002,11 +2022,14 @@ class ContractVerifier:
 
         When the SMT layer cannot project the source into components — e.g.
         an ``if``-expression over tuples, which it does not model as a
-        datatype — the narrowing is real but unverifiable here and the
-        destructure site has no runtime guard yet, so it is surfaced as one
-        unguarded Tier-3 obligation + E504 rather than dropped silently
-        (mirrors the non-let untranslatable-value path).  A source whose
-        tuple type the checker never recorded leaves the bindings unchecked.
+        datatype — the narrowing is real but unverifiable *statically* here,
+        so it is surfaced as one Tier-3 obligation + E504 rather than dropped
+        silently (mirrors the non-let untranslatable-value path); the verifier
+        counts only the ``let`` site as runtime-backed, hence E504 not a
+        discharged runtime check.  Codegen still guards every @Nat
+        destructure component at run time (``data.py``), so a negative value
+        traps regardless.  A source whose tuple type the checker never
+        recorded leaves the bindings unchecked.
         """
         rhs_ty = self._resolved_type_of(stmt.value)
         if not isinstance(rhs_ty, AdtType):

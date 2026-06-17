@@ -16532,6 +16532,15 @@ class TestNatBindingRuntimeGuard747:
 
     @staticmethod
     def _body(wat: str, fn: str) -> str:
+        """Slice out function ``fn``'s WAT body.
+
+        The guard-presence tests assert ``i64.lt_s`` appears in this slice;
+        that uniquely identifies the @Nat guard *only because* their
+        fixtures contain no other `i64.lt_s` emitter (comparison, string /
+        array / math builtins all emit one).  Keep these fixtures to plain
+        arithmetic / ctor / match bodies — the negative-traps tests below
+        pin the guard's runtime *semantics* independently.
+        """
         idx = wat.find(f"(func ${fn}")
         assert idx >= 0, f"{fn} not found in WAT"
         end = wat.find("\n  (func ", idx + 1)
@@ -16611,6 +16620,84 @@ public fn main(@Unit -> @Nat)
   requires(true) ensures(true) effects(pure)
 { takesNat(0 - 5) }
 """)
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    def test_destructure_negative_traps_at_runtime(self) -> None:
+        """A tuple-destructure binding a negative component into a @Nat slot
+        traps at runtime — proves the destructure guard's *semantics*, not
+        just its emission (the offset/accessor load logic is the most
+        regression-prone of the five sites)."""
+        result = _compile_ok("""
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = Tuple(0 - 5, 1); @Nat.0 }
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    def test_subpattern_negative_traps_at_runtime(self) -> None:
+        """An ADT sub-pattern binding a negative payload as @Nat traps at
+        runtime — the sub-pattern guard's semantics."""
+        result = _compile_ok("""
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match Some(0 - 5) { Some(@Nat) -> @Nat.0, None -> 0 } }
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    @staticmethod
+    def _boxes_module() -> object:
+        """A resolved `boxes` module declaring `data NatBox { WrapN(Nat) }`
+        for the cross-module imported-constructor guard tests (#747 site 4)."""
+        from pathlib import Path
+
+        from vera.parser import parse_to_ast
+        from vera.resolver import ResolvedModule
+
+        src = "public data NatBox {\n  WrapN(Nat)\n}\n"
+        return ResolvedModule(
+            path=("boxes",), file_path=Path("/fake/boxes.vera"),
+            program=parse_to_ast(src), source=src)
+
+    def test_imported_concrete_nat_ctor_field_guarded(self) -> None:
+        """An imported concrete-@Nat constructor field emits the runtime
+        guard (#747 site 4) — the cross-module codegen path the local-ctor
+        tests don't exercise."""
+        from vera.parser import parse_to_ast
+
+        src = """import boxes(WrapN, NatBox);
+public fn gimp(@Int -> @NatBox)
+  requires(true) ensures(true) effects(pure)
+{ WrapN(@Int.0) }
+"""
+        result = compile(
+            parse_to_ast(src), source=src,
+            resolved_modules=[self._boxes_module()])
+        assert not [d for d in result.diagnostics if d.severity == "error"]
+        assert "i64.lt_s" in self._body(result.wat, "gimp")
+
+    def test_imported_ctor_negative_traps_at_runtime(self) -> None:
+        """The imported concrete-@Nat ctor guard traps on a negative arg —
+        the cross-module runtime safety net."""
+        from vera.parser import parse_to_ast
+
+        src = """import boxes(WrapN, NatBox);
+public fn main(@Unit -> @NatBox)
+  requires(true) ensures(true) effects(pure)
+{ WrapN(0 - 5) }
+"""
+        result = compile(
+            parse_to_ast(src), source=src,
+            resolved_modules=[self._boxes_module()])
+        assert not [d for d in result.diagnostics if d.severity == "error"]
         with pytest.raises(
             (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
         ):
