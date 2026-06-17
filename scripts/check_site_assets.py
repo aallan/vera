@@ -27,9 +27,27 @@ from build_site import (  # noqa: E402
     build_llms_full_txt,
     build_llms_txt,
     build_robots_txt,
+    build_sitemap_xml,
     build_skill_md,
     _version,
+    _without_lastmod,
 )
+
+
+def sitemap_stale_reason(sitemap_path: Path, expected: str) -> str | None:
+    """Return why the committed sitemap is out of date, or ``None`` if current.
+
+    Structure-only comparison: ``<lastmod>`` dates are blanked before comparing,
+    because ``build_site`` preserves them when the URL set is unchanged (so they
+    no longer churn per build) but they can still legitimately differ across
+    machines/days — only a change to the URL structure means the file is stale.
+    """
+    if not sitemap_path.exists():
+        return "missing (run: python scripts/build_site.py)"
+    committed = _without_lastmod(sitemap_path.read_text(encoding="utf-8"))
+    if committed != _without_lastmod(expected):
+        return "stale (run: python scripts/build_site.py)"
+    return None
 
 
 def main() -> int:
@@ -51,9 +69,10 @@ def main() -> int:
         elif path.read_text(encoding="utf-8") != content:
             stale.append(f"  {name}: stale (run: python scripts/build_site.py)")
 
-    # For sitemap.xml, just check it exists (date changes daily)
-    if not (DOCS / "sitemap.xml").exists():
-        stale.append("  sitemap.xml: missing (run: python scripts/build_site.py)")
+    # sitemap.xml: structure-only comparison (dates are allowed to differ).
+    reason = sitemap_stale_reason(DOCS / "sitemap.xml", build_sitemap_xml())
+    if reason is not None:
+        stale.append(f"  sitemap.xml: {reason}")
 
     if stale:
         print(f"ERROR: {len(stale)} site asset(s) out of date:")

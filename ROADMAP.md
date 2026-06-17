@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-4,408 tests, 90 conformance programs, 35 examples, 13 spec chapters.
+4,414 tests, 90 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -34,7 +34,6 @@ The infrastructure that catches the next regression before a user does, plus the
 |---|---|
 | [#734](https://github.com/aallan/vera/issues/734) | Characterization harness for `execute()` — pin the observable contract (every `ExecuteResult` field × normal/trap/interrupt) before decomposing.  Sequenced after #706 (bucket-as-truth, now landed); lands **before** #421. |
 | [#421](https://github.com/aallan/vera/issues/421) | Decompose `vera/codegen/api.py` into a `vera/runtime/` package, one host-binding family per PR.  The file has doubled since the issue was filed (now 4,253 lines); the issue carries a supersession comment with the current scope. |
-| [#733](https://github.com/aallan/vera/issues/733) | Adopt ruff as an enforced CI + pre-commit gate and clear the 178 existing findings. |
 | [#392](https://github.com/aallan/vera/issues/392) | Audit the `smt.py` Z3 translation layer for soundness — a bug here silently bypasses verification. |
 | [#592](https://github.com/aallan/vera/issues/592) | End-to-end behavioural tests for the five UTF-8 decode sites currently pinned only by structural greps. |
 | [#645](https://github.com/aallan/vera/issues/645) | Explicit `encoding='utf-8'` at every text-mode file call, with a pre-commit check to hold the line. |
