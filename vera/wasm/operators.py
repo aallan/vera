@@ -927,9 +927,12 @@ class OperatorsMixin:
         """Emit a guarded value that traps if it is a negative i64.
 
         The binding-site analogue of :py:meth:`_emit_nat_sub_guard`
-        (#552): a runtime safety net for a `let @Nat = <Int>` narrowing
-        the verifier could not discharge statically (Tier 3), or that
-        reaches codegen without ``vera verify`` having run.  Pattern:
+        (#552): a runtime safety net for an @Int -> @Nat narrowing the
+        verifier could not discharge statically (Tier 3), or that reaches
+        codegen without ``vera verify`` having run.  Emitted at the @Nat
+        binding sites — ``let @Nat = <Int>``, tuple destructure, top-level
+        match bind, ADT sub-pattern bind, concrete constructor field, and
+        call argument (#747).  Pattern:
 
             [value]
             local.tee $tmp     ;; leave value on stack, copy to temp
@@ -942,10 +945,11 @@ class OperatorsMixin:
 
         Like the #520 guard, the bare ``unreachable`` trap reuses the
         existing taxonomy; a dedicated "negative-nat" trap kind with a
-        tailored Fix paragraph is left as a follow-up enhancement.  The
-        guard never fires on a value the verifier proved non-negative,
-        so a Tier-1-clean program pays only dead instructions, never a
-        trap.
+        tailored Fix paragraph (#749 item 4) needs the contract-fail
+        host-import channel wired through to a guard emitted mid-expression
+        and is tracked as a follow-up.  The guard never fires on a value
+        the verifier proved non-negative, so a Tier-1-clean program pays
+        only dead instructions, never a trap.
         """
         tmp = self.alloc_local("i64")
         return [

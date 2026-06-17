@@ -232,6 +232,9 @@ class ClosureLiftingMixin:
         # not just the WAT type — same propagation as the per-function
         # ctx in `functions.py`.
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
+        # #747: per-parameter concrete-@Nat flags for the call-site
+        # runtime narrowing guard inside closure bodies too.
+        ctx.set_fn_nat_params(self._fn_nat_params)
         ctx.set_type_aliases(self._type_aliases)
         ctx.set_type_alias_params(self._type_alias_params)
         env = WasmSlotEnv()

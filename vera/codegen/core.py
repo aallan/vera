@@ -95,6 +95,11 @@ class CodeGenerator(
         # extract the element type of e.g. `Array<Int>` returned from
         # a call (`f()[i]`) can reach into the type_args.
         self._fn_ret_type_exprs: dict[str, ast.TypeExpr] = {}
+        # #747: per-parameter "is a concrete @Nat formal" flags, for the
+        # runtime @Int -> @Nat narrowing guard at call sites.  Generic
+        # formals fixed to @Nat at the call site erase to i64 here, so they
+        # stay statically-only (verifier-obligated).
+        self._fn_nat_params: dict[str, tuple[bool, ...]] = {}
         # Track which effect operations are needed
         self._io_ops_used: set[str] = set()
         self._needs_contract_fail: bool = False

@@ -436,6 +436,13 @@ class CallsMixin:
         if call.name in self._effect_ops:
             target_name, _is_void = self._effect_ops[call.name]
             instructions: list[str] = []
+            # #747: the effect-op-argument @Int -> @Nat narrowing is the one
+            # runtime-guard site left unguarded here — `_effect_ops` carries
+            # only the dispatch target, not the op's formal types, so a
+            # concrete-@Nat-formal check would need a new op-parameter
+            # registry across the handler-dispatch path.  It is the rarest
+            # site, already obligated statically by the verifier and flagged
+            # E504 when Tier-3; the runtime guard is tracked as a follow-up.
             for arg in call.args:
                 arg_instrs = self.translate_expr(arg, env)
                 if arg_instrs is None:
@@ -472,10 +479,18 @@ class CallsMixin:
 
         # Regular function call
         instructions = []
-        for arg in call.args:
+        nat_params = self._fn_nat_params.get(call.name, ())
+        for i, arg in enumerate(call.args):
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
+            # #747: runtime-guard an @Int -> @Nat call-argument narrowing
+            # into a concrete @Nat formal (`f(@Int.0)` where `f(@Nat -> …)`).
+            # Generic formals fixed to @Nat at the call site erase to i64,
+            # so they stay statically-only (verifier-obligated).
+            if (i < len(nat_params) and nat_params[i]
+                    and self._narrows_into_nat(arg)):
+                arg_instrs = self._emit_nat_bind_guard(arg_instrs)
             instructions.extend(arg_instrs)
 
         # #517 — emit ``return_call $target`` for tail-position

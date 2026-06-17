@@ -36,6 +36,14 @@ class RegistrationMixin:
 
         ret_type = self._type_expr_to_wasm_type(decl.return_type)
         self._fn_sigs[decl.name] = (param_types, ret_type)
+        # #747: per-parameter concrete-@Nat flags for the runtime
+        # narrowing guard at call sites.  `decl.params` holds the
+        # parameter TypeExprs; a direct `@Nat` annotation is a
+        # `NamedType("Nat")`.
+        self._fn_nat_params[decl.name] = tuple(
+            isinstance(p, ast.NamedType) and p.name == "Nat"
+            for p in decl.params
+        )
         # #614: also register the full Vera return type expression so
         # `_infer_index_element_type_expr` can extract the element type
         # of an `Array<T>`-returning call inside `f()[i]`.  Without
@@ -244,6 +252,7 @@ class RegistrationMixin:
         """
         offset = 4  # tag (i32) at offset 0, occupies 4 bytes
         field_offsets: list[tuple[int, str]] = []
+        nat_fields: list[bool] = []
 
         if ctor.fields is not None:
             for field_te in ctor.fields:
@@ -252,12 +261,21 @@ class RegistrationMixin:
                 offset = _align_up(offset, align)
                 field_offsets.append((offset, wt))
                 offset += _wasm_type_size(wt)
+                # #747: a concrete @Nat field receives the runtime
+                # narrowing guard at construction.  A generic field
+                # (type param) instantiated to @Nat is erased to i64
+                # here, so it stays statically-only (verifier-obligated).
+                nat_fields.append(
+                    isinstance(field_te, ast.NamedType)
+                    and field_te.name == "Nat"
+                )
 
         total_size = _align_up(offset, 8) if offset > 0 else 8
         return ConstructorLayout(
             tag=tag,
             field_offsets=tuple(field_offsets),
             total_size=total_size,
+            nat_fields=tuple(nat_fields),
         )
 
     def _resolve_field_wasm_type(

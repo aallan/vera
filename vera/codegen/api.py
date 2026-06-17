@@ -38,6 +38,10 @@ class ConstructorLayout:
     tag: int  # discriminant (0, 1, 2, ...)
     field_offsets: tuple[tuple[int, str], ...]  # (byte_offset, wasm_type) per field
     total_size: int  # total bytes, 8-byte aligned
+    # #747: per-field "is a concrete @Nat field" flags, for the runtime
+    # @Int -> @Nat narrowing guard at construction sites.  Empty for
+    # built-in layouts (which carry no user @Nat fields).
+    nat_fields: tuple[bool, ...] = ()
 
 
 def _validate_wrap_handle(

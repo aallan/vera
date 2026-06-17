@@ -16349,10 +16349,11 @@ class TestNatBindingRuntimeGuard552:
     @Nat slot.  Like the #520 guard, it protects programs compiled
     without `vera verify`.
 
-    Only the canonical `let` site is guarded at codegen; the verifier
-    statically covers the other binding sites (call-arg, ctor-field,
-    match-bind, destructure).  Extending the runtime guard there needs
-    callee/field type plumbing or scrutinee-type inference (follow-up).
+    #552 guarded the canonical `let` site; #747 extends the runtime guard
+    to the tuple-destructure, top-level match-bind, ADT sub-pattern,
+    concrete constructor-field, and call-argument sites (see
+    `TestNatBindingRuntimeGuard747`).  The effect-op-argument site and a
+    dedicated trap kind remain a follow-up.
     """
 
     _GUARDED_LET = """
@@ -16514,6 +16515,102 @@ public fn main(@Unit -> @Nat)
 }
 """
         result = _compile_ok(src)
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+
+class TestNatBindingRuntimeGuard747:
+    """#747: the runtime `value >= 0` guard now fires at the @Nat binding
+    sites beyond `let` — tuple destructure, top-level match bind, ADT
+    sub-pattern bind, concrete constructor field, and call argument.  Each
+    emits the `i64.lt_s; if; unreachable` net so an unverified compile traps
+    on a negative @Nat rather than silently storing it; a non-narrowing
+    target (an @Int field/formal) emits none.
+    """
+
+    @staticmethod
+    def _body(wat: str, fn: str) -> str:
+        idx = wat.find(f"(func ${fn}")
+        assert idx >= 0, f"{fn} not found in WAT"
+        end = wat.find("\n  (func ", idx + 1)
+        return wat[idx:end if end >= 0 else len(wat)]
+
+    def test_param_destructure_nat_components_guarded(self) -> None:
+        """`let Tuple<@Nat, @Nat> = @Tuple<Int, Int>.0` guards each
+        narrowed component."""
+        result = _compile_ok("""
+public fn gdestr(@Tuple<Int, Int> -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = @Tuple<Int, Int>.0; @Nat.0 }
+""")
+        assert "i64.lt_s" in self._body(result.wat, "gdestr")
+
+    def test_subpattern_nat_bind_guarded(self) -> None:
+        """`match opt { Some(@Nat) -> }` on `Option<Int>` guards the
+        projected @Int payload bound as @Nat."""
+        result = _compile_ok("""
+public fn gsub(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Option<Int>.0 { Some(@Nat) -> @Nat.0, None -> 0 } }
+""")
+        assert "i64.lt_s" in self._body(result.wat, "gsub")
+
+    def test_toplevel_match_nat_bind_guarded(self) -> None:
+        """`match <Int> { @Nat -> }` guards the scrutinee bound as @Nat."""
+        result = _compile_ok("""
+public fn gmatch(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Int.0 { @Nat -> @Nat.0 } }
+""")
+        assert "i64.lt_s" in self._body(result.wat, "gmatch")
+
+    def test_concrete_nat_ctor_field_guarded(self) -> None:
+        """A concrete @Nat constructor field guards its @Int argument."""
+        result = _compile_ok("""
+public data NatBox { WrapN(Nat) }
+public fn gctor(@Int -> @NatBox)
+  requires(true) ensures(true) effects(pure)
+{ WrapN(@Int.0) }
+""")
+        assert "i64.lt_s" in self._body(result.wat, "gctor")
+
+    def test_concrete_nat_call_arg_guarded(self) -> None:
+        """A concrete @Nat call formal guards its @Int argument."""
+        result = _compile_ok("""
+public fn takesNat(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+public fn gcall(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ takesNat(@Int.0) }
+""")
+        assert "i64.lt_s" in self._body(result.wat, "gcall")
+
+    def test_int_ctor_field_emits_no_guard(self) -> None:
+        """A concrete @Int constructor field is not a narrowing target —
+        no guard, mirroring the @Int-field/@Int-formal exemption."""
+        result = _compile_ok("""
+public data IntBox { WrapI(Int) }
+public fn gint(@Int -> @IntBox)
+  requires(true) ensures(true) effects(pure)
+{ WrapI(@Int.0) }
+""")
+        assert not re.search(
+            r"\bi64\.lt_[su]\b", self._body(result.wat, "gint"))
+
+    def test_call_arg_negative_traps_at_runtime(self) -> None:
+        """An unverified compile passing -5 into a @Nat formal traps at
+        runtime — the guard's safety-net role beyond the `let` site."""
+        result = _compile_ok("""
+public fn takesNat(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ takesNat(0 - 5) }
+""")
         with pytest.raises(
             (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
         ):
