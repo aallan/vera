@@ -22,7 +22,6 @@ from vera.types import (
     TypeVar,
     UnknownType,
     canonical_type_name,
-    contains_typevar,
     substitute,
 )
 

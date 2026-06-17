@@ -71,9 +71,6 @@ def main() -> int:
         print("ERROR: EXAMPLES.md not found.", file=sys.stderr)
         return 1
 
-    # Non-Vera language tags to skip entirely
-    skip_langs = {"bash", "python", "json", "toml", "yaml", "shell", "sh", "text", ""}
-
     blocks = extract_code_blocks(examples_doc)
 
     total_blocks = 0

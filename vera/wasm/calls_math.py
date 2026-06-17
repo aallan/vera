@@ -198,9 +198,9 @@ class CallsMathMixin:
         instructions.append(f"local.set {neg_flag}")
         instructions.append(f"local.get {neg_flag}")
         instructions.append("if")
-        instructions.append(f"  i64.const 0")
+        instructions.append("  i64.const 0")
         instructions.append(f"  local.get {exp_tmp}")
-        instructions.append(f"  i64.sub")
+        instructions.append("  i64.sub")
         instructions.append(f"  local.set {exp_tmp}")
         instructions.append("end")
         # result = 1.0, b = base

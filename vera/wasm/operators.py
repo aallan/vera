@@ -284,13 +284,13 @@ class OperatorsMixin:
         instrs += right + [f"local.set {len2}", f"local.set {ptr2}"]
 
         # Default: equal (1)
-        instrs += [f"i32.const 1", f"local.set {result}"]
+        instrs += ["i32.const 1", f"local.set {result}"]
 
         # Length check
         instrs += [
             f"local.get {len1}", f"local.get {len2}", "i32.ne",
             "if",
-            f"  i32.const 0", f"  local.set {result}",
+            "  i32.const 0", f"  local.set {result}",
             "else",
         ]
 
@@ -302,7 +302,7 @@ class OperatorsMixin:
 
         # Byte-by-byte comparison loop
         instrs += [
-            f"    i32.const 0", f"    local.set {idx}",
+            "    i32.const 0", f"    local.set {idx}",
             "    block $seq_break",
             "      loop $seq_loop",
             f"        local.get {idx}",
@@ -320,7 +320,7 @@ class OperatorsMixin:
             "        i32.load8_u",
             "        i32.ne",
             "        if",
-            f"          i32.const 0",
+            "          i32.const 0",
             f"          local.set {result}",
             "          br $seq_break",
             "        end",
@@ -686,14 +686,14 @@ class OperatorsMixin:
             # forall: if predicate is false → result=0, break
             instructions.append("    i32.eqz")
             instructions.append("    if")
-            instructions.append(f"      i32.const 0")
+            instructions.append("      i32.const 0")
             instructions.append(f"      local.set {result_local}")
             instructions.append(f"      br {brk}")
             instructions.append("    end")
         else:
             # exists: if predicate is true → result=1, break
             instructions.append("    if")
-            instructions.append(f"      i32.const 1")
+            instructions.append("      i32.const 1")
             instructions.append(f"      local.set {result_local}")
             instructions.append(f"      br {brk}")
             instructions.append("    end")

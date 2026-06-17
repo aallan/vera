@@ -174,9 +174,6 @@ def main() -> int:
         print("ERROR: SKILL.md not found.", file=sys.stderr)
         return 1
 
-    # Non-Vera language tags to skip entirely
-    skip_langs = {"bash", "python", "json", "toml", "yaml", "shell", "sh", "text", ""}
-
     blocks = extract_code_blocks(skill)
 
     total_blocks = 0

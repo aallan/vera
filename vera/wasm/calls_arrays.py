@@ -268,7 +268,7 @@ class CallsArraysMixin:
         instructions.append(f"local.get {n_i64}")
         instructions.append("i64.const 0")
         instructions.append("i64.lt_s")
-        instructions.append(f"if")
+        instructions.append("if")
         instructions.append("  i64.const 0")
         instructions.append(f"  local.set {n_i64}")
         instructions.append("end")

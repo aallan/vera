@@ -11,11 +11,6 @@ import wasmtime
 
 from vera.codegen import (
     CompileResult,
-    ConstructorLayout,
-    ExecuteResult,
-    _align_up,
-    _wasm_type_align,
-    _wasm_type_size,
     compile,
     execute,
 )
@@ -32,7 +27,6 @@ def _compile(source: str) -> CompileResult:
     """Compile a Vera source string to WASM."""
     # Write to a temp source and parse
     import tempfile
-    from pathlib import Path
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".vera", delete=False
@@ -527,7 +521,7 @@ public fn inc(@Unit -> @Unit)
         # Find the function body — there should be exactly one
         # state_get call (the let binding), not two (snapshot + let)
         state_get_count = sum(
-            1 for l in lines if "call $vera.state_get_Int" in l
+            1 for line in lines if "call $vera.state_get_Int" in line
         )
         # Only the body's get() call — no snapshot
         assert state_get_count == 1
@@ -549,7 +543,7 @@ public fn increment(@Unit -> @Unit)
         wat = result.wat
         lines = wat.split("\n")
         state_get_count = sum(
-            1 for l in lines if "call $vera.state_get_Int" in l
+            1 for line in lines if "call $vera.state_get_Int" in line
         )
         # 3 calls: snapshot (old), body get(), postcondition new()
         assert state_get_count == 3

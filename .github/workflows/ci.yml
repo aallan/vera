@@ -164,6 +164,9 @@ jobs:
       - name: Check limitation tables are in sync
         run: python scripts/check_limitations_sync.py
 
+      - name: Lint (ruff)
+        run: ruff check .
+
       - name: Security lint (ruff S rules)
         run: ruff check --select S vera/
 

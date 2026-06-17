@@ -719,7 +719,7 @@ class CallsStringsMixin:
         instructions: list[str] = []
         instructions.extend(arg_instrs)
         # Bool is i32: 1 = true, 0 = false
-        instructions.append(f"if (result i32 i32)")
+        instructions.append("if (result i32 i32)")
         instructions.append(f"  i32.const {true_off}")
         instructions.append(f"  i32.const {true_len}")
         instructions.append("else")

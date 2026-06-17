@@ -18,7 +18,6 @@ import wasmtime
 
 from vera.codegen import (
     CompileResult,
-    ConstructorLayout,
     ExecuteResult,
     _align_up,
     _wasm_type_align,
@@ -39,7 +38,6 @@ def _compile(source: str) -> CompileResult:
     """Compile a Vera source string to WASM."""
     # Write to a temp source and parse
     import tempfile
-    from pathlib import Path
 
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".vera", delete=False
@@ -2093,7 +2091,7 @@ public fn f(-> @Int)
         # `$build ` or `$build(`.
         build_match = re.search(r"\(func \$build\b", result.wat)
         assert build_match is not None, (
-            f"Could not locate `(func $build` in WAT"
+            "Could not locate `(func $build` in WAT"
         )
         build_start = build_match.start()
         next_fn = re.search(r"\(func \$", result.wat[build_start + 1:])
@@ -2210,7 +2208,7 @@ public fn f(-> @Int)
         result = _compile_ok(source)
         build_match = re.search(r"\(func \$build\b", result.wat)
         assert build_match is not None, (
-            f"Could not locate `(func $build` in WAT"
+            "Could not locate `(func $build` in WAT"
         )
         build_start = build_match.start()
         next_fn = re.search(r"\(func \$", result.wat[build_start + 1:])
@@ -2311,7 +2309,7 @@ public fn f(-> @Int)
         # above.
         build_match = re.search(r"\(func \$build\b", result.wat)
         assert build_match is not None, (
-            f"Could not locate `(func $build` in WAT"
+            "Could not locate `(func $build` in WAT"
         )
         build_start = build_match.start()
         next_fn = re.search(r"\(func \$", result.wat[build_start + 1:])
@@ -6010,7 +6008,6 @@ private data Result<T, E> { Ok(T), Err(E) }
 """
 
     def _ok_prog(self, literal: str, expect_true: bool) -> str:
-        expected = 1 if expect_true else 0
         return self._PREAMBLE + f"""
 public fn f(-> @Int) requires(true) ensures(true) effects(pure) {{
   match parse_bool("{literal}") {{
@@ -8317,7 +8314,8 @@ public fn main(-> @Unit)
 
     def test_io_read_file_success(self) -> None:
         """IO.read_file reads a file and returns Ok(contents)."""
-        import tempfile, os
+        import tempfile
+        import os
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False,
         ) as f:
@@ -8350,7 +8348,8 @@ public fn main(-> @Unit)
 
     def test_io_read_file_roundtrip(self) -> None:
         """Write a file, then read it back, verify contents."""
-        import tempfile, os
+        import tempfile
+        import os
         tmp_dir = tempfile.mkdtemp()
         tmp_file = os.path.join(tmp_dir, "vera_test.txt")
         # Write a file from Vera, then read it back.  Convert to POSIX
@@ -12361,7 +12360,6 @@ public fn main(-> @Int)
 
     def test_http_get_mocked_success(self) -> None:
         """Mocked Http.get returns Ok with response body."""
-        from io import BytesIO
         from unittest.mock import MagicMock, patch
 
         source = """
@@ -12644,7 +12642,6 @@ class TestInferenceProviderDispatch:
     def test_mistral_auto_detect(self) -> None:
         """Mistral key auto-detected when no other keys are set."""
         from unittest.mock import patch
-        from vera.codegen.api import _call_inference_provider
 
         result_src = _compile_ok(TestInferenceCollection._CLASSIFY_SOURCE)
         with patch(
@@ -15498,7 +15495,7 @@ public fn main(@Unit -> @Int)
         compiled = _compile_ok(src)
         overflow_match = re.search(r"\(func \$overflow\b", compiled.wat)
         assert overflow_match is not None, (
-            f"`$overflow` function not found in emitted WAT"
+            "`$overflow` function not found in emitted WAT"
         )
         overflow_start = overflow_match.start()
         next_fn = re.search(
@@ -15622,11 +15619,11 @@ public fn main(@Unit -> @Decimal)
             r"i32\.const 0x80000000\s+i32\.or\s+i32\.store offset=4",
             result.wat,
         ), (
-            f"Expected adjacent `i32.const 0x80000000; i32.or; "
-            f"i32.store offset=4` sequence (the wrap-site tag "
-            f"emission immediately followed by the wrapper-field "
-            f"store).  Without #578, the wrap site stores the raw "
-            f"handle and this sequence never appears."
+            "Expected adjacent `i32.const 0x80000000; i32.or; "
+            "i32.store offset=4` sequence (the wrap-site tag "
+            "emission immediately followed by the wrapper-field "
+            "store).  Without #578, the wrap site stores the raw "
+            "handle and this sequence never appears."
         )
 
     def test_unwrap_emits_mask_and(self) -> None:
@@ -15649,10 +15646,10 @@ public fn main(@Unit -> @Decimal)
             r"\s+i32\.and",
             result.wat,
         ), (
-            f"Expected adjacent unwrap sequence "
-            f"`i32.load offset=4; i32.const 0x7FFFFFFF; i32.and`. "
-            f"Without #578, the unwrap reads the tagged value "
-            f"raw and `map_store` lookups would fail."
+            "Expected adjacent unwrap sequence "
+            "`i32.load offset=4; i32.const 0x7FFFFFFF; i32.and`. "
+            "Without #578, the unwrap reads the tagged value "
+            "raw and `map_store` lookups would fail."
         )
 
     def test_alloc_emits_heap_ceiling_guard(self) -> None:
@@ -15689,7 +15686,7 @@ public fn main(@Unit -> @Int)
         # which could false-match an `$alloc_xxx` symbol).
         alloc_match = re.search(r"\(func \$alloc\b", result.wat)
         assert alloc_match is not None, (
-            f"`$alloc` function not found in WAT"
+            "`$alloc` function not found in WAT"
         )
         alloc_start = alloc_match.start()
         next_fn = re.search(
@@ -17019,8 +17016,8 @@ public fn main(@Unit -> @Int)
             f"{[line for line in wat.splitlines() if 'option_map$' in line]}"
         )
         assert not re.search(r"\$option_map\$Int_Bool(?![A-Za-z0-9_])", wat), (
-            f"Wrong-suffix mono clone `$option_map$Int_Bool` "
-            f"should not appear post-#604 fix; found in WAT"
+            "Wrong-suffix mono clone `$option_map$Int_Bool` "
+            "should not appear post-#604 fix; found in WAT"
         )
         # F8 on PR #659 review — independently pin the WASM-side
         # call-site rewriter (`vera/wasm/calls.py::_resolve_arg_fn_shape_wasm`
@@ -17100,9 +17097,9 @@ public fn main(@Unit -> @Int)
         # leaking the raw alias body into a second registration) would
         # otherwise slip past the positive assertion.
         assert not re.search(r"\$option_map\$T_T(?![A-Za-z0-9_])", wat), (
-            f"Unsubstituted parameterised-alias clone "
-            f"`$option_map$T_T` should not appear after the "
-            f"`T → Int` substitution fix; found in WAT"
+            "Unsubstituted parameterised-alias clone "
+            "`$option_map$T_T` should not appear after the "
+            "`T → Int` substitution fix; found in WAT"
         )
         # Runtime pin — `Some(7) * 3 = 21`.
         exec_result = execute(result, fn_name="main")
@@ -18337,7 +18334,6 @@ public fn lookup_or_zero(@Map<Nat, Nat>, @Nat -> @Nat)
 }
 """
         import tempfile
-        from pathlib import Path
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".vera", delete=False,
         ) as f:

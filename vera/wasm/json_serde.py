@@ -24,7 +24,6 @@ Json ADT layouts (from prelude injection → registration.py):
 
 from __future__ import annotations
 
-import struct
 from collections.abc import Callable
 from typing import Any
 
