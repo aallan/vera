@@ -1399,8 +1399,15 @@ class ContractVerifier:
         * ``E.op(<Int>)`` with an @Nat formal   — effect-operation args;
         * ``Ctor(<Int>)`` with an @Nat field    — constructor fields;
         * ``match <Int> { @Nat -> ... }``       — top-level match binds;
-        * ``let Tuple<@Nat, ...> = Tuple(<Int>, ...)`` — destructuring a
-          literal tuple.
+        * ``match opt { Some(@Nat.0) -> }``      — ADT sub-pattern binds;
+        * ``let Tuple<@Nat, ...> = <source>``   — tuple destructures
+          (a literal ``Tuple(...)`` or, by projection, a non-literal
+          source).
+
+        At a *generic* constructor field, effect-op formal, or function
+        formal fixed to @Nat only at the call site, the instantiated @Nat
+        target is recovered from the checker's semantic-type side-table
+        (:py:meth:`_nat_binding_target` / :py:meth:`_target_type_of`, #747).
 
         The obligation fires when ``_narrows_into_nat(value)`` — either a
         genuine @Int narrowing, or a statically-@Nat value whose tree
@@ -1411,15 +1418,15 @@ class ContractVerifier:
         :py:meth:`SmtContext.check_valid` discharges each obligation under
         the in-scope branch guards.
 
-        Projection sites whose *source* type the verifier cannot resolve
-        statically — ADT sub-pattern binds (``Some(@Nat.0)``) and
-        non-literal tuple destructures — are deliberately left unchecked
-        (tracked as #747) rather than risk a false E503: the bound
-        value's Z3 term is an uninterpreted accessor with no
-        non-negativity assertion, so an already-@Nat source would fail
-        the proof spuriously.  Codegen does not guard them either (the
-        runtime guard covers only the let site), so closing them needs
-        scrutinee-type inference.
+        At a projection site (ADT sub-pattern bind or non-literal tuple
+        destructure) the bound value's Z3 term is an uninterpreted accessor
+        carrying no non-negativity fact, so only a *genuine* narrowing — a
+        source component the checker types as non-@Nat — is obligated; an
+        already-@Nat source is skipped to avoid a spurious E503.  A source
+        the SMT layer cannot project into components (an ``if``-expression
+        over tuples, which it does not model as a datatype) is surfaced as
+        an unguarded Tier-3 obligation (E504), since codegen guards only the
+        let site (#747).
         """
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             # Site 2: @Nat formal parameters narrowing an @Int argument.
@@ -1447,12 +1454,11 @@ class ContractVerifier:
             return
 
         if isinstance(expr, ast.ConstructorCall):
-            # Site 3: @Nat constructor fields narrowing an @Int argument.
-            # Only *concretely* @Nat fields fire — a generic field
-            # (TypeVar) instantiated to @Nat is not visible here without
-            # the call-site type arguments, so it is left unchecked
-            # (neither obligated here nor codegen-guarded) — deferred to
-            # #747, mirroring the generic effect-op formal case.
+            # @Nat constructor fields narrowing an @Int argument.  A
+            # concretely-@Nat field obligates directly (#552); a generic
+            # field (TypeVar) instantiated to @Nat at this call site is
+            # resolved via the checker's recorded instantiated target
+            # (`_nat_binding_target` -> the semantic-type side-table, #747).
             ci = self._lookup_constructor_info(expr.name)
             if ci is not None and ci.field_types is not None:
                 for arg, field_ty in zip(expr.args, ci.field_types):
@@ -1474,10 +1480,11 @@ class ContractVerifier:
             op = self.env.lookup_effect_op(expr.name, qualifier=expr.qualifier)
             param_types = getattr(op, "param_types", None)
             if param_types is not None:
-                # A generic (TypeVar) formal — `E<T>.wait` instantiated as
-                # `E<Nat>` — is skipped by `_is_nat_type`: only a concretely
-                # @Nat formal obligates, mirroring generic constructor fields.
-                # Resolving the instantiation is deferred to #747.
+                # A concretely-@Nat formal obligates directly (#552); a
+                # generic (TypeVar) formal — `E<T>.wait` instantiated as
+                # `E<Nat>` — is resolved via the checker's recorded
+                # instantiated target (`_nat_binding_target`, #747), as for
+                # generic constructor fields.
                 for arg, formal in zip(expr.args, param_types):
                     if (self._nat_binding_target(arg, formal)
                             and self._narrows_into_nat(arg)):
@@ -1553,11 +1560,12 @@ class ContractVerifier:
                         if type_name is not None:
                             cur_env = cur_env.push(type_name, val)
                 elif isinstance(stmt, ast.LetDestruct):
-                    # Site 6: `let Tuple<@Nat, ...> = Tuple(<Int>, ...)`.
-                    # A literal-constructor source pairs each binding with a
-                    # translatable sub-expression and is obligation-checked;
-                    # a non-literal source is left unchecked here — there is
-                    # no runtime guard off the `let` site (#747).
+                    # `let Tuple<@Nat, ...> = <source>`.  A literal-constructor
+                    # source (`Tuple(<Int>, ...)`) pairs each binding with a
+                    # translatable sub-expression, obligated directly; a
+                    # non-literal source (#747 site 2) is projected
+                    # component-wise out of the translated RHS, now that the
+                    # SMT layer models a tuple as a projectable datatype.
                     self._walk_for_nat_binding_obligations(
                         decl, stmt.value, smt, cur_env, assumptions,
                     )
@@ -1572,11 +1580,12 @@ class ContractVerifier:
                                     decl, sub, smt, cur_env, assumptions,
                                     site="tuple destructure",
                                 )
-                    # Non-literal tuple sources (#747 site 2) stay
-                    # unobligated: the SMT layer models a tuple as a scalar
-                    # (its sort is `Int`, not a projectable datatype), so a
-                    # component `>= 0` obligation cannot be expressed yet.
-                    # Tracked for when SMT tuple support lands.
+                    else:
+                        # Non-literal source (#747): project the tuple
+                        # components out of the translated RHS and obligate
+                        # each @Nat narrowing.
+                        self._obligate_destructure_narrowings(
+                            decl, stmt, smt, cur_env, assumptions)
                     # Rebind every destructured slot in cur_env so a later
                     # obligation translates against the destructured value,
                     # not a stale outer binding of the same slot name
@@ -1949,6 +1958,69 @@ class ContractVerifier:
                     decl, field_term, smt, assumptions,
                     site="ADT sub-pattern bind", node=scrutinee,
                 )
+
+    def _obligate_destructure_narrowings(
+        self,
+        decl: ast.FnDecl,
+        stmt: ast.LetDestruct,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """#747: obligate each @Nat binding of a *non-literal* tuple
+        destructure — ``let Tuple<@Nat, @Nat> = f()`` where ``f`` returns
+        ``Tuple<Int, Int>``.
+
+        A component genuinely narrows only when its source type (read from
+        the RHS's resolved tuple type) is not already @Nat — exactly the
+        ADT-sub-pattern guard, since the projected accessor term carries no
+        ``>= 0`` fact and an already-@Nat source would fail the proof
+        spuriously.  For each narrowing component the source is projected
+        out of the translated RHS (a Z3 tuple datatype, since #747's SMT
+        tuple support) and obligated ``>= 0``.
+
+        When the SMT layer cannot project the source into components — e.g.
+        an ``if``-expression over tuples, which it does not model as a
+        datatype — the narrowing is real but unverifiable here and the
+        destructure site has no runtime guard yet, so it is surfaced as one
+        unguarded Tier-3 obligation + E504 rather than dropped silently
+        (mirrors the non-let untranslatable-value path).  A source whose
+        tuple type the checker never recorded leaves the bindings unchecked.
+        """
+        rhs_ty = self._resolved_type_of(stmt.value)
+        if not isinstance(rhs_ty, AdtType):
+            return  # source tuple type unknown — leave bindings unchecked
+        source_args = rhs_ty.type_args
+        narrowing = [
+            i for i, te in enumerate(stmt.type_bindings)
+            if i < len(source_args)
+            and self._is_nat_type(self._resolve_type(te))
+            and not self._is_nat_type(source_args[i])
+        ]
+        if not narrowing:
+            return
+        rhs_z3 = smt.translate_expr(stmt.value, slot_env)
+        sort = None
+        idx = None
+        if rhs_z3 is not None:
+            try:
+                sort = rhs_z3.sort()
+                idx = smt._find_ctor_index(sort, stmt.constructor)
+            except Exception:  # pragma: no cover — non-datatype RHS
+                sort = idx = None
+        if sort is None or idx is None:
+            self._record_nat_bind_tier3(
+                decl, stmt.value, "tuple destructure", "tier3_unguarded")
+            return
+        for i in narrowing:
+            try:
+                comp_term = sort.accessor(idx, i)(rhs_z3)
+            except Exception:  # pragma: no cover — arity mismatch
+                continue
+            self._check_nat_binding_obligation_term(
+                decl, comp_term, smt, assumptions,
+                site="tuple destructure", node=stmt.value,
+            )
 
     def _record_nat_bind_tier3(
         self,

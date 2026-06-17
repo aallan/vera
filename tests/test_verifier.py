@@ -1217,10 +1217,73 @@ private fn f(@Int -> @Option<Nat>)
 }
 """)
 
-    def test_non_literal_nat_destructure_not_obligated_yet(self) -> None:
-        """A non-literal tuple-destructure source narrowing @Int into @Nat
-        slots is not obligated (the projected source type isn't resolved
-        here) — deferred to #747.  Pin the current behaviour (#748 review)."""
+    def test_non_literal_nat_destructure_obligated(self) -> None:
+        """#747 site 2: a non-literal tuple-destructure source — here a
+        function call returning `Tuple<Int, Int>` — narrowing both @Int
+        components into @Nat slots is obligated `>= 0`.  Under `requires(true)`
+        each component is unconstrained, so both narrowings fail (E503).
+        Closes the deferral the SMT tuple-datatype support unblocked: the RHS
+        now translates to a projectable Z3 datatype."""
+        result = _verify("""
+private fn mk(@Unit -> @Tuple<Int, Int>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(1, 2) }
+
+private fn f(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Nat, @Nat> = mk(@Unit.0);
+  @Nat.0
+}
+""")
+        violated = [o for o in result.obligations
+                    if o.kind == "nat_bind" and o.status == "violated"]
+        assert len(violated) == 2, [(o.kind, o.status)
+                                    for o in result.obligations]
+        assert all(o.error_code == "E503" for o in violated)
+        assert any(d.error_code == "E503" for d in result.diagnostics)
+
+    def test_non_literal_nat_destructure_already_nat_not_obligated(
+        self,
+    ) -> None:
+        """#747: a non-literal destructure whose source components are
+        *already* @Nat (`Tuple<Nat, Nat>`) is not a narrowing, so no
+        obligation fires.  Pins the soundness guard — the projected accessor
+        term carries no `>= 0` fact, so obligating an already-@Nat source
+        would fail the proof spuriously (the parallel of the ADT-sub-pattern
+        guard).  A `requires`-discharge isn't expressible here: Vera contracts
+        cannot project an opaque tuple's components, so the already-@Nat
+        source is the discharge analog."""
+        result = _verify("""
+private fn mkn(@Unit -> @Tuple<Nat, Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Tuple(1, 2) }
+
+private fn f(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  let Tuple<@Nat, @Nat> = mkn(@Unit.0);
+  @Nat.0
+}
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_if_expr_destructure_tier3_unguarded(self) -> None:
+        """#747: an `if`-expression tuple source the SMT layer does not model
+        as a projectable datatype leaves a real @Int->@Nat destructure
+        narrowing unverifiable and (off the `let` site) unguarded — surfaced
+        as an E504 warning + a `tier3_unguarded` obligation, not silently
+        dropped.  Pins the non-let untranslatable-value honesty path for the
+        residual SMT-completeness gap (#747)."""
         result = _verify("""
 private fn f(@Int -> @Nat)
   requires(true)
@@ -1231,7 +1294,13 @@ private fn f(@Int -> @Nat)
   @Nat.0
 }
 """)
-        assert not [o for o in result.obligations if o.kind == "nat_bind"]
+        unguarded = [o for o in result.obligations
+                     if o.kind == "nat_bind" and o.status == "tier3_unguarded"]
+        assert len(unguarded) == 1, [(o.kind, o.status)
+                                     for o in result.obligations]
+        assert unguarded[0].error_code == "E504"
+        warns = [d for d in result.diagnostics if d.error_code == "E504"]
+        assert len(warns) == 1 and warns[0].severity == "warning"
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
     def test_caught_narrowing_carries_e503_and_nat_bind(self) -> None:
