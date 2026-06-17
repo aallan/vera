@@ -1051,19 +1051,51 @@ private fn f(@Unit -> @Nat)
             )
             _verify_err(src, "may be negative")
 
-    def test_adt_subpattern_bind_not_obligated_yet(self) -> None:
-        """ADT sub-pattern binds (`Some(@Nat)` on `Option<Int>`) narrow a
-        projected field whose source type the verifier cannot resolve
-        statically — deferred to #747.  Pin the CURRENT behaviour (no
-        `nat_bind` obligation) so the #747 fix must update this test
-        consciously rather than silently changing it."""
-        result = _verify("""
+    def test_subpattern_bind_literal_nat_obligated(self) -> None:
+        """An @Nat sub-pattern binding the @Int payload of a *literal*
+        `Some(@Int.0)` narrows — #747 obligates the constructor argument
+        directly (deferred pre-#747)."""
+        _verify_err("""
 private fn f(@Int -> @Nat)
   requires(true)
   ensures(true)
   effects(pure)
 {
   match Some(@Int.0) {
+    Some(@Nat) -> @Nat.0,
+    None -> 0
+  }
+}
+""", "may be negative")
+
+    def test_subpattern_bind_opaque_nat_obligated(self) -> None:
+        """An @Nat sub-pattern binding a non-@Nat field of an *opaque*
+        scrutinee (`match opt { Some(@Nat) -> }` on `Option<Int>`) narrows
+        — #747 obligates the uninterpreted field accessor `>= 0`."""
+        _verify_err("""
+private fn f(@Option<Int> -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Int>.0 {
+    Some(@Nat) -> @Nat.0,
+    None -> 0
+  }
+}
+""", "may be negative")
+
+    def test_subpattern_bind_already_nat_not_obligated(self) -> None:
+        """A @Nat sub-pattern over an already-@Nat field (`Option<Nat>`)
+        is not a narrowing — #747 must NOT obligate it (the accessor
+        carries no `>= 0` fact, so a spurious obligation would fail)."""
+        result = _verify("""
+private fn f(@Option<Nat> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Nat>.0 {
     Some(@Nat) -> @Nat.0,
     None -> 0
   }

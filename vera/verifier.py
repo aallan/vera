@@ -46,6 +46,7 @@ from vera.types import (
     Type,
     TypeVar,
     contains_typevar,
+    substitute,
 )
 
 
@@ -1571,6 +1572,11 @@ class ContractVerifier:
                                     decl, sub, smt, cur_env, assumptions,
                                     site="tuple destructure",
                                 )
+                    # Non-literal tuple sources (#747 site 2) stay
+                    # unobligated: the SMT layer models a tuple as a scalar
+                    # (its sort is `Int`, not a projectable datatype), so a
+                    # component `>= 0` obligation cannot be expressed yet.
+                    # Tracked for when SMT tuple support lands.
                     # Rebind every destructured slot in cur_env so a later
                     # obligation translates against the destructured value,
                     # not a stale outer binding of the same slot name
@@ -1647,6 +1653,14 @@ class ContractVerifier:
                     self._check_nat_binding_obligation(
                         decl, expr.scrutinee, smt, slot_env, assumptions,
                         site="match binding",
+                    )
+                elif isinstance(arm.pattern, ast.ConstructorPattern):
+                    # Site 1 (#747): @Nat sub-patterns narrowing a non-@Nat
+                    # ADT field — the @Int payload of `Some(@Nat.0)` on an
+                    # `Option<Int>` scrutinee.
+                    self._obligate_subpattern_narrowings(
+                        decl, expr.scrutinee, scrutinee_z3, arm.pattern,
+                        smt, slot_env, assumptions,
                     )
                 if pat_cond is not None:
                     smt._path_conditions.append(pat_cond)
@@ -1813,6 +1827,128 @@ class ContractVerifier:
             self._report_nat_binding(decl, value_node, site, result.counterexample)
         else:  # pragma: no cover — solver timeout
             self._record_nat_bind_tier3(decl, value_node, site, "timeout")
+
+    def _check_nat_binding_obligation_term(
+        self,
+        decl: ast.FnDecl,
+        term: object,
+        smt: SmtContext,
+        assumptions: list[object],
+        *,
+        site: str,
+        node: ast.Expr,
+    ) -> None:
+        """Discharge ``term >= 0`` for a *projected* value — an ADT
+        sub-pattern field or a non-literal destructure component — whose
+        Z3 term we already have (#747).
+
+        Unlike :py:meth:`_check_nat_binding_obligation` the value is an
+        uninterpreted field accessor, not an AST expression, so there is
+        no translation step and no ``let``-style runtime guard: an
+        undischarged obligation is a genuine E503 (the accessor is
+        unconstrained, so Z3 witnesses the negative payload).  *node*
+        gives the diagnostic location.
+        """
+        self.summary.total += 1
+        obligation = term >= 0  # type: ignore[operator]
+        result = smt.check_valid(obligation, list(assumptions))
+        if result.status == "verified":
+            self.summary.tier1_verified += 1
+            self._record_obligation(decl.name, "nat_bind", node, "verified")
+        elif result.status == "violated":
+            self.summary.total -= 1
+            self._record_obligation(
+                decl.name, "nat_bind", node, "violated",
+                error_code="E503", counterexample=result.counterexample,
+            )
+            self._report_nat_binding(decl, node, site, result.counterexample)
+        else:  # pragma: no cover — solver timeout
+            self._record_nat_bind_tier3(decl, node, site, "timeout")
+
+    def _instantiated_field_types(
+        self, ctor_name: str, scrut_ty: Type | None,
+    ) -> tuple[Type, ...] | None:
+        """A constructor's field types instantiated against *scrut_ty*'s
+        type arguments (#747) — mirrors the checker's ``_check_ctor_pattern``.
+
+        ``None`` when the constructor or the scrutinee's ADT type is
+        unknown, so callers leave the sub-pattern unchecked rather than
+        guess at a narrowing.
+        """
+        ci = self._lookup_constructor_info(ctor_name)
+        if ci is None or ci.field_types is None:
+            return None
+        field_types = ci.field_types
+        if (isinstance(scrut_ty, AdtType) and ci.parent_type_params
+                and scrut_ty.type_args):
+            mapping = dict(zip(ci.parent_type_params, scrut_ty.type_args))
+            field_types = tuple(substitute(ft, mapping) for ft in field_types)
+        return field_types
+
+    def _obligate_subpattern_narrowings(
+        self,
+        decl: ast.FnDecl,
+        scrutinee: ast.Expr,
+        scrutinee_z3: object,
+        pattern: ast.ConstructorPattern,
+        smt: SmtContext,
+        slot_env: SlotEnv,
+        assumptions: list[object],
+    ) -> None:
+        """#747: obligate each @Nat sub-pattern binding that narrows a
+        non-@Nat ADT field — ``match opt { Some(@Nat.0) -> }`` on
+        ``Option<Int>``.
+
+        The field's Z3 term is an uninterpreted accessor, so only a
+        *genuine* narrowing (the source field is not already @Nat) is
+        obligated; an already-@Nat field would fail the proof spuriously
+        (its accessor carries no ``>= 0`` fact).
+        """
+        field_types = self._instantiated_field_types(
+            pattern.name, self._resolved_type_of(scrutinee))
+        if field_types is None:
+            return
+        # A literal-constructor scrutinee (`match Some(@Int.0) { ... }`)
+        # binds the constructor's own arguments — translatable AST nodes,
+        # obligated directly.  An opaque scrutinee binds uninterpreted
+        # field accessors, obligated as Z3 terms.
+        lit_args: tuple[ast.Expr, ...] | None = None
+        if (isinstance(scrutinee, ast.ConstructorCall)
+                and scrutinee.name == pattern.name):
+            lit_args = scrutinee.args
+        sort = None
+        idx = None
+        if lit_args is None:
+            if scrutinee_z3 is None:
+                return
+            try:
+                sort = scrutinee_z3.sort()  # type: ignore[attr-defined]
+                idx = smt._find_ctor_index(sort, pattern.name)
+            except Exception:  # pragma: no cover — non-datatype scrutinee
+                return
+            if idx is None:  # pragma: no cover
+                return
+        for i, (sub_pat, field_ty) in enumerate(
+                zip(pattern.sub_patterns, field_types)):
+            if not isinstance(sub_pat, ast.BindingPattern):
+                continue
+            target = self._resolve_type(sub_pat.type_expr)
+            if not (self._is_nat_type(target)
+                    and not self._is_nat_type(field_ty)):
+                continue
+            if lit_args is not None:
+                if i < len(lit_args) and self._narrows_into_nat(lit_args[i]):
+                    self._check_nat_binding_obligation(
+                        decl, lit_args[i], smt, slot_env, assumptions,
+                        site="ADT sub-pattern bind",
+                    )
+            else:
+                assert sort is not None  # set above when lit_args is None
+                field_term = sort.accessor(idx, i)(scrutinee_z3)
+                self._check_nat_binding_obligation_term(
+                    decl, field_term, smt, assumptions,
+                    site="ADT sub-pattern bind", node=scrutinee,
+                )
 
     def _record_nat_bind_tier3(
         self,
