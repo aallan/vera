@@ -1471,6 +1471,100 @@ private fn f(@Int -> @Nat)
 }
 """, "may be negative")
 
+    def test_narrowing_inside_index_expr_caught(self) -> None:
+        """A narrowing nested in an `IndexExpr` (here the index position) is
+        visited by the walker, not skipped — pins the IndexExpr recursion
+        branch a regression could silently drop (#749 item 1)."""
+        _verify_err("""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Array<Int>, @Int -> @Int)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Array<Int>.0[takes_nat(@Int.0)] }
+""", "may be negative")
+
+    def test_narrowing_inside_interpolated_string_caught(self) -> None:
+        """A narrowing nested in an interpolated-string part is visited by
+        the walker — pins the InterpolatedString recursion branch a
+        regression could silently drop (#749 item 1)."""
+        _verify_err(r"""
+private fn takes_nat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+private fn f(@Int -> @String)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ "v: \(takes_nat(@Int.0))" }
+""", "may be negative")
+
+    def test_fresh_slot_var_resolves_nat_alias(self) -> None:
+        """`_fresh_slot_var` dispatches on the *resolved* type, so a
+        destructure slot whose declared type is an alias of a scalar
+        (`type Count = Nat`) is invalidated with the scalar's Z3 invariant,
+        not dropped as an unknown ADT.  Direct unit pin for the alias path
+        the destructure suite only exercises indirectly (#749 item 2)."""
+        from vera import ast
+        from vera.smt import SmtContext
+        from vera.verifier import ContractVerifier
+
+        verifier = ContractVerifier()
+        verifier._register_all(parse_to_ast(
+            "type Count = Nat;\n"
+            "private fn f(@Int -> @Int)\n"
+            "  requires(true) ensures(true) effects(pure)\n"
+            "{ @Int.0 }"
+        ))
+        smt = SmtContext()
+
+        def named(name: str) -> ast.NamedType:
+            return ast.NamedType(name=name, type_args=())
+
+        alias = verifier._fresh_slot_var(smt, named("Count"))
+        direct = verifier._fresh_slot_var(smt, named("Nat"))
+        # The alias resolves to Nat and gets a real Z3 var with the same
+        # sort as a directly-@Nat slot...
+        assert alias is not None and direct is not None
+        assert alias.sort() == direct.sort()
+        # ...while a genuinely-unknown ADT type has no scalar sort.
+        assert verifier._fresh_slot_var(smt, named("SomeUserAdt")) is None
+
+    def test_narrows_into_nat_verifier_codegen_parity(self) -> None:
+        """`_narrows_into_nat` is hand-mirrored in the verifier and codegen;
+        they must agree on whether a value bound into a @Nat slot needs a
+        `value >= 0` check, or a builtin added to one mirror and not the
+        other would silently desync the static obligation from the runtime
+        guard (#749 item 3)."""
+        from vera.verifier import ContractVerifier
+        from vera.wasm.context import StringPool, WasmContext
+
+        verifier = ContractVerifier()
+        codegen = WasmContext(StringPool())
+        corpus = [
+            "@Int.0", "@Nat.0", "0 - 1", "5 - 1", "@Int.0 + 1",
+            "@Nat.0 - @Nat.1", "-1", "{ 0 - 1 }",
+            "if @Int.0 > 0 then { 1 } else { 0 - 1 }",
+        ]
+        for body in corpus:
+            src = (
+                "private fn f(@Int, @Nat -> @Int)\n"
+                "  requires(true) ensures(true) effects(pure)\n"
+                f"{{ {body} }}"
+            )
+            expr = parse_to_ast(src).declarations[0].decl.body.expr
+            assert (verifier._narrows_into_nat(expr)
+                    == codegen._narrows_into_nat(expr)), (
+                f"verifier/codegen `_narrows_into_nat` disagree on {body!r}")
+
     def test_effect_op_argument_narrowing_caught(self) -> None:
         """An @Int narrowing into an effect operation's @Nat formal
         (`IO.sleep : Nat -> Unit`) is obligated — qualified calls were

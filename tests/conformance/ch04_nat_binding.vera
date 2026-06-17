@@ -4,11 +4,14 @@
 -- negative narrowing into a @Nat slot must statically prove
 -- `value >= 0` at the binding site.  Generalises the #520 subtraction
 -- obligation from `@Nat - @Nat` to every binding site that introduces
--- a @Nat slot (let, call argument, tuple destructure).  Per spec/04
--- and spec/11 §11.2.1 (Tier-3 fallback emits a runtime guard).
+-- a @Nat slot (let, call argument, tuple destructure).  #747 extends
+-- this to the projection and generic-instantiation sites — ADT
+-- sub-pattern binds and a generic constructor field instantiated to
+-- @Nat.  Per spec/04 and spec/11 §11.2.1 (Tier-3 fallback emits a
+-- runtime guard).
 --
 -- All sites here verify at Tier 1 — discharged from explicit `requires`
--- clauses or path conditions in `if` branches.
+-- clauses, path conditions in `if` branches, or an already-@Nat source.
 -- let narrowing, discharged via requires.
 public fn clamp_let(@Int -> @Nat)
   requires(@Int.0 >= 0)
@@ -58,6 +61,30 @@ public fn destruct_narrow(@Int -> @Nat)
 {
   let Tuple<@Nat, @Nat> = Tuple(@Int.0, 5);
   @Nat.0
+}
+
+-- generic constructor field instantiated to @Nat (#747), discharged
+-- via requires — the field type is a TypeVar fixed to Nat by the
+-- @Option<Nat> return.
+public fn wrap_opt(@Int -> @Option<Nat>)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{
+  Some(@Int.0)
+}
+
+-- ADT sub-pattern bind (#747) on an already-@Nat scrutinee — no
+-- narrowing, so the projection path raises no spurious obligation.
+public fn unwrap_nat(@Option<Nat> -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{
+  match @Option<Nat>.0 {
+    Some(@Nat) -> @Nat.0,
+    None -> 0
+  }
 }
 
 public fn main(@Unit -> @Nat)
