@@ -2099,10 +2099,11 @@ class ContractVerifier:
                 decl, stmt.value, "tuple destructure", "tier3")
             return
         for i in narrowing:
-            try:
-                comp_term = sort.accessor(idx, i)(rhs_z3)
-            except Exception:  # pragma: no cover — arity mismatch
-                continue
+            # `i` is a valid field index (filtered into `narrowing` against
+            # `source_args`, whose length matches the tuple sort's fields),
+            # so the accessor is safe without a guard — mirroring the
+            # sub-pattern projection above.
+            comp_term = sort.accessor(idx, i)(rhs_z3)
             self._check_nat_binding_obligation_term(
                 decl, comp_term, smt, assumptions,
                 site="tuple destructure", node=stmt.value,
