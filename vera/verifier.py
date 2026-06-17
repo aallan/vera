@@ -158,6 +158,13 @@ class ContractVerifier:
         self._module_functions: dict[
             tuple[str, ...], dict[str, FunctionInfo]
         ] = {}
+        # #747 site 4: imported data constructors, harvested in
+        # _register_modules so _lookup_constructor_info resolves an
+        # imported ctor's field types.  The @Nat-narrowing obligation falls
+        # on the local @Int argument, so no imported-ADT SMT sort is needed
+        # — this is a flat fallback registry consulted only after the local
+        # constructor lookups.
+        self._module_constructors: dict[str, ConstructorInfo] = {}
         # Import name filter from ImportDecl nodes
         self._import_names: dict[
             tuple[str, ...], set[str] | None
@@ -514,6 +521,18 @@ class ContractVerifier:
             for fn_name, fn_info in mod_fns.items():
                 if name_filter is None or fn_name in name_filter:
                     self.env.functions.setdefault(fn_name, fn_info)
+
+            # 5. Harvest the module's data constructors so an imported
+            #    ctor's @Nat field resolves its field types (#747 site 4).
+            #    A fallback registry — the local lookups in
+            #    _lookup_constructor_info take precedence — so over-
+            #    harvesting (a re-exported builtin, an unreferenced or
+            #    private ctor the checker would have rejected at the call
+            #    site) is inert: it is only consulted for a name the walker
+            #    already resolved as a constructor.
+            for adt in temp.env.data_types.values():
+                for ctor_name, ctor_info in adt.constructors.items():
+                    self._module_constructors.setdefault(ctor_name, ctor_info)
 
     def _lookup_module_function(
         self, path: tuple[str, ...], name: str,
@@ -1370,7 +1389,9 @@ class ContractVerifier:
         ``lookup_constructor`` searches only the flat ``constructors``
         dict that built-ins (``Some`` / ``Ok`` / …) register into;
         :py:meth:`_register_data` files user ``data`` constructors under
-        ``data_types[...].constructors`` instead, so look there too.
+        ``data_types[...].constructors`` instead, so look there too.  An
+        imported module's constructors live in neither — they are harvested
+        into ``_module_constructors`` and consulted last (#747 site 4).
         """
         ci = self.env.lookup_constructor(name)
         if ci is not None:
@@ -1378,7 +1399,7 @@ class ContractVerifier:
         for adt in self.env.data_types.values():
             if name in adt.constructors:
                 return adt.constructors[name]
-        return None
+        return self._module_constructors.get(name)
 
     def _walk_for_nat_binding_obligations(
         self,

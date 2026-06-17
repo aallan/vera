@@ -2272,6 +2272,75 @@ private fn id(@Int -> @Int)
         assert result_without.summary.tier1_verified == result_with.summary.tier1_verified
         assert result_without.summary.tier3_runtime == result_with.summary.tier3_runtime
 
+    # -- #747 site 4: imported constructor @Nat-field narrowing ------------
+
+    BOXES_MODULE = """\
+public data NatBox {
+  WrapN(Nat)
+}
+
+public data Box<T> {
+  Wrap(T)
+}
+"""
+
+    def test_imported_ctor_concrete_nat_field_obligated(self) -> None:
+        """#747 site 4: an imported constructor with a concrete @Nat field
+        (`WrapN(Nat)` from another module) narrowing an @Int argument is
+        obligated `>= 0`.  The verifier harvests the imported ctor's field
+        types into `_module_constructors`, so the narrowing fires (E503)
+        under `requires(true)` instead of passing silently."""
+        mod = self._resolved(("boxes",), self.BOXES_MODULE)
+        result = self._verify_mod("""\
+import boxes(WrapN, NatBox);
+private fn f(@Int -> @NatBox)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ WrapN(@Int.0) }
+""", [mod])
+        violated = [o for o in result.obligations
+                    if o.kind == "nat_bind" and o.status == "violated"]
+        assert len(violated) == 1, [(o.kind, o.status)
+                                    for o in result.obligations]
+        assert violated[0].error_code == "E503"
+
+    def test_imported_ctor_concrete_nat_field_discharged(self) -> None:
+        """The imported concrete-@Nat-field narrowing discharges from a
+        precondition that proves the argument non-negative."""
+        mod = self._resolved(("boxes",), self.BOXES_MODULE)
+        result = self._verify_mod("""\
+import boxes(WrapN, NatBox);
+private fn f(@Int -> @NatBox)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{ WrapN(@Int.0) }
+""", [mod])
+        assert not [o for o in result.obligations
+                    if o.kind == "nat_bind" and o.status == "violated"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
+    def test_imported_ctor_generic_field_nat_obligated(self) -> None:
+        """#747 site 4: an imported *generic* constructor field instantiated
+        to @Nat at the call site (`Wrap(@Int.0)` building `Box<Nat>`) is
+        obligated — the harvested field type is a TypeVar, so the
+        instantiated @Nat target comes from the checker's side-table."""
+        mod = self._resolved(("boxes",), self.BOXES_MODULE)
+        result = self._verify_mod("""\
+import boxes(Wrap, Box);
+private fn f(@Int -> @Box<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Wrap(@Int.0) }
+""", [mod])
+        violated = [o for o in result.obligations
+                    if o.kind == "nat_bind" and o.status == "violated"]
+        assert len(violated) == 1, [(o.kind, o.status)
+                                    for o in result.obligations]
+        assert violated[0].error_code == "E503"
+
 
 # =====================================================================
 # Phase A: Match + ADT verification tests
