@@ -1472,13 +1472,15 @@ class ContractVerifier:
         already-@Nat source is skipped to avoid a spurious E503.  A source
         the SMT layer cannot project into components (an ``if``-expression
         over tuples, which it does not model as a datatype) is surfaced as a
-        Tier-3 obligation (E504): the verifier counts only the literal
-        ``let @Nat = <Int>`` site as backed by a runtime check, so a non-let
-        narrowing it cannot discharge statically is reported rather than
-        silently counted as runtime-checked.  Codegen does still guard the
-        projection sites at run time (``data.py``) — the E504 is a
-        static-unverifiability signal, not a claim that no guard exists
-        (#747).
+        Tier-3 obligation: the codegen-guarded sites (let, tuple
+        destructure, top-level match-bind, ADT sub-pattern, and concrete
+        call-argument / constructor-field) are recorded ``tier3_runtime``
+        (backed by the codegen ``i64.lt_s`` guard), while the genuinely
+        unguarded narrowings — the effect-operation argument and
+        generic-instantiated formals/fields (whose ``@Nat`` erases to i64) —
+        are surfaced as E504, neither statically proven nor runtime-checked
+        (#747; the ``guarded`` flag threaded to
+        :py:meth:`_record_nat_bind_tier3` decides which).
         """
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             # Site 2: @Nat formal parameters narrowing an @Int argument.
@@ -1874,11 +1876,12 @@ class ContractVerifier:
         Mirrors :py:meth:`_check_subtraction_obligation`: on success
         increments ``tier1_verified``; on a Z3 counterexample emits an
         E503 error.  When the value is untranslatable or the solver times
-        out the outcome depends on the site — the `let` site is backed by
-        the codegen runtime guard (counted ``tier3_runtime``), while every
-        other site has no guard, so the narrowing is surfaced as an E504
-        warning and excluded from the totals (#747; see
-        :py:meth:`_record_nat_bind_tier3`).  Path conditions in
+        out the outcome depends on the caller-supplied ``guarded`` flag —
+        codegen-guarded sites (``guarded=True``) are counted
+        ``tier3_runtime``, while the unguarded ones (effect-operation
+        argument, generic-instantiated formal/field — ``guarded=False``)
+        are surfaced as an E504 warning and excluded from the totals
+        (#747; see :py:meth:`_record_nat_bind_tier3`).  Path conditions in
         ``smt._path_conditions`` are folded in automatically by
         :py:meth:`SmtContext.check_valid`.
         """
@@ -2071,13 +2074,12 @@ class ContractVerifier:
         When the SMT layer cannot project the source into components — e.g.
         an ``if``-expression over tuples, which it does not model as a
         datatype — the narrowing is real but unverifiable *statically* here,
-        so it is surfaced as one Tier-3 obligation + E504 rather than dropped
-        silently (mirrors the non-let untranslatable-value path); the verifier
-        counts only the ``let`` site as runtime-backed, hence E504 not a
-        discharged runtime check.  Codegen still guards every @Nat
-        destructure component at run time (``data.py``), so a negative value
-        traps regardless.  A source whose tuple type the checker never
-        recorded leaves the bindings unchecked.
+        so it is surfaced as one guarded Tier-3 obligation per @Nat component
+        (``tier3_runtime``) rather than dropped silently.  The destructure is
+        a codegen-guarded site (recorded ``guarded=True``): codegen guards
+        every @Nat destructure component at run time (``data.py``), so a
+        negative value traps regardless.  A source whose tuple type the
+        checker never recorded leaves the bindings unchecked.
         """
         rhs_ty = self._resolved_type_of(stmt.value)
         if not isinstance(rhs_ty, AdtType):

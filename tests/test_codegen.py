@@ -16549,6 +16549,16 @@ class TestNatBindingRuntimeGuard747:
         end = wat.find("\n  (func ", idx + 1)
         return wat[idx:end if end >= 0 else len(wat)]
 
+    def _assert_guarded(self, wat: str, fn: str) -> None:
+        """Assert ``fn``'s body emits the full @Nat guard shape — both the
+        `i64.lt_s` comparison and the `unreachable` trap edge — so a
+        regression emitting the compare without the trap is caught (CR #756).
+        The fixtures are plain arithmetic / ctor / match bodies, so neither
+        token appears except in the guard."""
+        body = self._body(wat, fn)
+        assert "i64.lt_s" in body, f"{fn}: missing i64.lt_s guard compare"
+        assert "unreachable" in body, f"{fn}: missing unreachable trap edge"
+
     def test_param_destructure_nat_components_guarded(self) -> None:
         """`let Tuple<@Nat, @Nat> = @Tuple<Int, Int>.0` guards each
         narrowed component."""
@@ -16557,7 +16567,7 @@ public fn gdestr(@Tuple<Int, Int> -> @Nat)
   requires(true) ensures(true) effects(pure)
 { let Tuple<@Nat, @Nat> = @Tuple<Int, Int>.0; @Nat.0 }
 """)
-        assert "i64.lt_s" in self._body(result.wat, "gdestr")
+        self._assert_guarded(result.wat, "gdestr")
 
     def test_subpattern_nat_bind_guarded(self) -> None:
         """`match opt { Some(@Nat) -> }` on `Option<Int>` guards the
@@ -16567,7 +16577,7 @@ public fn gsub(@Option<Int> -> @Int)
   requires(true) ensures(true) effects(pure)
 { match @Option<Int>.0 { Some(@Nat) -> @Nat.0, None -> 0 } }
 """)
-        assert "i64.lt_s" in self._body(result.wat, "gsub")
+        self._assert_guarded(result.wat, "gsub")
 
     def test_toplevel_match_nat_bind_guarded(self) -> None:
         """`match <Int> { @Nat -> }` guards the scrutinee bound as @Nat."""
@@ -16576,7 +16586,7 @@ public fn gmatch(@Int -> @Int)
   requires(true) ensures(true) effects(pure)
 { match @Int.0 { @Nat -> @Nat.0 } }
 """)
-        assert "i64.lt_s" in self._body(result.wat, "gmatch")
+        self._assert_guarded(result.wat, "gmatch")
 
     def test_concrete_nat_ctor_field_guarded(self) -> None:
         """A concrete @Nat constructor field guards its @Int argument."""
@@ -16586,7 +16596,7 @@ public fn gctor(@Int -> @NatBox)
   requires(true) ensures(true) effects(pure)
 { WrapN(@Int.0) }
 """)
-        assert "i64.lt_s" in self._body(result.wat, "gctor")
+        self._assert_guarded(result.wat, "gctor")
 
     def test_concrete_nat_call_arg_guarded(self) -> None:
         """A concrete @Nat call formal guards its @Int argument."""
@@ -16598,7 +16608,7 @@ public fn gcall(@Int -> @Nat)
   requires(true) ensures(true) effects(pure)
 { takesNat(@Int.0) }
 """)
-        assert "i64.lt_s" in self._body(result.wat, "gcall")
+        self._assert_guarded(result.wat, "gcall")
 
     def test_nat_alias_let_bind_guarded(self) -> None:
         """A `type Age = Nat` alias target is guarded at the let-bind site —
@@ -16610,7 +16620,7 @@ public fn galias(@Int -> @Age)
   requires(true) ensures(true) effects(pure)
 { let @Age = @Int.0; @Age.0 }
 """)
-        assert "i64.lt_s" in self._body(result.wat, "galias")
+        self._assert_guarded(result.wat, "galias")
 
     def test_generic_nat_alias_ctor_field_guarded(self) -> None:
         """A generic alias instantiated to @Nat (`type Id<T> = T` used as
@@ -16623,7 +16633,20 @@ public fn ggen(@Int -> @GBox)
   requires(true) ensures(true) effects(pure)
 { GWrap(@Int.0) }
 """)
-        assert "i64.lt_s" in self._body(result.wat, "ggen")
+        self._assert_guarded(result.wat, "ggen")
+
+    def test_builtin_mdheading_nat_field_guarded(self) -> None:
+        """The built-in `MdHeading` constructor's concrete @Nat level field is
+        guarded.  Manual built-in layouts bypass `_compute_constructor_layout`
+        (the only other `nat_fields` populator), so the flag must be set on the
+        layout explicitly; MdHeading is the sole built-in ctor with a @Nat
+        field (CR #756)."""
+        result = _compile_ok("""
+public fn mkheading(@Int -> @MdBlock)
+  requires(true) ensures(true) effects(pure)
+{ MdHeading(@Int.0, [MdText("x")]) }
+""")
+        self._assert_guarded(result.wat, "mkheading")
 
     def test_int_ctor_field_emits_no_guard(self) -> None:
         """A concrete @Int constructor field is not a narrowing target —
@@ -16681,6 +16704,20 @@ public fn main(@Unit -> @Int)
         ):
             execute(result, fn_name="main", args=[])
 
+    def test_toplevel_match_negative_traps_at_runtime(self) -> None:
+        """A top-level `match <Int> { @Nat -> }` binding a negative scrutinee
+        as @Nat traps at runtime — pins the match-bind guard's semantics, not
+        only its WAT emission (CR #756)."""
+        result = _compile_ok("""
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match 0 - 5 { @Nat -> @Nat.0 } }
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
     @staticmethod
     def _boxes_module() -> object:
         """A resolved `boxes` module declaring `data NatBox { WrapN(Nat) }`
@@ -16710,7 +16747,7 @@ public fn gimp(@Int -> @NatBox)
             parse_to_ast(src), source=src,
             resolved_modules=[self._boxes_module()])
         assert not [d for d in result.diagnostics if d.severity == "error"]
-        assert "i64.lt_s" in self._body(result.wat, "gimp")
+        self._assert_guarded(result.wat, "gimp")
 
     def test_imported_ctor_negative_traps_at_runtime(self) -> None:
         """The imported concrete-@Nat ctor guard traps on a negative arg —

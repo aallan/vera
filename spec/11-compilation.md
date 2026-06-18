@@ -593,4 +593,4 @@ Imported functions are **not** exported from the WASM module — only the import
 
 ## 11.17 Limitations
 
-The Tier-3 runtime guard for the `@Nat >= 0` narrowing invariant covers every binding site except the effect-operation argument, and a tripped guard reports a generic trap rather than the `requires(... >= 0)` fix; both residuals are tracked as [#754](https://github.com/aallan/vera/issues/754).
+The Tier-3 runtime guard for the `@Nat >= 0` narrowing invariant covers every *concrete* binding site; two narrowings stay unguarded — the effect-operation argument (its guard is deferred) and generic-instantiated formals/fields, whose `@Nat` is monomorphised to `i64` so there is no concrete type to guard (an inherent erasure; both are still obligated statically).  A tripped guard also reports a generic trap rather than the `requires(... >= 0)` fix.  The effect-op-argument guard and the dedicated trap kind are tracked as [#754](https://github.com/aallan/vera/issues/754).

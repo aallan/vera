@@ -169,6 +169,12 @@ class RegistrationMixin:
                 tag=1,
                 field_offsets=((8, "i64"), (16, "i32_pair")),
                 total_size=24,
+                # #747 (CR #756): the level field is a concrete @Nat — flag it
+                # so `MdHeading(@Int.0, ...)` runtime-guards the narrowing.
+                # Manual built-in layouts bypass `_compute_constructor_layout`,
+                # which is the only other `nat_fields` populator; MdHeading is
+                # the sole built-in constructor with a @Nat field.
+                nat_fields=(True, False),
             ),
             "MdCodeBlock": ConstructorLayout(
                 tag=2,
