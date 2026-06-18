@@ -16820,6 +16820,26 @@ public fn gimpfn(@Int -> @Nat)
         assert not [d for d in result.diagnostics if d.severity == "error"]
         self._assert_guarded(result.wat, "gimpfn")
 
+    def test_imported_fn_negative_traps_at_runtime(self) -> None:
+        """The imported-function @Nat guard traps on a negative argument at
+        run time, not only in the WAT — proves the harvested `_fn_nat_params`
+        is enforced end-to-end across the module boundary (CR #756)."""
+        from vera.parser import parse_to_ast
+
+        src = """import natfns(boxNat);
+public fn gimpfn(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ boxNat(@Int.0) }
+"""
+        result = compile(
+            parse_to_ast(src), source=src,
+            resolved_modules=[self._nat_fn_module()])
+        assert not [d for d in result.diagnostics if d.severity == "error"]
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="gimpfn", args=[-1])
+
 
 # =====================================================================
 # WASM call translator critical bug fixes (#475 PR 1)

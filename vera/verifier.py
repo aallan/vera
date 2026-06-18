@@ -1913,15 +1913,27 @@ class ContractVerifier:
         outer ``slot_env``, and an obligation in the arm would read a *stale*
         outer slot of the same name instead of the pattern binding that
         shadows it (CR #756).  Mirrors the ``LetDestruct`` ``_fresh_slot_var``
-        guard.  A slot whose type has no scalar SMT sort is left unbound — it
-        is never a `value >= 0` obligation target, so its stale binding is
-        irrelevant (same reasoning as :py:meth:`_fresh_slot_var`).
+        guard.  A non-scalar slot (ADT / tuple / array) has no scalar SMT
+        sort, but a *nested* obligation in the arm can still project a
+        narrowing field out of it, so it is invalidated too — shadowed by a
+        fresh const of its own sort when an outer binding exists.
         """
         if isinstance(pattern, ast.BindingPattern):
             slot_name = smt._type_expr_to_slot_name(pattern.type_expr)
-            fresh = self._fresh_slot_var(smt, pattern.type_expr)
-            if slot_name is None or fresh is None:
+            if slot_name is None:
                 return env
+            fresh = self._fresh_slot_var(smt, pattern.type_expr)
+            if fresh is None:
+                # Non-scalar slot: `_fresh_slot_var` can't type it, but if an
+                # outer binding of the same slot exists a nested projection in
+                # the arm would read it as STALE.  Shadow it with a fresh const
+                # of the same sort to invalidate it (CR #756).  With no outer
+                # binding there is nothing stale, and an unbound slot already
+                # projects fresh.
+                stale = env.resolve(slot_name, 0)
+                if stale is None:
+                    return env
+                fresh = z3.FreshConst(stale.sort(), prefix="patbind")
             return env.push(slot_name, fresh)
         if isinstance(pattern, ast.ConstructorPattern):
             cur = env
