@@ -171,6 +171,10 @@ class CallsMarkupMixin:
         l_instrs = self.translate_expr(level_arg, env)
         if b_instrs is None or l_instrs is None:
             return None
+        # #757: runtime-guard an @Int -> @Nat narrowing of the heading level
+        # before it is passed to the host import (CR #756).
+        if self._narrows_into_nat(level_arg):
+            l_instrs = self._emit_nat_bind_guard(l_instrs)
         ins: list[str] = []
         ins.extend(b_instrs)
         ins.extend(l_instrs)

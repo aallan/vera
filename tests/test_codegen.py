@@ -16840,6 +16840,38 @@ public fn gimpfn(@Int -> @Nat)
         ):
             execute(result, fn_name="gimpfn", args=[-1])
 
+    @pytest.mark.parametrize("body", [
+        'string_repeat("ab", 0 - 5)',
+        'string_from_char_code(0 - 5)',
+        'string_pad_start("ab", 0 - 5, "x")',
+        'string_pad_end("ab", 0 - 5, "x")',
+    ])
+    def test_builtin_nat_param_negative_traps_at_runtime(self, body) -> None:
+        """A negative @Int narrowed into a builtin's @Nat parameter traps at
+        runtime (#757 fold-in).  Builtin translators bypass `_fn_nat_params`,
+        so each guards its @Nat arg directly; an unverified compile of a
+        negative argument traps rather than overallocating or passing a
+        negative to a host import (CR #756)."""
+        result = _compile_ok(f"""
+public fn main(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{{ {body} }}
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    def test_builtin_nat_param_valid_does_not_trap(self) -> None:
+        """A non-negative builtin @Nat argument runs without trapping — the
+        guard fires only on a genuine narrowing of a negative value (#757)."""
+        result = _compile_ok("""
+public fn main(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ string_repeat("ab", 3) }
+""")
+        execute(result, fn_name="main", args=[])
+
 
 # =====================================================================
 # WASM call translator critical bug fixes (#475 PR 1)
