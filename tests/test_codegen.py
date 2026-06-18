@@ -16635,6 +16635,23 @@ public fn ggen(@Int -> @GBox)
 """)
         self._assert_guarded(result.wat, "ggen")
 
+    def test_generic_instantiated_call_arg_guarded(self) -> None:
+        """A generic function formal fixed to @Nat at the call site is guarded
+        on the *monomorphised* callee.  The guard keys on the resolved call
+        target (`pick$Nat`, concrete @Nat flags), not the generic `pick`
+        (erased flags) — so `pick<Nat>(@Nat.0, @Int.0)` traps a negative
+        narrowing just like a concrete @Nat call (CR #756)."""
+        result = _compile_ok("""
+private forall<T>
+fn pick(@T, @T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+public fn gcall(@Nat, @Int -> @Nat)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ pick(@Nat.0, @Int.0) }
+""")
+        self._assert_guarded(result.wat, "gcall")
+
     def test_builtin_mdheading_nat_field_guarded(self) -> None:
         """The built-in `MdHeading` constructor's concrete @Nat level field is
         guarded.  Manual built-in layouts bypass `_compute_constructor_layout`

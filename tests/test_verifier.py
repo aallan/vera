@@ -1128,8 +1128,10 @@ public fn f(@Int -> @Unit)
         assert any("may be negative" in e.description.lower() for e in errors)
 
     def test_generic_effect_op_formal_nat_discharged(self) -> None:
-        """The generic effect-op narrowing discharges from a precondition."""
-        _verify_ok("""
+        """The generic effect-op narrowing discharges from a precondition.
+        Pins the emitted `nat_bind` status as ``verified`` so a regression to
+        *no* obligation can't pass silently (CR #756)."""
+        result = _verify("""
 effect E<T> {
   op wait(T -> Unit);
 }
@@ -1142,6 +1144,10 @@ public fn f(@Int -> @Unit)
   E.wait(@Int.0)
 }
 """)
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"], \
+            [(o.kind, o.status) for o in result.obligations]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
 
     def test_generic_function_formal_nat_obligated(self) -> None:
         """A generic function formal fixed to @Nat by a sibling argument
@@ -1169,8 +1175,9 @@ private fn f(@Nat, @Int -> @Nat)
 
     def test_generic_function_formal_nat_discharged(self) -> None:
         """The generic function-formal narrowing discharges from a
-        precondition constraining the @Int argument."""
-        _verify_ok("""
+        precondition constraining the @Int argument.  Pins the emitted
+        `nat_bind` status as ``verified`` (CR #756)."""
+        result = _verify("""
 private forall<T>
 fn pick(@T, @T -> @T)
   requires(true)
@@ -1184,6 +1191,10 @@ private fn f(@Nat, @Int -> @Nat)
   effects(pure)
 { pick(@Nat.0, @Int.0) }
 """)
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"], \
+            [(o.kind, o.status) for o in result.obligations]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
 
     def test_generic_ctor_field_nat_obligated(self) -> None:
         """A generic constructor field instantiated to @Nat (`Some(@Int.0)`
@@ -1206,8 +1217,9 @@ private fn f(@Int -> @Option<Nat>)
 
     def test_generic_ctor_field_nat_discharged(self) -> None:
         """The generic constructor-field narrowing discharges from a
-        precondition, exactly like the concrete-field case (#747)."""
-        _verify_ok("""
+        precondition, exactly like the concrete-field case (#747).  Pins the
+        emitted `nat_bind` status as ``verified`` (CR #756)."""
+        result = _verify("""
 private fn f(@Int -> @Option<Nat>)
   requires(@Int.0 >= 0)
   ensures(true)
@@ -1216,6 +1228,10 @@ private fn f(@Int -> @Option<Nat>)
   Some(@Int.0)
 }
 """)
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"], \
+            [(o.kind, o.status) for o in result.obligations]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
 
     def test_non_literal_nat_destructure_obligated(self) -> None:
         """#747 site 2: a non-literal tuple-destructure source — here a

@@ -1473,14 +1473,15 @@ class ContractVerifier:
         the SMT layer cannot project into components (an ``if``-expression
         over tuples, which it does not model as a datatype) is surfaced as a
         Tier-3 obligation: the codegen-guarded sites (let, tuple
-        destructure, top-level match-bind, ADT sub-pattern, and concrete
-        call-argument / constructor-field) are recorded ``tier3_runtime``
+        destructure, top-level match-bind, ADT sub-pattern, concrete
+        constructor-field, and *all* call-arguments — concrete directly,
+        generic on the monomorphised callee) are recorded ``tier3_runtime``
         (backed by the codegen ``i64.lt_s`` guard), while the genuinely
-        unguarded narrowings — the effect-operation argument and
-        generic-instantiated formals/fields (whose ``@Nat`` erases to i64) —
-        are surfaced as E504, neither statically proven nor runtime-checked
-        (#747; the ``guarded`` flag threaded to
-        :py:meth:`_record_nat_bind_tier3` decides which).
+        unguarded narrowings — the effect-operation argument and the
+        generic-instantiated constructor field (constructors carry no
+        per-field @Nat mono metadata) — are surfaced as E504, neither
+        statically proven nor runtime-checked (#747; the ``guarded`` flag
+        threaded to :py:meth:`_record_nat_bind_tier3` decides which).
         """
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             # Site 2: @Nat formal parameters narrowing an @Int argument.
@@ -1500,11 +1501,12 @@ class ContractVerifier:
                         self._check_nat_binding_obligation(
                             decl, arg, smt, slot_env, assumptions,
                             site="call argument",
-                            # codegen guards only a *concrete* @Nat formal;
-                            # a generic formal fixed to @Nat at the call site
-                            # erases to i64, so an untranslatable arg there is
-                            # genuinely unguarded.
-                            guarded=self._is_nat_type(formal),
+                            # Always codegen-guarded: a concrete @Nat formal
+                            # guards directly, and a generic formal fixed to
+                            # @Nat is guarded on the monomorphised callee
+                            # (`pick$Nat` carries concrete @Nat flags; the
+                            # guard keys on the resolved call target, CR #756).
+                            guarded=True,
                         )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
@@ -1879,8 +1881,9 @@ class ContractVerifier:
         out the outcome depends on the caller-supplied ``guarded`` flag —
         codegen-guarded sites (``guarded=True``) are counted
         ``tier3_runtime``, while the unguarded ones (effect-operation
-        argument, generic-instantiated formal/field — ``guarded=False``)
-        are surfaced as an E504 warning and excluded from the totals
+        argument and generic-instantiated constructor field —
+        ``guarded=False``) are surfaced as an E504 warning and excluded
+        from the totals
         (#747; see :py:meth:`_record_nat_bind_tier3`).  Path conditions in
         ``smt._path_conditions`` are folded in automatically by
         :py:meth:`SmtContext.check_valid`.
@@ -2142,16 +2145,17 @@ class ContractVerifier:
         timeout), distinguishing codegen-guarded narrowings from unguarded
         ones via the caller-supplied *guarded* flag.
 
-        Codegen unconditionally guards the `let`, tuple-destructure,
-        top-level match-bind, and ADT-sub-pattern sites, and the *concrete*
-        @Nat constructor-field / call-argument forms (#747), so a Tier-3
-        narrowing there genuinely falls to a runtime check
-        (``tier3_runtime``).  The unguarded cases — the effect-operation
-        argument and the generic-instantiated constructor-field /
-        call-argument forms (codegen erases their @Nat to i64) — may be
-        neither statically proven nor runtime-checked, so surface an E504
-        warning and exclude them from the discharged totals (like a
-        violation) rather than silently counting a runtime check they never
+        Codegen guards the `let`, tuple-destructure, top-level match-bind,
+        and ADT-sub-pattern sites, the *concrete* @Nat constructor-field, and
+        *all* call-arguments — concrete directly, generic on the
+        monomorphised callee (#747), so a Tier-3 narrowing there genuinely
+        falls to a runtime check (``tier3_runtime``).  The unguarded cases —
+        the effect-operation argument and the generic-instantiated
+        constructor field (constructors carry no per-field @Nat mono
+        metadata) — may be neither statically proven nor runtime-checked, so
+        surface an E504 warning and exclude them from the discharged totals
+        (like a violation) rather than silently counting a runtime check they
+        never
         get.  The caller knows which case applies (it has the formal /
         field type), so it passes *guarded* rather than inferring it from
         the broad *site* string.
@@ -2189,10 +2193,12 @@ class ContractVerifier:
                 "(untranslatable or the solver timed out), so the `>= 0` "
                 "obligation could not be discharged.  Codegen runtime-guards "
                 "the concrete @Nat binding sites (let, destructure, match, "
-                "sub-pattern, concrete field / argument) but not this one — an "
-                "effect-operation argument or a generic field/argument whose "
-                "@Nat instantiation erases to i64 (#754) — so here the "
-                "narrowing is neither statically proven nor runtime-checked."
+                "sub-pattern, concrete field) and all call-arguments (generic "
+                "ones on the monomorphised callee) but not this one — an "
+                "effect-operation argument, or a generic-instantiated "
+                "constructor field with no per-field mono metadata — so here "
+                "the narrowing is neither statically proven nor "
+                "runtime-checked."
             ),
             spec_ref='Chapter 11, Section 11.2.1 "Nat as i64"',
             error_code="E504",

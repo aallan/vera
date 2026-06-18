@@ -479,15 +479,18 @@ class CallsMixin:
 
         # Regular function call
         instructions = []
-        nat_params = self._fn_nat_params.get(call.name, ())
+        # #747 (CR #756): key the @Nat-parameter guard bitmap on the *resolved*
+        # ``call_target``, not ``call.name``.  Monomorphisation registers the
+        # specialised instance (`pick$Nat`) with its concrete @Nat flags
+        # ``(True, …)`` while the generic decl (`pick`) keeps the erased
+        # ``(False, …)``; looking up ``call.name`` would miss the guard on the
+        # actual callee.  So `f<Nat>(@Int.0)` runtime-guards the narrowing
+        # exactly like a concrete `f(@Nat -> …)` call.
+        nat_params = self._fn_nat_params.get(call_target, ())
         for i, arg in enumerate(call.args):
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
-            # #747: runtime-guard an @Int -> @Nat call-argument narrowing
-            # into a concrete @Nat formal (`f(@Int.0)` where `f(@Nat -> …)`).
-            # Generic formals fixed to @Nat at the call site erase to i64,
-            # so they stay statically-only (verifier-obligated).
             if (i < len(nat_params) and nat_params[i]
                     and self._narrows_into_nat(arg)):
                 arg_instrs = self._emit_nat_bind_guard(arg_instrs)
