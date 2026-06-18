@@ -2479,11 +2479,24 @@ class ContractVerifier:
         if isinstance(expr, ast.SlotRef):
             return expr.type_name == "Nat"
         if isinstance(expr, ast.FnCall):
+            # A generic call instantiated to @Nat (`idv(@Nat.0)` with
+            # `idv<T>(@T -> @T)`) carries @Nat provenance even though the
+            # declared return is a TypeVar; recover it from the checker's
+            # side-table so a generic-@Nat subtraction still obligates its
+            # #520 underflow (CR #756; mirrors the `_is_nat_typed` fix).  Only
+            # call nodes consult the table — an IntLit there would type as Nat
+            # and break the deliberate pure-literal (`0 - 1`) exemption below.
+            resolved = self._resolved_type_of(expr)
+            if resolved is not None and self._is_nat_type(resolved):
+                return True
             fn = self.env.lookup_function(expr.name)
             if fn is None:
                 return False
             return self._is_nat_type(fn.return_type)
         if isinstance(expr, ast.ModuleCall):
+            resolved = self._resolved_type_of(expr)
+            if resolved is not None and self._is_nat_type(resolved):
+                return True
             mfn = self._lookup_module_function(expr.path, expr.name)
             if mfn is None:
                 return False

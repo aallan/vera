@@ -982,6 +982,35 @@ private fn f(@Int -> @Nat)
         assert kinds.count("nat_sub") == 0, kinds
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
+    def test_generic_nat_call_subtraction_obligated(self) -> None:
+        """`idv(@Nat.0) - idv(@Nat.1)` with `idv<T>(@T -> @T)`: both operands
+        are generic calls returning @Nat.  `_has_nat_origin` now recovers the
+        instantiated @Nat result from the checker's side-table — the declared
+        return is a `TypeVar` the local heuristic missed — so the #520
+        underflow obligation fires instead of being silently skipped (CR #756).
+        The generic calls are untranslatable to Z3, so the obligation is
+        Tier-3 (codegen-#520-guarded), not a static E502; the point is it is no
+        longer dropped."""
+        result = _verify("""
+private forall<T>
+fn idv(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @T.0 }
+
+public fn f(@Nat, @Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ idv(@Nat.0) - idv(@Nat.1) }
+""")
+        kinds = [o.kind for o in result.obligations]
+        assert kinds.count("nat_sub") >= 1, kinds
+        assert any(o.kind == "nat_sub" and o.status == "tier3"
+                   for o in result.obligations), \
+            [(o.kind, o.status) for o in result.obligations]
+
     def test_nat_addition_not_flagged(self) -> None:
         """`let @Nat = @Nat.0 + @Nat.1`: value already @Nat, no obligation."""
         result = _verify("""
