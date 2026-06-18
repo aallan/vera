@@ -16899,6 +16899,28 @@ public fn main(@Unit -> @Unit)
         ):
             execute(result, fn_name="main", args=[])
 
+    def test_generic_ctor_field_negative_does_not_trap_today(self) -> None:
+        """The generic-instantiated constructor field is the one #747 narrowing
+        site with NO runtime guard: constructor layouts carry no per-field @Nat
+        mono metadata, so a generic field instantiated to @Nat erases to i64
+        (#757).  `Some(0 - 5)` building an `Option<Nat>` therefore compiles and
+        runs *without* trapping today — it stores -5 silently.  This pins the
+        deferral so it can't regress to a *silent* loss of the obligation: when
+        #757 lands and emits the guard, this test flips to a trap and becomes the
+        regression anchor, symmetric with the #754 effect-op pin
+        (`test_non_let_tier3_narrowing_warns_unguarded`).  The verifier still
+        obligates the narrowing statically (E503), so a verified program is
+        unaffected — this is purely the codegen runtime backstop (review of
+        #756, #760)."""
+        result = _compile_ok("""
+public fn f(@Unit -> @Option<Nat>)
+  requires(true) ensures(true) effects(pure)
+{ Some(0 - 5) }
+""")
+        # No pytest.raises: the deferred-guard state means this MUST NOT trap.
+        # If #757 adds the guard, replace this with a pytest.raises(...) block.
+        execute(result, fn_name="f", args=[])
+
 
 # =====================================================================
 # WASM call translator critical bug fixes (#475 PR 1)

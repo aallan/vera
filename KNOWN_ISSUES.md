@@ -69,7 +69,6 @@ Internal test-quality items that don't affect correctness today but would make t
 |-----|-------|
 | Five of the six UTF-8 decode sites are pinned only by structural source-greps — a refactor that centralises the decodes would break the greps even with preserved behaviour. End-to-end tests per site (parametrizing the existing `host_print` test over an import-name/signature/payload tuple) would survive it. | [#592](https://github.com/aallan/vera/issues/592) |
 | Text-mode `open()`/`read_text()`/`write_text()` calls without explicit `encoding='utf-8'` remain at roughly 30 sites, relying on CI's `PYTHONUTF8=1` backstop. The durable fix is explicit encoding everywhere plus a pre-commit check, after which the CI variable can be dropped. | [#645](https://github.com/aallan/vera/issues/645) |
-| The #757 generic-instantiated constructor-field runtime deferral is pinned only in prose (a `test_overall_tier_counts` docstring), unlike the #754 effect-op residual which has an assertion-bearing pin. A `Some(0 - 5)` → `Option<Nat>` codegen test asserting it compiles and runs without trapping would flip to a regression pin when #757 lands. | [#760](https://github.com/aallan/vera/issues/760) |
 
 ## CI workarounds
 
