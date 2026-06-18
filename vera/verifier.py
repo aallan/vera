@@ -818,18 +818,19 @@ class ContractVerifier:
                 decl, decl.body, smt, slot_env, assumptions,
             )
 
-        # 5.7. Check @Nat binding-site narrowing obligations (#552).
+        # 5.7. Check @Nat binding-site narrowing obligations (#552, #747).
         #      Generalises #520 from @Nat-@Nat subtraction to every
         #      site where an @Int value narrows into a @Nat slot: let
         #      bindings, call arguments, effect-operation arguments,
         #      constructor fields, top-level match binds, and literal-
-        #      tuple destructures.  Emits
-        #      `value >= 0` at each, discharged from preconditions and
-        #      path conditions exactly like #520.  Projection sites
-        #      whose source type is not statically resolvable here
-        #      (ADT sub-pattern binds, non-literal destructures) are
-        #      left unchecked — neither obligated here nor guarded by
-        #      codegen — tracked as #747 (needs scrutinee-type inference).
+        #      tuple destructures (#552); plus the projection and
+        #      instantiation sites — ADT sub-pattern binds, non-literal
+        #      tuple destructures, and generic-instantiated constructor /
+        #      effect-op / function formals and imported constructors —
+        #      which #747 resolves by threading the checker's semantic-type
+        #      side-tables in, so the scrutinee/instantiated type is known
+        #      here.  Emits `value >= 0` at each, discharged from
+        #      preconditions and path conditions exactly like #520.
         if decl.body is not None:
             self._walk_for_nat_binding_obligations(
                 decl, decl.body, smt, slot_env, assumptions,
@@ -1492,9 +1493,11 @@ class ContractVerifier:
             param_types = getattr(callee, "param_types", None)
             if param_types is not None:
                 # A generic function whose `TypeVar` formal is fixed to @Nat
-                # by context (e.g. `T = Nat`) is skipped by `_is_nat_type`:
-                # only a concretely-@Nat formal obligates, mirroring generic
-                # constructor fields and effect-op formals — deferred to #747.
+                # by context (e.g. `T = Nat`) is recovered from the checker's
+                # recorded instantiation (`_nat_binding_target` -> the target
+                # side-table, #747), so it obligates like a concretely-@Nat
+                # formal — as for generic constructor fields and effect-op
+                # formals.
                 for arg, formal in zip(expr.args, param_types):
                     if (self._nat_binding_target(arg, formal)
                             and self._narrows_into_nat(arg)):
@@ -2315,6 +2318,16 @@ class ContractVerifier:
         See #552 for the broader generalisation that fires on every
         binding site rather than just at subtraction.
         """
+        # Prefer the checker's recorded semantic type (#747 side-table): it
+        # resolves a generic call like `ident(@Nat.0)` to its *instantiated*
+        # result (`Nat`), which the local heuristics below miss — they see the
+        # callee's declared `TypeVar` return and fall to False.  Without this,
+        # an already-@Nat generic-call source is misread as an @Int -> @Nat
+        # narrowing, firing a spurious obligation (a false E504 at an unguarded
+        # generic-instantiated field) (CR #756).
+        resolved = self._resolved_type_of(expr)
+        if resolved is not None:
+            return self._is_nat_type(resolved)
         if isinstance(expr, ast.SlotRef):
             return expr.type_name == "Nat"
         if isinstance(expr, ast.IntLit):

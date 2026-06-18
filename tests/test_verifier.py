@@ -1233,6 +1233,32 @@ private fn f(@Int -> @Option<Nat>)
             [(o.kind, o.status) for o in result.obligations]
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
+    def test_generic_nat_returning_call_no_false_narrowing(self) -> None:
+        """A generic call whose result is @Nat (`ident(@Nat.0)` with
+        `ident<T>(@T -> @T)`) flowing into a @Nat slot is NOT a narrowing —
+        the source is already @Nat.  `_is_nat_typed` consults the checker's
+        semantic side-table (the local heuristics see only the callee's
+        TypeVar return), so no spurious obligation / false E504 fires at the
+        unguarded generic constructor field (CR #756)."""
+        result = _verify("""
+private forall<T>
+fn ident(@T -> @T)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @T.0 }
+
+public fn f(@Nat -> @Option<Nat>)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ Some(ident(@Nat.0)) }
+""")
+        assert not [o for o in result.obligations if o.kind == "nat_bind"], \
+            [(o.kind, o.status) for o in result.obligations]
+        assert not [d for d in result.diagnostics if d.error_code == "E504"]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
     def test_non_literal_nat_destructure_obligated(self) -> None:
         """#747 site 2: a non-literal tuple-destructure source — here a
         function call returning `Tuple<Int, Int>` — narrowing both @Int
