@@ -485,6 +485,11 @@ class CallsStringsMixin:
         ins.extend(s_instrs)
         ins.append(f"local.set {len_s}")
         ins.append(f"local.set {ptr_s}")
+        # Root the source pointer before the output `call $alloc` below — a GC
+        # there would otherwise reclaim a GC-managed source string while
+        # `ptr_s` still points into it, since the copy loop reads it *after*
+        # the alloc (CR #756; matches the `gc_shadow_push(dst)` rooting).
+        ins.extend(gc_shadow_push(ptr_s))
 
         # Evaluate count (Nat = i64 → i32)
         ins.extend(n_instrs)

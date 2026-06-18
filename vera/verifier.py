@@ -2501,6 +2501,15 @@ class ContractVerifier:
             if mfn is None:
                 return False
             return self._is_nat_type(mfn.return_type)
+        if isinstance(expr, ast.IndexExpr):
+            # `arr[i]` carries @Nat provenance iff its *element* type is @Nat
+            # (an `Array<Nat>` element), so `arr[i] - arr[j]` on an Array<Nat>
+            # still obligates its #520 underflow (CR #756).  The checker's
+            # side-table records the index expression's resolved element type —
+            # we consult that rather than recursing on the `@Array` operand,
+            # which is not itself @Nat.
+            resolved = self._resolved_type_of(expr)
+            return resolved is not None and self._is_nat_type(resolved)
         if isinstance(expr, ast.BinaryExpr):
             return (self._has_nat_origin(expr.left)
                     or self._has_nat_origin(expr.right))

@@ -1011,6 +1011,27 @@ public fn f(@Nat, @Nat -> @Nat)
                    for o in result.obligations), \
             [(o.kind, o.status) for o in result.obligations]
 
+    def test_array_nat_element_subtraction_obligated(self) -> None:
+        """`arr[0] - arr[1]` on an `@Array<Nat>` parameter (length >= 2, so both
+        indices are in bounds) reports the #520 underflow (E502): array indexing
+        preserves the element's @Nat provenance.  `_has_nat_origin` consults the
+        checker's
+        side-table for the IndexExpr's resolved element type (it cannot recurse
+        on the `@Array` operand, which is not itself @Nat), so the subtraction
+        is obligated like any `@Nat - @Nat` (CR #756)."""
+        result = _verify("""
+public fn f(@Array<Nat> -> @Nat)
+  requires(array_length(@Array<Nat>.0) >= 2)
+  ensures(true)
+  effects(pure)
+{ @Array<Nat>.0[0] - @Array<Nat>.0[1] }
+""")
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_sub"] == ["violated"], \
+            [(o.kind, o.status) for o in result.obligations]
+        assert any(d.error_code == "E502"
+                   for d in result.diagnostics if d.severity == "error")
+
     def test_nat_addition_not_flagged(self) -> None:
         """`let @Nat = @Nat.0 + @Nat.1`: value already @Nat, no obligation."""
         result = _verify("""
