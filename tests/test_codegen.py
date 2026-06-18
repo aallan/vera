@@ -16872,6 +16872,33 @@ public fn main(@Unit -> @String)
 """)
         execute(result, fn_name="main", args=[])
 
+    def test_builtin_md_has_heading_negative_level_traps_at_runtime(self) -> None:
+        """`md_has_heading` is the markup builtin in the guarded set — its @Nat
+        `level` parameter is covered by the same `_narrows_into_nat` guard as the
+        string builtins, but its `@MdBlock`/`@Bool` signature keeps it out of the
+        `@String`-returning parametrized trap test above.  A negative @Int
+        narrowed into `level` traps rather than passing a negative to the host
+        import (review of #756; round-14 #757 fold-in)."""
+        result = _compile_ok("""
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("# Title");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> {
+      let @Bool = md_has_heading(@MdBlock.0, 0 - 5);
+      if @Bool.0 then { IO.print("yes") } else { IO.print("no") }
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
 
 # =====================================================================
 # WASM call translator critical bug fixes (#475 PR 1)
