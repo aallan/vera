@@ -50,13 +50,14 @@ class ConstructorLayout:
         # constructors build the two in the same loop (airtight), but a
         # built-in layout (e.g. ``MdHeading``) hand-authors them as separate
         # literals — enforce the length invariant loudly at construction so a
-        # drifted literal fails here, not as a silently mis-indexed guard.
-        assert not self.nat_fields or (
-            len(self.nat_fields) == len(self.field_offsets)
-        ), (
-            f"nat_fields (len {len(self.nat_fields)}) must match field_offsets "
-            f"(len {len(self.field_offsets)}) or be empty"
-        )
+        # drifted literal fails here, not as a silently mis-indexed guard.  An
+        # explicit ``raise`` (not ``assert``) so the check survives ``python -O``
+        # and is a real runtime guard, matching this file's validation style.
+        if self.nat_fields and len(self.nat_fields) != len(self.field_offsets):
+            raise ValueError(
+                f"nat_fields (len {len(self.nat_fields)}) must match "
+                f"field_offsets (len {len(self.field_offsets)}) or be empty"
+            )
 
 
 def _validate_wrap_handle(
