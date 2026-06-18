@@ -111,6 +111,21 @@ class CallsMixin:
                 param_types = tuple(
                     substitute(p, mapping) for p in param_types)
                 return_type = substitute(return_type, mapping)
+                # #747: the initial synth used expected=None for generic
+                # calls, and an @Int argument flowing into a formal fixed
+                # to @Nat by inference (`pick(@Nat.0, @Int.0)` with
+                # `pick<T>(@T, @T)`) skips the re-synth at the subtype
+                # check (Int <: Nat holds).  Record the instantiated
+                # formal as each argument's target now, so the verifier's
+                # @Nat narrowing walker can obligate it.
+                if self.expr_target_types is not None:
+                    for c_arg, c_pt in zip(args, param_types):
+                        sp = c_arg.span
+                        if sp is not None and not contains_typevar(c_pt):
+                            self.expr_target_types[
+                                (sp.line, sp.column,
+                                 sp.end_line, sp.end_column)
+                            ] = c_pt
 
         # Check each argument
         for i, (arg_ty, param_ty) in enumerate(zip(arg_types, param_types)):
@@ -175,14 +190,19 @@ class CallsMixin:
                        args: tuple[ast.Expr, ...],
                        node: ast.Node) -> Type | None:
         """Check a call to an effect operation."""
-        arg_types: list[Type | None] = []
-        for arg in args:
-            arg_types.append(self._synth_expr(arg))
-
-        # Resolve type params from current effect context
+        # Resolve type params from the current effect context first, so
+        # each argument is synthesised against its *instantiated* formal.
+        # That records the @Nat target for an ``E<Nat>.op(@Int.0)``
+        # narrowing in the #747 side-table (uniform with plain calls and
+        # constructor fields) rather than leaving it unchecked.
         mapping = self._effect_type_mapping(op_info.parent_effect)
         param_types = tuple(substitute(p, mapping) for p in op_info.param_types)
         return_type = substitute(op_info.return_type, mapping)
+
+        arg_types: list[Type | None] = []
+        for i, arg in enumerate(args):
+            exp = param_types[i] if i < len(param_types) else None
+            arg_types.append(self._synth_expr(arg, expected=exp))
 
         if len(args) != len(param_types):
             self._error(

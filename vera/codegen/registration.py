@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from vera import ast
 from vera.codegen.api import ConstructorLayout, _align_up, _wasm_type_align, _wasm_type_size
+from vera.wasm.inference import substitute_type_vars
 
 
 class RegistrationMixin:
@@ -36,6 +37,13 @@ class RegistrationMixin:
 
         ret_type = self._type_expr_to_wasm_type(decl.return_type)
         self._fn_sigs[decl.name] = (param_types, ret_type)
+        # #747: per-parameter concrete-@Nat flags for the runtime
+        # narrowing guard at call sites.  `decl.params` holds the
+        # parameter TypeExprs; resolve through aliases / refinements so a
+        # `type Count = Nat` or `{ @Nat | p }` formal is guarded too.
+        self._fn_nat_params[decl.name] = tuple(
+            self._type_resolves_to_nat(p) for p in decl.params
+        )
         # #614: also register the full Vera return type expression so
         # `_infer_index_element_type_expr` can extract the element type
         # of an `Array<T>`-returning call inside `f()[i]`.  Without
@@ -161,6 +169,12 @@ class RegistrationMixin:
                 tag=1,
                 field_offsets=((8, "i64"), (16, "i32_pair")),
                 total_size=24,
+                # #747 (CR #756): the level field is a concrete @Nat — flag it
+                # so `MdHeading(@Int.0, ...)` runtime-guards the narrowing.
+                # Manual built-in layouts bypass `_compute_constructor_layout`,
+                # which is the only other `nat_fields` populator; MdHeading is
+                # the sole built-in constructor with a @Nat field.
+                nat_fields=(True, False),
             ),
             "MdCodeBlock": ConstructorLayout(
                 tag=2,
@@ -244,6 +258,7 @@ class RegistrationMixin:
         """
         offset = 4  # tag (i32) at offset 0, occupies 4 bytes
         field_offsets: list[tuple[int, str]] = []
+        nat_fields: list[bool] = []
 
         if ctor.fields is not None:
             for field_te in ctor.fields:
@@ -252,13 +267,55 @@ class RegistrationMixin:
                 offset = _align_up(offset, align)
                 field_offsets.append((offset, wt))
                 offset += _wasm_type_size(wt)
+                # #747: a concrete @Nat field receives the runtime
+                # narrowing guard at construction.  A generic field
+                # (type param) instantiated to @Nat is erased to i64
+                # here, so it stays statically-only (verifier-obligated).
+                nat_fields.append(self._type_resolves_to_nat(field_te))
 
         total_size = _align_up(offset, 8) if offset > 0 else 8
         return ConstructorLayout(
             tag=tag,
             field_offsets=tuple(field_offsets),
             total_size=total_size,
+            nat_fields=tuple(nat_fields),
         )
+
+    def _type_resolves_to_nat(self, te: ast.TypeExpr) -> bool:
+        """True if *te* is ``@Nat`` directly, through a ``type X = Nat``
+        alias, the base of a refinement (``{ @Nat | p }``), or a *generic*
+        alias instantiated to @Nat (``type Id<T> = T`` used as ``Id<Nat>``)
+        — used for the #747 runtime-guard metadata so an alias/refinement-
+        typed @Nat formal or field is still guarded (CR #756), mirroring the
+        verifier's alias-aware ``_is_nat_type``.
+
+        Alias resolution uses ``self._type_aliases``, populated in
+        declaration order during ``_register_all``; a `@Nat` alias declared
+        *after* the function/data that uses it is not yet visible here and
+        falls back to the verifier's static obligation.  Generic alias
+        arguments are bound into the body via ``substitute_type_vars`` so
+        ``Id<Nat>`` resolves to ``Nat`` rather than the bare type-param ``T``.
+        """
+        seen: set[str] = set()
+        while True:
+            if isinstance(te, ast.RefinementType):
+                te = te.base_type
+                continue
+            if isinstance(te, ast.NamedType):
+                if te.name == "Nat":
+                    return True
+                alias = self._type_aliases.get(te.name)
+                if alias is not None and te.name not in seen:
+                    seen.add(te.name)
+                    params = self._type_alias_params.get(te.name)
+                    if (params and te.type_args
+                            and len(params) == len(te.type_args)):
+                        alias = substitute_type_vars(
+                            alias, dict(zip(params, te.type_args)),
+                        )
+                    te = alias
+                    continue
+            return False
 
     def _resolve_field_wasm_type(
         self,

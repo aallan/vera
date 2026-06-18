@@ -52,15 +52,21 @@ class ExpressionsMixin:
         the default), this adds a single attribute test per expression.
         """
         result = self._synth_expr_impl(expr, expected=expected)
-        if (
-            self.expr_types is not None
-            and result is not None
-            and expr.span is not None
-        ):
+        if self.expr_types is not None and expr.span is not None:
             span = expr.span
-            self.expr_types[
-                (span.line, span.column, span.end_line, span.end_column)
-            ] = pretty_type(result)
+            key = (span.line, span.column, span.end_line, span.end_column)
+            if result is not None:
+                self.expr_types[key] = pretty_type(result)
+                # #747: parallel table of *semantic* result types, so the
+                # verifier can resolve the type of a scrutinee / RHS /
+                # constructor-call at a deferred narrowing site.
+                if self.expr_semantic_types is not None:
+                    self.expr_semantic_types[key] = result
+            # #747: the ``expected`` (instantiated target) type the
+            # expression was checked against — e.g. a generic formal or
+            # field fixed to @Nat at this call/construction site.
+            if self.expr_target_types is not None and expected is not None:
+                self.expr_target_types[key] = expected
         return result
 
     def _synth_expr_impl(self, expr: ast.Expr, *,

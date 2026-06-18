@@ -360,6 +360,12 @@ class SmtContext:
 
         adt_info = self._adt_registry.get(adt_name)
         if adt_info is None:
+            # #747: Tuple is variadic and never registered as an ADT, so it
+            # would otherwise fall back to a scalar Int.  Synthesise a
+            # single-constructor datatype on demand so its components are
+            # projectable (non-literal tuple-destructure obligations).
+            if adt_name == "Tuple" and type_args:
+                return self._get_or_create_tuple_sort(key, type_args)
             return None
 
         # Build type parameter substitution
@@ -391,6 +397,31 @@ class SmtContext:
                     fields.append((field_name, z3_sort))
                 dt.declare(ctor_name, *fields)
 
+        sort = dt.create()
+        self._z3_sorts[key] = sort
+        return sort
+
+    def _get_or_create_tuple_sort(
+        self, key: str, type_args: tuple[Type, ...],
+    ) -> z3.SortRef | None:
+        """#747: synthesise a Z3 datatype for a concrete ``Tuple`` instance.
+
+        The variadic ``Tuple`` type is never in the ADT registry, so without
+        this it falls back to a scalar ``Int``.  One ``Tuple`` constructor
+        with a field per component makes the components projectable via
+        accessors — needed for non-literal tuple-destructure narrowing
+        obligations.  Cached like any other ADT sort.
+        """
+        z3_name = key.replace("<", "_").replace(">", "").replace(", ", "_")
+        dt = z3.Datatype(z3_name)
+        fields: list[tuple[str, Any]] = []
+        for i, ft in enumerate(type_args):
+            z3_sort = self._vera_type_to_z3_sort(
+                ft, self_ref_key=key, self_ref_dt=dt)
+            if z3_sort is None:
+                return None
+            fields.append((f"Tuple_{i}", z3_sort))
+        dt.declare("Tuple", *fields)
         sort = dt.create()
         self._z3_sorts[key] = sort
         return sort

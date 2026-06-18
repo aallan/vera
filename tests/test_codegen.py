@@ -16349,10 +16349,11 @@ class TestNatBindingRuntimeGuard552:
     @Nat slot.  Like the #520 guard, it protects programs compiled
     without `vera verify`.
 
-    Only the canonical `let` site is guarded at codegen; the verifier
-    statically covers the other binding sites (call-arg, ctor-field,
-    match-bind, destructure).  Extending the runtime guard there needs
-    callee/field type plumbing or scrutinee-type inference (follow-up).
+    #552 guarded the canonical `let` site; #747 extends the runtime guard
+    to the tuple-destructure, top-level match-bind, ADT sub-pattern,
+    concrete constructor-field, and call-argument sites (see
+    `TestNatBindingRuntimeGuard747`).  The effect-op-argument site and a
+    dedicated trap kind remain a follow-up.
     """
 
     _GUARDED_LET = """
@@ -16514,6 +16515,385 @@ public fn main(@Unit -> @Nat)
 }
 """
         result = _compile_ok(src)
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+
+class TestNatBindingRuntimeGuard747:
+    """#747: the runtime `value >= 0` guard now fires at the @Nat binding
+    sites beyond `let` — tuple destructure, top-level match bind, ADT
+    sub-pattern bind, concrete constructor field, and call argument.  Each
+    emits the `i64.lt_s; if; unreachable` net so an unverified compile traps
+    on a negative @Nat rather than silently storing it; a non-narrowing
+    target (an @Int field/formal) emits none.
+    """
+
+    @staticmethod
+    def _body(wat: str, fn: str) -> str:
+        """Slice out function ``fn``'s WAT body.
+
+        The guard-presence tests assert ``i64.lt_s`` appears in this slice;
+        that uniquely identifies the @Nat guard *only because* their
+        fixtures contain no other `i64.lt_s` emitter (comparison, string /
+        array / math builtins all emit one).  Keep these fixtures to plain
+        arithmetic / ctor / match bodies — the negative-traps tests below
+        pin the guard's runtime *semantics* independently.
+        """
+        # Boundary-safe so `$gcall` does not match `$gcall_helper` — a plain
+        # substring `find` would slice the wrong body (CR #756).
+        m = re.search(rf"\(func \${re.escape(fn)}(?![A-Za-z0-9_$.])", wat)
+        assert m is not None, f"{fn} not found in WAT"
+        idx = m.start()
+        end = wat.find("\n  (func ", idx + 1)
+        return wat[idx:end if end >= 0 else len(wat)]
+
+    def _assert_guarded(self, wat: str, fn: str) -> None:
+        """Assert ``fn``'s body emits the full @Nat guard shape — both the
+        `i64.lt_s` comparison and the `unreachable` trap edge — so a
+        regression emitting the compare without the trap is caught (CR #756).
+        The fixtures are plain arithmetic / ctor / match bodies, so neither
+        token appears except in the guard."""
+        body = self._body(wat, fn)
+        assert "i64.lt_s" in body, f"{fn}: missing i64.lt_s guard compare"
+        assert "unreachable" in body, f"{fn}: missing unreachable trap edge"
+
+    def test_param_destructure_nat_components_guarded(self) -> None:
+        """`let Tuple<@Nat, @Nat> = @Tuple<Int, Int>.0` guards each
+        narrowed component."""
+        result = _compile_ok("""
+public fn gdestr(@Tuple<Int, Int> -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = @Tuple<Int, Int>.0; @Nat.0 }
+""")
+        self._assert_guarded(result.wat, "gdestr")
+
+    def test_subpattern_nat_bind_guarded(self) -> None:
+        """`match opt { Some(@Nat) -> }` on `Option<Int>` guards the
+        projected @Int payload bound as @Nat."""
+        result = _compile_ok("""
+public fn gsub(@Option<Int> -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Option<Int>.0 { Some(@Nat) -> @Nat.0, None -> 0 } }
+""")
+        self._assert_guarded(result.wat, "gsub")
+
+    def test_toplevel_match_nat_bind_guarded(self) -> None:
+        """`match <Int> { @Nat -> }` guards the scrutinee bound as @Nat."""
+        result = _compile_ok("""
+public fn gmatch(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match @Int.0 { @Nat -> @Nat.0 } }
+""")
+        self._assert_guarded(result.wat, "gmatch")
+
+    def test_concrete_nat_ctor_field_guarded(self) -> None:
+        """A concrete @Nat constructor field guards its @Int argument."""
+        result = _compile_ok("""
+public data NatBox { WrapN(Nat) }
+public fn gctor(@Int -> @NatBox)
+  requires(true) ensures(true) effects(pure)
+{ WrapN(@Int.0) }
+""")
+        self._assert_guarded(result.wat, "gctor")
+
+    def test_concrete_nat_call_arg_guarded(self) -> None:
+        """A concrete @Nat call formal guards its @Int argument."""
+        result = _compile_ok("""
+public fn takesNat(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+public fn gcall(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ takesNat(@Int.0) }
+""")
+        self._assert_guarded(result.wat, "gcall")
+
+    def test_nat_alias_let_bind_guarded(self) -> None:
+        """A `type Age = Nat` alias target is guarded at the let-bind site —
+        `_resolve_base_type_name` resolves the alias so the runtime guard is
+        not skipped by the bare `type_name == "Nat"` check (CR #756)."""
+        result = _compile_ok("""
+type Age = Nat;
+public fn galias(@Int -> @Age)
+  requires(true) ensures(true) effects(pure)
+{ let @Age = @Int.0; @Age.0 }
+""")
+        self._assert_guarded(result.wat, "galias")
+
+    def test_generic_nat_alias_ctor_field_guarded(self) -> None:
+        """A generic alias instantiated to @Nat (`type Id<T> = T` used as
+        `Id<Nat>`) resolves to Nat via type-argument substitution, so the
+        constructor-field narrowing is still guarded (CR #756)."""
+        result = _compile_ok("""
+type Id<T> = T;
+public data GBox { GWrap(Id<Nat>) }
+public fn ggen(@Int -> @GBox)
+  requires(true) ensures(true) effects(pure)
+{ GWrap(@Int.0) }
+""")
+        self._assert_guarded(result.wat, "ggen")
+
+    def test_generic_instantiated_call_arg_guarded(self) -> None:
+        """A generic function formal fixed to @Nat at the call site is guarded
+        on the *monomorphised* callee.  The guard keys on the resolved call
+        target (`pick$Nat`, concrete @Nat flags), not the generic `pick`
+        (erased flags) — so `pick<Nat>(@Nat.0, @Int.0)` traps a negative
+        narrowing just like a concrete @Nat call (CR #756)."""
+        result = _compile_ok("""
+private forall<T>
+fn pick(@T, @T -> @T)
+  requires(true) ensures(true) effects(pure)
+{ @T.0 }
+public fn gcall(@Nat, @Int -> @Nat)
+  requires(@Int.0 >= 0) ensures(true) effects(pure)
+{ pick(@Nat.0, @Int.0) }
+""")
+        self._assert_guarded(result.wat, "gcall")
+
+    def test_builtin_mdheading_nat_field_guarded(self) -> None:
+        """The built-in `MdHeading` constructor's concrete @Nat level field is
+        guarded.  Manual built-in layouts bypass `_compute_constructor_layout`
+        (the only other `nat_fields` populator), so the flag must be set on the
+        layout explicitly; MdHeading is the sole built-in ctor with a @Nat
+        field (CR #756)."""
+        result = _compile_ok("""
+public fn mkheading(@Int -> @MdBlock)
+  requires(true) ensures(true) effects(pure)
+{ MdHeading(@Int.0, [MdText("x")]) }
+""")
+        self._assert_guarded(result.wat, "mkheading")
+
+    def test_int_ctor_field_emits_no_guard(self) -> None:
+        """A concrete @Int constructor field is not a narrowing target —
+        no guard, mirroring the @Int-field/@Int-formal exemption."""
+        result = _compile_ok("""
+public data IntBox { WrapI(Int) }
+public fn gint(@Int -> @IntBox)
+  requires(true) ensures(true) effects(pure)
+{ WrapI(@Int.0) }
+""")
+        assert not re.search(
+            r"\bi64\.lt_[su]\b", self._body(result.wat, "gint"))
+
+    def test_call_arg_negative_traps_at_runtime(self) -> None:
+        """An unverified compile passing -5 into a @Nat formal traps at
+        runtime — the guard's safety-net role beyond the `let` site."""
+        result = _compile_ok("""
+public fn takesNat(@Nat -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ @Nat.0 }
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ takesNat(0 - 5) }
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    def test_destructure_negative_traps_at_runtime(self) -> None:
+        """A tuple-destructure binding a negative component into a @Nat slot
+        traps at runtime — proves the destructure guard's *semantics*, not
+        just its emission (the offset/accessor load logic is the most
+        regression-prone of the five sites)."""
+        result = _compile_ok("""
+public fn main(@Unit -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ let Tuple<@Nat, @Nat> = Tuple(0 - 5, 1); @Nat.0 }
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    def test_subpattern_negative_traps_at_runtime(self) -> None:
+        """An ADT sub-pattern binding a negative payload as @Nat traps at
+        runtime — the sub-pattern guard's semantics."""
+        result = _compile_ok("""
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match Some(0 - 5) { Some(@Nat) -> @Nat.0, None -> 0 } }
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    def test_toplevel_match_negative_traps_at_runtime(self) -> None:
+        """A top-level `match <Int> { @Nat -> }` binding a negative scrutinee
+        as @Nat traps at runtime — pins the match-bind guard's semantics, not
+        only its WAT emission (CR #756)."""
+        result = _compile_ok("""
+public fn main(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ match 0 - 5 { @Nat -> @Nat.0 } }
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    @staticmethod
+    def _boxes_module() -> object:
+        """A resolved `boxes` module declaring `data NatBox { WrapN(Nat) }`
+        for the cross-module imported-constructor guard tests (#747 site 4)."""
+        from pathlib import Path
+
+        from vera.parser import parse_to_ast
+        from vera.resolver import ResolvedModule
+
+        src = "public data NatBox {\n  WrapN(Nat)\n}\n"
+        return ResolvedModule(
+            path=("boxes",), file_path=Path("/fake/boxes.vera"),
+            program=parse_to_ast(src), source=src)
+
+    def test_imported_concrete_nat_ctor_field_guarded(self) -> None:
+        """An imported concrete-@Nat constructor field emits the runtime
+        guard (#747 site 4) — the cross-module codegen path the local-ctor
+        tests don't exercise."""
+        from vera.parser import parse_to_ast
+
+        src = """import boxes(WrapN, NatBox);
+public fn gimp(@Int -> @NatBox)
+  requires(true) ensures(true) effects(pure)
+{ WrapN(@Int.0) }
+"""
+        result = compile(
+            parse_to_ast(src), source=src,
+            resolved_modules=[self._boxes_module()])
+        assert not [d for d in result.diagnostics if d.severity == "error"]
+        self._assert_guarded(result.wat, "gimp")
+
+    def test_imported_ctor_negative_traps_at_runtime(self) -> None:
+        """The imported concrete-@Nat ctor guard traps on a negative arg —
+        the cross-module runtime safety net."""
+        from vera.parser import parse_to_ast
+
+        src = """import boxes(WrapN, NatBox);
+public fn main(@Unit -> @NatBox)
+  requires(true) ensures(true) effects(pure)
+{ WrapN(0 - 5) }
+"""
+        result = compile(
+            parse_to_ast(src), source=src,
+            resolved_modules=[self._boxes_module()])
+        assert not [d for d in result.diagnostics if d.severity == "error"]
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    @staticmethod
+    def _nat_fn_module() -> object:
+        """A resolved `natfns` module with a function taking a concrete @Nat
+        formal, for the cross-module imported-function guard test (CR #756 —
+        `_register_modules` must harvest the module's `_fn_nat_params`)."""
+        from pathlib import Path
+
+        from vera.parser import parse_to_ast
+        from vera.resolver import ResolvedModule
+
+        src = ("public fn boxNat(@Nat -> @Nat)\n"
+               "  requires(true) ensures(true) effects(pure)\n"
+               "{ @Nat.0 }\n")
+        return ResolvedModule(
+            path=("natfns",), file_path=Path("/fake/natfns.vera"),
+            program=parse_to_ast(src), source=src)
+
+    def test_imported_fn_nat_param_guarded(self) -> None:
+        """A cross-module call into an imported function's concrete @Nat formal
+        emits the runtime guard.  `_register_modules` must harvest the imported
+        module's `_fn_nat_params`, or the guard metadata is lost and the
+        narrowing stored unchecked (CR #756)."""
+        from vera.parser import parse_to_ast
+
+        src = """import natfns(boxNat);
+public fn gimpfn(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ boxNat(@Int.0) }
+"""
+        result = compile(
+            parse_to_ast(src), source=src,
+            resolved_modules=[self._nat_fn_module()])
+        assert not [d for d in result.diagnostics if d.severity == "error"]
+        self._assert_guarded(result.wat, "gimpfn")
+
+    def test_imported_fn_negative_traps_at_runtime(self) -> None:
+        """The imported-function @Nat guard traps on a negative argument at
+        run time, not only in the WAT — proves the harvested `_fn_nat_params`
+        is enforced end-to-end across the module boundary (CR #756)."""
+        from vera.parser import parse_to_ast
+
+        src = """import natfns(boxNat);
+public fn gimpfn(@Int -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{ boxNat(@Int.0) }
+"""
+        result = compile(
+            parse_to_ast(src), source=src,
+            resolved_modules=[self._nat_fn_module()])
+        assert not [d for d in result.diagnostics if d.severity == "error"]
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="gimpfn", args=[-1])
+
+    @pytest.mark.parametrize("body", [
+        'string_repeat("ab", 0 - 5)',
+        'string_from_char_code(0 - 5)',
+        'string_pad_start("ab", 0 - 5, "x")',
+        'string_pad_end("ab", 0 - 5, "x")',
+    ])
+    def test_builtin_nat_param_negative_traps_at_runtime(self, body) -> None:
+        """A negative @Int narrowed into a builtin's @Nat parameter traps at
+        runtime (#757 fold-in).  Builtin translators bypass `_fn_nat_params`,
+        so each guards its @Nat arg directly; an unverified compile of a
+        negative argument traps rather than overallocating or passing a
+        negative to a host import (CR #756)."""
+        result = _compile_ok(f"""
+public fn main(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{{ {body} }}
+""")
+        with pytest.raises(
+            (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
+        ):
+            execute(result, fn_name="main", args=[])
+
+    def test_builtin_nat_param_valid_does_not_trap(self) -> None:
+        """A non-negative builtin @Nat argument runs without trapping — the
+        guard fires only on a genuine narrowing of a negative value (#757)."""
+        result = _compile_ok("""
+public fn main(@Unit -> @String)
+  requires(true) ensures(true) effects(pure)
+{ string_repeat("ab", 3) }
+""")
+        execute(result, fn_name="main", args=[])
+
+    def test_builtin_md_has_heading_negative_level_traps_at_runtime(self) -> None:
+        """`md_has_heading` is the markup builtin in the guarded set — its @Nat
+        `level` parameter is covered by the same `_narrows_into_nat` guard as the
+        string builtins, but its `@MdBlock`/`@Bool` signature keeps it out of the
+        `@String`-returning parametrized trap test above.  A negative @Int
+        narrowed into `level` traps rather than passing a negative to the host
+        import (review of #756; round-14 #757 fold-in)."""
+        result = _compile_ok("""
+effect IO { op print(String -> Unit); }
+public fn main(@Unit -> @Unit)
+  requires(true) ensures(true) effects(<IO>)
+{
+  let @Result<MdBlock, String> = md_parse("# Title");
+  match @Result<MdBlock, String>.0 {
+    Ok(@MdBlock) -> {
+      let @Bool = md_has_heading(@MdBlock.0, 0 - 5);
+      if @Bool.0 then { IO.print("yes") } else { IO.print("no") }
+    },
+    Err(_) -> IO.print("err")
+  }
+}
+""")
         with pytest.raises(
             (wasmtime.WasmtimeError, wasmtime.Trap, RuntimeError)
         ):

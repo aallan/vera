@@ -166,6 +166,9 @@ class WasmContext(
         # None too, causing the enclosing function (or closure) to
         # be dropped from the output.
         self._fn_ret_type_exprs: dict[str, ast.TypeExpr] = {}
+        # #747: per-parameter concrete-@Nat flags per function, for the
+        # runtime @Int -> @Nat narrowing guard at call sites.
+        self._fn_nat_params: dict[str, tuple[bool, ...]] = {}
         # Closure compilation state — accumulated during translation
         # Each entry: (anon_fn, captures, closure_id)
         # captures: list of (type_name, outer_de_bruijn, wasm_type)
@@ -240,6 +243,13 @@ class WasmContext(
     ) -> None:
         """Set function return Vera-type exprs for richer inference (#614)."""
         self._fn_ret_type_exprs = ret_type_exprs
+
+    def set_fn_nat_params(
+        self, nat_params: dict[str, tuple[bool, ...]],
+    ) -> None:
+        """Set per-parameter concrete-@Nat flags for the call-site
+        runtime narrowing guard (#747)."""
+        self._fn_nat_params = nat_params
 
     def set_type_aliases(
         self, aliases: dict[str, ast.TypeExpr],
@@ -509,8 +519,10 @@ class WasmContext(
                 # statically (Tier 3), or when codegen runs without
                 # `vera verify`.  The guard never trips on a provably-@Nat
                 # value, mirroring the #520 subtraction guard's
-                # belt-and-suspenders role.
-                if (type_name == "Nat"
+                # belt-and-suspenders role.  Alias-aware (`type Age = Nat`)
+                # via `_resolve_base_type_name` so an alias/refined @Nat let
+                # target is guarded too (CR #756).
+                if (self._resolve_base_type_name(type_name) == "Nat"
                         and self._narrows_into_nat(stmt.value)):
                     instructions.extend(
                         self._emit_nat_bind_guard(val_instrs))

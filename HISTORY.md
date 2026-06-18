@@ -1,6 +1,6 @@
 # History
 
-How the Vera compiler was built, from initial commit through Stage 14, across 76 active development days.
+How the Vera compiler was built, from initial commit through Stage 14, across 77 active development days.
 
 Vera was developed in an interleaved spiral — each phase added a complete compiler layer with tests, documentation, and working examples before moving to the next. The compiler was built by a single developer working with Claude Code, with CodeRabbit providing AI code review on pull requests from v0.0.80 onwards. The entire project — language design, specification, compiler, test suite, documentation, website — was built from scratch starting 22 February 2026.
 
@@ -383,6 +383,7 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | v0.0.170 | 12 Jun | **Editor hovers now carry the same Fix: instructions as `--json`, exactly once per call site** ([#728](https://github.com/aallan/vera/issues/728)). |
 | v0.0.171 | 15 Jun | **Map and Set host storage moved to bucket-as-truth across the CLI and browser runtimes, deleting the Python/JS mirror so collection contents live in one place** ([#706](https://github.com/aallan/vera/issues/706)). |
 | v0.0.172 | 16 Jun | **The `@Nat >= 0` invariant is now obligation-checked at every binding site, not just `@Nat` subtractions** ([#552](https://github.com/aallan/vera/issues/552)). |
+| v0.0.173 | 17 Jun | **The `@Nat >= 0` narrowing obligation now covers every projection and instantiation binding site (ADT sub-patterns, non-literal tuple destructures, generic and imported constructors), with runtime guards at the concrete sites, generic function calls, and builtin `@Nat` parameters** ([#747](https://github.com/aallan/vera/issues/747)). |
 
 ---
 
@@ -398,4 +399,4 @@ Proof obligations became first-class records with a warm Z3 session, and the LSP
 | Spec chapters | 7 | 10 | 11 | 12 | 13 | 13 | 13 | 13 |
 | Code coverage | — | — | — | 90% | 91% | 96% | 96% | 95% |
 
-Total: **1,400+ commits, 173 tagged releases, 76 active development days.**
+Total: **1,400+ commits, 174 tagged releases, 77 active development days.**

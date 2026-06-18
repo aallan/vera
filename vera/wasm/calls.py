@@ -436,6 +436,13 @@ class CallsMixin:
         if call.name in self._effect_ops:
             target_name, _is_void = self._effect_ops[call.name]
             instructions: list[str] = []
+            # #747: the effect-op-argument @Int -> @Nat narrowing is the one
+            # runtime-guard site left unguarded here — `_effect_ops` carries
+            # only the dispatch target, not the op's formal types, so a
+            # concrete-@Nat-formal check would need a new op-parameter
+            # registry across the handler-dispatch path.  It is the rarest
+            # site, already obligated statically by the verifier and flagged
+            # E504 when Tier-3; the runtime guard is tracked as a follow-up.
             for arg in call.args:
                 arg_instrs = self.translate_expr(arg, env)
                 if arg_instrs is None:
@@ -472,10 +479,21 @@ class CallsMixin:
 
         # Regular function call
         instructions = []
-        for arg in call.args:
+        # #747 (CR #756): key the @Nat-parameter guard bitmap on the *resolved*
+        # ``call_target``, not ``call.name``.  Monomorphisation registers the
+        # specialised instance (`pick$Nat`) with its concrete @Nat flags
+        # ``(True, …)`` while the generic decl (`pick`) keeps the erased
+        # ``(False, …)``; looking up ``call.name`` would miss the guard on the
+        # actual callee.  So `f<Nat>(@Int.0)` runtime-guards the narrowing
+        # exactly like a concrete `f(@Nat -> …)` call.
+        nat_params = self._fn_nat_params.get(call_target, ())
+        for i, arg in enumerate(call.args):
             arg_instrs = self.translate_expr(arg, env)
             if arg_instrs is None:
                 return None
+            if (i < len(nat_params) and nat_params[i]
+                    and self._narrows_into_nat(arg)):
+                arg_instrs = self._emit_nat_bind_guard(arg_instrs)
             instructions.extend(arg_instrs)
 
         # #517 — emit ``return_call $target`` for tail-position

@@ -90,6 +90,9 @@ class FunctionCompilationMixin:
         # resolve the element type of `f()[i]` when `f` returns
         # `Array<T>`.
         ctx.set_fn_ret_type_exprs(self._fn_ret_type_exprs)
+        # #747: per-parameter concrete-@Nat flags for the call-site
+        # runtime narrowing guard.
+        ctx.set_fn_nat_params(self._fn_nat_params)
         # Provide type aliases so closures can resolve FnType return types
         ctx.set_type_aliases(self._type_aliases)
         ctx.set_type_alias_params(self._type_alias_params)

@@ -33,10 +33,13 @@ public fn test_async_multiple(@Unit -> @Int)
 }
 
 private fn async_helper(@Int -> @Int)
-  requires(true)
+  requires(@Int.0 >= 0)
   ensures(true)
   effects(<Async>)
 {
+  -- `async` infers Future<Nat> from the Nat-typed `@Int.0 * 2`, so the
+  -- @Int argument narrows into a @Nat formal (#747); the precondition
+  -- discharges it.
   let @Future<Int> = async(@Int.0 * 2);
   await(@Future<Int>.0)
 }

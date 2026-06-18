@@ -124,7 +124,16 @@ class DataMixin:
                 instructions.append(f"i32.store offset={fo + 4}")
             else:
                 instructions.append(f"local.get {tmp}")
-                instructions.extend(arg_instrs_list[i])
+                field_val = arg_instrs_list[i]
+                # #747: runtime-guard an @Int -> @Nat narrowing into a
+                # concrete @Nat constructor field (`WrapN(@Int.0)` where
+                # `WrapN(Nat)`).  Generic fields instantiated to @Nat erase
+                # to i64 here (no `nat_fields` flag), so they stay
+                # statically-only — the verifier obligates them.
+                if (i < len(layout.nat_fields) and layout.nat_fields[i]
+                        and self._narrows_into_nat(expr.args[i])):
+                    field_val = self._emit_nat_bind_guard(field_val)
+                instructions.extend(field_val)
                 instructions.append(f"{wt}.store offset={fo}")
 
         # Leave pointer as result
@@ -202,8 +211,22 @@ class DataMixin:
             align = _aligns.get(wt, 8)
             offset = (offset + align - 1) & ~(align - 1)
             local_idx = self.alloc_local(wt)
-            instrs.append(f"local.get {scr_local}")
-            instrs.append(f"{wt}.load offset={offset}")
+            load = [
+                f"local.get {scr_local}",
+                f"{wt}.load offset={offset}",
+            ]
+            # #747: runtime-guard an @Int -> @Nat destructure component the
+            # verifier could not discharge `>= 0` statically (Tier 3), or
+            # when codegen runs without `vera verify`.  Conservative — every
+            # @Nat target slot is guarded, since the *source* component type
+            # is not threaded into codegen — but it only ever traps on a
+            # genuinely negative i64, never on a valid @Nat in [0, 2^63).
+            # `_resolve_base_type_name` so a `type Age = Nat` alias / refined
+            # @Nat target is guarded too (CR #756), matching the alias-aware
+            # call-arg / ctor-field metadata.
+            if self._resolve_base_type_name(type_name) == "Nat":
+                load = self._emit_nat_bind_guard(load)
+            instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
             # PR #707 review: same heap-pointer rooting
             # discipline as ``_extract_constructor_fields`` (line ~515)
@@ -427,8 +450,17 @@ class DataMixin:
                     "binding pattern type has no slot name",
                 )
             local_idx = self.alloc_local(scr_wasm_type)
+            bind_val = [f"local.get {scr_local}"]
+            # #747: runtime-guard a top-level `match <Int> { @Nat -> ... }`
+            # narrowing — the scrutinee binds as @Nat, so trap if it is a
+            # negative i64 (Tier-3 backstop; never trips on a valid @Nat).
+            # Alias-aware (`type Age = Nat`) via `_resolve_base_type_name`
+            # (CR #756).
+            if (self._resolve_base_type_name(type_name) == "Nat"
+                    and scr_wasm_type == "i64"):
+                bind_val = self._emit_nat_bind_guard(bind_val)
             instrs = [
-                f"local.get {scr_local}",
+                *bind_val,
                 f"local.set {local_idx}",
             ]
             # PR #707 review: same heap-pointer rooting
@@ -532,8 +564,19 @@ class DataMixin:
                 offset = (offset + align - 1) & ~(align - 1)
                 # Load field from scrutinee pointer
                 local_idx = self.alloc_local(wt)
-                instrs.append(f"local.get {scr_local}")
-                instrs.append(f"{wt}.load offset={offset}")
+                load = [
+                    f"local.get {scr_local}",
+                    f"{wt}.load offset={offset}",
+                ]
+                # #747: runtime-guard an @Int -> @Nat ADT sub-pattern bind
+                # (`match opt { Some(@Nat.0) -> }` on `Option<Int>`).  The
+                # field loads as @Nat; trap if it is a negative i64 (Tier-3
+                # backstop; never trips on a valid @Nat in [0, 2^63)).
+                # Alias-aware (`type Age = Nat`) via `_resolve_base_type_name`
+                # (CR #756).
+                if self._resolve_base_type_name(type_name) == "Nat":
+                    load = self._emit_nat_bind_guard(load)
+                instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")
                 # #705: shadow-push heap-pointer match bindings so
                 # subsequent allocations (e.g. ``set_new()`` inside

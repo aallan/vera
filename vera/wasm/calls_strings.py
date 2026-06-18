@@ -415,6 +415,11 @@ class CallsStringsMixin:
         if n_instrs is None:
             return None
 
+        # #757: runtime-guard an @Int -> @Nat narrowing of the char code
+        # before it is wrapped to i32 and stored as a byte (CR #756).
+        if self._narrows_into_nat(arg):
+            n_instrs = self._emit_nat_bind_guard(n_instrs)
+
         self.needs_alloc = True
 
         byte_val = self.alloc_local("i32")
@@ -458,6 +463,13 @@ class CallsStringsMixin:
         if s_instrs is None or n_instrs is None:
             return None
 
+        # #757: runtime-guard an @Int -> @Nat narrowing of the count before it
+        # is wrapped to i32 and used in `len * count` (a negative would wrap to
+        # a huge i32 and overallocate).  Builtin translators bypass
+        # `_fn_nat_params`, so the guard is applied per-translator (CR #756).
+        if self._narrows_into_nat(arg_n):
+            n_instrs = self._emit_nat_bind_guard(n_instrs)
+
         self.needs_alloc = True
 
         ptr_s = self.alloc_local("i32")
@@ -473,6 +485,11 @@ class CallsStringsMixin:
         ins.extend(s_instrs)
         ins.append(f"local.set {len_s}")
         ins.append(f"local.set {ptr_s}")
+        # Root the source pointer before the output `call $alloc` below — a GC
+        # there would otherwise reclaim a GC-managed source string while
+        # `ptr_s` still points into it, since the copy loop reads it *after*
+        # the alloc (CR #756; matches the `gc_shadow_push(dst)` rooting).
+        ins.extend(gc_shadow_push(ptr_s))
 
         # Evaluate count (Nat = i64 → i32)
         ins.extend(n_instrs)
@@ -3207,6 +3224,14 @@ class CallsStringsMixin:
         fill_instrs = self.translate_expr(arg_fill, env)
         if s_instrs is None or target_instrs is None or fill_instrs is None:
             return None
+
+        # #757: runtime-guard an @Int -> @Nat narrowing of `target_len` before
+        # it is wrapped to i32 and used to size the allocation (a negative
+        # would wrap to a huge i32 and overallocate).  Per-translator because
+        # builtins bypass `_fn_nat_params` (CR #756).
+        if self._narrows_into_nat(arg_target):
+            target_instrs = self._emit_nat_bind_guard(target_instrs)
+
         self.needs_alloc = True
 
         ptr_s = self.alloc_local("i32")

@@ -500,13 +500,13 @@ fn await<T>(@Future<T>.0 -> @T) effects(<Async>)
 **Example:**
 
 ```
-private fn compute(@Int, @Int -> @Int)
+private fn compute(@Nat, @Nat -> @Int)
   requires(true)
   ensures(true)
   effects(<Async>)
 {
-  let @Future<Int> = async(@Int.1 * 2);
-  let @Future<Int> = async(@Int.0 * 3);
+  let @Future<Int> = async(@Nat.1 * 2);
+  let @Future<Int> = async(@Nat.0 * 3);
   await(@Future<Int>.0) + await(@Future<Int>.1)
 }
 ```

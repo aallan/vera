@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-4,414 tests, 90 conformance programs, 35 examples, 13 spec chapters.
+4,459 tests, 90 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -20,7 +20,6 @@ The cases where Vera accepts a program and quietly does something weaker than it
 
 | Issue | What | Why it's first |
 |---|---|---|
-| [#747](https://github.com/aallan/vera/issues/747) | `@Nat` narrowing at projection binding sites | `let`/argument/effect-operation-argument/constructor-field/match-bind/literal-destructure narrowing is now obligation-checked (#552); ADT sub-pattern binds, non-literal destructures, generic constructor fields, effect-operation formals, and function formals instantiated to `@Nat`, and imported ADT constructors still need scrutinee/call-site type inference or imported-module constructor lookup to obligate, and the Tier-3 runtime guard backs only the `let` site. |
 | [#746](https://github.com/aallan/vera/issues/746) | Refinement-type predicate verification | User refinement predicates (`{ @Int \| p }`) are parsed but verified nowhere — a value violating the predicate is accepted silently.  Needs predicate→Z3 translation, binder substitution, and discharge at every binding site. |
 | [#732](https://github.com/aallan/vera/issues/732) | Per-monomorphization static verification for generic functions | Generic (`forall<T>`) bodies skip all static verification today — a silent downgrade from Tier 1 to Tier 3.  Verifying each concrete instantiation reuses the existing pipeline; closes the static half of [#555](https://github.com/aallan/vera/issues/555). |
 | [#730](https://github.com/aallan/vera/issues/730) | Precondition-check calls in statement position | E501 fires only for calls in value position; a call whose result is discarded is never checked against its `requires(...)`. |
@@ -53,6 +52,7 @@ One fact, one home, with drift caught by a gate.  The audit's second theme: most
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts. |
 | [#538](https://github.com/aallan/vera/issues/538) | Replace line-numbered allowlists with inline fence annotations — retires `fix_allowlists.py` and with it the [#606](https://github.com/aallan/vera/issues/606) bulk-shift bug. |
 | [#683](https://github.com/aallan/vera/issues/683) | Align spec EBNF and Lark grammar rule names, with a check script to hold the alignment. |
+| [#759](https://github.com/aallan/vera/issues/759) | Harden the `@Nat` narrowing guard structures — single-source the checker/verifier span-key constructor, and enforce the `nat_fields`/`field_offsets` length invariant via a `ConstructorLayout.__post_init__` assertion.  Internal robustness from the #756 review; no behaviour change. |
 
 ### Tier 3 — Usability and polish
 
@@ -71,7 +71,6 @@ Real improvements that still rank below correctness and robustness.  The browser
 | [#739](https://github.com/aallan/vera/issues/739) | Typed `Protocol` interfaces for the mixin mypy carve-outs — sequenced after the #421 decomposition reshapes the mixin sets. |
 | [#737](https://github.com/aallan/vera/issues/737) | Document the distribution policy (git-clone now; PyPI `veralang` publication gated on #481). |
 | [#745](https://github.com/aallan/vera/issues/745) | Narrow the wrap-table / Phase 2c emission to `decimal_ops_used` only — post-#706 only Decimal registers wrappers, but the machinery (`$register_wrapper`, `host_decref_handle`, the Phase 2c walk) is still emitted dead for any Map/Set/JSON/HTML module.  Coupled to Phase 2c emission, so de-gating needs care. |
-| [#749](https://github.com/aallan/vera/issues/749) | `@Nat`-narrowing review follow-ups from #748 — container `IndexExpr`/`InterpolatedString` test pins, a `_fresh_slot_var` alias unit-test, a verifier/codegen `_narrows_into_nat` differential test, and a dedicated `@Nat`-guard trap kind.  Polish / test-debt; no correctness gap. |
 
 ### Not doing now
 
