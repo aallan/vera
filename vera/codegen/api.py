@@ -45,6 +45,19 @@ class ConstructorLayout:
     # rather than assume a flag exists for every field.
     nat_fields: tuple[bool, ...] = ()
 
+    def __post_init__(self) -> None:
+        # #759: ``nat_fields`` runs parallel to ``field_offsets``.  User
+        # constructors build the two in the same loop (airtight), but a
+        # built-in layout (e.g. ``MdHeading``) hand-authors them as separate
+        # literals — enforce the length invariant loudly at construction so a
+        # drifted literal fails here, not as a silently mis-indexed guard.
+        assert not self.nat_fields or (
+            len(self.nat_fields) == len(self.field_offsets)
+        ), (
+            f"nat_fields (len {len(self.nat_fields)}) must match field_offsets "
+            f"(len {len(self.field_offsets)}) or be empty"
+        )
+
 
 def _validate_wrap_handle(
     raw_handle: object, kind: int, body_ptr: int,

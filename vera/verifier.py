@@ -194,10 +194,10 @@ class ContractVerifier:
 
     @staticmethod
     def _span_key(expr: ast.Expr) -> tuple[int, int, int, int] | None:
-        sp = getattr(expr, "span", None)
-        if sp is None:
-            return None
-        return (sp.line, sp.column, sp.end_line, sp.end_column)
+        # Single source of truth: the checker writes the side-table with the
+        # same `ast.span_key`, so the read and write key formats can't drift
+        # apart (#759).
+        return ast.span_key(expr)
 
     def _resolved_type_of(self, expr: ast.Expr) -> Type | None:
         """The checker's synthesised *result* type for *expr* (#747).

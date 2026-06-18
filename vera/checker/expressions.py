@@ -53,8 +53,7 @@ class ExpressionsMixin:
         """
         result = self._synth_expr_impl(expr, expected=expected)
         if self.expr_types is not None and expr.span is not None:
-            span = expr.span
-            key = (span.line, span.column, span.end_line, span.end_column)
+            key = ast.span_key(expr)
             if result is not None:
                 self.expr_types[key] = pretty_type(result)
                 # #747: parallel table of *semantic* result types, so the

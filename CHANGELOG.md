@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Internal: hardened the `@Nat` narrowing guard data structures** ([#759](https://github.com/aallan/vera/issues/759)).  Single-sourced the checker→verifier side-table span key through `ast.span_key` (previously hand-rolled at three sites), and added a `ConstructorLayout.__post_init__` assertion that `nat_fields` stays length-aligned with `field_offsets`, so a drifted built-in literal fails loudly at construction rather than as a silently mis-indexed guard.  Also pinned the [#757](https://github.com/aallan/vera/issues/757) generic-instantiated-constructor-field runtime deferral with a codegen test ([#760](https://github.com/aallan/vera/issues/760)).  No behaviour change — internal robustness follow-ups from the #756 review.
+
 ## [0.0.173] - 2026-06-17
 
 ### Added

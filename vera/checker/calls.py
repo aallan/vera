@@ -120,12 +120,9 @@ class CallsMixin:
                 # @Nat narrowing walker can obligate it.
                 if self.expr_target_types is not None:
                     for c_arg, c_pt in zip(args, param_types):
-                        sp = c_arg.span
-                        if sp is not None and not contains_typevar(c_pt):
-                            self.expr_target_types[
-                                (sp.line, sp.column,
-                                 sp.end_line, sp.end_column)
-                            ] = c_pt
+                        key = ast.span_key(c_arg)
+                        if key is not None and not contains_typevar(c_pt):
+                            self.expr_target_types[key] = c_pt
 
         # Check each argument
         for i, (arg_ty, param_ty) in enumerate(zip(arg_types, param_types)):

@@ -8,7 +8,7 @@ Priority lives in this file and nowhere else — issues carry kind and area labe
 
 ## Where we are
 
-4,459 tests, 90 conformance programs, 35 examples, 13 spec chapters.
+4,460 tests, 90 conformance programs, 35 examples, 13 spec chapters.
 
 ## The roadmap
 
@@ -52,7 +52,6 @@ One fact, one home, with drift caught by a gate.  The audit's second theme: most
 | [#528](https://github.com/aallan/vera/issues/528) | Gate the hand-edited numbers on the veralang.dev homepage against live counts. |
 | [#538](https://github.com/aallan/vera/issues/538) | Replace line-numbered allowlists with inline fence annotations — retires `fix_allowlists.py` and with it the [#606](https://github.com/aallan/vera/issues/606) bulk-shift bug. |
 | [#683](https://github.com/aallan/vera/issues/683) | Align spec EBNF and Lark grammar rule names, with a check script to hold the alignment. |
-| [#759](https://github.com/aallan/vera/issues/759) | Harden the `@Nat` narrowing guard structures — single-source the checker/verifier span-key constructor, and enforce the `nat_fields`/`field_offsets` length invariant via a `ConstructorLayout.__post_init__` assertion.  Internal robustness from the #756 review; no behaviour change. |
 
 ### Tier 3 — Usability and polish
 

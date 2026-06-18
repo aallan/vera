@@ -28,6 +28,23 @@ class Span:
         return f"{self.line}:{self.column}-{self.end_line}:{self.end_column}"
 
 
+def span_key(node: "Node") -> tuple[int, int, int, int] | None:
+    """Canonical side-table key for an expression — its
+    ``(line, column, end_line, end_column)`` span, or ``None`` if the node is
+    unspanned.
+
+    Single source of truth for the checker writers (``expr_types`` /
+    ``expr_semantic_types`` / ``expr_target_types``) and the verifier reader
+    (``_resolved_type_of`` / ``_target_type_of``): both halves of the #747
+    side-table must agree on the key format, so neither hand-rolls the tuple
+    (#759).
+    """
+    sp = getattr(node, "span", None)
+    if sp is None:
+        return None
+    return (sp.line, sp.column, sp.end_line, sp.end_column)
+
+
 @dataclass(frozen=True)
 class Node:
     """Abstract base for all AST nodes."""
