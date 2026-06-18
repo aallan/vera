@@ -2440,8 +2440,12 @@ private fn f(@Int -> @NatBox)
   effects(pure)
 { WrapN(@Int.0) }
 """, [mod])
-        assert not [o for o in result.obligations
-                    if o.kind == "nat_bind" and o.status == "violated"]
+        # Pin that the obligation actually fired and verified — not merely the
+        # absence of a violation (which a no-obligation regression would also
+        # satisfy), mirroring the generic discharged companion (CR #756).
+        statuses = [o.status for o in result.obligations
+                    if o.kind == "nat_bind"]
+        assert statuses == ["verified"], statuses
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
     def test_imported_ctor_generic_field_nat_obligated(self) -> None:

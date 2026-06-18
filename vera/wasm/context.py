@@ -519,8 +519,10 @@ class WasmContext(
                 # statically (Tier 3), or when codegen runs without
                 # `vera verify`.  The guard never trips on a provably-@Nat
                 # value, mirroring the #520 subtraction guard's
-                # belt-and-suspenders role.
-                if (type_name == "Nat"
+                # belt-and-suspenders role.  Alias-aware (`type Age = Nat`)
+                # via `_resolve_base_type_name` so an alias/refined @Nat let
+                # target is guarded too (CR #756).
+                if (self._resolve_base_type_name(type_name) == "Nat"
                         and self._narrows_into_nat(stmt.value)):
                     instructions.extend(
                         self._emit_nat_bind_guard(val_instrs))

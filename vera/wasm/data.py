@@ -221,7 +221,10 @@ class DataMixin:
             # @Nat target slot is guarded, since the *source* component type
             # is not threaded into codegen — but it only ever traps on a
             # genuinely negative i64, never on a valid @Nat in [0, 2^63).
-            if type_name == "Nat":
+            # `_resolve_base_type_name` so a `type Age = Nat` alias / refined
+            # @Nat target is guarded too (CR #756), matching the alias-aware
+            # call-arg / ctor-field metadata.
+            if self._resolve_base_type_name(type_name) == "Nat":
                 load = self._emit_nat_bind_guard(load)
             instrs.extend(load)
             instrs.append(f"local.set {local_idx}")
@@ -451,7 +454,10 @@ class DataMixin:
             # #747: runtime-guard a top-level `match <Int> { @Nat -> ... }`
             # narrowing — the scrutinee binds as @Nat, so trap if it is a
             # negative i64 (Tier-3 backstop; never trips on a valid @Nat).
-            if type_name == "Nat" and scr_wasm_type == "i64":
+            # Alias-aware (`type Age = Nat`) via `_resolve_base_type_name`
+            # (CR #756).
+            if (self._resolve_base_type_name(type_name) == "Nat"
+                    and scr_wasm_type == "i64"):
                 bind_val = self._emit_nat_bind_guard(bind_val)
             instrs = [
                 *bind_val,
@@ -566,7 +572,9 @@ class DataMixin:
                 # (`match opt { Some(@Nat.0) -> }` on `Option<Int>`).  The
                 # field loads as @Nat; trap if it is a negative i64 (Tier-3
                 # backstop; never trips on a valid @Nat in [0, 2^63)).
-                if type_name == "Nat":
+                # Alias-aware (`type Age = Nat`) via `_resolve_base_type_name`
+                # (CR #756).
+                if self._resolve_base_type_name(type_name) == "Nat":
                     load = self._emit_nat_bind_guard(load)
                 instrs.extend(load)
                 instrs.append(f"local.set {local_idx}")

@@ -16541,8 +16541,11 @@ class TestNatBindingRuntimeGuard747:
         arithmetic / ctor / match bodies — the negative-traps tests below
         pin the guard's runtime *semantics* independently.
         """
-        idx = wat.find(f"(func ${fn}")
-        assert idx >= 0, f"{fn} not found in WAT"
+        # Boundary-safe so `$gcall` does not match `$gcall_helper` — a plain
+        # substring `find` would slice the wrong body (CR #756).
+        m = re.search(rf"\(func \${re.escape(fn)}(?![A-Za-z0-9_$.])", wat)
+        assert m is not None, f"{fn} not found in WAT"
+        idx = m.start()
         end = wat.find("\n  (func ", idx + 1)
         return wat[idx:end if end >= 0 else len(wat)]
 
@@ -16596,6 +16599,31 @@ public fn gcall(@Int -> @Nat)
 { takesNat(@Int.0) }
 """)
         assert "i64.lt_s" in self._body(result.wat, "gcall")
+
+    def test_nat_alias_let_bind_guarded(self) -> None:
+        """A `type Age = Nat` alias target is guarded at the let-bind site —
+        `_resolve_base_type_name` resolves the alias so the runtime guard is
+        not skipped by the bare `type_name == "Nat"` check (CR #756)."""
+        result = _compile_ok("""
+type Age = Nat;
+public fn galias(@Int -> @Age)
+  requires(true) ensures(true) effects(pure)
+{ let @Age = @Int.0; @Age.0 }
+""")
+        assert "i64.lt_s" in self._body(result.wat, "galias")
+
+    def test_generic_nat_alias_ctor_field_guarded(self) -> None:
+        """A generic alias instantiated to @Nat (`type Id<T> = T` used as
+        `Id<Nat>`) resolves to Nat via type-argument substitution, so the
+        constructor-field narrowing is still guarded (CR #756)."""
+        result = _compile_ok("""
+type Id<T> = T;
+public data GBox { GWrap(Id<Nat>) }
+public fn ggen(@Int -> @GBox)
+  requires(true) ensures(true) effects(pure)
+{ GWrap(@Int.0) }
+""")
+        assert "i64.lt_s" in self._body(result.wat, "ggen")
 
     def test_int_ctor_field_emits_no_guard(self) -> None:
         """A concrete @Int constructor field is not a narrowing target —

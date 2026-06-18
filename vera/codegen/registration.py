@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from vera import ast
 from vera.codegen.api import ConstructorLayout, _align_up, _wasm_type_align, _wasm_type_size
+from vera.wasm.inference import substitute_type_vars
 
 
 class RegistrationMixin:
@@ -276,15 +277,18 @@ class RegistrationMixin:
 
     def _type_resolves_to_nat(self, te: ast.TypeExpr) -> bool:
         """True if *te* is ``@Nat`` directly, through a ``type X = Nat``
-        alias, or as the base of a refinement (``{ @Nat | p }``) — used for
-        the #747 runtime-guard metadata so an alias/refinement-typed @Nat
-        formal or field is still guarded (CR #756), mirroring the verifier's
-        alias-aware ``_is_nat_type``.
+        alias, the base of a refinement (``{ @Nat | p }``), or a *generic*
+        alias instantiated to @Nat (``type Id<T> = T`` used as ``Id<Nat>``)
+        — used for the #747 runtime-guard metadata so an alias/refinement-
+        typed @Nat formal or field is still guarded (CR #756), mirroring the
+        verifier's alias-aware ``_is_nat_type``.
 
         Alias resolution uses ``self._type_aliases``, populated in
         declaration order during ``_register_all``; a `@Nat` alias declared
         *after* the function/data that uses it is not yet visible here and
-        falls back to the verifier's static obligation.
+        falls back to the verifier's static obligation.  Generic alias
+        arguments are bound into the body via ``substitute_type_vars`` so
+        ``Id<Nat>`` resolves to ``Nat`` rather than the bare type-param ``T``.
         """
         seen: set[str] = set()
         while True:
@@ -297,6 +301,12 @@ class RegistrationMixin:
                 alias = self._type_aliases.get(te.name)
                 if alias is not None and te.name not in seen:
                     seen.add(te.name)
+                    params = self._type_alias_params.get(te.name)
+                    if (params and te.type_args
+                            and len(params) == len(te.type_args)):
+                        alias = substitute_type_vars(
+                            alias, dict(zip(params, te.type_args)),
+                        )
                     te = alias
                     continue
             return False

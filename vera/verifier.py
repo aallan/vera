@@ -94,18 +94,23 @@ def verify(
     contract verification (C7d).  Imported function preconditions are
     checked at call sites; postconditions are assumed.
     """
-    if expr_types is None and expr_target_types is None:
+    if expr_types is None or expr_target_types is None:
         # #747: when the caller didn't supply the checker's semantic-type
         # side-tables, collect them here so a bare verify() matches the CLI
         # (cmd_verify) and LSP (VerificationSession) paths — both of which
         # thread them — keeping the warm/cold differential oracle and any
-        # external caller consistent.  Lazy import avoids a module cycle.
+        # external caller consistent.  A caller that supplies only *one*
+        # table still gets the other filled — an empty target table would
+        # silently under-fire the #747 generic-instantiation checks (CR
+        # #756).  Lazy import avoids a module cycle.
         from vera.checker import typecheck_with_artifacts
         _diags, _arts = typecheck_with_artifacts(
             program, source, file=file, resolved_modules=resolved_modules,
         )
-        expr_types = _arts.expr_semantic_types
-        expr_target_types = _arts.expr_target_types
+        if expr_types is None:
+            expr_types = _arts.expr_semantic_types
+        if expr_target_types is None:
+            expr_target_types = _arts.expr_target_types
     verifier = ContractVerifier(
         source=source, file=file, timeout_ms=timeout_ms,
         resolved_modules=resolved_modules,
