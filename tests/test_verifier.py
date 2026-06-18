@@ -1432,6 +1432,48 @@ private fn f(@Nat, @Nat -> @Nat)
         assert kinds.count("nat_sub") == 1, kinds
         assert [d for d in result.diagnostics if d.severity == "error"] == []
 
+    def test_pipe_call_arg_narrowing_obligated(self) -> None:
+        """`(0 - 5) |> takesNat()` desugars to `takesNat(0 - 5)` — the piped
+        left operand narrows @Int into a @Nat formal, so it must carry the
+        same `value >= 0` obligation as the direct call.  The walker keeps the
+        pipe as a `BinaryExpr`, so without explicit handling the narrowing was
+        missed entirely — a false 'verified' for a negative value (CR #756)."""
+        _verify_err("""
+private fn takesNat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+public fn f(@Unit -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ (0 - 5) |> takesNat() }
+""", "may be negative")
+
+    def test_pipe_call_arg_narrowing_discharged(self) -> None:
+        """The piped narrowing verifies when the precondition proves the
+        argument non-negative — the discharged companion to
+        `test_pipe_call_arg_narrowing_obligated` (CR #756)."""
+        result = _verify("""
+private fn takesNat(@Nat -> @Nat)
+  requires(true)
+  ensures(true)
+  effects(pure)
+{ @Nat.0 }
+
+public fn f(@Int -> @Nat)
+  requires(@Int.0 >= 0)
+  ensures(true)
+  effects(pure)
+{ @Int.0 |> takesNat() }
+""")
+        assert [o.status for o in result.obligations
+                if o.kind == "nat_bind"] == ["verified"], \
+            [(o.kind, o.status) for o in result.obligations]
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
     def test_destructure_threads_cur_env_for_later_obligation(self) -> None:
         """After a literal destructure, a later statement's narrowing
         obligation must translate against the destructured slot, not a

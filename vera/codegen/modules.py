@@ -108,6 +108,14 @@ class CrossModuleMixin:
             for fn_name, ret_te in temp._fn_ret_type_exprs.items():
                 self._fn_ret_type_exprs.setdefault(fn_name, ret_te)
 
+            # Harvest per-parameter concrete-@Nat flags (#747, CR #756).
+            # Without this an imported function `f(@Nat -> …)` loses its
+            # `_fn_nat_params` entry, so a cross-module call `f(@Int.0)`
+            # would skip the `value >= 0` runtime guard the in-module call
+            # gets.  Same `setdefault` first-seen-wins shape as `_fn_sigs`.
+            for fn_name, nat_params in temp._fn_nat_params.items():
+                self._fn_nat_params.setdefault(fn_name, nat_params)
+
             # Harvest ADT layouts
             for adt_name, layouts in temp._adt_layouts.items():
                 # Builtin ADTs (Option, Result, Ordering, etc.) appear in

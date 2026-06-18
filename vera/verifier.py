@@ -1484,6 +1484,35 @@ class ContractVerifier:
         statically proven nor runtime-checked (#747; the ``guarded`` flag
         threaded to :py:meth:`_record_nat_bind_tier3` decides which).
         """
+        if isinstance(expr, ast.BinaryExpr) and expr.op == ast.BinOp.PIPE:
+            # `left |> right(a, …)` desugars to `right(left, a, …)`: the left
+            # operand binds into the callee's first formal.  The FnCall branch
+            # below never sees this — the AST keeps the pipe as a BinaryExpr —
+            # so a piped @Int -> @Nat narrowing would be missed entirely, a
+            # false "verified" for `(0 - 5) |> takesNat()` even though codegen
+            # desugars and guards it (CR #756).  The checker recorded each
+            # effective arg's instantiated formal in the target side-table, so
+            # `_nat_binding_target(arg, None)` recovers the @Nat target; the
+            # site is codegen-guarded (the desugared call), hence guarded=True.
+            right = expr.right
+            if isinstance(right, (ast.FnCall, ast.ModuleCall)):
+                for arg in (expr.left, *right.args):
+                    if (self._nat_binding_target(arg, None)
+                            and self._narrows_into_nat(arg)):
+                        self._check_nat_binding_obligation(
+                            decl, arg, smt, slot_env, assumptions,
+                            site="call argument", guarded=True,
+                        )
+                self._walk_for_nat_binding_obligations(
+                    decl, expr.left, smt, slot_env, assumptions,
+                )
+                for arg in right.args:
+                    self._walk_for_nat_binding_obligations(
+                        decl, arg, smt, slot_env, assumptions,
+                    )
+                return
+            # A non-call pipe RHS falls through to the generic walk below.
+
         if isinstance(expr, (ast.FnCall, ast.ModuleCall)):
             # Site 2: @Nat formal parameters narrowing an @Int argument.
             if isinstance(expr, ast.FnCall):
@@ -1722,6 +1751,14 @@ class ContractVerifier:
                     pat_cond = smt._pattern_condition(
                         scrutinee_z3, arm.pattern,
                     )
+                else:
+                    # Scrutinee untranslatable: bind the arm's pattern slots to
+                    # fresh vars so an obligation in the arm reads the new
+                    # binding, not a stale outer slot of the same name shadowed
+                    # by the pattern (CR #756; mirrors the LetDestruct guard).
+                    arm_env = self._fresh_pattern_env(
+                        arm.pattern, slot_env, smt,
+                    )
                 # Prove the arm's @Nat narrowing obligations AND walk its
                 # body under the arm's discriminant condition `pat_cond`
                 # (`is-<Ctor>(scrutinee)`).  A sub-pattern field accessor is
@@ -1865,6 +1902,34 @@ class ContractVerifier:
             result = smt.declare_string(fresh)
         return result
 
+    def _fresh_pattern_env(
+        self, pattern: ast.Pattern, env: SlotEnv, smt: SmtContext,
+    ) -> SlotEnv:
+        """Bind *pattern*'s slots to fresh, unconstrained SMT vars.
+
+        Used when a `match` scrutinee is untranslatable (``translate_expr``
+        returned ``None``) so the arm cannot bind its pattern slots to
+        scrutinee projections.  Without fresh slots ``arm_env`` would keep the
+        outer ``slot_env``, and an obligation in the arm would read a *stale*
+        outer slot of the same name instead of the pattern binding that
+        shadows it (CR #756).  Mirrors the ``LetDestruct`` ``_fresh_slot_var``
+        guard.  A slot whose type has no scalar SMT sort is left unbound — it
+        is never a `value >= 0` obligation target, so its stale binding is
+        irrelevant (same reasoning as :py:meth:`_fresh_slot_var`).
+        """
+        if isinstance(pattern, ast.BindingPattern):
+            slot_name = smt._type_expr_to_slot_name(pattern.type_expr)
+            fresh = self._fresh_slot_var(smt, pattern.type_expr)
+            if slot_name is None or fresh is None:
+                return env
+            return env.push(slot_name, fresh)
+        if isinstance(pattern, ast.ConstructorPattern):
+            cur = env
+            for sub in pattern.sub_patterns:
+                cur = self._fresh_pattern_env(sub, cur, smt)
+            return cur
+        return env
+
     def _check_nat_binding_obligation(
         self,
         decl: ast.FnDecl,
@@ -1972,8 +2037,16 @@ class ContractVerifier:
         if ci is None or ci.field_types is None:
             return None
         field_types = ci.field_types
-        if (isinstance(scrut_ty, AdtType) and ci.parent_type_params
-                and scrut_ty.type_args):
+        if ci.parent_type_params:
+            # Generic constructor: its declared field types carry the parent's
+            # TypeVars, which only the scrutinee's instantiation resolves.  If
+            # that instantiation isn't readable (scrutinee not a resolved
+            # AdtType with type args), return None so the caller leaves the
+            # sub-pattern unchecked rather than obligate against an
+            # unsubstituted TypeVar field — matching the docstring's "unknown
+            # scrutinee" contract (CR #756).
+            if not (isinstance(scrut_ty, AdtType) and scrut_ty.type_args):
+                return None
             mapping = dict(zip(ci.parent_type_params, scrut_ty.type_args))
             field_types = tuple(substitute(ft, mapping) for ft in field_types)
         return field_types
