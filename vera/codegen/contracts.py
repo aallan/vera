@@ -7,6 +7,7 @@ postcondition checks with informative failure messages.
 from __future__ import annotations
 
 from vera import ast
+from vera.skip import CodegenSkip
 from vera.wasm import WasmContext, WasmSlotEnv
 
 
@@ -141,9 +142,35 @@ class ContractsMixin:
         like translate.  Traps via the ``$vera.contract_fail`` host import (the
         same channel used for precondition / postcondition failures) when the
         predicate is false.  Returns None when the predicate falls outside the
-        compilable fragment (no guard emitted)."""
+        compilable fragment (no guard emitted).
+
+        A predicate that *raises* ``CodegenSkip`` while lowering (most commonly
+        a generic / monomorphised function call whose instance isn't registered
+        in this guard's context) is surfaced as a loud E617 error rather than
+        (a) crashing ``vera compile`` with a raw traceback — the guard-emission
+        sites sit outside the function-body ``CodegenSkip`` handler — or (b)
+        being swallowed to ``return None``, which would silently DROP the guard
+        the verifier recorded as runtime-checked (a true boundary silent
+        failure).  CR PR-review."""
         guard_env = base_env.push(base_name, value_local)
-        cond = ctx.translate_expr(predicate, guard_env)
+        try:
+            cond = ctx.translate_expr(predicate, guard_env)
+        except CodegenSkip as skip:
+            self._error(
+                predicate,
+                "Refinement predicate cannot be compiled to a runtime guard "
+                f"at this boundary ({skip}); the verifier recorded it as "
+                "runtime-checked, but codegen cannot emit the guard.",
+                rationale="A refined parameter / return is guarded at the "
+                "boundary by lowering its predicate to WebAssembly.  This "
+                "predicate calls a construct the backend cannot lower here "
+                "(e.g. a generic / monomorphised function call whose instance "
+                "is not registered in this context), so the promised guard "
+                "cannot be emitted — rejected loudly rather than silently "
+                "dropped.",
+                error_code="E617",
+            )
+            return None
         if cond is None:
             return None
         ptr, length = self.string_pool.intern(message)

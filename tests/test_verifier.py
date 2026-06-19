@@ -3871,6 +3871,58 @@ private fn build(@Int -> @Box)
         errs = [d for d in bad.diagnostics if d.error_code == "E505"]
         assert errs, "expected E505 on the unconstrained constructor field"
 
+    def test_tuple_component_construction_discharges_and_violates(self) -> None:
+        """A refined TUPLE component obligates its construction argument, just
+        like an ADT constructor field.  `Tuple` is a built-in carrier (not
+        user-registered), so the component target types are recovered from the
+        construction site's expected type — PR-review soundness fix: an
+        unobligated refined tuple component was a false Tier-1 / silent
+        negative (verify-clean, but the value violated the predicate at run
+        time)."""
+        ok = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn build(@Unit -> @Tuple<PosInt, Int>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(7, 3) }
+""")
+        assert [d for d in ok.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(ok, "verified")) == 1
+
+        bad = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn build(@Int -> @Tuple<PosInt, Int>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(@Int.0, 3) }
+""")
+        errs = [d for d in bad.diagnostics if d.error_code == "E505"]
+        assert errs, "expected E505 on the unconstrained tuple component"
+
+    def test_tuple_component_not_laundered_to_false_tier1(self) -> None:
+        """A refined tuple component built from an unconstrained source is NOT
+        laundered into a clean Tier-1 by the destructure source-fact seed: the
+        construction site obligates it (E505), so the seed only ever assumes a
+        component the producer actually established (PR-review regression —
+        previously `vera verify` reported Tier-1 while `vera run` trapped at
+        the violating value)."""
+        result = _verify("""
+type PosInt = { @Int | @Int.0 > 0 };
+
+private fn make_bad(@Int -> @Tuple<PosInt, PosInt>)
+  requires(true) ensures(true) effects(pure)
+{ Tuple(@Int.0, @Int.0) }
+
+private fn consume(@Int -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  let Tuple<@PosInt, @PosInt> = make_bad(@Int.0);
+  @PosInt.0 + @PosInt.1
+}
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E505"]
+        assert errs, "unconstrained tuple components must obligate at construction"
+
     def test_let_binding_discharges(self) -> None:
         """The let site's *discharge* direction (the violation is covered by
         `test_let_violation_reports_e505`): `let @PosInt = @Int.0` under

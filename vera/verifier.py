@@ -1706,6 +1706,38 @@ class ContractVerifier:
                             # an untranslatable arg is genuinely unguarded.
                             guarded=self._is_nat_type(field_ty),
                         )
+            else:
+                # `Tuple` (and any other built-in carrier) is NOT user-
+                # registered, so `_lookup_constructor_info` is None and the
+                # field-obligation loop above is skipped — which left a refined
+                # component built in value / call-argument / return position
+                # UNobligated, a false Tier-1 / silent negative (the user-ADT
+                # case above already obligates its fields).  Recover the
+                # component *target* types from the construction site's expected
+                # type and obligate each refined / @Nat component, mirroring the
+                # field path (#746; PR-review-found gap, the #758 analogue for
+                # refinement components).  guarded=False — codegen does not
+                # component-guard a tuple value.
+                target = self._target_type_of(expr)
+                comp_types = (
+                    target.type_args
+                    if isinstance(target, AdtType)
+                    and len(target.type_args) == len(expr.args)
+                    else ()
+                )
+                for arg, comp_ty in zip(expr.args, comp_types):
+                    if (self._is_refined_type(comp_ty)
+                            and self._narrows_into_refined(arg, comp_ty)):
+                        self._check_refined_binding_obligation(
+                            decl, arg, comp_ty, smt, slot_env, assumptions,
+                            site="tuple component", guarded=False,
+                        )
+                    elif (self._is_nat_type(comp_ty)
+                            and self._narrows_into_nat(arg)):
+                        self._check_nat_binding_obligation(
+                            decl, arg, smt, slot_env, assumptions,
+                            site="tuple component",
+                        )
             for arg in expr.args:
                 self._walk_for_nat_binding_obligations(
                     decl, arg, smt, slot_env, assumptions,
@@ -2554,11 +2586,20 @@ class ContractVerifier:
     def _term_source_fact(
         self, smt: SmtContext, source_ty: Type, term: z3.ExprRef,
     ) -> object | None:
-        """A sound Z3 fact a projected *term*'s declared *source_ty* guarantees
-        — a refined source's full predicate (incl. its `>= 0` Nat conjoin), or
+        """A Z3 fact a projected *term*'s declared *source_ty* guarantees — a
+        refined source's full predicate (incl. its `>= 0` Nat conjoin), or
         `>= 0` for a bare `@Nat` field — so a projection from a refined/Nat
-        field isn't rejected for lack of the invariant the field already carries
-        (#746).  ``None`` for an unconstrained base (e.g. bare `@Int`).
+        source isn't rejected for lack of the invariant it carries (#746).
+        ``None`` for an unconstrained base (e.g. bare `@Int`).
+
+        Sound because every *producer* of a refined value is obligated to
+        discharge it: a refined ADT/tuple component at its construction site
+        (the ``ConstructorCall`` obligation — the tuple branch added by the
+        PR-review fix), a refined parameter by R1 param-assume (callers
+        discharge it), a refined return at the return position.  So a
+        ``SlotRef`` / ``FnCall`` source provably carries its component
+        refinements (the lone residual is a tuple-component-refined param
+        crossing an untrusted FFI boundary, which is not component-guarded).
 
         Refined is checked first since a refinement-over-`@Nat` subsumes
         `>= 0`.  But when that full predicate is Tier 3 (untranslatable), we

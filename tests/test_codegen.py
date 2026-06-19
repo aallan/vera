@@ -5587,6 +5587,31 @@ public fn f(@Tiny -> @Int) requires(true) ensures(true) effects(pure) { 0 }
         )
         assert "resolves to another refinement" in errs[0].description
 
+    def test_generic_call_in_refinement_predicate_rejected_e617(self) -> None:
+        """A refinement predicate that calls a GENERIC function can't be
+        lowered to a boundary runtime guard (the monomorphised instance isn't
+        registered in the guard's context), so `_emit_refinement_check` catches
+        the `CodegenSkip` and emits a clean E617 — NOT a raw traceback (the
+        guard sites sit outside the body's CodegenSkip handler), and NOT a
+        silent `return None` that would drop the guard the verifier recorded as
+        runtime-checked (PR-review)."""
+        src = """
+private forall<T> fn always_true(@T -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ true }
+type Checked = { @Int | always_true(@Int.0) };
+public fn f(@Checked -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @Checked.0 }
+"""
+        result = _compile(src)
+        errs = [d for d in result.diagnostics
+                if d.severity == "error" and d.error_code == "E617"]
+        assert errs, (
+            f"expected E617 for the un-lowerable generic predicate; "
+            f"diagnostics: {result.diagnostics}"
+        )
+
 
 # =====================================================================
 # C6.5e: String and Array types in function signatures
