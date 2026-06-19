@@ -10,28 +10,25 @@ from vera import ast
 from vera.wasm import WasmContext, WasmSlotEnv
 
 
-_PRIMITIVE_REFINE_BASES = frozenset(
-    {"Int", "Nat", "Bool", "Float64", "String"}
-)
-
-
 class ContractsMixin:
     """Methods for compiling runtime contract checks."""
 
     def _refinement_guard_parts(
         self, te: ast.TypeExpr,
     ) -> tuple[ast.Expr, str] | None:
-        """(predicate, base slot-name) if *te* is a refinement over a
-        primitive base, else None — the codegen counterpart of the verifier's
-        ``_refined_parts`` / ``_base_slot_name`` (#746).
+        """(predicate, base slot-name) if *te* is a refinement, else None
+        (#746) — the codegen counterpart of the verifier's ``_refined_parts``.
 
         Resolves an alias chain (``type PosInt = { @Int | ... }``; also
-        ``type P2 = PosInt``) to the underlying ``RefinementType``.  Only
-        primitive bases are guarded — a non-primitive base (e.g. ``Array``) has
-        no slot binder the predicate translator can substitute, exactly as on
-        the verify side, so it yields None (no runtime guard, matching the
-        Tier-3 static outcome).
-        """
+        ``type P2 = PosInt``) to the underlying ``RefinementType`` and returns
+        its predicate plus the base type's *name* (the binder slot, e.g.
+        ``Int`` for ``{ @Int | ... }`` or ``Array`` for
+        ``{ @Array<Int> | array_length(@Array<Int>.0) > 0 }``).  Unlike the
+        verify side — where Z3 cannot decide ``array_length`` so a collection
+        base is Tier 3 — the runtime guard compiles the predicate to WASM
+        directly, so it covers any base whose predicate
+        :py:meth:`WasmContext.translate_expr` can lower (:py:meth:`_emit_refinement_check`
+        returns None and emits no guard when it cannot)."""
         node: ast.TypeExpr = te
         seen: set[str] = set()
         while (isinstance(node, ast.NamedType)
@@ -41,9 +38,21 @@ class ContractsMixin:
             node = self._type_aliases[node.name]
         if isinstance(node, ast.RefinementType):
             base = node.base_type
-            if (isinstance(base, ast.NamedType)
-                    and base.name in _PRIMITIVE_REFINE_BASES):
-                return (node.predicate, base.name)
+            if isinstance(base, ast.NamedType):
+                # Build the canonical slot name the predicate's binder uses —
+                # ``Array<Int>`` for a parameterised base, ``Int`` otherwise —
+                # matching `_translate_slot_ref`'s key (a bare ``Array`` would
+                # never resolve).
+                name = base.name
+                if base.type_args:
+                    arg_names: list[str] = []
+                    for ta in base.type_args:
+                        if isinstance(ta, ast.NamedType):
+                            arg_names.append(ta.name)
+                        else:
+                            return None
+                    name = f"{base.name}<{', '.join(arg_names)}>"
+                return (node.predicate, name)
         return None
 
     def _emit_refinement_check(
@@ -53,19 +62,22 @@ class ContractsMixin:
         base_name: str,
         value_local: int,
         message: str,
+        base_env: WasmSlotEnv,
     ) -> list[str] | None:
         """Compile a refinement-predicate runtime guard over *value_local*
         (#746).
 
         The predicate is closed over the binder ``@<base>.0``; translating it
-        against a fresh slot env binding that base to *value_local* reads the
-        value and yields an i32 boolean, exactly like a ``requires`` clause.
-        Traps via the ``$vera.contract_fail`` host import (the same channel
-        used for precondition / postcondition failures) when the predicate is
-        false.  Returns None when the predicate falls outside the compilable
-        fragment (no guard emitted — the static side already surfaced it as
-        Tier 3)."""
-        guard_env = WasmSlotEnv().push(base_name, value_local)
+        against *base_env* extended with that base bound to *value_local* reads
+        the value and yields an i32 boolean, exactly like a ``requires``
+        clause.  Extending the function's own slot env (rather than a bare one)
+        preserves the surrounding type context a pair value such as ``Array``
+        needs — its ``(ptr, len)`` representation — so ``array_length`` and the
+        like translate.  Traps via the ``$vera.contract_fail`` host import (the
+        same channel used for precondition / postcondition failures) when the
+        predicate is false.  Returns None when the predicate falls outside the
+        compilable fragment (no guard emitted)."""
+        guard_env = base_env.push(base_name, value_local)
         cond = ctx.translate_expr(predicate, guard_env)
         if cond is None:
             return None
@@ -229,7 +241,7 @@ class ContractsMixin:
             msg = self._format_refinement_message(
                 decl, decl.return_type, "return value")
             guard = self._emit_refinement_check(
-                ctx, predicate, base_name, ptr_l, msg)
+                ctx, predicate, base_name, ptr_l, msg, env)
             if guard is None:
                 return []
             # Result is (ptr, len) with len on top of the stack.
@@ -274,7 +286,7 @@ class ContractsMixin:
                 msg = self._format_refinement_message(
                     decl, decl.return_type, "return value")
                 guard = self._emit_refinement_check(
-                    ctx, predicate, base_name, result_local, msg)
+                    ctx, predicate, base_name, result_local, msg, env)
                 if guard is not None:
                     instrs.extend(guard)
 

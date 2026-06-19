@@ -2262,23 +2262,24 @@ class ContractVerifier:
         value_node: ast.Expr,
         site: str,
     ) -> None:
-        """Record a Tier-3 ``refine_bind`` outcome (untranslatable value or
-        predicate, or solver timeout) as an E506 warning excluded from the
-        discharged totals (#746).
+        """Record a Tier-3 ``refine_bind`` outcome — the predicate could not be
+        discharged statically (a non-primitive base such as ``Array``, an
+        undecidable construct, or a solver timeout) — as a runtime-checked
+        Tier-3 (#746).
 
-        Unlike :py:meth:`_record_nat_bind_tier3` there is no ``guarded``
-        branch: codegen does not yet runtime-guard refinement predicates (the
-        #746 follow-up), so an undischarged refined narrowing is *always*
-        neither statically proven nor runtime-checked — surfaced like a
-        violation rather than silently counted as a runtime check it never
-        gets (R7).
-        """
-        self.summary.total -= 1
+        Codegen now emits a runtime guard for refinement predicates at the
+        function boundary (a refined parameter at entry, a refined return at
+        exit; call arguments via the callee's entry guard), so an
+        undischarged narrowing falls to that guard rather than being silently
+        accepted (R7).  Counted as ``tier3_runtime`` with an informational
+        E506 warning, exactly like any other Tier-3 contract Vera checks at
+        run time."""
+        self.summary.tier3_runtime += 1
         self._record_obligation(
-            decl.name, "refine_bind", value_node, "tier3_unguarded",
+            decl.name, "refine_bind", value_node, "tier3",
             error_code="E506",
         )
-        self._report_refined_unguarded(decl, value_node, site)
+        self._report_refined_runtime(decl, value_node, site)
 
     def _check_refined_binding_obligation_term(
         self,
@@ -2769,40 +2770,38 @@ class ContractVerifier:
             error_code="E505",
         )
 
-    def _report_refined_unguarded(
+    def _report_refined_runtime(
         self,
         decl: ast.FnDecl,
         node: ast.Expr,
         site: str,
     ) -> None:
-        """Emit an E506 warning for a refinement narrowing the SMT layer could
-        not discharge (#746).
+        """Emit an informational E506 warning for a refinement narrowing the
+        SMT layer could not discharge but codegen runtime-guards (#746).
 
-        Codegen runtime-guards refinements over a *primitive* base (Int / Nat /
-        Bool / Float64 / String) at the function boundary — a refined parameter
-        is checked at entry and a refined return at exit, with internal
-        narrowings caught transitively when they reach a boundary.  This
-        warning therefore fires mainly for a refinement over a *non-primitive*
-        base (e.g. ``Array``), whose predicate the translator does not lower:
-        it is neither statically discharged nor refinement-runtime-guarded, so
-        it is surfaced rather than silently passed (R7).  Runtime guards for
-        non-primitive bases are tracked as the #746 follow-up."""
+        The predicate is outside Z3's decidable fragment — a non-primitive base
+        such as ``Array`` (Z3 cannot decide ``array_length``), an undecidable
+        construct, or a solver timeout — so it could not be proved statically.
+        Codegen emits a runtime predicate guard at the function boundary (a
+        refined parameter at entry, a refined return at exit; call arguments
+        via the callee's entry guard), so the narrowing falls to that check —
+        like any other Tier-3 contract Vera verifies at run time, not a silent
+        gap."""
         self._warning(
             node,
             (
-                f"Value narrowing into a refined {site} in '{decl.name}' "
-                "could not be verified statically — add a `requires(...)` "
-                "implying the predicate, or guard the binding with an `if` "
-                "testing the predicate."
+                f"Refinement predicate at a {site} in '{decl.name}' could not "
+                "be verified statically; it will be checked at run time. To "
+                "prove it statically, add a `requires(...)` implying the "
+                "predicate or guard the binding with an `if`."
             ),
             rationale=(
-                "The narrowed value or the refinement predicate is outside "
-                "Z3's decidable fragment (untranslatable, a non-primitive "
-                "base such as Array, or the solver timed out), so the "
-                "predicate obligation could not be discharged statically.  "
-                "Codegen runtime-guards refinements over a primitive base at "
-                "the function boundary, but not over a non-primitive base, so "
-                "this narrowing is not refinement-runtime-checked either."
+                "The refinement predicate is outside Z3's decidable fragment "
+                "(a non-primitive base such as Array, an undecidable "
+                "construct, or a solver timeout), so it could not be "
+                "discharged statically.  Codegen emits a runtime predicate "
+                "guard at the function boundary, so the narrowing is checked "
+                "at run time (Tier 3) rather than silently accepted."
             ),
             spec_ref=(
                 'Chapter 2, Section 2.6 "Refinement Types" and Chapter 6, '

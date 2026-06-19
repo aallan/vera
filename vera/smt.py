@@ -1182,6 +1182,20 @@ class SmtContext:
                 self.solver.add(z3_post)
         self._result_var = saved_result
 
+        # #746: a refined return type is an implicit postcondition — assume
+        # its predicate on the fresh call result so a caller can rely on a
+        # verified refined return (the producing function discharges the
+        # predicate at its return position).  Only a primitive base has a
+        # substitutable binder; the base-`@Nat` `>= 0` is already carried by
+        # the `declare_nat` above, so the predicate alone suffices here.
+        if isinstance(ret_type, RefinedType) and isinstance(
+            ret_type.base, PrimitiveType
+        ):
+            inner_env = SlotEnv().push(ret_type.base.name, ret_var)
+            z3_pred = self.translate_expr(ret_type.predicate, inner_env)
+            if z3_pred is not None:
+                self.solver.add(z3_pred)
+
         return ret_var
 
     def _translate_block(

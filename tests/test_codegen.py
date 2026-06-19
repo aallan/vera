@@ -5399,6 +5399,42 @@ public fn entry(@Unit -> @Int)
 """
         _run_trap(src, fn="entry")
 
+    _ARR = (
+        "type NonEmptyArray = "
+        "{ @Array<Int> | array_length(@Array<Int>.0) > 0 };\n"
+    )
+
+    def test_array_param_guard_traps_on_empty(self) -> None:
+        """A refinement over a non-primitive (`Array`) base is runtime-guarded
+        too — the predicate is compiled to WASM directly (Z3 cannot decide
+        `array_length`, but codegen can), so an empty array into a
+        `@NonEmptyArray` parameter traps."""
+        src = self._ARR + """
+public fn head(@NonEmptyArray -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ @NonEmptyArray.0[0] }
+public fn empty(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ head([]) }
+public fn nonempty(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ head([42, 7]) }
+"""
+        _run_trap(src, fn="empty")
+        assert _run(src, fn="nonempty") == 42
+
+    def test_array_return_guard_traps_on_empty(self) -> None:
+        """A refined `@NonEmptyArray` return is runtime-guarded at exit."""
+        src = self._ARR + """
+public fn mk(@Array<Int> -> @NonEmptyArray)
+  requires(true) ensures(true) effects(pure)
+{ @Array<Int>.0 }
+public fn entry(@Unit -> @Int)
+  requires(true) ensures(true) effects(pure)
+{ let @NonEmptyArray = mk([]); 0 }
+"""
+        _run_trap(src, fn="entry")
+
 
 # =====================================================================
 # C6.5e: String and Array types in function signatures

@@ -1,18 +1,16 @@
 -- Refinement types — types constrained by predicates.
 --
--- Since #746 the predicates are verified STATICALLY and, for primitive bases,
--- guarded at RUNTIME.  A value narrowing into a refined slot or returned at a
--- refined return position carries a Tier-1 proof obligation; below,
--- `safe_divide(10, 3)` discharges `3 > 0` into its `@PosInt` parameter and
--- `to_percentage` discharges its `@Percentage` return predicate — both at
--- Tier 1.  A primitive-base refinement is also runtime-guarded at the function
--- boundary (param entry / return exit), so an unverified compile traps on a
--- violating value.  The one exception is `head([42, 1, 2])`: its
--- `@NonEmptyArray` predicate is over a non-primitive (`Array`) base, which the
--- predicate translator does not encode (only primitive bases — @Int, @Nat,
--- @Bool, @Float64, @String — have their binder substituted), so it stays
--- Tier 3 (an E506 warning) and relies on the array's own bounds checks —
--- tracked as #762.
+-- Since #746 the predicates are verified STATICALLY and guarded at RUNTIME.
+-- A value narrowing into a refined slot or returned at a refined return
+-- position carries a Tier-1 proof obligation; below, `safe_divide(10, 3)`
+-- discharges `3 > 0` into its `@PosInt` parameter and `to_percentage`
+-- discharges its `@Percentage` return predicate — both at Tier 1.  Every
+-- refinement is also runtime-guarded at the function boundary (param entry /
+-- return exit), so an unverified compile traps on a violating value.
+-- `head`'s `@NonEmptyArray` predicate is over a non-primitive (`Array`) base
+-- that Z3 cannot decide, so it is Tier 3 *statically* (an informational E506),
+-- but codegen still compiles `array_length(...) > 0` to a runtime guard — so
+-- `head([])` would trap at the parameter (#746/#762).
 --
 -- A positive integer
 type PosInt = { @Int | @Int.0 > 0 };

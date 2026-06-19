@@ -251,14 +251,13 @@ class TestObligationKinds:
         assert violated[0].counterexample is not None
         _assert_summary_consistent("refine-bind-violation", result)
 
-    def test_refine_bind_tier3_excluded_from_totals(self) -> None:
-        """A Tier-3 refinement narrowing (non-primitive `Array` base, an E506
-        `tier3_unguarded` outcome) is excluded from `summary.total` and is NOT
-        counted as a runtime-guarded `tier3_runtime` — the bespoke bookkeeping
-        `_assert_summary_consistent` does not otherwise exercise (it never sees
-        the `tier3_unguarded` status or the `total -= 1`).  A bug dropping the
-        `total -= 1` (double-counting an unguarded narrowing as discharged)
-        would pass every other test."""
+    def test_refine_bind_tier3_runtime_checked(self) -> None:
+        """A Tier-3 refinement narrowing (non-primitive `Array` base) is
+        recorded as a runtime-checked `tier3` with an informational E506 — not
+        `tier1_verified` and not silently dropped — because codegen guards the
+        predicate at the function boundary.  Exercises the `tier3_runtime`
+        bookkeeping `_assert_summary_consistent` checks (status `tier3` ↔
+        `summary.tier3_runtime`)."""
         source = (
             "type NonEmptyArray = "
             "{ @Array<Int> | array_length(@Array<Int>.0) > 0 };\n"
@@ -272,16 +271,18 @@ class TestObligationKinds:
             "{ head([42, 1, 2]) }\n"
         )
         result = self._verify_source(source)
-        tier3_unguarded = [
+        tier3 = [
             o for o in result.obligations
-            if o.kind == "refine_bind" and o.status == "tier3_unguarded"
+            if o.kind == "refine_bind" and o.status == "tier3"
         ]
-        assert len(tier3_unguarded) == 1
-        assert tier3_unguarded[0].error_code == "E506"
-        # Excluded from the discharged totals and not a runtime-guarded tier3.
-        assert result.summary.tier3_runtime == 0
-        verified = sum(1 for o in result.obligations if o.status == "verified")
-        assert result.summary.total == verified
+        assert len(tier3) == 1
+        assert tier3[0].error_code == "E506"
+        # Counted as a runtime check, never a silent pass or a Tier-1.
+        assert not any(
+            o.kind == "refine_bind" and o.status == "verified"
+            for o in result.obligations
+        )
+        assert result.summary.tier3_runtime >= 1
         _assert_summary_consistent("refine-bind-tier3", result)
 
     def test_violated_ensures_carries_counterexample(self) -> None:

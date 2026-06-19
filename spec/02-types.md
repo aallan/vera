@@ -254,11 +254,11 @@ An obligation drops to Tier 3 — reported as an `E506` warning rather than sile
 
 ### 2.6.5 Runtime Guards
 
-A refinement over a **primitive base** (`@Int`, `@Nat`, `@Bool`, `@Float64`, `@String`) is also guarded at **runtime**: the compiler emits a predicate check at the function boundary — a refined parameter is checked at entry and a refined return at exit — that traps (via the contract-failure channel) if the value violates the predicate. So even a program compiled *without* `vera verify` rejects a refinement-violating value at a `public`/FFI boundary rather than silently accepting it; for example, calling `clamp_percent(@Int)` whose body returns a value outside `0..100` traps with a refinement-violation diagnostic. A call argument is covered by the callee's entry guard, so the boundary checks compose to cover every narrowing whose result is actually consumed.
+A refinement predicate is also guarded at **runtime**: the compiler emits a predicate check at the function boundary — a refined parameter is checked at entry and a refined return at exit — that traps (via the contract-failure channel) if the value violates the predicate. So even a program compiled *without* `vera verify` rejects a refinement-violating value at a `public`/FFI boundary rather than silently accepting it; for example, calling `clamp_percent(@Int)` whose body returns a value outside `0..100` traps with a refinement-violation diagnostic. A call argument is covered by the callee's entry guard, so the boundary checks compose to cover every narrowing whose result is actually consumed.
+
+This covers refinements over a **non-primitive base** too (e.g. `{ @Array<Int> | array_length(@Array<Int>.0) > 0 }`): although Z3 cannot decide `array_length` so the predicate is Tier 3 *statically* (§2.6.4), codegen compiles it directly to WebAssembly, so an empty array passed into a `@NonEmptyArray` parameter traps at run time.
 
 The guard is *defense in depth* for the unverified path: a `vera verify`-clean program proves the predicate statically, so the runtime guard is never reached.
-
-> **Limitation.** Refinements over a **non-primitive base** (e.g. `{ @Array<Int> | array_length(...) > 0 }`) are not yet runtime-guarded — they remain Tier 3 statically (the predicate translator does not lower a collection binder), and the underlying operations' own runtime checks (such as array bounds) provide the safety net instead. Tracked as [#762](https://github.com/aallan/vera/issues/762).
 
 ## 2.7 Parametric Polymorphism
 

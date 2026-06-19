@@ -212,7 +212,7 @@ class FunctionCompilationMixin:
             predicate, base_name = parts
             msg = self._format_refinement_message(decl, param_te, "parameter")
             guard = self._emit_refinement_check(
-                ctx, predicate, base_name, value_local, msg)
+                ctx, predicate, base_name, value_local, msg, env)
             if guard is not None:
                 pre_instrs.extend(guard)
 
