@@ -48,6 +48,7 @@ from vera.types import (
     TypeVar,
     contains_typevar,
     substitute,
+    types_equal,
 )
 
 
@@ -3211,16 +3212,18 @@ class ContractVerifier:
 
         Fires for any value not *already* known to carry the target's exact
         refinement.  The one exemption (R3) is an already-refined source whose
-        predicate matches the target's: ``let @PosInt = <some @PosInt>`` adds
-        no obligation, because the source's refinement was itself discharged
-        where it was produced (modular verification).  Matching is by
-        **predicate-AST equality**, not :py:func:`types_equal` — the latter
-        ignores the predicate (``types.py``), so ``@Percentage`` flowing into
-        ``@PosInt`` would wrongly be treated as a no-op.  ``span`` is
-        ``compare=False`` on the AST nodes, so the same alias matches itself
-        while a structurally-different predicate (``@Percentage`` vs
-        ``@PosInt``) does not — that case stays obligated and is discharged
-        (or refuted) by Z3.
+        **base AND predicate** match the target's: ``let @PosInt = <some
+        @PosInt>`` adds no obligation, because the source's refinement was
+        itself discharged where it was produced (modular verification).
+        Predicate matching is by **AST equality** (``span`` is
+        ``compare=False`` on the nodes, so the same alias matches itself while
+        ``@Percentage`` vs ``@PosInt`` does not); base matching is by
+        :py:func:`types_equal`.  BOTH are required — a predicate-only match
+        would unsoundly exempt ``{ @Int | true }`` flowing into ``{ @Nat | true
+        }`` (equal predicates, but the ``@Nat`` base adds an implicit ``>= 0``
+        the ``@Int`` source never established), silently bypassing the ``>= 0``
+        obligation at an unguarded internal site (CR a48cd2c).  A non-exempt
+        case stays obligated and is discharged (or refuted) by Z3.
 
         A source carrying a *stronger* refinement (``@Percentage`` into a
         ``>= 0`` slot) is deliberately NOT exempted here: it stays obligated
@@ -3233,7 +3236,9 @@ class ContractVerifier:
         source_ty = self._resolved_type_of(value)
         if source_ty is not None:
             source_parts = self._refined_parts(source_ty)
-            if source_parts is not None and source_parts[1] == target_parts[1]:
+            if (source_parts is not None
+                    and source_parts[1] == target_parts[1]
+                    and types_equal(source_parts[0], target_parts[0])):
                 return False
         return True
 
@@ -3245,15 +3250,20 @@ class ContractVerifier:
         feed :py:meth:`_narrows_into_refined`.
 
         Fires when *target* is refined and the field is not already the SAME
-        refinement (predicate-AST equality), so a `match opt { Some(@PosInt) ->
-        }` on an `Option<Int>` obligates while one on an `Option<PosInt>` does
-        not.
+        refinement — matched on **base AND predicate** (``types_equal`` base +
+        predicate-AST equality, like :py:meth:`_narrows_into_refined`), so a
+        `match opt { Some(@PosInt) -> }` on an `Option<Int>` obligates while one
+        on an `Option<PosInt>` does not.  Both parts are required: a
+        predicate-only match would unsoundly exempt an `@Int` field flowing into
+        a `{ @Nat | true }` slot (equal predicates, differing base invariant).
         """
         target_parts = self._refined_parts(target)
         if target_parts is None:
             return False
         field_parts = self._refined_parts(field_ty)
-        if field_parts is not None and field_parts[1] == target_parts[1]:
+        if (field_parts is not None
+                and field_parts[1] == target_parts[1]
+                and types_equal(field_parts[0], target_parts[0])):
             return False
         return True
 

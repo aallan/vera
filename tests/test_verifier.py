@@ -3632,6 +3632,27 @@ private fn caller(@Percentage -> @Int)
 """, "refinement predicate")
         assert matched[0].error_code == "E505"
 
+    def test_same_predicate_distinct_base_still_obligated(self) -> None:
+        """R3 soundness: a source whose predicate matches the target's but whose
+        BASE differs is NOT exempted.  `{ @Int | true }` into `{ @Nat | true }`
+        must still obligate the `@Nat` base's `>= 0` (an `@Int` can be negative)
+        rather than being silently exempted on predicate equality alone — which
+        would bypass the `>= 0` check at this unguarded `let` site (CR
+        a48cd2c)."""
+        result = _verify("""
+type AnyInt = { @Int | true };
+type AnyNat = { @Nat | true };
+
+public fn coerce(@AnyInt -> @Nat)
+  requires(true) ensures(true) effects(pure)
+{
+  let @AnyNat = @AnyInt.0;
+  @AnyNat.0
+}
+""")
+        errs = [d for d in result.diagnostics if d.error_code == "E505"]
+        assert errs, "base-mismatch narrowing must obligate, not be R3-exempted"
+
     def test_stronger_refinement_source_discharges(self) -> None:
         """A source with a STRONGER refinement (`@Percentage`, `>= 0 && <=
         100`) into a `>= 0` slot is not exempted but DISCHARGES — the implied
