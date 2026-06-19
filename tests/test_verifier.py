@@ -3757,6 +3757,45 @@ public fn make(@Unit -> @Checked)
         assert len(self._refine_obligations(result, "tier3_unguarded")) == 1
         assert self._refine_obligations(result, "tier3") == []
 
+    def test_refinement_over_aliased_base_verifies(self) -> None:
+        """A refinement whose base is an ALIAS — `type Age = Nat; { @Age |
+        @Age.0 >= 18 }` — translates and verifies at Tier-1: the predicate's
+        binder `@Age.0` is bound even though the resolved primitive is `@Nat`
+        (CR e6f17b7).  Previously a false E506 because the binder name was
+        erased to `Nat` by resolution and `@Age.0` never resolved."""
+        result = _verify("""
+type Age = Nat;
+type Adult = { @Age | @Age.0 >= 18 };
+
+public fn f(@Int -> @Adult)
+  requires(@Int.0 >= 18) ensures(true) effects(pure)
+{ @Int.0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        assert len(self._refine_obligations(result, "verified")) == 1
+        assert self._refine_obligations(result, "tier3") == []
+        assert self._refine_obligations(result, "tier3_unguarded") == []
+
+    def test_refinement_over_adt_base_declared_with_adt_sort(self) -> None:
+        """A refinement OVER an ADT base (`{ @Pair | true }`) is declared with
+        the ADT sort (`declare_adt` unwraps the refinement), so a match /
+        projection in the body translates — not a false Tier-3 / Z3 sort
+        failure from declaring the param as Int (CR d338946)."""
+        result = _verify("""
+private data Pair { Pair(Int, Int) }
+
+type RP = { @Pair | true };
+
+public fn f(@RP -> @Int)
+  requires(true) ensures(true) effects(pure)
+{
+  match @RP.0 {
+    Pair(@Int, @Int) -> @Int.1
+  }
+}
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+
     # -- R9: @Nat / refine_bind disjointness -------------------------------
 
     def test_bare_nat_yields_nat_bind_not_refine_bind(self) -> None:

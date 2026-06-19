@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import z3
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from typing import TYPE_CHECKING
 
 from vera import ast
@@ -3637,8 +3637,15 @@ class ContractVerifier:
 
     @staticmethod
     def _is_adt_type(ty: Type) -> bool:
-        """Check if a type is an algebraic data type."""
+        """Check if a type is an algebraic data type — including a refinement
+        OVER an ADT base (`{ @Box | P }`), whose base sort must still be
+        declared via ``declare_adt`` rather than falling through to
+        ``declare_int`` (which would make pattern-matches / projections see an
+        Int term, a false Tier-3 or a Z3 sort failure; CR d338946).  Mirrors
+        :py:meth:`_is_array_type`'s refinement unwrap."""
         from vera.types import AdtType
+        if isinstance(ty, RefinedType):
+            ty = ty.base
         return isinstance(ty, AdtType)
 
     @staticmethod
@@ -3743,6 +3750,33 @@ class ContractVerifier:
         return None
 
     @staticmethod
+    def _predicate_binder_name(predicate: ast.Expr) -> str | None:
+        """The slot type-name the refinement predicate's binder ACTUALLY uses.
+
+        :py:meth:`_base_slot_name` returns the resolved *primitive* name, but
+        the predicate may reference its binder by a syntactic ALIAS — ``@Age.0``
+        for ``type Age = Nat; { @Age | @Age.0 >= 18 }`` — which differs from the
+        resolved ``Nat`` (``_resolve_type`` erases the alias).  A refinement
+        predicate is closed over its single binder, so the first ``SlotRef`` in
+        it names that binder; pushing the value under THIS name too lets
+        ``@Age.0`` resolve, instead of the predicate falsely falling to Tier 3
+        (CR e6f17b7).  ``None`` if the predicate holds no ``SlotRef``."""
+        stack: list[object] = [predicate]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.SlotRef):
+                return node.type_name
+            if isinstance(node, ast.Node) and is_dataclass(node):
+                for fld in fields(node):
+                    val = getattr(node, fld.name)
+                    if isinstance(val, ast.Node):
+                        stack.append(val)
+                    elif isinstance(val, (list, tuple)):
+                        stack.extend(
+                            v for v in val if isinstance(v, ast.Node))
+        return None
+
+    @staticmethod
     def _translate_refined_predicate(
         smt: "SmtContext", refined_ty: Type, value_term: z3.ExprRef,
     ) -> z3.ExprRef | None:
@@ -3773,6 +3807,13 @@ class ContractVerifier:
         if base_name is None:
             return None
         inner_env = SlotEnv().push(base_name, value_term)
+        # The predicate may reference its binder by a syntactic alias
+        # (`@Age.0` for `type Age = Nat`) that differs from the resolved
+        # primitive `base_name`; bind the value under that name too so the
+        # predicate resolves instead of falsely falling to Tier 3 (CR e6f17b7).
+        binder_name = ContractVerifier._predicate_binder_name(predicate)
+        if binder_name is not None and binder_name != base_name:
+            inner_env = inner_env.push(binder_name, value_term)
         translated = smt.translate_expr(predicate, inner_env)
         if translated is None:
             return None

@@ -18,6 +18,7 @@ from vera import ast
 from vera.types import (
     AdtType,
     PrimitiveType,
+    RefinedType,
     Type,
     TypeVar,
     BOOL,
@@ -311,7 +312,15 @@ class SmtContext:
     def declare_adt(
         self, name: str, ty: Type,
     ) -> z3.ExprRef | None:
-        """Declare a Z3 constant of an ADT sort."""
+        """Declare a Z3 constant of an ADT sort.
+
+        Unwraps a refinement OVER an ADT base (`{ @Box | P }`) to its base
+        sort, so a refined-ADT param/return is declared with the ADT sort
+        rather than falling to ``declare_int`` (which would make a
+        pattern-match / projection see an Int term — a false Tier-3 or a Z3
+        sort failure; CR d338946).  Mirrors the array path's internal unwrap."""
+        if isinstance(ty, RefinedType):
+            ty = ty.base
         z3_sort = self._vera_type_to_z3_sort(ty)
         if z3_sort is None:
             return None
