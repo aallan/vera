@@ -73,6 +73,13 @@ class ContractsMixin:
                     bseen.add(base_node.name)
                     base_node = self._type_aliases[base_node.name]
                 if (isinstance(base_node, ast.NamedType)
+                        and base_node.name == "Unit"):
+                    # `@Unit` is zero-size / erased: there is no value to load
+                    # into a boundary predicate check, so emit NO guard (the
+                    # verifier records such a refinement `tier3_unguarded`
+                    # rather than claiming a runtime check; CR db24433).
+                    return None
+                if (isinstance(base_node, ast.NamedType)
                         and base_node.name == "Nat"):
                     predicate = ast.BinaryExpr(
                         op=ast.BinOp.AND,

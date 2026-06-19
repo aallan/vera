@@ -3723,9 +3723,39 @@ public fn f(@Byte -> @Byte) requires(true) ensures(true) effects(pure)
 public fn g(@Unit -> @Byte) requires(true) ensures(true) effects(pure)
 { let @SmallByte = f(5); @SmallByte.0 }
 """)
-        # No false E505 from treating @Byte as an unconstrained Int.
-        assert [d for d in result.diagnostics if d.error_code == "E505"] == []
-        assert any(d.error_code == "E506" for d in result.diagnostics)
+        # No verifier *errors* at all (not just no E505), and exactly one
+        # E506 Tier-3 warning on the @Byte narrowing — pinned so the test
+        # cannot pass on an unrelated failure or E506 multiplicity drift
+        # (CR db24433).
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        warns = [d for d in result.diagnostics if d.error_code == "E506"]
+        assert len(warns) == 1
+        assert warns[0].severity == "warning"
+
+    def test_unit_refinement_is_unguarded_not_falsely_guarded(self) -> None:
+        """A refinement over `@Unit` is recorded `tier3_unguarded` (E506 'not
+        runtime-guarded'), NOT `tier3` (guarded): `@Unit` is erased, so codegen
+        cannot emit a boundary predicate check, and the verifier must not claim
+        a runtime guard it never gets (CR db24433).  A refined `@Unit` return
+        is the boundary that would otherwise falsely claim guarding (a
+        function-predicate form reaches here; `{ @Unit | false }` is rejected
+        at type-check as uninhabited)."""
+        result = _verify("""
+private fn always_false(@Unit -> @Bool)
+  requires(true) ensures(true) effects(pure)
+{ false }
+
+type Checked = { @Unit | always_false(@Unit.0) };
+
+public fn make(@Unit -> @Checked)
+  requires(true) ensures(true) effects(pure)
+{ @Unit.0 }
+""")
+        assert [d for d in result.diagnostics if d.severity == "error"] == []
+        # Recorded UNguarded (excluded from totals), never a claimed runtime
+        # guard codegen does not emit.
+        assert len(self._refine_obligations(result, "tier3_unguarded")) == 1
+        assert self._refine_obligations(result, "tier3") == []
 
     # -- R9: @Nat / refine_bind disjointness -------------------------------
 

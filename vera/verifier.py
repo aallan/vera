@@ -1029,7 +1029,8 @@ class ContractVerifier:
                 # checked by the codegen return guard (guarded), never a silent
                 # pass (R7).
                 self._record_refined_bind_tier3(
-                    decl, ret_node, "return type", guarded=True)
+                    decl, ret_node, "return type",
+                    guarded=not self._is_unit_refinement(ret_type))
             else:
                 ret_result = smt.check_valid(goal, list(assumptions))
                 if ret_result.status == "verified":
@@ -2321,16 +2322,19 @@ class ContractVerifier:
         :py:meth:`_record_refined_bind_tier3`.
         """
         self.summary.total += 1
+        # A `@Unit` refinement is codegen-UNguarded (erased binder), so its
+        # Tier-3 fallback must not claim a runtime guard (CR db24433).
+        eff_guarded = guarded and not self._is_unit_refinement(refined_ty)
         val = smt.translate_expr(value_node, slot_env)
         if val is None:
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=guarded)
+                decl, value_node, site, guarded=eff_guarded)
             return
 
         goal = self._translate_refined_predicate(smt, refined_ty, val)
         if goal is None:
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=guarded)
+                decl, value_node, site, guarded=eff_guarded)
             return
 
         result = smt.check_valid(goal, list(assumptions))
@@ -2350,7 +2354,7 @@ class ContractVerifier:
                 decl, value_node, refined_ty, site, result.counterexample)
         else:  # pragma: no cover — solver timeout
             self._record_refined_bind_tier3(
-                decl, value_node, site, guarded=guarded)
+                decl, value_node, site, guarded=eff_guarded)
 
     def _record_refined_bind_tier3(
         self,
@@ -2454,7 +2458,8 @@ class ContractVerifier:
         )
         if goal is None:
             self._record_refined_bind_tier3(
-                decl, decl.body, "return type", guarded=True)
+                decl, decl.body, "return type",
+                guarded=not self._is_unit_refinement(ret_type))
             return
         result = smt.check_valid(goal, list(assumptions))
         if result.status == "verified":
@@ -2473,7 +2478,8 @@ class ContractVerifier:
             )
         else:  # pragma: no cover — solver timeout
             self._record_refined_bind_tier3(
-                decl, decl.body, "return type", guarded=True)
+                decl, decl.body, "return type",
+                guarded=not self._is_unit_refinement(ret_type))
 
     def _check_refined_binding_obligation_term(
         self,
@@ -3596,6 +3602,18 @@ class ContractVerifier:
     def _is_nat_type(ty: Type) -> bool:
         """Check if a type is Nat (non-negative integer)."""
         return ty == NAT or (isinstance(ty, RefinedType) and ty.base == NAT)
+
+    @staticmethod
+    def _is_unit_refinement(ty: Type) -> bool:
+        """Whether *ty* is a refinement over the ``@Unit`` base, which codegen
+        CANNOT runtime-guard: ``@Unit`` is zero-size / erased, so there is no
+        value to load into the boundary predicate check (#746, CR db24433).
+
+        A Tier-3 ``@Unit`` refinement is therefore recorded ``guarded=False``
+        (an honest E506 ``tier3_unguarded`` warning) rather than claiming a
+        runtime guard codegen never emits — unlike ``@Byte`` (an `i32`) or
+        ``@Array`` (a pair), whose binders DO lower, so those stay guarded."""
+        return isinstance(ty, RefinedType) and ty.base == UNIT
 
     @staticmethod
     def _is_bool_type(ty: Type) -> bool:
